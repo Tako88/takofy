@@ -9,11 +9,11 @@ use std::process::ExitCode;
 
 use librespot::core::SessionConfig;
 use log::LevelFilter;
-use takofy_core::TrackEntry;
 use takofy_core::credentials::AccessToken;
 use takofy_core::engine::{Engine, EngineError};
 use takofy_core::login::{AuthError, LoginMethod, SourceErrorKind, authenticate};
 use takofy_core::oauth::{OAUTH_LOG_TARGET, RedirectMode, SpotifyOAuth};
+use takofy_core::{Outcome, PlaybackError, PlaybackEvent, TrackEntry, TrackPages, drive};
 
 use crate::keychain::KeychainStore;
 
@@ -57,7 +57,7 @@ fn main() -> ExitCode {
     };
 
     match runtime.block_on(run(cfg, &access)) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(code) => code,
         Err(error) => {
             eprintln!("error: {error}");
             ExitCode::FAILURE
@@ -65,62 +65,132 @@ fn main() -> ExitCode {
     }
 }
 
-async fn run(cfg: SessionConfig, token: &AccessToken) -> Result<(), EngineError> {
+async fn run(cfg: SessionConfig, token: &AccessToken) -> Result<ExitCode, EngineError> {
     let engine = Engine::connect(cfg, token).await?;
     let playlists = engine.rootlist().await?;
     if playlists.is_empty() {
         println!("no playlists found");
-        return Ok(());
+        return Ok(ExitCode::SUCCESS);
     }
     for (index, entry) in playlists.iter().enumerate() {
         println!("{}. {} - {}", index + 1, entry.name, entry.uri);
     }
     let Some(index) = prompt_playlist(playlists.len()).await else {
-        return Ok(());
+        return Ok(ExitCode::SUCCESS);
     };
-    let mut pages = engine.tracks(&playlists[index].uri);
-    let mut shown = match pages.next().await? {
-        Some(tracks) => print_tracks(0, &tracks),
+    let Some(track) = choose_track(engine.tracks(&playlists[index].uri)).await? else {
+        return Ok(ExitCode::SUCCESS);
+    };
+
+    let (playback, events) = match engine.playback() {
+        Ok(pair) => pair,
+        Err(PlaybackError::NoAudioDevice) => {
+            eprintln!("error: no audio output device available");
+            return Ok(ExitCode::from(3));
+        }
+        Err(error) => {
+            eprintln!("error: {error}");
+            return Ok(ExitCode::FAILURE);
+        }
+    };
+
+    if let Err(error) = playback.play(&track.uri) {
+        eprintln!("error: {error}");
+        if let Err(error) = playback.shutdown().await {
+            eprintln!("error: {error}");
+        }
+        return Ok(ExitCode::FAILURE);
+    }
+
+    let loop_result =
+        tokio::task::spawn_blocking(move || drive(events, print_playback_event)).await;
+    let exit = match loop_result {
+        Ok(Ok(Outcome::Ended | Outcome::Stopped)) => ExitCode::SUCCESS,
+        Ok(Ok(Outcome::Unavailable)) => {
+            println!("track unavailable");
+            ExitCode::FAILURE
+        }
+        Ok(Err(error)) => {
+            eprintln!("error: {error}");
+            ExitCode::FAILURE
+        }
+        Err(error) => {
+            eprintln!("error: player event loop failed: {error}");
+            ExitCode::FAILURE
+        }
+    };
+    if let Err(error) = playback.shutdown().await {
+        eprintln!("error: {error}");
+        return Ok(ExitCode::FAILURE);
+    }
+    Ok(exit)
+}
+
+async fn choose_track(mut pages: TrackPages<'_>) -> Result<Option<TrackEntry>, EngineError> {
+    let mut shown: Vec<TrackEntry> = Vec::new();
+    match pages.next().await? {
+        Some(tracks) => push_page(&mut shown, &tracks),
         None => {
             println!("no tracks");
-            0
+            return Ok(None);
         }
-    };
+    }
+    if shown.is_empty() {
+        println!("no tracks to pick");
+        return Ok(None);
+    }
     loop {
+        println!(
+            "pick a track (1-{}), n for next page, q to quit",
+            shown.len()
+        );
         let Some(input) = read_line().await else {
-            return Ok(());
+            return Ok(None);
         };
+        if input.is_empty() || input.eq_ignore_ascii_case("q") {
+            return Ok(None);
+        }
         if input.eq_ignore_ascii_case("n") {
             match pages.next().await? {
-                Some(tracks) => shown = print_tracks(shown, &tracks),
-                None => {
-                    println!("end of tracks");
-                    return Ok(());
-                }
+                Some(tracks) => push_page(&mut shown, &tracks),
+                None => println!("end of tracks"),
             }
-        } else if input.is_empty() || input.eq_ignore_ascii_case("q") {
-            return Ok(());
-        } else {
-            println!("n for next page, q to quit");
+            continue;
         }
+        if let Ok(number) = input.parse::<usize>()
+            && (1..=shown.len()).contains(&number)
+        {
+            return Ok(Some(shown[number - 1].clone()));
+        }
+        println!("enter a track number, n for next page, or q to quit");
     }
 }
 
-fn print_tracks(start: usize, tracks: &[TrackEntry]) -> usize {
+fn push_page(shown: &mut Vec<TrackEntry>, tracks: &[TrackEntry]) {
     if tracks.is_empty() {
         println!("(empty page)");
-        return start;
     }
-    for (offset, track) in tracks.iter().enumerate() {
+    for track in tracks {
+        shown.push(track.clone());
         println!(
             "{}. {} - {} ({})",
-            start + offset + 1,
+            shown.len(),
             track.title,
             track.artists,
             track.uri
         );
     }
-    start + tracks.len()
+}
+
+fn print_playback_event(event: &PlaybackEvent) {
+    match event {
+        PlaybackEvent::Loading => println!("loading"),
+        PlaybackEvent::Playing { position_ms } => println!("playing at {position_ms} ms"),
+        PlaybackEvent::Paused { position_ms } => println!("paused at {position_ms} ms"),
+        PlaybackEvent::Ended => println!("ended"),
+        PlaybackEvent::Unavailable => println!("unavailable"),
+        PlaybackEvent::Stopped => println!("stopped"),
+    }
 }
 
 async fn prompt_playlist(count: usize) -> Option<usize> {

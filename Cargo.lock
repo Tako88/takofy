@@ -3816,6 +3816,7 @@ version = "0.1.0"
 dependencies = [
  "futures-util",
  "librespot",
+ "log",
  "protobuf",
  "protobuf-json-mapping",
  "thiserror 2.0.21",

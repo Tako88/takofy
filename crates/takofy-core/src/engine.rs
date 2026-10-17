@@ -6,6 +6,7 @@ use librespot::core::{Session, SessionConfig};
 use crate::context::{ContextError, Walker};
 use crate::credentials::AccessToken;
 use crate::model::{PlaylistEntry, TrackEntry};
+use crate::playback::{Playback, PlaybackError, PlaybackEvent};
 use crate::remote::{ROOTLIST_WIRE, RemoteContext, RemoteRootlist, label_playlists, label_tracks};
 use crate::rootlist::{RootlistError, fetch_all};
 
@@ -43,6 +44,21 @@ impl Engine {
         };
         let uris = fetch_all(&source).await?;
         Ok(label_playlists(&self.session, uris).await)
+    }
+
+    /// Starts a player over this session.
+    ///
+    /// Needs an active Tokio runtime: the event forwarder is spawned on it.
+    pub fn playback(
+        &self,
+    ) -> Result<
+        (
+            Playback,
+            tokio::sync::mpsc::UnboundedReceiver<PlaybackEvent>,
+        ),
+        PlaybackError,
+    > {
+        Playback::start(self.session.clone())
     }
 
     /// A paged, labelled view of a playlist's tracks.

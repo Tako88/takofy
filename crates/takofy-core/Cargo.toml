@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 librespot.workspace = true
+log.workspace = true
 tokio.workspace = true
 thiserror.workspace = true
 protobuf.workspace = true
