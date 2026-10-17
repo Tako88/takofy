@@ -4,6 +4,7 @@
 //! keychain calls never sit inside async code.
 
 mod keychain;
+mod prompt;
 
 use std::process::ExitCode;
 
@@ -16,6 +17,7 @@ use takofy_core::oauth::{OAUTH_LOG_TARGET, RedirectMode, SpotifyOAuth};
 use takofy_core::{Outcome, PlaybackError, PlaybackEvent, TrackEntry, TrackPages, drive};
 
 use crate::keychain::KeychainStore;
+use crate::prompt::{Choice, format_playlist_line, format_track_line, parse_choice, read_line};
 
 const USAGE: &str = "usage: takofy [--paste]";
 
@@ -73,7 +75,7 @@ async fn run(cfg: SessionConfig, token: &AccessToken) -> Result<ExitCode, Engine
         return Ok(ExitCode::SUCCESS);
     }
     for (index, entry) in playlists.iter().enumerate() {
-        println!("{}. {} - {}", index + 1, entry.name, entry.uri);
+        println!("{}", format_playlist_line(index + 1, entry));
     }
     let Some(index) = prompt_playlist(playlists.len()).await else {
         return Ok(ExitCode::SUCCESS);
@@ -147,22 +149,17 @@ async fn choose_track(mut pages: TrackPages<'_>) -> Result<Option<TrackEntry>, E
         let Some(input) = read_line().await else {
             return Ok(None);
         };
-        if input.is_empty() || input.eq_ignore_ascii_case("q") {
-            return Ok(None);
-        }
-        if input.eq_ignore_ascii_case("n") {
-            match pages.next().await? {
+        match parse_choice(&input, shown.len()) {
+            Choice::Pick(number) => return Ok(Some(shown[number - 1].clone())),
+            Choice::Quit => return Ok(None),
+            Choice::Next => match pages.next().await? {
                 Some(tracks) => push_page(&mut shown, &tracks),
                 None => println!("end of tracks"),
+            },
+            Choice::Invalid => {
+                println!("enter a track number, n for next page, or q to quit");
             }
-            continue;
         }
-        if let Ok(number) = input.parse::<usize>()
-            && (1..=shown.len()).contains(&number)
-        {
-            return Ok(Some(shown[number - 1].clone()));
-        }
-        println!("enter a track number, n for next page, or q to quit");
     }
 }
 
@@ -172,13 +169,7 @@ fn push_page(shown: &mut Vec<TrackEntry>, tracks: &[TrackEntry]) {
     }
     for track in tracks {
         shown.push(track.clone());
-        println!(
-            "{}. {} - {} ({})",
-            shown.len(),
-            track.title,
-            track.artists,
-            track.uri
-        );
+        println!("{}", format_track_line(shown.len(), track));
     }
 }
 
@@ -197,29 +188,12 @@ async fn prompt_playlist(count: usize) -> Option<usize> {
     loop {
         println!("pick a playlist (1-{count}, q to quit)");
         let input = read_line().await?;
-        if input.is_empty() || input.eq_ignore_ascii_case("q") {
-            return None;
-        }
-        if let Ok(number) = input.parse::<usize>()
-            && (1..=count).contains(&number)
-        {
-            return Some(number - 1);
+        match parse_choice(&input, count) {
+            Choice::Pick(number) => return Some(number - 1),
+            Choice::Quit => return None,
+            Choice::Next | Choice::Invalid => {}
         }
     }
-}
-
-async fn read_line() -> Option<String> {
-    tokio::task::spawn_blocking(|| {
-        let mut line = String::new();
-        match std::io::stdin().read_line(&mut line) {
-            Ok(0) => None,
-            Ok(_) => Some(line.trim().to_owned()),
-            Err(_) => None,
-        }
-    })
-    .await
-    .ok()
-    .flatten()
 }
 
 fn logger_builder() -> env_logger::Builder {
