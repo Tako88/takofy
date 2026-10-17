@@ -1,16 +1,6 @@
-//! Plain view types for playlists and tracks.
+//! The shared types, re-exported so `crate::model` resolves.
+//!
+//! The definitions live in `takofy-model`, which holds no network and no I/O;
+//! see that crate for why they are not here.
 
-/// A playlist as listed in the rootlist.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PlaylistEntry {
-    pub uri: String,
-    pub name: String,
-}
-
-/// A track inside a playlist.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TrackEntry {
-    pub uri: String,
-    pub title: String,
-    pub artists: String,
-}
+pub use takofy_model::{PlaylistEntry, TrackEntry};

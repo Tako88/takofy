@@ -1,0 +1,12 @@
+[package]
+name = "takofy-model"
+description = "Plain data shared by the engine and the window. No network, no I/O."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

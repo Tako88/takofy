@@ -7,6 +7,7 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+takofy-model = { path = "../takofy-model" }
 librespot.workspace = true
 log.workspace = true
 tokio.workspace = true
