@@ -19,8 +19,13 @@ features, bugs, design judgements, human actions. Nothing is tracked by hand in
 the repository.
 
 - **One tracking issue per phase**, labelled `phase`, carrying the exit criterion,
-  the open items and the blockers. The open `phase` issues are the roadmap; a
-  feature or bug that is not part of a phase gets its own issue and its own label.
+  the open items and the blockers. Its state is the only place a phase's progress
+  is recorded; nothing else reports it. A feature or bug that is not part of a
+  phase gets its own issue and its own label.
+- **The pinned roadmap issue maps the phases**, in order, one line each saying
+  what the phase is for and linking to its tracking issue. It carries no status,
+  so closing a phase never edits it. A phase is added there when it gets its
+  issue, not before.
 - **A phase closes when the commit that verifies its exit criterion lands on
   `main` carrying `Closes #N`.** Nothing is marked done by hand.
 - **Branches**: one per phase (`<phase-slug>`), and one per milestone off it
