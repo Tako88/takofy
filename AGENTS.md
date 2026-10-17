@@ -2,8 +2,8 @@
 
 A Spotify client for Windows and Linux. Desktop only — no phone, no web build,
 no touch. Rust, with `librespot` speaking Spotify's own protocol and
-`eframe`/`egui` drawing. One binary, no runtime, no Electron. Distributed as
-source and as release binaries on GitHub. Not affiliated with Spotify.
+`eframe`/`egui` drawing. One binary, no runtime, no Electron. A private
+repository, not distributed. Not affiliated with Spotify.
 
 <!--
 The stack is named here and nowhere else in this file. A stack detail earns a
