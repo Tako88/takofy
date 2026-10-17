@@ -180,8 +180,8 @@ mod tests {
 
     #[test]
     fn flags_combine() {
-        let flags = parse_flags(args(&["--paste", "--context", "spotify:search:x"]))
-            .expect("flags parse");
+        let flags =
+            parse_flags(args(&["--paste", "--context", "spotify:search:x"])).expect("flags parse");
         assert_eq!(flags.redirect, RedirectMode::Paste);
         assert_eq!(flags.context.as_deref(), Some("spotify:search:x"));
     }
@@ -189,7 +189,10 @@ mod tests {
     #[test]
     fn usage_mentions_every_flag() {
         for flag in ["--paste", "--context"] {
-            assert!(USAGE.contains(flag), "{flag} is missing from the usage line");
+            assert!(
+                USAGE.contains(flag),
+                "{flag} is missing from the usage line"
+            );
         }
     }
 }

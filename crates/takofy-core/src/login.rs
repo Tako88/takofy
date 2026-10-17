@@ -57,27 +57,60 @@ pub enum AuthError {
     MissingRefreshToken,
 }
 
+/// Loads a stored refresh token and refreshes it.
+///
+/// `Ok(None)` means nothing was stored, or the refresh failed: the caller must
+/// fall back to [`authorize`].
+pub fn resume(
+    store: &dyn CredentialStore,
+    source: &dyn TokenSource,
+) -> Result<Option<AccessToken>, AuthError> {
+    let Some(stored) = store.load()? else {
+        return Ok(None);
+    };
+    let Ok(set) = source.refresh(&stored) else {
+        return Ok(None);
+    };
+    if let Some(fresh) = &set.refresh {
+        persist(store, Some(&stored), fresh)?;
+    }
+    Ok(Some(set.access))
+}
+
+/// Runs the interactive flow and stores the refresh token it returns.
+pub fn authorize(
+    store: &dyn CredentialStore,
+    source: &dyn TokenSource,
+) -> Result<AccessToken, AuthError> {
+    let set = source.interactive()?;
+    let refresh = set.refresh.ok_or(AuthError::MissingRefreshToken)?;
+    persist(store, None, &refresh)?;
+    Ok(set.access)
+}
+
+/// Stores `fresh` unless it is the token already on disk as `previous`.
+fn persist(
+    store: &dyn CredentialStore,
+    previous: Option<&RefreshToken>,
+    fresh: &RefreshToken,
+) -> Result<(), StoreError> {
+    if previous.is_some_and(|token| token.expose() == fresh.expose()) {
+        return Ok(());
+    }
+    store.save(fresh)
+}
+
 /// Loads a stored refresh token, refreshes it, and only opens a browser if that
 /// fails. The stored token is replaced only after a successful exchange.
 pub fn authenticate(
     store: &dyn CredentialStore,
     source: &dyn TokenSource,
 ) -> Result<(AccessToken, LoginMethod), AuthError> {
-    if let Some(stored) = store.load()?
-        && let Ok(set) = source.refresh(&stored)
-    {
-        if let Some(fresh) = &set.refresh
-            && fresh.expose() != stored.expose()
-        {
-            store.save(fresh)?;
-        }
-        return Ok((set.access, LoginMethod::Resumed));
+    if let Some(access) = resume(store, source)? {
+        return Ok((access, LoginMethod::Resumed));
     }
-
-    let set = source.interactive()?;
-    let refresh = set.refresh.ok_or(AuthError::MissingRefreshToken)?;
-    store.save(&refresh)?;
-    Ok((set.access, LoginMethod::Interactive))
+    let access = authorize(store, source)?;
+    Ok((access, LoginMethod::Interactive))
 }
 
 #[cfg(test)]
@@ -87,6 +120,7 @@ mod tests {
 
     use super::{
         AuthError, LoginMethod, SourceError, SourceErrorKind, TokenSet, TokenSource, authenticate,
+        authorize, resume,
     };
     use crate::credentials::fake::FakeStore;
     use crate::credentials::{AccessToken, CredentialStore, RefreshToken};
@@ -346,5 +380,152 @@ mod tests {
             AuthError::Source(source) => assert_eq!(source.kind, SourceErrorKind::PortBusy),
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    #[test]
+    fn resume_without_stored_token_is_none_and_never_calls_source() {
+        let store = FakeStore::new();
+        let source = ScriptedSource::new();
+
+        let token = resume(&store, &source).expect("resume succeeds");
+
+        assert!(token.is_none());
+        assert_eq!(source.refresh_calls(), 0);
+        assert_eq!(source.interactive_calls(), 0);
+        assert_eq!(store.save_count(), 0);
+    }
+
+    #[test]
+    fn resume_refresh_failure_is_none_and_store_untouched() {
+        let store = FakeStore::seeded(refresh("old"));
+        let source = ScriptedSource::new().on_refresh(Err(other_error()));
+
+        let token = resume(&store, &source).expect("resume succeeds");
+
+        assert!(token.is_none());
+        assert_eq!(source.refresh_calls(), 1);
+        assert_eq!(source.interactive_calls(), 0);
+        assert_eq!(store.save_count(), 0);
+        assert_eq!(store.load().expect("load").expect("token").expose(), "old");
+    }
+
+    #[test]
+    fn resume_saves_only_a_rotated_token() {
+        let unchanged = FakeStore::seeded(refresh("same"));
+        let source = ScriptedSource::new().on_refresh(Ok(TokenSet {
+            access: access("access-1"),
+            refresh: Some(refresh("same")),
+        }));
+
+        let token = resume(&unchanged, &source).expect("resume succeeds");
+
+        assert_eq!(token.expect("resumed token").expose(), "access-1");
+        assert_eq!(unchanged.save_count(), 0);
+
+        let rotated = FakeStore::seeded(refresh("old"));
+        let source = ScriptedSource::new().on_refresh(Ok(TokenSet {
+            access: access("access-2"),
+            refresh: Some(refresh("new")),
+        }));
+
+        let token = resume(&rotated, &source).expect("resume succeeds");
+
+        assert_eq!(token.expect("resumed token").expose(), "access-2");
+        assert_eq!(rotated.save_count(), 1);
+        assert_eq!(
+            rotated.load().expect("load").expect("token").expose(),
+            "new"
+        );
+    }
+
+    #[test]
+    fn resume_save_failure_is_an_error() {
+        let store = FakeStore::seeded(refresh("old"));
+        store.fail_save();
+        let source = ScriptedSource::new().on_refresh(Ok(TokenSet {
+            access: access("access-1"),
+            refresh: Some(refresh("new")),
+        }));
+
+        let error = resume(&store, &source).expect_err("resume fails");
+
+        assert!(matches!(error, AuthError::Store(_)));
+    }
+
+    #[test]
+    fn resume_load_failure_is_an_error() {
+        let store = FakeStore::new();
+        store.fail_load();
+        let source = ScriptedSource::new();
+
+        let error = resume(&store, &source).expect_err("resume fails");
+
+        assert!(matches!(error, AuthError::Store(_)));
+        assert_eq!(source.refresh_calls(), 0);
+    }
+
+    #[test]
+    fn authorize_saves_even_if_the_token_equals_the_stored_one() {
+        let store = FakeStore::seeded(refresh("same"));
+        let source = ScriptedSource::new().on_interactive(Ok(TokenSet {
+            access: access("access-1"),
+            refresh: Some(refresh("same")),
+        }));
+
+        let token = authorize(&store, &source).expect("authorize succeeds");
+
+        assert_eq!(token.expose(), "access-1");
+        assert_eq!(store.save_count(), 1);
+        assert_eq!(store.load().expect("load").expect("token").expose(), "same");
+    }
+
+    #[test]
+    fn authorize_without_refresh_token_saves_nothing() {
+        let store = FakeStore::seeded(refresh("old"));
+        let source = ScriptedSource::new().on_interactive(Ok(TokenSet {
+            access: access("access-1"),
+            refresh: None,
+        }));
+
+        let error = authorize(&store, &source).expect_err("authorize fails");
+
+        assert!(matches!(error, AuthError::MissingRefreshToken));
+        assert_eq!(store.save_count(), 0);
+        assert_eq!(store.load().expect("load").expect("token").expose(), "old");
+    }
+
+    #[test]
+    fn authorize_overwrites_stale_token() {
+        let store = FakeStore::seeded(refresh("old"));
+        let source = ScriptedSource::new().on_interactive(Ok(TokenSet {
+            access: access("access-1"),
+            refresh: Some(refresh("new")),
+        }));
+
+        let token = authorize(&store, &source).expect("authorize succeeds");
+
+        assert_eq!(token.expose(), "access-1");
+        assert_eq!(store.save_count(), 1);
+        assert_eq!(store.load().expect("load").expect("token").expose(), "new");
+    }
+
+    #[test]
+    fn resume_then_authorize_matches_the_old_fallback() {
+        let store = FakeStore::seeded(refresh("old"));
+        let source = ScriptedSource::new()
+            .on_refresh(Err(other_error()))
+            .on_interactive(Ok(TokenSet {
+                access: access("access-4"),
+                refresh: Some(refresh("new")),
+            }));
+
+        let resumed = resume(&store, &source).expect("resume succeeds");
+        assert!(resumed.is_none());
+        let access = authorize(&store, &source).expect("authorize succeeds");
+
+        assert_eq!(access.expose(), "access-4");
+        assert_eq!(source.refresh_calls(), 1);
+        assert_eq!(source.interactive_calls(), 1);
+        assert_eq!(store.load().expect("load").expect("token").expose(), "new");
     }
 }
