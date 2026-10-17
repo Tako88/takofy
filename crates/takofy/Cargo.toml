@@ -11,6 +11,7 @@ takofy-core = { path = "../takofy-core" }
 takofy-model = { path = "../takofy-model" }
 librespot.workspace = true
 keyring.workspace = true
+eframe.workspace = true
 env_logger.workspace = true
 log.workspace = true
 tokio.workspace = true
