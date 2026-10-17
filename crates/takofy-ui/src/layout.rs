@@ -5,6 +5,11 @@
 
 use crate::theme::{Tokens, space};
 
+/// Recommended starting size of the window, in points.
+pub const WINDOW_DEFAULT: [f32; 2] = [1100.0, 720.0];
+/// Smallest the window may be dragged, in points.
+pub const WINDOW_MIN: [f32; 2] = [640.0, 480.0];
+
 /// Below this width the sidebar is not worth its space.
 pub const COMPACT_MAX: f32 = 760.0;
 /// At and above this width the shell has room for a wider sidebar.
@@ -89,6 +94,26 @@ mod tests {
     fn breakpoints_are_inclusive_at_their_lower_bound() {
         assert_eq!(Width::of(COMPACT_MAX), Width::Regular);
         assert_eq!(Width::of(WIDE_MIN), Width::Wide);
+    }
+
+    #[test]
+    fn the_default_window_starts_in_the_regular_layout() {
+        assert_eq!(Width::of(WINDOW_DEFAULT[0]), Width::Regular);
+    }
+
+    #[test]
+    fn the_minimum_window_is_still_compact() {
+        assert_eq!(Width::of(WINDOW_MIN[0]), Width::Compact);
+    }
+
+    #[test]
+    fn the_minimum_window_fits_inside_the_default() {
+        for axis in 0..2 {
+            assert!(
+                WINDOW_MIN[axis] <= WINDOW_DEFAULT[axis],
+                "minimum axis {axis} exceeds the default"
+            );
+        }
     }
 
     #[test]

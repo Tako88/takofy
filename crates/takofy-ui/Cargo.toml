@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 egui.workspace = true
+takofy-model = { path = "../takofy-model" }
 
 [lints]
 workspace = true
