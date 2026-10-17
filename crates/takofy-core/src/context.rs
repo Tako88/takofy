@@ -1,0 +1,400 @@
+//! Context page parsing and the queue-based walker.
+//!
+//! A resolved context may hold several pages, and any page may carry its own
+//! `next`, so the walker queues work instead of following one linear chain.
+
+use std::collections::{HashSet, VecDeque};
+
+use librespot::core::SpotifyUri;
+use librespot::protocol::context_page::ContextPage;
+use protobuf_json_mapping::ParseOptions;
+
+/// One page of a context.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Page {
+    /// Playable URIs kept from this page.
+    pub tracks: Vec<String>,
+    /// The next page URL, when present and non-empty.
+    pub next: Option<String>,
+}
+
+/// Why a context read failed.
+#[derive(Debug, thiserror::Error)]
+pub enum ContextError {
+    /// The source itself failed; the message is the source's.
+    #[error("{0}")]
+    Source(String),
+    /// The body could not be decoded; the message names the parser's complaint.
+    #[error("could not parse a context page: {0}")]
+    Parse(String),
+    /// A `next` URL was discovered twice.
+    #[error("context page cycle at {url}")]
+    Cycle { url: String },
+    /// More than [`MAX_PAGES`] pages were returned.
+    #[error("context has more than {MAX_PAGES} pages")]
+    TooManyPages,
+}
+
+/// Reads pages of a context. Implemented over librespot in `remote`.
+pub(crate) trait PageSource {
+    async fn resolve(&self, uri: &str) -> Result<Vec<Page>, ContextError>;
+    async fn next(&self, url: &str) -> Result<Page, ContextError>;
+}
+
+/// Hard cap on pages, so a source that keeps serving `next` cannot loop forever.
+const MAX_PAGES: usize = 500;
+
+/// Keeps only playable URIs and drops an empty `next`.
+pub fn page_from_proto(page: &ContextPage) -> Page {
+    let tracks = page
+        .tracks
+        .iter()
+        .filter_map(|track| track.uri.as_deref())
+        .filter(|uri| matches!(SpotifyUri::from_uri(uri), Ok(parsed) if parsed.is_playable()))
+        .map(str::to_owned)
+        .collect();
+    let next = page
+        .next_page_url
+        .as_deref()
+        .filter(|url| !url.is_empty())
+        .map(str::to_owned);
+    Page { tracks, next }
+}
+
+/// Decodes a JSON context page. The parser error carries no JSON body.
+pub fn parse_page_json(bytes: &[u8]) -> Result<Page, ContextError> {
+    let json = std::str::from_utf8(bytes)
+        .map_err(|_| ContextError::Parse("body is not utf-8".to_owned()))?;
+    let options = ParseOptions {
+        ignore_unknown_fields: true,
+        ..Default::default()
+    };
+    let page = protobuf_json_mapping::parse_from_str_with_options::<ContextPage>(json, &options)
+        .map_err(|error| ContextError::Parse(error.to_string()))?;
+    let page = page_from_proto(&page);
+    if page.tracks.is_empty()
+        && page.next.is_none()
+        && ![
+            "tracks",
+            "next_page_url",
+            "nextPageUrl",
+            "page_url",
+            "pageUrl",
+        ]
+        .iter()
+        .any(|field| json.contains(field))
+    {
+        return Err(ContextError::Parse(
+            "missing 'tracks' or 'next_page_url' in context page".to_owned(),
+        ));
+    }
+    Ok(page)
+}
+
+/// Walks a context: all inline pages first, then pending URLs in discovery order.
+pub(crate) struct Walker<S> {
+    source: S,
+    uri: String,
+    resolved: bool,
+    ready: VecDeque<Page>,
+    pending: VecDeque<String>,
+    seen: HashSet<String>,
+    count: usize,
+}
+
+impl<S: PageSource> Walker<S> {
+    pub(crate) fn new(source: S, uri: impl Into<String>) -> Self {
+        Self {
+            source,
+            uri: uri.into(),
+            resolved: false,
+            ready: VecDeque::new(),
+            pending: VecDeque::new(),
+            seen: HashSet::new(),
+            count: 0,
+        }
+    }
+
+    pub(crate) async fn next_page(&mut self) -> Result<Option<Page>, ContextError> {
+        if !self.resolved {
+            self.resolved = true;
+            let pages = self.source.resolve(&self.uri).await?;
+            self.ready.extend(pages);
+        }
+        loop {
+            if let Some(page) = self.ready.pop_front() {
+                self.count += 1;
+                if self.count > MAX_PAGES {
+                    return Err(ContextError::TooManyPages);
+                }
+                if let Some(url) = &page.next {
+                    if !self.seen.insert(url.clone()) {
+                        return Err(ContextError::Cycle { url: url.clone() });
+                    }
+                    self.pending.push_back(url.clone());
+                }
+                return Ok(Some(page));
+            }
+            match self.pending.pop_front() {
+                Some(url) => self.ready.push_back(self.source.next(&url).await?),
+                None => return Ok(None),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    use librespot::protocol::context_page::ContextPage;
+    use librespot::protocol::context_track::ContextTrack;
+
+    use super::{
+        ContextError, MAX_PAGES, Page, PageSource, Walker, page_from_proto, parse_page_json,
+    };
+
+    const TRACK_A: &str = "spotify:track:4uLU6hMCjMI75M1A2tKUQC";
+    const TRACK_B: &str = "spotify:track:6rqhFgbbKwnb9MLmUQDhG6";
+
+    fn page(tracks: &[&str], next: Option<&str>) -> Page {
+        Page {
+            tracks: tracks.iter().map(|track| (*track).to_owned()).collect(),
+            next: next.map(str::to_owned),
+        }
+    }
+
+    struct Fake {
+        resolve: Vec<Page>,
+        nexts: Mutex<HashMap<String, Page>>,
+        fail_resolve: bool,
+        fail_next: bool,
+    }
+
+    impl Fake {
+        fn new(resolve: Vec<Page>) -> Self {
+            Self {
+                resolve,
+                nexts: Mutex::new(HashMap::new()),
+                fail_resolve: false,
+                fail_next: false,
+            }
+        }
+
+        fn with_next(mut self, url: &str, page: Page) -> Self {
+            self.nexts
+                .get_mut()
+                .expect("lock")
+                .insert(url.to_owned(), page);
+            self
+        }
+    }
+
+    impl PageSource for Fake {
+        async fn resolve(&self, _uri: &str) -> Result<Vec<Page>, ContextError> {
+            if self.fail_resolve {
+                return Err(ContextError::Source("resolve failed".to_owned()));
+            }
+            Ok(self.resolve.clone())
+        }
+
+        async fn next(&self, url: &str) -> Result<Page, ContextError> {
+            if self.fail_next {
+                return Err(ContextError::Source("next failed".to_owned()));
+            }
+            self.nexts
+                .lock()
+                .expect("lock")
+                .get(url)
+                .cloned()
+                .ok_or_else(|| ContextError::Source(format!("no page for {url}")))
+        }
+    }
+
+    async fn drain(walker: &mut Walker<Fake>) -> Result<Vec<Page>, ContextError> {
+        let mut pages = Vec::new();
+        while let Some(page) = walker.next_page().await? {
+            pages.push(page);
+        }
+        Ok(pages)
+    }
+
+    #[tokio::test]
+    async fn inline_pages_come_out_in_order() {
+        let fake = Fake::new(vec![page(&["a"], None), page(&["b"], None)]);
+        let mut walker = Walker::new(fake, "context");
+        let pages = drain(&mut walker).await.expect("walk");
+        assert_eq!(pages, vec![page(&["a"], None), page(&["b"], None)]);
+    }
+
+    #[tokio::test]
+    async fn follows_next_after_inline_pages() {
+        let fake = Fake::new(vec![page(&["a"], Some("u1"))]).with_next("u1", page(&["b"], None));
+        let mut walker = Walker::new(fake, "context");
+        let pages = drain(&mut walker).await.expect("walk");
+        assert_eq!(pages, vec![page(&["a"], Some("u1")), page(&["b"], None)]);
+    }
+
+    #[tokio::test]
+    async fn multiple_inline_pages_each_with_next_are_all_followed() {
+        let fake = Fake::new(vec![page(&["a"], Some("u1")), page(&["b"], Some("u2"))])
+            .with_next("u1", page(&["c"], None))
+            .with_next("u2", page(&["d"], None));
+        let mut walker = Walker::new(fake, "context");
+        let pages = drain(&mut walker).await.expect("walk");
+        assert_eq!(
+            pages,
+            vec![
+                page(&["a"], Some("u1")),
+                page(&["b"], Some("u2")),
+                page(&["c"], None),
+                page(&["d"], None),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn inline_pages_sharing_a_next_url_is_a_cycle() {
+        let fake = Fake::new(vec![page(&["a"], Some("u1")), page(&["b"], Some("u1"))]);
+        let mut walker = Walker::new(fake, "context");
+        walker.next_page().await.expect("first page");
+        let error = walker.next_page().await.expect_err("cycle");
+        assert!(matches!(error, ContextError::Cycle { url } if url == "u1"));
+    }
+
+    #[tokio::test]
+    async fn stops_when_next_is_absent() {
+        let fake = Fake::new(vec![page(&[], None)]);
+        let mut walker = Walker::new(fake, "context");
+        assert_eq!(
+            walker.next_page().await.expect("page"),
+            Some(page(&[], None))
+        );
+        assert_eq!(walker.next_page().await.expect("end"), None);
+    }
+
+    #[tokio::test]
+    async fn repeated_next_url_is_a_cycle() {
+        let fake =
+            Fake::new(vec![page(&["a"], Some("u1"))]).with_next("u1", page(&["b"], Some("u1")));
+        let mut walker = Walker::new(fake, "context");
+        walker.next_page().await.expect("inline");
+        let error = walker.next_page().await.expect_err("cycle");
+        assert!(matches!(error, ContextError::Cycle { url } if url == "u1"));
+    }
+
+    #[tokio::test]
+    async fn page_cap_trips() {
+        let resolve = (0..=MAX_PAGES)
+            .map(|_| page(&["a"], None))
+            .collect::<Vec<_>>();
+        let fake = Fake::new(resolve);
+        let mut walker = Walker::new(fake, "context");
+        let error = drain(&mut walker).await.expect_err("cap");
+        assert!(matches!(error, ContextError::TooManyPages));
+    }
+
+    #[tokio::test]
+    async fn fetched_chain_page_cap_trips() {
+        let mut fake = Fake::new(vec![page(&["a"], Some("u0"))]);
+        for index in 0..=MAX_PAGES {
+            let next = format!("u{}", index + 1);
+            fake = fake.with_next(&format!("u{index}"), page(&["a"], Some(next.as_str())));
+        }
+        let mut walker = Walker::new(fake, "context");
+        let error = drain(&mut walker).await.expect_err("cap");
+        assert!(matches!(error, ContextError::TooManyPages));
+    }
+
+    #[tokio::test]
+    async fn empty_context_yields_none() {
+        let fake = Fake::new(Vec::new());
+        let mut walker = Walker::new(fake, "context");
+        assert_eq!(walker.next_page().await.expect("empty"), None);
+    }
+
+    #[tokio::test]
+    async fn source_error_propagates() {
+        let mut fake = Fake::new(Vec::new());
+        fake.fail_resolve = true;
+        let mut walker = Walker::new(fake, "context");
+        let error = walker.next_page().await.expect_err("source");
+        assert!(matches!(error, ContextError::Source(_)));
+
+        let mut fake = Fake::new(vec![page(&["a"], Some("u1"))]);
+        fake.fail_next = true;
+        let mut walker = Walker::new(fake, "context");
+        walker.next_page().await.expect("inline");
+        let error = walker.next_page().await.expect_err("source");
+        assert!(matches!(error, ContextError::Source(_)));
+    }
+
+    #[test]
+    fn non_playable_items_are_dropped() {
+        let context_page = ContextPage {
+            tracks: vec![track(TRACK_A), track("spotify:album:abc"), track(TRACK_B)],
+            ..Default::default()
+        };
+        assert_eq!(
+            page_from_proto(&context_page).tracks,
+            vec![TRACK_A, TRACK_B]
+        );
+    }
+
+    #[test]
+    fn empty_next_url_is_none() {
+        let context_page = ContextPage {
+            next_page_url: Some(String::new()),
+            ..Default::default()
+        };
+        assert_eq!(page_from_proto(&context_page).next, None);
+    }
+
+    #[test]
+    fn parses_snake_and_camel_json_names() {
+        let snake = format!(r#"{{"next_page_url":"u1","tracks":[{{"uri":"{TRACK_A}"}}]}}"#);
+        let parsed = parse_page_json(snake.as_bytes()).expect("snake");
+        assert_eq!(parsed, page(&[TRACK_A], Some("u1")));
+
+        let camel = format!(r#"{{"nextPageUrl":"u1","tracks":[{{"uri":"{TRACK_A}"}}]}}"#);
+        let parsed = parse_page_json(camel.as_bytes()).expect("camel");
+        assert_eq!(parsed, page(&[TRACK_A], Some("u1")));
+    }
+
+    #[test]
+    fn empty_well_shaped_page_parses() {
+        let parsed = parse_page_json(br#"{"tracks":[]}"#).expect("empty tracks");
+        assert_eq!(parsed, page(&[], None));
+    }
+
+    #[test]
+    fn context_shaped_body_is_rejected() {
+        let error = parse_page_json(br#"{"pages":[]}"#).expect_err("wrong shape");
+        assert!(matches!(error, ContextError::Parse(_)));
+        assert!(!error.to_string().contains("pages"));
+    }
+
+    #[test]
+    fn object_with_no_known_fields_is_rejected() {
+        let error = parse_page_json(b"{}").expect_err("no fields");
+        assert!(matches!(error, ContextError::Parse(_)));
+        assert!(!error.to_string().contains("{}"));
+    }
+
+    #[test]
+    fn unknown_json_fields_are_ignored() {
+        let json = format!(
+            r#"{{"next_page_url":"u1","something_else":true,"tracks":[{{"uri":"{TRACK_A}"}}]}}"#
+        );
+        let parsed = parse_page_json(json.as_bytes()).expect("unknown ignored");
+        assert_eq!(parsed, page(&[TRACK_A], Some("u1")));
+    }
+
+    fn track(uri: &str) -> ContextTrack {
+        ContextTrack {
+            uri: Some(uri.to_owned()),
+            ..Default::default()
+        }
+    }
+}

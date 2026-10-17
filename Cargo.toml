@@ -20,6 +20,14 @@ librespot = { version = "0.8.0", default-features = false, features = [
     "rodio-backend",
 ] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
+thiserror = "2"
+keyring = "4.2.0"
+env_logger = "0.11"
+log = "0.4"
+protobuf = "3.7"
+protobuf-json-mapping = "3.7"
+futures-util = "0.3"
+# Reserved for the phase-2 UI; nothing resolves them yet.
 eframe = "0.37.0"
 egui = "0.37.0"
 
