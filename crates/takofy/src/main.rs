@@ -14,7 +14,8 @@ use takofy_core::credentials::AccessToken;
 use takofy_core::engine::{Engine, EngineError};
 use takofy_core::login::{AuthError, LoginMethod, SourceErrorKind, authenticate};
 use takofy_core::oauth::{OAUTH_LOG_TARGET, RedirectMode, SpotifyOAuth};
-use takofy_core::{Outcome, PlaybackError, PlaybackEvent, TrackEntry, TrackPages, drive};
+use takofy_core::{Outcome, PlaybackError, PlaybackEvent, TrackPages, drive};
+use takofy_model::TrackEntry;
 
 use crate::keychain::KeychainStore;
 use crate::prompt::{Choice, format_playlist_line, format_track_line, parse_choice, read_line};

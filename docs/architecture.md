@@ -24,13 +24,16 @@ The price is a Premium account and a footing outside Spotify's developer terms.
 
 | crate | does | never does |
 | --- | --- | --- |
+| `takofy-model` | holds plain data | depends on anything |
 | `takofy-core` | talks to Spotify | draws |
 | `takofy-ui` | draws | reaches the network |
 | `takofy` | owns threads, wiring, platform | either of the above |
 
 The split is enforced by the compiler, not by convention. `takofy-ui` does not
 depend on `takofy-core` or on librespot, so a view cannot reach the network by
-accident.
+accident. The two share only `takofy-model`, which has no dependencies at all.
+That is what lets the window hold the types it draws without the split ceasing
+to be a boundary.
 
 ## How data moves
 

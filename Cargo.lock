@@ -3807,6 +3807,7 @@ dependencies = [
  "librespot",
  "log",
  "takofy-core",
+ "takofy-model",
  "tokio",
 ]
 

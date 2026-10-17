@@ -9,7 +9,7 @@ use librespot::core::{Session, SpotifyUri};
 use librespot::metadata::{Metadata, Playlist};
 
 use crate::context::{ContextError, Page, PageSource, page_from_proto, parse_page_json};
-use crate::model::{PlaylistEntry, TrackEntry};
+use takofy_model::{PlaylistEntry, TrackEntry};
 use crate::rootlist::{RootlistError, RootlistPage, RootlistSource, RootlistWire, parse_rootlist};
 
 /// The wire the live rootlist is read as; flip to `Json` if the binary parse fails.
