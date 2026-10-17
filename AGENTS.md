@@ -33,9 +33,11 @@ the repository.
   milestone is done; the phase branch merges into `main` when the phase's exit
   criterion holds. Process docs — this file — are committed to `main` directly,
   because they belong to no phase.
-- **Plans are local.** `.pi/plans/<slice>/` is gitignored and holds the audited
+- **Plans and scratch are local.** `.pi/plans/<slice>/` holds the audited
   contract, its adversarial audit, its gate evidence and the milestone extracts.
-  It churns, so it is not repo content.
+  `.pi/scratch/` holds spikes, throwaway probes and diagnostic scripts; what a
+  spike finds belongs in an issue before the probe is discarded. All of `.pi/` is
+  gitignored, because it churns and is not repo content.
 - **An issue reads as plain language.** Written for someone who has not opened
   the code: what is wanted, why it matters, how you will know it is done. No
   shorthand that only means something inside this repository.
