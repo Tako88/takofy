@@ -3814,7 +3814,10 @@ dependencies = [
 name = "takofy-core"
 version = "0.1.0"
 dependencies = [
+ "futures-util",
  "librespot",
+ "protobuf",
+ "protobuf-json-mapping",
  "thiserror 2.0.21",
  "tokio",
 ]

@@ -9,6 +9,8 @@ use std::process::ExitCode;
 
 use librespot::core::SessionConfig;
 use log::LevelFilter;
+use takofy_core::credentials::AccessToken;
+use takofy_core::engine::{Engine, EngineError};
 use takofy_core::login::{AuthError, LoginMethod, SourceErrorKind, authenticate};
 use takofy_core::oauth::{OAUTH_LOG_TARGET, RedirectMode, SpotifyOAuth};
 
@@ -30,19 +32,45 @@ fn main() -> ExitCode {
     let cfg = SessionConfig::default();
     let store = KeychainStore;
 
-    match authenticate(&store, &SpotifyOAuth::new(&cfg.client_id, mode)) {
-        Ok((_access, method)) => {
-            match method {
-                LoginMethod::Resumed => println!("Logged in (resumed)"),
-                LoginMethod::Interactive => println!("Logged in (browser)"),
-            }
-            ExitCode::SUCCESS
-        }
+    let (access, method) = match authenticate(&store, &SpotifyOAuth::new(&cfg.client_id, mode)) {
+        Ok(result) => result,
         Err(error) => {
             print_error(&error);
+            return ExitCode::FAILURE;
+        }
+    };
+    match method {
+        LoginMethod::Resumed => println!("Logged in (resumed)"),
+        LoginMethod::Interactive => println!("Logged in (browser)"),
+    }
+
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            eprintln!("error: could not start the runtime: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    match runtime.block_on(run(cfg, &access)) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("error: {error}");
             ExitCode::FAILURE
         }
     }
+}
+
+async fn run(cfg: SessionConfig, token: &AccessToken) -> Result<(), EngineError> {
+    let engine = Engine::connect(cfg, token).await?;
+    let playlists = engine.rootlist().await?;
+    for (index, entry) in playlists.iter().enumerate() {
+        println!("{}. {} - {}", index + 1, entry.name, entry.uri);
+    }
+    Ok(())
 }
 
 fn logger_builder() -> env_logger::Builder {
