@@ -2,9 +2,10 @@
 
 What Takofy is built out of, and why the boundaries sit where they do.
 
-This describes the system as it is. The reason for a change belongs in the issue
-or the commit that made it. A decision that is reversible in an afternoon and
-does not move a boundary belongs there too, not here.
+This describes the system as it is, and what has been settled for what is not
+built yet. The reason for a change belongs in the issue or the commit that made
+it. A decision that is reversible in an afternoon and does not move a boundary
+belongs there too, not here.
 
 ## The footing
 
