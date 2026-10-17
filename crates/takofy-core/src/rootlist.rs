@@ -169,6 +169,7 @@ mod tests {
         pages: Mutex<VecDeque<RootlistPage>>,
         repeat: Option<RootlistPage>,
         calls: AtomicUsize,
+        froms: Mutex<Vec<usize>>,
         fail: bool,
     }
 
@@ -178,6 +179,7 @@ mod tests {
                 pages: Mutex::new(pages.into()),
                 repeat: None,
                 calls: AtomicUsize::new(0),
+                froms: Mutex::new(Vec::new()),
                 fail: false,
             }
         }
@@ -187,6 +189,7 @@ mod tests {
                 pages: Mutex::new(VecDeque::new()),
                 repeat: Some(page),
                 calls: AtomicUsize::new(0),
+                froms: Mutex::new(Vec::new()),
                 fail: false,
             }
         }
@@ -196,6 +199,7 @@ mod tests {
                 pages: Mutex::new(VecDeque::new()),
                 repeat: None,
                 calls: AtomicUsize::new(0),
+                froms: Mutex::new(Vec::new()),
                 fail: true,
             }
         }
@@ -203,11 +207,16 @@ mod tests {
         fn calls(&self) -> usize {
             self.calls.load(Ordering::SeqCst)
         }
+
+        fn froms(&self) -> Vec<usize> {
+            self.froms.lock().expect("lock").clone()
+        }
     }
 
     impl RootlistSource for Scripted {
-        async fn page(&self, _from: usize, _len: usize) -> Result<RootlistPage, RootlistError> {
+        async fn page(&self, from: usize, _len: usize) -> Result<RootlistPage, RootlistError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
+            self.froms.lock().expect("lock").push(from);
             if self.fail {
                 return Err(RootlistError::Source("boom".to_owned()));
             }
@@ -302,6 +311,25 @@ mod tests {
         let result = fetch_all(&source).await.expect("walk");
         assert_eq!(result.len(), total);
         assert_eq!(source.calls(), 2);
+    }
+
+    #[tokio::test]
+    async fn fetch_all_advances_by_scanned_not_playlists_kept() {
+        let all_playlists = Scripted::new(vec![
+            page_with(PAGE_SIZE, Some(3 * PAGE_SIZE)),
+            page_with(PAGE_SIZE, Some(3 * PAGE_SIZE)),
+            page_with(PAGE_SIZE, Some(3 * PAGE_SIZE)),
+        ]);
+        fetch_all(&all_playlists).await.expect("walk");
+        assert_eq!(all_playlists.froms(), vec![0, PAGE_SIZE, 2 * PAGE_SIZE]);
+
+        let folder_heavy = Scripted::new(vec![RootlistPage {
+            playlists: vec![PLAYLIST_A.to_owned()],
+            scanned: 2,
+            total: None,
+        }]);
+        fetch_all(&folder_heavy).await.expect("walk");
+        assert_eq!(folder_heavy.froms(), vec![0, 2]);
     }
 
     #[tokio::test]
