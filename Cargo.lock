@@ -5428,12 +5428,14 @@ name = "takofy"
 version = "0.1.0"
 dependencies = [
  "eframe",
+ "egui",
  "env_logger",
  "keyring",
  "librespot",
  "log",
  "takofy-core",
  "takofy-model",
+ "takofy-ui",
  "tokio",
 ]
 

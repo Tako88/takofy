@@ -6,3 +6,4 @@ pub mod layout;
 pub mod message;
 pub mod signin;
 pub mod theme;
+pub mod view;
