@@ -20,6 +20,7 @@ librespot = { version = "0.8.0", default-features = false, features = [
     "rodio-backend",
 ] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
+thiserror = "2"
 eframe = "0.37.0"
 egui = "0.37.0"
 

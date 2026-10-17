@@ -5,3 +5,5 @@
 //! cannot reach the network by accident.
 //!
 //! Empty for now; `#1` fills it in.
+
+pub mod credentials;
