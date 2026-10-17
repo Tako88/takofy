@@ -10,6 +10,8 @@
 pub struct PlaylistEntry {
     pub uri: String,
     pub name: String,
+    /// `false` when `name` is the URI fallback.
+    pub named: bool,
 }
 
 /// A track inside a playlist.
@@ -18,4 +20,6 @@ pub struct TrackEntry {
     pub uri: String,
     pub title: String,
     pub artists: String,
+    /// `false` when `title` is the URI fallback.
+    pub named: bool,
 }

@@ -9,8 +9,8 @@ use librespot::core::{Session, SpotifyUri};
 use librespot::metadata::{Metadata, Playlist};
 
 use crate::context::{ContextError, Page, PageSource, page_from_proto, parse_page_json};
-use takofy_model::{PlaylistEntry, TrackEntry};
 use crate::rootlist::{RootlistError, RootlistPage, RootlistSource, RootlistWire, parse_rootlist};
+use takofy_model::{PlaylistEntry, TrackEntry};
 
 /// The wire the live rootlist is read as; flip to `Json` if the binary parse fails.
 pub(crate) const ROOTLIST_WIRE: RootlistWire = RootlistWire::Binary;
@@ -55,21 +55,28 @@ pub(crate) async fn label_playlists(session: &Session, uris: Vec<String>) -> Vec
     futures_util::stream::iter(uris)
         .map(|uri| async move {
             let name = playlist_name(session, &uri).await;
-            PlaylistEntry { uri, name }
+            let (name, named) = playlist_label(&uri, name);
+            PlaylistEntry { uri, name, named }
         })
         .buffered(8)
         .collect::<Vec<_>>()
         .await
 }
 
-async fn playlist_name(session: &Session, uri: &str) -> String {
-    let Ok(id) = SpotifyUri::from_uri(uri) else {
-        return uri.to_owned();
-    };
-    match Playlist::get(session, &id).await {
-        Ok(playlist) => playlist.name().to_owned(),
-        Err(_) => uri.to_owned(),
+/// The display name and whether it is a real name rather than the URI fallback.
+fn playlist_label(uri: &str, name: Option<String>) -> (String, bool) {
+    match name {
+        Some(name) => (name, true),
+        None => (uri.to_owned(), false),
     }
+}
+
+async fn playlist_name(session: &Session, uri: &str) -> Option<String> {
+    let id = SpotifyUri::from_uri(uri).ok()?;
+    Playlist::get(session, &id)
+        .await
+        .ok()
+        .map(|playlist| playlist.name().to_owned())
 }
 
 /// Reads context pages through librespot's spclient.
@@ -137,11 +144,13 @@ fn expand_labels(uris: &[String], labels: &Labels) -> Vec<TrackEntry> {
                 uri: uri.clone(),
                 title: title.clone(),
                 artists: artists.clone(),
+                named: true,
             },
             None => TrackEntry {
                 uri: uri.clone(),
                 title: uri.clone(),
                 artists: String::new(),
+                named: false,
             },
         })
         .collect()
@@ -151,7 +160,10 @@ fn expand_labels(uris: &[String], labels: &Labels) -> Vec<TrackEntry> {
 /// answers only part of it.
 async fn fetch_labels(session: &Session, distinct: &[String]) -> Labels {
     let mut labels = Labels::new();
-    let mut queue: Vec<Vec<String>> = distinct.chunks(LABEL_CHUNK).map(<[String]>::to_vec).collect();
+    let mut queue: Vec<Vec<String>> = distinct
+        .chunks(LABEL_CHUNK)
+        .map(<[String]>::to_vec)
+        .collect();
     queue.reverse();
     while let Some(chunk) = queue.pop() {
         let Some(found) = request_labels(session, &chunk).await else {
@@ -211,7 +223,10 @@ async fn request_labels(session: &Session, chunk: &[String]) -> Option<Labels> {
     let response = match session.spclient().get_extended_metadata(request).await {
         Ok(response) => response,
         Err(error) => {
-            log::warn!("metadata request for {} tracks failed: {error}", chunk.len());
+            log::warn!(
+                "metadata request for {} tracks failed: {error}",
+                chunk.len()
+            );
             return None;
         }
     };
@@ -248,7 +263,7 @@ async fn request_labels(session: &Session, chunk: &[String]) -> Option<Labels> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Labels, distinct_uris, expand_labels};
+    use super::{Labels, distinct_uris, expand_labels, playlist_label};
 
     fn owned(uris: &[&str]) -> Vec<String> {
         uris.iter().map(|uri| (*uri).to_owned()).collect()
@@ -280,10 +295,7 @@ mod tests {
     #[test]
     fn every_position_is_named_when_a_track_repeats() {
         let uris = owned(&["a", "b", "a"]);
-        let entries = expand_labels(
-            &uris,
-            &named(&[("a", "One", "Band"), ("b", "Two", "Band")]),
-        );
+        let entries = expand_labels(&uris, &named(&[("a", "One", "Band"), ("b", "Two", "Band")]));
         let titles: Vec<&str> = entries.iter().map(|entry| entry.title.as_str()).collect();
         assert_eq!(titles, vec!["One", "Two", "One"]);
     }
@@ -303,6 +315,7 @@ mod tests {
         assert_eq!(entries[1].title, "b");
         assert!(entries[1].artists.is_empty());
         assert_eq!(entries[1].uri, "b");
+        assert!(!entries[1].named);
     }
 
     #[test]
@@ -311,5 +324,20 @@ mod tests {
         let entries = expand_labels(&uris, &named(&[("a", "One", "Band")]));
         assert_eq!(entries[0].uri, "a");
         assert_eq!(entries[0].artists, "Band");
+        assert!(entries[0].named);
+    }
+
+    #[test]
+    fn playlist_label_marks_a_real_name() {
+        let (name, named) = playlist_label("spotify:playlist:x", Some("Mix".to_owned()));
+        assert_eq!(name, "Mix");
+        assert!(named);
+    }
+
+    #[test]
+    fn playlist_label_falls_back_to_the_uri() {
+        let (name, named) = playlist_label("spotify:playlist:x", None);
+        assert_eq!(name, "spotify:playlist:x");
+        assert!(!named);
     }
 }

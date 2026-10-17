@@ -115,6 +115,7 @@ mod tests {
         let entry = PlaylistEntry {
             uri: "spotify:playlist:x".to_owned(),
             name: "Mix".to_owned(),
+            named: true,
         };
         assert_eq!(
             format_playlist_line(2, &entry),
@@ -128,6 +129,7 @@ mod tests {
             uri: "spotify:track:y".to_owned(),
             title: "Song".to_owned(),
             artists: "Band".to_owned(),
+            named: true,
         };
         assert_eq!(
             format_track_line(1, &track),

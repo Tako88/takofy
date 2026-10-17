@@ -27,7 +27,7 @@ The price is a Premium account and a footing outside Spotify's developer terms.
 | `takofy-model` | holds plain data | depends on anything |
 | `takofy-core` | talks to Spotify | draws |
 | `takofy-ui` | draws | reaches the network |
-| `takofy` | owns threads, wiring, platform | either of the above |
+| `takofy` | owns threads, wiring, platform | talks to Spotify, or draws a widget |
 
 The split is enforced by the compiler, not by convention. `takofy-ui` does not
 depend on `takofy-core` or on librespot, so a view cannot reach the network by
@@ -44,19 +44,35 @@ The UI never calls into core. That keeps the crate boundary real, keeps the fram
 loop free of awaits, and keeps the cursor types that borrow a session out of the
 UI.
 
-The updates have to stay fine-grained. `Update::PlaylistLoaded(Vec<PlaylistEntry>)`
-is testable. `Update::State(Library)` is not: it moves the UI's state into core
-and leaves the reducer with nothing to assert. The first shape is what earns the
-boilerplate the second one avoids.
+The updates have to stay fine-grained. An update that reports one event is
+testable; one that carries the whole state is not: it moves the UI's state into
+core and leaves the reducer with nothing to assert. The first shape is what
+earns the boilerplate the second one avoids.
 
 ## Who owns what
 
-- The binary owns the `Engine`, the tokio runtime, and both channels.
+- The binary owns the tokio runtime, and the `Engine` in headless mode.
+- The window's end of the bridge, `UiEnd`, is moved into the app and dropped
+  with it when the window closes.
+- `Worker` is owned outside the app, by the teardown that joins it. eframe drops
+  the app before `run_native` returns, so a `Worker` the app held would be gone
+  before shutdown could use it.
+- The waker is installed only once the window exists. An update that arrives
+  first waits in the channel, and the first frame drains it.
 - `Playback` is single-owner by design. `Player::drop` joins the player thread
   only when the last `Arc` drops, so a stray clone skips the join silently.
   `shutdown` enforces this with `Arc::try_unwrap` and reports `PlayerShared`.
 - librespot owns its playback threads. Nothing is shared behind a lock the UI
   could block on.
+
+Shutdown runs in a fixed order: the window closes, teardown joins the worker,
+and then the runtime drops. It depends on `NativeOptions::run_and_return`, so
+that eframe returns instead of exiting the process; an exit would skip both
+teardown and the runtime drop.
+
+In the window, sign-in calls run on detached threads, not `spawn_blocking`:
+one parked on the browser callback can hold up the runtime drop, which waits
+on the blocking pool, and a detached thread dies with the process instead.
 
 ## Invariants
 
