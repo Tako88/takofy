@@ -40,6 +40,14 @@ impl SignIn {
                 *self = SignIn::Failed(failure);
             }
             (Update::SignInFailed(_), _) => {}
+            (
+                Update::Playlists(_)
+                | Update::PlaylistFailed(_)
+                | Update::Tracks { .. }
+                | Update::TracksFailed { .. }
+                | Update::Transport(_),
+                _,
+            ) => {}
         }
     }
 
@@ -66,6 +74,8 @@ pub fn failure_message(failure: Failure) -> &'static str {
         Failure::PortBusy => "The sign-in port is in use. Close the other app and try again.",
         Failure::Keychain => "Could not read or save your sign-in. Check your system keychain.",
         Failure::NoRefreshToken => "Spotify did not return a refresh token. Try again.",
+        Failure::NoAudioDevice => "No audio output device is available.",
+        Failure::Load => "Could not load the library. Check your connection and try again.",
         Failure::Other => "Sign-in failed. Try again, or run with --headless for details.",
     }
 }
@@ -131,7 +141,7 @@ mod tests {
             Update::SignInFailed(Failure::Other),
         ] {
             let mut state = SignIn::SignedIn;
-            state.apply(update);
+            state.apply(update.clone());
             assert_eq!(
                 state,
                 SignIn::SignedIn,
@@ -220,6 +230,8 @@ mod tests {
             Failure::PortBusy,
             Failure::Keychain,
             Failure::NoRefreshToken,
+            Failure::NoAudioDevice,
+            Failure::Load,
             Failure::Other,
         ] {
             let message = failure_message(failure);

@@ -16,6 +16,9 @@ use takofy_ui::message::{Command, Failure, Update};
 use tokio::runtime::{Handle, Runtime};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::oneshot;
+use tokio::sync::oneshot::Receiver as StopReceiver;
+
+use crate::session::{SessionError, SessionHost, stop_or};
 
 /// A handle the worker can wake to ask for the next frame.
 pub(crate) trait Waker: Send + Sync + 'static {
@@ -50,7 +53,7 @@ impl WakeSlot {
 
 /// Queues an update, then wakes the window.
 #[derive(Clone)]
-struct Notifier {
+pub(crate) struct Notifier {
     tx: Sender<Update>,
     slot: WakeSlot,
 }
@@ -84,19 +87,52 @@ impl Worker {
     /// Signals the command loop and waits for it to end.
     pub(crate) async fn finish(self) {
         let _ = self.stop.send(());
-        let _ = self.task.await;
+        if let Err(error) = self.task.await {
+            // A panic message can be third-party text. The default hook has
+            // already printed it, so only the kind is worth logging.
+            let reason = if error.is_panic() {
+                "panicked"
+            } else if error.is_cancelled() {
+                "cancelled"
+            } else {
+                "ended abnormally"
+            };
+            log::error!("session task {reason}");
+        }
+    }
+}
+
+/// What the task received from the select, once the borrow on `stop` is gone.
+enum Event {
+    /// An access token, or `None` once every sender has gone.
+    Token(Option<AccessToken>),
+    /// A command, or `None` once the window has gone.
+    Command(Option<Command>),
+}
+
+/// Whether a host call finished or was abandoned because the window closed.
+enum Step {
+    Done,
+    Stopped,
+}
+
+impl Step {
+    fn stopped(&self) -> bool {
+        matches!(self, Self::Stopped)
     }
 }
 
 /// Starts the sign-in worker and kicks off the resume attempt immediately, so
 /// it overlaps window creation.
-pub(crate) fn start<S: TokenSource + Send + Sync + 'static>(
+pub(crate) fn start<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
     handle: &Handle,
+    host: H,
     store: Arc<dyn CredentialStore>,
     source: Arc<S>,
 ) -> (UiEnd, WakeSlot, Worker) {
     let (updates_tx, updates_rx) = channel();
     let (commands_tx, mut commands_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (tokens_tx, mut tokens_rx) = tokio::sync::mpsc::unbounded_channel();
     let (stop_tx, mut stop_rx) = oneshot::channel();
     let slot = WakeSlot::default();
     let notifier = Notifier {
@@ -106,38 +142,79 @@ pub(crate) fn start<S: TokenSource + Send + Sync + 'static>(
 
     {
         let notifier = notifier.clone();
+        let tokens = tokens_tx.clone();
         let store = Arc::clone(&store);
         let source = Arc::clone(&source);
         std::thread::spawn(move || {
-            send_update(
-                &notifier,
-                resume_update(resume(store.as_ref(), source.as_ref())),
-            );
+            let result = resume(store.as_ref(), source.as_ref());
+            if let Ok(Some(token)) = &result
+                && tokens.send(token.clone()).is_err()
+            {
+                return;
+            }
+            send_update(&notifier, resume_update(result));
         });
     }
 
     let task_notifier = notifier.clone();
     let task = handle.spawn(async move {
+        let mut host = host;
+        let mut connected = false;
+        let mut token: Option<AccessToken> = None;
         loop {
-            tokio::select! {
+            let event = tokio::select! {
                 biased;
                 _ = &mut stop_rx => break,
-                command = commands_rx.recv() => match command {
-                    Some(Command::Authorize) => {
-                        let notifier = task_notifier.clone();
-                        let store = Arc::clone(&store);
-                        let source = Arc::clone(&source);
-                        std::thread::spawn(move || {
-                            send_update(
-                                &notifier,
-                                authorize_update(authorize(store.as_ref(), source.as_ref())),
-                            );
-                        });
+                received = tokens_rx.recv() => Event::Token(received),
+                command = commands_rx.recv() => Event::Command(command),
+            };
+            match event {
+                Event::Token(Some(received)) => {
+                    if connected {
+                        // The first token opened the session; a second cannot
+                        // improve it.
+                        continue;
                     }
-                    None => break,
-                },
+                    token = Some(received);
+                    let step = load_library(
+                        &mut host,
+                        &mut stop_rx,
+                        &task_notifier,
+                        token.as_ref(),
+                        &mut connected,
+                    )
+                    .await;
+                    if step.stopped() {
+                        break;
+                    }
+                }
+                Event::Token(None) => {}
+                Event::Command(Some(Command::Authorize)) => {
+                    spawn_authorize(
+                        task_notifier.clone(),
+                        tokens_tx.clone(),
+                        Arc::clone(&store),
+                        Arc::clone(&source),
+                    );
+                }
+                Event::Command(Some(Command::ReloadLibrary)) => {
+                    let step = load_library(
+                        &mut host,
+                        &mut stop_rx,
+                        &task_notifier,
+                        token.as_ref(),
+                        &mut connected,
+                    )
+                    .await;
+                    if step.stopped() {
+                        break;
+                    }
+                }
+                Event::Command(Some(_)) => {}
+                Event::Command(None) => break,
             }
         }
+        let _ = host.shutdown().await;
     });
 
     (
@@ -151,6 +228,84 @@ pub(crate) fn start<S: TokenSource + Send + Sync + 'static>(
             task,
         },
     )
+}
+
+/// Runs the authorize flow off the runtime and hands the task its token.
+fn spawn_authorize<S: TokenSource + Send + Sync + 'static>(
+    notifier: Notifier,
+    tokens: UnboundedSender<AccessToken>,
+    store: Arc<dyn CredentialStore>,
+    source: Arc<S>,
+) {
+    std::thread::spawn(move || {
+        let result = authorize(store.as_ref(), source.as_ref());
+        if let Ok(token) = &result
+            && tokens.send(token.clone()).is_err()
+        {
+            return;
+        }
+        send_update(&notifier, authorize_update(result));
+    });
+}
+
+/// Connects if needed and lists the rootlist, announcing the outcome.
+///
+/// `Stopped` means the window closed while the call was in flight, so the
+/// caller must leave the loop and run the shutdown.
+async fn load_library<H: SessionHost>(
+    host: &mut H,
+    stop: &mut StopReceiver<()>,
+    notifier: &Notifier,
+    token: Option<&AccessToken>,
+    connected: &mut bool,
+) -> Step {
+    if !*connected {
+        let Some(token) = token else {
+            // A reload with nothing to connect with; a retry can only work once
+            // sign-in has delivered a token.
+            notifier.send(Update::PlaylistFailed(library_failure(
+                &SessionError::NotConnected,
+            )));
+            return Step::Done;
+        };
+        match stop_or(stop, host.connect(token)).await {
+            None => return Step::Stopped,
+            Some(Ok(())) => *connected = true,
+            Some(Err(error)) => {
+                notifier.send(Update::PlaylistFailed(library_failure(&error)));
+                return Step::Done;
+            }
+        }
+    }
+
+    match stop_or(stop, host.rootlist()).await {
+        None => Step::Stopped,
+        Some(result) => {
+            announce(notifier, result, Update::Playlists, Update::PlaylistFailed);
+            Step::Done
+        }
+    }
+}
+
+/// Sends the ready update, or the failure update with its reason collapsed for
+/// the window.
+pub(crate) fn announce<T>(
+    notifier: &Notifier,
+    result: Result<T, SessionError>,
+    ready: impl FnOnce(T) -> Update,
+    failed: impl FnOnce(Failure) -> Update,
+) {
+    match result {
+        Ok(value) => notifier.send(ready(value)),
+        Err(error) => notifier.send(failed(library_failure(&error))),
+    }
+}
+
+/// Every session-side failure reads the same to the window; the reason is for
+/// the log.
+pub(crate) fn library_failure(error: &SessionError) -> Failure {
+    log::warn!("session failure: {}", error.kind());
+    Failure::Load
 }
 
 /// Logs the failure variant, then hands the update to the window. The variant
@@ -183,8 +338,9 @@ pub(crate) fn run_ordered<R, F: Future<Output = ()>>(
 
 /// Builds the bridge, runs the window, and finishes the worker before the
 /// runtime is dropped.
-pub(crate) fn run_window<S, R>(
+pub(crate) fn run_window<H: SessionHost, S, R>(
     runtime: Runtime,
+    host: H,
     store: Arc<dyn CredentialStore>,
     source: Arc<S>,
     window: impl FnOnce(UiEnd, WakeSlot) -> R,
@@ -192,7 +348,7 @@ pub(crate) fn run_window<S, R>(
 where
     S: TokenSource + Send + Sync + 'static,
 {
-    let (ui_end, slot, worker) = start(runtime.handle(), store, source);
+    let (ui_end, slot, worker) = start(runtime.handle(), host, store, source);
     run_ordered(
         runtime,
         move || window(ui_end, slot),
@@ -231,14 +387,17 @@ pub(crate) fn authorize_update(result: Result<AccessToken, AuthError>) -> Update
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-    use std::sync::mpsc::{Receiver, channel};
+    use std::sync::mpsc::{Receiver, Sender, channel};
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
     use takofy_core::credentials::{AccessToken, CredentialStore, RefreshToken, StoreError};
     use takofy_core::login::{SourceError, SourceErrorKind, TokenSet, TokenSource};
+    use takofy_model::PlaylistEntry;
     use tokio::runtime::Runtime;
 
     use super::*;
+    use crate::session::{SessionError, SessionHost};
 
     fn runtime() -> Runtime {
         tokio::runtime::Builder::new_multi_thread()
@@ -311,7 +470,7 @@ mod tests {
         }
 
         fn seen(&self) -> Option<Update> {
-            *self.seen.lock().expect("lock")
+            self.seen.lock().expect("lock").clone()
         }
 
         fn wakes(&self) -> usize {
@@ -376,6 +535,16 @@ mod tests {
                 ..Self::default()
             }
         }
+
+        fn with(
+            refresh: Result<TokenSet, SourceError>,
+            interactive: Result<TokenSet, SourceError>,
+        ) -> Self {
+            Self {
+                refresh: Mutex::new(Some(refresh)),
+                interactive: Mutex::new(Some(interactive)),
+            }
+        }
     }
 
     impl TokenSource for FixedSource {
@@ -394,6 +563,126 @@ mod tests {
                 .take()
                 .expect("interactive was scripted")
         }
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq, Default)]
+    enum ConnectScript {
+        #[default]
+        Ok,
+        Fail,
+        Pending,
+    }
+
+    #[derive(Clone)]
+    enum RootlistScript {
+        Ready(Vec<PlaylistEntry>),
+        Fail,
+        Pending,
+    }
+
+    impl Default for RootlistScript {
+        fn default() -> Self {
+            Self::Ready(Vec::new())
+        }
+    }
+
+    #[derive(Default)]
+    struct FakeState {
+        connect_scripts: Mutex<Vec<ConnectScript>>,
+        rootlist_script: Mutex<RootlistScript>,
+        connects: AtomicUsize,
+        rootlists: AtomicUsize,
+        shutdowns: AtomicUsize,
+        connect_started: Mutex<Option<Sender<()>>>,
+        rootlist_started: Mutex<Option<Sender<()>>>,
+    }
+
+    /// Records every session call so an exit path can be asserted without a
+    /// network or an audio device.
+    #[derive(Clone)]
+    struct FakeHost {
+        shared: Arc<FakeState>,
+    }
+
+    impl FakeHost {
+        fn new(connect: ConnectScript, rootlist: RootlistScript) -> Self {
+            Self::with_connect_scripts(vec![connect], rootlist)
+        }
+
+        /// One script per `connect` call; the last one repeats once the queue
+        /// runs out, so a single-entry queue behaves like a fixed script.
+        fn with_connect_scripts(connect: Vec<ConnectScript>, rootlist: RootlistScript) -> Self {
+            Self {
+                shared: Arc::new(FakeState {
+                    connect_scripts: Mutex::new(connect),
+                    rootlist_script: Mutex::new(rootlist),
+                    ..FakeState::default()
+                }),
+            }
+        }
+    }
+
+    impl SessionHost for FakeHost {
+        fn connect(
+            &mut self,
+            _token: &AccessToken,
+        ) -> impl Future<Output = Result<(), SessionError>> + Send {
+            self.shared.connects.fetch_add(1, Ordering::SeqCst);
+            if let Some(tx) = self.shared.connect_started.lock().expect("lock").take() {
+                let _ = tx.send(());
+            }
+            let script = {
+                let mut scripts = self.shared.connect_scripts.lock().expect("lock");
+                if scripts.len() > 1 {
+                    scripts.remove(0)
+                } else {
+                    scripts.first().copied().unwrap_or_default()
+                }
+            };
+            async move {
+                match script {
+                    ConnectScript::Ok => Ok(()),
+                    ConnectScript::Fail => Err(SessionError::NotConnected),
+                    ConnectScript::Pending => std::future::pending().await,
+                }
+            }
+        }
+
+        fn rootlist(
+            &self,
+        ) -> impl Future<Output = Result<Vec<PlaylistEntry>, SessionError>> + Send {
+            self.shared.rootlists.fetch_add(1, Ordering::SeqCst);
+            if let Some(tx) = self.shared.rootlist_started.lock().expect("lock").take() {
+                let _ = tx.send(());
+            }
+            let script = self.shared.rootlist_script.lock().expect("lock").clone();
+            async move {
+                match script {
+                    RootlistScript::Ready(list) => Ok(list),
+                    RootlistScript::Fail => Err(SessionError::NotConnected),
+                    RootlistScript::Pending => std::future::pending().await,
+                }
+            }
+        }
+
+        fn shutdown(self) -> impl Future<Output = Result<(), SessionError>> + Send {
+            self.shared.shutdowns.fetch_add(1, Ordering::SeqCst);
+            async move { Ok(()) }
+        }
+    }
+
+    fn playlist(uri: &str, name: &str) -> PlaylistEntry {
+        PlaylistEntry {
+            uri: uri.to_owned(),
+            name: name.to_owned(),
+            named: true,
+        }
+    }
+
+    fn expect_updates(ui_end: &UiEnd, count: usize) -> Vec<Update> {
+        (0..count)
+            .map(|_| ui_end.updates.recv().expect("update"))
+            .collect()
     }
 
     #[test]
@@ -492,8 +781,9 @@ mod tests {
     fn resume_thread_reports_signed_in() {
         let store = Arc::new(MemoryStore::seeded("stored"));
         let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Pending);
 
-        let update = run_window(runtime(), store, source, |ui_end, slot| {
+        let update = run_window(runtime(), host, store, source, |ui_end, slot| {
             slot.install(Arc::new(RecordingWaker::default()));
             ui_end.updates.recv().expect("resume update")
         });
@@ -509,7 +799,8 @@ mod tests {
             Some("refresh"),
         ))));
 
-        let updates = run_window(runtime(), store, source, |ui_end, slot| {
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Pending);
+        let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
             slot.install(Arc::new(RecordingWaker::default()));
             let first = ui_end.updates.recv().expect("resume update");
             ui_end.commands.send(Command::Authorize).expect("send");
@@ -525,7 +816,9 @@ mod tests {
         let store = Arc::new(MemoryStore::default());
         let source = Arc::new(FixedSource::default());
         let runtime = current_thread_runtime();
-        let (ui_end, _slot, worker) = start(runtime.handle(), store, source);
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Pending);
+        let shared = Arc::clone(&host.shared);
+        let (ui_end, _slot, worker) = start(runtime.handle(), host, store, source);
 
         // The assertion must run between `finish` and `drop(runtime)`, while
         // the runtime still owns the command task. After the runtime drops, the
@@ -535,6 +828,11 @@ mod tests {
             assert!(
                 ui_end.commands.is_closed(),
                 "closing the command channel is the proof that the task was joined"
+            );
+            assert_eq!(
+                shared.shutdowns.load(Ordering::SeqCst),
+                1,
+                "the task must shut the session down on its way out"
             );
         };
 
@@ -546,7 +844,8 @@ mod tests {
         let store = Arc::new(MemoryStore::default());
         let source = Arc::new(FixedSource::default());
         let runtime = current_thread_runtime();
-        let (ui_end, _slot, worker) = start(runtime.handle(), store, source);
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Pending);
+        let (ui_end, _slot, worker) = start(runtime.handle(), host, store, source);
 
         let ran = Arc::new(AtomicBool::new(false));
         let teardown = {
@@ -576,11 +875,17 @@ mod tests {
         let store = Arc::new(MemoryStore::default());
         let source = Arc::new(FixedSource::default());
 
-        let entered = run_window(runtime(), store, source, |_ui_end, _slot| {
-            assert!(tokio::runtime::Handle::try_current().is_ok());
-            tokio::spawn(async {}).abort();
-            true
-        });
+        let entered = run_window(
+            runtime(),
+            FakeHost::new(ConnectScript::Ok, RootlistScript::Pending),
+            store,
+            source,
+            |_ui_end, _slot| {
+                assert!(tokio::runtime::Handle::try_current().is_ok());
+                tokio::spawn(async {}).abort();
+                true
+            },
+        );
 
         assert!(entered);
     }
@@ -600,7 +905,8 @@ mod tests {
         let store = Arc::new(MemoryStore::default());
         let source = Arc::new(FixedSource::default());
         let runtime = runtime();
-        let (ui_end, _slot, worker) = start(runtime.handle(), store, source);
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Pending);
+        let (ui_end, _slot, worker) = start(runtime.handle(), host, store, source);
 
         let log: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
 
@@ -644,7 +950,8 @@ mod tests {
         let store = Arc::new(MemoryStore::default());
         let source = Arc::new(FixedSource::default());
         let runtime = runtime();
-        let (_ui_end, _slot, worker) = start(runtime.handle(), store, source);
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Pending);
+        let (_ui_end, _slot, worker) = start(runtime.handle(), host, store, source);
 
         let ran = Arc::new(AtomicBool::new(false));
         let teardown = {
@@ -661,6 +968,288 @@ mod tests {
         run_ordered(runtime, || {}, teardown);
 
         assert!(ran.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn a_token_connects_and_lists_the_rootlist() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:one", "One")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list.clone()));
+        let shared = Arc::clone(&host.shared);
+
+        let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            expect_updates(&ui_end, 2)
+        });
+
+        assert!(updates.contains(&Update::SignedIn));
+        assert!(updates.contains(&Update::Playlists(list)));
+        assert_eq!(shared.connects.load(Ordering::SeqCst), 1);
+        assert_eq!(shared.rootlists.load(Ordering::SeqCst), 1);
+        assert_eq!(shared.shutdowns.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn an_empty_rootlist_is_announced_as_empty() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+
+        let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            expect_updates(&ui_end, 2)
+        });
+
+        assert!(updates.contains(&Update::Playlists(Vec::new())));
+    }
+
+    #[test]
+    fn a_failed_connect_is_announced_as_a_library_failure() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let host = FakeHost::new(ConnectScript::Fail, RootlistScript::default());
+        let shared = Arc::clone(&host.shared);
+
+        let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            expect_updates(&ui_end, 2)
+        });
+
+        assert!(updates.contains(&Update::SignedIn));
+        assert!(updates.contains(&Update::PlaylistFailed(Failure::Load)));
+        assert_eq!(shared.rootlists.load(Ordering::SeqCst), 0);
+        assert_eq!(shared.shutdowns.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_failed_rootlist_is_announced_as_a_library_failure() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Fail);
+        let shared = Arc::clone(&host.shared);
+
+        let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            expect_updates(&ui_end, 2)
+        });
+
+        assert!(updates.contains(&Update::SignedIn));
+        assert!(updates.contains(&Update::PlaylistFailed(Failure::Load)));
+        assert_eq!(shared.connects.load(Ordering::SeqCst), 1);
+        assert_eq!(shared.shutdowns.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn reload_library_runs_the_rootlist_again() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+
+        let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let mut seen = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::ReloadLibrary)
+                .expect("reload");
+            seen.extend(expect_updates(&ui_end, 1));
+            seen
+        });
+
+        let listed = updates
+            .iter()
+            .filter(|update| matches!(update, Update::Playlists(_)))
+            .count();
+        assert_eq!(listed, 2);
+        assert_eq!(shared.connects.load(Ordering::SeqCst), 1);
+        assert_eq!(shared.rootlists.load(Ordering::SeqCst), 2);
+        assert_eq!(shared.shutdowns.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_second_token_does_not_reconnect() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::with(
+            Ok(token_set("access-one", None)),
+            Ok(token_set("access-two", Some("refresh-two"))),
+        ));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+
+        let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let mut seen = expect_updates(&ui_end, 2);
+            let mut sign_ins = seen
+                .iter()
+                .filter(|update| **update == Update::SignedIn)
+                .count();
+
+            ui_end.commands.send(Command::Authorize).expect("authorize");
+            while sign_ins < 2 {
+                let update = ui_end.updates.recv().expect("update");
+                if update == Update::SignedIn {
+                    sign_ins += 1;
+                }
+                seen.push(update);
+            }
+
+            ui_end
+                .commands
+                .send(Command::ReloadLibrary)
+                .expect("reload");
+            loop {
+                let update = ui_end.updates.recv().expect("update");
+                let listed = matches!(update, Update::Playlists(_));
+                seen.push(update);
+                if listed {
+                    break;
+                }
+            }
+            seen
+        });
+
+        assert_eq!(
+            shared.connects.load(Ordering::SeqCst),
+            1,
+            "a second token must not open a second session"
+        );
+        assert_eq!(shared.rootlists.load(Ordering::SeqCst), 2);
+        assert_eq!(shared.shutdowns.load(Ordering::SeqCst), 1);
+        let listed = updates
+            .iter()
+            .filter(|update| matches!(update, Update::Playlists(_)))
+            .count();
+        assert_eq!(listed, 2);
+    }
+
+    #[test]
+    fn a_stop_during_the_rootlist_shuts_down_before_the_task_returns() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Pending);
+        let shared = Arc::clone(&host.shared);
+        let (started_tx, started_rx) = channel();
+        *shared.rootlist_started.lock().expect("lock") = Some(started_tx);
+
+        let runtime = runtime();
+        let (ui_end, _slot, worker) = start(runtime.handle(), host, store, source);
+
+        let window = move || {
+            started_rx.recv().expect("rootlist started");
+        };
+        let teardown = move || async move {
+            // A hung stop must fail the test, not hang the suite.
+            tokio::time::timeout(Duration::from_secs(1), worker.finish())
+                .await
+                .expect("finish must resolve when the stop interrupts the rootlist");
+            assert!(
+                ui_end.commands.is_closed(),
+                "the task must have returned before finish resolves"
+            );
+            assert_eq!(
+                shared.shutdowns.load(Ordering::SeqCst),
+                1,
+                "the shutdown must run when the stop interrupts the rootlist"
+            );
+        };
+
+        run_ordered(runtime, window, teardown);
+    }
+
+    #[test]
+    fn a_stop_during_the_connect_shuts_down_before_the_task_returns() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let host = FakeHost::new(ConnectScript::Pending, RootlistScript::default());
+        let shared = Arc::clone(&host.shared);
+        let (started_tx, started_rx) = channel();
+        *shared.connect_started.lock().expect("lock") = Some(started_tx);
+
+        let runtime = runtime();
+        let (ui_end, _slot, worker) = start(runtime.handle(), host, store, source);
+
+        let window = move || {
+            started_rx.recv().expect("connect started");
+        };
+        let teardown = move || async move {
+            // A hung stop must fail the test, not hang the suite.
+            tokio::time::timeout(Duration::from_secs(1), worker.finish())
+                .await
+                .expect("finish must resolve when the stop interrupts the connect");
+            assert!(
+                ui_end.commands.is_closed(),
+                "the task must have returned before finish resolves"
+            );
+            assert_eq!(
+                shared.shutdowns.load(Ordering::SeqCst),
+                1,
+                "the shutdown must run when the stop interrupts the connect"
+            );
+        };
+
+        run_ordered(runtime, window, teardown);
+    }
+
+    #[test]
+    fn reload_library_retries_a_failed_connect() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:one", "One")];
+        let host = FakeHost::with_connect_scripts(
+            vec![ConnectScript::Fail, ConnectScript::Ok],
+            RootlistScript::Ready(list.clone()),
+        );
+        let shared = Arc::clone(&host.shared);
+
+        let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let mut seen = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::ReloadLibrary)
+                .expect("reload");
+            seen.extend(expect_updates(&ui_end, 1));
+            seen
+        });
+
+        assert!(updates.contains(&Update::SignedIn));
+        assert!(updates.contains(&Update::PlaylistFailed(Failure::Load)));
+        assert!(updates.contains(&Update::Playlists(list)));
+        assert_eq!(
+            shared.connects.load(Ordering::SeqCst),
+            2,
+            "a retry after a failed connect must re-enter connect"
+        );
+        assert_eq!(shared.rootlists.load(Ordering::SeqCst), 1);
+        assert_eq!(shared.shutdowns.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn reload_with_no_token_announces_a_library_failure() {
+        let store = Arc::new(MemoryStore::default());
+        let source = Arc::new(FixedSource::default());
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::default());
+        let shared = Arc::clone(&host.shared);
+
+        let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            assert_eq!(
+                ui_end.updates.recv().expect("resume update"),
+                Update::NeedsAuthorization
+            );
+            ui_end
+                .commands
+                .send(Command::ReloadLibrary)
+                .expect("reload");
+            ui_end.updates.recv().expect("library failure")
+        });
+
+        assert_eq!(update, Update::PlaylistFailed(Failure::Load));
+        assert_eq!(shared.connects.load(Ordering::SeqCst), 0);
+        assert_eq!(shared.rootlists.load(Ordering::SeqCst), 0);
+        assert_eq!(shared.shutdowns.load(Ordering::SeqCst), 1);
     }
 
     #[test]

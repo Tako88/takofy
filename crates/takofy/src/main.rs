@@ -8,6 +8,7 @@ mod bridge;
 mod headless;
 mod keychain;
 mod prompt;
+mod session;
 
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -115,6 +116,7 @@ fn run_window(flags: &Flags) -> ExitCode {
     // A window has no terminal, so its authorize path is loopback by
     // construction; a Paste source would block on a prompt nobody can answer.
     let source = Arc::new(SpotifyOAuth::new(&cfg.client_id, RedirectMode::Loopback));
+    let host = session::LiveSession::new(cfg);
 
     let runtime = match build_runtime() {
         Ok(runtime) => runtime,
@@ -124,7 +126,7 @@ fn run_window(flags: &Flags) -> ExitCode {
         }
     };
 
-    let result = bridge::run_window(runtime, store, source, |ui_end, slot| {
+    let result = bridge::run_window(runtime, host, store, source, |ui_end, slot| {
         eframe::run_native(
             "Takofy",
             app::native_options(),

@@ -3,6 +3,7 @@
 use std::sync::mpsc::Receiver;
 
 use eframe::egui;
+use takofy_ui::library::Library;
 use takofy_ui::message::Update;
 use takofy_ui::signin::SignIn;
 use takofy_ui::theme::{Tokens, style};
@@ -25,6 +26,7 @@ pub(crate) fn native_options() -> eframe::NativeOptions {
 /// The window and its end of the bridge.
 pub(crate) struct TakofyApp {
     state: SignIn,
+    library: Library,
     ui_end: UiEnd,
     tokens: Tokens,
 }
@@ -36,6 +38,7 @@ impl TakofyApp {
         cc.egui_ctx.set_global_style(style(&tokens));
         Self {
             state: SignIn::default(),
+            library: Library::default(),
             ui_end,
             tokens,
         }
@@ -44,11 +47,11 @@ impl TakofyApp {
 
 impl eframe::App for TakofyApp {
     fn logic(&mut self, _ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        drain(&self.ui_end.updates, &mut self.state);
+        drain(&self.ui_end.updates, &mut self.state, &mut self.library);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        if let Some(command) = view::show(ui, &mut self.state, &self.tokens) {
+        if let Some(command) = view::show(ui, &mut self.state, &mut self.library, &self.tokens) {
             let _ = self.ui_end.commands.send(command);
         }
     }
@@ -58,10 +61,11 @@ impl eframe::App for TakofyApp {
 ///
 /// A disconnected sender is not an error: it means the worker is gone and the
 /// window can no longer hear anything.
-pub(crate) fn drain(rx: &Receiver<Update>, state: &mut SignIn) -> usize {
+pub(crate) fn drain(rx: &Receiver<Update>, state: &mut SignIn, library: &mut Library) -> usize {
     let mut applied = 0;
     while let Ok(update) = rx.try_recv() {
-        state.apply(update);
+        state.apply(update.clone());
+        library.apply(&update);
         applied += 1;
     }
     applied
@@ -71,6 +75,7 @@ pub(crate) fn drain(rx: &Receiver<Update>, state: &mut SignIn) -> usize {
 mod tests {
     use std::sync::mpsc::channel;
 
+    use takofy_ui::library::Load;
     use takofy_ui::message::Failure;
 
     use super::*;
@@ -79,22 +84,36 @@ mod tests {
     fn drain_applies_every_update_in_order() {
         let (tx, rx) = channel();
         let mut state = SignIn::Starting;
+        let mut library = Library::default();
         tx.send(Update::NeedsAuthorization).expect("send");
         tx.send(Update::SignInFailed(Failure::PortBusy))
             .expect("send");
 
-        let applied = drain(&rx, &mut state);
+        let applied = drain(&rx, &mut state, &mut library);
 
         assert_eq!(applied, 2);
         assert_eq!(state, SignIn::NeedsAuthorization);
     }
 
     #[test]
+    fn drain_feeds_the_library() {
+        let (tx, rx) = channel();
+        let mut state = SignIn::Starting;
+        let mut library = Library::default();
+        tx.send(Update::SignedIn).expect("send");
+        tx.send(Update::Playlists(Vec::new())).expect("send");
+
+        assert_eq!(drain(&rx, &mut state, &mut library), 2);
+        assert_eq!(library.playlists, Load::Ready(Vec::new()));
+    }
+
+    #[test]
     fn drain_returns_zero_on_an_empty_channel_without_blocking() {
         let (_tx, rx) = channel();
         let mut state = SignIn::Starting;
+        let mut library = Library::default();
 
-        assert_eq!(drain(&rx, &mut state), 0);
+        assert_eq!(drain(&rx, &mut state, &mut library), 0);
         assert_eq!(state, SignIn::Starting);
     }
 
@@ -102,12 +121,13 @@ mod tests {
     fn drain_survives_a_disconnected_sender() {
         let (tx, rx) = channel();
         let mut state = SignIn::Starting;
+        let mut library = Library::default();
         tx.send(Update::SignedIn).expect("send");
         drop(tx);
 
-        assert_eq!(drain(&rx, &mut state), 1);
+        assert_eq!(drain(&rx, &mut state, &mut library), 1);
         assert_eq!(state, SignIn::SignedIn);
-        assert_eq!(drain(&rx, &mut state), 0);
+        assert_eq!(drain(&rx, &mut state, &mut library), 0);
     }
 
     #[test]
