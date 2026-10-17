@@ -4,9 +4,10 @@
 
 use futures_util::StreamExt;
 use librespot::core::{Session, SpotifyUri};
-use librespot::metadata::{Metadata, Playlist};
+use librespot::metadata::{Metadata, Playlist, Track};
 
-use crate::model::PlaylistEntry;
+use crate::context::{ContextError, Page, PageSource, page_from_proto, parse_page_json};
+use crate::model::{PlaylistEntry, TrackEntry};
 use crate::rootlist::{RootlistError, RootlistPage, RootlistSource, RootlistWire, parse_rootlist};
 
 /// The wire the live rootlist is read as; flip to `Json` if the binary parse fails.
@@ -66,5 +67,68 @@ async fn playlist_name(session: &Session, uri: &str) -> String {
     match Playlist::get(session, &id).await {
         Ok(playlist) => playlist.name().to_owned(),
         Err(_) => uri.to_owned(),
+    }
+}
+
+/// Reads context pages through librespot's spclient.
+pub(crate) struct RemoteContext<'a> {
+    pub(crate) session: &'a Session,
+}
+
+impl PageSource for RemoteContext<'_> {
+    async fn resolve(&self, uri: &str) -> Result<Vec<Page>, ContextError> {
+        let context = self
+            .session
+            .spclient()
+            .get_context(uri)
+            .await
+            .map_err(|error| ContextError::Source(error.to_string()))?;
+        Ok(context.pages.iter().map(page_from_proto).collect())
+    }
+
+    async fn next(&self, url: &str) -> Result<Page, ContextError> {
+        let bytes = self
+            .session
+            .spclient()
+            .get_next_page(url)
+            .await
+            .map_err(|error| ContextError::Source(error.to_string()))?;
+        parse_page_json(&bytes)
+    }
+}
+
+/// Names each track, falling back to its URI when metadata is missing.
+pub(crate) async fn label_tracks(session: &Session, uris: Vec<String>) -> Vec<TrackEntry> {
+    futures_util::stream::iter(uris)
+        .map(|uri| async move { label_track(session, uri).await })
+        .buffered(8)
+        .collect::<Vec<_>>()
+        .await
+}
+
+async fn label_track(session: &Session, uri: String) -> TrackEntry {
+    let Ok(id) = SpotifyUri::from_uri(&uri) else {
+        return TrackEntry {
+            title: uri.clone(),
+            artists: String::new(),
+            uri,
+        };
+    };
+    match Track::get(session, &id).await {
+        Ok(track) => TrackEntry {
+            title: track.name.clone(),
+            artists: track
+                .artists
+                .iter()
+                .map(|artist| artist.name.clone())
+                .collect::<Vec<_>>()
+                .join(", "),
+            uri,
+        },
+        Err(_) => TrackEntry {
+            title: uri.clone(),
+            artists: String::new(),
+            uri,
+        },
     }
 }

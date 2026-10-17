@@ -9,6 +9,7 @@ use std::process::ExitCode;
 
 use librespot::core::SessionConfig;
 use log::LevelFilter;
+use takofy_core::TrackEntry;
 use takofy_core::credentials::AccessToken;
 use takofy_core::engine::{Engine, EngineError};
 use takofy_core::login::{AuthError, LoginMethod, SourceErrorKind, authenticate};
@@ -67,10 +68,88 @@ fn main() -> ExitCode {
 async fn run(cfg: SessionConfig, token: &AccessToken) -> Result<(), EngineError> {
     let engine = Engine::connect(cfg, token).await?;
     let playlists = engine.rootlist().await?;
+    if playlists.is_empty() {
+        println!("no playlists found");
+        return Ok(());
+    }
     for (index, entry) in playlists.iter().enumerate() {
         println!("{}. {} - {}", index + 1, entry.name, entry.uri);
     }
-    Ok(())
+    let Some(index) = prompt_playlist(playlists.len()).await else {
+        return Ok(());
+    };
+    let mut pages = engine.tracks(&playlists[index].uri);
+    let mut shown = match pages.next().await? {
+        Some(tracks) => print_tracks(0, &tracks),
+        None => {
+            println!("no tracks");
+            0
+        }
+    };
+    loop {
+        let Some(input) = read_line().await else {
+            return Ok(());
+        };
+        if input.eq_ignore_ascii_case("n") {
+            match pages.next().await? {
+                Some(tracks) => shown = print_tracks(shown, &tracks),
+                None => {
+                    println!("end of tracks");
+                    return Ok(());
+                }
+            }
+        } else if input.is_empty() || input.eq_ignore_ascii_case("q") {
+            return Ok(());
+        } else {
+            println!("n for next page, q to quit");
+        }
+    }
+}
+
+fn print_tracks(start: usize, tracks: &[TrackEntry]) -> usize {
+    if tracks.is_empty() {
+        println!("(empty page)");
+        return start;
+    }
+    for (offset, track) in tracks.iter().enumerate() {
+        println!(
+            "{}. {} - {} ({})",
+            start + offset + 1,
+            track.title,
+            track.artists,
+            track.uri
+        );
+    }
+    start + tracks.len()
+}
+
+async fn prompt_playlist(count: usize) -> Option<usize> {
+    loop {
+        println!("pick a playlist (1-{count}, q to quit)");
+        let input = read_line().await?;
+        if input.is_empty() || input.eq_ignore_ascii_case("q") {
+            return None;
+        }
+        if let Ok(number) = input.parse::<usize>()
+            && (1..=count).contains(&number)
+        {
+            return Some(number - 1);
+        }
+    }
+}
+
+async fn read_line() -> Option<String> {
+    tokio::task::spawn_blocking(|| {
+        let mut line = String::new();
+        match std::io::stdin().read_line(&mut line) {
+            Ok(0) => None,
+            Ok(_) => Some(line.trim().to_owned()),
+            Err(_) => None,
+        }
+    })
+    .await
+    .ok()
+    .flatten()
 }
 
 fn logger_builder() -> env_logger::Builder {

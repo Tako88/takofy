@@ -3,9 +3,10 @@
 use librespot::core::authentication::Credentials;
 use librespot::core::{Session, SessionConfig};
 
+use crate::context::{ContextError, Walker};
 use crate::credentials::AccessToken;
-use crate::model::PlaylistEntry;
-use crate::remote::{ROOTLIST_WIRE, RemoteRootlist, label_playlists};
+use crate::model::{PlaylistEntry, TrackEntry};
+use crate::remote::{ROOTLIST_WIRE, RemoteContext, RemoteRootlist, label_playlists, label_tracks};
 use crate::rootlist::{RootlistError, fetch_all};
 
 /// Why an [`Engine`] operation failed.
@@ -15,6 +16,8 @@ pub enum EngineError {
     Session(#[from] librespot::core::Error),
     #[error(transparent)]
     Rootlist(#[from] RootlistError),
+    #[error(transparent)]
+    Context(#[from] ContextError),
 }
 
 /// A connected Spotify session.
@@ -40,5 +43,34 @@ impl Engine {
         };
         let uris = fetch_all(&source).await?;
         Ok(label_playlists(&self.session, uris).await)
+    }
+
+    /// A paged, labelled view of a playlist's tracks.
+    pub fn tracks(&self, playlist_uri: &str) -> TrackPages<'_> {
+        TrackPages {
+            session: &self.session,
+            walker: Walker::new(
+                RemoteContext {
+                    session: &self.session,
+                },
+                playlist_uri,
+            ),
+        }
+    }
+}
+
+/// The track pages of one playlist.
+pub struct TrackPages<'a> {
+    session: &'a Session,
+    walker: Walker<RemoteContext<'a>>,
+}
+
+impl TrackPages<'_> {
+    /// The next page of labelled tracks, or `None` at the end.
+    pub async fn next(&mut self) -> Result<Option<Vec<TrackEntry>>, EngineError> {
+        let Some(page) = self.walker.next_page().await? else {
+            return Ok(None);
+        };
+        Ok(Some(label_tracks(self.session, page.tracks).await))
     }
 }
