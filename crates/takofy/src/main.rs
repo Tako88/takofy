@@ -1,8 +1,9 @@
-//! The headless Takofy driver: logging, flags and login.
+//! The Takofy entry point: logging, flags, login and the runtime.
 //!
 //! Keychain and OAuth run before any Tokio runtime, so blocking HTTP and
 //! keychain calls never sit inside async code.
 
+mod headless;
 mod keychain;
 mod prompt;
 
@@ -10,23 +11,26 @@ use std::process::ExitCode;
 
 use librespot::core::SessionConfig;
 use log::LevelFilter;
-use takofy_core::credentials::AccessToken;
-use takofy_core::engine::{Engine, EngineError};
 use takofy_core::login::{AuthError, LoginMethod, SourceErrorKind, authenticate};
 use takofy_core::oauth::{OAUTH_LOG_TARGET, RedirectMode, SpotifyOAuth};
-use takofy_core::{Outcome, PlaybackError, PlaybackEvent, TrackPages, drive};
-use takofy_model::TrackEntry;
 
 use crate::keychain::KeychainStore;
-use crate::prompt::{Choice, format_playlist_line, format_track_line, parse_choice, read_line};
 
-const USAGE: &str = "usage: takofy [--paste]";
+const USAGE: &str = "usage: takofy [--paste] [--context <uri>]";
+
+/// What the command line asked for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Flags {
+    redirect: RedirectMode,
+    /// Open this context instead of listing the rootlist.
+    context: Option<String>,
+}
 
 fn main() -> ExitCode {
     logger_builder().init();
 
-    let mode = match redirect_mode(std::env::args().skip(1)) {
-        Ok(mode) => mode,
+    let flags = match parse_flags(std::env::args().skip(1)) {
+        Ok(flags) => flags,
         Err(()) => {
             eprintln!("{USAGE}");
             return ExitCode::from(2);
@@ -36,13 +40,14 @@ fn main() -> ExitCode {
     let cfg = SessionConfig::default();
     let store = KeychainStore;
 
-    let (access, method) = match authenticate(&store, &SpotifyOAuth::new(&cfg.client_id, mode)) {
-        Ok(result) => result,
-        Err(error) => {
-            print_error(&error);
-            return ExitCode::FAILURE;
-        }
-    };
+    let (access, method) =
+        match authenticate(&store, &SpotifyOAuth::new(&cfg.client_id, flags.redirect)) {
+            Ok(result) => result,
+            Err(error) => {
+                print_error(&error);
+                return ExitCode::FAILURE;
+            }
+        };
     match method {
         LoginMethod::Resumed => println!("Logged in (resumed)"),
         LoginMethod::Interactive => println!("Logged in (browser)"),
@@ -59,7 +64,7 @@ fn main() -> ExitCode {
         }
     };
 
-    match runtime.block_on(run(cfg, &access)) {
+    match runtime.block_on(headless::run(cfg, &access, flags.context)) {
         Ok(code) => code,
         Err(error) => {
             eprintln!("error: {error}");
@@ -68,133 +73,20 @@ fn main() -> ExitCode {
     }
 }
 
-async fn run(cfg: SessionConfig, token: &AccessToken) -> Result<ExitCode, EngineError> {
-    let engine = Engine::connect(cfg, token).await?;
-    let playlists = engine.rootlist().await?;
-    if playlists.is_empty() {
-        println!("no playlists found");
-        return Ok(ExitCode::SUCCESS);
-    }
-    for (index, entry) in playlists.iter().enumerate() {
-        println!("{}", format_playlist_line(index + 1, entry));
-    }
-    let Some(index) = prompt_playlist(playlists.len()).await else {
-        return Ok(ExitCode::SUCCESS);
+fn parse_flags(args: impl Iterator<Item = String>) -> Result<Flags, ()> {
+    let mut flags = Flags {
+        redirect: RedirectMode::Loopback,
+        context: None,
     };
-    let Some(track) = choose_track(engine.tracks(&playlists[index].uri)).await? else {
-        return Ok(ExitCode::SUCCESS);
-    };
-
-    let (playback, events) = match engine.playback() {
-        Ok(pair) => pair,
-        Err(PlaybackError::NoAudioDevice) => {
-            eprintln!("error: no audio output device available");
-            return Ok(ExitCode::from(3));
-        }
-        Err(error) => {
-            eprintln!("error: {error}");
-            return Ok(ExitCode::FAILURE);
-        }
-    };
-
-    if let Err(error) = playback.play(&track.uri) {
-        eprintln!("error: {error}");
-        if let Err(error) = playback.shutdown().await {
-            eprintln!("error: {error}");
-        }
-        return Ok(ExitCode::FAILURE);
-    }
-
-    let loop_result =
-        tokio::task::spawn_blocking(move || drive(events, print_playback_event)).await;
-    let exit = match loop_result {
-        Ok(Ok(Outcome::Ended | Outcome::Stopped)) => ExitCode::SUCCESS,
-        Ok(Ok(Outcome::Unavailable)) => {
-            println!("track unavailable");
-            ExitCode::FAILURE
-        }
-        Ok(Err(error)) => {
-            eprintln!("error: {error}");
-            ExitCode::FAILURE
-        }
-        Err(error) => {
-            eprintln!("error: player event loop failed: {error}");
-            ExitCode::FAILURE
-        }
-    };
-    if let Err(error) = playback.shutdown().await {
-        eprintln!("error: {error}");
-        return Ok(ExitCode::FAILURE);
-    }
-    Ok(exit)
-}
-
-async fn choose_track(mut pages: TrackPages<'_>) -> Result<Option<TrackEntry>, EngineError> {
-    let mut shown: Vec<TrackEntry> = Vec::new();
-    match pages.next().await? {
-        Some(tracks) => push_page(&mut shown, &tracks),
-        None => {
-            println!("no tracks");
-            return Ok(None);
+    let mut args = args;
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--paste" => flags.redirect = RedirectMode::Paste,
+            "--context" => flags.context = Some(args.next().ok_or(())?),
+            _ => return Err(()),
         }
     }
-    if shown.is_empty() {
-        println!("no tracks to pick");
-        return Ok(None);
-    }
-    loop {
-        println!(
-            "pick a track (1-{}), n for next page, q to quit",
-            shown.len()
-        );
-        let Some(input) = read_line().await else {
-            return Ok(None);
-        };
-        match parse_choice(&input, shown.len()) {
-            Choice::Pick(number) => return Ok(Some(shown[number - 1].clone())),
-            Choice::Quit => return Ok(None),
-            Choice::Next => match pages.next().await? {
-                Some(tracks) => push_page(&mut shown, &tracks),
-                None => println!("end of tracks"),
-            },
-            Choice::Invalid => {
-                println!("enter a track number, n for next page, or q to quit");
-            }
-        }
-    }
-}
-
-fn push_page(shown: &mut Vec<TrackEntry>, tracks: &[TrackEntry]) {
-    if tracks.is_empty() {
-        println!("(empty page)");
-    }
-    for track in tracks {
-        shown.push(track.clone());
-        println!("{}", format_track_line(shown.len(), track));
-    }
-}
-
-fn print_playback_event(event: &PlaybackEvent) {
-    match event {
-        PlaybackEvent::Loading => println!("loading"),
-        PlaybackEvent::Playing { position_ms } => println!("playing at {position_ms} ms"),
-        PlaybackEvent::Paused { position_ms } => println!("paused at {position_ms} ms"),
-        PlaybackEvent::Ended => println!("ended"),
-        PlaybackEvent::Unavailable => println!("unavailable"),
-        PlaybackEvent::Stopped => println!("stopped"),
-    }
-}
-
-async fn prompt_playlist(count: usize) -> Option<usize> {
-    loop {
-        println!("pick a playlist (1-{count}, q to quit)");
-        let input = read_line().await?;
-        match parse_choice(&input, count) {
-            Choice::Pick(number) => return Some(number - 1),
-            Choice::Quit => return None,
-            Choice::Next | Choice::Invalid => {}
-        }
-    }
+    Ok(flags)
 }
 
 fn logger_builder() -> env_logger::Builder {
@@ -203,17 +95,6 @@ fn logger_builder() -> env_logger::Builder {
     // librespot-oauth logs tokens and auth codes at trace level.
     builder.filter_module(OAUTH_LOG_TARGET, LevelFilter::Off);
     builder
-}
-
-fn redirect_mode(args: impl Iterator<Item = String>) -> Result<RedirectMode, ()> {
-    let mut mode = RedirectMode::Loopback;
-    for arg in args {
-        match arg.as_str() {
-            "--paste" => mode = RedirectMode::Paste,
-            _ => return Err(()),
-        }
-    }
-    Ok(mode)
 }
 
 fn print_error(error: &AuthError) {
@@ -231,14 +112,24 @@ fn print_error(error: &AuthError) {
 
 #[cfg(test)]
 mod tests {
-    use log::{Level, Metadata, Record};
+    use std::vec::IntoIter;
 
-    use super::logger_builder;
-    use takofy_core::oauth::OAUTH_LOG_TARGET;
+    use log::{Level, Metadata, Record};
+    use takofy_core::oauth::{OAUTH_LOG_TARGET, RedirectMode};
+
+    use super::{Flags, USAGE, logger_builder, parse_flags};
 
     fn record<'a>(target: &'a str, level: Level) -> Record<'a> {
         let metadata = Metadata::builder().target(target).level(level).build();
         Record::builder().metadata(metadata).build()
+    }
+
+    fn args(values: &[&str]) -> IntoIter<String> {
+        values
+            .iter()
+            .map(|value| (*value).to_owned())
+            .collect::<Vec<String>>()
+            .into_iter()
     }
 
     #[test]
@@ -252,5 +143,53 @@ mod tests {
     fn unrelated_warn_target_is_kept() {
         let logger = logger_builder().build();
         assert!(logger.matches(&record("takofy", Level::Warn)));
+    }
+
+    #[test]
+    fn no_arguments_means_loopback_and_the_rootlist() {
+        assert_eq!(
+            parse_flags(args(&[])).ok(),
+            Some(Flags {
+                redirect: RedirectMode::Loopback,
+                context: None,
+            })
+        );
+    }
+
+    #[test]
+    fn paste_selects_the_stdin_redirect() {
+        let flags = parse_flags(args(&["--paste"])).expect("flags parse");
+        assert_eq!(flags.redirect, RedirectMode::Paste);
+    }
+
+    #[test]
+    fn context_takes_the_next_argument() {
+        let flags = parse_flags(args(&["--context", "spotify:artist:x"])).expect("flags parse");
+        assert_eq!(flags.context.as_deref(), Some("spotify:artist:x"));
+    }
+
+    #[test]
+    fn context_without_a_value_is_rejected() {
+        assert!(parse_flags(args(&["--context"])).is_err());
+    }
+
+    #[test]
+    fn unknown_arguments_are_rejected() {
+        assert!(parse_flags(args(&["--nope"])).is_err());
+    }
+
+    #[test]
+    fn flags_combine() {
+        let flags = parse_flags(args(&["--paste", "--context", "spotify:search:x"]))
+            .expect("flags parse");
+        assert_eq!(flags.redirect, RedirectMode::Paste);
+        assert_eq!(flags.context.as_deref(), Some("spotify:search:x"));
+    }
+
+    #[test]
+    fn usage_mentions_every_flag() {
+        for flag in ["--paste", "--context"] {
+            assert!(USAGE.contains(flag), "{flag} is missing from the usage line");
+        }
     }
 }
