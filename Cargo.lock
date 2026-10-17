@@ -3807,6 +3807,7 @@ dependencies = [
  "librespot",
  "log",
  "takofy-core",
+ "takofy-model",
  "tokio",
 ]
 
@@ -3819,9 +3820,14 @@ dependencies = [
  "log",
  "protobuf",
  "protobuf-json-mapping",
+ "takofy-model",
  "thiserror 2.0.21",
  "tokio",
 ]
+
+[[package]]
+name = "takofy-model"
+version = "0.1.0"
 
 [[package]]
 name = "takofy-ui"

@@ -1,6 +1,6 @@
 //! Selection prompts: parsing a choice and formatting a list line.
 
-use takofy_core::{PlaylistEntry, TrackEntry};
+use takofy_model::{PlaylistEntry, TrackEntry};
 
 /// A parsed answer to a numbered prompt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,7 +58,7 @@ pub(crate) async fn read_line() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{Choice, format_playlist_line, format_track_line, parse_choice};
-    use takofy_core::{PlaylistEntry, TrackEntry};
+    use takofy_model::{PlaylistEntry, TrackEntry};
 
     #[test]
     fn in_range_numbers_pick() {
