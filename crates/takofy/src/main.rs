@@ -1,13 +1,9 @@
 //! The application: window, threads, and the wiring between them.
 //!
-//! This crate is the only place the Spotify session and the UI meet. It runs one
-//! egui thread, one tokio runtime for the session, and lets `librespot` own its
-//! own playback threads; they talk over channels rather than shared locks, so a
-//! slow network cannot stall a frame.
+//! The only place the Spotify session and the UI meet.
 //!
-//! The shell below is a placeholder that exists to prove the window, the GPU
-//! backend and the token layer work on both target platforms. Phase 1 (`#1`)
-//! replaces the placeholder text with a real library and a real transport.
+//! The shell is a placeholder proving the window, the GPU backend and the token
+//! layer work on both targets. `#1` replaces it.
 
 use eframe::egui;
 use takofy_ui::{layout, theme};
@@ -47,7 +43,7 @@ impl eframe::App for App {
                 .show(ui, |ui| {
                     ui.add_space(theme::space::MD);
                     ui.heading("Library");
-                    ui.label(egui::RichText::new("Playlists arrive in phase 1.").color(muted));
+                    ui.label(egui::RichText::new("No playlists yet.").color(muted));
                 });
         }
 
@@ -62,7 +58,7 @@ impl eframe::App for App {
         egui::CentralPanel::default().show(ui, |ui| {
             ui.add_space(theme::space::MD);
             ui.heading("Takofy");
-            ui.label(egui::RichText::new("The Spotify session arrives in phase 1.").color(muted));
+            ui.label(egui::RichText::new("Nothing here yet.").color(muted));
         });
     }
 }

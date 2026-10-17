@@ -1,55 +1,38 @@
 //! The token layer.
 //!
-//! Every colour, size, weight, spacing step, radius and duration the UI may use
-//! is defined here and nowhere else. A component reads a token; it never invents
-//! a value. `clippy.toml` denies the `egui::Color32` constructors crate-wide and
-//! this file is the one place that allow is lifted, so a literal colour anywhere
-//! else is a build failure rather than a review comment.
-//!
-//! Names are semantic. A component asks for `surface` or `text_muted`; it never
-//! asks for `grey_800`, because a component has no opinion about which grey.
+//! `clippy.toml` denies the `egui::Color32` constructors crate-wide, and this is
+//! the one file where that allow is lifted — a literal colour anywhere else is a
+//! build failure rather than a review comment.
 
 #![allow(clippy::disallowed_methods, reason = "this file is the token layer")]
 
 use egui::{Color32, FontFamily, FontId, TextStyle, Visuals};
 
-/// Spacing steps. A 4-point grid, so vertical rhythm stays consistent.
+/// A 4-point grid, so vertical rhythm stays consistent.
 pub mod space {
-    /// Between an icon and its label.
     pub const XS: f32 = 4.0;
-    /// Between rows in a list.
     pub const SM: f32 = 8.0;
-    /// Between controls inside a group.
     pub const MD: f32 = 12.0;
-    /// Between groups.
     pub const LG: f32 = 20.0;
-    /// Around the outside of a region.
     pub const XL: f32 = 32.0;
 }
 
-/// Corner radii.
 pub mod radius {
     use egui::CornerRadius;
 
-    /// Inline chips and small controls.
     pub const SM: CornerRadius = CornerRadius::same(4);
-    /// Cards and panels.
     pub const MD: CornerRadius = CornerRadius::same(8);
-    /// Album art.
     pub const LG: CornerRadius = CornerRadius::same(12);
 }
 
-/// Type sizes. Families are fixed; only the size varies.
+/// Only the size varies; the families are fixed in [`style`].
 pub mod text {
-    /// Track and album titles in a list.
     pub const BODY: f32 = 14.0;
-    /// Secondary lines: artist, album, duration.
     pub const LABEL: f32 = 12.0;
-    /// The now-playing title.
     pub const TITLE: f32 = 20.0;
 }
 
-/// The dark palette. The only `Color32` values in the codebase.
+/// The only `Color32` values in the codebase.
 pub struct Palette {
     /// Behind everything.
     pub bg: Color32,
@@ -68,7 +51,6 @@ pub struct Palette {
 }
 
 impl Palette {
-    /// The default palette.
     pub const DARK: Self = Self {
         bg: Color32::from_rgb(0x0b, 0x0b, 0x0d),
         surface: Color32::from_rgb(0x15, 0x15, 0x18),
@@ -80,9 +62,8 @@ impl Palette {
     };
 }
 
-/// The whole token set: the palette plus the geometry that is not a plain step.
+/// The palette plus the geometry that is not a spacing step.
 pub struct Tokens {
-    /// Colours.
     pub palette: Palette,
     /// Fixed row height, so lists scan as a grid.
     pub row_height: f32,
@@ -93,7 +74,6 @@ pub struct Tokens {
 }
 
 impl Tokens {
-    /// The default dark theme.
     pub const DARK: Self = Self {
         palette: Palette::DARK,
         row_height: 48.0,
@@ -102,10 +82,8 @@ impl Tokens {
     };
 }
 
-/// Builds the egui style from the tokens.
-///
-/// Every field egui will let us set is set from a token. Anything egui defaults
-/// and we leave alone is a value the UI cannot reach, so it needs no token.
+/// Every field egui lets us set comes from a token. Anything left at egui's
+/// default is a value the UI cannot reach, so it needs no token.
 pub fn style(tokens: &Tokens) -> egui::Style {
     let p = &tokens.palette;
 

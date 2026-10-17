@@ -29,6 +29,12 @@ the repository.
 - **Plans are local.** `.pi/plans/<slice>/` is gitignored and holds the audited
   contract, its adversarial audit, its gate evidence and the milestone extracts.
   It churns, so it is not repo content.
+- **An issue reads as plain language.** Written for someone who has not opened
+  the code: what is wanted, why it matters, how you will know it is done. No
+  shorthand that only means something inside this repository.
+- **A commit message is short too.** A subject that says what changed, then only
+  what the diff cannot show — why, and what surprised you. Not a narration of the
+  diff, and not a summary of the session that produced it.
 
 ## Testing
 
@@ -79,8 +85,11 @@ duplication. Otherwise prefer rule of three.
 
 ## Comments
 
-A comment says why the code is the way it is now. Write it for a reader who has
-only the file.
+Short, and only where the code does not already say it. A good name and
+signature are the explanation; a comment that repeats them makes the reader read
+twice. One line is the norm, two usually means the code should be clearer
+instead. Where a comment earns its place it says why, or states a constraint the
+type system cannot carry. It never narrates the lines below it.
 
 - No plan identifiers: `D7`, `M4`, `G1`, `D-H`, "step 25", "obligation 3", "Gate A".
   They point at a plan that is local and churns, so they mean nothing to the next

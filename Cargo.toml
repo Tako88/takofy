@@ -9,14 +9,12 @@ rust-version = "1.99"
 publish = false
 
 [workspace.dependencies]
-# The pin that matters is in Cargo.lock, not here. librespot 0.8.0's build script
-# uses vergen-gitcl 1.0.8, which no longer agrees with vergen 9.1.0's vergen-lib,
-# so librespot-core fails to build a build script. librespot's `dev` branch
-# carries the same fix (vergen =9.0.6). A plain `cargo update` undoes it; re-run
-# `cargo update -p vergen --precise 9.0.6` if the workspace stops building.
+# librespot 0.8.0's build script does not compile against current vergen. The fix
+# is a Cargo.lock pin to vergen 9.0.6, which `cargo update` undoes — re-run
+# `cargo update -p vergen --precise 9.0.6` if the build breaks.
 #
-# rustls over native-tls and no mdns: Windows then needs no OpenSSL, and a
-# Spotify Connect receiver is not something phase 1 asks for.
+# rustls over native-tls and no mdns: Windows needs no OpenSSL, and nothing here
+# is a Spotify Connect receiver.
 librespot = { version = "0.8.0", default-features = false, features = [
     "rustls-tls-native-roots",
     "rodio-backend",

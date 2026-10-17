@@ -1,8 +1,5 @@
-# The design system rule is enforced here, not in a document.
-#
 # Every colour in the UI comes from a token. A component that writes its own
-# `Color32` fails the build. The allow is lifted in exactly one file,
-# `crates/takofy-ui/src/theme.rs`, which is the token layer itself.
+# `Color32` fails the build; the allow is lifted only in theme.rs.
 disallowed-methods = [
     { path = "egui::Color32::from_rgb", reason = "colours come from the token layer (crates/takofy-ui/src/theme.rs)" },
     { path = "egui::Color32::from_rgba_premultiplied", reason = "colours come from the token layer (crates/takofy-ui/src/theme.rs)" },
