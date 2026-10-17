@@ -7,3 +7,5 @@
 //! Empty for now; `#1` fills it in.
 
 pub mod credentials;
+pub mod login;
+pub mod oauth;
