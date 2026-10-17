@@ -5,9 +5,11 @@ no touch. Rust, with `librespot` speaking Spotify's own protocol and
 `eframe`/`egui` drawing. One binary, no runtime, no Electron. A private
 repository, not distributed. Not affiliated with Spotify.
 
+The shape of the system is in `docs/architecture.md`.
+
 <!--
-The stack is named here and nowhere else in this file. A stack detail earns a
-place only when a rule depends on it.
+A stack detail earns a place here only when a rule depends on it. The reasoning
+behind the stack lives in that document, not here.
 -->
 
 ## Workflow and tracking
@@ -71,10 +73,9 @@ UI seam: data/state, formatting, presentation are three separate things.
 Formatting lives in pure functions and is tested. Presentational components may
 be long and still single-purpose.
 
-The workspace is three crates, and the split is a boundary the compiler enforces
-rather than a filing convention. `takofy-core` talks to Spotify and never draws.
-`takofy-ui` draws and never reaches the network. `takofy` is the binary that owns
-the threads and wires the two together. A view that needs data is handed it.
+The crate boundaries, the threading model and the invariants are in
+`docs/architecture.md`. The rule that falls out of them: a view that needs data
+is handed it, because `takofy-ui` cannot go and get it.
 
 ## DRY
 

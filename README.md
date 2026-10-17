@@ -2,6 +2,11 @@
 
 A fast, lean Spotify client for Windows and Linux, in Rust.
 
+## How it is put together
+
+The crate boundaries, the threading model and the invariants are in
+[`docs/architecture.md`](docs/architecture.md).
+
 ## Building
 
 ```
