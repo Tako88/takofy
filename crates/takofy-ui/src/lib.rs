@@ -2,6 +2,8 @@
 //!
 //! State is handed in as `message::Update`s; this crate draws and never fetches.
 
+pub mod availability;
+pub mod icon;
 pub mod layout;
 pub mod library;
 pub mod message;

@@ -11,6 +11,7 @@
 
 #![allow(clippy::disallowed_methods, reason = "this file is the token layer")]
 
+pub mod ease;
 mod egui_style;
 pub mod fonts;
 
@@ -28,6 +29,8 @@ pub mod space {
     pub const S6: f32 = 32.0;
     pub const S7: f32 = 48.0;
     pub const S8: f32 = 64.0;
+    /// The reference's 1 px gaps, which are not a step on the scale.
+    pub const PX: f32 = 1.0;
     /// The gap between major regions, as opposed to within one.
     pub const GUTTER: f32 = S5;
 }
@@ -68,6 +71,9 @@ pub mod leading {
 /// Letter spacing in em.
 pub mod tracking {
     pub const TIGHT: f32 = -0.02;
+    /// The reference writes this as a bare `0.02em`; it is not a named token
+    /// there, but it appears six times, so it is one here.
+    pub const SLIGHT: f32 = 0.02;
     pub const WIDE: f32 = 0.06;
     pub const CAPS: f32 = 0.11;
 }
@@ -135,6 +141,54 @@ pub mod extent {
     pub const TOPBAR_H: f32 = 56.0;
     pub const SIDEBAR_RAIL_W: f32 = 64.0;
     pub const ROW_H: f32 = 44.0;
+    pub const BUTTON: f32 = 28.0;
+    pub const BUTTON_LG: f32 = 34.0;
+    pub const SLIDER_H: f32 = 14.0;
+    pub const SLIDER_TRACK_H: f32 = 3.0;
+    pub const SLIDER_THUMB_W: f32 = 3.0;
+    pub const CHIP_PAD_X: f32 = 7.2;
+    pub const CHIP_PAD_Y: f32 = 3.2;
+    pub const FOCUS_OFFSET: f32 = 2.0;
+}
+
+/// The sprite's own geometry.
+///
+/// The reference draws every glyph on a 24-unit viewBox and strokes it at a
+/// width in those units, so the drawn width follows the size: doubling the icon
+/// doubles the stroke. `side` is in points, `stroke` is in grid units.
+pub mod icon {
+    /// The reference sprite's `viewBox` is `0 0 24 24` for every symbol.
+    pub const GRID: f32 = 24.0;
+
+    #[derive(Clone, Copy, PartialEq, Debug)]
+    pub struct Size {
+        pub side: f32,
+        pub stroke: f32,
+    }
+
+    impl Size {
+        pub const SM: Self = Self {
+            side: 12.0,
+            stroke: 1.8,
+        };
+        pub const BASE: Self = Self {
+            side: 16.0,
+            stroke: 1.8,
+        };
+        pub const MD: Self = Self {
+            side: 18.0,
+            stroke: 1.6,
+        };
+        pub const LG: Self = Self {
+            side: 22.0,
+            stroke: 1.6,
+        };
+
+        /// The width this size draws, in points.
+        pub fn stroke_pts(self) -> f32 {
+            self.stroke * self.side / GRID
+        }
+    }
 }
 
 /// Durations in seconds, and the one easing curve the design uses.
@@ -182,11 +236,15 @@ pub struct Palette {
     pub text_muted: Color32,
     /// The third tier, for text that may be dimmed rather than read.
     pub text_subtle: Color32,
+    /// Present but not usable: a waiting control's glyph.
+    pub text_disabled: Color32,
     /// Text on a light fill.
     pub text_inverse: Color32,
     /// Sound is coming out. Never a surface.
     pub accent: Color32,
     pub accent_hover: Color32,
+    /// A selected chip's fill: bone at low alpha, not a gamma-scaled text.
+    pub pressed: Color32,
     /// A verified mark, which is not the playback colour.
     pub verified: Color32,
     pub shadow_sm: egui::Shadow,
@@ -210,9 +268,11 @@ impl Palette {
         text: Color32::from_rgb(0xf2, 0xf0, 0xea),
         text_muted: Color32::from_rgb(0xb0, 0xac, 0xa4),
         text_subtle: Color32::from_rgb(0x83, 0x80, 0x7a),
+        text_disabled: Color32::from_rgb(0x4d, 0x4c, 0x48),
         text_inverse: Color32::from_rgb(0x0b, 0x0b, 0x0c),
         accent: Color32::from_rgb(0x1e, 0xd7, 0x60),
         accent_hover: Color32::from_rgb(0x3e, 0xe5, 0x7b),
+        pressed: Color32::from_rgba_unmultiplied_const(0xf2, 0xf0, 0xea, 20),
         verified: Color32::from_rgb(0x9f, 0xc6, 0xe8),
         shadow_sm: egui::Shadow {
             offset: [0, 1],
@@ -364,5 +424,67 @@ mod tests {
         assert_eq!(p.shadow_sm.color.to_srgba_unmultiplied()[3], 128);
         assert_eq!(p.shadow_md.color.to_srgba_unmultiplied()[3], 140);
         assert_eq!(p.shadow_lg.color.to_srgba_unmultiplied()[3], 166);
+    }
+
+    #[test]
+    fn the_icon_sizes_increase_and_the_stroke_never_grows_with_them() {
+        let sizes = [
+            icon::Size::SM,
+            icon::Size::BASE,
+            icon::Size::MD,
+            icon::Size::LG,
+        ];
+        for pair in sizes.windows(2) {
+            assert!(pair[0].side < pair[1].side, "{:?} is not larger", pair);
+            assert!(
+                pair[0].stroke >= pair[1].stroke,
+                "{:?} got a heavier stroke",
+                pair
+            );
+        }
+    }
+
+    #[test]
+    fn the_icon_grid_is_the_sprites_viewbox() {
+        assert_eq!(icon::GRID, 24.0);
+    }
+
+    #[test]
+    fn text_disabled_is_a_band_below_text_subtle() {
+        let p = &Palette::DARK;
+        for (name, behind) in [
+            ("surface", p.surface),
+            ("panel", p.panel),
+            ("window", p.window),
+        ] {
+            let ratio = contrast_ratio(p.text_disabled, behind);
+            assert!(
+                (2.0..=3.0).contains(&ratio),
+                "text_disabled is {ratio:.2}:1 on {name}"
+            );
+            assert!(
+                ratio < contrast_ratio(p.text_subtle, behind),
+                "text_disabled is not below text_subtle on {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn slight_tracking_sits_between_none_and_wide() {
+        const { assert!(0.0 < tracking::SLIGHT) };
+        const { assert!(tracking::SLIGHT < tracking::WIDE) };
+    }
+
+    #[test]
+    fn pressed_is_bone_at_a_twentieth_of_an_alpha() {
+        let [r, g, b, a] = Palette::DARK.pressed.to_srgba_unmultiplied();
+        assert_eq!(a, 20);
+        // Unmultiplying a low alpha is lossy by up to about 6 per channel.
+        for (got, want) in [(r, 0xf2), (g, 0xf0), (b, 0xea)] {
+            assert!(
+                got.abs_diff(want) <= 6,
+                "pressed is {r},{g},{b},{a}, not bone"
+            );
+        }
     }
 }
