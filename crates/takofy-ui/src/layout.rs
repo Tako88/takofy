@@ -48,12 +48,6 @@ pub struct Regions {
     pub playbar: Playbar,
 }
 
-impl Regions {
-    pub fn has_rail(&self) -> bool {
-        self.sidebar == Sidebar::Rail
-    }
-}
-
 /// The widths and heights the regions occupy, each one a token.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Shell {
@@ -124,10 +118,10 @@ pub struct Grid {
 
 /// The regions tile the inner area with `gap`-wide channels between them.
 ///
-/// The regions argument is not read: the shell already carries the widths the
-/// classification produced. It stays in the signature so the caller hands over
-/// the same classification it solved the shell from.
-pub fn grid_for(content: Rect, _regions: &Regions, shell: &Shell) -> Grid {
+/// The shell is the whole input. It already carries the widths the
+/// classification produced, so reading the classification again here could only
+/// disagree with it.
+pub fn grid_for(content: Rect, shell: &Shell) -> Grid {
     let inner = content.shrink(shell.padding);
 
     let playbar = Rect::from_min_max(
@@ -193,7 +187,7 @@ mod tests {
         let content = content(width, height);
         let regions = regions_for(content.width());
         let shell = shell_for(&regions);
-        (grid_for(content, &regions, &shell), regions, shell)
+        (grid_for(content, &shell), regions, shell)
     }
 
     #[test]
@@ -384,7 +378,7 @@ mod tests {
         let (rail, regions, shell) = solve(800.0, 900.0);
         assert_eq!(rail.sidebar.width(), extent::SIDEBAR_RAIL_W);
         assert!(rail.sidebar.width() < full.sidebar.width());
-        assert!(regions.has_rail());
+        assert_eq!(regions.sidebar, Sidebar::Rail);
         assert_eq!(rail.sidebar.width(), shell.sidebar);
     }
 
