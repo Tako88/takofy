@@ -19,7 +19,7 @@ librespot = { version = "0.8.0", default-features = false, features = [
     "rustls-tls-native-roots",
     "rodio-backend",
 ] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 thiserror = "2"
 keyring = "4.2.0"
 env_logger = "0.11"
