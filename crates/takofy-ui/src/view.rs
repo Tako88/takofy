@@ -34,7 +34,7 @@ pub fn show(
 /// A spinner with no control, so a second click cannot queue another sign-in.
 fn progress(ui: &mut Ui) {
     ui.with_layout(Layout::top_down(Align::Center), |ui| {
-        ui.add_space(space::XL);
+        ui.add_space(space::S6);
         ui.spinner();
     });
 }
@@ -69,7 +69,7 @@ fn shell(
 ) -> Option<Command> {
     let width = Width::of(ui.ctx().content_rect().width());
     let regions = layout::regions_for(width);
-    let sizes = layout::shell_for(width, tokens);
+    let sizes = layout::shell_for(width);
 
     let mut command = None;
     if regions.sidebar
@@ -95,9 +95,9 @@ fn shell(
 
 /// The sidebar: the playlists, or the state of the load that fetches them.
 fn library_view(ui: &mut Ui, library: &mut Library, tokens: &Tokens) -> Option<Command> {
-    ui.add_space(space::MD);
+    ui.add_space(space::S3);
     ui.heading("Playlists");
-    ui.add_space(space::SM);
+    ui.add_space(space::S2);
 
     let mut clicked: Option<String> = None;
     let mut retry = false;
@@ -138,7 +138,7 @@ fn tracks_view(
     transport: &mut Transport,
     tokens: &Tokens,
 ) -> Option<Command> {
-    ui.add_space(space::MD);
+    ui.add_space(space::S3);
     match &library.tracks {
         Load::Idle => {
             ui.label(muted("Select a playlist.", tokens));

@@ -8,7 +8,7 @@ use takofy_ui::library::Library;
 use takofy_ui::message::Update;
 use takofy_ui::player::{REDRAW, Transport, TransportState, position_at};
 use takofy_ui::signin::SignIn;
-use takofy_ui::theme::{Tokens, style};
+use takofy_ui::theme::{Tokens, fonts, style};
 use takofy_ui::{layout, view};
 
 use crate::bridge::UiEnd;
@@ -21,6 +21,9 @@ pub(crate) fn native_options() -> eframe::NativeOptions {
             .with_inner_size(layout::WINDOW_DEFAULT)
             .with_min_inner_size(layout::WINDOW_MIN),
         run_and_return: true,
+        // Every glyph is bundled, so a system fallback would hide a gap on this
+        // machine and ship boxes on any other.
+        system_font_fallback: false,
         ..Default::default()
     }
 }
@@ -41,6 +44,7 @@ impl TakofyApp {
     /// Installs the theme and takes ownership of the window's end.
     pub(crate) fn new(cc: &eframe::CreationContext<'_>, ui_end: UiEnd) -> Self {
         let tokens = Tokens::DARK;
+        cc.egui_ctx.set_fonts(fonts::definitions());
         cc.egui_ctx.set_global_style(style(&tokens));
         Self {
             state: SignIn::default(),
@@ -191,6 +195,28 @@ mod tests {
     #[test]
     fn run_and_return_is_pinned() {
         assert!(native_options().run_and_return);
+    }
+
+    #[test]
+    fn the_system_font_fallback_stays_off() {
+        assert!(
+            !native_options().system_font_fallback,
+            "a fallback would hide a missing glyph here and show one elsewhere"
+        );
+    }
+
+    #[test]
+    fn the_shipping_chain_keeps_egui_icons() {
+        // This binary links eframe, which is what turns on egui's `default_fonts`;
+        // a crate depending on egui alone has no builtin fonts at all. So this is
+        // the only place the configuration that actually ships can be asserted.
+        let defs = takofy_ui::theme::fonts::definitions();
+        for (family, chain) in &defs.families {
+            assert!(
+                chain.iter().any(|name| name == "egui-icons"),
+                "{family:?} would leave egui's own icons undrawn"
+            );
+        }
     }
 
     #[test]
