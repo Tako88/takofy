@@ -42,11 +42,14 @@ pub enum Control {
     HeroLike,
     HeroMore,
     HeroPlay,
+    /// A card's own play control in the library grid. The card selects its playlist;
+    /// playing from the card needs the tracks loaded first, which no path does yet.
+    CardPlay,
     Authorize,
 }
 
 impl Control {
-    pub const ALL: [Self; 36] = [
+    pub const ALL: [Self; 37] = [
         Self::NavHome,
         Self::NavSearch,
         Self::LibraryCreate,
@@ -82,6 +85,7 @@ impl Control {
         Self::HeroLike,
         Self::HeroMore,
         Self::HeroPlay,
+        Self::CardPlay,
         Self::Authorize,
     ];
 }
@@ -151,6 +155,7 @@ pub fn availability(control: Control) -> Availability {
         Control::HeroLike => Availability::Waiting,
         Control::HeroMore => Availability::Waiting,
         Control::HeroPlay => Availability::Ready,
+        Control::CardPlay => Availability::Waiting,
 
         // The sign-in card's one control; the state decides whether it acts.
         Control::Authorize => Availability::Ready,
@@ -190,6 +195,6 @@ mod tests {
             assert!(!seen.contains(&control), "{control:?} is listed twice");
             seen.push(control);
         }
-        assert_eq!(seen.len(), 36);
+        assert_eq!(seen.len(), 37);
     }
 }

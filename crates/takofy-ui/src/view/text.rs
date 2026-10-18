@@ -99,6 +99,17 @@ pub fn library_kind(label: &str, tokens: &Tokens) -> RichText {
         .color(tokens.palette.text_subtle)
 }
 
+/// A card's name, and the heading of anything that names a thing in a grid.
+pub fn card_name() -> FontId {
+    FontId::new(text::SM, fonts::sans(Weight::Semibold))
+}
+
+/// What a card is: a playlist, an album. Monospace, so a column of them reads as a
+/// list of labels rather than as a sentence.
+pub fn card_kind() -> FontId {
+    FontId::new(text::XS, fonts::mono(MonoWeight::Regular))
+}
+
 /// A track row's title, in the interface face at 500.
 pub fn track_name() -> FontId {
     FontId::new(text::BASE, fonts::sans(Weight::Medium))

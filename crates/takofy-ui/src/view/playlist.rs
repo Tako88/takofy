@@ -7,18 +7,19 @@
 
 use egui::emath::GuiRounding;
 use egui::{FontId, Pos2, Rect, Sense, Ui, vec2};
-use takofy_model::TrackEntry;
+use takofy_model::{PlaylistEntry, TrackEntry};
 
 use crate::format::{format_position, hero_meta};
 use crate::icon;
-use crate::layout::{Table, table as table_layout};
+use crate::layout::{Table, cards, table as table_layout};
 use crate::library::{Library, Load};
-use crate::message::Command;
+use crate::message::{Command, Failure};
 use crate::player::{Transport, TransportState};
 use crate::queue::Queue;
 use crate::theme::icon::Size;
 use crate::theme::{Tokens, extent, space, stroke, text, tracking};
 
+use super::card;
 use super::hero;
 use super::text as recipe;
 use super::track_row::{self, Row, State};
@@ -35,10 +36,7 @@ pub fn tracks_view(
     ui.add_space(space::S3);
 
     match &library.tracks {
-        Load::Idle => {
-            ui.label(recipe::muted("Select a playlist.", tokens));
-            return None;
-        }
+        Load::Idle => return idle(ui, library, tokens),
         Load::Loading => {
             ui.spinner();
             return None;
@@ -122,6 +120,160 @@ pub fn tracks_view(
     });
 
     command
+}
+
+/// What the idle main view shows: the grid of playlists, or the state of the
+/// load that fetches them.
+///
+/// The main view is idle when no playlist is selected — the state `deselect`
+/// returns to. This reads that from the playlists' load alone: the tracks are
+/// already `Idle` by the time the branch that calls it is taken, so the grid
+/// never competes with the tracklist for a selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdleView<'a> {
+    /// The playlists are in flight, or have not been asked for yet.
+    Loading,
+    /// The fetch failed; the failure is what the retry needs.
+    Failed(Failure),
+    /// The fetch succeeded and the library holds no playlists.
+    Empty,
+    /// The fetch succeeded and the library holds these playlists.
+    Grid(&'a [PlaylistEntry]),
+}
+
+/// Reads the idle view from the playlists' load.
+///
+/// The two unstaged states are one `Loading`: a list nobody has asked for yet
+/// and a list being fetched both have nothing to draw, and the reference gives
+/// both the same treatment.
+pub fn idle_view(library: &Library) -> IdleView<'_> {
+    match &library.playlists {
+        Load::Idle | Load::Loading => IdleView::Loading,
+        Load::Failed(failure) => IdleView::Failed(*failure),
+        Load::Ready(playlists) if playlists.is_empty() => IdleView::Empty,
+        Load::Ready(playlists) => IdleView::Grid(playlists),
+    }
+}
+
+/// Draws the idle main view and returns the command its controls asked for.
+///
+/// This is the whole idle-grid wiring in one place: the `Load::Idle` arm calls
+/// it and nothing else does, so phase 4 can lift it out when it builds the
+/// library route. The copy and the retry are the sidebar's, reusing
+/// `library.reload()` so the two library surfaces recover the same way.
+fn idle(ui: &mut Ui, library: &mut Library, tokens: &Tokens) -> Option<Command> {
+    match idle_view(library) {
+        IdleView::Loading => {
+            // The sidebar's loading copy, so both library surfaces say the same
+            // thing while the list is fetched.
+            ui.label(recipe::muted("Loading your playlists…", tokens));
+            None
+        }
+        IdleView::Empty => {
+            ui.label(recipe::muted("No playlists yet.", tokens));
+            None
+        }
+        IdleView::Failed(failure) => {
+            ui.label(recipe::muted(
+                crate::signin::failure_message(failure),
+                tokens,
+            ));
+            // The sidebar retries a failed playlist load with `reload`; the
+            // grid offers the same recovery behind a control.
+            if ui.button("Retry").clicked() {
+                return Some(library.reload());
+            }
+            None
+        }
+        IdleView::Grid(entries) => {
+            // The borrow ends with this copy, so the click below can select
+            // through the library. The sidebar copies its list for the same
+            // reason.
+            let entries = entries.to_vec();
+            grid(ui, &entries, library, tokens)
+        }
+    }
+}
+
+/// The grid of playlist cards that fills the idle main view.
+///
+/// Every value is a token or a measure the painter owns: the minimum card
+/// width and the gap are tokens, and the height beyond the square art is what
+/// `card::extra_height` reports. The grid loads nothing on its own — the one
+/// click asks for tracks, through `library.select`.
+fn grid(
+    ui: &mut Ui,
+    entries: &[PlaylistEntry],
+    library: &mut Library,
+    tokens: &Tokens,
+) -> Option<Command> {
+    let mut picked: Option<String> = None;
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            let solved = card_grid(ui);
+            let list = grid_rect(ui, &solved, entries.len());
+            // The whole grid is reserved at once, so the scrollbar is right, and
+            // only the cards the viewport can show are laid out and given
+            // interaction.
+            ui.allocate_rect(list, Sense::hover());
+            let visible = ui.clip_rect();
+
+            for (index, entry) in entries.iter().enumerate() {
+                let rect = solved.card_rect(index);
+                if !visible.intersects(rect) {
+                    continue;
+                }
+                let card = card::Card {
+                    uri: &entry.uri,
+                    name: &entry.name,
+                    kind: "Playlist",
+                };
+                if card::show(ui, rect, &card, tokens) {
+                    picked = Some(entry.uri.clone());
+                }
+            }
+        });
+
+    picked.and_then(|uri| select_playlist(library, &uri))
+}
+
+/// The solved card grid for the current width and the tokens the reference
+/// gives a card.
+///
+/// The view and its tests both call this, so a card's place and a test's click
+/// cannot drift apart.
+fn card_grid(ui: &mut Ui) -> cards::Grid {
+    let area = Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), 0.0));
+    cards::grid(area, extent::CARD_MIN_W, space::S3, card::extra_height(ui))
+}
+
+/// The rect that holds every card: the width the grid solved and the rows'
+/// total height, gaps included.
+fn grid_rect(ui: &mut Ui, grid: &cards::Grid, count: usize) -> Rect {
+    let height = if count == 0 {
+        0.0
+    } else {
+        let rows = grid.rows(count);
+        rows as f32 * grid.card_rect(0).height() + (rows - 1) as f32 * space::S3
+    };
+    Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), height))
+}
+
+/// Starts a playlist's load from an idle-grid card click.
+///
+/// `Library::select` always starts a load and returns its command, and that is
+/// all this does. The grid is drawn only while the tracks are `Idle`, so the card
+/// under a click can never be the playlist whose tracks are already loading;
+/// there is nothing to suppress here.
+///
+/// `deselect()` is the one way the same playlist can be clicked again while its
+/// first fetch is still coming back: it clears the selection and resets the
+/// tracks to `Idle`, and the library keeps no record of the in-flight request, so
+/// the second click does start it again. The first reply is discarded as stale,
+/// so the repeat costs a fetch and nothing else.
+fn select_playlist(library: &mut Library, uri: &str) -> Option<Command> {
+    Some(library.select(uri))
 }
 
 /// The sum of the track lengths, in milliseconds, or zero when any length is
@@ -323,6 +475,45 @@ mod tests {
         library
     }
 
+    fn playlist(uri: &str, name: &str) -> PlaylistEntry {
+        PlaylistEntry {
+            uri: uri.to_owned(),
+            name: name.to_owned(),
+            named: true,
+        }
+    }
+
+    /// A library whose playlists are ready and whose tracks are untouched: the
+    /// idle state the grid fills.
+    fn library_idle(playlists: Vec<PlaylistEntry>) -> Library {
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(playlists));
+        library
+    }
+
+    /// The rect the idle grid draws the `index`-th card into, solved the same
+    /// way the view solves it: the leading space, then the grid at the current
+    /// width. Nothing here is a coordinate copied out of the view.
+    fn card_rect_for(ctx: &Context, index: usize) -> Rect {
+        let mut found = None;
+        run(ctx, input(Vec::new()), |ui| {
+            ui.add_space(space::S3);
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                let solved = card_grid(ui);
+                found = Some(solved.card_rect(index));
+            });
+        });
+        found.expect("the idle grid lays out")
+    }
+
+    /// The rect the idle grid draws the `index`-th card's play tile into at rest,
+    /// solved through the card's own placement rather than a copied coordinate.
+    /// The tile is drawn only once the card is revealed, so this is the rect a
+    /// click finds after hovering; the reveal only raises the tile from here.
+    fn card_play_rect_for(ctx: &Context, index: usize) -> Rect {
+        card::play_rect(card_rect_for(ctx, index))
+    }
+
     fn track_ms(uri: &str, duration_ms: u32) -> TrackEntry {
         TrackEntry {
             duration_ms: Some(duration_ms),
@@ -484,6 +675,54 @@ mod tests {
         queue: &mut Queue,
     ) -> Option<Command> {
         clicks(PROBE, ctx, centre, 1, library, transport, queue)
+    }
+
+    /// One click at `centre` after resting the pointer there for `hover_frames`
+    /// passes, and the command the view returned while the click happened.
+    ///
+    /// A card draws its play tile only once its reveal animation has run, and
+    /// that animation advances because each [`Context::run_ui`] carries
+    /// `input.time` forward by one `predicted_dt`. Pressing and releasing on the
+    /// same pass would click an unrevealed card, so the pointer is left on the
+    /// card until it is fully revealed first, which is what a real hover does.
+    fn click_after_hover(
+        screen: Vec2,
+        ctx: &Context,
+        centre: Pos2,
+        hover_frames: usize,
+        library: &mut Library,
+        transport: &mut Transport,
+        queue: &mut Queue,
+    ) -> Option<Command> {
+        let tokens = Tokens::DARK;
+        let mut command = None;
+        // Warm up so hit-testing has a previous pass to read, pointer away.
+        run(ctx, sized_input(screen, Vec::new()), |ui| {
+            let _ = tracks_view(ui, Table::Full, library, transport, queue, &tokens);
+        });
+        // Rest the pointer on the card until the reveal animation has finished.
+        for _ in 0..hover_frames {
+            run(
+                ctx,
+                sized_input(screen, vec![Event::PointerMoved(centre)]),
+                |ui| {
+                    let _ = tracks_view(ui, Table::Full, library, transport, queue, &tokens);
+                },
+            );
+        }
+        for event in [button(centre, true), button(centre, false)] {
+            let command = &mut command;
+            let library = &mut *library;
+            let transport = &mut *transport;
+            let queue = &mut *queue;
+            run(ctx, sized_input(screen, vec![event]), |ui| {
+                if let Some(next) = tracks_view(ui, Table::Full, library, transport, queue, &tokens)
+                {
+                    *command = Some(next);
+                }
+            });
+        }
+        command
     }
 
     /// One double click on `centre`, and the command the view returned while it
@@ -981,5 +1220,198 @@ mod tests {
             u32::MAX,
             "two maximal lengths saturate rather than wrap"
         );
+    }
+
+    #[test]
+    fn idle_view_reads_the_playlists_load() {
+        // A list nobody has asked for yet and a list in flight are one state:
+        // neither has anything to draw.
+        assert_eq!(idle_view(&Library::default()), IdleView::Loading);
+
+        let mut loading = Library::default();
+        loading.apply(&Update::SignedIn);
+        assert_eq!(idle_view(&loading), IdleView::Loading);
+
+        let mut failed = Library::default();
+        failed.apply(&Update::PlaylistFailed(Failure::Load));
+        assert_eq!(idle_view(&failed), IdleView::Failed(Failure::Load));
+
+        assert_eq!(idle_view(&library_idle(Vec::new())), IdleView::Empty);
+
+        let ready = library_idle(vec![playlist("a", "A"), playlist("b", "B")]);
+        let IdleView::Grid(entries) = idle_view(&ready) else {
+            panic!("ready playlists are a grid: {:?}", idle_view(&ready));
+        };
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].uri, "a");
+        assert_eq!(entries[1].uri, "b");
+    }
+
+    #[test]
+    fn a_click_on_a_card_loads_its_playlist() {
+        let ctx = context();
+        let mut library = library_idle(vec![playlist("a", "A"), playlist("b", "B")]);
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+
+        // The click is where the view draws the first card, not a probe's
+        // geometry.
+        let centre = card_rect_for(&ctx, 0).center();
+        let command = click(&ctx, centre, &mut library, &mut transport, &mut queue);
+
+        assert_eq!(
+            command,
+            Some(Command::LoadTracks {
+                playlist: "a".to_owned()
+            })
+        );
+        assert_eq!(library.selected(), Some("a"));
+        assert_eq!(library.tracks, Load::Loading);
+    }
+
+    #[test]
+    fn a_card_click_asks_for_tracks_once() {
+        // The whole click sequence twice: the first click selects the playlist
+        // and starts its load, and the second lands on the progress the view is
+        // showing instead of a card. Counting the commands the view reports is
+        // the assertion the single command in `a_click_on_a_card_loads_its_
+        // playlist` cannot make.
+        let ctx = context();
+        let tokens = Tokens::DARK;
+        let mut library = library_idle(vec![playlist("a", "A")]);
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let centre = card_rect_for(&ctx, 0).center();
+
+        run(&ctx, input(Vec::new()), |ui| {
+            let _ = tracks_view(
+                ui,
+                Table::Full,
+                &mut library,
+                &mut transport,
+                &mut queue,
+                &tokens,
+            );
+        });
+
+        let mut loads = 0;
+        for _ in 0..2 {
+            for event in [
+                Event::PointerMoved(centre),
+                button(centre, true),
+                button(centre, false),
+            ] {
+                run(&ctx, input(vec![event]), |ui| {
+                    if let Some(Command::LoadTracks { .. }) = tracks_view(
+                        ui,
+                        Table::Full,
+                        &mut library,
+                        &mut transport,
+                        &mut queue,
+                        &tokens,
+                    ) {
+                        loads += 1;
+                    }
+                });
+            }
+        }
+
+        assert_eq!(loads, 1, "two clicks on the same card must load it once");
+        assert_eq!(library.selected(), Some("a"));
+    }
+
+    #[test]
+    fn a_click_on_a_cards_play_tile_does_not_load_the_playlist() {
+        let ctx = context();
+        let mut library = library_idle(vec![playlist("a", "A")]);
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+
+        // The click is the centre of the tile the card itself places, after the
+        // pointer has rested on the card long enough for the reveal animation to
+        // have drawn it.
+        let tile = card_play_rect_for(&ctx, 0);
+        let command = click_after_hover(
+            PROBE,
+            &ctx,
+            tile.center(),
+            16,
+            &mut library,
+            &mut transport,
+            &mut queue,
+        );
+
+        assert_eq!(
+            command, None,
+            "a click on the waiting play tile must not fall through to the card"
+        );
+        assert_eq!(library.selected(), None, "the card must not be selected");
+        assert_eq!(library.tracks, Load::Idle, "the playlist must not load");
+    }
+
+    #[test]
+    fn the_card_height_the_grid_solves_contains_the_last_line_the_card_paints() {
+        let ctx = context();
+        let tokens = Tokens::DARK;
+        // A realistic card: the grid's own solve at the probe's width, so the
+        // rect's height is `card_w + card::extra_height`, the number the grid is
+        // given.
+        let rect = card_rect_for(&ctx, 0);
+        let card = card::Card {
+            uri: "a",
+            name: "Evening",
+            kind: "Playlist",
+        };
+        let mut output = ctx.run_ui(input(Vec::new()), |ui| {
+            let _ = card::show(ui, rect, &card, &tokens);
+        });
+        output.textures_delta.clear();
+
+        let last = output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Text(text) => Some(text.pos.y + text.galley.size().y),
+                _ => None,
+            })
+            .max_by(f32::total_cmp)
+            .expect("the card paints a name line and a kind line");
+
+        // The grid's card must contain the painter's lowest line, and it must
+        // leave no more than the layout's own `S2` below it. The first half
+        // catches an `extra_height` short enough to spill the line out of the
+        // card; the second catches the 16 points of slack left when the padding
+        // was counted against the art as well as against the card.
+        assert!(
+            last <= rect.bottom(),
+            "the last painted line ends at {last}, past the card's {}",
+            rect.bottom()
+        );
+        assert!(
+            rect.bottom() - last <= space::S2 + 0.5,
+            "the card leaves {} below its last line, more than the {} it lays out",
+            rect.bottom() - last,
+            space::S2
+        );
+    }
+
+    #[test]
+    fn deselect_returns_to_the_grid() {
+        let mut library = library_idle(vec![playlist("a", "A")]);
+        library.select("a");
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: vec![track("t", "t")],
+        });
+        library.deselect();
+
+        let IdleView::Grid(entries) = idle_view(&library) else {
+            panic!(
+                "deselect must return to the grid: {:?}",
+                idle_view(&library)
+            );
+        };
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].uri, "a");
     }
 }

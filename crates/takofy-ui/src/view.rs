@@ -4,6 +4,7 @@
 //! command when the user asks for one. It never transitions state itself.
 
 mod art;
+pub mod card;
 pub mod controls;
 mod hero;
 pub mod now_playing;

@@ -7,6 +7,7 @@ use egui::{Rect, pos2, vec2};
 
 use crate::theme::{extent, space};
 
+pub mod cards;
 pub mod hero;
 pub mod table;
 pub mod tracks;
