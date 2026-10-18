@@ -341,9 +341,6 @@ pub fn chip_in(
 
 /// A slider. `None` draws the track alone, which is what a bar with no known
 /// duration has to show rather than a position it cannot know.
-///
-/// Dragging arrives with the transport, which is what makes a position mean
-/// something to seek to.
 pub fn slider(
     ui: &mut Ui,
     tokens: &Tokens,
@@ -379,6 +376,15 @@ pub fn slider(
     }
 
     slot
+}
+
+/// The fraction across a track at `pointer_x`, clamped to `[0, 1]`. A zero
+/// width has no interior, so it reads as the start.
+pub fn fraction_at(pointer_x: f32, left: f32, width: f32) -> f32 {
+    if width <= 0.0 {
+        return 0.0;
+    }
+    ((pointer_x - left) / width).clamp(0.0, 1.0)
 }
 
 #[cfg(test)]
@@ -566,5 +572,15 @@ mod tests {
 
         tap(&ctx, ready.center(), &mut clicked);
         assert!(clicked.1, "the click harness never produced a click");
+    }
+
+    #[test]
+    fn fraction_at_clamps_to_the_track() {
+        assert_eq!(fraction_at(100.0, 100.0, 200.0), 0.0);
+        assert_eq!(fraction_at(150.0, 100.0, 200.0), 0.25);
+        assert_eq!(fraction_at(300.0, 100.0, 200.0), 1.0);
+        assert_eq!(fraction_at(400.0, 100.0, 200.0), 1.0);
+        assert_eq!(fraction_at(50.0, 100.0, 200.0), 0.0);
+        assert_eq!(fraction_at(150.0, 100.0, 0.0), 0.0);
     }
 }

@@ -72,7 +72,7 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
         });
     }
 
-    region(
+    command = command.or(region(
         ui,
         "playbar",
         grid.playbar,
@@ -81,13 +81,14 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
             playbar::show(
                 ui,
                 screen.transport,
+                screen.queue,
                 screen.position_ms,
                 regions.playbar,
                 ui.available_rect_before_wrap(),
                 tokens,
-            );
+            )
         },
-    );
+    ));
 
     // The drawer is stepped after the regions, so a playlist picked from the rail
     // closes it in the same frame it is picked.
@@ -185,7 +186,7 @@ fn region<R>(
 
 /// Runs `add` inside a left-to-right child at `rect`, so a control that
 /// allocates its own space still lands where the design wants it.
-pub(super) fn row_of(ui: &mut Ui, id: &str, rect: Rect, add: impl FnOnce(&mut Ui)) {
+pub(super) fn row_of<R>(ui: &mut Ui, id: &str, rect: Rect, add: impl FnOnce(&mut Ui) -> R) -> R {
     ui.scope_builder(
         UiBuilder::new()
             .id_salt(id)
@@ -193,14 +194,20 @@ pub(super) fn row_of(ui: &mut Ui, id: &str, rect: Rect, add: impl FnOnce(&mut Ui
             .layout(Layout::left_to_right(Align::Center)),
         |ui| {
             ui.set_clip_rect(rect);
-            add(ui);
+            add(ui)
         },
-    );
+    )
+    .inner
 }
 
 /// The same, named for the rows that hold a run of controls.
-pub(super) fn row_centred(ui: &mut Ui, id: &str, rect: Rect, add: impl FnOnce(&mut Ui)) {
-    row_of(ui, id, rect, add);
+pub(super) fn row_centred<R>(
+    ui: &mut Ui,
+    id: &str,
+    rect: Rect,
+    add: impl FnOnce(&mut Ui) -> R,
+) -> R {
+    row_of(ui, id, rect, add)
 }
 
 /// Paints a hairline rule inside `rect`.
