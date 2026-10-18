@@ -74,6 +74,10 @@ impl eframe::App for TakofyApp {
         }
     }
 
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        window_clear_color(&self.tokens)
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let position_ms = position_at(
             &self.transport.anchor(),
@@ -90,6 +94,12 @@ impl eframe::App for TakofyApp {
             let _ = self.ui_end.commands.send(command);
         }
     }
+}
+
+/// The window's background. The channels between panels read as the window
+/// colour, so the default translucent grey is not wanted.
+pub(crate) fn window_clear_color(tokens: &Tokens) -> [f32; 4] {
+    tokens.palette.window.to_normalized_gamma_f32()
 }
 
 /// Applies every queued update without blocking, and reports how many landed.
@@ -190,6 +200,15 @@ mod tests {
         assert_eq!(drain(&rx, &mut state, &mut library, &mut transport), 1);
         assert_eq!(state, SignIn::SignedIn);
         assert_eq!(drain(&rx, &mut state, &mut library, &mut transport), 0);
+    }
+
+    #[test]
+    fn the_clear_colour_is_the_window_token() {
+        let tokens = Tokens::DARK;
+        assert_eq!(
+            window_clear_color(&tokens),
+            tokens.palette.window.to_normalized_gamma_f32()
+        );
     }
 
     #[test]
