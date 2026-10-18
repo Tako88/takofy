@@ -15,8 +15,8 @@ public Web API, and there is no dashboard app behind it.
 
 Two properties of the public API force that. It hands out no audio stream, so a
 client built on it can only remote-control an official one. And a new dashboard
-app lands in Development Mode, capped at five users and, since February 2026,
-without the batch endpoints, so reading a 500-track playlist costs 500 requests.
+app lands in Development Mode, capped at five users and without the batch
+endpoints, so reading a 500-track playlist costs 500 requests.
 
 The price is a Premium account and a footing outside Spotify's developer terms.
 
@@ -24,13 +24,16 @@ The price is a Premium account and a footing outside Spotify's developer terms.
 
 | crate | does | never does |
 | --- | --- | --- |
+| `takofy-model` | holds plain data | depends on anything |
 | `takofy-core` | talks to Spotify | draws |
 | `takofy-ui` | draws | reaches the network |
-| `takofy` | owns threads, wiring, platform | either of the above |
+| `takofy` | owns threads, wiring, platform | talks to Spotify, or draws a widget |
 
 The split is enforced by the compiler, not by convention. `takofy-ui` does not
 depend on `takofy-core` or on librespot, so a view cannot reach the network by
-accident.
+accident. The two share only `takofy-model`, which has no dependencies at all.
+That is what lets the window hold the types it draws without the split ceasing
+to be a boundary.
 
 ## How data moves
 
@@ -41,24 +44,52 @@ The UI never calls into core. That keeps the crate boundary real, keeps the fram
 loop free of awaits, and keeps the cursor types that borrow a session out of the
 UI.
 
-The updates have to stay fine-grained. `Update::PlaylistLoaded(Vec<PlaylistEntry>)`
-is testable. `Update::State(Library)` is not: it moves the UI's state into core
-and leaves the reducer with nothing to assert. The first shape is what earns the
-boilerplate the second one avoids.
+The updates have to stay fine-grained. An update that reports one event is
+testable; one that carries the whole state is not: it moves the UI's state into
+core and leaves the reducer with nothing to assert. The first shape is what
+earns the boilerplate the second one avoids.
 
 ## Who owns what
 
-- The binary owns the `Engine`, the tokio runtime, and both channels.
+- The binary owns the tokio runtime, and the `Engine` in headless mode. In the
+  window, the command task owns the engine and the player, and the task's exit
+  path shuts both down.
+- The session work the task drives sits behind one seam, so the task's exit
+  paths can be exercised without a network or an audio device. A real `Playback`
+  needs a live session and an audio device, so the exit path would otherwise be
+  untestable.
+- The window's end of the bridge, `UiEnd`, is moved into the app and dropped
+  with it when the window closes.
+- `Worker` is owned outside the app, by the teardown that joins it. eframe drops
+  the app before `run_native` returns, so a `Worker` the app held would be gone
+  before shutdown could use it.
+- The waker is installed only once the window exists. An update that arrives
+  first waits in the channel, and the first frame drains it.
 - `Playback` is single-owner by design. `Player::drop` joins the player thread
   only when the last `Arc` drops, so a stray clone skips the join silently.
   `shutdown` enforces this with `Arc::try_unwrap` and reports `PlayerShared`.
 - librespot owns its playback threads. Nothing is shared behind a lock the UI
   could block on.
+- Playback events leave librespot on a task spawned on the runtime and reach the
+  window through one plain drain thread. That thread is detached, so it cannot
+  delay the runtime drop.
+
+Shutdown runs in a fixed order: the window closes, teardown tells the command
+task to stop, the task shuts the player down, and then the runtime drops. The
+player's shutdown is awaited, so the order ends in joining the player thread. It
+depends on `NativeOptions::run_and_return`, so that eframe returns instead of
+exiting the process; an exit would skip both teardown and the runtime drop.
+
+In the window, sign-in calls run on detached threads, not `spawn_blocking`:
+one parked on the browser callback can hold up the runtime drop, which waits
+on the blocking pool, and a detached thread dies with the process instead.
 
 ## Invariants
 
 - No token, auth code or credential reaches a log, a panic message or stdout.
-- No credential is written to disk. The refresh token lives in the OS keychain.
+- No credential is written to disk. The refresh token lives in the OS keychain;
+  there is no fallback to a file or to a store keyed by something the same user
+  can read.
 - `takofy-ui` does not link `takofy-core` or librespot.
 - The UI thread never blocks on I/O.
 
@@ -69,5 +100,8 @@ That suits a music player, which is lists and a transport bar rather than an
 animation showcase, and it has AccessKit support by default.
 
 What it costs: egui has no stylesheet. The token layer in
-`crates/takofy-ui/src/theme.rs` is therefore the only place a colour or size may
-be written, and `clippy.toml` fails the build on a literal anywhere else.
+`crates/takofy-ui/src/theme.rs` is therefore the only place a colour, spacing
+step, type size or radius is written, and `clippy.toml` fails the build on a
+`Color32` constructor anywhere else. Window geometry and the breakpoints that
+decide region visibility live in `crates/takofy-ui/src/layout.rs`, which
+expresses every region width in tokens.

@@ -19,7 +19,7 @@ pub const SCOPES: [&str; 4] = [
 /// The log target librespot-oauth logs tokens and auth codes under.
 pub const OAUTH_LOG_TARGET: &str = "librespot_oauth";
 
-const CALLBACK_MESSAGE: &str = "Login complete. You can close this tab and return to the terminal.";
+const CALLBACK_MESSAGE: &str = "Login complete. You can close this tab and return to Takofy.";
 
 /// Which redirect URI the browser flow uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

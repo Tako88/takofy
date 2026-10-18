@@ -5,10 +5,10 @@ use librespot::core::{Session, SessionConfig};
 
 use crate::context::{ContextError, Walker};
 use crate::credentials::AccessToken;
-use crate::model::{PlaylistEntry, TrackEntry};
 use crate::playback::{Playback, PlaybackError, PlaybackEvent};
 use crate::remote::{ROOTLIST_WIRE, RemoteContext, RemoteRootlist, label_playlists, label_tracks};
 use crate::rootlist::{RootlistError, fetch_all};
+use takofy_model::{PlaylistEntry, TrackEntry};
 
 /// Why an [`Engine`] operation failed.
 #[derive(Debug, thiserror::Error)]

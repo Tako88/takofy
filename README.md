@@ -20,10 +20,14 @@ Linux needs ALSA development headers (`alsa-lib-devel` on Fedora,
 
 ## Status
 
-Headless phase 1 runs: `cargo run` completes a PKCE login in the browser,
-stores the refresh token in the OS keychain, prints your rootlist, and plays a
-selected playlist track to its end. There is no window yet; `takofy-ui` still
-builds but the binary does not use it.
+The window is the default: `cargo run` opens it, completes the PKCE sign-in in
+the browser once, and stores the refresh token in the OS keychain. The sidebar
+lists your playlists; clicking one shows its tracks, double-clicking a track
+plays it, and the transport bar names what is playing with a position that
+advances. `cargo run -- --headless` still drives the terminal driver unchanged.
+
+Not there yet: search, folders, album art, and seeking or transport controls
+([#13](https://github.com/Tako88/takofy/issues/13)).
 
 ## Requirements
 
@@ -31,17 +35,20 @@ builds but the binary does not use it.
   which needs a Premium account. A free account fails with `track unavailable`.
 - **An OS keychain.** The refresh token is stored with the `keyring` crate:
   Windows Credential Manager, or a Secret Service provider on Linux (GNOME
-  Keyring, KWallet's Secret Service bridge, or another daemon). Without one the
-  program exits with an error and never writes a token to disk.
+  Keyring, KWallet's Secret Service bridge, or another daemon). Without one,
+  sign-in fails and no token is written to disk; `--headless` exits with that
+  error.
 - **An audio output device.** Playback probes the default device through rodio
-  before loading anything. With no device, `cargo run` prints
-  `no audio output device available` and exits with code 3.
+  before loading anything. With no device the window says so on the transport
+  bar; `--headless` prints `no audio output device available` and exits with
+  code 3.
 
 ## `--paste`
 
 Normal login opens `http://127.0.0.1:8898/login` in the browser. If that port
-is busy, or the redirect is rejected, `cargo run -- --paste` switches to the
-portless `http://127.0.0.1/login` and reads the pasted redirect URL from stdin.
+is busy, or the redirect is rejected, `cargo run -- --headless --paste` switches
+to the portless `http://127.0.0.1/login` and reads the pasted redirect URL from
+stdin.
 That portless redirect may not be registered for the client ID, so `--paste` is
 a last resort, not the primary path.
 
