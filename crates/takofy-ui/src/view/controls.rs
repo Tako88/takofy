@@ -69,12 +69,7 @@ pub fn slot(
     };
 
     if ready && response.has_focus() {
-        ui.painter().rect_stroke(
-            rect.expand(extent::FOCUS_OFFSET),
-            radius::SM,
-            Stroke::new(stroke::HAIRLINE, tokens.palette.accent),
-            StrokeKind::Outside,
-        );
+        focus_ring(ui, rect, tokens);
     }
 
     if ready && response.hovered() {
@@ -133,6 +128,19 @@ fn foreground(tokens: &Tokens, ready: bool, mix: f32) -> Color32 {
 
 fn ready(control: Control) -> bool {
     availability(control) == Availability::Ready
+}
+
+/// The ring a focused control wears.
+///
+/// Shared, because a library row is focusable too and rows are not controls: they
+/// are one per playlist, so they cannot come from the availability table.
+pub fn focus_ring(ui: &Ui, rect: Rect, tokens: &Tokens) {
+    ui.painter().rect_stroke(
+        rect.expand(extent::FOCUS_OFFSET),
+        radius::SM,
+        Stroke::new(stroke::HAIRLINE, tokens.palette.accent),
+        StrokeKind::Outside,
+    );
 }
 
 /// One line of text, laid out with the reference's letter spacing.

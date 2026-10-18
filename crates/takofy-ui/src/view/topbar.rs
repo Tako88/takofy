@@ -158,7 +158,9 @@ fn trail(ui: &mut Ui, crumbs: &[crate::trail::Crumb<'_>], rect: Rect, tokens: &T
                 tokens.palette.text,
             );
             ui.painter().galley(place.min, galley, color);
-        } else {
+        } else if crumb.link {
+            // One link crumb can exist at a time, which is why this is safe to
+            // name with a single control: two of them would share a widget id.
             let slot = controls::slot(
                 ui,
                 Control::TrailPlaylists,
@@ -169,6 +171,9 @@ fn trail(ui: &mut Ui, crumbs: &[crate::trail::Crumb<'_>], rect: Rect, tokens: &T
             );
             ui.painter().galley(place.min, galley, color);
             clicked |= slot.response.clicked();
+        } else {
+            // Home has no view to go back to, so it is text, not a control.
+            ui.painter().galley(place.min, galley, color);
         }
         x = place.right() + space::S2;
     }

@@ -67,6 +67,26 @@ mod tests {
         }
     }
 
+    /// Only one crumb may be a link, because the view names a link crumb with a
+    /// single `Control`, and two widgets cannot share a widget id. This is the
+    /// bug that drew egui's "second use of widget ID" warning over the trail the
+    /// moment a playlist was opened.
+    #[test]
+    fn at_most_one_crumb_is_a_link() {
+        let mut unselected = Library::default();
+        unselected.apply(&Update::Playlists(vec![playlist("a", "Mix")]));
+
+        let mut selected = Library::default();
+        selected.apply(&Update::Playlists(vec![playlist("a", "Mix")]));
+        selected.select("a");
+
+        for library in [unselected, selected] {
+            let crumbs = trail(&library);
+            let links = crumbs.iter().filter(|crumb| crumb.link).count();
+            assert!(links <= 1, "{links} link crumbs: {crumbs:?}");
+        }
+    }
+
     #[test]
     fn no_selection_gives_home_then_playlists_as_current() {
         let library = Library::default();

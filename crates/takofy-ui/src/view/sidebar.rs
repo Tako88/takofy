@@ -222,7 +222,7 @@ fn rows(ui: &mut Ui, rect: Rect, library: &mut Library, tokens: &Tokens) -> Opti
                                 let (_, row) =
                                     ui.allocate_space(Vec2::new(ui.available_width(), ROW_H));
                                 let selected = current.as_deref() == Some(entry.uri.as_str());
-                                if one(ui, row, &entry.name, selected, tokens) {
+                                if one(ui, row, &entry.uri, &entry.name, selected, tokens) {
                                     picked = Some(entry.uri.clone());
                                 }
                             }
@@ -247,10 +247,12 @@ fn rows(ui: &mut Ui, rect: Rect, library: &mut Library, tokens: &Tokens) -> Opti
 /// The tile stands in until covers are fetched. A selected row borrows the
 /// reference's language for the current navigation item — a raised fill and a
 /// bone rule at the left edge — because the reference defines no selected row.
-fn one(ui: &mut Ui, rect: Rect, name: &str, selected: bool, tokens: &Tokens) -> bool {
+fn one(ui: &mut Ui, rect: Rect, uri: &str, name: &str, selected: bool, tokens: &Tokens) -> bool {
+    // The uri, not the name: two playlists may share a name, and two widgets may
+    // not share an id.
     let response = ui.interact(
         rect,
-        ui.scope_id().with(("library-row", name)),
+        ui.scope_id().with(("library-row", uri)),
         Sense::click(),
     );
     response.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, selected, name));
@@ -312,6 +314,10 @@ fn one(ui: &mut Ui, rect: Rect, name: &str, selected: bool, tokens: &Tokens) -> 
         kind_line,
         tokens.palette.text_subtle,
     );
+
+    if response.has_focus() {
+        controls::focus_ring(ui, rect, tokens);
+    }
 
     response.clicked()
 }
