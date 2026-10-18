@@ -31,6 +31,8 @@ pub struct Slot {
     pub response: Response,
     /// 0 at rest, 1 fully hovered, eased. Always 0 while waiting.
     pub hover: f32,
+    /// Whether the control can act: its view exists *and* the moment allows it.
+    pub live: bool,
 }
 
 /// Wires one control's rect to its interaction and accessibility.
@@ -45,8 +47,13 @@ pub fn slot(
     rect: Rect,
     label: &str,
     tokens: &Tokens,
+    live: bool,
 ) -> Slot {
-    let ready = availability(control) == Availability::Ready;
+    // Two different facts meet here. `availability` is about the build and never
+    // changes; `live` is about the moment — nothing is queued, no track is
+    // loaded. A control that cannot act right now is offered exactly as a waiting
+    // one is: unfocusable, announced disabled, and drawn with the same tone.
+    let ready = availability(control) == Availability::Ready && live;
     let id = ui.scope_id().with(control);
     let sense = if ready {
         Sense::click()
@@ -76,7 +83,11 @@ pub fn slot(
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
 
-    Slot { response, hover }
+    Slot {
+        response,
+        hover,
+        live: ready,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -126,10 +137,6 @@ fn foreground(tokens: &Tokens, ready: bool, mix: f32) -> Color32 {
     }
 }
 
-fn ready(control: Control) -> bool {
-    availability(control) == Availability::Ready
-}
-
 /// The ring a focused control wears.
 ///
 /// Shared, because a library row is focusable too and rows are not controls: they
@@ -157,6 +164,10 @@ fn line(ui: &Ui, label: &str, font: FontId, color: Color32, spacing: f32) -> Arc
 }
 
 /// An icon-only button.
+/// A control's identity, its place, its glyph, its size, its label and whether it
+/// can act right now are six separate facts about one button; grouping them would
+/// invent a type that has no other use.
+#[expect(clippy::too_many_arguments, reason = "six facts about one button")]
 pub fn icon_button(
     ui: &mut Ui,
     tokens: &Tokens,
@@ -165,8 +176,9 @@ pub fn icon_button(
     icon: Icon,
     size: Size,
     label: &str,
+    live: bool,
 ) -> Slot {
-    let slot = slot(ui, control, Role::Button, rect, label, tokens);
+    let slot = slot(ui, control, Role::Button, rect, label, tokens, live);
     if let Some(fill) = wash(ui, tokens, slot.hover) {
         ui.painter().rect_filled(rect, radius::SM, fill);
     }
@@ -175,7 +187,7 @@ pub fn icon_button(
         icon,
         centred(ui, rect, size.side),
         size,
-        foreground(tokens, ready(control), slot.hover),
+        foreground(tokens, live, slot.hover),
     );
     slot
 }
@@ -184,6 +196,10 @@ pub fn icon_button(
 ///
 /// The frame stays put while the control is waiting, which is the whole point of
 /// drawing it at all.
+/// A control's identity, its place, its glyph, its size, its label and whether it
+/// can act right now are six separate facts about one button; grouping them would
+/// invent a type that has no other use.
+#[expect(clippy::too_many_arguments, reason = "six facts about one button")]
 pub fn round_button(
     ui: &mut Ui,
     tokens: &Tokens,
@@ -192,9 +208,10 @@ pub fn round_button(
     icon: Icon,
     size: Size,
     label: &str,
+    live: bool,
 ) -> Slot {
-    let slot = slot(ui, control, Role::Button, rect, label, tokens);
-    let live = ready(control);
+    let slot = slot(ui, control, Role::Button, rect, label, tokens, live);
+    let live = slot.live;
     let border = if live && slot.hover > 0.0 {
         tokens.palette.border_strong
     } else {
@@ -232,12 +249,12 @@ pub fn nav_item(
     icon: Icon,
     label: &str,
 ) -> Slot {
-    let slot = slot(ui, control, Role::Button, rect, label, tokens);
+    let slot = slot(ui, control, Role::Button, rect, label, tokens, true);
     if let Some(fill) = wash(ui, tokens, slot.hover) {
         ui.painter().rect_filled(rect, radius::SM, fill);
     }
 
-    let color = foreground(tokens, ready(control), slot.hover);
+    let color = foreground(tokens, slot.live, slot.hover);
     let glyph = match form {
         Sidebar::Rail => centred(ui, rect, Size::LG.side),
         Sidebar::Full => {
@@ -298,7 +315,7 @@ pub fn chip_in(
     label: &str,
     selected: bool,
 ) -> Slot {
-    let live = ready(control);
+    let live = availability(control) == Availability::Ready;
     let color = if live {
         tokens.palette.text_muted
     } else {
@@ -311,7 +328,7 @@ pub fn chip_in(
         color,
         crate::view::text::tracking_pts(text::XXS, tracking::WIDE),
     );
-    let slot = slot(ui, control, Role::Button, rect, label, tokens);
+    let slot = slot(ui, control, Role::Button, rect, label, tokens, true);
 
     let border = if selected {
         tokens.palette.text
@@ -348,8 +365,9 @@ pub fn slider(
     rect: Rect,
     fraction: Option<f32>,
     label: &str,
+    live: bool,
 ) -> Slot {
-    let slot = slot(ui, control, Role::Slider, rect, label, tokens);
+    let slot = slot(ui, control, Role::Slider, rect, label, tokens, live);
     let track = Rect::from_center_size(
         rect.center(),
         Vec2::new(rect.width(), extent::SLIDER_TRACK_H),
@@ -365,7 +383,7 @@ pub fn slider(
             tokens.palette.text,
         );
 
-        if ready(control) && (slot.hover > 0.0 || slot.response.has_focus()) {
+        if slot.live && (slot.hover > 0.0 || slot.response.has_focus()) {
             let thumb = Rect::from_center_size(
                 pos2(track.left() + width, rect.center().y),
                 Vec2::new(extent::SLIDER_THUMB_W, extent::SLIDER_H),
@@ -432,6 +450,7 @@ mod tests {
                 cell(0.0),
                 "Home",
                 &Tokens::DARK,
+                true,
             );
             sense = Some(slot.response.sense);
         });
@@ -452,12 +471,48 @@ mod tests {
                 cell(0.0),
                 "Toggle",
                 &Tokens::DARK,
+                true,
             );
             sense = Some(slot.response.sense);
         });
         let sense = sense.expect("the slot drew");
         assert!(sense.senses_click());
         assert!(sense.is_focusable());
+    }
+
+    /// A control whose view exists can still be unable to act — nothing is queued,
+    /// no track is loaded. It is offered exactly as a waiting one is: if it were
+    /// not, it would take Tab and announce itself as enabled while doing nothing.
+    #[test]
+    fn a_momentarily_inert_control_is_offered_like_a_waiting_one() {
+        let ctx = Context::default();
+        let mut offered = None;
+        run(&ctx, input(Vec::new()), |ui| {
+            let live = slot(
+                ui,
+                Control::DrawerToggle,
+                Role::Button,
+                cell(0.0),
+                "Toggle",
+                &Tokens::DARK,
+                true,
+            );
+            let inert = slot(
+                ui,
+                Control::DrawerToggle,
+                Role::Button,
+                cell(1.0),
+                "Toggle",
+                &Tokens::DARK,
+                false,
+            );
+            offered = Some((live.live, inert.live, inert.response.sense));
+        });
+        let (live, inert, sense) = offered.expect("both slots drew");
+        assert!(live, "a control that can act is live");
+        assert!(!inert, "one that cannot is not");
+        assert!(!sense.senses_click());
+        assert!(!sense.is_focusable());
     }
 
     #[test]
@@ -474,6 +529,7 @@ mod tests {
                 cell(0.0),
                 "Home",
                 &Tokens::DARK,
+                true,
             );
             assert!(ui.ctx().has_accesskit_node(slot.response.id));
             node = ui.ctx().accesskit_node_builder(slot.response.id, |node| {
@@ -515,6 +571,7 @@ mod tests {
                         cell(index as f32),
                         label,
                         &Tokens::DARK,
+                        true,
                     );
                     if slot.response.has_focus() {
                         focused.push(*control);
@@ -549,6 +606,7 @@ mod tests {
                         waiting,
                         "Home",
                         &Tokens::DARK,
+                        true,
                     );
                     let ready_slot = slot(
                         ui,
@@ -557,6 +615,7 @@ mod tests {
                         ready,
                         "Toggle",
                         &Tokens::DARK,
+                        true,
                     );
                     clicked.0 = waiting_slot.response.clicked();
                     clicked.1 = ready_slot.response.clicked();

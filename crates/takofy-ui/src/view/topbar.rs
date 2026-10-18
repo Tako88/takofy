@@ -51,6 +51,7 @@ pub fn show(
             Icon::Library,
             Size::LG,
             "Open your library",
+            true,
         )
         .response
     });
@@ -61,7 +62,7 @@ pub fn show(
             (Control::HistoryForward, Icon::ArrowRight, "Go forward"),
         ] {
             let rect = Rect::from_min_size(ui.cursor().min, Vec2::splat(extent::BUTTON));
-            controls::round_button(ui, tokens, control, rect, glyph, Size::BASE, label);
+            controls::round_button(ui, tokens, control, rect, glyph, Size::BASE, label, true);
             ui.advance_cursor_after_rect(Rect::from_min_size(
                 rect.min,
                 Vec2::new(extent::BUTTON + space::S1, extent::BUTTON),
@@ -168,6 +169,7 @@ fn trail(ui: &mut Ui, crumbs: &[crate::trail::Crumb<'_>], rect: Rect, tokens: &T
                 place,
                 crumb.label,
                 tokens,
+                true,
             );
             // A link brightens to full bone under the pointer, as the reference's
             // does. The width does not depend on the colour, so the galley is laid
@@ -244,6 +246,7 @@ fn search(ui: &mut Ui, rect: Rect, tokens: &Tokens) {
         rect,
         "Search",
         tokens,
+        true,
     );
 }
 
@@ -278,5 +281,6 @@ fn account(ui: &mut Ui, rect: Rect, tokens: &Tokens) {
         rect,
         "Account",
         tokens,
+        true,
     );
 }

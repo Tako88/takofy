@@ -159,7 +159,14 @@ fn now_column(ui: &mut Ui, transport: &Transport, tokens: &Tokens, form: Playbar
     }
 
     let mut x = ui.max_rect().right() - controls;
-    draw_run(ui, tokens, now_controls(form), &mut x, art.center().y);
+    draw_run(
+        ui,
+        tokens,
+        now_controls(form),
+        &mut x,
+        art.center().y,
+        &|_| true,
+    );
 }
 
 /// The transport row and the progress row beneath it. The command is applied
@@ -181,7 +188,14 @@ fn centre_column(
     let width = 2.0 * run_width(&down) + extent::BUTTON_LG;
     let mut x = ui.max_rect().center().x - width / 2.0;
 
-    let mut clicked = draw_run(ui, tokens, &down, &mut x, top + extent::BUTTON / 2.0);
+    let mut clicked = draw_run(
+        ui,
+        tokens,
+        &down,
+        &mut x,
+        top + extent::BUTTON / 2.0,
+        &|control| control != Control::Previous || queue.can_previous(),
+    );
 
     let play = Rect::from_min_size(Pos2::new(x, top), Vec2::splat(extent::BUTTON_LG));
     let play_slot = controls::round_button(
@@ -192,13 +206,21 @@ fn centre_column(
         play_glyph(transport.state),
         Size::MD,
         "Play",
+        queue.can_toggle(),
     );
     if play_slot.response.clicked() {
         clicked = Some(Control::PlayPause);
     }
     x = play.right() + space::S1;
 
-    if let Some(control) = draw_run(ui, tokens, &up, &mut x, top + extent::BUTTON / 2.0) {
+    if let Some(control) = draw_run(
+        ui,
+        tokens,
+        &up,
+        &mut x,
+        top + extent::BUTTON / 2.0,
+        &|control| control != Control::Next || queue.can_next(),
+    ) {
         clicked = Some(control);
     }
 
@@ -236,6 +258,7 @@ fn centre_column(
         track,
         transport.fraction(position_ms),
         "Seek",
+        transport.seekable(),
     );
 
     let remaining = match transport.duration_ms {
@@ -320,6 +343,7 @@ fn extras_column(ui: &mut Ui, tokens: &Tokens, form: Playbar) {
         controls,
         &mut x,
         ui.cursor().min.y + extent::PLAYBAR_ART / 2.0,
+        &|_| true,
     );
 }
 
@@ -331,6 +355,7 @@ fn draw_run(
     controls: &[(Control, Icon)],
     x: &mut f32,
     centre_y: f32,
+    can_act: &dyn Fn(Control) -> bool,
 ) -> Option<Control> {
     let mut clicked = None;
     for (index, (control, glyph)) in controls.iter().enumerate() {
@@ -343,7 +368,7 @@ fn draw_run(
                 Pos2::new(*x, centre_y - extent::SLIDER_H / 2.0),
                 Vec2::new(extent::VOLUME_W, extent::SLIDER_H),
             );
-            let slot = controls::slider(ui, tokens, *control, rect, Some(0.7), "Volume");
+            let slot = controls::slider(ui, tokens, *control, rect, Some(0.7), "Volume", true);
             if slot.response.clicked() {
                 clicked = Some(*control);
             }
@@ -353,7 +378,16 @@ fn draw_run(
                 Pos2::new(*x, centre_y - extent::BUTTON / 2.0),
                 Vec2::splat(extent::BUTTON),
             );
-            let slot = controls::icon_button(ui, tokens, *control, rect, *glyph, Size::MD, "");
+            let slot = controls::icon_button(
+                ui,
+                tokens,
+                *control,
+                rect,
+                *glyph,
+                Size::MD,
+                "",
+                can_act(*control),
+            );
             if slot.response.clicked() {
                 clicked = Some(*control);
             }
@@ -439,6 +473,7 @@ mod tests {
                 icon,
                 Size::MD,
                 label,
+                true,
             )
         };
         neighbour(ui, 0.0, Control::Previous, Icon::Previous, "Previous");
@@ -452,6 +487,7 @@ mod tests {
             track,
             transport.fraction(0),
             "Seek",
+            true,
         );
         if !seek.response.has_focus() {
             seek.response.request_focus();

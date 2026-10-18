@@ -142,6 +142,7 @@ fn library_block(
         Icon::ArrowRight,
         Size::MD,
         "Expand your library",
+        true,
     );
     let create = Rect::from_min_size(
         Pos2::new(expand.left() - extent::BUTTON - space::S1, expand.top()),
@@ -155,6 +156,7 @@ fn library_block(
         Icon::Plus,
         Size::MD,
         "Create playlist or folder",
+        true,
     );
     y = row.bottom() + space::S2;
 
