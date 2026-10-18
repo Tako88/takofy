@@ -20,6 +20,8 @@ pub enum Command {
     Resume,
     /// Stop playback.
     Stop,
+    /// Jump to `position_ms` within the loaded track.
+    Seek { position_ms: u32 },
     /// Fetch the playlists again.
     ReloadLibrary,
 }
@@ -54,6 +56,10 @@ pub enum TransportUpdate {
     Unavailable,
     /// Playback was stopped on request.
     Stopped,
+    /// A track is loaded and this is how long it is.
+    Duration { duration_ms: u32 },
+    /// The player jumped to `position_ms` within the loaded track.
+    Seeked { position_ms: u32 },
     /// The command could not be carried out; carries no detail.
     Failed(Failure),
 }

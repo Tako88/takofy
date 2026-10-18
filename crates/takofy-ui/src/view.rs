@@ -17,6 +17,7 @@ use crate::drawer::Drawer;
 use crate::library::Library;
 use crate::message::Command;
 use crate::player::Transport;
+use crate::queue::Queue;
 use crate::signin::{SignIn, failure_message};
 use crate::theme::{Tokens, space};
 
@@ -25,6 +26,7 @@ pub struct Screen<'a> {
     pub state: &'a mut SignIn,
     pub library: &'a mut Library,
     pub transport: &'a mut Transport,
+    pub queue: &'a mut Queue,
     pub drawer: &'a mut Drawer,
     pub position_ms: u32,
 }

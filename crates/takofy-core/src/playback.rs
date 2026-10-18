@@ -8,6 +8,7 @@
 use std::sync::Arc;
 
 use librespot::core::{Session, SpotifyUri};
+use librespot::metadata::audio::item::AudioItem;
 use librespot::playback::audio_backend::{self, SinkBuilder};
 use librespot::playback::config::{AudioFormat, PlayerConfig};
 use librespot::playback::mixer::NoOpVolume;
@@ -29,6 +30,16 @@ pub enum PlaybackEvent {
     Unavailable,
     /// The player was stopped on request.
     Stopped,
+    /// A track is loaded and this is how long it is.
+    Duration { duration_ms: u32 },
+    /// The player jumped to `position_ms` within the loaded track.
+    Seeked { position_ms: u32 },
+}
+
+/// A track's length, read off the audio item so the mapping below stays one
+/// line and the test can name a duration without the item's other fields.
+fn duration_of(audio_item: &AudioItem) -> u32 {
+    audio_item.duration_ms
 }
 
 /// Maps a librespot event, dropping everything with no meaning for a CLI.
@@ -44,6 +55,12 @@ pub fn map_event(event: &PlayerEvent) -> Option<PlaybackEvent> {
         PlayerEvent::EndOfTrack { .. } => Some(PlaybackEvent::Ended),
         PlayerEvent::Unavailable { .. } => Some(PlaybackEvent::Unavailable),
         PlayerEvent::Stopped { .. } => Some(PlaybackEvent::Stopped),
+        PlayerEvent::TrackChanged { audio_item } => Some(PlaybackEvent::Duration {
+            duration_ms: duration_of(audio_item),
+        }),
+        PlayerEvent::Seeked { position_ms, .. } => Some(PlaybackEvent::Seeked {
+            position_ms: *position_ms,
+        }),
         _ => None,
     }
 }
@@ -88,7 +105,9 @@ pub fn drive(
             PlaybackEvent::Stopped => Some(Outcome::Stopped),
             PlaybackEvent::Loading
             | PlaybackEvent::Playing { .. }
-            | PlaybackEvent::Paused { .. } => None,
+            | PlaybackEvent::Paused { .. }
+            | PlaybackEvent::Duration { .. }
+            | PlaybackEvent::Seeked { .. } => None,
         };
         on_event(&event);
         if let Some(outcome) = terminal {
@@ -144,6 +163,12 @@ impl Playback {
         }
         self.player.load(parsed, true, 0);
         Ok(())
+    }
+
+    /// Jumps within the loaded track. Only a loaded track can be jumped in;
+    /// while loading it restarts the load at that position.
+    pub fn seek(&self, position_ms: u32) {
+        self.player.seek(position_ms);
     }
 
     /// Pauses playback, keeping the loaded track.
@@ -208,9 +233,11 @@ mod tests {
     use std::sync::Arc;
 
     use librespot::core::SpotifyUri;
+    use librespot::metadata::artist::ArtistsWithRole;
+    use librespot::metadata::audio::{AudioFiles, AudioItem, UniqueFields};
     use librespot::playback::player::PlayerEvent;
 
-    use super::{Outcome, PlaybackError, PlaybackEvent, drive, into_sole, map_event};
+    use super::{Outcome, PlaybackError, PlaybackEvent, drive, duration_of, into_sole, map_event};
 
     fn track() -> SpotifyUri {
         SpotifyUri::from_uri("spotify:track:4uLU6hMCjMI75M1A2tKUQC").expect("valid track uri")
@@ -277,6 +304,98 @@ mod tests {
             track_id: track(),
         };
         assert_eq!(map_event(&event), Some(PlaybackEvent::Stopped));
+    }
+
+    /// An item with only the fields a test needs; a real one comes from the
+    /// network, and a test must not need the network to name a duration.
+    fn audio_item(duration_ms: u32) -> AudioItem {
+        AudioItem {
+            track_id: track(),
+            uri: "spotify:track:4uLU6hMCjMI75M1A2tKUQC".to_owned(),
+            files: AudioFiles::default(),
+            name: "A title".to_owned(),
+            covers: Vec::new(),
+            language: Vec::new(),
+            duration_ms,
+            is_explicit: false,
+            availability: Ok(()),
+            alternatives: None,
+            unique_fields: UniqueFields::Track {
+                artists: ArtistsWithRole::default(),
+                album: String::new(),
+                album_artists: Vec::new(),
+                popularity: 0,
+                number: 0,
+                disc_number: 0,
+            },
+        }
+    }
+
+    #[test]
+    fn track_changed_maps_to_duration() {
+        let event = PlayerEvent::TrackChanged {
+            audio_item: Box::new(audio_item(222_000)),
+        };
+        assert_eq!(
+            map_event(&event),
+            Some(PlaybackEvent::Duration {
+                duration_ms: 222_000
+            }),
+        );
+    }
+
+    #[test]
+    fn seeked_maps_with_position() {
+        let event = PlayerEvent::Seeked {
+            play_request_id: 0,
+            track_id: track(),
+            position_ms: 41_000,
+        };
+        assert_eq!(
+            map_event(&event),
+            Some(PlaybackEvent::Seeked {
+                position_ms: 41_000
+            }),
+        );
+    }
+
+    #[test]
+    fn duration_and_seeked_are_not_terminal() {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        tx.send(PlaybackEvent::Duration {
+            duration_ms: 222_000,
+        })
+        .expect("send duration");
+        tx.send(PlaybackEvent::Seeked {
+            position_ms: 41_000,
+        })
+        .expect("send seeked");
+        // `drive` runs until the channel closes; without dropping the sender this
+        // waits for a close that never comes, and the test hangs rather than fails.
+        drop(tx);
+        let mut seen = Vec::new();
+        let outcome = drive(rx, |event| seen.push(*event));
+        assert_eq!(
+            seen,
+            vec![
+                PlaybackEvent::Duration {
+                    duration_ms: 222_000
+                },
+                PlaybackEvent::Seeked {
+                    position_ms: 41_000
+                },
+            ],
+            "both are reported",
+        );
+        assert!(
+            outcome.is_err(),
+            "the drain ends only when the player's channel closes",
+        );
+    }
+
+    #[test]
+    fn duration_of_reads_the_audio_item() {
+        assert_eq!(duration_of(&audio_item(180_000)), 180_000);
     }
 
     #[test]

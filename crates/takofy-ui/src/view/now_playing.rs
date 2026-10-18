@@ -51,6 +51,7 @@ pub fn show(ui: &mut Ui, transport: &Transport, tokens: &Tokens) {
         Icon::More,
         Size::MD,
         "More",
+        true,
     );
 
     // The art slot: the largest square the panel can hold, up to the reference's

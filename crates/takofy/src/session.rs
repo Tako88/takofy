@@ -66,6 +66,9 @@ pub(crate) trait SessionHost: Send + 'static {
 
     fn play(&mut self, uri: &str) -> Result<(), SessionError>;
 
+    /// Jumps within the loaded track. A call with no player is a no-op.
+    fn seek(&self, position_ms: u32);
+
     /// The event stream of a player started since the last call, so the one
     /// drain thread can be handed it exactly once.
     fn take_events(&mut self) -> Option<UnboundedReceiver<PlaybackEvent>>;
@@ -164,6 +167,12 @@ impl SessionHost for LiveSession {
     fn resume(&self) {
         if let Some(playback) = &self.playback {
             playback.resume();
+        }
+    }
+
+    fn seek(&self, position_ms: u32) {
+        if let Some(playback) = &self.playback {
+            playback.seek(position_ms);
         }
     }
 

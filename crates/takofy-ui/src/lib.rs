@@ -9,6 +9,7 @@ pub mod layout;
 pub mod library;
 pub mod message;
 pub mod player;
+pub mod queue;
 pub mod signin;
 pub mod theme;
 pub mod trail;
