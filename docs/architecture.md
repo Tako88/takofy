@@ -49,6 +49,15 @@ testable; one that carries the whole state is not: it moves the UI's state into
 core and leaves the reducer with nothing to assert. The first shape is what
 earns the boilerplate the second one avoids.
 
+Playback events carry the loaded track's duration and the position a seek
+landed on, so the window can draw the time left and follow the player's truth
+rather than a guess. The play queue is a window reducer too: it owns the index
+and the advance rule, folds the same updates the transport does, and hands back
+an ordinary `Play`, so the worker stays a dumb executor and never learns about
+the queue. None of this changes the shutdown order — the command task still
+owns the engine and the player, and teardown still joins it before the runtime
+drops.
+
 ## Who owns what
 
 - The binary owns the tokio runtime, and the `Engine` in headless mode. In the
