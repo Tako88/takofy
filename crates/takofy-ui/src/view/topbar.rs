@@ -133,12 +133,12 @@ fn trail(ui: &mut Ui, crumbs: &[crate::trail::Crumb<'_>], rect: Rect, tokens: &T
             x = at.x + separator.size().x + space::S2;
         }
 
-        let color = if crumb.current {
+        let base = if crumb.current {
             tokens.palette.text
         } else {
             tokens.palette.text_muted
         };
-        let galley = recipe::spaced(ui, crumb.label, font.clone(), color, spacing);
+        let galley = recipe::spaced(ui, crumb.label, font.clone(), base, spacing);
         let width = galley.size().x.min((rect.right() - x).max(0.0));
         let place = Rect::from_min_size(
             Pos2::new(x, rect.center().y - galley.size().y / 2.0),
@@ -157,7 +157,7 @@ fn trail(ui: &mut Ui, crumbs: &[crate::trail::Crumb<'_>], rect: Rect, tokens: &T
                 radius::SM,
                 tokens.palette.text,
             );
-            ui.painter().galley(place.min, galley, color);
+            ui.painter().galley(place.min, galley, base);
         } else if crumb.link {
             // One link crumb can exist at a time, which is why this is safe to
             // name with a single control: two of them would share a widget id.
@@ -169,11 +169,20 @@ fn trail(ui: &mut Ui, crumbs: &[crate::trail::Crumb<'_>], rect: Rect, tokens: &T
                 crumb.label,
                 tokens,
             );
+            // A link brightens to full bone under the pointer, as the reference's
+            // does. The width does not depend on the colour, so the galley is laid
+            // out again only once the hover is known.
+            let color = base.lerp_to_gamma(tokens.palette.text, slot.hover);
+            let galley = if color == base {
+                galley
+            } else {
+                recipe::spaced(ui, crumb.label, font.clone(), color, spacing)
+            };
             ui.painter().galley(place.min, galley, color);
             clicked |= slot.response.clicked();
         } else {
             // Home has no view to go back to, so it is text, not a control.
-            ui.painter().galley(place.min, galley, color);
+            ui.painter().galley(place.min, galley, base);
         }
         x = place.right() + space::S2;
     }
