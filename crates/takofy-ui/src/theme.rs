@@ -130,6 +130,7 @@ impl MonoWeight {
 pub mod extent {
     pub const SIDEBAR_W: f32 = 256.0;
     pub const NOWPLAYING_W: f32 = 312.0;
+    pub const NOWPLAYING_NARROW_W: f32 = 272.0;
     pub const PLAYBAR_H: f32 = 64.0;
     pub const TOPBAR_H: f32 = 56.0;
     pub const SIDEBAR_RAIL_W: f32 = 64.0;
@@ -331,6 +332,11 @@ mod tests {
             let ratio = contrast_ratio(color, p.surface);
             assert!(ratio >= 4.5, "{name} is {ratio:.2}:1 on surface, below AA");
         }
+    }
+
+    #[test]
+    fn the_narrow_now_playing_is_narrower_than_the_wide_one() {
+        const { assert!(extent::NOWPLAYING_NARROW_W < extent::NOWPLAYING_W) };
     }
 
     #[test]
