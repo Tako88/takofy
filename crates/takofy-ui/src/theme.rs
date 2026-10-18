@@ -235,6 +235,34 @@ pub mod hero {
     pub const TITLE_VW: f32 = 0.045;
 }
 
+/// The equaliser that stands in for a playing row's number.
+///
+/// Three bars, each starting its pulse a little after the one before it, so the
+/// group reads as one movement rather than three. A held track stops the pulse
+/// where it is; it does not clear the bars, because the track is still the one
+/// the transport is on.
+pub mod eq {
+    /// How many bars there are, left to right.
+    pub const BARS: usize = 3;
+    /// A bar's width, 2 px.
+    pub const BAR_W: f32 = 2.0;
+    /// The gap between two bars, 2 px.
+    pub const GAP: f32 = 2.0;
+    /// The tallest a bar is drawn, 0.8125 rem.
+    pub const H: f32 = 13.0;
+    /// How far behind the previous bar each bar starts, 220 ms.
+    pub const DELAY: f32 = 0.22;
+    /// One pulse, 900 ms.
+    pub const PULSE: f32 = 0.9;
+    /// How often the pulse asks for a redraw, in seconds: one frame at 60 Hz.
+    /// The pulse is the one thing on screen that is never still, and the window's
+    /// steady redraw is an order of magnitude slower than this.
+    pub const FRAME: f32 = 0.016;
+    /// The shortest a bar gets, a quarter of its height. A bar shrinks and grows
+    /// again; it never disappears.
+    pub const MIN_SCALE: f32 = 0.25;
+}
+
 /// The sprite's own geometry.
 ///
 /// The reference draws every glyph on a 24-unit viewBox and strokes it at a
@@ -629,6 +657,19 @@ mod tests {
     #[test]
     fn the_hero_play_tile_is_larger_than_a_card_tile() {
         const { assert!(extent::CARD_PLAY < hero::PLAY) };
+    }
+
+    #[test]
+    fn the_equaliser_bars_shrink_and_grow_without_vanishing() {
+        const { assert!(eq::MIN_SCALE > 0.0) };
+        const { assert!(eq::MIN_SCALE < 1.0) };
+        // A bar is a bar, not a square.
+        const { assert!(eq::BAR_W < eq::H) };
+        // The last bar starts inside the first bar's own pulse, so the group is
+        // one movement and not a wave chasing its own tail.
+        const { assert!((eq::BARS as f32 - 1.0) * eq::DELAY < eq::PULSE) };
+        // A frame is a fraction of a pulse, or the picture would skip.
+        const { assert!(eq::FRAME < eq::PULSE / 8.0) };
     }
 
     #[test]

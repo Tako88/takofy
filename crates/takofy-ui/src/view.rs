@@ -3,6 +3,7 @@
 //! The view reads the state machine and the tokens it is handed, and returns a
 //! command when the user asks for one. It never transitions state itself.
 
+mod art;
 pub mod controls;
 pub mod now_playing;
 pub mod playbar;
@@ -11,6 +12,7 @@ mod shell;
 pub mod sidebar;
 pub mod text;
 pub mod topbar;
+mod track_row;
 
 use egui::{Align, Button, Layout, Ui};
 

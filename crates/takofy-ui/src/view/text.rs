@@ -99,6 +99,24 @@ pub fn library_kind(label: &str, tokens: &Tokens) -> RichText {
         .color(tokens.palette.text_subtle)
 }
 
+/// A track row's title, in the interface face at 500.
+pub fn track_name() -> FontId {
+    FontId::new(text::BASE, fonts::sans(Weight::Medium))
+}
+
+/// A track row's artist and album, which sit under the title and beside it.
+pub fn track_secondary() -> FontId {
+    FontId::new(text::SM, fonts::sans(Weight::Regular))
+}
+
+/// A track row's numbers: the index, the date added, the duration.
+///
+/// Monospace, so the digits line up down the column and a duration reads as a
+/// quantity rather than as prose.
+pub fn track_mono(size: f32) -> FontId {
+    FontId::new(size, fonts::mono(MonoWeight::Regular))
+}
+
 /// A playbar readout: the position, its end, the state, the artist line.
 pub fn readout(label: &str, tokens: &Tokens) -> RichText {
     RichText::new(label)

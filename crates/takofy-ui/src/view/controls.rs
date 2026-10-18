@@ -8,6 +8,7 @@
 //! The focus ring is drawn here too, because every control wants the same one
 //! and only the slot knows the control has focus.
 
+use std::hash::Hash;
 use std::sync::Arc;
 
 use egui::emath::GuiRounding;
@@ -40,9 +41,39 @@ pub struct Slot {
 /// `role` is a parameter because the search field is a `Role::SearchInput` and
 /// not a button. `tokens` is needed for the focus ring's accent, which is not a
 /// field of egui's `Visuals`.
+///
+/// The id is `(control, ())`, which hashes the same as the control alone, so a
+/// control that appears once keeps the id it always had.
 pub fn slot(
     ui: &mut Ui,
     control: Control,
+    role: Role,
+    rect: Rect,
+    label: &str,
+    tokens: &Tokens,
+    live: bool,
+) -> Slot {
+    slot_keyed(ui, control, (), role, rect, label, tokens, live)
+}
+
+/// Wires one control's rect to its interaction and accessibility, keyed.
+///
+/// A control that appears once can use `slot`. One that appears once per row —
+/// a like or a more — must pass a key, because `availability` and the id would
+/// otherwise be identical for every row and every row would share one hover,
+/// one focus node and one AccessKit node.
+///
+/// `role` is a parameter because the search field is a `Role::SearchInput` and
+/// not a button. `tokens` is needed for the focus ring's accent, which is not a
+/// field of egui's `Visuals`.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a control needs its identity, place, label and state"
+)]
+pub fn slot_keyed(
+    ui: &mut Ui,
+    control: Control,
+    key: impl Hash + std::fmt::Debug,
     role: Role,
     rect: Rect,
     label: &str,
@@ -54,7 +85,7 @@ pub fn slot(
     // loaded. A control that cannot act right now is offered exactly as a waiting
     // one is: unfocusable, announced disabled, and drawn with the same tone.
     let ready = availability(control) == Availability::Ready && live;
-    let id = ui.scope_id().with(control);
+    let id = ui.scope_id().with((control, key));
     let sense = if ready {
         // Draggable as well as clickable: the seek bar is scrubbed, and a press and
         // release without movement is still a click.
@@ -180,7 +211,30 @@ pub fn icon_button(
     label: &str,
     live: bool,
 ) -> Slot {
-    let slot = slot(ui, control, Role::Button, rect, label, tokens, live);
+    icon_button_keyed(ui, tokens, control, (), rect, icon, size, label, live)
+}
+
+/// An icon button that appears once per row.
+///
+/// A row's like and more are one control type repeated down a list, so they have
+/// to carry a key or every row would share one hover, one focus node and one
+/// AccessKit node. It paints exactly what `icon_button` paints.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the same facts as a button, plus which row it belongs to"
+)]
+pub fn icon_button_keyed(
+    ui: &mut Ui,
+    tokens: &Tokens,
+    control: Control,
+    key: impl Hash + std::fmt::Debug,
+    rect: Rect,
+    icon: Icon,
+    size: Size,
+    label: &str,
+    live: bool,
+) -> Slot {
+    let slot = slot_keyed(ui, control, key, Role::Button, rect, label, tokens, live);
     if let Some(fill) = wash(ui, tokens, slot.hover) {
         ui.painter().rect_filled(rect, radius::SM, fill);
     }
@@ -633,6 +687,71 @@ mod tests {
 
         tap(&ctx, ready.center(), &mut clicked);
         assert!(clicked.1, "the click harness never produced a click");
+    }
+
+    #[test]
+    fn keyed_slots_on_one_control_are_distinct_per_key() {
+        let ctx = Context::default();
+        let keys = ["a", "b", "c", "d", "e", "f", "g", "h"];
+        let mut ids = Vec::new();
+        run(&ctx, input(Vec::new()), |ui| {
+            for (index, key) in keys.iter().enumerate() {
+                let slot = slot_keyed(
+                    ui,
+                    Control::TrackLike,
+                    *key,
+                    Role::Button,
+                    cell(index as f32),
+                    "Like",
+                    &Tokens::DARK,
+                    true,
+                );
+                ids.push(slot.response.id);
+            }
+        });
+        assert_eq!(ids.len(), keys.len());
+        for i in 0..ids.len() {
+            for j in (i + 1)..ids.len() {
+                assert!(
+                    ids[i] != ids[j],
+                    "keys {} and {} share an id",
+                    keys[i],
+                    keys[j]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_unit_key_reproduces_the_existing_slot_id() {
+        let ctx = Context::default();
+        let mut ids = (None, None, None);
+        run(&ctx, input(Vec::new()), |ui| {
+            let keyed = slot_keyed(
+                ui,
+                Control::TrackLike,
+                (),
+                Role::Button,
+                cell(0.0),
+                "Like",
+                &Tokens::DARK,
+                true,
+            );
+            let plain = slot(
+                ui,
+                Control::TrackLike,
+                Role::Button,
+                cell(1.0),
+                "Like",
+                &Tokens::DARK,
+                true,
+            );
+            let raw = ui.scope_id().with(Control::TrackLike);
+            ids = (Some(keyed.response.id), Some(plain.response.id), Some(raw));
+        });
+        let (keyed, plain, raw) = ids;
+        assert_eq!(keyed, plain, "slot no longer delegates with the unit key");
+        assert_eq!(keyed, raw, "the keyed id moved the existing control ids");
     }
 
     #[test]

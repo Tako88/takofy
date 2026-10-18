@@ -36,10 +36,17 @@ pub enum Control {
     Mute,
     Volume,
     Fullscreen,
+    TrackLike,
+    TrackMore,
+    HeroShuffle,
+    HeroLike,
+    HeroMore,
+    HeroPlay,
+    Authorize,
 }
 
 impl Control {
-    pub const ALL: [Self; 29] = [
+    pub const ALL: [Self; 36] = [
         Self::NavHome,
         Self::NavSearch,
         Self::LibraryCreate,
@@ -69,6 +76,13 @@ impl Control {
         Self::Mute,
         Self::Volume,
         Self::Fullscreen,
+        Self::TrackLike,
+        Self::TrackMore,
+        Self::HeroShuffle,
+        Self::HeroLike,
+        Self::HeroMore,
+        Self::HeroPlay,
+        Self::Authorize,
     ];
 }
 
@@ -124,6 +138,22 @@ pub fn availability(control: Control) -> Availability {
         Control::Mute => Availability::Waiting,
         Control::Volume => Availability::Waiting,
         Control::Fullscreen => Availability::Waiting,
+
+        // A row's like and more are not the playbar's like or the Now Playing
+        // more: they act on another track and must carry their own ids. Both
+        // are drawn but have no command yet (Q5(a)).
+        Control::TrackLike => Availability::Waiting,
+        Control::TrackMore => Availability::Waiting,
+
+        // The hero's tools have no command yet. Its play has one, so the view
+        // is Ready and the moment decides whether it can act.
+        Control::HeroShuffle => Availability::Waiting,
+        Control::HeroLike => Availability::Waiting,
+        Control::HeroMore => Availability::Waiting,
+        Control::HeroPlay => Availability::Ready,
+
+        // The sign-in card's one control; the state decides whether it acts.
+        Control::Authorize => Availability::Ready,
     }
 }
 
@@ -132,7 +162,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_the_shell_and_transport_controls_are_ready() {
+    fn only_the_controls_with_a_way_to_act_are_ready() {
         for control in Control::ALL {
             let ready = matches!(
                 control,
@@ -142,6 +172,8 @@ mod tests {
                     | Control::PlayPause
                     | Control::Next
                     | Control::Seek
+                    | Control::HeroPlay
+                    | Control::Authorize
             );
             assert_eq!(
                 availability(control) == Availability::Ready,
@@ -158,6 +190,6 @@ mod tests {
             assert!(!seen.contains(&control), "{control:?} is listed twice");
             seen.push(control);
         }
-        assert_eq!(seen.len(), 29);
+        assert_eq!(seen.len(), 36);
     }
 }

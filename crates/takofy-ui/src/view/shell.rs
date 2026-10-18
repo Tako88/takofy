@@ -61,7 +61,16 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
         "view",
         main_panel(&grid),
         grid.view.shrink(inset),
-        |ui| playlist::tracks_view(ui, screen.library, screen.transport, screen.queue, tokens),
+        |ui| {
+            playlist::tracks_view(
+                ui,
+                regions.table,
+                screen.library,
+                screen.transport,
+                screen.queue,
+                tokens,
+            )
+        },
     ));
 
     if let Some(panel) = grid.now_playing
