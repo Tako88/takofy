@@ -4,8 +4,12 @@
 //! command when the user asks for one. It never transitions state itself.
 
 pub mod controls;
+pub mod now_playing;
+pub mod playbar;
 mod shell;
+pub mod sidebar;
 pub mod text;
+pub mod topbar;
 
 use egui::{Align, Button, Layout, Ui};
 

@@ -1,21 +1,19 @@
-//! The signed-in shell: the panel grid and the three regions it holds.
+//! The signed-in shell: the panel grid and the regions it holds.
 //!
 //! `egui::Panel` is deliberately not used. Its frame margins do not collapse, so
 //! a gap between two panels would be the sum of two margins, and its separator
 //! line reserves stroke width inside the size that was asked for. The grid is
 //! solved as rects instead, which is what the reference's CSS grid does.
 
-use egui::{Align, Color32, Layout, Rect, Stroke, StrokeKind, Ui, UiBuilder};
+use egui::{Align, Color32, Layout, Order, Rect, Stroke, StrokeKind, Ui, UiBuilder, Vec2};
 
-use crate::layout::{self, Grid, Sidebar};
-use crate::library::{Library, Load};
+use crate::drawer::{Drawer, Input};
+use crate::layout::{self, Grid, NowPlaying, Sidebar};
 use crate::message::Command;
-use crate::player::{Transport, format_position};
-use crate::signin::failure_message;
 use crate::theme::{Tokens, radius, space, stroke};
 
 use super::Screen;
-use super::text::muted;
+use super::{now_playing, playbar, sidebar, topbar};
 
 /// The signed-in shell: three columns over a playbar, each panel a hairline box
 /// on the window background.
@@ -33,35 +31,117 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
         panel(ui, now_playing, tokens.palette.panel, tokens);
     }
 
+    let inset = stroke::HAIRLINE;
     let mut command = match regions.sidebar {
         Sidebar::Full => region(
             ui,
             "sidebar",
             grid.sidebar,
-            grid.sidebar.shrink(stroke::HAIRLINE).shrink(space::S3),
-            |ui| library_view(ui, screen.library, tokens),
+            grid.sidebar.shrink(inset),
+            |ui| sidebar::show(ui, Sidebar::Full, screen.library, tokens),
         ),
-        // The reference drops the wordmark, the nav labels and the whole library
-        // block below 900; the rail keeps only the icons, which arrive with the
-        // chrome.
-        Sidebar::Rail => None,
+        // Below 900 the rail keeps the monogram and the nav icons and drops the
+        // wordmark, the labels and the library, which is what the reference does.
+        Sidebar::Rail => region(
+            ui,
+            "sidebar-rail",
+            grid.sidebar,
+            grid.sidebar.shrink(inset),
+            |ui| sidebar::show(ui, Sidebar::Rail, screen.library, tokens),
+        ),
     };
+
+    let bar = topbar::show(ui, screen.library, regions.sidebar, grid.topbar, tokens);
+    if bar.back_to_library {
+        screen.library.deselect();
+    }
+
     command = command.or(region(
         ui,
         "view",
-        grid.view,
-        grid.view.shrink(stroke::HAIRLINE),
+        main_panel(&grid),
+        grid.view.shrink(inset),
         |ui| tracks_view(ui, screen.library, screen.transport, tokens),
     ));
+
+    if let Some(panel) = grid.now_playing
+        && regions.now_playing != NowPlaying::Hidden
+    {
+        region(ui, "now-playing", panel, panel.shrink(inset), |ui| {
+            now_playing::show(ui, screen.transport, tokens);
+        });
+    }
+
     region(
         ui,
         "playbar",
         grid.playbar,
-        grid.playbar.shrink(stroke::HAIRLINE).shrink(space::S3),
-        |ui| transport_view(ui, screen.transport, screen.position_ms, tokens),
+        grid.playbar.shrink(inset),
+        |ui| {
+            playbar::show(
+                ui,
+                screen.transport,
+                screen.position_ms,
+                regions.playbar,
+                ui.available_rect_before_wrap(),
+                tokens,
+            );
+        },
     );
 
+    // The drawer is stepped after the regions, so a playlist picked from the rail
+    // closes it in the same frame it is picked.
+    let open = *screen.drawer == Drawer::Open;
+    let clicked_outside = open && drawer_overlay(ui, grid, screen, tokens);
+
+    let escape = ui.input(|input| input.key_pressed(egui::Key::Escape));
+    let next = screen.drawer.step(Input {
+        rail: regions.sidebar == Sidebar::Rail,
+        toggle: bar.toggle.as_ref().is_some_and(egui::Response::clicked),
+        escape,
+        clicked_outside,
+        selected: command.is_some(),
+    });
+    // Closing with Escape hands focus back to the control that opened the drawer,
+    // so the keyboard does not end up nowhere.
+    if open
+        && next == Drawer::Closed
+        && escape
+        && let Some(toggle) = &bar.toggle
+    {
+        toggle.request_focus();
+    }
+    *screen.drawer = next;
+
     command
+}
+
+/// The rail's overflow panel: the full sidebar, over everything, above the
+/// playbar so the transport stays reachable.
+fn drawer_overlay(ui: &mut Ui, grid: Grid, screen: &mut Screen<'_>, tokens: &Tokens) -> bool {
+    let shadow = tokens.palette.shadow_lg.as_shape(grid.drawer, radius::LG);
+    ui.painter().add(shadow);
+
+    let area = egui::Area::new(ui.scope_id().with("drawer"))
+        .order(Order::Foreground)
+        .fixed_pos(grid.drawer.min)
+        .constrain(false)
+        .fade_in(false);
+
+    let inner = area.show(ui.ctx(), |ui| {
+        ui.set_clip_rect(grid.drawer);
+        panel(ui, grid.drawer, tokens.palette.surface, tokens);
+        let mut child = ui.new_child(
+            UiBuilder::new()
+                .id_salt("drawer-sidebar")
+                .max_rect(grid.drawer)
+                .layout(Layout::top_down(Align::Min)),
+        );
+        child.set_clip_rect(grid.drawer);
+        sidebar::show(&mut child, Sidebar::Full, screen.library, tokens);
+    });
+
+    inner.response.clicked_elsewhere()
 }
 
 /// The topbar and the view share one panel, so they share one frame.
@@ -103,112 +183,84 @@ fn region<R>(
     .inner
 }
 
-/// The sidebar: the playlists, or the state of the load that fetches them.
-fn library_view(ui: &mut Ui, library: &mut Library, tokens: &Tokens) -> Option<Command> {
-    ui.heading("Playlists");
-    ui.add_space(space::S2);
+/// Runs `add` inside a left-to-right child at `rect`, so a control that
+/// allocates its own space still lands where the design wants it.
+pub(super) fn row_of(ui: &mut Ui, id: &str, rect: Rect, add: impl FnOnce(&mut Ui)) {
+    ui.scope_builder(
+        UiBuilder::new()
+            .id_salt(id)
+            .max_rect(rect)
+            .layout(Layout::left_to_right(Align::Center)),
+        |ui| {
+            ui.set_clip_rect(rect);
+            add(ui);
+        },
+    );
+}
 
-    let mut clicked: Option<String> = None;
-    let mut retry = false;
-    match &library.playlists {
-        Load::Idle => {}
-        Load::Loading => {
-            ui.spinner();
-        }
-        Load::Ready(playlists) if playlists.is_empty() => {
-            ui.label(muted("No playlists yet.", tokens));
-        }
-        Load::Ready(playlists) => {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                for entry in playlists {
-                    let selected = library.selected() == Some(entry.uri.as_str());
-                    if ui.selectable_label(selected, &entry.name).clicked() {
-                        clicked = Some(entry.uri.clone());
-                    }
-                }
-            });
-        }
-        Load::Failed(failure) => {
-            ui.label(muted(failure_message(*failure), tokens));
-            retry = ui.button("Retry").clicked();
-        }
-    }
+/// The same, named for the rows that hold a run of controls.
+pub(super) fn row_centred(ui: &mut Ui, id: &str, rect: Rect, add: impl FnOnce(&mut Ui)) {
+    row_of(ui, id, rect, add);
+}
 
-    if let Some(uri) = clicked {
-        return Some(library.select(&uri));
-    }
-    if retry { Some(library.reload()) } else { None }
+/// Paints a hairline rule inside `rect`.
+pub(super) fn rule(ui: &Ui, rect: Rect, color: Color32) {
+    ui.painter().rect_filled(
+        Rect::from_min_size(rect.min, Vec2::new(rect.width(), stroke::HAIRLINE)),
+        0.0,
+        color,
+    );
 }
 
 /// The main pane: the selected playlist's tracks, or the state of their load.
 fn tracks_view(
     ui: &mut Ui,
-    library: &mut Library,
-    transport: &mut Transport,
+    library: &mut crate::library::Library,
+    transport: &mut crate::player::Transport,
     tokens: &Tokens,
 ) -> Option<Command> {
-    let content = ui.max_rect().shrink(space::S3);
-    ui.scope_builder(
-        UiBuilder::new()
-            .max_rect(content)
-            .layout(Layout::top_down(Align::Min)),
-        |ui| tracks_content(ui, library, transport, tokens),
-    )
-    .inner
-}
+    use crate::library::Load;
 
-fn tracks_content(
-    ui: &mut Ui,
-    library: &mut Library,
-    transport: &mut Transport,
-    tokens: &Tokens,
-) -> Option<Command> {
+    ui.add_space(space::S3);
+
     match &library.tracks {
         Load::Idle => {
-            ui.label(muted("Select a playlist.", tokens));
-            None
+            ui.label(super::text::muted("Select a playlist.", tokens));
+            return None;
         }
         Load::Loading => {
             ui.spinner();
-            None
+            return None;
         }
         Load::Ready(tracks) if tracks.tracks.is_empty() => {
-            ui.label(muted("No tracks in this playlist.", tokens));
-            None
-        }
-        Load::Ready(tracks) => {
-            egui::ScrollArea::vertical()
-                .show(ui, |ui| {
-                    let mut command = None;
-                    for entry in &tracks.tracks {
-                        if ui.selectable_label(false, &entry.title).double_clicked() {
-                            command = Some(transport.play(&entry.uri, &entry.title));
-                        }
-                    }
-                    command
-                })
-                .inner
+            ui.label(super::text::muted("No tracks in this playlist.", tokens));
+            return None;
         }
         Load::Failed(failure) => {
-            ui.label(muted(failure_message(*failure), tokens));
+            ui.label(super::text::muted(
+                crate::signin::failure_message(*failure),
+                tokens,
+            ));
             if ui.button("Retry").clicked() {
                 let playlist = library.selected().map(str::to_owned);
-                playlist.map(|playlist| library.select(&playlist))
-            } else {
-                None
+                return playlist.map(|playlist| library.select(&playlist));
             }
+            return None;
         }
+        Load::Ready(_) => {}
     }
-}
 
-/// The bar: what is playing, where it is, and what it is doing.
-fn transport_view(ui: &mut Ui, transport: &Transport, position_ms: u32, tokens: &Tokens) {
-    let Some(now) = &transport.now_playing else {
-        return;
-    };
-    ui.horizontal(|ui| {
-        ui.label(&now.title);
-        ui.label(muted(format_position(position_ms).as_str(), tokens));
-        ui.label(muted(transport.state.label(), tokens));
-    });
+    egui::ScrollArea::vertical()
+        .show(ui, |ui| {
+            let mut command = None;
+            if let Load::Ready(tracks) = &library.tracks {
+                for entry in &tracks.tracks {
+                    if ui.selectable_label(false, &entry.title).double_clicked() {
+                        command = Some(transport.play(&entry.uri, &entry.title));
+                    }
+                }
+            }
+            command
+        })
+        .inner
 }

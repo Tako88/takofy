@@ -8,6 +8,53 @@ use egui::{Color32, FontId, RichText};
 
 use crate::theme::{MonoWeight, Tokens, Weight, fonts, text, tracking};
 
+/// Lays out one line with the reference's letter spacing, ready to paint.
+///
+/// A caps label is the reason this exists: `Painter::text` cannot carry spacing,
+/// and the reference tracks its small mono text apart.
+pub fn spaced(
+    ui: &egui::Ui,
+    label: &str,
+    font: FontId,
+    color: Color32,
+    spacing: f32,
+) -> std::sync::Arc<egui::Galley> {
+    let format = egui::TextFormat {
+        font_id: font,
+        color,
+        extra_letter_spacing: spacing,
+        ..Default::default()
+    };
+    let mut job = egui::text::LayoutJob::single_section(label.to_owned(), format);
+    job.wrap.max_rows = 1;
+    ui.painter().layout_job(job)
+}
+
+/// One line, wrapped at `width` and elided with an ellipsis.
+///
+/// `ui.put` centres the widget it is given, which is wrong for anything that
+/// starts at a known left edge, so a row paints its own galleys.
+pub fn line(
+    ui: &egui::Ui,
+    label: &str,
+    font: FontId,
+    color: Color32,
+    spacing: f32,
+    width: f32,
+) -> std::sync::Arc<egui::Galley> {
+    let format = egui::TextFormat {
+        font_id: font,
+        color,
+        extra_letter_spacing: spacing,
+        ..Default::default()
+    };
+    let mut job = egui::text::LayoutJob::single_section(label.to_owned(), format);
+    job.wrap.max_width = width;
+    job.wrap.max_rows = 1;
+    job.wrap.overflow_character = Some('…');
+    ui.painter().layout_job(job)
+}
+
 /// Secondary text, so chrome does not read as content.
 pub fn muted(text: &str, tokens: &Tokens) -> RichText {
     RichText::new(text).color(tokens.palette.text_muted)
