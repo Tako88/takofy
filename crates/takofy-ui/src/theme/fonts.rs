@@ -55,9 +55,13 @@ const FILES: [(&str, &[u8], &[f32]); 6] = [
 
 /// The regional faces in fallback order.
 ///
-/// Four repertories overlap heavily, so for a character all of them carry, the
-/// first name here wins and the rest are never consulted. Japanese comes first
-/// today; that is a product decision, and changing it is this list.
+/// For a character several faces carry, the first name here wins and the rest are
+/// never consulted, so this list decides the form of every shared Han character.
+/// Which region one wants cannot be read off the string: kana and hangul give a
+/// language away, but every face draws them identically, and telling Chinese from
+/// Japanese would take a repertoire table this app does not carry. So Japanese
+/// leads by decision. It costs Chinese the form of a character and never the
+/// character, which is what `the_han_repertoires_nest` holds this to.
 const CJK_ORDER: [&str; 4] = ["jp", "kr", "sc", "tc"];
 
 /// egui's own text faces. Its symbol faces stay, at the end of every chain.
@@ -470,6 +474,64 @@ mod tests {
                     "{family:?} has no glyph for {script}: {sample:?}"
                 );
             }
+        }
+    }
+
+    /// The order decides forms only because no order can strand a character: the
+    /// Chinese face carries every Han character the other three do, so a Chinese
+    /// character never falls through to a face that lacks it. A font swap that
+    /// broke that would turn a form preference into a missing glyph, and it has to
+    /// fail here rather than in a screenshot.
+    #[test]
+    fn the_han_repertoires_nest() {
+        let mut defs = definitions();
+        // A family per face, so `characters` answers for that face alone.
+        let probes: [(&str, &str); 4] = [
+            ("probe-jp", "jp"),
+            ("probe-kr", "kr"),
+            ("probe-sc", "sc"),
+            ("probe-tc", "tc"),
+        ];
+        for (probe, region) in probes {
+            defs.families
+                .insert(FontFamily::Name(probe.into()), vec![key(region, 400.0)]);
+        }
+
+        let ctx = egui::Context::default();
+        ctx.set_fonts(defs);
+        let mut warm_up = ctx.run_ui(egui::RawInput::default(), |_ui| {});
+        warm_up.textures_delta.clear();
+
+        let han_of = |probe: &str| -> std::collections::BTreeSet<char> {
+            let family = FontFamily::Name(probe.into());
+            ctx.fonts_mut(|fonts| {
+                fonts
+                    .characters(&family)
+                    .keys()
+                    .copied()
+                    .filter(|c| matches!(c, '\u{3400}'..='\u{4DBF}' | '\u{4E00}'..='\u{9FFF}'))
+                    .collect()
+            })
+        };
+
+        let chinese = han_of("probe-sc");
+        assert!(
+            chinese.len() > SAMPLES.len(),
+            "the Chinese face came back with {} Han characters, which is not a repertoire",
+            chinese.len()
+        );
+
+        for (probe, region) in probes {
+            if probe == "probe-sc" {
+                continue;
+            }
+            let theirs = han_of(probe);
+            assert!(!theirs.is_empty(), "{region} carries no Han at all");
+            let stranded: Vec<char> = theirs.difference(&chinese).copied().take(5).collect();
+            assert!(
+                stranded.is_empty(),
+                "{region} carries Han the Chinese face does not, so an order could strand it: {stranded:?}"
+            );
         }
     }
 
