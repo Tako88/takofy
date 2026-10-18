@@ -4,6 +4,7 @@ use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 use eframe::egui;
+use takofy_ui::drawer::Drawer;
 use takofy_ui::library::Library;
 use takofy_ui::message::Update;
 use takofy_ui::player::{REDRAW, Transport, TransportState, position_at};
@@ -33,6 +34,7 @@ pub(crate) struct TakofyApp {
     state: SignIn,
     library: Library,
     transport: Transport,
+    drawer: Drawer,
     ui_end: UiEnd,
     tokens: Tokens,
     /// Restamped whenever the transport's anchor moves, so the interpolated
@@ -50,6 +52,7 @@ impl TakofyApp {
             state: SignIn::default(),
             library: Library::default(),
             transport: Transport::default(),
+            drawer: Drawer::default(),
             ui_end,
             tokens,
             since: None,
@@ -83,14 +86,14 @@ impl eframe::App for TakofyApp {
             &self.transport.anchor(),
             self.since.map_or(Duration::ZERO, |since| since.elapsed()),
         );
-        if let Some(command) = view::show(
-            ui,
-            &mut self.state,
-            &mut self.library,
-            &mut self.transport,
+        let mut screen = view::Screen {
+            state: &mut self.state,
+            library: &mut self.library,
+            transport: &mut self.transport,
+            drawer: &mut self.drawer,
             position_ms,
-            &self.tokens,
-        ) {
+        };
+        if let Some(command) = view::show(ui, &mut screen, &self.tokens) {
             let _ = self.ui_end.commands.send(command);
         }
     }

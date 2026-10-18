@@ -69,12 +69,7 @@ pub fn slot(
     };
 
     if ready && response.has_focus() {
-        ui.painter().rect_stroke(
-            rect.expand(extent::FOCUS_OFFSET),
-            radius::SM,
-            Stroke::new(stroke::HAIRLINE, tokens.palette.accent),
-            StrokeKind::Outside,
-        );
+        focus_ring(ui, rect, tokens);
     }
 
     if ready && response.hovered() {
@@ -133,6 +128,19 @@ fn foreground(tokens: &Tokens, ready: bool, mix: f32) -> Color32 {
 
 fn ready(control: Control) -> bool {
     availability(control) == Availability::Ready
+}
+
+/// The ring a focused control wears.
+///
+/// Shared, because a library row is focusable too and rows are not controls: they
+/// are one per playlist, so they cannot come from the availability table.
+pub fn focus_ring(ui: &Ui, rect: Rect, tokens: &Tokens) {
+    ui.painter().rect_stroke(
+        rect.expand(extent::FOCUS_OFFSET),
+        radius::SM,
+        Stroke::new(stroke::HAIRLINE, tokens.palette.accent),
+        StrokeKind::Outside,
+    );
 }
 
 /// One line of text, laid out with the reference's letter spacing.
@@ -259,6 +267,37 @@ pub fn nav_item(
 /// A square segmented tab. The selected one is filled and bordered in `text`;
 /// the rest keep a hairline.
 pub fn chip(ui: &mut Ui, tokens: &Tokens, control: Control, label: &str, selected: bool) -> Slot {
+    let rect = place(ui, chip_size(ui, tokens, label));
+    chip_in(ui, tokens, control, rect, label, selected)
+}
+
+/// The box a chip's label needs.
+///
+/// The reference wraps its chips, so a caller that wraps them has to know the
+/// sizes before it decides where the lines break.
+pub fn chip_size(ui: &Ui, tokens: &Tokens, label: &str) -> Vec2 {
+    let galley = line(
+        ui,
+        &label.to_uppercase(),
+        FontId::new(text::XXS, fonts::mono(MonoWeight::Medium)),
+        tokens.palette.text_muted,
+        crate::view::text::tracking_pts(text::XXS, tracking::WIDE),
+    );
+    Vec2::new(
+        galley.size().x + 2.0 * extent::CHIP_PAD_X,
+        galley.size().y + 2.0 * extent::CHIP_PAD_Y,
+    )
+}
+
+/// A chip drawn into a rect the caller chose.
+pub fn chip_in(
+    ui: &mut Ui,
+    tokens: &Tokens,
+    control: Control,
+    rect: Rect,
+    label: &str,
+    selected: bool,
+) -> Slot {
     let live = ready(control);
     let color = if live {
         tokens.palette.text_muted
@@ -272,11 +311,6 @@ pub fn chip(ui: &mut Ui, tokens: &Tokens, control: Control, label: &str, selecte
         color,
         crate::view::text::tracking_pts(text::XXS, tracking::WIDE),
     );
-    let size = Vec2::new(
-        galley.size().x + 2.0 * extent::CHIP_PAD_X,
-        galley.size().y + 2.0 * extent::CHIP_PAD_Y,
-    );
-    let rect = place(ui, size);
     let slot = slot(ui, control, Role::Button, rect, label, tokens);
 
     let border = if selected {
