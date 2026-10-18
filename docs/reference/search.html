@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Search · Takofy</title>
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body class="app" data-page="search">
+
+<!-- ===================== Sidebar ===================== -->
+<aside class="sidebar" aria-label="Your library">
+  <div class="sidebar__brand">
+    <svg class="sidebar__logo" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-logo"></use></svg>
+    <span class="sidebar__wordmark">Takofy</span>
+  </div>
+
+  <nav class="sidebar__nav" aria-label="Primary">
+    <a class="nav-item" href="index.html" data-nav="home">
+      <svg class="icon icon--lg" aria-hidden="true"><use href="#i-home"></use></svg>
+      <span class="nav-item__label">Home</span>
+    </a>
+    <a class="nav-item" href="search.html" data-nav="search">
+      <svg class="icon icon--lg" aria-hidden="true"><use href="#i-search"></use></svg>
+      <span class="nav-item__label">Search</span>
+    </a>
+  </nav>
+
+  <div class="library" data-chip-group data-chip-target="#library-list">
+    <div class="library__head">
+      <span>Your Library</span>
+      <span class="library__head-actions">
+        <button class="icon-button" type="button" aria-label="Create playlist or folder">
+          <svg class="icon icon--md" aria-hidden="true"><use href="#i-plus"></use></svg>
+        </button>
+        <button class="icon-button" type="button" aria-label="Expand your library">
+          <svg class="icon icon--md" aria-hidden="true"><use href="#i-arrow-right"></use></svg>
+        </button>
+      </span>
+    </div>
+
+    <div class="chips" role="group" aria-label="Filter your library">
+      <button class="chip" type="button" data-chip="playlist" aria-pressed="false">Playlists</button>
+      <button class="chip" type="button" data-chip="artist" aria-pressed="false">Artists</button>
+      <button class="chip" type="button" data-chip="album" aria-pressed="false">Albums</button>
+      <button class="chip" type="button" data-chip="podcast" aria-pressed="false">Podcasts</button>
+    </div>
+
+    <ul class="library__list" id="library-list" data-library-list></ul>
+  </div>
+</aside>
+
+<!-- ===================== Main ===================== -->
+<div class="app__main">
+  <header class="topbar">
+    <button class="icon-button topbar__drawer-toggle" type="button" data-drawer-toggle aria-expanded="false" aria-label="Open your library">
+      <svg class="icon icon--lg" aria-hidden="true"><use href="#i-library"></use></svg>
+    </button>
+    <div class="topbar__history">
+      <button class="round-button" type="button" data-back aria-label="Go back">
+        <svg class="icon" aria-hidden="true"><use href="#i-arrow-left"></use></svg>
+      </button>
+      <button class="round-button" type="button" data-forward aria-label="Go forward">
+        <svg class="icon" aria-hidden="true"><use href="#i-arrow-right"></use></svg>
+      </button>
+    </div>
+    <form class="searchbar" role="search" onsubmit="return false">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-search"></use></svg>
+      <input type="search" placeholder="Artists, albums or podcasts" aria-label="Search" />
+    </form>
+    <nav class="trail" aria-label="You are here">
+      <a href="index.html">Home</a>
+      <span class="trail__sep">/</span>
+      <span aria-current="page">Search</span>
+    </nav>
+    <a class="topbar__account" href="#"><span class="avatar">TK</span><span>Tako</span></a>
+  </header>
+
+  <main class="view">
+    <div class="view__inner">
+      <div class="page-head">
+        <h1 class="page-head__title">Search</h1>
+        <p class="page-head__note">Index of 4.1 m tracks · 62 k shows</p>
+      </div>
+
+      <section class="section section--first" aria-labelledby="recent">
+        <div class="section__head">
+          <h2 class="section__title" id="recent">Recent searches</h2>
+          <span class="section__link">Clear</span>
+        </div>
+        <ul class="card-grid" data-playing-scope>
+          <li class="card card--artist">
+            <div class="card__art">
+              <img src="img/artists/vela-moreno.jpg" alt="" loading="lazy" />
+              <button class="card__play" type="button" data-track="Slow Tide" data-artist="Vela Moreno" data-art="img/covers/slow-tide.jpg" data-duration="222" aria-label="Play Vela Moreno">
+                <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg>
+              </button>
+            </div>
+            <div class="card__body">
+              <a class="card__title truncate" href="artist.html">Vela Moreno</a>
+              <p class="card__sub">Artist</p>
+            </div>
+          </li>
+          <li class="card card--artist">
+            <div class="card__art">
+              <img src="img/artists/nils-aker.jpg" alt="" loading="lazy" />
+              <button class="card__play" type="button" data-track="Cold Storage" data-artist="Nils Aker" data-art="img/covers/cold-storage.jpg" data-duration="304" aria-label="Play Nils Aker">
+                <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg>
+              </button>
+            </div>
+            <div class="card__body">
+              <a class="card__title truncate" href="artist.html">Nils Aker</a>
+              <p class="card__sub">Artist</p>
+            </div>
+          </li>
+          <li class="card">
+            <div class="card__art">
+              <img src="img/covers/pod-two-cars.jpg" alt="" loading="lazy" />
+              <button class="card__play" type="button" data-track="Ep. 209 — The Worst Engine Ever Built" data-artist="Two Cars, One Road" data-art="img/covers/pod-two-cars.jpg" data-duration="3480" aria-label="Play Two Cars, One Road">
+                <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg>
+              </button>
+            </div>
+            <div class="card__body">
+              <a class="card__title truncate" href="podcasts.html">Two Cars, One Road</a>
+              <p class="card__sub">Podcast</p>
+            </div>
+          </li>
+          <li class="card">
+            <div class="card__art">
+              <img src="img/covers/halcyon-street.jpg" alt="" loading="lazy" />
+              <button class="card__play" type="button" data-track="Halcyon Street" data-artist="The Rookery" data-art="img/covers/halcyon-street.jpg" data-duration="196" aria-label="Play Halcyon Street">
+                <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg>
+              </button>
+            </div>
+            <div class="card__body">
+              <a class="card__title truncate" href="album.html">Halcyon Street</a>
+              <p class="card__sub">Album · The Rookery</p>
+            </div>
+          </li>
+          <li class="card card--artist">
+            <div class="card__art">
+              <img src="img/artists/marta-isleif.jpg" alt="" loading="lazy" />
+              <button class="card__play" type="button" data-track="Northlight" data-artist="Marta Ísleif" data-art="img/covers/northlight.jpg" data-duration="244" aria-label="Play Marta Ísleif">
+                <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg>
+              </button>
+            </div>
+            <div class="card__body">
+              <a class="card__title truncate" href="artist.html">Marta Ísleif</a>
+              <p class="card__sub">Artist</p>
+            </div>
+          </li>
+        </ul>
+      </section>
+
+      <section class="section" aria-labelledby="browse">
+        <div class="section__head">
+          <h2 class="section__title" id="browse">Browse all</h2>
+          <span class="section__link">24 categories</span>
+        </div>
+
+        <ul class="genre-grid">
+          <li><a class="genre" href="playlist.html" style="--genre-tint:#2f3f3a">Ambient<img src="img/covers/nocturne-field.jpg" alt="" loading="lazy" /></a></li>
+          <li><a class="genre" href="playlist.html" style="--genre-tint:#3d2f2a">Indie folk<img src="img/covers/fieldwork.jpg" alt="" loading="lazy" /></a></li>
+          <li><a class="genre" href="playlist.html" style="--genre-tint:#2a3242">Post-rock<img src="img/covers/long-way-down.jpg" alt="" loading="lazy" /></a></li>
+          <li><a class="genre" href="playlist.html" style="--genre-tint:#3a2a38">Dark pop<img src="img/covers/blue-hour.jpg" alt="" loading="lazy" /></a></li>
+          <li><a class="genre" href="playlist.html" style="--genre-tint:#42342a">Singer-songwriter<img src="img/covers/northlight.jpg" alt="" loading="lazy" /></a></li>
+          <li><a class="genre" href="playlist.html" style="--genre-tint:#26383d">Electronic<img src="img/covers/cold-storage.jpg" alt="" loading="lazy" /></a></li>
+          <li><a class="genre" href="playlist.html" style="--genre-tint:#3d3a26">Alt rock<img src="img/covers/terminal.jpg" alt="" loading="lazy" /></a></li>
+          <li><a class="genre" href="podcasts.html" style="--genre-tint:#33283d">Podcasts<img src="img/covers/pod-field-notes.jpg" alt="" loading="lazy" /></a></li>
+          <li><a class="genre" href="playlist.html" style="--genre-tint:#3f2c2c">Late night<img src="img/covers/signal-decay.jpg" alt="" loading="lazy" /></a></li>
+          <li><a class="genre" href="playlist.html" style="--genre-tint:#253242">Focus<img src="img/covers/saltglass.jpg" alt="" loading="lazy" /></a></li>
+          <li><a class="genre" href="playlist.html" style="--genre-tint:#38332b">Charts<img src="img/covers/discover-weekly.jpg" alt="" loading="lazy" /></a></li>
+          <li><a class="genre" href="library.html" style="--genre-tint:#2b3a2c">New releases<img src="img/covers/release-radar.jpg" alt="" loading="lazy" /></a></li>
+        </ul>
+      </section>
+
+      <footer class="tracklist__foot">
+        <p>Design concept · cover photography from Unsplash contributors via picsum.photos — see <a href="credits.html">credits</a>.</p>
+      </footer>
+    </div>
+  </main>
+</div>
+
+<!-- ===================== Now playing panel ===================== -->
+<aside class="now-playing" aria-label="Now playing">
+  <div class="now-playing__head">
+    <h2>Now playing</h2>
+    <button class="icon-button" type="button" aria-label="More options for the current track">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-more"></use></svg>
+    </button>
+  </div>
+
+  <div class="now-playing__art">
+    <img data-now-art src="img/covers/slow-tide.jpg" alt="Slow Tide cover" />
+  </div>
+
+  <div class="now-playing__meta">
+    <div>
+      <a class="now-playing__title truncate" href="album.html" data-now-title>Slow Tide</a>
+      <a class="now-playing__artist truncate" href="artist.html" data-now-artist>Vela Moreno</a>
+    </div>
+    <button class="icon-button icon-button--lg" type="button" data-like data-like-group="now" aria-pressed="false" aria-label="Save to your library">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-heart"></use></svg>
+    </button>
+  </div>
+
+  <p class="now-playing__spec">
+    <span><b>320</b> kbps</span><span>Ogg Vorbis</span><span>44.1 kHz</span><span>Stereo</span>
+  </p>
+
+  <div class="panel-tabs" role="tablist" aria-label="Now playing views">
+    <button class="panel-tab" type="button" role="tab" aria-selected="true" aria-controls="pane-queue" data-panel-tab>Queue</button>
+    <button class="panel-tab" type="button" role="tab" aria-selected="false" aria-controls="pane-lyrics" data-panel-tab>Lyrics</button>
+  </div>
+
+  <div class="panel-pane is-active" id="pane-queue" role="tabpanel" data-panel-pane>
+    <p class="queue-head">Next in queue</p>
+    <ul class="queue" data-queue-list data-playing-scope></ul>
+  </div>
+
+  <div class="panel-pane" id="pane-lyrics" role="tabpanel" data-panel-pane>
+    <div class="lyrics">
+      <p>Harbour wall, salt in the air</p>
+      <p>Nothing moves here but the light</p>
+      <p class="is-current">I keep the tide in a jar by the door</p>
+      <p>Count the bells, count them twice</p>
+      <p>Every green room has a window</p>
+      <p>Every window has your name</p>
+      <p>Slow tide, take your time</p>
+      <p>I am in no hurry tonight</p>
+    </div>
+  </div>
+</aside>
+
+<!-- ===================== Mobile tab bar ===================== -->
+<nav class="tabbar" aria-label="Primary">
+  <a href="index.html" data-nav="home"><svg class="icon icon--lg" aria-hidden="true"><use href="#i-home"></use></svg>Home</a>
+  <a href="search.html" data-nav="search"><svg class="icon icon--lg" aria-hidden="true"><use href="#i-search"></use></svg>Search</a>
+  <a href="library.html" data-nav="library"><svg class="icon icon--lg" aria-hidden="true"><use href="#i-library"></use></svg>Library</a>
+  <a href="podcasts.html" data-nav="podcasts"><svg class="icon icon--lg" aria-hidden="true"><use href="#i-mic"></use></svg>Podcasts</a>
+</nav>
+
+<!-- ===================== Playbar ===================== -->
+<footer class="playbar">
+  <div class="playbar__now">
+    <img class="playbar__art" data-now-art src="img/covers/slow-tide.jpg" alt="Slow Tide cover" />
+    <div class="playbar__text">
+      <a class="playbar__title truncate" href="album.html" data-now-title>Slow Tide</a>
+      <a class="playbar__artist truncate" href="artist.html" data-now-artist>Vela Moreno</a>
+    </div>
+    <button class="icon-button" type="button" data-like data-like-group="now" aria-pressed="false" aria-label="Save to your library">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-heart"></use></svg>
+    </button>
+    <button class="icon-button" type="button" aria-label="Open miniplayer">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-screen"></use></svg>
+    </button>
+  </div>
+
+  <div class="playbar__center">
+    <div class="playbar__buttons">
+      <button class="icon-button" type="button" data-toggle aria-pressed="false" aria-label="Shuffle">
+        <svg class="icon icon--md" aria-hidden="true"><use href="#i-shuffle"></use></svg>
+      </button>
+      <button class="icon-button" type="button" data-prev aria-label="Previous track">
+        <svg class="icon icon--md" aria-hidden="true"><use href="#i-prev"></use></svg>
+      </button>
+      <button class="play-button playbar__play" type="button" data-transport aria-label="Play or pause">
+        <svg class="icon icon--md" aria-hidden="true"><use href="#i-pause" data-transport-icon></use></svg>
+      </button>
+      <button class="icon-button" type="button" data-next aria-label="Next track">
+        <svg class="icon icon--md" aria-hidden="true"><use href="#i-next"></use></svg>
+      </button>
+      <button class="icon-button" type="button" data-toggle aria-pressed="false" aria-label="Repeat">
+        <svg class="icon icon--md" aria-hidden="true"><use href="#i-repeat"></use></svg>
+      </button>
+    </div>
+
+    <div class="playbar__progress">
+      <span class="playbar__time" data-elapsed>1:14</span>
+      <div class="slider" data-seek role="slider" tabindex="0" aria-label="Seek" aria-valuemin="0" aria-valuenow="74" aria-valuemax="222">
+        <div class="slider__track"></div>
+        <div class="slider__fill" data-seek-fill></div>
+        <div class="slider__thumb"></div>
+      </div>
+      <span class="playbar__time playbar__time--end" data-remaining>-2:28</span>
+    </div>
+  </div>
+
+  <div class="playbar__extras">
+    <button class="icon-button" type="button" aria-label="Queue">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-queue"></use></svg>
+    </button>
+    <button class="icon-button" type="button" aria-label="Connect to a device">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-devices"></use></svg>
+    </button>
+    <button class="icon-button" type="button" aria-label="Mute">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-volume" data-volume-icon></use></svg>
+    </button>
+    <div class="slider playbar__volume" data-volume role="slider" tabindex="0" aria-label="Volume" aria-valuemin="0" aria-valuenow="72" aria-valuemax="100">
+      <div class="slider__track"></div>
+      <div class="slider__fill"></div>
+      <div class="slider__thumb"></div>
+    </div>
+    <button class="icon-button" type="button" aria-label="Full screen">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-expand"></use></svg>
+    </button>
+  </div>
+
+  <div class="playbar__minibar" aria-hidden="true">
+    <div class="progress-bar__fill" data-mini-fill></div>
+  </div>
+</footer>
+
+<script src="main.js"></script>
+</body>
+</html>

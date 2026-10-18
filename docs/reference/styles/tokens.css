@@ -1,0 +1,97 @@
+/* @design-system tokens — managed by pi-designer; edit in the Design System pane. */
+/* @design-system:start */
+html:root {
+  /* ── Surfaces ─────────────────────────────────────────────── */
+  /* Near black. The panels sit a few points above true black so the 8px window
+     channels still read as gaps, and the elevation ladder is deliberately
+     short so no large block reads as grey. */
+  --color-window: #000000;
+  --color-surface: #070708;
+  --color-surface-raised: #121215;
+  --color-surface-hover: #1c1c20;
+  --color-surface-sunken: #000000;
+  --color-panel: #0b0b0d;
+  --color-border: rgba(242, 240, 234, 0.11);
+  --color-border-strong: rgba(242, 240, 234, 0.26);
+  --color-scrim: rgba(0, 0, 0, 0.78);
+
+  /* ── Text ─────────────────────────────────────────────────── */
+  /* Three tiers, all of which clear WCAG AA on --color-surface. Hierarchy is
+     carried by size, weight and the mono/roman split rather than by dimming
+     text into illegibility. */
+  --color-text: #f2f0ea;
+  --color-text-muted: #b0aca4;
+  --color-text-subtle: #83807a;
+  --color-text-inverse: #0b0b0c;
+
+  /* ── Brand ────────────────────────────────────────────────── */
+  /* Green is a functional signal here — it means "sound is coming out" and
+     nothing else. It is not the brand colour, so it never paints a surface. */
+  --color-accent: #1ed760;
+  --color-accent-hover: #3ee57b;
+  --color-verified: #9fc6e8;
+
+  /* ── Type ─────────────────────────────────────────────────── */
+  --font-sans: "Archivo", system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --text-2xs: 0.625rem;
+  --text-xs: 0.6875rem;
+  --text-sm: 0.75rem;
+  --text-base: 0.8125rem;
+  --text-md: 0.9375rem;
+  --text-lg: 1.125rem;
+  --text-xl: 1.375rem;
+  --text-2xl: 1.75rem;
+  --text-3xl: 2.5rem;
+  --text-4xl: 3.5rem;
+  --leading-tight: 1.05;
+  --leading-snug: 1.25;
+  --leading-normal: 1.5;
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+  --weight-black: 800;
+  --tracking-tight: -0.02em;
+  --tracking-caps: 0.11em;
+  --tracking-wide: 0.06em;
+
+  /* ── Space ────────────────────────────────────────────────── */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+  --space-7: 3rem;
+  --space-8: 4rem;
+  --space-gutter: 1.5rem;
+
+  /* ── Radius ───────────────────────────────────────────────── */
+  /* Nearly square throughout. Roundness is the thing we are giving up. */
+  --radius-xs: 1px;
+  --radius-sm: 2px;
+  --radius: 3px;
+  --radius-lg: 4px;
+  --radius-pill: 999px;
+
+  /* ── Shadow ───────────────────────────────────────────────── */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.5);
+  --shadow-md: 0 6px 20px rgba(0, 0, 0, 0.55);
+  --shadow-lg: 0 20px 50px rgba(0, 0, 0, 0.65);
+
+  /* ── Layout ───────────────────────────────────────────────── */
+  --sidebar-w: 16rem;
+  --nowplaying-w: 19.5rem;
+  --playbar-h: 4rem;
+  --topbar-h: 3.5rem;
+  --sidebar-rail-w: 4rem;
+  --row-h: 2.75rem;
+
+  /* ── Motion ───────────────────────────────────────────────── */
+  --ease-out: cubic-bezier(0.3, 0, 0, 1);
+  --dur-fast: 110ms;
+  --dur-base: 180ms;
+  --dur-slow: 300ms;
+}
+/* @design-system:end */

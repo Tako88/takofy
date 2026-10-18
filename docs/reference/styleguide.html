@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Design System</title>
+<style>
+  body { margin: 2rem; }
+  .ds-section { margin: 0 0 2rem; }
+  .ds-tokens { list-style: none; padding: 0; display: grid; gap: 6px; }
+  .ds-token { display: grid; grid-template-columns: minmax(0, 1fr) 160px; gap: 12px; align-items: center; }
+  .ds-token--plain { grid-template-columns: minmax(0, 1fr); }
+  .ds-token__id { display: flex; gap: 10px; align-items: baseline; min-width: 0; flex-wrap: wrap; }
+  .ds-tokens span { opacity: .7; font-size: 0.9rem; }
+  .ds-preview { display: flex; align-items: center; min-height: 24px; padding: 2px 4px; background: #f3f4f6; border-radius: 4px; overflow: hidden; }
+  .ds-preview code { font-size: 0.8rem; color: #6b7280; overflow-wrap: anywhere; }
+  .ds-swatch { width: 100%; height: 20px; border: 1px solid rgba(0, 0, 0, .15); border-radius: 3px; }
+  .ds-type { color: #111; font-size: 0.9rem; line-height: 1.25; overflow-wrap: anywhere; }
+  .ds-space { height: 10px; background: #9ca3af; border-radius: 2px; }
+  .ds-radius { width: 36px; height: 36px; background: #fff; border: 1px solid #9ca3af; }
+  .ds-shadow { width: 48px; height: 22px; background: #fff; border-radius: 3px; }
+</style>
+</head>
+<body>
+<h1>Design System</h1>
+<section class="ds-section">
+<h2>Colors</h2>
+<ul class="ds-tokens">
+<li class="ds-token"><div class="ds-token__id"><code>--color-window</code><span>#000000</span></div><div class="ds-preview"><div class="ds-swatch" style="background:#000000"></div></div></li>
+<li class="ds-token"><div class="ds-token__id"><code>--color-surface</code><span>#070708</span></div><div class="ds-preview"><div class="ds-swatch" style="background:#070708"></div></div></li>
+<li class="ds-token"><div class="ds-token__id"><code>--color-surface-raised</code><span>#121215</span></div><div class="ds-preview"><div class="ds-swatch" style="background:#121215"></div></div></li>
+<li class="ds-token"><div class="ds-token__id"><code>--color-surface-hover</code><span>#1c1c20</span></div><div class="ds-preview"><div class="ds-swatch" style="background:#1c1c20"></div></div></li>
+<li class="ds-token"><div class="ds-token__id"><code>--color-surface-sunken</code><span>#000000</span></div><div class="ds-preview"><div class="ds-swatch" style="background:#000000"></div></div></li>
+<li class="ds-token"><div class="ds-token__id"><code>--color-panel</code><span>#0b0b0d</span></div><div class="ds-preview"><div class="ds-swatch" style="background:#0b0b0d"></div></div></li>
+<li class="ds-token"><div class="ds-token__id"><code>--color-border</code><span>rgba(242, 240, 234, 0.11)</span></div><div class="ds-preview"><div class="ds-swatch" style="background:rgba(242, 240, 234, 0.11)"></div></div></li>
+<li class="ds-token"><div class="ds-token__id"><code>--color-border-strong</code><span>rgba(242, 240, 234, 0.26)</span></div><div class="ds-preview"><div class="ds-swatch" style="background:rgba(242, 240, 234, 0.26)"></div></div></li>
+<li class="ds-token"><div class="ds-token__id"><code>--color-scrim</code><span>rgba(0, 0, 0, 0.78)</span></div><div class="ds-preview"><div class="ds-swatch" style="background:rgba(0, 0, 0, 0.78)"></div></div></li>
+<li class="ds-token"><div class="ds-token__id"><code>--color-text</code><span>#f2f0ea</span></div><div class="ds-preview"><div class="ds-swatch" style="background:#f2f0ea"></div></div></li>
+<li class="ds-token"><div class="ds-token__id"><code>--color-text-muted</code><span>#b0aca4</span></div><div class="ds-preview"><div class="ds-swatch" style="background:#b0aca4"></div></div></li>
+<li class="ds-token"><div class="ds-token__id"><code>--color-text-subtle</code><span>#83807a</span></div><div class="ds-preview"><div class="ds-swatch" style="background:#83807a"></div></div></li>
+<li class="ds-token"><div class="ds-token__id"><code>--color-text-inverse</code><span>#0b0b0c</span></div><div class="ds-preview"><div class="ds-swatch" style="background:#0b0b0c"></div></div></li>
+<li class="ds-token"><div class="ds-token__id"><code>--color-accent</code><span>#1ed760</span></div><div class="ds-preview"><div class="ds-swatch" style="background:#1ed760"></div></div></li>
+<li class="ds-token"><div class="ds-token__id"><code>--color-accent-hover</code><span>#3ee57b</span></div><div class="ds-preview"><div class="ds-swatch" style="background:#3ee57b"></div></div></li>
+<li class="ds-token"><div class="ds-token__id"><code>--color-verified</code><span>#9fc6e8</span></div><div class="ds-preview"><div class="ds-swatch" style="background:#9fc6e8"></div></div></li>
+</ul>
+</section>
+<section class="ds-section">
+<h2>Typography</h2>
+<ul class="ds-tokens">
+<li class="ds-token"><div class="ds-token__id"><code>--font-sans</code><span>&quot;Archivo&quot;, system-ui, -apple-system, &quot;Segoe UI&quot;, Roboto, Helvetica, Arial, sans-serif</span></div><div class="ds-preview"><div class="ds-type" style="font-family:&quot;Archivo&quot;, system-ui, -apple-system, &quot;Segoe UI&quot;, Roboto, Helvetica, Arial, sans-serif;font-size:&quot;Archivo&quot;, system-ui, -apple-system, &quot;Segoe UI&quot;, Roboto, Helvetica, Arial, sans-serif">Aa Bb Cc<br />0123 !?</div></div></li>
+<li class="ds-token"><div class="ds-token__id"><code>--font-mono</code><span>&quot;JetBrains Mono&quot;, ui-monospace, &quot;SF Mono&quot;, Menlo, Consolas, monospace</span></div><div class="ds-preview"><div class="ds-type" style="font-family:&quot;JetBrains Mono&quot;, ui-monospace, &quot;SF Mono&quot;, Menlo, Consolas, monospace;font-size:&quot;JetBrains Mono&quot;, ui-monospace, &quot;SF Mono&quot;, Menlo, Consolas, monospace">Aa Bb Cc<br />0123 !?</div></div></li>
+<li class="ds-token"><div class="ds-token__id"><code>--text-2xs</code><span>0.625rem</span></div><div class="ds-preview"><div class="ds-type" style="font-family:0.625rem;font-size:0.625rem">Aa Bb Cc<br />0123 !?</div></div></li>
+<li class="ds-token"><div class="ds-token__id"><code>--text-xs</code><span>0.6875rem</span></div><div class="ds-preview"><div class="ds-type" style="font-family:0.6875rem;font-size:0.6875rem">Aa Bb Cc<br />0123 !?</div></div></li>
+<li class="ds-token"><div class="ds-token__id"><code>--text-sm</code><span>0.75rem</span></div><div class="ds-preview"><div class="ds-type" style="font-family:0.75rem;font-size:0.75rem">Aa Bb Cc<br />0123 !?</div></div></li>
+<li class="ds-token"><div class="ds-token__id"><code>--text-base</code><span>0.8125rem</span></div><div class="ds-preview"><div class="ds-type" style="font-family:0.8125rem;font-size:0.8125rem">Aa Bb Cc<br />0123 !?</div></div></li>
+<li class="ds-token"><div class="ds-token__id"><code>--text-md</code><span>0.9375rem</span></div><div class="ds-preview"><div class="ds-type" style="font-family:0.9375rem;font-size:0.9375rem">Aa Bb Cc<br />0123 !?</div></div></li>
+<li class="ds-token"><div class="ds-token__id"><code>--text-lg</code><span>1.125rem</span></div><div class="ds-preview"><div class="ds-type" style="font-family:1.125rem;font-size:1.125rem">Aa Bb Cc<br />0123 !?</div></div></li>
+<li class="ds-token"><div class="ds-token__id"><code>--text-xl</code><span>1.375rem</span></div><div class="ds-preview"><div class="ds-type" style="font-family:1.375rem;font-size:1.375rem">Aa Bb Cc<br />0123 !?</div></div></li>
+<li class="ds-token"><div class="ds-token__id"><code>--text-2xl</code><span>1.75rem</span></div><div class="ds-preview"><div class="ds-type" style="font-family:1.75rem;font-size:1.75rem">Aa Bb Cc<br />0123 !?</div></div></li>
+<li class="ds-token"><div class="ds-token__id"><code>--text-3xl</code><span>2.5rem</span></div><div class="ds-preview"><div class="ds-type" style="font-family:2.5rem;font-size:2.5rem">Aa Bb Cc<br />0123 !?</div></div></li>
+<li class="ds-token"><div class="ds-token__id"><code>--text-4xl</code><span>3.5rem</span></div><div class="ds-preview"><div class="ds-type" style="font-family:3.5rem;font-size:3.5rem">Aa Bb Cc<br />0123 !?</div></div></li>
+</ul>
+</section>
+<section class="ds-section">
+<h2>Spacing</h2>
+<ul class="ds-tokens">
+<li class="ds-token"><div class="ds-token__id"><code>--space-1</code><span>0.25rem</span></div><div class="ds-preview"><div class="ds-space" style="width:0.25rem"></div></div></li>
+<li class="ds-token"><div class="ds-token__id"><code>--space-2</code><span>0.5rem</span></div><div class="ds-preview"><div class="ds-space" style="width:0.5rem"></div></div></li>
+<li class="ds-token"><div class="ds-token__id"><code>--space-3</code><span>0.75rem</span></div><div class="ds-preview"><div class="ds-space" style="width:0.75rem"></div></div></li>
+<li class="ds-token"><div class="ds-token__id"><code>--space-4</code><span>1rem</span></div><div class="ds-preview"><div class="ds-space" style="width:1rem"></div></div></li>
+<li class="ds-token"><div class="ds-token__id"><code>--space-5</code><span>1.5rem</span></div><div class="ds-preview"><div class="ds-space" style="width:1.5rem"></div></div></li>
+<li class="ds-token"><div class="ds-token__id"><code>--space-6</code><span>2rem</span></div><div class="ds-preview"><div class="ds-space" style="width:2rem"></div></div></li>
+<li class="ds-token"><div class="ds-token__id"><code>--space-7</code><span>3rem</span></div><div class="ds-preview"><div class="ds-space" style="width:3rem"></div></div></li>
+<li class="ds-token"><div class="ds-token__id"><code>--space-8</code><span>4rem</span></div><div class="ds-preview"><div class="ds-space" style="width:4rem"></div></div></li>
+<li class="ds-token"><div class="ds-token__id"><code>--space-gutter</code><span>1.5rem</span></div><div class="ds-preview"><div class="ds-space" style="width:1.5rem"></div></div></li>
+</ul>
+</section>
+<section class="ds-section">
+<h2>Radii</h2>
+<ul class="ds-tokens">
+<li class="ds-token"><div class="ds-token__id"><code>--radius-xs</code><span>1px</span></div><div class="ds-preview"><div class="ds-radius" style="border-radius:1px"></div></div></li>
+<li class="ds-token"><div class="ds-token__id"><code>--radius-sm</code><span>2px</span></div><div class="ds-preview"><div class="ds-radius" style="border-radius:2px"></div></div></li>
+<li class="ds-token"><div class="ds-token__id"><code>--radius</code><span>3px</span></div><div class="ds-preview"><div class="ds-radius" style="border-radius:3px"></div></div></li>
+<li class="ds-token"><div class="ds-token__id"><code>--radius-lg</code><span>4px</span></div><div class="ds-preview"><div class="ds-radius" style="border-radius:4px"></div></div></li>
+<li class="ds-token"><div class="ds-token__id"><code>--radius-pill</code><span>999px</span></div><div class="ds-preview"><div class="ds-radius" style="border-radius:999px"></div></div></li>
+</ul>
+</section>
+<section class="ds-section">
+<h2>Shadows</h2>
+<ul class="ds-tokens">
+<li class="ds-token"><div class="ds-token__id"><code>--shadow-sm</code><span>0 1px 2px rgba(0, 0, 0, 0.5)</span></div><div class="ds-preview"><div class="ds-shadow" style="box-shadow:0 1px 2px rgba(0, 0, 0, 0.5)"></div></div></li>
+<li class="ds-token"><div class="ds-token__id"><code>--shadow-md</code><span>0 6px 20px rgba(0, 0, 0, 0.55)</span></div><div class="ds-preview"><div class="ds-shadow" style="box-shadow:0 6px 20px rgba(0, 0, 0, 0.55)"></div></div></li>
+<li class="ds-token"><div class="ds-token__id"><code>--shadow-lg</code><span>0 20px 50px rgba(0, 0, 0, 0.65)</span></div><div class="ds-preview"><div class="ds-shadow" style="box-shadow:0 20px 50px rgba(0, 0, 0, 0.65)"></div></div></li>
+</ul>
+</section>
+<section class="ds-section">
+<h2>Other</h2>
+<ul class="ds-tokens">
+<li class="ds-token ds-token--plain"><div class="ds-token__id"><code>--leading-tight</code><span>1.05</span></div></li>
+<li class="ds-token ds-token--plain"><div class="ds-token__id"><code>--leading-snug</code><span>1.25</span></div></li>
+<li class="ds-token ds-token--plain"><div class="ds-token__id"><code>--leading-normal</code><span>1.5</span></div></li>
+<li class="ds-token ds-token--plain"><div class="ds-token__id"><code>--weight-regular</code><span>400</span></div></li>
+<li class="ds-token ds-token--plain"><div class="ds-token__id"><code>--weight-medium</code><span>500</span></div></li>
+<li class="ds-token ds-token--plain"><div class="ds-token__id"><code>--weight-semibold</code><span>600</span></div></li>
+<li class="ds-token ds-token--plain"><div class="ds-token__id"><code>--weight-bold</code><span>700</span></div></li>
+<li class="ds-token ds-token--plain"><div class="ds-token__id"><code>--weight-black</code><span>800</span></div></li>
+<li class="ds-token ds-token--plain"><div class="ds-token__id"><code>--tracking-tight</code><span>-0.02em</span></div></li>
+<li class="ds-token ds-token--plain"><div class="ds-token__id"><code>--tracking-caps</code><span>0.11em</span></div></li>
+<li class="ds-token ds-token--plain"><div class="ds-token__id"><code>--tracking-wide</code><span>0.06em</span></div></li>
+<li class="ds-token ds-token--plain"><div class="ds-token__id"><code>--sidebar-w</code><span>16rem</span></div></li>
+<li class="ds-token ds-token--plain"><div class="ds-token__id"><code>--nowplaying-w</code><span>19.5rem</span></div></li>
+<li class="ds-token ds-token--plain"><div class="ds-token__id"><code>--playbar-h</code><span>4rem</span></div></li>
+<li class="ds-token ds-token--plain"><div class="ds-token__id"><code>--topbar-h</code><span>3.5rem</span></div></li>
+<li class="ds-token ds-token--plain"><div class="ds-token__id"><code>--sidebar-rail-w</code><span>4rem</span></div></li>
+<li class="ds-token ds-token--plain"><div class="ds-token__id"><code>--row-h</code><span>2.75rem</span></div></li>
+<li class="ds-token ds-token--plain"><div class="ds-token__id"><code>--ease-out</code><span>cubic-bezier(0.3, 0, 0, 1)</span></div></li>
+<li class="ds-token ds-token--plain"><div class="ds-token__id"><code>--dur-fast</code><span>110ms</span></div></li>
+<li class="ds-token ds-token--plain"><div class="ds-token__id"><code>--dur-base</code><span>180ms</span></div></li>
+<li class="ds-token ds-token--plain"><div class="ds-token__id"><code>--dur-slow</code><span>300ms</span></div></li>
+</ul>
+</section>
+</body>
+</html>
