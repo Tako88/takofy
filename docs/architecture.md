@@ -51,7 +51,13 @@ earns the boilerplate the second one avoids.
 
 ## Who owns what
 
-- The binary owns the tokio runtime, and the `Engine` in headless mode.
+- The binary owns the tokio runtime, and the `Engine` in headless mode. In the
+  window, the command task owns the engine and the player, and the task's exit
+  path shuts both down.
+- The session work the task drives sits behind one seam, so the task's exit
+  paths can be exercised without a network or an audio device. A real `Playback`
+  needs a live session and an audio device, so the exit path would otherwise be
+  untestable.
 - The window's end of the bridge, `UiEnd`, is moved into the app and dropped
   with it when the window closes.
 - `Worker` is owned outside the app, by the teardown that joins it. eframe drops
@@ -65,10 +71,11 @@ earns the boilerplate the second one avoids.
 - librespot owns its playback threads. Nothing is shared behind a lock the UI
   could block on.
 
-Shutdown runs in a fixed order: the window closes, teardown joins the worker,
-and then the runtime drops. It depends on `NativeOptions::run_and_return`, so
-that eframe returns instead of exiting the process; an exit would skip both
-teardown and the runtime drop.
+Shutdown runs in a fixed order: the window closes, teardown tells the command
+task to stop, the task shuts the player down, and then the runtime drops. The
+player's shutdown is awaited, so the order ends in joining the player thread. It
+depends on `NativeOptions::run_and_return`, so that eframe returns instead of
+exiting the process; an exit would skip both teardown and the runtime drop.
 
 In the window, sign-in calls run on detached threads, not `spawn_blocking`:
 one parked on the browser callback can hold up the runtime drop, which waits

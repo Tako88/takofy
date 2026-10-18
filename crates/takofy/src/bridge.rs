@@ -12,9 +12,10 @@ use std::sync::{Arc, OnceLock};
 
 use takofy_core::credentials::{AccessToken, CredentialStore};
 use takofy_core::login::{AuthError, SourceErrorKind, TokenSource, authorize, resume};
-use takofy_ui::message::{Command, Failure, Update};
+use takofy_core::playback::{PlaybackError, PlaybackEvent};
+use takofy_ui::message::{Command, Failure, TransportUpdate, Update};
 use tokio::runtime::{Handle, Runtime};
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot;
 use tokio::sync::oneshot::Receiver as StopReceiver;
 
@@ -210,7 +211,19 @@ pub(crate) fn start<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                         break;
                     }
                 }
-                Event::Command(Some(_)) => {}
+                Event::Command(Some(Command::LoadTracks { playlist })) => {
+                    let step =
+                        load_tracks(&mut host, &mut stop_rx, &task_notifier, &playlist).await;
+                    if step.stopped() {
+                        break;
+                    }
+                }
+                Event::Command(Some(Command::Play { uri })) => {
+                    play(&mut host, &task_notifier, &uri);
+                }
+                Event::Command(Some(Command::Pause)) => host.pause(),
+                Event::Command(Some(Command::Resume)) => host.resume(),
+                Event::Command(Some(Command::Stop)) => host.stop(),
                 Event::Command(None) => break,
             }
         }
@@ -298,6 +311,89 @@ pub(crate) fn announce<T>(
     match result {
         Ok(value) => notifier.send(ready(value)),
         Err(error) => notifier.send(failed(library_failure(&error))),
+    }
+}
+
+/// Loads the first page of a playlist's tracks and announces it.
+async fn load_tracks<H: SessionHost>(
+    host: &mut H,
+    stop: &mut StopReceiver<()>,
+    notifier: &Notifier,
+    playlist: &str,
+) -> Step {
+    match stop_or(stop, host.tracks(playlist)).await {
+        None => Step::Stopped,
+        Some(result) => {
+            announce(
+                notifier,
+                result,
+                |page| Update::Tracks {
+                    playlist: playlist.to_owned(),
+                    tracks: page.unwrap_or_default(),
+                },
+                |failure| Update::TracksFailed {
+                    playlist: playlist.to_owned(),
+                    failure,
+                },
+            );
+            Step::Done
+        }
+    }
+}
+
+/// Starts the player if needed and hands the one drain thread its events.
+fn play<H: SessionHost>(host: &mut H, notifier: &Notifier, uri: &str) {
+    match host.play(uri) {
+        Ok(()) => {
+            if let Some(events) = host.take_events() {
+                spawn_drain(notifier.clone(), events);
+            }
+        }
+        Err(error) => {
+            notifier.send(Update::Transport(TransportUpdate::Failed(
+                playback_failure(&error),
+            )));
+        }
+    }
+}
+
+/// Drains playback events onto the update channel for as long as the player
+/// lives. A plain thread needs no runtime, so `blocking_recv` cannot delay the
+/// runtime's drop.
+fn spawn_drain(notifier: Notifier, mut events: UnboundedReceiver<PlaybackEvent>) {
+    std::thread::spawn(move || {
+        while let Some(event) = events.blocking_recv() {
+            notifier.send(transport_of(&event));
+        }
+    });
+}
+
+/// Turns a playback event into the window's vocabulary. Total over the event
+/// set, so a new event is a build failure here.
+pub(crate) fn transport_of(event: &PlaybackEvent) -> Update {
+    Update::Transport(match event {
+        PlaybackEvent::Loading => TransportUpdate::Loading,
+        PlaybackEvent::Playing { position_ms } => TransportUpdate::Position {
+            position_ms: *position_ms,
+            paused: false,
+        },
+        PlaybackEvent::Paused { position_ms } => TransportUpdate::Position {
+            position_ms: *position_ms,
+            paused: true,
+        },
+        PlaybackEvent::Ended => TransportUpdate::Ended,
+        PlaybackEvent::Unavailable => TransportUpdate::Unavailable,
+        PlaybackEvent::Stopped => TransportUpdate::Stopped,
+    })
+}
+
+/// A playback failure the bar can name, or `Other` when it cannot. The reason
+/// is for the log, never the window.
+pub(crate) fn playback_failure(error: &SessionError) -> Failure {
+    log::warn!("playback failure: {}", error.kind());
+    match error {
+        SessionError::Playback(PlaybackError::NoAudioDevice) => Failure::NoAudioDevice,
+        _ => Failure::Other,
     }
 }
 
@@ -393,7 +489,7 @@ mod tests {
 
     use takofy_core::credentials::{AccessToken, CredentialStore, RefreshToken, StoreError};
     use takofy_core::login::{SourceError, SourceErrorKind, TokenSet, TokenSource};
-    use takofy_model::PlaylistEntry;
+    use takofy_model::{PlaylistEntry, TrackEntry};
     use tokio::runtime::Runtime;
 
     use super::*;
@@ -586,15 +682,42 @@ mod tests {
         }
     }
 
+    /// `Ready(None)` is a playlist with no tracks.
+    #[derive(Clone)]
+    enum TracksScript {
+        Ready(Option<Vec<TrackEntry>>),
+        Fail,
+        Pending,
+    }
+
+    impl Default for TracksScript {
+        fn default() -> Self {
+            Self::Ready(None)
+        }
+    }
+
     #[derive(Default)]
     struct FakeState {
         connect_scripts: Mutex<Vec<ConnectScript>>,
         rootlist_script: Mutex<RootlistScript>,
+        tracks_script: Mutex<TracksScript>,
+        connected: AtomicBool,
         connects: AtomicUsize,
         rootlists: AtomicUsize,
+        tracks: AtomicUsize,
+        plays: AtomicUsize,
+        pauses: AtomicUsize,
+        resumes: AtomicUsize,
+        stops: AtomicUsize,
+        players: AtomicUsize,
+        player_started: AtomicBool,
         shutdowns: AtomicUsize,
         connect_started: Mutex<Option<Sender<()>>>,
         rootlist_started: Mutex<Option<Sender<()>>>,
+        tracks_started: Mutex<Option<Sender<()>>>,
+        play_started: Mutex<Option<Sender<()>>>,
+        events: Mutex<Option<UnboundedReceiver<PlaybackEvent>>>,
+        event_tx: Mutex<Option<UnboundedSender<PlaybackEvent>>>,
     }
 
     /// Records every session call so an exit path can be asserted without a
@@ -639,9 +762,13 @@ mod tests {
                     scripts.first().copied().unwrap_or_default()
                 }
             };
+            let shared = Arc::clone(&self.shared);
             async move {
                 match script {
-                    ConnectScript::Ok => Ok(()),
+                    ConnectScript::Ok => {
+                        shared.connected.store(true, Ordering::SeqCst);
+                        Ok(())
+                    }
                     ConnectScript::Fail => Err(SessionError::NotConnected),
                     ConnectScript::Pending => std::future::pending().await,
                 }
@@ -663,6 +790,61 @@ mod tests {
                     RootlistScript::Pending => std::future::pending().await,
                 }
             }
+        }
+
+        fn tracks(
+            &mut self,
+            _playlist: &str,
+        ) -> impl Future<Output = Result<Option<Vec<TrackEntry>>, SessionError>> + Send {
+            self.shared.tracks.fetch_add(1, Ordering::SeqCst);
+            if let Some(tx) = self.shared.tracks_started.lock().expect("lock").take() {
+                let _ = tx.send(());
+            }
+            let connected = self.shared.connected.load(Ordering::SeqCst);
+            let script = self.shared.tracks_script.lock().expect("lock").clone();
+            async move {
+                if !connected {
+                    return Err(SessionError::NotConnected);
+                }
+                match script {
+                    TracksScript::Ready(page) => Ok(page),
+                    TracksScript::Fail => Err(SessionError::NotConnected),
+                    TracksScript::Pending => std::future::pending().await,
+                }
+            }
+        }
+
+        fn play(&mut self, _uri: &str) -> Result<(), SessionError> {
+            self.shared.plays.fetch_add(1, Ordering::SeqCst);
+            if !self.shared.connected.load(Ordering::SeqCst) {
+                return Err(SessionError::NotConnected);
+            }
+            if !self.shared.player_started.swap(true, Ordering::SeqCst) {
+                self.shared.players.fetch_add(1, Ordering::SeqCst);
+                let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                *self.shared.event_tx.lock().expect("lock") = Some(tx);
+                *self.shared.events.lock().expect("lock") = Some(rx);
+            }
+            if let Some(tx) = self.shared.play_started.lock().expect("lock").take() {
+                let _ = tx.send(());
+            }
+            Ok(())
+        }
+
+        fn take_events(&mut self) -> Option<UnboundedReceiver<PlaybackEvent>> {
+            self.shared.events.lock().expect("lock").take()
+        }
+
+        fn pause(&self) {
+            self.shared.pauses.fetch_add(1, Ordering::SeqCst);
+        }
+
+        fn resume(&self) {
+            self.shared.resumes.fetch_add(1, Ordering::SeqCst);
+        }
+
+        fn stop(&self) {
+            self.shared.stops.fetch_add(1, Ordering::SeqCst);
         }
 
         fn shutdown(self) -> impl Future<Output = Result<(), SessionError>> + Send {
@@ -1256,5 +1438,389 @@ mod tests {
     fn run_ordered_returns_the_window_result() {
         let result = run_ordered(runtime(), || 42, || async {});
         assert_eq!(result, 42);
+    }
+
+    fn track(uri: &str) -> TrackEntry {
+        TrackEntry {
+            uri: uri.to_owned(),
+            title: uri.to_owned(),
+            artists: String::new(),
+            named: true,
+        }
+    }
+
+    #[test]
+    fn transport_of_maps_every_event() {
+        assert_eq!(
+            transport_of(&PlaybackEvent::Loading),
+            Update::Transport(TransportUpdate::Loading)
+        );
+        assert_eq!(
+            transport_of(&PlaybackEvent::Playing { position_ms: 5 }),
+            Update::Transport(TransportUpdate::Position {
+                position_ms: 5,
+                paused: false,
+            })
+        );
+        assert_eq!(
+            transport_of(&PlaybackEvent::Paused { position_ms: 5 }),
+            Update::Transport(TransportUpdate::Position {
+                position_ms: 5,
+                paused: true,
+            })
+        );
+        assert_eq!(
+            transport_of(&PlaybackEvent::Ended),
+            Update::Transport(TransportUpdate::Ended)
+        );
+        assert_eq!(
+            transport_of(&PlaybackEvent::Unavailable),
+            Update::Transport(TransportUpdate::Unavailable)
+        );
+        assert_eq!(
+            transport_of(&PlaybackEvent::Stopped),
+            Update::Transport(TransportUpdate::Stopped)
+        );
+    }
+
+    #[test]
+    fn playback_failure_names_a_missing_device() {
+        assert_eq!(
+            playback_failure(&SessionError::Playback(PlaybackError::NoAudioDevice)),
+            Failure::NoAudioDevice
+        );
+        assert_eq!(
+            playback_failure(&SessionError::NotConnected),
+            Failure::Other
+        );
+        assert_eq!(
+            playback_failure(&SessionError::Playback(PlaybackError::NoAudioBackend)),
+            Failure::Other
+        );
+    }
+
+    #[test]
+    fn announce_sends_tracks_for_a_page() {
+        let (tx, rx) = channel();
+        let notifier = Notifier {
+            tx,
+            slot: WakeSlot::default(),
+        };
+        let playlist = "spotify:playlist:a".to_owned();
+        announce(
+            &notifier,
+            Ok(Some(vec![track("t")])),
+            |page| Update::Tracks {
+                playlist: playlist.clone(),
+                tracks: page.unwrap_or_default(),
+            },
+            |failure| Update::TracksFailed {
+                playlist: playlist.clone(),
+                failure,
+            },
+        );
+        assert_eq!(
+            rx.recv().expect("update"),
+            Update::Tracks {
+                playlist,
+                tracks: vec![track("t")],
+            }
+        );
+    }
+
+    #[test]
+    fn announce_sends_tracks_failed_for_an_error() {
+        let (tx, rx) = channel();
+        let notifier = Notifier {
+            tx,
+            slot: WakeSlot::default(),
+        };
+        let playlist = "spotify:playlist:a".to_owned();
+        let result: Result<Option<Vec<TrackEntry>>, SessionError> = Err(SessionError::NotConnected);
+        announce(
+            &notifier,
+            result,
+            |page| Update::Tracks {
+                playlist: playlist.clone(),
+                tracks: page.unwrap_or_default(),
+            },
+            |failure| Update::TracksFailed {
+                playlist: playlist.clone(),
+                failure,
+            },
+        );
+        assert_eq!(
+            rx.recv().expect("update"),
+            Update::TracksFailed {
+                playlist,
+                failure: Failure::Load,
+            }
+        );
+    }
+
+    #[test]
+    fn a_load_tracks_before_connect_announces_a_failure() {
+        let store = Arc::new(MemoryStore::default());
+        let source = Arc::new(FixedSource::default());
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::default());
+        let shared = Arc::clone(&host.shared);
+
+        let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            assert_eq!(
+                ui_end.updates.recv().expect("resume update"),
+                Update::NeedsAuthorization
+            );
+            ui_end
+                .commands
+                .send(Command::LoadTracks {
+                    playlist: "spotify:playlist:a".to_owned(),
+                })
+                .expect("load");
+            ui_end.updates.recv().expect("failure")
+        });
+
+        assert_eq!(
+            update,
+            Update::TracksFailed {
+                playlist: "spotify:playlist:a".to_owned(),
+                failure: Failure::Load,
+            }
+        );
+        assert_eq!(shared.tracks.load(Ordering::SeqCst), 1);
+        assert_eq!(shared.shutdowns.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_failed_track_load_is_announced_and_the_task_shuts_down() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+        *shared.tracks_script.lock().expect("lock") = TracksScript::Fail;
+
+        let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::LoadTracks {
+                    playlist: "spotify:playlist:a".to_owned(),
+                })
+                .expect("load");
+            ui_end.updates.recv().expect("failure")
+        });
+
+        assert_eq!(
+            update,
+            Update::TracksFailed {
+                playlist: "spotify:playlist:a".to_owned(),
+                failure: Failure::Load,
+            }
+        );
+        assert_eq!(shared.tracks.load(Ordering::SeqCst), 1);
+        assert_eq!(shared.shutdowns.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_second_play_does_not_start_a_second_player() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+        let (play_started_tx, play_started_rx) = channel();
+        *shared.play_started.lock().expect("lock") = Some(play_started_tx);
+
+        run_window(runtime(), host, store, source, move |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::Play {
+                    uri: "spotify:track:x".to_owned(),
+                })
+                .expect("play");
+            play_started_rx.recv().expect("play started");
+            ui_end
+                .commands
+                .send(Command::Play {
+                    uri: "spotify:track:x".to_owned(),
+                })
+                .expect("play");
+            // Reload is processed after the second play, so it is a barrier.
+            ui_end
+                .commands
+                .send(Command::ReloadLibrary)
+                .expect("reload");
+            loop {
+                if matches!(ui_end.updates.recv().expect("update"), Update::Playlists(_)) {
+                    break;
+                }
+            }
+        });
+
+        assert_eq!(shared.plays.load(Ordering::SeqCst), 2);
+        assert_eq!(shared.players.load(Ordering::SeqCst), 1);
+        assert_eq!(shared.shutdowns.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn pause_resume_and_stop_with_no_player_do_not_start_one() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+
+        run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end.commands.send(Command::Pause).expect("pause");
+            ui_end.commands.send(Command::Resume).expect("resume");
+            ui_end.commands.send(Command::Stop).expect("stop");
+            ui_end
+                .commands
+                .send(Command::ReloadLibrary)
+                .expect("reload");
+            loop {
+                if matches!(ui_end.updates.recv().expect("update"), Update::Playlists(_)) {
+                    break;
+                }
+            }
+        });
+
+        assert_eq!(shared.pauses.load(Ordering::SeqCst), 1);
+        assert_eq!(shared.resumes.load(Ordering::SeqCst), 1);
+        assert_eq!(shared.stops.load(Ordering::SeqCst), 1);
+        assert_eq!(shared.players.load(Ordering::SeqCst), 0);
+        assert_eq!(shared.shutdowns.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn playback_events_reach_the_window() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+        let window_shared = Arc::clone(&shared);
+        let (play_started_tx, play_started_rx) = channel();
+        *shared.play_started.lock().expect("lock") = Some(play_started_tx);
+
+        let update = run_window(runtime(), host, store, source, move |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::Play {
+                    uri: "spotify:track:x".to_owned(),
+                })
+                .expect("play");
+            play_started_rx.recv().expect("play started");
+            let tx = window_shared
+                .event_tx
+                .lock()
+                .expect("lock")
+                .clone()
+                .expect("event sender");
+            tx.send(PlaybackEvent::Playing { position_ms: 7 })
+                .expect("event");
+            ui_end.updates.recv().expect("transport")
+        });
+
+        assert_eq!(
+            update,
+            Update::Transport(TransportUpdate::Position {
+                position_ms: 7,
+                paused: false,
+            })
+        );
+    }
+
+    #[test]
+    fn a_stop_during_tracks_shuts_down_before_the_task_returns() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+        *shared.tracks_script.lock().expect("lock") = TracksScript::Pending;
+        let (started_tx, started_rx) = channel();
+        *shared.tracks_started.lock().expect("lock") = Some(started_tx);
+
+        let runtime = runtime();
+        let (ui_end, _slot, worker) = start(runtime.handle(), host, store, source);
+
+        let window = move || {
+            loop {
+                if matches!(ui_end.updates.recv().expect("update"), Update::Playlists(_)) {
+                    break;
+                }
+            }
+            ui_end
+                .commands
+                .send(Command::LoadTracks {
+                    playlist: "spotify:playlist:a".to_owned(),
+                })
+                .expect("load");
+            started_rx.recv().expect("tracks started");
+        };
+        let teardown = move || async move {
+            // A hung stop must fail the test, not hang the suite.
+            tokio::time::timeout(Duration::from_secs(1), worker.finish())
+                .await
+                .expect("finish must resolve when the stop interrupts the track load");
+            assert_eq!(
+                shared.shutdowns.load(Ordering::SeqCst),
+                1,
+                "the shutdown must run when the stop interrupts the track load"
+            );
+        };
+
+        run_ordered(runtime, window, teardown);
+    }
+
+    #[test]
+    fn a_stop_with_the_player_started_shuts_down_before_the_task_returns() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+        let (play_started_tx, play_started_rx) = channel();
+        *shared.play_started.lock().expect("lock") = Some(play_started_tx);
+
+        let runtime = runtime();
+        let (ui_end, _slot, worker) = start(runtime.handle(), host, store, source);
+
+        let window = move || {
+            loop {
+                if matches!(ui_end.updates.recv().expect("update"), Update::Playlists(_)) {
+                    break;
+                }
+            }
+            ui_end
+                .commands
+                .send(Command::Play {
+                    uri: "spotify:track:x".to_owned(),
+                })
+                .expect("play");
+            play_started_rx.recv().expect("play started");
+        };
+        let teardown = move || async move {
+            tokio::time::timeout(Duration::from_secs(1), worker.finish())
+                .await
+                .expect("finish must resolve when the stop interrupts playback");
+            assert_eq!(
+                shared.shutdowns.load(Ordering::SeqCst),
+                1,
+                "the shutdown must run after a player was started"
+            );
+            assert_eq!(shared.players.load(Ordering::SeqCst), 1);
+        };
+
+        run_ordered(runtime, window, teardown);
     }
 }

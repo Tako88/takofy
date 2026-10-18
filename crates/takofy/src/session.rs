@@ -9,7 +9,9 @@ use std::future::Future;
 use librespot::core::SessionConfig;
 use takofy_core::credentials::AccessToken;
 use takofy_core::engine::{Engine, EngineError};
-use takofy_model::PlaylistEntry;
+use takofy_core::playback::{Playback, PlaybackError, PlaybackEvent};
+use takofy_model::{PlaylistEntry, TrackEntry};
+use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::oneshot::Receiver;
 
 /// Why a session-side operation failed, including the wiring's own state.
@@ -19,6 +21,8 @@ pub(crate) enum SessionError {
     NotConnected,
     /// The engine call itself failed.
     Engine(EngineError),
+    /// The player could not be started, driven or shut down.
+    Playback(PlaybackError),
 }
 
 impl SessionError {
@@ -30,6 +34,13 @@ impl SessionError {
             Self::Engine(EngineError::Session(_)) => "session",
             Self::Engine(EngineError::Rootlist(_)) => "rootlist",
             Self::Engine(EngineError::Context(_)) => "context",
+            Self::Playback(error) => match error {
+                PlaybackError::NoAudioBackend => "no audio backend",
+                PlaybackError::NoAudioDevice => "no audio device",
+                PlaybackError::PlayerShared => "player shared",
+                PlaybackError::PlayerClosed => "player closed",
+                PlaybackError::NotPlayable(_) => "not playable",
+            },
         }
     }
 }
@@ -48,6 +59,23 @@ pub(crate) trait SessionHost: Send + 'static {
 
     fn rootlist(&self) -> impl Future<Output = Result<Vec<PlaylistEntry>, SessionError>> + Send;
 
+    fn tracks(
+        &mut self,
+        playlist: &str,
+    ) -> impl Future<Output = Result<Option<Vec<TrackEntry>>, SessionError>> + Send;
+
+    fn play(&mut self, uri: &str) -> Result<(), SessionError>;
+
+    /// The event stream of a player started since the last call, so the one
+    /// drain thread can be handed it exactly once.
+    fn take_events(&mut self) -> Option<UnboundedReceiver<PlaybackEvent>>;
+
+    fn pause(&self);
+
+    fn resume(&self);
+
+    fn stop(&self);
+
     fn shutdown(self) -> impl Future<Output = Result<(), SessionError>> + Send;
 }
 
@@ -64,15 +92,22 @@ pub(crate) async fn stop_or<T>(
 }
 
 /// The production adapter. Holds the config so `connect` can run once the
-/// token arrives.
+/// token arrives, and the player so it can be started lazily.
 pub(crate) struct LiveSession {
     cfg: SessionConfig,
     engine: Option<Engine>,
+    playback: Option<Playback>,
+    events: Option<UnboundedReceiver<PlaybackEvent>>,
 }
 
 impl LiveSession {
     pub(crate) fn new(cfg: SessionConfig) -> Self {
-        Self { cfg, engine: None }
+        Self {
+            cfg,
+            engine: None,
+            playback: None,
+            events: None,
+        }
     }
 }
 
@@ -92,11 +127,59 @@ impl SessionHost for LiveSession {
         }
     }
 
+    async fn tracks(&mut self, playlist: &str) -> Result<Option<Vec<TrackEntry>>, SessionError> {
+        let Some(engine) = &self.engine else {
+            return Err(SessionError::NotConnected);
+        };
+        engine
+            .tracks(playlist)
+            .next()
+            .await
+            .map_err(SessionError::Engine)
+    }
+
+    fn play(&mut self, uri: &str) -> Result<(), SessionError> {
+        if self.playback.is_none() {
+            let engine = self.engine.as_ref().ok_or(SessionError::NotConnected)?;
+            let (playback, events) = engine.playback().map_err(SessionError::Playback)?;
+            self.playback = Some(playback);
+            self.events = Some(events);
+        }
+        match self.playback.as_ref() {
+            Some(playback) => playback.play(uri).map_err(SessionError::Playback),
+            None => Err(SessionError::NotConnected),
+        }
+    }
+
+    fn take_events(&mut self) -> Option<UnboundedReceiver<PlaybackEvent>> {
+        self.events.take()
+    }
+
+    fn pause(&self) {
+        if let Some(playback) = &self.playback {
+            playback.pause();
+        }
+    }
+
+    fn resume(&self) {
+        if let Some(playback) = &self.playback {
+            playback.resume();
+        }
+    }
+
+    fn stop(&self) {
+        if let Some(playback) = &self.playback {
+            playback.stop();
+        }
+    }
+
     async fn shutdown(self) -> Result<(), SessionError> {
-        // Consuming the adapter is what will join a started player; the engine
-        // simply drops with it.
-        drop(self);
-        Ok(())
+        // Consuming the player is what joins its thread; the engine drops with
+        // the adapter.
+        match self.playback {
+            Some(playback) => playback.shutdown().await.map_err(SessionError::Playback),
+            None => Ok(()),
+        }
     }
 }
 
