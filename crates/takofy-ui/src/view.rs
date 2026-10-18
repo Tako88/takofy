@@ -10,19 +10,20 @@ pub mod playbar;
 pub mod playlist;
 mod shell;
 pub mod sidebar;
+mod sign_in;
 pub mod text;
 pub mod topbar;
 mod track_row;
 
-use egui::{Align, Button, Layout, Ui};
+use egui::Ui;
 
 use crate::drawer::Drawer;
 use crate::library::Library;
 use crate::message::Command;
 use crate::player::Transport;
 use crate::queue::Queue;
-use crate::signin::{SignIn, failure_message};
-use crate::theme::{Tokens, space};
+use crate::signin::SignIn;
+use crate::theme::Tokens;
 
 /// The state the window draws from, borrowed for one pass.
 pub struct Screen<'a> {
@@ -37,38 +38,11 @@ pub struct Screen<'a> {
 /// Draws the current state, returning a command when the user asks for one.
 pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Command> {
     match *screen.state {
-        SignIn::Starting | SignIn::Authorizing => {
-            progress(ui);
-            None
+        // Starting, authorizing and a prompt are one card: with words when there
+        // are words, with a spinner while the flow works.
+        SignIn::Starting | SignIn::Authorizing | SignIn::NeedsAuthorization | SignIn::Failed(_) => {
+            sign_in::show(ui, screen.state, tokens)
         }
-        SignIn::NeedsAuthorization | SignIn::Failed(_) => sign_in(ui, screen.state),
         SignIn::SignedIn => shell::show(ui, screen, tokens),
-    }
-}
-
-/// A spinner with no control, so a second click cannot queue another sign-in.
-fn progress(ui: &mut Ui) {
-    ui.with_layout(Layout::top_down(Align::Center), |ui| {
-        ui.add_space(space::S6);
-        ui.spinner();
-    });
-}
-
-/// The prompt and retry control. The button is enabled only where a command is
-/// accepted, so a stale frame cannot queue a second one.
-fn sign_in(ui: &mut Ui, state: &mut SignIn) -> Option<Command> {
-    let (heading, body, label) = match *state {
-        SignIn::Failed(failure) => ("Could not sign in", failure_message(failure), "Try again"),
-        _ => ("Takofy", "Sign in with Spotify to continue.", "Authorize"),
-    };
-
-    ui.heading(heading);
-    ui.label(body);
-
-    let enabled = state.can_authorize();
-    if ui.add_enabled(enabled, Button::new(label)).clicked() {
-        state.authorize()
-    } else {
-        None
     }
 }

@@ -94,6 +94,41 @@ fn keychain_message() -> &'static str {
     "Try signing in again. The system keychain could not be used."
 }
 
+/// The words the sign-in screen shows for one state.
+///
+/// Every field is `&'static str`: the copy is compiled in and never
+/// interpolated from runtime state, so no field can carry a credential.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Words {
+    /// The heading above the body.
+    pub heading: &'static str,
+    /// The explanatory line under the heading.
+    pub body: &'static str,
+    /// The text on the control that advances the flow.
+    pub label: &'static str,
+}
+
+/// The copy for one sign-in state, or `None` where the state draws no words.
+///
+/// `Starting` and `Authorizing` show a spinner and nothing else, and `SignedIn`
+/// hands the window to the shell. The match has no wildcard arm, so adding a
+/// `SignIn` variant is a compile error until its copy is decided here.
+pub fn copy(state: SignIn) -> Option<Words> {
+    match state {
+        SignIn::Starting | SignIn::Authorizing | SignIn::SignedIn => None,
+        SignIn::NeedsAuthorization => Some(Words {
+            heading: "Takofy",
+            body: "Sign in with Spotify to continue.",
+            label: "Authorize",
+        }),
+        SignIn::Failed(failure) => Some(Words {
+            heading: "Could not sign in",
+            body: failure_message(failure),
+            label: "Try again",
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -276,14 +311,7 @@ mod tests {
     #[test]
     fn failure_message_is_non_empty_and_distinct_per_failure() {
         let mut messages = Vec::new();
-        for failure in [
-            Failure::PortBusy,
-            Failure::Keychain,
-            Failure::NoRefreshToken,
-            Failure::NoAudioDevice,
-            Failure::Load,
-            Failure::Other,
-        ] {
+        for failure in every_failure() {
             let message = failure_message(failure);
             assert!(!message.trim().is_empty(), "{failure:?} has no message");
             assert!(
@@ -291,6 +319,94 @@ mod tests {
                 "{failure:?} repeats another message"
             );
             messages.push(message);
+        }
+    }
+
+    /// Every `SignIn` value there is, so a test can sweep them all.
+    fn every_state() -> Vec<SignIn> {
+        let mut states = vec![
+            SignIn::Starting,
+            SignIn::NeedsAuthorization,
+            SignIn::Authorizing,
+            SignIn::SignedIn,
+        ];
+        states.extend(every_failure().into_iter().map(SignIn::Failed));
+        states
+    }
+
+    /// Every `Failure` value there is, so a test can sweep them all.
+    fn every_failure() -> [Failure; 6] {
+        [
+            Failure::PortBusy,
+            Failure::Keychain,
+            Failure::NoRefreshToken,
+            Failure::NoAudioDevice,
+            Failure::Load,
+            Failure::Other,
+        ]
+    }
+
+    #[test]
+    fn every_state_has_its_copy_decided() {
+        // `copy` has no wildcard arm, so a new `SignIn` variant does not
+        // compile until it is decided. This pins the decision for the states
+        // that exist today: the prompt and the failures draw words, the two
+        // progress states and the signed-in shell draw none.
+        for state in every_state() {
+            let expected = matches!(state, SignIn::NeedsAuthorization | SignIn::Failed(_));
+            assert_eq!(
+                copy(state).is_some(),
+                expected,
+                "{state:?} has the wrong copy presence"
+            );
+        }
+
+        assert_eq!(
+            copy(SignIn::NeedsAuthorization),
+            Some(Words {
+                heading: "Takofy",
+                body: "Sign in with Spotify to continue.",
+                label: "Authorize",
+            })
+        );
+    }
+
+    #[test]
+    fn failed_copy_carries_the_failure_message() {
+        for failure in every_failure() {
+            let words = copy(SignIn::Failed(failure)).expect("a failure has copy");
+            assert_eq!(
+                words.body,
+                failure_message(failure),
+                "{failure:?} must show what failure_message writes"
+            );
+        }
+    }
+
+    #[test]
+    fn copy_carries_no_secret_term() {
+        // `copy` is `&'static str`, so no runtime value can be interpolated;
+        // the words are compiled in. The remaining risk is a credential-shaped
+        // field name or literal in the wording. `refresh token` as a phrase is
+        // allowed: `NoRefreshToken` names the missing thing, not its value.
+        let forbidden = [
+            "Bearer",
+            "access_token",
+            "refresh_token",
+            "client_secret",
+            "authorization code",
+            "password",
+            "eyJ",
+        ];
+        for state in every_state() {
+            let Some(words) = copy(state) else {
+                continue;
+            };
+            for text in [words.heading, words.body, words.label] {
+                for term in forbidden {
+                    assert!(!text.contains(term), "{state:?} would echo {term}: {text}");
+                }
+            }
         }
     }
 }

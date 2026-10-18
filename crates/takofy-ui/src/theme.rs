@@ -200,6 +200,10 @@ pub mod extent {
     /// sign-in card. 24 rem is the measure it gives a narrow field, and it
     /// leaves a margin to spare at the minimum window.
     pub const SIGNIN_W: f32 = 384.0;
+    /// A bordered button's box padding, 0.35 rem above and below its label. It is
+    /// not a step on the spacing scale — the reference writes it as a bare value
+    /// and uses it for every button.
+    pub const BUTTON_PAD_Y: f32 = 5.6;
 }
 
 /// How the free space in a row of columns is shared, in the reference's
@@ -689,6 +693,8 @@ mod tests {
             assert!(hero::ART == 11.0 * REM);
             assert!(hero::PLAY == 2.75 * REM);
             assert!(hero::TITLE_MIN == 2.0 * REM);
+            // The button's own padding is a bare 0.35 rem, not a step on the scale.
+            assert!(extent::BUTTON_PAD_Y == 0.35 * REM);
         };
     }
 }

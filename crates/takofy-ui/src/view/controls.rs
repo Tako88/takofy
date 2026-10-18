@@ -362,6 +362,71 @@ pub fn chip_size(ui: &Ui, tokens: &Tokens, label: &str) -> Vec2 {
     )
 }
 
+/// A bordered button carrying a word rather than a glyph: the reference's
+/// `.button`, which is the sign-in card's one control.
+///
+/// The frame is `border_strong` at rest and the text colour under the pointer,
+/// which is the reference's own hover for a button. A waiting one keeps the frame
+/// and drops to the disabled tone, like every other control here.
+pub fn text_button(
+    ui: &mut Ui,
+    tokens: &Tokens,
+    control: Control,
+    rect: Rect,
+    label: &str,
+    live: bool,
+) -> Slot {
+    let slot = slot(ui, control, Role::Button, rect, label, tokens, live);
+    let ready = slot.live;
+    // The reference's `.button` sets its label to the text colour at rest; the
+    // pointer changes only its frame and its wash. A waiting one keeps the frame
+    // and drops to the disabled tone, like every other control here.
+    let color = if ready {
+        tokens.palette.text
+    } else {
+        tokens.palette.text_disabled
+    };
+    let border = if ready && slot.hover > 0.0 {
+        tokens.palette.text
+    } else {
+        tokens.palette.border_strong
+    };
+
+    if let Some(fill) = wash(ui, tokens, slot.hover) {
+        ui.painter().rect_filled(rect, radius::SM, fill);
+    }
+    ui.painter().rect_stroke(
+        rect,
+        radius::SM,
+        Stroke::new(stroke::HAIRLINE, border),
+        StrokeKind::Inside,
+    );
+    let galley = line(ui, label, text_button_font(), color, 0.0);
+    ui.painter().galley(
+        pos2(
+            rect.center().x - galley.size().x / 2.0,
+            rect.center().y - galley.size().y / 2.0,
+        ),
+        galley,
+        color,
+    );
+    slot
+}
+
+/// The box a text button's label needs.
+pub fn text_button_size(ui: &Ui, tokens: &Tokens, label: &str) -> Vec2 {
+    let galley = line(ui, label, text_button_font(), tokens.palette.text, 0.0);
+    Vec2::new(
+        galley.size().x + 2.0 * space::S3,
+        galley.size().y + 2.0 * extent::BUTTON_PAD_Y,
+    )
+}
+
+/// The face a button's label is set in: `--text-sm` at weight 600.
+fn text_button_font() -> FontId {
+    FontId::new(text::SM, fonts::sans(Weight::Semibold))
+}
+
 /// A chip drawn into a rect the caller chose.
 pub fn chip_in(
     ui: &mut Ui,
@@ -752,6 +817,62 @@ mod tests {
         let (keyed, plain, raw) = ids;
         assert_eq!(keyed, plain, "slot no longer delegates with the unit key");
         assert_eq!(keyed, raw, "the keyed id moved the existing control ids");
+    }
+
+    #[test]
+    fn a_text_button_box_grows_with_its_label_and_pads_the_text() {
+        let ctx = Context::default();
+        let mut measured = None;
+        run(&ctx, input(Vec::new()), |ui| {
+            let short = text_button_size(ui, &Tokens::DARK, "Go");
+            let long = text_button_size(ui, &Tokens::DARK, "Authorize");
+            let bare = line(
+                ui,
+                "Authorize",
+                text_button_font(),
+                Tokens::DARK.palette.text,
+                0.0,
+            );
+            measured = Some((short, long, bare.size().y));
+        });
+        let (short, long, bare) = measured.expect("the buttons measured");
+        assert!(
+            long.x > short.x,
+            "a longer label must need a wider box: {long:?} vs {short:?}"
+        );
+        assert!(
+            long.y > bare,
+            "the box must be taller than its bare text: {long:?} vs {bare}"
+        );
+    }
+
+    #[test]
+    fn a_text_button_that_is_not_live_takes_no_click() {
+        let ctx = Context::default();
+        let rect = Rect::from_min_size(Pos2::new(100.0, 100.0), Vec2::new(120.0, 30.0));
+        let mut clicked = false;
+
+        // A press and release need several passes to register.
+        let tap = |ctx: &Context, at: Pos2, clicked: &mut bool| {
+            for event in [Event::PointerMoved(at), button(at, true), button(at, false)] {
+                run(ctx, input(vec![event]), |ui| {
+                    let slot = text_button(
+                        ui,
+                        &Tokens::DARK,
+                        Control::Authorize,
+                        rect,
+                        "Authorize",
+                        false,
+                    );
+                    *clicked = slot.response.clicked();
+                });
+            }
+        };
+
+        // Warm up so hit-testing has a previous pass to read.
+        run(&ctx, input(Vec::new()), |_ui| {});
+        tap(&ctx, rect.center(), &mut clicked);
+        assert!(!clicked, "a waiting text button received a click");
     }
 
     #[test]

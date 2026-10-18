@@ -117,6 +117,17 @@ pub fn track_mono(size: f32) -> FontId {
     FontId::new(size, fonts::mono(MonoWeight::Regular))
 }
 
+/// The sign-in card's heading: the largest type in the window after the hero's,
+/// and the only place the interface face is set this heavy at this size.
+pub fn card_heading() -> FontId {
+    FontId::new(text::XL, fonts::sans(Weight::Bold))
+}
+
+/// A card's explanatory line.
+pub fn card_body() -> FontId {
+    FontId::new(text::SM, fonts::sans(Weight::Regular))
+}
+
 /// A playbar readout: the position, its end, the state, the artist line.
 pub fn readout(label: &str, tokens: &Tokens) -> RichText {
     RichText::new(label)
