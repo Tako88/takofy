@@ -149,6 +149,38 @@ pub mod extent {
     pub const CHIP_PAD_X: f32 = 7.2;
     pub const CHIP_PAD_Y: f32 = 3.2;
     pub const FOCUS_OFFSET: f32 = 2.0;
+
+    /// The volume slider's width, 4.5 rem.
+    pub const VOLUME_W: f32 = 72.0;
+    /// The playbar's cover tile, 2.75 rem.
+    pub const PLAYBAR_ART: f32 = 44.0;
+    /// The account button's avatar tile, 1.25 rem.
+    pub const AVATAR: f32 = 20.0;
+    /// A library row's cover tile, 2.25 rem.
+    pub const LIBRARY_ART: f32 = 36.0;
+    /// The search field's height, 2 rem.
+    pub const SEARCH_H: f32 = 32.0;
+    /// The search field's flex basis, 14 rem.
+    pub const SEARCH_BASIS_W: f32 = 224.0;
+    /// The search field's maximum width, 24 rem.
+    pub const SEARCH_MAX_W: f32 = 384.0;
+    /// The search field's floor. Not a reference value: a round 8 rem chosen
+    /// on the reference's own scale, to be tuned at the minimum window.
+    pub const SEARCH_MIN_W: f32 = 128.0;
+    /// The progress bar's maximum width, 32 rem.
+    pub const PROGRESS_MAX_W: f32 = 512.0;
+    /// The time readout's column, 2.5 rem.
+    pub const TIME_W: f32 = 40.0;
+    /// The Now Playing art's maximum side, 16 rem.
+    pub const NOWPLAYING_ART_MAX: f32 = 256.0;
+
+    /// The playbar's minimum columns: 11 rem, 18 rem, 11 rem.
+    pub const PLAYBAR_NOW_MIN: f32 = 176.0;
+    pub const PLAYBAR_CENTRE_MIN: f32 = 288.0;
+    pub const PLAYBAR_EXTRAS_MIN: f32 = 176.0;
+    /// The reduced playbar's minimums: 9 rem and 14 rem.
+    pub const PLAYBAR_NOW_MIN_REDUCED: f32 = 144.0;
+    pub const PLAYBAR_CENTRE_MIN_REDUCED: f32 = 224.0;
 }
 
 /// The sprite's own geometry.

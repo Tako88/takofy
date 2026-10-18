@@ -5,7 +5,7 @@
 //! line reserves stroke width inside the size that was asked for. The grid is
 //! solved as rects instead, which is what the reference's CSS grid does.
 
-use egui::{Align, Color32, Layout, Rect, Stroke, StrokeKind, Ui, UiBuilder, Vec2};
+use egui::{Align, Color32, Layout, Rect, Stroke, StrokeKind, Ui, UiBuilder};
 
 use crate::layout::{self, Grid, Sidebar};
 use crate::library::{Library, Load};
@@ -14,17 +14,12 @@ use crate::player::{Transport, format_position};
 use crate::signin::failure_message;
 use crate::theme::{Tokens, radius, space, stroke};
 
+use super::Screen;
 use super::text::muted;
 
 /// The signed-in shell: three columns over a playbar, each panel a hairline box
 /// on the window background.
-pub fn show(
-    ui: &mut Ui,
-    library: &mut Library,
-    transport: &mut Transport,
-    position_ms: u32,
-    tokens: &Tokens,
-) -> Option<Command> {
+pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Command> {
     let content = ui.ctx().content_rect();
     let regions = layout::regions_for(content.width());
     let shell = layout::shell_for(&regions);
@@ -39,20 +34,32 @@ pub fn show(
     }
 
     let mut command = match regions.sidebar {
-        Sidebar::Full => region(ui, "sidebar", grid.sidebar, |ui| {
-            library_view(ui, library, tokens)
-        }),
+        Sidebar::Full => region(
+            ui,
+            "sidebar",
+            grid.sidebar,
+            grid.sidebar.shrink(stroke::HAIRLINE).shrink(space::S3),
+            |ui| library_view(ui, screen.library, tokens),
+        ),
         // The reference drops the wordmark, the nav labels and the whole library
         // block below 900; the rail keeps only the icons, which arrive with the
         // chrome.
         Sidebar::Rail => None,
     };
-    command = command.or(region(ui, "view", grid.view, |ui| {
-        tracks_view(ui, library, transport, tokens)
-    }));
-    region(ui, "playbar", grid.playbar, |ui| {
-        transport_view(ui, transport, position_ms, tokens)
-    });
+    command = command.or(region(
+        ui,
+        "view",
+        grid.view,
+        grid.view.shrink(stroke::HAIRLINE),
+        |ui| tracks_view(ui, screen.library, screen.transport, tokens),
+    ));
+    region(
+        ui,
+        "playbar",
+        grid.playbar,
+        grid.playbar.shrink(stroke::HAIRLINE).shrink(space::S3),
+        |ui| transport_view(ui, screen.transport, screen.position_ms, tokens),
+    );
 
     command
 }
@@ -73,14 +80,14 @@ fn panel(ui: &Ui, rect: Rect, fill: Color32, tokens: &Tokens) {
     );
 }
 
-/// Draws one region into its rect, clipped to the panel it sits on.
-///
-/// The inset stands in for the reference's per-region padding, which arrives
-/// with the chrome.
-fn region<R>(ui: &mut Ui, id: &str, panel: Rect, add_contents: impl FnOnce(&mut Ui) -> R) -> R {
-    let inset = Vec2::splat(space::S3);
-    let content = panel.shrink(stroke::HAIRLINE).shrink2(inset);
-
+/// Draws one region into its content rect, clipped to the panel it sits on.
+fn region<R>(
+    ui: &mut Ui,
+    id: &str,
+    panel: Rect,
+    content: Rect,
+    add_contents: impl FnOnce(&mut Ui) -> R,
+) -> R {
     ui.scope_builder(
         UiBuilder::new()
             .id_salt(id)
@@ -135,6 +142,22 @@ fn library_view(ui: &mut Ui, library: &mut Library, tokens: &Tokens) -> Option<C
 
 /// The main pane: the selected playlist's tracks, or the state of their load.
 fn tracks_view(
+    ui: &mut Ui,
+    library: &mut Library,
+    transport: &mut Transport,
+    tokens: &Tokens,
+) -> Option<Command> {
+    let content = ui.max_rect().shrink(space::S3);
+    ui.scope_builder(
+        UiBuilder::new()
+            .max_rect(content)
+            .layout(Layout::top_down(Align::Min)),
+        |ui| tracks_content(ui, library, transport, tokens),
+    )
+    .inner
+}
+
+fn tracks_content(
     ui: &mut Ui,
     library: &mut Library,
     transport: &mut Transport,

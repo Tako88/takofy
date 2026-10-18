@@ -102,6 +102,24 @@ impl Library {
         self.playlists = Load::Loading;
         Command::ReloadLibrary
     }
+
+    /// Clears the selection and the tracks that belonged to it.
+    pub fn deselect(&mut self) {
+        self.selected = None;
+        self.tracks = Load::Idle;
+    }
+
+    /// The selected playlist's name, once the list that names it is ready.
+    pub fn selected_name(&self) -> Option<&str> {
+        let selected = self.selected.as_deref()?;
+        match &self.playlists {
+            Load::Ready(playlists) => playlists
+                .iter()
+                .find(|entry| entry.uri == selected)
+                .map(|entry| entry.name.as_str()),
+            Load::Idle | Load::Loading | Load::Failed(_) => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -299,6 +317,52 @@ mod tests {
 
         assert_eq!(library.tracks, Load::Idle);
         assert_eq!(library.selected(), None);
+    }
+
+    #[test]
+    fn deselect_clears_the_selection_and_the_tracks() {
+        let mut library = Library::default();
+        library.select("a");
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: vec![track("t")],
+        });
+
+        library.deselect();
+
+        assert_eq!(library.selected(), None);
+        assert_eq!(library.tracks, Load::Idle);
+    }
+
+    #[test]
+    fn a_reply_for_a_deselected_playlist_is_discarded() {
+        let mut library = Library::default();
+        library.select("a");
+        library.deselect();
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: vec![track("t")],
+        });
+
+        assert_eq!(library.tracks, Load::Idle);
+    }
+
+    #[test]
+    fn the_selected_name_comes_from_a_ready_list() {
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(vec![playlist("a", "A")]));
+        library.select("a");
+        assert_eq!(library.selected_name(), Some("A"));
+    }
+
+    #[test]
+    fn the_selected_name_is_none_while_the_list_reloads() {
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(vec![playlist("a", "A")]));
+        library.select("a");
+        library.reload();
+        assert_eq!(library.selected(), Some("a"));
+        assert_eq!(library.selected_name(), None);
     }
 
     #[test]

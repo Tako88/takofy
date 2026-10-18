@@ -3,9 +3,13 @@
 //! Breakpoints and region visibility live here and nowhere else, so no view
 //! measures the window and there is nothing to keep in sync.
 
-use egui::{Rect, pos2};
+use egui::{Rect, pos2, vec2};
 
 use crate::theme::{extent, space};
+
+pub mod tracks;
+
+use tracks::{Track, solve};
 
 /// Recommended starting size of the window, in points.
 pub const WINDOW_DEFAULT: [f32; 2] = [1100.0, 720.0];
@@ -38,6 +42,99 @@ pub enum NowPlaying {
 pub enum Playbar {
     Full,
     Reduced,
+}
+
+/// The three columns of the playbar, in points.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct PlaybarCols {
+    pub now: f32,
+    pub centre: f32,
+    pub extras: f32,
+}
+
+impl PlaybarCols {
+    /// The gap between two playbar columns, `space-4`.
+    pub const GAP: f32 = space::S4;
+    /// The playbar's inline padding, `space-2`.
+    pub const PADDING: f32 = space::S2;
+
+    /// Places the solved widths left to right inside `rect`.
+    pub fn columns(self, rect: Rect) -> [Rect; 3] {
+        let left = rect.left() + Self::PADDING;
+        let height = rect.height();
+        let now = Rect::from_min_size(pos2(left, rect.top()), vec2(self.now, height));
+        let centre = Rect::from_min_size(
+            pos2(now.right() + Self::GAP, rect.top()),
+            vec2(self.centre, height),
+        );
+        let extras = Rect::from_min_size(
+            pos2(centre.right() + Self::GAP, rect.top()),
+            vec2(self.extras, height),
+        );
+        [now, centre, extras]
+    }
+}
+
+/// The topbar's items, in points. The toggle exists only in the rail form.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct TopbarCols {
+    pub toggle: Option<f32>,
+    pub history: f32,
+    pub search: f32,
+    pub trail: f32,
+    pub account: f32,
+}
+
+impl TopbarCols {
+    /// The gap between two topbar items, `space-4`.
+    pub const GAP: f32 = space::S4;
+    /// The topbar's inline padding, `space-4`.
+    pub const PADDING: f32 = space::S4;
+
+    /// Places the solved widths in their flex order, with the trail held to the
+    /// right against the account by the free space before it.
+    pub fn columns(self, rect: Rect) -> TopbarRects {
+        let left = rect.left() + Self::PADDING;
+        let right = rect.right() - Self::PADDING;
+        let height = rect.height();
+
+        let account = Rect::from_min_size(
+            pos2(right - self.account, rect.top()),
+            vec2(self.account, height),
+        );
+        let trail = Rect::from_min_size(
+            pos2(account.left() - Self::GAP - self.trail, rect.top()),
+            vec2(self.trail, height),
+        );
+
+        let mut cursor = left;
+        let toggle = self.toggle.map(|width| {
+            let toggle = Rect::from_min_size(pos2(cursor, rect.top()), vec2(width, height));
+            cursor = toggle.right() + Self::GAP;
+            toggle
+        });
+        let history = Rect::from_min_size(pos2(cursor, rect.top()), vec2(self.history, height));
+        cursor = history.right() + Self::GAP;
+        let search = Rect::from_min_size(pos2(cursor, rect.top()), vec2(self.search, height));
+
+        TopbarRects {
+            toggle,
+            history,
+            search,
+            trail,
+            account,
+        }
+    }
+}
+
+/// The placed topbar items.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct TopbarRects {
+    pub toggle: Option<Rect>,
+    pub history: Rect,
+    pub search: Rect,
+    pub trail: Rect,
+    pub account: Rect,
 }
 
 /// Which form each region takes at the current window width.
@@ -170,6 +267,118 @@ pub fn grid_for(content: Rect, shell: &Shell) -> Grid {
         now_playing,
         playbar,
         drawer,
+    }
+}
+
+/// The width of the playbar's extras, derived from the controls it holds.
+///
+/// The full bar has four icon buttons and the volume, with a `space-1` gap
+/// between each; the reduced bar hides the first two buttons and keeps the
+/// volume's `space-2` margin on each side.
+pub fn playbar_extras(form: Playbar) -> f32 {
+    match form {
+        Playbar::Full => {
+            4.0 * extent::BUTTON + extent::VOLUME_W + 2.0 * space::S2 + 4.0 * space::S1
+        }
+        Playbar::Reduced => {
+            2.0 * extent::BUTTON + extent::VOLUME_W + 2.0 * space::S2 + 2.0 * space::S1
+        }
+    }
+}
+
+/// Solves the playbar's three columns inside `rect`.
+pub fn playbar_for(rect: Rect, form: Playbar) -> PlaybarCols {
+    let available = rect.width() - 2.0 * PlaybarCols::PADDING;
+    let tracks = match form {
+        Playbar::Full => [
+            Track {
+                basis: 0.0,
+                min: extent::PLAYBAR_NOW_MIN,
+                max: f32::INFINITY,
+                grow: 1.0,
+            },
+            Track {
+                basis: 0.0,
+                min: extent::PLAYBAR_CENTRE_MIN,
+                max: f32::INFINITY,
+                grow: 2.0,
+            },
+            Track {
+                basis: 0.0,
+                min: extent::PLAYBAR_EXTRAS_MIN,
+                max: f32::INFINITY,
+                grow: 1.0,
+            },
+        ],
+        Playbar::Reduced => [
+            Track {
+                basis: 0.0,
+                min: extent::PLAYBAR_NOW_MIN_REDUCED,
+                max: f32::INFINITY,
+                grow: 1.0,
+            },
+            Track {
+                basis: 0.0,
+                min: extent::PLAYBAR_CENTRE_MIN_REDUCED,
+                max: f32::INFINITY,
+                grow: 1.5,
+            },
+            Track::fixed(playbar_extras(Playbar::Reduced)),
+        ],
+    };
+    let widths = solve(available, PlaybarCols::GAP, &tracks);
+    PlaybarCols {
+        now: widths[0],
+        centre: widths[1],
+        extras: widths[2],
+    }
+}
+
+/// The space the topbar's non-trail items leave free, in points.
+fn topbar_free(rect: Rect, sidebar: Sidebar) -> f32 {
+    let toggle = match sidebar {
+        Sidebar::Full => 0.0,
+        Sidebar::Rail => extent::BUTTON,
+    };
+    let items = match sidebar {
+        Sidebar::Full => 4.0,
+        Sidebar::Rail => 5.0,
+    };
+    rect.width()
+        - 2.0 * TopbarCols::PADDING
+        - toggle
+        - (2.0 * extent::BUTTON + space::S1)
+        - extent::BUTTON
+        - TopbarCols::GAP * (items - 1.0)
+}
+
+/// Solves the topbar's items inside `rect`.
+///
+/// The trail gets its natural width first, so the search field yields down to
+/// its floor before the trail loses a single point; only once the field is at
+/// its floor does the trail take what is left and truncate.
+pub fn topbar_for(rect: Rect, sidebar: Sidebar, trail_natural: f32) -> TopbarCols {
+    let toggle = match sidebar {
+        Sidebar::Full => None,
+        Sidebar::Rail => Some(extent::BUTTON),
+    };
+    let history = 2.0 * extent::BUTTON + space::S1;
+    let account = extent::BUTTON;
+    let free = topbar_free(rect, sidebar).max(0.0);
+    let natural = if trail_natural.is_finite() && trail_natural > 0.0 {
+        trail_natural
+    } else {
+        0.0
+    };
+    let search = (free - natural).clamp(extent::SEARCH_MIN_W, extent::SEARCH_MAX_W);
+    let trail = (free - search).clamp(0.0, natural);
+
+    TopbarCols {
+        toggle,
+        history,
+        search,
+        trail,
+        account,
     }
 }
 
@@ -438,6 +647,198 @@ mod tests {
             (tiled - inner.area()).abs() < 0.01,
             "regions cover {tiled}, inner area is {}",
             inner.area()
+        );
+    }
+
+    fn assert_close(left: f32, right: f32) {
+        assert!((left - right).abs() < 0.01, "{left} is not {right}");
+    }
+
+    fn playbar_at(width: f32) -> (Rect, Playbar) {
+        let regions = regions_for(width);
+        let shell = shell_for(&regions);
+        let grid = grid_for(content(width, 900.0), &shell);
+        (grid.playbar, regions.playbar)
+    }
+
+    fn playbar_tracks_width(rect: Rect) -> f32 {
+        rect.width() - 2.0 * PlaybarCols::PADDING - 2.0 * PlaybarCols::GAP
+    }
+
+    fn topbar_rect(width: f32) -> Rect {
+        Rect::from_min_size(Pos2::ZERO, vec2(width, extent::TOPBAR_H))
+    }
+
+    #[test]
+    fn the_reduced_extras_are_152_from_the_tokens() {
+        assert_eq!(playbar_extras(Playbar::Reduced), 152.0);
+    }
+
+    #[test]
+    fn the_full_extras_are_216_from_the_tokens() {
+        assert_eq!(playbar_extras(Playbar::Full), 216.0);
+    }
+
+    #[test]
+    fn the_reduced_playbar_fits_the_minimum_window_with_56_to_spare() {
+        let (rect, form) = playbar_at(WINDOW_MIN[0]);
+        assert_eq!(form, Playbar::Reduced);
+        let columns = playbar_for(rect, form);
+        let minimums = extent::PLAYBAR_NOW_MIN_REDUCED
+            + extent::PLAYBAR_CENTRE_MIN_REDUCED
+            + playbar_extras(Playbar::Reduced);
+        let slack = playbar_tracks_width(rect) - minimums;
+        assert_close(slack, 56.0);
+        assert_close(
+            columns.now + columns.centre + columns.extras,
+            playbar_tracks_width(rect),
+        );
+    }
+
+    #[test]
+    fn the_full_extras_fit_their_column_at_the_narrowest_full_width() {
+        let (rect, form) = playbar_at(PLAYBAR_REDUCED_MAX + 0.1);
+        assert_eq!(form, Playbar::Full);
+        let columns = playbar_for(rect, form);
+        assert!(columns.extras >= playbar_extras(Playbar::Full));
+    }
+
+    #[test]
+    fn every_column_meets_its_minimum_at_every_width_from_the_minimum_window_up() {
+        for width in (WINDOW_MIN[0] as u32)..=2000 {
+            let (rect, form) = playbar_at(width as f32);
+            let columns = playbar_for(rect, form);
+            let (now_min, centre_min, extras_min) = match form {
+                Playbar::Full => (
+                    extent::PLAYBAR_NOW_MIN,
+                    extent::PLAYBAR_CENTRE_MIN,
+                    extent::PLAYBAR_EXTRAS_MIN,
+                ),
+                Playbar::Reduced => (
+                    extent::PLAYBAR_NOW_MIN_REDUCED,
+                    extent::PLAYBAR_CENTRE_MIN_REDUCED,
+                    playbar_extras(Playbar::Reduced),
+                ),
+            };
+            assert!(columns.now >= now_min, "{width}: now {}", columns.now);
+            assert!(
+                columns.centre >= centre_min,
+                "{width}: centre {}",
+                columns.centre
+            );
+            assert!(
+                columns.extras >= extras_min,
+                "{width}: extras {}",
+                columns.extras
+            );
+        }
+    }
+
+    #[test]
+    fn below_the_supported_width_columns_hold_their_minimums_and_overflow_right() {
+        let width = WINDOW_MIN[0] - 100.0;
+        let (rect, form) = playbar_at(width);
+        assert_eq!(form, Playbar::Reduced);
+        let columns = playbar_for(rect, form);
+        assert_eq!(columns.now, extent::PLAYBAR_NOW_MIN_REDUCED);
+        assert_eq!(columns.centre, extent::PLAYBAR_CENTRE_MIN_REDUCED);
+        assert_eq!(columns.extras, playbar_extras(Playbar::Reduced));
+        let used = columns.now
+            + columns.centre
+            + columns.extras
+            + 2.0 * PlaybarCols::PADDING
+            + 2.0 * PlaybarCols::GAP;
+        assert!(used > rect.width());
+    }
+
+    #[test]
+    fn playbar_columns_are_one_gap_apart_and_inside_the_rect() {
+        let (rect, form) = playbar_at(1440.0);
+        let [now, centre, extras] = playbar_for(rect, form).columns(rect);
+        assert_eq!(now.left(), rect.left() + PlaybarCols::PADDING);
+        assert_close(now.right() + PlaybarCols::GAP, centre.left());
+        assert_close(centre.right() + PlaybarCols::GAP, extras.left());
+        assert!(extras.right() <= rect.right() - PlaybarCols::PADDING + 0.01);
+        for column in [now, centre, extras] {
+            assert_eq!(column.top(), rect.top());
+            assert_eq!(column.bottom(), rect.bottom());
+        }
+    }
+
+    #[test]
+    fn the_playbar_weights_follow_the_reference_at_1440_and_at_800() {
+        let (full, form) = playbar_at(1440.0);
+        let columns = playbar_for(full, form);
+        let tracks = playbar_tracks_width(full);
+        assert_close(columns.now, tracks / 4.0);
+        assert_close(columns.centre, tracks / 2.0);
+        assert_close(columns.extras, tracks / 4.0);
+
+        let (reduced, form) = playbar_at(800.0);
+        let columns = playbar_for(reduced, form);
+        let flex = playbar_tracks_width(reduced) - playbar_extras(Playbar::Reduced);
+        let unit = flex / 2.5;
+        assert_close(columns.now, unit);
+        assert_close(columns.centre, 1.5 * unit);
+    }
+
+    #[test]
+    fn the_search_field_is_capped_at_its_maximum() {
+        let columns = topbar_for(topbar_rect(1440.0), Sidebar::Full, 100.0);
+        assert_eq!(columns.search, extent::SEARCH_MAX_W);
+    }
+
+    #[test]
+    fn the_search_field_yields_to_the_trail_before_the_trail_truncates() {
+        let rect = topbar_rect(1100.0);
+        let free = topbar_free(rect, Sidebar::Full);
+
+        let natural = free - 200.0;
+        let columns = topbar_for(rect, Sidebar::Full, natural);
+        assert_close(columns.search, 200.0);
+        assert_close(columns.trail, natural);
+
+        let natural = free - 50.0;
+        let columns = topbar_for(rect, Sidebar::Full, natural);
+        assert_eq!(columns.search, extent::SEARCH_MIN_W);
+        assert!(columns.trail < natural);
+        assert_close(columns.search + columns.trail, free);
+    }
+
+    #[test]
+    fn the_trail_never_overlaps_the_search_field() {
+        for width in 640..=2000 {
+            let rect = topbar_rect(width as f32);
+            let sidebar = regions_for(width as f32).sidebar;
+            let free = topbar_free(rect, sidebar);
+            let columns = topbar_for(rect, sidebar, 300.0);
+            assert!(
+                columns.search + columns.trail <= free + 0.01,
+                "{width}: search {} + trail {} beats {free}",
+                columns.search,
+                columns.trail
+            );
+        }
+    }
+
+    #[test]
+    fn the_toggle_exists_only_on_the_rail() {
+        let full = topbar_for(topbar_rect(1440.0), Sidebar::Full, 200.0);
+        let rail = topbar_for(topbar_rect(800.0), Sidebar::Rail, 200.0);
+        assert_eq!(full.toggle, None);
+        assert_eq!(rail.toggle, Some(extent::BUTTON));
+        assert!(full.columns(topbar_rect(1440.0)).toggle.is_none());
+        assert!(rail.columns(topbar_rect(800.0)).toggle.is_some());
+    }
+
+    #[test]
+    fn the_account_is_flush_right_and_the_trail_ends_one_gap_before_it() {
+        let rect = topbar_rect(1440.0);
+        let columns = topbar_for(rect, Sidebar::Full, 200.0).columns(rect);
+        assert_close(columns.account.right(), rect.right() - TopbarCols::PADDING);
+        assert_close(
+            columns.trail.right() + TopbarCols::GAP,
+            columns.account.left(),
         );
     }
 }
