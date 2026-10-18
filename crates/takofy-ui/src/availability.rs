@@ -109,10 +109,10 @@ pub fn availability(control: Control) -> Availability {
         Control::NowPlayingMore => Availability::Waiting, // #16
 
         // Transport and seek are their own issue.
-        Control::Previous => Availability::Waiting, // #13
-        Control::PlayPause => Availability::Waiting, // #13
-        Control::Next => Availability::Waiting,     // #13
-        Control::Seek => Availability::Waiting,     // #13
+        Control::Previous => Availability::Ready,  // #13
+        Control::PlayPause => Availability::Ready, // #13
+        Control::Next => Availability::Ready,      // #13
+        Control::Seek => Availability::Ready,      // #13
 
         // Playbar chrome with no separate issue yet.
         Control::Like => Availability::Waiting,
@@ -132,9 +132,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_the_drawer_toggle_and_the_playlists_crumb_are_ready() {
+    fn only_the_shell_and_transport_controls_are_ready() {
         for control in Control::ALL {
-            let ready = matches!(control, Control::DrawerToggle | Control::TrailPlaylists);
+            let ready = matches!(
+                control,
+                Control::DrawerToggle
+                    | Control::TrailPlaylists
+                    | Control::Previous
+                    | Control::PlayPause
+                    | Control::Next
+                    | Control::Seek
+            );
             assert_eq!(
                 availability(control) == Availability::Ready,
                 ready,
