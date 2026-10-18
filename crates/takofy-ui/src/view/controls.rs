@@ -8,11 +8,23 @@
 //! The focus ring is drawn here too, because every control wants the same one
 //! and only the slot knows the control has focus.
 
-use egui::{Rect, Response, Role, Sense, Stroke, StrokeKind, Ui, WidgetInfo};
+use std::sync::Arc;
+
+use egui::emath::GuiRounding;
+use egui::text::LayoutJob;
+use egui::{
+    Align2, Color32, FontId, Galley, Rect, Response, Role, Sense, Stroke, StrokeKind, TextFormat,
+    Ui, Vec2, WidgetInfo, pos2,
+};
 
 use crate::availability::{Availability, Control, availability};
+use crate::icon::{self, Icon};
+use crate::layout::Sidebar;
 use crate::theme::ease;
-use crate::theme::{Tokens, extent, motion, radius, stroke};
+use crate::theme::icon::Size;
+use crate::theme::{
+    MonoWeight, Tokens, Weight, extent, fonts, motion, radius, space, stroke, text, tracking,
+};
 
 /// What a slot hands back.
 pub struct Slot {
@@ -70,6 +82,269 @@ pub fn slot(
     }
 
     Slot { response, hover }
+}
+
+// ---------------------------------------------------------------------------
+// The painted controls
+//
+// Every control takes a rect and paints itself from tokens. A waiting control
+// keeps its frame and drops to `text_disabled`, because it has to read as
+// something that is present and not yet usable rather than something faded out.
+// ---------------------------------------------------------------------------
+
+/// Reserves a box in the current layout and returns its rect.
+///
+/// A control paints into a rect it is handed, so a region and the gallery place
+/// it the same way. This is the only thing here that moves the layout cursor.
+fn place(ui: &mut Ui, size: Vec2) -> Rect {
+    ui.allocate_space(size).1
+}
+
+/// A square of `side` centred in `rect`, snapped so a hairline glyph lands on
+/// whole pixels.
+fn centred(ui: &Ui, rect: Rect, side: f32) -> Rect {
+    Rect::from_center_size(rect.center(), Vec2::splat(side)).round_to_pixels(ui.pixels_per_point())
+}
+
+/// The hover wash: the panel a control sits on, moved toward the hover tone.
+///
+/// Nothing is drawn at rest, so a control on the playbar does not stamp a
+/// panel-coloured patch onto the window behind it.
+fn wash(ui: &Ui, tokens: &Tokens, mix: f32) -> Option<Color32> {
+    (mix > 0.0).then(|| {
+        ui.visuals()
+            .panel_fill
+            .lerp_to_gamma(tokens.palette.surface_hover, mix)
+    })
+}
+
+/// A control's foreground: muted at rest, `text` under the pointer, and the
+/// disabled tone while it is waiting. Waiting never brightens.
+fn foreground(tokens: &Tokens, ready: bool, mix: f32) -> Color32 {
+    if ready {
+        tokens
+            .palette
+            .text_muted
+            .lerp_to_gamma(tokens.palette.text, mix)
+    } else {
+        tokens.palette.text_disabled
+    }
+}
+
+fn ready(control: Control) -> bool {
+    availability(control) == Availability::Ready
+}
+
+/// One line of text, laid out with the reference's letter spacing.
+fn line(ui: &Ui, label: &str, font: FontId, color: Color32, spacing: f32) -> Arc<Galley> {
+    let format = TextFormat {
+        font_id: font,
+        color,
+        extra_letter_spacing: spacing,
+        ..Default::default()
+    };
+    let mut job = LayoutJob::single_section(label.to_owned(), format);
+    job.wrap.max_rows = 1;
+    ui.painter().layout_job(job)
+}
+
+/// An icon-only button.
+pub fn icon_button(
+    ui: &mut Ui,
+    tokens: &Tokens,
+    control: Control,
+    rect: Rect,
+    icon: Icon,
+    size: Size,
+    label: &str,
+) -> Slot {
+    let slot = slot(ui, control, Role::Button, rect, label, tokens);
+    if let Some(fill) = wash(ui, tokens, slot.hover) {
+        ui.painter().rect_filled(rect, radius::SM, fill);
+    }
+    icon::paint(
+        ui.painter(),
+        icon,
+        centred(ui, rect, size.side),
+        size,
+        foreground(tokens, ready(control), slot.hover),
+    );
+    slot
+}
+
+/// A bordered button: the history pair, and the play tile.
+///
+/// The frame stays put while the control is waiting, which is the whole point of
+/// drawing it at all.
+pub fn round_button(
+    ui: &mut Ui,
+    tokens: &Tokens,
+    control: Control,
+    rect: Rect,
+    icon: Icon,
+    size: Size,
+    label: &str,
+) -> Slot {
+    let slot = slot(ui, control, Role::Button, rect, label, tokens);
+    let live = ready(control);
+    let border = if live && slot.hover > 0.0 {
+        tokens.palette.border_strong
+    } else {
+        tokens.palette.border
+    };
+    if let Some(fill) = wash(ui, tokens, slot.hover) {
+        ui.painter().rect_filled(rect, radius::SM, fill);
+    }
+    ui.painter().rect_stroke(
+        rect,
+        radius::SM,
+        Stroke::new(stroke::HAIRLINE, border),
+        StrokeKind::Inside,
+    );
+    icon::paint(
+        ui.painter(),
+        icon,
+        centred(ui, rect, size.side),
+        size,
+        foreground(tokens, live, slot.hover),
+    );
+    slot
+}
+
+/// A navigation entry: icon and label in the sidebar, icon alone in the rail.
+///
+/// The two forms differ only in the label and the padding, which is why they are
+/// one control taking the region model rather than two controls.
+pub fn nav_item(
+    ui: &mut Ui,
+    tokens: &Tokens,
+    control: Control,
+    rect: Rect,
+    form: Sidebar,
+    icon: Icon,
+    label: &str,
+) -> Slot {
+    let slot = slot(ui, control, Role::Button, rect, label, tokens);
+    if let Some(fill) = wash(ui, tokens, slot.hover) {
+        ui.painter().rect_filled(rect, radius::SM, fill);
+    }
+
+    let color = foreground(tokens, ready(control), slot.hover);
+    let glyph = match form {
+        Sidebar::Rail => centred(ui, rect, Size::LG.side),
+        Sidebar::Full => {
+            let left = rect.left() + space::S3;
+            Rect::from_min_size(
+                pos2(left, rect.center().y - Size::LG.side / 2.0),
+                Vec2::splat(Size::LG.side),
+            )
+            .round_to_pixels(ui.pixels_per_point())
+        }
+    };
+    icon::paint(ui.painter(), icon, glyph, Size::LG, color);
+
+    if form == Sidebar::Full {
+        ui.painter().text(
+            pos2(glyph.right() + space::S3, rect.center().y),
+            Align2::LEFT_CENTER,
+            label,
+            FontId::new(text::BASE, fonts::sans(Weight::Medium)),
+            color,
+        );
+    }
+
+    slot
+}
+
+/// A square segmented tab. The selected one is filled and bordered in `text`;
+/// the rest keep a hairline.
+pub fn chip(ui: &mut Ui, tokens: &Tokens, control: Control, label: &str, selected: bool) -> Slot {
+    let live = ready(control);
+    let color = if live {
+        tokens.palette.text_muted
+    } else {
+        tokens.palette.text_disabled
+    };
+    let galley = line(
+        ui,
+        &label.to_uppercase(),
+        FontId::new(text::XXS, fonts::mono(MonoWeight::Medium)),
+        color,
+        crate::view::text::tracking_pts(text::XXS, tracking::WIDE),
+    );
+    let size = Vec2::new(
+        galley.size().x + 2.0 * extent::CHIP_PAD_X,
+        galley.size().y + 2.0 * extent::CHIP_PAD_Y,
+    );
+    let rect = place(ui, size);
+    let slot = slot(ui, control, Role::Button, rect, label, tokens);
+
+    let border = if selected {
+        tokens.palette.text
+    } else if live && slot.hover > 0.0 {
+        tokens.palette.border_strong
+    } else {
+        tokens.palette.border
+    };
+    if selected {
+        ui.painter()
+            .rect_filled(rect, radius::SM, tokens.palette.pressed);
+    }
+    ui.painter().rect_stroke(
+        rect,
+        radius::SM,
+        Stroke::new(stroke::HAIRLINE, border),
+        StrokeKind::Inside,
+    );
+    ui.painter().galley(
+        rect.min + Vec2::new(extent::CHIP_PAD_X, extent::CHIP_PAD_Y),
+        galley,
+        color,
+    );
+
+    slot
+}
+
+/// A slider. `None` draws the track alone, which is what a bar with no known
+/// duration has to show rather than a position it cannot know.
+///
+/// Dragging arrives with the transport, which is what makes a position mean
+/// something to seek to.
+pub fn slider(
+    ui: &mut Ui,
+    tokens: &Tokens,
+    control: Control,
+    rect: Rect,
+    fraction: Option<f32>,
+    label: &str,
+) -> Slot {
+    let slot = slot(ui, control, Role::Slider, rect, label, tokens);
+    let track = Rect::from_center_size(
+        rect.center(),
+        Vec2::new(rect.width(), extent::SLIDER_TRACK_H),
+    );
+    ui.painter()
+        .rect_filled(track, radius::PILL, tokens.palette.border_strong);
+
+    if let Some(fraction) = fraction {
+        let width = track.width() * fraction.clamp(0.0, 1.0);
+        ui.painter().rect_filled(
+            Rect::from_min_size(track.min, Vec2::new(width, track.height())),
+            radius::PILL,
+            tokens.palette.text,
+        );
+
+        if ready(control) && (slot.hover > 0.0 || slot.response.has_focus()) {
+            let thumb = Rect::from_center_size(
+                pos2(track.left() + width, rect.center().y),
+                Vec2::new(extent::SLIDER_THUMB_W, extent::SLIDER_H),
+            );
+            ui.painter()
+                .rect_filled(thumb, radius::PILL, tokens.palette.accent);
+        }
+    }
+
+    slot
 }
 
 #[cfg(test)]

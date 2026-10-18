@@ -99,6 +99,15 @@ egui is immediate mode, so `ui()` re-runs each frame and reads a plain struct.
 That suits a music player, which is lists and a transport bar rather than an
 animation showcase, and it has AccessKit support by default.
 
+The icons are data. The reference draws them from an SVG sprite, so
+`crates/takofy-ui/src/icon/data.rs` holds the flattened coordinates and the
+binary carries no SVG parser: `convex_polygon` for the filled glyphs, polylines
+for the stroked ones, and two pure functions that round the corners and cap the
+ends at draw time, because the sprite asks for round joins and epaint mitres.
+The table is generated, and the generator is a local script rather than repo
+content, so `assets/icons/README.md` documents the conversion and a test
+re-checks every glyph against `docs/reference/main.js`.
+
 What it costs: egui has no stylesheet. The token layer in
 `crates/takofy-ui/src/theme.rs` is therefore the only place a colour, spacing
 step, type size or radius is written, and `clippy.toml` fails the build on a
