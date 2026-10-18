@@ -427,6 +427,42 @@ fn text_button_font() -> FontId {
     FontId::new(text::SM, fonts::sans(Weight::Semibold))
 }
 
+/// The one loud element in the interface: a solid accent tile.
+///
+/// The reference draws it for the hero's own play control, for a hovered card and
+/// for a hovered row's index, and it is the only thing here that fills with the
+/// accent colour. Sound lives here and nowhere else.
+pub fn play_tile(
+    ui: &mut Ui,
+    tokens: &Tokens,
+    control: Control,
+    rect: Rect,
+    label: &str,
+    live: bool,
+) -> Slot {
+    let slot = slot(ui, control, Role::Button, rect, label, tokens, live);
+    let ready = slot.live;
+    let fill = if !ready {
+        tokens.palette.text_disabled
+    } else if slot.hover > 0.0 {
+        tokens
+            .palette
+            .accent
+            .lerp_to_gamma(tokens.palette.accent_hover, slot.hover)
+    } else {
+        tokens.palette.accent
+    };
+    ui.painter().rect_filled(rect, radius::SM, fill);
+    icon::paint(
+        ui.painter(),
+        Icon::Play,
+        centred(ui, rect, Size::MD.side),
+        Size::MD,
+        tokens.palette.text_inverse,
+    );
+    slot
+}
+
 /// A chip drawn into a rect the caller chose.
 pub fn chip_in(
     ui: &mut Ui,

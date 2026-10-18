@@ -7,8 +7,9 @@
 
 use egui::emath::GuiRounding;
 use egui::{FontId, Pos2, Rect, Sense, Ui, vec2};
+use takofy_model::TrackEntry;
 
-use crate::format::format_position;
+use crate::format::{format_position, hero_meta};
 use crate::icon;
 use crate::layout::{Table, table as table_layout};
 use crate::library::{Library, Load};
@@ -18,6 +19,7 @@ use crate::queue::Queue;
 use crate::theme::icon::Size;
 use crate::theme::{Tokens, extent, space, stroke, text, tracking};
 
+use super::hero;
 use super::text as recipe;
 use super::track_row::{self, Row, State};
 
@@ -63,12 +65,31 @@ pub fn tracks_view(
     egui::ScrollArea::vertical().show(ui, |ui| {
         let width = ui.available_width();
         let columns = table_layout::columns(width, table.columns());
-        head(ui, columns, tokens);
 
         let Load::Ready(tracks) = &library.tracks else {
             return;
         };
         let count = tracks.tracks.len();
+
+        // The band heads the playlist and is drawn only when the library can name
+        // the selection; with no name there is nothing to say above the rows. It
+        // takes the width and starts at the cursor, so the header and the rows
+        // follow it down one scroll area. An empty playlist never reaches here —
+        // its own state returns above — so the band only ever heads a playable
+        // list.
+        if let Some(title) = library.selected_name() {
+            let band = hero::Band {
+                eyebrow: "Playlist",
+                title,
+                meta: hero_meta(count, total_duration_ms(&tracks.tracks)),
+                playable: count > 0,
+            };
+            if hero::show(ui, &band, tokens) {
+                command = queue.start(&tracks.tracks, 0, transport);
+            }
+        }
+
+        head(ui, columns, tokens);
         // The whole list is reserved at once, so the scrollbar is right, and only
         // the rows the viewport can show are laid out and given interaction: a
         // thousand-track playlist paints the dozen rows on screen.
@@ -101,6 +122,28 @@ pub fn tracks_view(
     });
 
     command
+}
+
+/// The sum of the track lengths, in milliseconds, or zero when any length is
+/// unknown.
+///
+/// The model holds each length as an `Option`: a track that could not be
+/// labelled carries none, exactly as it carries no album. A sum over only the
+/// lengths that happen to be present is a lower bound, not the runtime, but the
+/// byline would read an exact figure with nothing to mark it as a bound; the
+/// missing lengths are already blank on their own rows, so a total that hides
+/// its gap is worse than no total at all. A list with any unknown length
+/// therefore reports zero — the absent total `hero_meta` leaves out — and a
+/// wholly known list reports its honest sum. Saturating addition keeps an absurd
+/// list from wrapping.
+fn total_duration_ms(tracks: &[TrackEntry]) -> u32 {
+    if tracks.iter().any(|entry| entry.duration_ms.is_none()) {
+        return 0;
+    }
+    tracks
+        .iter()
+        .filter_map(|entry| entry.duration_ms)
+        .fold(0u32, u32::saturating_add)
 }
 
 /// The rect the rows are laid out in: the list's width, and the height of every
@@ -198,12 +241,23 @@ mod tests {
     use super::*;
     use crate::library::Library;
     use crate::message::Update;
+    use crate::theme::hero::PLAY;
     use crate::theme::{fonts, style};
-    use takofy_model::TrackEntry;
+    use takofy_model::{PlaylistEntry, TrackEntry};
+
+    /// The probe window: 900 by 400, the size every bare-row test runs in.
+    const PROBE: Vec2 = Vec2::new(900.0, 400.0);
+    /// A probe window tall enough to hold the band, the header and two rows in
+    /// full, so a click under the band is not clipped away by the viewport.
+    const TALL: Vec2 = Vec2::new(900.0, 800.0);
 
     fn input(events: Vec<Event>) -> RawInput {
+        sized_input(PROBE, events)
+    }
+
+    fn sized_input(size: Vec2, events: Vec<Event>) -> RawInput {
         RawInput {
-            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 400.0))),
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
             events,
             ..Default::default()
         }
@@ -257,6 +311,25 @@ mod tests {
         library
     }
 
+    /// The same selection, with the playlist list ready so the library can name
+    /// it. `selected_name` is the switch the hero hangs on.
+    fn library_named(tracks: Vec<TrackEntry>, name: &str) -> Library {
+        let mut library = library_with(tracks);
+        library.apply(&Update::Playlists(vec![PlaylistEntry {
+            uri: "spotify:playlist:a".to_owned(),
+            name: name.to_owned(),
+            named: true,
+        }]));
+        library
+    }
+
+    fn track_ms(uri: &str, duration_ms: u32) -> TrackEntry {
+        TrackEntry {
+            duration_ms: Some(duration_ms),
+            ..track(uri, uri)
+        }
+    }
+
     /// A context with the app's fonts and style installed.
     fn context() -> Context {
         let tokens = Tokens::DARK;
@@ -290,11 +363,86 @@ mod tests {
         found.expect("the header and the list lay out")
     }
 
-    /// One double click on `centre`, fed one event per pass, and the command the
-    /// view returned while it happened.
-    fn double_click(
+    /// The rect `tracks_view` draws the `index`-th row into while the band is
+    /// drawn, solved the same way the view solves it: the band and its action row
+    /// first, then the header, then the whole list reserved in one block, then
+    /// `layout::table::row_rect` for the row.
+    ///
+    /// The band pushes the rows down. Every other geometry test builds no named
+    /// playlist, so the band never appears in them, and this is the only solve
+    /// that sees its offset.
+    fn row_rect_below_hero(
+        ctx: &Context,
+        screen: Vec2,
+        count: usize,
+        index: usize,
+        title: &str,
+    ) -> Rect {
+        let tokens = Tokens::DARK;
+        let table = Table::Full;
+        let mut found = None;
+        run(ctx, sized_input(screen, Vec::new()), |ui| {
+            ui.add_space(space::S3);
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                let width = ui.available_width();
+                let columns = table_layout::columns(width, table.columns());
+                let band = hero::Band {
+                    eyebrow: "Playlist",
+                    title,
+                    meta: Vec::new(),
+                    playable: count > 0,
+                };
+                let _ = hero::show(ui, &band, &tokens);
+                head(ui, columns, &tokens);
+                let list = list_rect(ui, count);
+                found = Some(table_layout::row_rect(list, index, extent::ROW_H));
+            });
+        });
+        found.expect("the hero, header and list lay out")
+    }
+
+    /// The rect `tracks_view` draws the hero's play control into, solved the way
+    /// the view solves it: the band takes the width and a fixed height, the action
+    /// row a fixed height under it, and the tile sits at the row's left with the
+    /// gutter. The band is drawn through the view's own painter to advance the
+    /// layout, so only the action row's height is re-derived here.
+    fn play_tile_rect_for(ctx: &Context, title: &str) -> Rect {
+        let tokens = Tokens::DARK;
+        let mut found = None;
+        run(ctx, input(Vec::new()), |ui| {
+            ui.add_space(space::S3);
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                let width = ui.available_width();
+                let top = ui.cursor().min;
+                let band = hero::Band {
+                    eyebrow: "Playlist",
+                    title,
+                    meta: Vec::new(),
+                    playable: true,
+                };
+                let _ = hero::show(ui, &band, &tokens);
+                let bottom = ui.cursor().min.y;
+                let height = PLAY + 2.0 * space::S4;
+                let row =
+                    Rect::from_min_size(Pos2::new(top.x, bottom - height), vec2(width, height));
+                let centre = row.center().y;
+                found = Some(Rect::from_min_size(
+                    Pos2::new(row.left() + space::GUTTER, centre - PLAY / 2.0),
+                    Vec2::splat(PLAY),
+                ));
+            });
+        });
+        found.expect("the hero and its action row lay out")
+    }
+
+    /// Clicks `centre` `times` times, one event per pass, and returns the command
+    /// the view reported while they happened. `screen` is the probe window, so a
+    /// test that needs the band and two whole rows can ask for a taller one.
+    fn clicks(
+        screen: Vec2,
         ctx: &Context,
         centre: Pos2,
+        times: usize,
         library: &mut Library,
         transport: &mut Transport,
         queue: &mut Queue,
@@ -302,10 +450,10 @@ mod tests {
         let tokens = Tokens::DARK;
         let mut command = None;
         // Warm up so hit-testing has a previous pass to read.
-        run(ctx, input(Vec::new()), |ui| {
+        run(ctx, sized_input(screen, Vec::new()), |ui| {
             let _ = tracks_view(ui, Table::Full, library, transport, queue, &tokens);
         });
-        for _ in 0..2 {
+        for _ in 0..times {
             for event in [
                 Event::PointerMoved(centre),
                 button(centre, true),
@@ -315,7 +463,7 @@ mod tests {
                 let library = &mut *library;
                 let transport = &mut *transport;
                 let queue = &mut *queue;
-                run(ctx, input(vec![event]), |ui| {
+                run(ctx, sized_input(screen, vec![event]), |ui| {
                     if let Some(next) =
                         tracks_view(ui, Table::Full, library, transport, queue, &tokens)
                     {
@@ -325,6 +473,29 @@ mod tests {
             }
         }
         command
+    }
+
+    /// One click on `centre`, and the command the view returned while it happened.
+    fn click(
+        ctx: &Context,
+        centre: Pos2,
+        library: &mut Library,
+        transport: &mut Transport,
+        queue: &mut Queue,
+    ) -> Option<Command> {
+        clicks(PROBE, ctx, centre, 1, library, transport, queue)
+    }
+
+    /// One double click on `centre`, and the command the view returned while it
+    /// happened.
+    fn double_click(
+        ctx: &Context,
+        centre: Pos2,
+        library: &mut Library,
+        transport: &mut Transport,
+        queue: &mut Queue,
+    ) -> Option<Command> {
+        clicks(PROBE, ctx, centre, 2, library, transport, queue)
     }
 
     /// The x the header paints the upper-cased `label` at, read back from the
@@ -671,5 +842,144 @@ mod tests {
         });
 
         assert_eq!(command, None, "an empty list has nothing to activate");
+    }
+
+    #[test]
+    fn the_hero_heads_a_named_playlist_and_not_an_unnamed_one() {
+        let tokens = Tokens::DARK;
+        let ctx = context();
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+
+        // A selected playlist whose name the library knows: the band is drawn.
+        let mut named = library_named(vec![track("a", "t0")], "Evening");
+        let mut output = ctx.run_ui(input(Vec::new()), |ui| {
+            let _ = tracks_view(
+                ui,
+                Table::Full,
+                &mut named,
+                &mut transport,
+                &mut queue,
+                &tokens,
+            );
+        });
+        output.textures_delta.clear();
+        let texts = drawn_texts(&output);
+        assert!(
+            texts.contains(&"PLAYLIST"),
+            "the band's eyebrow must be drawn over a named playlist: {texts:?}"
+        );
+        assert!(
+            texts.contains(&"Evening"),
+            "the band must name the playlist: {texts:?}"
+        );
+
+        // The same selection with nothing in the library to name it: no band,
+        // only the rows.
+        let mut unnamed = library_with(vec![track("a", "t0")]);
+        let mut output = ctx.run_ui(input(Vec::new()), |ui| {
+            let _ = tracks_view(
+                ui,
+                Table::Full,
+                &mut unnamed,
+                &mut transport,
+                &mut queue,
+                &tokens,
+            );
+        });
+        output.textures_delta.clear();
+        let texts = drawn_texts(&output);
+        assert!(
+            !texts.contains(&"PLAYLIST"),
+            "no name means no band, only the rows: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn the_hero_play_control_starts_the_first_track_through_the_queue() {
+        let ctx = context();
+        let mut library = library_named(vec![track("a", "t0"), track("b", "t1")], "Evening");
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+
+        // The click is where the view draws the control, not a probe's geometry.
+        let play = play_tile_rect_for(&ctx, "Evening").center();
+        let command = click(&ctx, play, &mut library, &mut transport, &mut queue);
+
+        assert_eq!(
+            command,
+            Some(Command::Play {
+                uri: "a".to_owned()
+            })
+        );
+        assert!(
+            queue.can_next(),
+            "the hero's play must start the queue, not only the transport"
+        );
+        assert_eq!(
+            transport.now_playing.as_ref().map(|now| now.uri.as_str()),
+            Some("a")
+        );
+    }
+
+    #[test]
+    fn a_double_click_on_the_second_row_plays_it_while_the_band_is_drawn() {
+        let ctx = context();
+        let mut library = library_named(vec![track("a", "t0"), track("b", "t1")], "Evening");
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+
+        // The band pushes the rows down, so the only solve that sees its offset
+        // is the one below it. Clicking the second row must start the second
+        // track: if the offset were dropped, the same point would land on the
+        // first.
+        let second = row_rect_below_hero(&ctx, TALL, 2, 1, "Evening").center();
+        let command = clicks(
+            TALL,
+            &ctx,
+            second,
+            2,
+            &mut library,
+            &mut transport,
+            &mut queue,
+        );
+
+        assert_eq!(
+            command,
+            Some(Command::Play {
+                uri: "b".to_owned()
+            })
+        );
+        assert!(
+            !queue.can_next(),
+            "the second of two rows was started, not the first"
+        );
+        assert_eq!(
+            transport.now_playing.as_ref().map(|now| now.uri.as_str()),
+            Some("b")
+        );
+    }
+
+    #[test]
+    fn the_total_is_withheld_when_any_length_is_unknown() {
+        assert_eq!(total_duration_ms(&[]), 0, "no tracks is the absent total");
+        assert_eq!(
+            total_duration_ms(&[track_ms("a", 1_000), track_ms("b", 2_000)]),
+            3_000
+        );
+        assert_eq!(
+            total_duration_ms(&[track_ms("a", 1_000), track("b", "t1")]),
+            0,
+            "one unknown length withholds the whole total"
+        );
+    }
+
+    #[test]
+    fn the_total_saturates_instead_of_wrapping() {
+        assert_eq!(
+            total_duration_ms(&[track_ms("a", u32::MAX), track_ms("b", u32::MAX)]),
+            u32::MAX,
+            "two maximal lengths saturate rather than wrap"
+        );
     }
 }

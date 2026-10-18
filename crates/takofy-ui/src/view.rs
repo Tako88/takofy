@@ -5,6 +5,7 @@
 
 mod art;
 pub mod controls;
+mod hero;
 pub mod now_playing;
 pub mod playbar;
 pub mod playlist;
