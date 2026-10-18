@@ -490,6 +490,7 @@ mod tests {
     use takofy_core::credentials::{AccessToken, CredentialStore, RefreshToken, StoreError};
     use takofy_core::login::{SourceError, SourceErrorKind, TokenSet, TokenSource};
     use takofy_model::{PlaylistEntry, TrackEntry};
+    use takofy_ui::signin::failure_message;
     use tokio::runtime::Runtime;
 
     use super::*;
@@ -585,18 +586,31 @@ mod tests {
     #[derive(Default)]
     struct MemoryStore {
         token: Mutex<Option<RefreshToken>>,
+        unavailable: AtomicBool,
     }
 
     impl MemoryStore {
         fn seeded(value: &str) -> Self {
             Self {
                 token: Mutex::new(RefreshToken::new(value.to_owned())),
+                ..Self::default()
+            }
+        }
+
+        /// A store that cannot be read, as on a machine with no provider.
+        fn unavailable() -> Self {
+            Self {
+                unavailable: AtomicBool::new(true),
+                ..Self::default()
             }
         }
     }
 
     impl CredentialStore for MemoryStore {
         fn load(&self) -> Result<Option<RefreshToken>, StoreError> {
+            if self.unavailable.load(Ordering::SeqCst) {
+                return Err(StoreError::Unavailable);
+            }
             Ok(self.token.lock().expect("lock").clone())
         }
 
@@ -898,6 +912,39 @@ mod tests {
         assert_eq!(
             resume_update(Err(auth_source(SourceErrorKind::PortBusy))),
             Update::SignInFailed(Failure::PortBusy)
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_store_that_cannot_be_read_reaches_the_window_as_actionable_text() {
+        let store = MemoryStore::unavailable();
+        let source = FixedSource::default();
+
+        let error = resume(&store, &source).expect_err("the store load fails");
+
+        assert_eq!(failure_of(&error), Failure::Keychain);
+        let message = failure_message(Failure::Keychain);
+        assert!(
+            message.contains("org.freedesktop.secrets"),
+            "the window text must name the D-Bus service: {message}"
+        );
+        for desktop in ["GNOME", "Plasma", "Hyprland", "i3", "sway"] {
+            assert!(
+                message.contains(desktop),
+                "{desktop} must be distinguished: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_corrupt_entry_reaches_the_window_as_actionable_text() {
+        let failure = failure_of(&AuthError::Store(StoreError::Corrupt));
+
+        assert_eq!(failure, Failure::Keychain);
+        assert!(
+            failure_message(failure).contains("signing in again"),
+            "a corrupt entry must offer a way out"
         );
     }
 
