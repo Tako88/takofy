@@ -72,12 +72,26 @@ impl SignIn {
 pub fn failure_message(failure: Failure) -> &'static str {
     match failure {
         Failure::PortBusy => "The sign-in port is in use. Close the other app and try again.",
-        Failure::Keychain => "Could not read or save your sign-in. Check your system keychain.",
+        Failure::Keychain => keychain_message(),
         Failure::NoRefreshToken => "Spotify did not return a refresh token. Try again.",
         Failure::NoAudioDevice => "No audio output device is available.",
         Failure::Load => "Could not load the library. Check your connection and try again.",
         Failure::Other => "Sign-in failed. Try again, or run with --headless for details.",
     }
+}
+
+/// Linux has a D-Bus service to name; other targets have nothing verifiable to add.
+#[cfg(target_os = "linux")]
+fn keychain_message() -> &'static str {
+    "Try signing in again. The system keychain needs the Secret Service provider \
+     org.freedesktop.secrets on D-Bus: check it is enabled on GNOME or Plasma, or \
+     start one on a bare compositor such as Hyprland, i3 or sway. A provider that \
+     is running but locked can also cause this."
+}
+
+#[cfg(not(target_os = "linux"))]
+fn keychain_message() -> &'static str {
+    "Try signing in again. The system keychain could not be used."
 }
 
 #[cfg(test)]
@@ -220,6 +234,42 @@ mod tests {
             let expected = state.can_authorize();
             let got = state.authorize();
             assert_eq!(expected, got.is_some(), "{state:?}");
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn keychain_failure_names_the_service_and_both_desktops() {
+        let message = failure_message(Failure::Keychain);
+        assert!(
+            message.contains("org.freedesktop.secrets"),
+            "the message must name the D-Bus service: {message}"
+        );
+        for desktop in ["GNOME", "Plasma", "Hyprland", "i3", "sway"] {
+            assert!(
+                message.contains(desktop),
+                "{desktop} must be distinguished: {message}"
+            );
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn keychain_failure_names_no_linux_service_off_linux() {
+        assert!(
+            !failure_message(Failure::Keychain).contains("org.freedesktop.secrets"),
+            "the fallback must not name a Linux service"
+        );
+    }
+
+    #[test]
+    fn keychain_failure_carries_no_secret() {
+        let message = failure_message(Failure::Keychain);
+        for forbidden in ["token", "refresh", "password", "auth code"] {
+            assert!(
+                !message.contains(forbidden),
+                "the message must not carry {forbidden}: {message}"
+            );
         }
     }
 

@@ -15,8 +15,11 @@ use std::sync::Arc;
 
 use librespot::core::SessionConfig;
 use log::LevelFilter;
+use takofy_core::credentials::StoreError;
 use takofy_core::login::{AuthError, LoginMethod, SourceErrorKind, authenticate};
 use takofy_core::oauth::{OAUTH_LOG_TARGET, RedirectMode, SpotifyOAuth};
+use takofy_ui::message::Failure;
+use takofy_ui::signin::failure_message;
 
 use crate::keychain::KeychainStore;
 
@@ -188,6 +191,10 @@ fn print_error(error: &AuthError) {
         eprintln!(
             "free the port, or re-run with --paste (which needs http://127.0.0.1/login registered)"
         );
+        return;
+    }
+    if matches!(error, AuthError::Store(StoreError::Unavailable)) {
+        eprintln!("error: {}", failure_message(Failure::Keychain));
         return;
     }
     eprintln!("error: {error}");

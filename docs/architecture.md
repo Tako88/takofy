@@ -15,8 +15,8 @@ public Web API, and there is no dashboard app behind it.
 
 Two properties of the public API force that. It hands out no audio stream, so a
 client built on it can only remote-control an official one. And a new dashboard
-app lands in Development Mode, capped at five users and, since February 2026,
-without the batch endpoints, so reading a 500-track playlist costs 500 requests.
+app lands in Development Mode, capped at five users and without the batch
+endpoints, so reading a 500-track playlist costs 500 requests.
 
 The price is a Premium account and a footing outside Spotify's developer terms.
 
@@ -70,6 +70,9 @@ earns the boilerplate the second one avoids.
   `shutdown` enforces this with `Arc::try_unwrap` and reports `PlayerShared`.
 - librespot owns its playback threads. Nothing is shared behind a lock the UI
   could block on.
+- Playback events leave librespot on a task spawned on the runtime and reach the
+  window through one plain drain thread. That thread is detached, so it cannot
+  delay the runtime drop.
 
 Shutdown runs in a fixed order: the window closes, teardown tells the command
 task to stop, the task shuts the player down, and then the runtime drops. The
@@ -84,7 +87,9 @@ on the blocking pool, and a detached thread dies with the process instead.
 ## Invariants
 
 - No token, auth code or credential reaches a log, a panic message or stdout.
-- No credential is written to disk. The refresh token lives in the OS keychain.
+- No credential is written to disk. The refresh token lives in the OS keychain;
+  there is no fallback to a file or to a store keyed by something the same user
+  can read.
 - `takofy-ui` does not link `takofy-core` or librespot.
 - The UI thread never blocks on I/O.
 
@@ -95,5 +100,8 @@ That suits a music player, which is lists and a transport bar rather than an
 animation showcase, and it has AccessKit support by default.
 
 What it costs: egui has no stylesheet. The token layer in
-`crates/takofy-ui/src/theme.rs` is therefore the only place a colour or size may
-be written, and `clippy.toml` fails the build on a literal anywhere else.
+`crates/takofy-ui/src/theme.rs` is therefore the only place a colour, spacing
+step, type size or radius is written, and `clippy.toml` fails the build on a
+`Color32` constructor anywhere else. Window geometry and the breakpoints that
+decide region visibility live in `crates/takofy-ui/src/layout.rs`, which
+expresses every region width in tokens.
