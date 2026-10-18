@@ -153,7 +153,7 @@ fn trail(ui: &mut Ui, crumbs: &[crate::trail::Crumb<'_>], rect: Rect, tokens: &T
                         place.left() - space::S2,
                         rect.center().y - Size::MD.side / 2.0,
                     ),
-                    Vec2::new(2.0, Size::MD.side),
+                    Vec2::new(stroke::RULE, Size::MD.side),
                 ),
                 radius::SM,
                 tokens.palette.text,

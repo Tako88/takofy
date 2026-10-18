@@ -263,7 +263,7 @@ fn one(ui: &mut Ui, rect: Rect, uri: &str, name: &str, selected: bool, tokens: &
         ui.painter()
             .rect_filled(rect, radius::SM, tokens.palette.surface_raised);
         ui.painter().rect_filled(
-            Rect::from_min_size(rect.min, Vec2::new(2.0, rect.height())),
+            Rect::from_min_size(rect.min, Vec2::new(stroke::RULE, rect.height())),
             radius::SM,
             tokens.palette.text,
         );

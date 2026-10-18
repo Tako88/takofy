@@ -6,6 +6,7 @@
 pub mod controls;
 pub mod now_playing;
 pub mod playbar;
+pub mod playlist;
 mod shell;
 pub mod sidebar;
 pub mod text;

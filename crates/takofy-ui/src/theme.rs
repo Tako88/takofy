@@ -156,7 +156,8 @@ pub mod extent {
     pub const PLAYBAR_ART: f32 = 44.0;
     /// The account button's avatar tile, 1.25 rem.
     pub const AVATAR: f32 = 20.0;
-    /// A library row's cover tile, 2.25 rem.
+    /// A library row's cover tile, 2.25 rem. A track row's art is the same
+    /// 2.25 rem box, so it is this token and not a second one of its own.
     pub const LIBRARY_ART: f32 = 36.0;
     /// The search field's height, 2 rem.
     pub const SEARCH_H: f32 = 32.0;
@@ -181,6 +182,57 @@ pub mod extent {
     /// The reduced playbar's minimums: 9 rem and 14 rem.
     pub const PLAYBAR_NOW_MIN_REDUCED: f32 = 144.0;
     pub const PLAYBAR_CENTRE_MIN_REDUCED: f32 = 224.0;
+
+    /// A track row's fixed columns, from the reference's `--track-cols` for a
+    /// playlist: the index and the art are 2.25 rem, the date added is 5.5 rem,
+    /// the duration is 3.5 rem, and the like and the actions are 1.75 rem each.
+    pub const TRACK_INDEX_W: f32 = 36.0;
+    pub const TRACK_ADDED_W: f32 = 88.0;
+    pub const TRACK_LIKE_W: f32 = 28.0;
+    pub const TRACK_DURATION_W: f32 = 56.0;
+    pub const TRACK_ACTIONS_W: f32 = 28.0;
+
+    /// A card's minimum width, 9 rem, which is what the grid's auto-fill counts.
+    pub const CARD_MIN_W: f32 = 144.0;
+    /// A card's play tile, 2 rem.
+    pub const CARD_PLAY: f32 = 32.0;
+    /// The sign-in card's width. Not a reference value: the reference draws no
+    /// sign-in card. 24 rem is the measure it gives a narrow field, and it
+    /// leaves a margin to spare at the minimum window.
+    pub const SIGNIN_W: f32 = 384.0;
+}
+
+/// How the free space in a row of columns is shared, in the reference's
+/// fractional units.
+///
+/// A row's fixed columns take their width and these share what is left, so their
+/// ratio decides how a track list reads: the title is what a listener scans.
+///
+/// A nested title's gutter is not a token. The reference composes it as a grid
+/// track and a gap, so the sum is not a value it names; whoever lays the title
+/// out writes `extent::LIBRARY_ART + space::S3` and invents nothing.
+pub mod grow {
+    /// The title column, `1fr`.
+    pub const TITLE: f32 = 1.0;
+    /// The album column, `0.65fr` in the reference's playlist template.
+    pub const ALBUM: f32 = 0.65;
+}
+
+/// A header band: its height, its art, and the clamp its title is drawn at.
+pub mod hero {
+    /// The band's minimum height, 11 rem.
+    pub const MIN_H: f32 = 176.0;
+    /// The band's art tile, 11 rem. The same value as the band's own height, and
+    /// a different role: the tile is square and the band may grow taller.
+    pub const ART: f32 = 176.0;
+    /// The play tile under the band, 2.75 rem. Larger than a card's, because it
+    /// is the band's own call to action.
+    pub const PLAY: f32 = 44.0;
+    /// The title's floor, 2 rem, which is not a step on the type scale: the
+    /// reference clamps the size rather than choosing one of the steps.
+    pub const TITLE_MIN: f32 = 32.0;
+    /// The title's share of the viewport width, 4.5 vw, as a fraction of it.
+    pub const TITLE_VW: f32 = 0.045;
 }
 
 /// The sprite's own geometry.
@@ -234,6 +286,9 @@ pub mod motion {
 pub mod stroke {
     /// The one width a divider is allowed to be.
     pub const HAIRLINE: f32 = 1.0;
+    /// The one width a marker is allowed to be: the flag at the leading edge of
+    /// the selected row, the current breadcrumb and the sounding row.
+    pub const RULE: f32 = 2.0;
 }
 
 /// The only `Color32` values in the codebase.
@@ -277,6 +332,13 @@ pub struct Palette {
     pub accent_hover: Color32,
     /// A selected chip's fill: bone at low alpha, not a gamma-scaled text.
     pub pressed: Color32,
+    /// The fill under the pointer on a track row, bone at 6%. Not the palette's
+    /// `surface_hover`, which is a lighter grey from the reference's own scale.
+    pub row_hover: Color32,
+    /// The wash a header band sits on. The reference writes this as `#3a3a3a`
+    /// under a 0.4 opacity; a fill has one channel to carry that, so it is
+    /// folded into the alpha here.
+    pub hero_wash: Color32,
     /// A verified mark, which is not the playback colour.
     pub verified: Color32,
     pub shadow_sm: egui::Shadow,
@@ -305,6 +367,8 @@ impl Palette {
         accent: Color32::from_rgb(0x1e, 0xd7, 0x60),
         accent_hover: Color32::from_rgb(0x3e, 0xe5, 0x7b),
         pressed: Color32::from_rgba_unmultiplied_const(0xf2, 0xf0, 0xea, 20),
+        row_hover: Color32::from_rgba_unmultiplied_const(0xf2, 0xf0, 0xea, 15),
+        hero_wash: Color32::from_rgba_unmultiplied_const(0x3a, 0x3a, 0x3a, 102),
         verified: Color32::from_rgb(0x9f, 0xc6, 0xe8),
         shadow_sm: egui::Shadow {
             offset: [0, 1],
@@ -445,6 +509,8 @@ mod tests {
         assert_eq!(p.border.to_srgba_unmultiplied()[3], 28);
         assert_eq!(p.border_strong.to_srgba_unmultiplied()[3], 66);
         assert_eq!(p.scrim.to_srgba_unmultiplied()[3], 199);
+        assert_eq!(p.row_hover.to_srgba_unmultiplied()[3], 15);
+        assert_eq!(p.hero_wash.to_srgba_unmultiplied()[3], 102);
     }
 
     #[test]
@@ -518,5 +584,70 @@ mod tests {
                 "pressed is {r},{g},{b},{a}, not bone"
             );
         }
+    }
+
+    #[test]
+    fn the_row_hover_is_bone_but_lighter_than_pressed() {
+        let p = &Palette::DARK;
+        let [r, g, b, a] = p.row_hover.to_srgba_unmultiplied();
+        assert_eq!(a, 15, "the reference draws the row hover at 0.06");
+        for (got, want) in [(r, 0xf2), (g, 0xf0), (b, 0xea)] {
+            assert!(got.abs_diff(want) <= 6, "row_hover is {r},{g},{b},{a}");
+        }
+        assert!(
+            a < p.pressed.to_srgba_unmultiplied()[3],
+            "a hover is lighter than a selection"
+        );
+    }
+
+    #[test]
+    fn the_hero_wash_is_the_reference_tint_at_its_own_opacity() {
+        let [r, g, b, a] = Palette::DARK.hero_wash.to_srgba_unmultiplied();
+        // The reference's `--hero-tint` is #3a3a3a under a 0.4 opacity.
+        for (got, want) in [(r, 0x3a), (g, 0x3a), (b, 0x3a)] {
+            assert!(got.abs_diff(want) <= 6, "hero_wash is {r},{g},{b},{a}");
+        }
+    }
+
+    #[test]
+    fn the_rule_is_heavier_than_the_hairline() {
+        const { assert!(stroke::HAIRLINE < stroke::RULE) };
+    }
+
+    #[test]
+    fn the_title_column_grows_more_than_the_album_column() {
+        const { assert!(grow::ALBUM > 0.0) };
+        const { assert!(grow::ALBUM < grow::TITLE) };
+    }
+
+    #[test]
+    fn the_hero_title_clamp_has_a_floor_below_its_cap() {
+        const { assert!(hero::TITLE_MIN < text::XXXXL) };
+        const { assert!(hero::TITLE_VW > 0.0) };
+    }
+
+    #[test]
+    fn the_hero_play_tile_is_larger_than_a_card_tile() {
+        const { assert!(extent::CARD_PLAY < hero::PLAY) };
+    }
+
+    #[test]
+    fn the_track_columns_are_the_reference_rem_values() {
+        // 16 points to the rem, which is the base every value in this file uses.
+        const REM: f32 = 16.0;
+        const {
+            assert!(extent::TRACK_INDEX_W == 2.25 * REM);
+            assert!(extent::TRACK_ADDED_W == 5.5 * REM);
+            assert!(extent::TRACK_LIKE_W == 1.75 * REM);
+            assert!(extent::TRACK_DURATION_W == 3.5 * REM);
+            assert!(extent::TRACK_ACTIONS_W == 1.75 * REM);
+            assert!(extent::LIBRARY_ART == 2.25 * REM);
+            assert!(extent::CARD_MIN_W == 9.0 * REM);
+            assert!(extent::CARD_PLAY == 2.0 * REM);
+            assert!(hero::MIN_H == 11.0 * REM);
+            assert!(hero::ART == 11.0 * REM);
+            assert!(hero::PLAY == 2.75 * REM);
+            assert!(hero::TITLE_MIN == 2.0 * REM);
+        };
     }
 }

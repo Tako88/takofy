@@ -1,7 +1,7 @@
 //! Flattened icon geometry, generated from `docs/reference/main.js`.
 //!
-//! Regenerate with `.pi/scratch/icons-flatten`; the conversion is
-//! documented in `crates/takofy-ui/assets/icons/README.md`.
+//! Regenerate with `cargo run -p takofy-ui --example icons_flatten`; the
+//! conversion is documented in `crates/takofy-ui/assets/icons/README.md`.
 
 use super::{Glyph, Icon, Line, Point};
 
@@ -848,6 +848,85 @@ const LOGO_FILLS: &[&[Point]] = &[
     &[(9.5, 5.5), (14.5, 5.5), (14.5, 21.0), (9.5, 21.0)],
 ];
 
+const CLOCK_LINES: &[Line] = &[
+    Line {
+        points: &[
+            (20.2, 12.0),
+            (20.161, 12.804),
+            (20.042, 13.6),
+            (19.847, 14.38),
+            (19.576, 15.138),
+            (19.232, 15.865),
+            (18.818, 16.556),
+            (18.339, 17.202),
+            (17.798, 17.798),
+            (17.202, 18.339),
+            (16.556, 18.818),
+            (15.865, 19.232),
+            (15.138, 19.576),
+            (14.38, 19.847),
+            (13.6, 20.042),
+            (12.804, 20.161),
+            (12.0, 20.2),
+            (11.196, 20.161),
+            (10.4, 20.042),
+            (9.62, 19.847),
+            (8.862, 19.576),
+            (8.135, 19.232),
+            (7.444, 18.818),
+            (6.798, 18.339),
+            (6.202, 17.798),
+            (5.661, 17.202),
+            (5.182, 16.556),
+            (4.768, 15.865),
+            (4.424, 15.138),
+            (4.153, 14.38),
+            (3.958, 13.6),
+            (3.839, 12.804),
+            (3.8, 12.0),
+            (3.839, 11.196),
+            (3.958, 10.4),
+            (4.153, 9.62),
+            (4.424, 8.862),
+            (4.768, 8.135),
+            (5.182, 7.444),
+            (5.661, 6.798),
+            (6.202, 6.202),
+            (6.798, 5.661),
+            (7.444, 5.182),
+            (8.135, 4.768),
+            (8.862, 4.424),
+            (9.62, 4.153),
+            (10.4, 3.958),
+            (11.196, 3.839),
+            (12.0, 3.8),
+            (12.804, 3.839),
+            (13.6, 3.958),
+            (14.38, 4.153),
+            (15.138, 4.424),
+            (15.865, 4.768),
+            (16.556, 5.182),
+            (17.202, 5.661),
+            (17.798, 6.202),
+            (18.339, 6.798),
+            (18.818, 7.444),
+            (19.232, 8.135),
+            (19.576, 8.862),
+            (19.847, 9.62),
+            (20.042, 10.4),
+            (20.161, 11.196),
+        ],
+        closed: true,
+        width: None,
+    },
+    Line {
+        points: &[(12.0, 7.4), (12.0, 12.0), (15.2, 14.0)],
+        closed: false,
+        width: None,
+    },
+];
+const CLOCK_FILLS: &[&[Point]] = &[];
+
 pub(super) fn glyph(icon: Icon) -> Glyph {
     match icon {
         Icon::Play => Glyph {
@@ -960,6 +1039,11 @@ pub(super) fn glyph(icon: Icon) -> Glyph {
             lines: LOGO_LINES,
             fills: LOGO_FILLS,
         },
+        Icon::Clock => Glyph {
+            source: 0x5b15de8d236f2fce,
+            lines: CLOCK_LINES,
+            fills: CLOCK_FILLS,
+        },
     }
 }
 
@@ -987,5 +1071,6 @@ pub(super) fn symbol_id(icon: Icon) -> &'static str {
         Icon::Expand => "i-expand",
         Icon::Screen => "i-screen",
         Icon::Logo => "i-logo",
+        Icon::Clock => "i-clock",
     }
 }

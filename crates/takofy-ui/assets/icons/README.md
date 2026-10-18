@@ -1,21 +1,19 @@
 # Icon geometry
 
-The 22 icons the shell draws are the reference's own sprite, flattened once,
+The 23 icons the shell draws are the reference's own sprite, flattened once,
 offline, into `crates/takofy-ui/src/icon/data.rs`. There is no SVG parser in the
 binary: the runtime turns a committed polyline into an `egui::Shape`.
 
-**The generator is local.** It lives in `.pi/scratch/icons-flatten/` and is not
-committed, because `.pi/` is scratch. This file is the record of what it does,
-so the table can be regenerated or audited without it. If a 23rd glyph is needed
-before the generator is rewritten, promote the generator to a committed `cargo`
-example first rather than flattening by hand.
+**The generator is committed.** It is the `takofy-ui` example
+`crates/takofy-ui/examples/icons_flatten.rs`. The conversion rules live here, so
+the table can be regenerated or audited with the example rather than by hand.
 
 ## Source
 
 `docs/reference/main.js`, the `SPRITE` array: 33 `<symbol>` elements, of which
-22 are in scope. The 11 left out (`mic chevron-down chevron-right heart-filled
-download close check verified clock grid list`) have no consumer; `verified`
-would also need a literal `#fff` stroke.
+23 are in scope. The 10 left out (`mic chevron-down chevron-right heart-filled
+download close check verified grid list`) have no consumer; `verified` would
+also need a literal `#fff` stroke.
 
 ## Conversion
 
@@ -72,9 +70,15 @@ stroked at the size's own width.
 
 ## Regenerating
 
+Adding a glyph bootstraps: the example is in this same package, so
+`cargo run --example` cannot build until the crate compiles, and the crate
+needs the new `Icon` variant and an arm for it in `data.rs`. Add the variant
+and a stub arm first, then run the example to fill the arm in, then format:
+
 ```sh
-cd .pi/scratch/icons-flatten && cargo run
+cargo run -p takofy-ui --example icons_flatten
+cargo fmt --all
 ```
 
-It rewrites `crates/takofy-ui/src/icon/data.rs` and a visual contact sheet at
-`.pi/scratch/icons-flatten/preview.svg`.
+It rewrites `crates/takofy-ui/src/icon/data.rs`, and the formatter keeps the
+table in the repository's style.

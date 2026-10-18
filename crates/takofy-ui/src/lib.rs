@@ -4,6 +4,7 @@
 
 pub mod availability;
 pub mod drawer;
+pub mod format;
 pub mod icon;
 pub mod layout;
 pub mod library;
