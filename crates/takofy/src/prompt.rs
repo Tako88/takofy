@@ -129,6 +129,8 @@ mod tests {
             uri: "spotify:track:y".to_owned(),
             title: "Song".to_owned(),
             artists: "Band".to_owned(),
+            album: None,
+            duration_ms: None,
             named: true,
         };
         assert_eq!(

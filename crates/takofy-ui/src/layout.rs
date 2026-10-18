@@ -7,6 +7,9 @@ use egui::{Rect, pos2, vec2};
 
 use crate::theme::{extent, space};
 
+pub mod cards;
+pub mod hero;
+pub mod table;
 pub mod tracks;
 
 use tracks::{Track, solve};
@@ -24,6 +27,11 @@ pub const NOWPLAYING_HIDDEN_MAX: f32 = 1120.0;
 pub const PLAYBAR_REDUCED_MAX: f32 = 1000.0;
 /// At and below this width the sidebar becomes the rail.
 pub const RAIL_MAX: f32 = 900.0;
+/// At and below this width a track list drops the album, the date added and the
+/// like, keeping the title and the duration. The reference does it in a media
+/// query on the window, which is why it is a threshold here and not a measure of
+/// the table.
+pub const TABLE_NARROW_MAX: f32 = 760.0;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Sidebar {
@@ -137,12 +145,44 @@ pub struct TopbarRects {
     pub account: Rect,
 }
 
+/// How much room a track list has.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Table {
+    /// Every column the reference draws.
+    Full,
+    /// The title takes what the album, the date and the like were using.
+    Narrow,
+}
+
+impl Table {
+    /// The columns this width leaves room for.
+    pub fn columns(self) -> table::Present {
+        match self {
+            Self::Full => table::Present {
+                album: true,
+                added: true,
+                like: true,
+                duration: true,
+                actions: true,
+            },
+            Self::Narrow => table::Present {
+                album: false,
+                added: false,
+                like: false,
+                duration: true,
+                actions: true,
+            },
+        }
+    }
+}
+
 /// Which form each region takes at the current window width.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Regions {
     pub sidebar: Sidebar,
     pub now_playing: NowPlaying,
     pub playbar: Playbar,
+    pub table: Table,
 }
 
 /// The widths and heights the regions occupy, each one a token.
@@ -180,6 +220,11 @@ pub fn regions_for(width: f32) -> Regions {
             Playbar::Reduced
         } else {
             Playbar::Full
+        },
+        table: if width <= TABLE_NARROW_MAX {
+            Table::Narrow
+        } else {
+            Table::Full
         },
     }
 }
@@ -427,6 +472,21 @@ mod tests {
 
         assert_eq!(regions_for(RAIL_MAX).sidebar, Sidebar::Rail);
         assert_eq!(regions_for(RAIL_MAX + 0.1).sidebar, Sidebar::Full);
+
+        assert_eq!(regions_for(TABLE_NARROW_MAX).table, Table::Narrow);
+        assert_eq!(regions_for(TABLE_NARROW_MAX + 0.1).table, Table::Full);
+    }
+
+    #[test]
+    fn a_narrow_table_keeps_the_title_its_duration_and_its_controls() {
+        let narrow = Table::Narrow.columns();
+        assert!(!narrow.album && !narrow.added && !narrow.like);
+        // The duration is what a listener scrubs by, and the more button is the
+        // only way to reach a track's actions, so neither is ever dropped.
+        assert!(narrow.duration && narrow.actions);
+
+        let full = Table::Full.columns();
+        assert!(full.album && full.added && full.like && full.duration && full.actions);
     }
 
     #[test]

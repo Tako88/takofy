@@ -9,10 +9,11 @@
 use egui::{Align2, EventFilter, FontId, Key, Pos2, Rect, Stroke, StrokeKind, Ui, Vec2};
 
 use crate::availability::Control;
+use crate::format::{format_position, format_remaining};
 use crate::icon::Icon;
 use crate::layout::{self, Playbar};
 use crate::message::Command;
-use crate::player::{SEEK_STEP_MS, Transport, TransportState, format_position, format_remaining};
+use crate::player::{SEEK_STEP_MS, Transport, TransportState};
 use crate::queue::Queue;
 use crate::theme::icon::Size;
 use crate::theme::{

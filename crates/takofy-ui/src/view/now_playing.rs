@@ -3,16 +3,15 @@
 //! The tabs and the queue arrive with the data that fills them. What is here is
 //! real: the caption, an art slot, and the track the transport names.
 
-use egui::{Align2, FontId, Pos2, Rect, Stroke, StrokeKind, Ui, Vec2};
+use egui::{Align2, FontId, Pos2, Rect, Ui, Vec2};
 
 use crate::availability::Control;
-use crate::icon::{self, Icon};
+use crate::icon::Icon;
 use crate::player::Transport;
 use crate::theme::icon::Size;
-use crate::theme::{
-    MonoWeight, Tokens, Weight, extent, fonts, radius, space, stroke, text, tracking,
-};
+use crate::theme::{MonoWeight, Tokens, Weight, extent, fonts, radius, space, text, tracking};
 
+use super::art;
 use super::controls;
 use super::text as recipe;
 
@@ -55,25 +54,19 @@ pub fn show(ui: &mut Ui, transport: &Transport, tokens: &Tokens) {
     );
 
     // The art slot: the largest square the panel can hold, up to the reference's
-    // cap. A monogram stands in until covers are fetched.
+    // cap. It is the same placeholder a row and a card draw, so the art milestone
+    // replaces one painter's body rather than hunting for every empty box.
     let side = (band.width() - 2.0 * space::S3).min(extent::NOWPLAYING_ART_MAX);
     let art = Rect::from_min_size(
         Pos2::new(band.center().x - side / 2.0, head.bottom() + space::S3),
         Vec2::splat(side),
     );
-    ui.painter().rect(
+    art::tile(
+        ui.painter(),
         art,
         radius::SM,
-        tokens.palette.surface_raised,
-        Stroke::new(stroke::HAIRLINE, tokens.palette.border_strong),
-        StrokeKind::Inside,
-    );
-    icon::paint(
-        ui.painter(),
-        Icon::Logo,
-        Rect::from_center_size(art.center(), Vec2::splat(side * 0.4)),
-        Size::LG,
-        tokens.palette.text_subtle,
+        tokens.palette.border_strong,
+        tokens,
     );
 
     let meta = Rect::from_min_size(

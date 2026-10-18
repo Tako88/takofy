@@ -67,10 +67,11 @@ pub enum Icon {
     Expand,
     Screen,
     Logo,
+    Clock,
 }
 
 impl Icon {
-    pub const ALL: [Self; 22] = [
+    pub const ALL: [Self; 23] = [
         Self::Play,
         Self::Pause,
         Self::Previous,
@@ -93,6 +94,7 @@ impl Icon {
         Self::Expand,
         Self::Screen,
         Self::Logo,
+        Self::Clock,
     ];
 
     /// The flattened geometry.

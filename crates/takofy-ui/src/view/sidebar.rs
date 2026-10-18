@@ -4,7 +4,7 @@
 //! but the label and the padding, and which one is on screen comes from the
 //! region model rather than from a mode of its own.
 
-use egui::{Layout, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Ui, UiBuilder, Vec2};
+use egui::{Layout, Pos2, Rect, RichText, Sense, Ui, UiBuilder, Vec2};
 
 use crate::availability::Control;
 use crate::icon::{self, Icon};
@@ -17,6 +17,7 @@ use crate::theme::{
     MonoWeight, Tokens, Weight, extent, fonts, radius, space, stroke, text, tracking,
 };
 
+use super::art;
 use super::controls;
 use super::shell::rule;
 use super::text as recipe;
@@ -263,7 +264,7 @@ fn one(ui: &mut Ui, rect: Rect, uri: &str, name: &str, selected: bool, tokens: &
         ui.painter()
             .rect_filled(rect, radius::SM, tokens.palette.surface_raised);
         ui.painter().rect_filled(
-            Rect::from_min_size(rect.min, Vec2::new(2.0, rect.height())),
+            Rect::from_min_size(rect.min, Vec2::new(stroke::RULE, rect.height())),
             radius::SM,
             tokens.palette.text,
         );
@@ -279,12 +280,12 @@ fn one(ui: &mut Ui, rect: Rect, uri: &str, name: &str, selected: bool, tokens: &
         ),
         Vec2::splat(extent::LIBRARY_ART),
     );
-    ui.painter().rect(
+    art::tile(
+        ui.painter(),
         tile,
         radius::SM,
-        tokens.palette.surface_raised,
-        Stroke::new(stroke::HAIRLINE, tokens.palette.border),
-        StrokeKind::Inside,
+        tokens.palette.border,
+        tokens,
     );
 
     let name_x = tile.right() + space::S3;

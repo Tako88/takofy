@@ -8,6 +8,7 @@
 //! The focus ring is drawn here too, because every control wants the same one
 //! and only the slot knows the control has focus.
 
+use std::hash::Hash;
 use std::sync::Arc;
 
 use egui::emath::GuiRounding;
@@ -40,9 +41,39 @@ pub struct Slot {
 /// `role` is a parameter because the search field is a `Role::SearchInput` and
 /// not a button. `tokens` is needed for the focus ring's accent, which is not a
 /// field of egui's `Visuals`.
+///
+/// The id is `(control, ())`, which hashes the same as the control alone, so a
+/// control that appears once keeps the id it always had.
 pub fn slot(
     ui: &mut Ui,
     control: Control,
+    role: Role,
+    rect: Rect,
+    label: &str,
+    tokens: &Tokens,
+    live: bool,
+) -> Slot {
+    slot_keyed(ui, control, (), role, rect, label, tokens, live)
+}
+
+/// Wires one control's rect to its interaction and accessibility, keyed.
+///
+/// A control that appears once can use `slot`. One that appears once per row —
+/// a like or a more — must pass a key, because `availability` and the id would
+/// otherwise be identical for every row and every row would share one hover,
+/// one focus node and one AccessKit node.
+///
+/// `role` is a parameter because the search field is a `Role::SearchInput` and
+/// not a button. `tokens` is needed for the focus ring's accent, which is not a
+/// field of egui's `Visuals`.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a control needs its identity, place, label and state"
+)]
+pub fn slot_keyed(
+    ui: &mut Ui,
+    control: Control,
+    key: impl Hash + std::fmt::Debug,
     role: Role,
     rect: Rect,
     label: &str,
@@ -54,7 +85,7 @@ pub fn slot(
     // loaded. A control that cannot act right now is offered exactly as a waiting
     // one is: unfocusable, announced disabled, and drawn with the same tone.
     let ready = availability(control) == Availability::Ready && live;
-    let id = ui.scope_id().with(control);
+    let id = ui.scope_id().with((control, key));
     let sense = if ready {
         // Draggable as well as clickable: the seek bar is scrubbed, and a press and
         // release without movement is still a click.
@@ -180,7 +211,30 @@ pub fn icon_button(
     label: &str,
     live: bool,
 ) -> Slot {
-    let slot = slot(ui, control, Role::Button, rect, label, tokens, live);
+    icon_button_keyed(ui, tokens, control, (), rect, icon, size, label, live)
+}
+
+/// An icon button that appears once per row.
+///
+/// A row's like and more are one control type repeated down a list, so they have
+/// to carry a key or every row would share one hover, one focus node and one
+/// AccessKit node. It paints exactly what `icon_button` paints.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the same facts as a button, plus which row it belongs to"
+)]
+pub fn icon_button_keyed(
+    ui: &mut Ui,
+    tokens: &Tokens,
+    control: Control,
+    key: impl Hash + std::fmt::Debug,
+    rect: Rect,
+    icon: Icon,
+    size: Size,
+    label: &str,
+    live: bool,
+) -> Slot {
+    let slot = slot_keyed(ui, control, key, Role::Button, rect, label, tokens, live);
     if let Some(fill) = wash(ui, tokens, slot.hover) {
         ui.painter().rect_filled(rect, radius::SM, fill);
     }
@@ -306,6 +360,107 @@ pub fn chip_size(ui: &Ui, tokens: &Tokens, label: &str) -> Vec2 {
         galley.size().x + 2.0 * extent::CHIP_PAD_X,
         galley.size().y + 2.0 * extent::CHIP_PAD_Y,
     )
+}
+
+/// A bordered button carrying a word rather than a glyph: the reference's
+/// `.button`, which is the sign-in card's one control.
+///
+/// The frame is `border_strong` at rest and the text colour under the pointer,
+/// which is the reference's own hover for a button. A waiting one keeps the frame
+/// and drops to the disabled tone, like every other control here.
+pub fn text_button(
+    ui: &mut Ui,
+    tokens: &Tokens,
+    control: Control,
+    rect: Rect,
+    label: &str,
+    live: bool,
+) -> Slot {
+    let slot = slot(ui, control, Role::Button, rect, label, tokens, live);
+    let ready = slot.live;
+    // The reference's `.button` sets its label to the text colour at rest; the
+    // pointer changes only its frame and its wash. A waiting one keeps the frame
+    // and drops to the disabled tone, like every other control here.
+    let color = if ready {
+        tokens.palette.text
+    } else {
+        tokens.palette.text_disabled
+    };
+    let border = if ready && slot.hover > 0.0 {
+        tokens.palette.text
+    } else {
+        tokens.palette.border_strong
+    };
+
+    if let Some(fill) = wash(ui, tokens, slot.hover) {
+        ui.painter().rect_filled(rect, radius::SM, fill);
+    }
+    ui.painter().rect_stroke(
+        rect,
+        radius::SM,
+        Stroke::new(stroke::HAIRLINE, border),
+        StrokeKind::Inside,
+    );
+    let galley = line(ui, label, text_button_font(), color, 0.0);
+    ui.painter().galley(
+        pos2(
+            rect.center().x - galley.size().x / 2.0,
+            rect.center().y - galley.size().y / 2.0,
+        ),
+        galley,
+        color,
+    );
+    slot
+}
+
+/// The box a text button's label needs.
+pub fn text_button_size(ui: &Ui, tokens: &Tokens, label: &str) -> Vec2 {
+    let galley = line(ui, label, text_button_font(), tokens.palette.text, 0.0);
+    Vec2::new(
+        galley.size().x + 2.0 * space::S3,
+        galley.size().y + 2.0 * extent::BUTTON_PAD_Y,
+    )
+}
+
+/// The face a button's label is set in: `--text-sm` at weight 600.
+fn text_button_font() -> FontId {
+    FontId::new(text::SM, fonts::sans(Weight::Semibold))
+}
+
+/// The one loud element in the interface: a solid accent tile.
+///
+/// The reference draws it for the hero's own play control, for a hovered card and
+/// for a hovered row's index, and it is the only thing here that fills with the
+/// accent colour. Sound lives here and nowhere else.
+pub fn play_tile(
+    ui: &mut Ui,
+    tokens: &Tokens,
+    control: Control,
+    rect: Rect,
+    label: &str,
+    live: bool,
+) -> Slot {
+    let slot = slot(ui, control, Role::Button, rect, label, tokens, live);
+    let ready = slot.live;
+    let fill = if !ready {
+        tokens.palette.text_disabled
+    } else if slot.hover > 0.0 {
+        tokens
+            .palette
+            .accent
+            .lerp_to_gamma(tokens.palette.accent_hover, slot.hover)
+    } else {
+        tokens.palette.accent
+    };
+    ui.painter().rect_filled(rect, radius::SM, fill);
+    icon::paint(
+        ui.painter(),
+        Icon::Play,
+        centred(ui, rect, Size::MD.side),
+        Size::MD,
+        tokens.palette.text_inverse,
+    );
+    slot
 }
 
 /// A chip drawn into a rect the caller chose.
@@ -633,6 +788,127 @@ mod tests {
 
         tap(&ctx, ready.center(), &mut clicked);
         assert!(clicked.1, "the click harness never produced a click");
+    }
+
+    #[test]
+    fn keyed_slots_on_one_control_are_distinct_per_key() {
+        let ctx = Context::default();
+        let keys = ["a", "b", "c", "d", "e", "f", "g", "h"];
+        let mut ids = Vec::new();
+        run(&ctx, input(Vec::new()), |ui| {
+            for (index, key) in keys.iter().enumerate() {
+                let slot = slot_keyed(
+                    ui,
+                    Control::TrackLike,
+                    *key,
+                    Role::Button,
+                    cell(index as f32),
+                    "Like",
+                    &Tokens::DARK,
+                    true,
+                );
+                ids.push(slot.response.id);
+            }
+        });
+        assert_eq!(ids.len(), keys.len());
+        for i in 0..ids.len() {
+            for j in (i + 1)..ids.len() {
+                assert!(
+                    ids[i] != ids[j],
+                    "keys {} and {} share an id",
+                    keys[i],
+                    keys[j]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_unit_key_reproduces_the_existing_slot_id() {
+        let ctx = Context::default();
+        let mut ids = (None, None, None);
+        run(&ctx, input(Vec::new()), |ui| {
+            let keyed = slot_keyed(
+                ui,
+                Control::TrackLike,
+                (),
+                Role::Button,
+                cell(0.0),
+                "Like",
+                &Tokens::DARK,
+                true,
+            );
+            let plain = slot(
+                ui,
+                Control::TrackLike,
+                Role::Button,
+                cell(1.0),
+                "Like",
+                &Tokens::DARK,
+                true,
+            );
+            let raw = ui.scope_id().with(Control::TrackLike);
+            ids = (Some(keyed.response.id), Some(plain.response.id), Some(raw));
+        });
+        let (keyed, plain, raw) = ids;
+        assert_eq!(keyed, plain, "slot no longer delegates with the unit key");
+        assert_eq!(keyed, raw, "the keyed id moved the existing control ids");
+    }
+
+    #[test]
+    fn a_text_button_box_grows_with_its_label_and_pads_the_text() {
+        let ctx = Context::default();
+        let mut measured = None;
+        run(&ctx, input(Vec::new()), |ui| {
+            let short = text_button_size(ui, &Tokens::DARK, "Go");
+            let long = text_button_size(ui, &Tokens::DARK, "Authorize");
+            let bare = line(
+                ui,
+                "Authorize",
+                text_button_font(),
+                Tokens::DARK.palette.text,
+                0.0,
+            );
+            measured = Some((short, long, bare.size().y));
+        });
+        let (short, long, bare) = measured.expect("the buttons measured");
+        assert!(
+            long.x > short.x,
+            "a longer label must need a wider box: {long:?} vs {short:?}"
+        );
+        assert!(
+            long.y > bare,
+            "the box must be taller than its bare text: {long:?} vs {bare}"
+        );
+    }
+
+    #[test]
+    fn a_text_button_that_is_not_live_takes_no_click() {
+        let ctx = Context::default();
+        let rect = Rect::from_min_size(Pos2::new(100.0, 100.0), Vec2::new(120.0, 30.0));
+        let mut clicked = false;
+
+        // A press and release need several passes to register.
+        let tap = |ctx: &Context, at: Pos2, clicked: &mut bool| {
+            for event in [Event::PointerMoved(at), button(at, true), button(at, false)] {
+                run(ctx, input(vec![event]), |ui| {
+                    let slot = text_button(
+                        ui,
+                        &Tokens::DARK,
+                        Control::Authorize,
+                        rect,
+                        "Authorize",
+                        false,
+                    );
+                    *clicked = slot.response.clicked();
+                });
+            }
+        };
+
+        // Warm up so hit-testing has a previous pass to read.
+        run(&ctx, input(Vec::new()), |_ui| {});
+        tap(&ctx, rect.center(), &mut clicked);
+        assert!(!clicked, "a waiting text button received a click");
     }
 
     #[test]
