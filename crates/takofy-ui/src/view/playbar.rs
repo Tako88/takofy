@@ -290,10 +290,22 @@ fn centre_column(
 /// The seek a click or a key on the focused track asks for.
 fn seek_command(
     ui: &Ui,
-    transport: &Transport,
+    transport: &mut Transport,
     slot: &controls::Slot,
     track: Rect,
 ) -> Option<Command> {
+    // A drag follows the pointer and asks once, on release; the bar is drawn from
+    // the transport's own position, so the preview comes for free.
+    if slot.response.dragged() {
+        if let Some(pointer) = slot.response.interact_pointer_pos() {
+            let fraction = controls::fraction_at(pointer.x, track.left(), track.width());
+            transport.scrub_to(fraction);
+        }
+        return None;
+    }
+    if slot.response.drag_stopped() {
+        return transport.scrub_end();
+    }
     if slot.response.clicked() {
         let pointer = slot.response.interact_pointer_pos()?;
         let fraction = controls::fraction_at(pointer.x, track.left(), track.width());
@@ -399,6 +411,8 @@ fn draw_run(
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use egui::{Context, Event, Modifiers, PointerButton, RawInput};
 
     use super::*;
@@ -453,6 +467,16 @@ mod tests {
         }
     }
 
+    /// A transport playing a track whose length is known, which is the only state
+    /// the seek can act in.
+    fn seekable() -> Transport {
+        Transport {
+            state: crate::player::TransportState::Playing,
+            duration_ms: Some(100_000),
+            ..Default::default()
+        }
+    }
+
     fn track_rect() -> Rect {
         Rect::from_min_size(Pos2::new(80.0, 0.0), Vec2::new(200.0, extent::SLIDER_H))
     }
@@ -461,7 +485,7 @@ mod tests {
     /// an arrow is not locked to the track.
     fn seek_controls(
         ui: &mut Ui,
-        transport: &Transport,
+        transport: &mut Transport,
         tokens: &Tokens,
     ) -> (Option<Command>, bool) {
         let neighbour = |ui: &mut Ui, x: f32, control, icon, label| {
@@ -496,18 +520,69 @@ mod tests {
         (command, seek.response.has_focus())
     }
 
-    fn click(ctx: &Context, at: Pos2, transport: &Transport, tokens: &Tokens) -> Option<Command> {
+    fn click(
+        ctx: &Context,
+        at: Pos2,
+        transport: &mut Transport,
+        tokens: &Tokens,
+    ) -> Option<Command> {
         run(ctx, input(Vec::new()), |ui| {
-            let _ = seek_controls(ui, transport, tokens);
+            let _ = seek_controls(ui, &mut *transport, tokens);
         });
         let mut command = None;
         for event in [Event::PointerMoved(at), button(at, true), button(at, false)] {
             let command = &mut command;
             run(ctx, input(vec![event]), |ui| {
-                *command = seek_controls(ui, transport, tokens).0;
+                *command = seek_controls(ui, &mut *transport, tokens).0;
             });
         }
         command
+    }
+
+    #[test]
+    fn a_drag_previews_under_the_pointer_and_asks_once_it_is_let_go() {
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        let track = track_rect();
+        let at =
+            |fraction: f32| Pos2::new(track.left() + fraction * track.width(), track.center().y);
+        let mut transport = seekable();
+
+        // A pointer has to exist for a frame before it can press anything.
+        run(&ctx, input(Vec::new()), |ui| {
+            let _ = seek_controls(ui, &mut transport, &tokens);
+        });
+
+        let mut command = None;
+        for event in [
+            Event::PointerMoved(at(0.2)),
+            button(at(0.2), true),
+            Event::PointerMoved(at(0.7)),
+            Event::PointerMoved(at(0.8)),
+        ] {
+            let command = &mut command;
+            run(&ctx, input(vec![event]), |ui| {
+                *command = seek_controls(ui, &mut transport, &tokens).0;
+            });
+        }
+        assert_eq!(command, None, "a drag asks for nothing while it runs");
+        assert_eq!(
+            transport.shown_position(Duration::ZERO),
+            80_000,
+            "the bar follows the pointer, not the track",
+        );
+
+        run(&ctx, input(vec![button(at(0.8), false)]), |ui| {
+            let command = &mut command;
+            *command = seek_controls(ui, &mut transport, &tokens).0;
+        });
+        assert_eq!(
+            command,
+            Some(Command::Seek {
+                position_ms: 80_000
+            }),
+            "and asks once, where it was let go",
+        );
     }
 
     #[test]
@@ -518,7 +593,7 @@ mod tests {
         let at = Pos2::new(track.left() + 0.25 * track.width(), track.center().y);
 
         assert_eq!(
-            click(&ctx, at, &playing(0), &tokens),
+            click(&ctx, at, &mut playing(0), &tokens),
             Some(Command::Seek {
                 position_ms: 55_500
             })
@@ -531,12 +606,12 @@ mod tests {
         let ctx = context(&tokens);
         let track = track_rect();
         let at = Pos2::new(track.left() + 0.25 * track.width(), track.center().y);
-        let transport = Transport {
+        let mut transport = Transport {
             state: TransportState::Playing,
             ..Transport::default()
         };
 
-        assert_eq!(click(&ctx, at, &transport, &tokens), None);
+        assert_eq!(click(&ctx, at, &mut transport, &tokens), None);
     }
 
     #[test]
@@ -551,15 +626,15 @@ mod tests {
         for (pressed, modifiers, expected) in cases {
             let tokens = Tokens::DARK;
             let ctx = context(&tokens);
-            let transport = playing(10_000);
+            let mut transport = playing(10_000);
 
             // First pass gives the seek focus; the second installs the arrow
             // lock, which only applies to the frame after it is set.
             run(&ctx, input(Vec::new()), |ui| {
-                let _ = seek_controls(ui, &transport, &tokens);
+                let _ = seek_controls(ui, &mut transport, &tokens);
             });
             run(&ctx, input(Vec::new()), |ui| {
-                let _ = seek_controls(ui, &transport, &tokens);
+                let _ = seek_controls(ui, &mut transport, &tokens);
             });
 
             let mut command = None;
@@ -571,7 +646,7 @@ mod tests {
                     key(pressed, modifiers),
                 ]),
                 |ui| {
-                    let (next, has_focus) = seek_controls(ui, &transport, &tokens);
+                    let (next, has_focus) = seek_controls(ui, &mut transport, &tokens);
                     command = next;
                     focused = has_focus;
                 },

@@ -69,6 +69,13 @@ pub struct Transport {
     pub now_playing: Option<NowPlaying>,
     /// The loaded track's length, once the player has reported it.
     pub duration_ms: Option<u32>,
+    /// Where a drag on the seek bar has left the position. It outlives the
+    /// release, so the bar holds the pointer's answer instead of falling back to
+    /// where the track still is, and is dropped when the player confirms.
+    pub scrub: Option<u32>,
+    /// Whether the pointer is still down. Ending a drag is a one-shot transition,
+    /// so asking twice about the same release asks once.
+    pub dragging: bool,
 }
 
 /// The position and state a redraw interpolates from.
@@ -102,11 +109,21 @@ impl Transport {
             TransportUpdate::Ended | TransportUpdate::Stopped => {
                 self.state = TransportState::Stopped;
                 self.position_ms = 0;
+                self.scrub = None;
             }
-            TransportUpdate::Unavailable => self.state = TransportState::Unavailable,
+            TransportUpdate::Unavailable => {
+                self.state = TransportState::Unavailable;
+                self.scrub = None;
+            }
             TransportUpdate::Duration { duration_ms } => self.duration_ms = Some(*duration_ms),
-            TransportUpdate::Seeked { position_ms } => self.position_ms = *position_ms,
-            TransportUpdate::Failed(failure) => self.state = TransportState::Failed(*failure),
+            TransportUpdate::Seeked { position_ms } => {
+                self.position_ms = *position_ms;
+                self.scrub = None;
+            }
+            TransportUpdate::Failed(failure) => {
+                self.state = TransportState::Failed(*failure);
+                self.scrub = None;
+            }
         }
         self.anchor() != before
     }
@@ -127,6 +144,7 @@ impl Transport {
         });
         self.position_ms = 0;
         self.duration_ms = None;
+        self.scrub = None;
         self.state = TransportState::Loading;
         Command::Play {
             uri: uri.to_owned(),
@@ -142,14 +160,36 @@ impl Transport {
 
     /// The command that jumps to a fraction of the track, if it is seekable.
     pub fn seek_to_fraction(&self, fraction: f32) -> Option<Command> {
+        self.seek_target(fraction)
+            .map(|position_ms| Command::Seek { position_ms })
+    }
+
+    /// Follows the pointer across the bar. Nothing is asked for while the drag
+    /// runs: the player is told once, when the button comes back up.
+    pub fn scrub_to(&mut self, fraction: f32) {
+        self.scrub = self.seek_target(fraction);
+        self.dragging = true;
+    }
+
+    /// Ends a drag, asking for the position it landed on. The preview stays until
+    /// the player reports the seek, so a release does not snap the bar back.
+    pub fn scrub_end(&mut self) -> Option<Command> {
+        if !self.dragging {
+            return None;
+        }
+        self.dragging = false;
+        self.scrub.map(|position_ms| Command::Seek { position_ms })
+    }
+
+    /// The clamped position a fraction lands on, or `None` when the track cannot
+    /// be jumped in.
+    fn seek_target(&self, fraction: f32) -> Option<u32> {
         if !self.seekable() {
             return None;
         }
         let duration = self.duration_ms?;
         let target = (fraction.clamp(0.0, 1.0) * duration as f32) as u32;
-        Some(Command::Seek {
-            position_ms: target.min(duration.saturating_sub(1)),
-        })
+        Some(target.min(duration.saturating_sub(1)))
     }
 
     /// The command that jumps `delta_ms` from the anchor, clamped to the track.
@@ -166,6 +206,9 @@ impl Transport {
 
     /// The position to draw after `elapsed`, never past a known duration.
     pub fn shown_position(&self, elapsed: Duration) -> u32 {
+        if let Some(scrub) = self.scrub {
+            return scrub;
+        }
         let position = position_at(&self.anchor(), elapsed);
         match self.duration_ms {
             Some(duration) => position.min(duration),
@@ -332,6 +375,96 @@ mod tests {
         let mut transport = Transport::default();
         assert!(!transport.apply(&Update::SignedIn));
         assert_eq!(transport.state, TransportState::Idle);
+    }
+
+    /// A transport that is playing a track with a length, which is the only state
+    /// a drag can happen in.
+    fn seekable_transport() -> Transport {
+        let mut transport = Transport::default();
+        transport.apply(&transport_update(TransportUpdate::Duration {
+            duration_ms: 100_000,
+        }));
+        transport.apply(&transport_update(TransportUpdate::Position {
+            position_ms: 10_000,
+            paused: false,
+        }));
+        transport
+    }
+
+    #[test]
+    fn a_drag_shows_where_the_pointer_is_not_where_the_track_is() {
+        let mut transport = seekable_transport();
+        transport.scrub_to(0.75);
+        assert_eq!(transport.shown_position(Duration::ZERO), 75_000);
+    }
+
+    #[test]
+    fn a_drag_asks_for_nothing_until_it_ends() {
+        let mut transport = seekable_transport();
+        transport.scrub_to(0.25);
+        transport.scrub_to(0.5);
+        assert_eq!(
+            transport.scrub_end(),
+            Some(Command::Seek {
+                position_ms: 50_000
+            }),
+            "the release asks for where it was let go",
+        );
+        assert_eq!(transport.scrub_end(), None, "one drag is one jump");
+    }
+
+    #[test]
+    fn a_drag_holds_its_place_until_the_player_reports_the_seek() {
+        let mut transport = seekable_transport();
+        transport.scrub_to(0.9);
+        transport.scrub_end();
+        assert_eq!(
+            transport.shown_position(Duration::from_secs(5)),
+            90_000,
+            "the bar must not fall back to where the track still is",
+        );
+        transport.apply(&transport_update(TransportUpdate::Seeked {
+            position_ms: 1_000,
+        }));
+        assert_eq!(
+            transport.shown_position(Duration::ZERO),
+            1_000,
+            "and the player's answer wins once it arrives",
+        );
+    }
+
+    #[test]
+    fn a_drag_on_a_track_with_no_length_does_nothing() {
+        let mut transport = Transport::default();
+        transport.scrub_to(0.5);
+        assert_eq!(transport.shown_position(Duration::ZERO), 0);
+        assert_eq!(transport.scrub_end(), None);
+    }
+
+    #[test]
+    fn a_drag_past_either_end_clamps_to_the_track() {
+        let mut transport = seekable_transport();
+        transport.scrub_to(1.5);
+        assert_eq!(
+            transport.scrub_end(),
+            Some(Command::Seek {
+                position_ms: 99_999
+            }),
+            "the last millisecond, never the length itself",
+        );
+        transport.scrub_to(-0.5);
+        assert_eq!(
+            transport.scrub_end(),
+            Some(Command::Seek { position_ms: 0 }),
+        );
+    }
+
+    #[test]
+    fn playing_another_track_drops_a_drag() {
+        let mut transport = seekable_transport();
+        transport.scrub_to(0.5);
+        transport.play("spotify:track:y", "Another");
+        assert_eq!(transport.shown_position(Duration::ZERO), 0);
     }
 
     #[test]

@@ -56,7 +56,9 @@ pub fn slot(
     let ready = availability(control) == Availability::Ready && live;
     let id = ui.scope_id().with(control);
     let sense = if ready {
-        Sense::click()
+        // Draggable as well as clickable: the seek bar is scrubbed, and a press and
+        // release without movement is still a click.
+        Sense::click_and_drag()
     } else {
         Sense::hover()
     };
