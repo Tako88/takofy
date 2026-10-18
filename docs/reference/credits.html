@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Art credits · Takofy</title>
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body class="app" data-page="credits">
+
+<aside class="sidebar" aria-label="Your library">
+  <div class="sidebar__brand">
+    <svg class="sidebar__logo" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-logo"></use></svg>
+    <span class="sidebar__wordmark">Takofy</span>
+  </div>
+
+  <nav class="sidebar__nav" aria-label="Primary">
+    <a class="nav-item" href="index.html" data-nav="home">
+      <svg class="icon icon--lg" aria-hidden="true"><use href="#i-home"></use></svg>
+      <span class="nav-item__label">Home</span>
+    </a>
+    <a class="nav-item" href="search.html" data-nav="search">
+      <svg class="icon icon--lg" aria-hidden="true"><use href="#i-search"></use></svg>
+      <span class="nav-item__label">Search</span>
+    </a>
+  </nav>
+
+  <div class="library" data-chip-group data-chip-target="#library-list">
+    <div class="library__head">
+      <span>Your Library</span>
+      <span class="library__head-actions">
+        <button class="icon-button" type="button" aria-label="Create playlist or folder">
+          <svg class="icon icon--md" aria-hidden="true"><use href="#i-plus"></use></svg>
+        </button>
+        <button class="icon-button" type="button" aria-label="Expand your library">
+          <svg class="icon icon--md" aria-hidden="true"><use href="#i-arrow-right"></use></svg>
+        </button>
+      </span>
+    </div>
+
+    <div class="chips" role="group" aria-label="Filter your library">
+      <button class="chip" type="button" data-chip="playlist" aria-pressed="false">Playlists</button>
+      <button class="chip" type="button" data-chip="artist" aria-pressed="false">Artists</button>
+      <button class="chip" type="button" data-chip="album" aria-pressed="false">Albums</button>
+      <button class="chip" type="button" data-chip="podcast" aria-pressed="false">Podcasts</button>
+    </div>
+
+    <ul class="library__list" id="library-list" data-library-list></ul>
+  </div>
+</aside>
+
+<div class="app__main">
+  <header class="topbar">
+    <button class="icon-button topbar__drawer-toggle" type="button" data-drawer-toggle aria-expanded="false" aria-label="Open your library">
+      <svg class="icon icon--lg" aria-hidden="true"><use href="#i-library"></use></svg>
+    </button>
+    <div class="topbar__history">
+      <button class="round-button" type="button" data-back aria-label="Go back">
+        <svg class="icon" aria-hidden="true"><use href="#i-arrow-left"></use></svg>
+      </button>
+      <button class="round-button" type="button" data-forward aria-label="Go forward">
+        <svg class="icon" aria-hidden="true"><use href="#i-arrow-right"></use></svg>
+      </button>
+    </div>
+    <form class="searchbar" role="search" onsubmit="return false">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-search"></use></svg>
+      <input type="search" placeholder="Search" aria-label="Search" />
+    </form>
+    <nav class="trail" aria-label="You are here">
+      <a href="index.html">Home</a>
+      <span class="trail__sep">/</span>
+      <span aria-current="page">Art credits</span>
+    </nav>
+    <a class="topbar__account" href="#"><span class="avatar">TK</span><span>Tako</span></a>
+  </header>
+
+  <main class="view">
+    <div class="view__inner">
+      <div class="page-head">
+        <h1 class="page-head__title">Art credits</h1>
+        <p class="page-head__note">32 source photographs · Unsplash licence</p>
+      </div>
+
+      <p class="about__text" style="max-width:70ch;padding-bottom:var(--space-4)">
+        Every sleeve in this concept is a real photograph, chosen from the Unsplash catalogue via
+        picsum.photos and stored locally under <code>img/</code>. The artists, albums, playlists and
+        shows are invented; the photographers below are not. Raw provenance for the whole candidate
+        set is kept at <code>img/_sources.json</code>, and every thumbnail on this page is served
+        from the <code>img/_t/</code> cache of 200&nbsp;px derivatives.
+      </p>
+
+      <ul class="credits-list">
+        <li class="credit"><img class="credit__art" src="img/_t/135.jpg" alt="" loading="lazy" /><span><a class="credit__name" href="https://unsplash.com/photos/o4H20aIIAt8">Yuriy Khimanin</a><span class="credit__note">slow-tide · album</span></span></li>
+        <li class="credit"><img class="credit__art" src="img/_t/199.jpg" alt="" loading="lazy" /><span><a class="credit__name" href="https://unsplash.com/photos/RL0l7Zk5PxU">Beto Galetto</a><span class="credit__note">saltglass · album</span></span></li>
+        <li class="credit"><img class="credit__art" src="img/_t/172.jpg" alt="" loading="lazy" /><span><a class="credit__name" href="https://unsplash.com/photos/TQeX8khR54I">Aleksi Tappura</a><span class="credit__note">harbour-lights · EP</span></span></li>
+        <li class="credit"><img class="credit__art" src="img/_t/187.jpg" alt="" loading="lazy" /><span><a class="credit__name" href="https://unsplash.com/photos/oSf8ePoG9NU">Andre Koch</a><span class="credit__note">cold-storage · album</span></span></li>
+        <li class="credit"><img class="credit__art" src="img/_t/149.jpg" alt="" loading="lazy" /><span><a class="credit__name" href="https://unsplash.com/photos/revxuIor0nY">Guillaume</a><span class="credit__note">nocturne-field · album</span></span></li>
+        <li class="credit"><img class="credit__art" src="img/_t/122.jpg" alt="" loading="lazy" /><span><a class="credit__name" href="https://unsplash.com/photos/xS_RzdD5CFE">Vadim Sherbakov</a><span class="credit__note">signal-decay · album</span></span></li>
+        <li class="credit"><img class="credit__art" src="img/_t/152.jpg" alt="" loading="lazy" /><span><a class="credit__name" href="https://unsplash.com/photos/tVIqMgGlAG0">Steven Spassov</a><span class="credit__note">blue-hour · album</span></span></li>
+        <li class="credit"><img class="credit__art" src="img/_t/140.jpg" alt="" loading="lazy" /><span><a class="credit__name" href="https://unsplash.com/photos/Acfgb7bc-Bc">Kundan Ramisetti</a><span class="credit__note">paper-rooms · album</span></span></li>
+        <li class="credit"><img class="credit__art" src="img/_t/204.jpg" alt="" loading="lazy" /><span><a class="credit__name" href="https://unsplash.com/photos/vCqmY3bfqfo">Tiago Gerken</a><span class="credit__note">long-way-down · album</span></span></li>
+        <li class="credit"><img class="credit__art" src="img/_t/190.jpg" alt="" loading="lazy" /><span><a class="credit__name" href="https://unsplash.com/photos/jrzvClypPq8">James Forbes</a><span class="credit__note">wintering · album</span></span></li>
+        <li class="credit"><img class="credit__art" src="img/_t/184.jpg" alt="" loading="lazy" /><span><a class="credit__name" href="https://unsplash.com/photos/yNGQ830uFB4">Tim de Groot</a><span class="credit__note">dune-song · album</span></span></li>
+        <li class="credit"><img class="credit__art" src="img/_t/130.jpg" alt="" loading="lazy" /><span><a class="credit__name" href="https://unsplash.com/photos/ywiAen4L4qA">Ryan Jacques</a><span class="credit__note">northlight · album</span></span></li>
+        <li class="credit"><img class="credit__art" src="img/_t/112.jpg" alt="" loading="lazy" /><span><a class="credit__name" href="https://unsplash.com/photos/kmF_Aq8gkp0">Zugr</a><span class="credit__note">fieldwork · album</span></span></li>
+        <li class="credit"><img class="credit__art" src="img/_t/195.jpg" alt="" loading="lazy" /><span><a class="credit__name" href="https://unsplash.com/photos/t05kfHeygbE">Matthew Skinner</a><span class="credit__note">halcyon-street · album</span></span></li>
+        <li class="credit"><img class="credit__art" src="img/_t/192.jpg" alt="" loading="lazy" /><span><a class="credit__name" href="https://unsplash.com/photos/umchkHwkdyM">Adam Przewoski</a><span class="credit__note">terminal · album</span></span></li>
+        <li class="credit"><img class="credit__art" src="img/_t/111.jpg" alt="" loading="lazy" /><span><a class="credit__name" href="https://unsplash.com/photos/eLUegVAjN7s">Gabe Rodriguez</a><span class="credit__note">chrome-gospel · album</span></span></li>
+        <li class="credit"><img class="credit__art" src="img/_t/144.jpg" alt="" loading="lazy" /><span><a class="credit__name" href="https://unsplash.com/photos/TuOiIpkIea8">Mouly Kumar</a><span class="credit__note">undertow · album</span></span></li>
+        <li class="credit"><img class="credit__art" src="img/_t/116.jpg" alt="" loading="lazy" /><span><a class="credit__name" href="https://unsplash.com/photos/YcfCXxo7rpc">Anton Sulsky</a><span class="credit__note">low-country · album</span></span></li>
+        <li class="credit"><img class="credit__art" src="img/_t/161.jpg" alt="" loading="lazy" /><span><a class="credit__name" href="https://unsplash.com/photos/ti4uz330CwU">Chloe Benko-Prieur</a><span class="credit__note">discover-weekly · playlist</span></span></li>
+        <li class="credit"><img class="credit__art" src="img/_t/141.jpg" alt="" loading="lazy" /><span><a class="credit__name" href="https://unsplash.com/photos/v9eNihIWh8k">Greg Shield</a><span class="credit__note">release-radar · playlist</span></span></li>
+        <li class="credit"><img class="credit__art" src="img/_t/177.jpg" alt="" loading="lazy" /><span><a class="credit__name" href="https://unsplash.com/photos/tvicgTdh7Fg">Danka &amp; Peter</a><span class="credit__note">field-notes · podcast</span></span></li>
+        <li class="credit"><img class="credit__art" src="img/_t/196.jpg" alt="" loading="lazy" /><span><a class="credit__name" href="https://unsplash.com/photos/mR_HR8NZwg8">Dyaa Eldin Moustafa</a><span class="credit__note">long-way-round · podcast</span></span></li>
+        <li class="credit"><img class="credit__art" src="img/_t/188.jpg" alt="" loading="lazy" /><span><a class="credit__name" href="https://unsplash.com/photos/1fpyA_z2woY">Wojtek Witkowski</a><span class="credit__note">rooftop-sessions · podcast</span></span></li>
+        <li class="credit"><img class="credit__art" src="img/_t/133.jpg" alt="" loading="lazy" /><span><a class="credit__name" href="https://unsplash.com/photos/8Zt0xOOK4nI">Dietmar Becker</a><span class="credit__note">two-cars · podcast</span></span></li>
+        <li class="credit"><img class="credit__art" src="img/_t/154.jpg" alt="" loading="lazy" /><span><a class="credit__name" href="https://unsplash.com/photos/x_jTtMOOMd4">Christopher Sardegna</a><span class="credit__note">vela-moreno · artist</span></span></li>
+        <li class="credit"><img class="credit__art" src="img/_t/107.jpg" alt="" loading="lazy" /><span><a class="credit__name" href="https://unsplash.com/photos/9VWOr22LhVI">Lukas Schweizer</a><span class="credit__note">nils-aker · artist</span></span></li>
+        <li class="credit"><img class="credit__art" src="img/_t/167.jpg" alt="" loading="lazy" /><span><a class="credit__name" href="https://unsplash.com/photos/WqK_xV_hbug">petradr</a><span class="credit__note">hana-so · artist</span></span></li>
+        <li class="credit"><img class="credit__art" src="img/_t/156.jpg" alt="" loading="lazy" /><span><a class="credit__name" href="https://unsplash.com/photos/iRyGmA_no2Q">Christopher Sardegna</a><span class="credit__note">coastal-divide · artist</span></span></li>
+        <li class="credit"><img class="credit__art" src="img/_t/203.jpg" alt="" loading="lazy" /><span><a class="credit__name" href="https://unsplash.com/photos/PFZTiiJnjag">Diogo Tavares</a><span class="credit__note">marta-isleif · artist</span></span></li>
+        <li class="credit"><img class="credit__art" src="img/_t/129.jpg" alt="" loading="lazy" /><span><a class="credit__name" href="https://unsplash.com/photos/A88emaZe7d8">Charlie Foster</a><span class="credit__note">the-rookery · artist</span></span></li>
+        <li class="credit"><img class="credit__art" src="img/_t/124.jpg" alt="" loading="lazy" /><span><a class="credit__name" href="https://unsplash.com/photos/fj0tFloTPGQ">Anton Sulsky</a><span class="credit__note">wires-and-wolves · artist</span></span></li>
+        <li class="credit"><img class="credit__art" src="img/_t/108.jpg" alt="" loading="lazy" /><span><a class="credit__name" href="https://unsplash.com/photos/t1mqA3V3-7g">Florian Klauer</a><span class="credit__note">pale-harbour · artist</span></span></li>
+      </ul>
+
+      <footer class="tracklist__foot">
+        <p>Photographs are used under the <a href="https://unsplash.com/license">Unsplash licence</a>. Fonts: Archivo and JetBrains Mono, both SIL Open Font Licence 1.1, self-hosted from Fontsource.</p>
+      </footer>
+    </div>
+  </main>
+</div>
+
+<aside class="now-playing" aria-label="Now playing">
+  <div class="now-playing__head">
+    <h2>Now playing</h2>
+    <button class="icon-button" type="button" aria-label="More options for the current track">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-more"></use></svg>
+    </button>
+  </div>
+
+  <div class="now-playing__art">
+    <img data-now-art src="img/covers/slow-tide.jpg" alt="Slow Tide cover" />
+  </div>
+
+  <div class="now-playing__meta">
+    <div>
+      <a class="now-playing__title truncate" href="album.html" data-now-title>Slow Tide</a>
+      <a class="now-playing__artist truncate" href="artist.html" data-now-artist>Vela Moreno</a>
+    </div>
+    <button class="icon-button icon-button--lg" type="button" data-like data-like-group="now" aria-pressed="false" aria-label="Save to your library">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-heart"></use></svg>
+    </button>
+  </div>
+
+  <p class="now-playing__spec">
+    <span><b>320</b> kbps</span><span>Ogg Vorbis</span><span>44.1 kHz</span><span>Stereo</span>
+  </p>
+
+  <div class="panel-tabs" role="tablist" aria-label="Now playing views">
+    <button class="panel-tab" type="button" role="tab" aria-selected="true" aria-controls="pane-queue" data-panel-tab>Queue</button>
+    <button class="panel-tab" type="button" role="tab" aria-selected="false" aria-controls="pane-lyrics" data-panel-tab>Lyrics</button>
+  </div>
+
+  <div class="panel-pane is-active" id="pane-queue" role="tabpanel" data-panel-pane>
+    <p class="queue-head">Next in queue</p>
+    <ul class="queue" data-queue-list data-playing-scope></ul>
+  </div>
+
+  <div class="panel-pane" id="pane-lyrics" role="tabpanel" data-panel-pane>
+    <div class="lyrics">
+      <p>Harbour wall, salt in the air</p>
+      <p>Nothing moves here but the light</p>
+      <p class="is-current">I keep the tide in a jar by the door</p>
+      <p>Count the bells, count them twice</p>
+      <p>Every green room has a window</p>
+      <p>Every window has your name</p>
+      <p>Slow tide, take your time</p>
+      <p>I am in no hurry tonight</p>
+    </div>
+  </div>
+</aside>
+
+<nav class="tabbar" aria-label="Primary">
+  <a href="index.html" data-nav="home"><svg class="icon icon--lg" aria-hidden="true"><use href="#i-home"></use></svg>Home</a>
+  <a href="search.html" data-nav="search"><svg class="icon icon--lg" aria-hidden="true"><use href="#i-search"></use></svg>Search</a>
+  <a href="library.html" data-nav="library"><svg class="icon icon--lg" aria-hidden="true"><use href="#i-library"></use></svg>Library</a>
+  <a href="podcasts.html" data-nav="podcasts"><svg class="icon icon--lg" aria-hidden="true"><use href="#i-mic"></use></svg>Podcasts</a>
+</nav>
+
+<footer class="playbar">
+  <div class="playbar__now">
+    <img class="playbar__art" data-now-art src="img/covers/slow-tide.jpg" alt="Slow Tide cover" />
+    <div class="playbar__text">
+      <a class="playbar__title truncate" href="album.html" data-now-title>Slow Tide</a>
+      <a class="playbar__artist truncate" href="artist.html" data-now-artist>Vela Moreno</a>
+    </div>
+    <button class="icon-button" type="button" data-like data-like-group="now" aria-pressed="false" aria-label="Save to your library">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-heart"></use></svg>
+    </button>
+    <button class="icon-button" type="button" aria-label="Open miniplayer">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-screen"></use></svg>
+    </button>
+  </div>
+
+  <div class="playbar__center">
+    <div class="playbar__buttons">
+      <button class="icon-button" type="button" data-toggle aria-pressed="false" aria-label="Shuffle">
+        <svg class="icon icon--md" aria-hidden="true"><use href="#i-shuffle"></use></svg>
+      </button>
+      <button class="icon-button" type="button" data-prev aria-label="Previous track">
+        <svg class="icon icon--md" aria-hidden="true"><use href="#i-prev"></use></svg>
+      </button>
+      <button class="play-button playbar__play" type="button" data-transport aria-label="Play or pause">
+        <svg class="icon icon--md" aria-hidden="true"><use href="#i-pause" data-transport-icon></use></svg>
+      </button>
+      <button class="icon-button" type="button" data-next aria-label="Next track">
+        <svg class="icon icon--md" aria-hidden="true"><use href="#i-next"></use></svg>
+      </button>
+      <button class="icon-button" type="button" data-toggle aria-pressed="false" aria-label="Repeat">
+        <svg class="icon icon--md" aria-hidden="true"><use href="#i-repeat"></use></svg>
+      </button>
+    </div>
+
+    <div class="playbar__progress">
+      <span class="playbar__time" data-elapsed>1:14</span>
+      <div class="slider" data-seek role="slider" tabindex="0" aria-label="Seek" aria-valuemin="0" aria-valuenow="74" aria-valuemax="222">
+        <div class="slider__track"></div>
+        <div class="slider__fill" data-seek-fill></div>
+        <div class="slider__thumb"></div>
+      </div>
+      <span class="playbar__time playbar__time--end" data-remaining>-2:28</span>
+    </div>
+  </div>
+
+  <div class="playbar__extras">
+    <button class="icon-button" type="button" aria-label="Queue">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-queue"></use></svg>
+    </button>
+    <button class="icon-button" type="button" aria-label="Connect to a device">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-devices"></use></svg>
+    </button>
+    <button class="icon-button" type="button" aria-label="Mute">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-volume" data-volume-icon></use></svg>
+    </button>
+    <div class="slider playbar__volume" data-volume role="slider" tabindex="0" aria-label="Volume" aria-valuemin="0" aria-valuenow="72" aria-valuemax="100">
+      <div class="slider__track"></div>
+      <div class="slider__fill"></div>
+      <div class="slider__thumb"></div>
+    </div>
+    <button class="icon-button" type="button" aria-label="Full screen">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-expand"></use></svg>
+    </button>
+  </div>
+
+  <div class="playbar__minibar" aria-hidden="true">
+    <div class="progress-bar__fill" data-mini-fill></div>
+  </div>
+</footer>
+
+<script src="main.js"></script>
+</body>
+</html>

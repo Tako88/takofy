@@ -1,0 +1,2898 @@
+/* ==========================================================================
+   Music client — application shell + views.
+
+   Design language: warm charcoal ground, bone-white text, hairline rules,
+   near-square geometry. Every number and field label is set in monospace, so
+   the interface reads like an instrument rather than a storefront. Green is
+   reserved exclusively for one meaning: sound is coming out.
+
+   Token store: styles/tokens.css · Fonts: styles/fonts.css
+   ========================================================================== */
+
+@import "styles/tokens.css";
+@import "styles/fonts.css";
+
+/* --------------------------------------------------------------------------
+   1. Base
+   -------------------------------------------------------------------------- */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  line-height: var(--leading-normal);
+  color: var(--color-text);
+  background: var(--color-window);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+h1,
+h2,
+h3,
+h4,
+p {
+  margin: 0;
+}
+
+ul,
+ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+input {
+  font: inherit;
+}
+
+img {
+  display: block;
+  max-width: 100%;
+}
+
+svg {
+  display: block;
+}
+
+:focus-visible {
+  outline: 1px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+::selection {
+  background: var(--color-accent);
+  color: var(--color-text-inverse);
+}
+
+[hidden] {
+  display: none !important;
+}
+
+/* Typographic helpers. Text is set in Archivo; anything countable, labelled
+   or measured is set in JetBrains Mono. */
+.label {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: 500;
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+}
+
+.num {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.text-muted {
+  color: var(--color-text-muted);
+}
+
+.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* Hairline scrollbars — the app should not read as a web page. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(242, 240, 234, 0.2) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(242, 240, 234, 0.16);
+  background-clip: content-box;
+  border: 3px solid transparent;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(242, 240, 234, 0.3);
+  background-clip: content-box;
+}
+
+/* --------------------------------------------------------------------------
+   2. Icons
+   -------------------------------------------------------------------------- */
+
+.icon {
+  width: 1rem;
+  height: 1rem;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.icon--sm {
+  width: 0.75rem;
+  height: 0.75rem;
+}
+
+.icon--md {
+  width: 1.125rem;
+  height: 1.125rem;
+  stroke-width: 1.6;
+}
+
+.icon--lg {
+  width: 1.375rem;
+  height: 1.375rem;
+  stroke-width: 1.6;
+}
+
+/* --------------------------------------------------------------------------
+   3. Controls
+   -------------------------------------------------------------------------- */
+
+.icon-button {
+  display: grid;
+  place-items: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-muted);
+  transition: color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out);
+}
+
+.icon-button:hover {
+  color: var(--color-text);
+  background: var(--color-surface-hover);
+}
+
+.icon-button--lg {
+  width: 2.125rem;
+  height: 2.125rem;
+}
+
+.icon-button.is-on {
+  color: var(--color-accent);
+}
+
+.icon-button.is-liked {
+  color: var(--color-accent);
+}
+
+/* The one loud element in the interface: a solid accent tile. Playback lives
+   here and nowhere else. */
+.play-button {
+  display: grid;
+  place-items: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: var(--radius-sm);
+  background: var(--color-accent);
+  color: var(--color-text-inverse);
+  transition: background var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
+}
+
+.play-button:hover {
+  background: var(--color-accent-hover);
+}
+
+.play-button:active {
+  transform: scale(0.96);
+}
+
+.play-button .icon {
+  fill: currentColor;
+  stroke: none;
+}
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0.35rem 0.75rem;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--color-text);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  white-space: nowrap;
+  transition: border-color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out);
+}
+
+.button:hover {
+  border-color: var(--color-text);
+  background: var(--color-surface-hover);
+}
+
+.button--ghost {
+  padding-inline: 0;
+  border-color: transparent;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: 500;
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+}
+
+.button--ghost:hover {
+  color: var(--color-text);
+  background: none;
+}
+
+.badge-verified {
+  display: inline-block;
+  width: 0.875rem;
+  height: 0.875rem;
+  vertical-align: -0.1em;
+  margin-right: 0.35rem;
+  flex: none;
+  color: var(--color-verified);
+}
+
+.badge-verified .icon {
+  width: 100%;
+  height: 100%;
+  fill: currentColor;
+  stroke: none;
+}
+
+/* --------------------------------------------------------------------------
+   4. Sliders — a playhead, not a pill
+   -------------------------------------------------------------------------- */
+
+.slider {
+  position: relative;
+  display: flex;
+  align-items: center;
+  height: 0.875rem;
+  cursor: pointer;
+  touch-action: none;
+}
+
+.slider__track,
+.slider__fill {
+  position: absolute;
+  left: 0;
+  height: 3px;
+  pointer-events: none;
+}
+
+.slider__track {
+  right: 0;
+  background: rgba(242, 240, 234, 0.2);
+}
+
+.slider__fill {
+  width: 0;
+  background: var(--color-text);
+}
+
+.slider__thumb {
+  position: absolute;
+  left: 0;
+  width: 3px;
+  height: 0.875rem;
+  border-radius: var(--radius-xs);
+  background: var(--color-text);
+  opacity: 0;
+  transform: translateX(-50%);
+  pointer-events: none;
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+
+.slider:hover .slider__fill,
+.slider:focus-visible .slider__fill,
+.slider.is-active .slider__fill {
+  background: var(--color-accent);
+}
+
+.slider:hover .slider__thumb,
+.slider:focus-visible .slider__thumb,
+.slider.is-active .slider__thumb {
+  background: var(--color-accent);
+  opacity: 1;
+}
+
+.slider:focus-visible {
+  outline: none;
+}
+
+.slider:focus-visible .slider__thumb {
+  opacity: 1;
+  outline: 1px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+/* --------------------------------------------------------------------------
+   5. Equaliser — the only other place green appears while idle
+   -------------------------------------------------------------------------- */
+
+.eq {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 2px;
+  height: 0.8125rem;
+}
+
+.eq i {
+  width: 2px;
+  height: 100%;
+  background: var(--color-accent);
+  transform-origin: bottom;
+  animation: eq-pulse 900ms var(--ease-out) infinite;
+}
+
+.eq i:nth-child(2) {
+  animation-delay: 220ms;
+}
+
+.eq i:nth-child(3) {
+  animation-delay: 440ms;
+}
+
+.is-paused .eq i {
+  animation-play-state: paused;
+}
+
+@keyframes eq-pulse {
+  0%,
+  100% {
+    transform: scaleY(0.25);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+/* --------------------------------------------------------------------------
+   6. App shell
+   -------------------------------------------------------------------------- */
+
+.app {
+  display: grid;
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr) var(--nowplaying-w);
+  grid-template-rows: minmax(0, 1fr) var(--playbar-h);
+  gap: var(--space-2);
+  padding: var(--space-2);
+  height: 100vh;
+  height: 100dvh;
+  background: var(--color-window);
+}
+
+.app__main {
+  grid-column: 2;
+  grid-row: 1;
+  display: grid;
+  grid-template-rows: var(--topbar-h) minmax(0, 1fr);
+  min-width: 0;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  overflow: hidden;
+}
+
+.view {
+  position: relative;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  /* One column definition drives every list on the page: the header row, the
+     rows themselves and the library's list density all read the same value. */
+  --track-cols: 2.25rem minmax(0, 1fr) minmax(0, 0.6fr) 1.75rem 3.5rem 1.75rem;
+}
+
+.view__inner {
+  padding: 0 var(--space-gutter) var(--space-7);
+}
+
+/* --------------------------------------------------------------------------
+   7. Sidebar
+   -------------------------------------------------------------------------- */
+
+.sidebar {
+  grid-column: 1;
+  grid-row: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  overflow: hidden;
+}
+
+.sidebar__brand {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  padding: var(--space-4) var(--space-4) var(--space-3);
+}
+
+/* Sized so the monogram's cap height matches the wordmark beside it. */
+.sidebar__logo {
+  width: 1.125rem;
+  height: 1.125rem;
+  flex: none;
+  color: var(--color-text);
+}
+
+.sidebar__wordmark {
+  font-size: var(--text-md);
+  font-weight: 700;
+  letter-spacing: var(--tracking-tight);
+}
+
+.sidebar__nav {
+  display: grid;
+  gap: 1px;
+  padding: 0 var(--space-1);
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-muted);
+  font-size: var(--text-base);
+  font-weight: 500;
+  transition: color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out);
+}
+
+.nav-item:hover {
+  color: var(--color-text);
+  background: var(--color-surface-hover);
+}
+
+/* The active marker is a hairline rule in bone, not an accent fill: green is
+   spoken for. */
+.nav-item[aria-current="page"] {
+  color: var(--color-text);
+  background: var(--color-surface-raised);
+  box-shadow: inset 2px 0 0 var(--color-text);
+}
+
+.library {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  margin-top: var(--space-4);
+  border-top: 1px solid var(--color-border);
+}
+
+.library__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4) var(--space-2);
+  color: var(--color-text-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: 500;
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+}
+
+.library__head-actions {
+  display: flex;
+  gap: var(--space-1);
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  padding: 0 var(--space-4) var(--space-3);
+}
+
+/* Square segmented tabs with hairline edges. */
+.chip {
+  padding: 0.2rem 0.45rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: 500;
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  transition: color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out),
+    background var(--dur-fast) var(--ease-out);
+}
+
+.chip:hover {
+  border-color: var(--color-border-strong);
+  color: var(--color-text);
+}
+
+.chip[aria-pressed="true"] {
+  border-color: var(--color-text);
+  background: rgba(242, 240, 234, 0.08);
+  color: var(--color-text);
+}
+
+.library__list {
+  display: grid;
+  gap: 1px;
+  min-height: 0;
+  padding: 0 var(--space-2) var(--space-4);
+  overflow-y: auto;
+  align-content: start;
+}
+
+.library-item {
+  display: grid;
+  grid-template-columns: 2.25rem minmax(0, 1fr);
+  gap: var(--space-3);
+  align-items: center;
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
+  transition: background var(--dur-fast) var(--ease-out);
+}
+
+.library-item:hover {
+  background: var(--color-surface-hover);
+}
+
+.library-item__art {
+  width: 2.25rem;
+  height: 2.25rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  object-fit: cover;
+}
+
+.library-item--artist .library-item__art {
+  border-radius: 50%;
+}
+
+.library-item__text {
+  min-width: 0;
+}
+
+.library-item__name {
+  display: block;
+  font-size: var(--text-sm);
+  font-weight: 500;
+}
+
+.library-item--podcast .library-item__name {
+  white-space: normal;
+}
+
+.library-item__kind {
+  display: block;
+  color: var(--color-text-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: 0.02em;
+}
+
+.library-item--artist .library-item__kind {
+  color: var(--color-text-subtle);
+}
+
+/* --------------------------------------------------------------------------
+   8. Topbar + drill trail
+   -------------------------------------------------------------------------- */
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: 0 var(--space-4);
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+.topbar__history {
+  display: flex;
+  gap: var(--space-1);
+}
+
+.round-button {
+  display: grid;
+  place-items: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-muted);
+  transition: color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
+}
+
+.round-button:hover:not(:disabled) {
+  border-color: var(--color-border-strong);
+  color: var(--color-text);
+}
+
+.round-button:disabled {
+  color: var(--color-text-subtle);
+  cursor: default;
+}
+
+/* Where you are, expressed as a stack you can pop back through — the client
+   never hides your position behind a page load. */
+.trail {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: 500;
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--color-text-subtle);
+}
+
+/* Only one element in the bar may claim the free space. */
+.trail + .topbar__account {
+  margin-left: 0;
+}
+
+.trail a {
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+
+.trail a:hover {
+  color: var(--color-text);
+}
+
+.trail__sep {
+  color: var(--color-text-subtle);
+}
+
+.trail [aria-current="page"] {
+  color: var(--color-text);
+  padding-left: var(--space-2);
+  box-shadow: inset 2px 0 0 var(--color-accent);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.searchbar {
+  display: flex;
+  flex: 1 1 14rem;
+  align-items: center;
+  gap: var(--space-2);
+  max-width: 24rem;
+  height: 2rem;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-raised);
+  color: var(--color-text-subtle);
+  transition: border-color var(--dur-fast) var(--ease-out);
+}
+
+.searchbar:focus-within {
+  border-color: var(--color-text);
+}
+
+.searchbar input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: none;
+  color: var(--color-text);
+  font-size: var(--text-sm);
+}
+
+.searchbar input:focus {
+  outline: none;
+}
+
+.searchbar input::placeholder {
+  color: var(--color-text-subtle);
+}
+
+.topbar__account {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
+  padding: 0.15rem 0.5rem 0.15rem 0.2rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+}
+
+.topbar__account:hover {
+  border-color: var(--color-border-strong);
+}
+
+.avatar {
+  display: grid;
+  place-items: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  border-radius: var(--radius-xs);
+  background: var(--color-surface-hover);
+  color: var(--color-text);
+  font-family: var(--font-mono);
+  font-size: 0.5rem;
+  font-weight: 700;
+}
+
+.topbar__drawer-toggle {
+  display: none;
+}
+
+/* --------------------------------------------------------------------------
+   9. Sections, cards, shelves
+   -------------------------------------------------------------------------- */
+
+.section {
+  margin-top: var(--space-6);
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--color-border);
+}
+
+/* The first section under a hero continues it rather than starting a new band. */
+.section--first {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+
+.section__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+
+.section__title {
+  font-size: var(--text-lg);
+  font-weight: 700;
+  letter-spacing: var(--tracking-tight);
+}
+
+.section__title a {
+  text-decoration: underline;
+  text-decoration-color: var(--color-text-subtle);
+  text-underline-offset: 3px;
+  text-decoration-thickness: 1px;
+}
+
+.section__title a:hover {
+  text-decoration-color: currentColor;
+}
+
+.section__link {
+  position: relative;
+  color: var(--color-text-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: 500;
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+/* The label stays optically small while the target grows to something a
+   pointer can actually hit. */
+.section__link::after {
+  content: "";
+  position: absolute;
+  inset: -0.75rem -0.5rem;
+}
+
+.section__link:hover {
+  color: var(--color-text);
+}
+
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr));
+  gap: var(--space-3);
+  /* Pull the grid out by the card's own padding so cover art lines up with the
+     section headings; the hover surface still bleeds past the gutter. */
+  margin-inline: calc(var(--space-2) * -1);
+}
+
+.card {
+  position: relative;
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  transition: background var(--dur-base) var(--ease-out), border-color var(--dur-base) var(--ease-out);
+}
+
+.card:hover,
+.card:focus-within {
+  border-color: var(--color-border);
+  background: var(--color-surface-raised);
+}
+
+.card__art {
+  position: relative;
+  aspect-ratio: 1;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.card__art img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.card--artist .card__art {
+  border-radius: 50%;
+}
+
+.card__play {
+  position: absolute;
+  z-index: 2;
+  right: var(--space-2);
+  bottom: var(--space-2);
+  display: grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: var(--radius-sm);
+  background: var(--color-accent);
+  color: var(--color-text-inverse);
+  opacity: 0;
+  transform: translateY(0.25rem);
+  transition: opacity var(--dur-base) var(--ease-out), transform var(--dur-base) var(--ease-out),
+    background var(--dur-fast) var(--ease-out);
+}
+
+.card__play .icon {
+  fill: currentColor;
+  stroke: none;
+}
+
+.card:hover .card__play,
+.card:focus-within .card__play,
+.card.is-playing .card__play {
+  opacity: 1;
+  transform: none;
+}
+
+.card__play:hover {
+  background: var(--color-accent-hover);
+}
+
+.card__play,
+.tile__play {
+  pointer-events: none;
+}
+
+.card:hover .card__play,
+.card:focus-within .card__play,
+.card.is-playing .card__play,
+.tile:hover .tile__play,
+.tile:focus-within .tile__play,
+.tile.is-playing .tile__play {
+  pointer-events: auto;
+}
+
+/* Without hover there is nothing to reveal the control, so it is simply shown. */
+@media (hover: none) {
+  .card__play,
+  .tile__play {
+    opacity: 1;
+    transform: none;
+    pointer-events: auto;
+  }
+}
+
+.card__body {
+  min-width: 0;
+}
+
+/* The visible title is the whole card's hit area, so the cover, the copy and
+   the padding all lead to the same place — while the play tile stays above it
+   on the z-axis. */
+.card__title,
+.tile__title,
+.media__title {
+  display: block;
+}
+
+.card__title::after,
+.tile__title::after,
+.media__title::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+}
+
+.card__title {
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.card--artist .card__title {
+  font-size: var(--text-sm);
+}
+
+.card__sub {
+  color: var(--color-text-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.02em;
+}
+
+.card--artist .card__body {
+  text-align: left;
+}
+
+/* Recently played — compact rows, not tiles with air in them. */
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+  gap: var(--space-1);
+}
+
+.tile {
+  position: relative;
+  display: grid;
+  grid-template-columns: 2.75rem minmax(0, 1fr) auto;
+  gap: var(--space-3);
+  align-items: center;
+  height: 2.75rem;
+  padding-right: var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-raised);
+  overflow: hidden;
+  transition: border-color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out);
+}
+
+.tile:hover {
+  border-color: var(--color-border-strong);
+  background: var(--color-surface-hover);
+}
+
+.tile__art {
+  width: 2.75rem;
+  height: 2.75rem;
+  object-fit: cover;
+}
+
+.tile__art--liked {
+  display: grid;
+  place-items: center;
+  background: linear-gradient(140deg, #1a1a20, #33333c);
+  color: #f2f0ea;
+}
+
+.tile__art--liked .icon {
+  width: 1rem;
+  height: 1rem;
+}
+
+.tile__title {
+  font-size: var(--text-sm);
+  font-weight: 500;
+}
+
+.tile__play {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: var(--radius-sm);
+  background: var(--color-accent);
+  color: var(--color-text-inverse);
+  opacity: 0;
+  transition: opacity var(--dur-base) var(--ease-out), background var(--dur-fast) var(--ease-out);
+}
+
+.tile__play .icon {
+  fill: currentColor;
+  stroke: none;
+}
+
+.tile:hover .tile__play,
+.tile:focus-within .tile__play,
+.tile.is-playing .tile__play {
+  opacity: 1;
+}
+
+.tile__play:hover {
+  background: var(--color-accent-hover);
+}
+
+/* Page headers for the flat views (library, search, podcasts). */
+.greeting {
+  padding: var(--space-5) 0 var(--space-4);
+  font-size: var(--text-2xl);
+  font-weight: 800;
+  letter-spacing: var(--tracking-tight);
+}
+
+.page-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: var(--space-5) 0 var(--space-4);
+  border-bottom: 1px solid var(--color-border);
+  margin-bottom: var(--space-5);
+}
+
+.page-head__title {
+  font-size: var(--text-2xl);
+  font-weight: 800;
+  letter-spacing: var(--tracking-tight);
+}
+
+.page-head__note {
+  padding-bottom: 0.35rem;
+  color: var(--color-text-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+}
+
+/* --------------------------------------------------------------------------
+   10. Hero — a hard-edged tinted band, not a soft bloom
+   -------------------------------------------------------------------------- */
+
+.hero {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  min-height: 11rem;
+  padding: var(--space-5) var(--space-gutter);
+  border-bottom: 1px solid var(--color-border);
+  --hero-tint: #3a3a3a;
+}
+
+.hero__bg {
+  position: absolute;
+  inset: 0;
+  background: var(--hero-tint);
+  opacity: 0.4;
+}
+
+.hero__inner {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-5);
+  width: 100%;
+  min-width: 0;
+}
+
+.hero__art {
+  width: 11rem;
+  height: 11rem;
+  flex: none;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  object-fit: cover;
+}
+
+.hero__meta {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.hero__eyebrow {
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: 500;
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+}
+
+.hero__title {
+  font-size: clamp(2rem, 4.5vw, 3.5rem);
+  font-weight: 800;
+  letter-spacing: var(--tracking-tight);
+  line-height: var(--leading-tight);
+}
+
+.hero__byline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
+}
+
+.hero__byline a {
+  color: var(--color-text);
+  font-weight: 700;
+}
+
+.hero__byline a:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.hero__dot::before {
+  content: "·";
+  margin-right: var(--space-1);
+}
+
+.hero--artist {
+  min-height: 17rem;
+  padding-bottom: var(--space-5);
+}
+
+.hero--artist .hero__photo {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center 35%;
+}
+
+.hero--artist .hero__bg {
+  background: linear-gradient(
+    180deg,
+    rgba(0, 0, 0, 0.32) 0%,
+    rgba(0, 0, 0, 0.58) 45%,
+    var(--color-surface) 100%
+  );
+  opacity: 1;
+}
+
+.hero--artist .hero__title {
+  font-size: clamp(2.25rem, 5.5vw, 4.5rem);
+}
+
+.hero__listeners {
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.hero__eyebrow .badge-verified {
+  width: 0.75rem;
+  height: 0.75rem;
+}
+
+/* Playlist cover assembled from its first four tracks. */
+.mosaic {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+  width: 11rem;
+  height: 11rem;
+  flex: none;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.mosaic img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.mosaic--fill {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+}
+
+/* Action row beneath the hero. */
+.actionbar {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: var(--space-5);
+  padding: var(--space-4) var(--space-gutter);
+  transition: background var(--dur-base) var(--ease-out), padding var(--dur-base) var(--ease-out);
+}
+
+.actionbar.is-stuck {
+  padding-block: var(--space-2);
+  border-bottom: 1px solid var(--color-border);
+  background: rgba(7, 7, 8, 0.86);
+  background: color-mix(in srgb, var(--color-surface) 86%, transparent);
+  backdrop-filter: blur(16px);
+}
+
+.actionbar__title {
+  display: none;
+  font-size: var(--text-md);
+  font-weight: 700;
+  letter-spacing: var(--tracking-tight);
+}
+
+.actionbar.is-stuck .actionbar__title {
+  display: block;
+}
+
+.actionbar__tools {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+
+.hero__play {
+  width: 2.75rem;
+  height: 2.75rem;
+}
+
+/* --------------------------------------------------------------------------
+   11. Tracklists
+   -------------------------------------------------------------------------- */
+
+.tracklist {
+  display: grid;
+  gap: 1px;
+}
+
+/* Play counts hug their content instead of floating in a fixed-width gutter. */
+.tracks--plays {
+  --track-cols: 2.25rem minmax(0, 1fr) max-content 1.75rem 3.5rem 1.75rem;
+}
+
+/* Inside an album block the album column is redundant — the block header
+   already said which record this is. */
+.tracks--slim {
+  --track-cols: 2.25rem minmax(0, 1fr) 1.75rem 3.5rem 1.75rem;
+}
+
+.tracks--library {
+  --track-cols: 2.25rem minmax(0, 1fr) minmax(0, 0.7fr) 6rem 3.5rem 1.75rem;
+}
+
+/* A playlist carries both the album and the date it was added. */
+.tracks--playlist {
+  --track-cols: 2.25rem minmax(0, 1fr) minmax(0, 0.65fr) 5.5rem 1.75rem 3.5rem 1.75rem;
+}
+
+.tracks--library .track-row {
+  min-height: 3.5rem;
+}
+
+.tracks--library .track-row__title {
+  grid-template-columns: 2.75rem minmax(0, 1fr);
+}
+
+.tracks--library .track-row__art {
+  width: 2.75rem;
+  height: 2.75rem;
+}
+
+.tracklist__head {
+  display: grid;
+  grid-template-columns: var(--track-cols);
+  gap: var(--space-4);
+  align-items: center;
+  padding: 0 var(--space-3) var(--space-2);
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-text-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: 500;
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  margin-bottom: var(--space-1);
+}
+
+.tracklist__head-number {
+  text-align: right;
+}
+
+.tracklist__head-end {
+  text-align: right;
+}
+
+.track-row {
+  display: grid;
+  grid-template-columns: var(--track-cols);
+  gap: var(--space-4);
+  align-items: center;
+  min-height: var(--row-h);
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-sm);
+  transition: background var(--dur-fast) var(--ease-out);
+}
+
+.track-row:hover,
+.track-row:focus-within {
+  background: rgba(242, 240, 234, 0.06);
+}
+
+/* The sounding row is marked by a rule at the margin. The title stays bone —
+   green text would say "link", not "playing". */
+.track-row.is-playing {
+  box-shadow: inset 2px 0 0 var(--color-accent);
+}
+
+.track-row__index {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  justify-self: end;
+  color: var(--color-text-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.track-row__number {
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+
+.track-row__toggle {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--color-text);
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+
+.track-row__toggle .icon {
+  fill: currentColor;
+  stroke: none;
+}
+
+.track-row:hover .track-row__number,
+.track-row:focus-within .track-row__number,
+.track-row.is-playing .track-row__number {
+  opacity: 0;
+}
+
+.track-row:hover .track-row__toggle,
+.track-row:focus-within .track-row__toggle,
+.track-row.is-playing .track-row__toggle {
+  opacity: 1;
+}
+
+.track-row.is-playing:hover .track-row__eq,
+.track-row.is-playing:focus-within .track-row__eq {
+  display: none;
+}
+
+.track-row__eq {
+  position: absolute;
+  inset: 0;
+  display: none;
+  place-items: center;
+}
+
+.track-row.is-playing .track-row__eq {
+  display: grid;
+}
+
+.track-row__title {
+  display: grid;
+  grid-template-columns: 2.25rem minmax(0, 1fr);
+  gap: var(--space-3);
+  align-items: center;
+  min-width: 0;
+}
+
+/* Rows only reserve a cover-art column when they actually carry one — an album
+   tracklist does not repeat the cover eleven times. */
+.track-row__title:not(:has(.track-row__art)) {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.track-row__art {
+  width: 2.25rem;
+  height: 2.25rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xs);
+  object-fit: cover;
+}
+
+.track-row__text {
+  min-width: 0;
+}
+
+.track-row__name {
+  display: block;
+  width: 100%;
+  text-align: left;
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  font-weight: 500;
+}
+
+.track-row__name:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.track-row__artist,
+.track-row__album {
+  display: block;
+  min-width: 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.track-row__artist a:hover,
+.track-row__album a:hover {
+  color: var(--color-text);
+  text-decoration: underline;
+}
+
+.track-row__meta {
+  min-width: 0;
+  color: var(--color-text-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.track-row__duration {
+  color: var(--color-text-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.track-row__actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.track-row__like {
+  opacity: 0;
+}
+
+.track-row:hover .track-row__like,
+.track-row:focus-within .track-row__like,
+.track-row__like.is-liked {
+  opacity: 1;
+}
+
+.tracklist__foot {
+  padding: var(--space-6) 0 0;
+  border-top: 1px solid var(--color-border);
+  margin-top: var(--space-6);
+  color: var(--color-text-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: 0.02em;
+}
+
+.tracklist__foot--plain {
+  padding-top: var(--space-4);
+  border-top: 0;
+  margin-top: var(--space-5);
+}
+
+.tracklist__foot a {
+  color: var(--color-text-muted);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* --------------------------------------------------------------------------
+   12. Discography — every album expanded in place
+   -------------------------------------------------------------------------- */
+
+.discography {
+  display: grid;
+  gap: var(--space-6);
+}
+
+.album-block {
+  display: grid;
+  gap: var(--space-4);
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--color-border);
+}
+
+.album-block__head {
+  display: grid;
+  grid-template-columns: 7rem minmax(0, 1fr) auto;
+  gap: var(--space-5);
+  align-items: center;
+}
+
+.album-block__art {
+  width: 7rem;
+  height: 7rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  object-fit: cover;
+}
+
+.album-block__meta {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.album-block__title {
+  font-size: var(--text-xl);
+  font-weight: 800;
+  letter-spacing: var(--tracking-tight);
+}
+
+.album-block__title:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.album-block__facts {
+  color: var(--color-text-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+}
+
+.album-block__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.album-block__summary {
+  max-width: 62ch;
+  color: var(--color-text-muted);
+  font-size: var(--text-base);
+}
+
+/* --------------------------------------------------------------------------
+   13. About / bio
+   -------------------------------------------------------------------------- */
+
+.about {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+  gap: var(--space-5);
+  align-items: start;
+}
+
+.about__body {
+  display: grid;
+  gap: var(--space-4);
+  max-width: 62ch;
+}
+
+.about__lead {
+  font-size: var(--text-lg);
+  font-weight: 600;
+  line-height: var(--leading-snug);
+}
+
+.about__text {
+  color: var(--color-text-muted);
+}
+
+.about__media {
+  position: relative;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+/* Editorial photography is graded to sit inside the palette; cover art is not
+   touched, because that is the artist's own work. */
+.about__media img {
+  filter: saturate(0.6) contrast(1.06);
+}
+
+.about__caption {
+  position: absolute;
+  inset: auto 0 0 0;
+  padding: var(--space-3);
+  background: linear-gradient(0deg, var(--color-scrim), transparent);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+}
+
+.about__stats {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+}
+
+.stat {
+  display: grid;
+  gap: 2px;
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.stat:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.stat__value {
+  font-family: var(--font-mono);
+  font-size: var(--text-lg);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.stat__label {
+  color: var(--color-text-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+}
+
+/* --------------------------------------------------------------------------
+   14. Podcasts
+   -------------------------------------------------------------------------- */
+
+.continue-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(19rem, 1fr));
+  gap: var(--space-3);
+}
+
+.continue-card {
+  display: grid;
+  grid-template-columns: 5rem minmax(0, 1fr);
+  gap: var(--space-4);
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  transition: border-color var(--dur-base) var(--ease-out), background var(--dur-base) var(--ease-out);
+}
+
+.continue-card:hover {
+  border-color: var(--color-border-strong);
+  background: var(--color-surface-raised);
+}
+
+.continue-card__art {
+  position: relative;
+  width: 5rem;
+  height: 5rem;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.continue-card__art img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.continue-card__play {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.58);
+  color: var(--color-accent);
+  opacity: 0;
+  transition: opacity var(--dur-base) var(--ease-out);
+}
+
+.continue-card:hover .continue-card__play,
+.continue-card:focus-within .continue-card__play {
+  opacity: 1;
+}
+
+.continue-card__play .icon {
+  width: 1.75rem;
+  height: 1.75rem;
+  fill: currentColor;
+  stroke: none;
+}
+
+.continue-card__body {
+  display: grid;
+  gap: var(--space-2);
+  align-content: start;
+  min-width: 0;
+}
+
+.continue-card__show {
+  color: var(--color-text-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+}
+
+.continue-card__title {
+  font-size: var(--text-md);
+  font-weight: 600;
+  line-height: var(--leading-snug);
+}
+
+.continue-card__progress {
+  display: grid;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
+}
+
+.progress-bar {
+  height: 3px;
+  background: rgba(242, 240, 234, 0.2);
+  overflow: hidden;
+}
+
+.progress-bar__fill {
+  height: 100%;
+  background: var(--color-text);
+}
+
+.continue-card__times {
+  display: flex;
+  justify-content: space-between;
+  color: var(--color-text-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.episode {
+  display: grid;
+  grid-template-columns: 2.5rem minmax(0, 1fr) auto;
+  gap: var(--space-4);
+  align-items: start;
+  padding: var(--space-4) var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+  transition: background var(--dur-fast) var(--ease-out);
+}
+
+.episode:hover {
+  background: rgba(242, 240, 234, 0.05);
+}
+
+.episode__toggle {
+  display: grid;
+  place-items: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--color-text);
+  transition: border-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+
+.episode:hover .episode__toggle {
+  border-color: var(--color-text);
+}
+
+.episode__toggle:hover {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+.episode__toggle .icon {
+  width: 1rem;
+  height: 1rem;
+  fill: currentColor;
+  stroke: none;
+}
+
+.episode__body {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.episode__title {
+  font-size: var(--text-md);
+  font-weight: 600;
+}
+
+.episode__text {
+  max-width: 70ch;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.episode__meta {
+  padding-top: var(--space-2);
+  color: var(--color-text-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+/* --------------------------------------------------------------------------
+   15. Library view
+   -------------------------------------------------------------------------- */
+
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+  padding-bottom: var(--space-4);
+}
+
+.view-toggle {
+  display: flex;
+  gap: 1px;
+  margin-left: auto;
+}
+
+.view-toggle button {
+  display: grid;
+  place-items: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-subtle);
+}
+
+.view-toggle button:hover {
+  color: var(--color-text);
+  border-color: var(--color-border-strong);
+}
+
+.view-toggle button[aria-pressed="true"] {
+  border-color: var(--color-text);
+  background: rgba(242, 240, 234, 0.08);
+  color: var(--color-text);
+}
+
+/* One markup, two densities: the same nodes read as a grid of covers or as a
+   column of rows, so the toggle needs no second DOM tree. */
+.library-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+  gap: var(--space-3);
+  margin-inline: calc(var(--space-2) * -1);
+}
+
+.media {
+  position: relative;
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  transition: background var(--dur-base) var(--ease-out), border-color var(--dur-base) var(--ease-out);
+}
+
+.media:hover,
+.media:focus-within {
+  border-color: var(--color-border);
+  background: var(--color-surface-raised);
+}
+
+.media__art {
+  position: relative;
+  aspect-ratio: 1;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.media[data-kind="artist"] .media__art {
+  border-radius: 50%;
+}
+
+.media__art img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.media__body {
+  min-width: 0;
+}
+
+.media__title {
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.media__sub {
+  color: var(--color-text-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: 0.02em;
+}
+
+.media__meta,
+.media__dur {
+  display: none;
+  color: var(--color-text-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+}
+
+/* The overflow menu belongs to the list density only; cover cards stay clean. */
+.media > .icon-button {
+  display: none;
+}
+
+.media__dur {
+  font-variant-numeric: tabular-nums;
+}
+
+.library-grid--list {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1px;
+}
+
+.library-grid--list .media {
+  grid-template-columns: 2.25rem minmax(0, 1fr) 9rem 5rem 1.75rem;
+  gap: var(--space-4);
+  align-items: center;
+  min-height: var(--row-h);
+  padding: var(--space-1) var(--space-3);
+  border-color: transparent;
+  border-radius: var(--radius-sm);
+}
+
+.library-grid--list .media__art {
+  width: 2.25rem;
+  height: 2.25rem;
+  aspect-ratio: auto;
+  border-radius: var(--radius-xs);
+}
+
+.library-grid--list .media[data-kind="artist"] .media__art {
+  border-radius: 50%;
+}
+
+.library-grid--list .media__title {
+  font-size: var(--text-base);
+  font-weight: 500;
+}
+
+.library-grid--list .media__meta,
+.library-grid--list .media__dur {
+  display: block;
+}
+
+.library-grid--list .media__dur {
+  text-align: right;
+}
+
+.library-grid--list .media > .icon-button {
+  display: grid;
+  position: relative;
+  z-index: 1;
+}
+
+.library-grid__head {
+  display: none;
+}
+
+.library-page:has(.library-grid--list) .library-grid__head {
+  display: grid;
+  grid-template-columns: 2.25rem minmax(0, 1fr) 9rem 5rem 1.75rem;
+  gap: var(--space-4);
+  padding: 0 var(--space-3) var(--space-2);
+  border-bottom: 1px solid var(--color-border);
+  margin-bottom: var(--space-1);
+  color: var(--color-text-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: 500;
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+}
+
+.library-grid__head span:last-child {
+  text-align: right;
+}
+
+.empty-state {
+  display: grid;
+  gap: var(--space-2);
+  justify-items: start;
+  padding: var(--space-7) 0;
+  color: var(--color-text-muted);
+}
+
+.empty-state__title {
+  color: var(--color-text);
+  font-size: var(--text-md);
+  font-weight: 600;
+}
+
+/* Browse-all tiles on the search view. */
+.genre-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+  gap: var(--space-3);
+}
+
+.genre {
+  position: relative;
+  display: block;
+  aspect-ratio: 16 / 9;
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--genre-tint, var(--color-surface-raised));
+  overflow: hidden;
+  font-size: var(--text-md);
+  font-weight: 700;
+  letter-spacing: var(--tracking-tight);
+  transition: border-color var(--dur-fast) var(--ease-out);
+}
+
+.genre:hover {
+  border-color: var(--color-border-strong);
+}
+
+.genre img {
+  position: absolute;
+  right: -0.75rem;
+  bottom: -1rem;
+  width: 4.5rem;
+  height: 4.5rem;
+  border: 1px solid rgba(0, 0, 0, 0.4);
+  object-fit: cover;
+  transform: rotate(22deg);
+  /* Kept from shouting over the muted palette. */
+  filter: saturate(0.7) brightness(0.92);
+}
+
+/* --------------------------------------------------------------------------
+   16. Now playing panel
+   -------------------------------------------------------------------------- */
+
+.now-playing {
+  grid-column: 3;
+  grid-row: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-panel);
+  overflow: hidden;
+}
+
+.now-playing__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-3) var(--space-2);
+  color: var(--color-text-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: 500;
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+}
+
+.now-playing__art {
+  width: min(100%, 16rem);
+  margin: 0 auto;
+  aspect-ratio: 1;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.now-playing__art img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.now-playing__meta {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-3);
+  align-items: center;
+  padding: var(--space-4) var(--space-3) var(--space-2);
+}
+
+.now-playing__title {
+  display: block;
+  font-size: var(--text-md);
+  font-weight: 700;
+  letter-spacing: var(--tracking-tight);
+}
+
+.now-playing__title:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.now-playing__artist {
+  display: block;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.now-playing__artist:hover {
+  color: var(--color-text);
+  text-decoration: underline;
+}
+
+/* The readout: a native client tells you what it is actually decoding. */
+.now-playing__spec {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  padding: 0 var(--space-3) var(--space-4);
+  color: var(--color-text-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+}
+
+.now-playing__spec b {
+  color: var(--color-text-muted);
+  font-weight: 500;
+}
+
+.panel-tabs {
+  display: flex;
+  gap: 1px;
+  padding: 0 var(--space-3) var(--space-3);
+}
+
+.panel-tab {
+  padding: 0.15rem 0.5rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: 500;
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+}
+
+.panel-tab:hover {
+  color: var(--color-text);
+  border-color: var(--color-border-strong);
+}
+
+.panel-tab[aria-selected="true"] {
+  border-color: var(--color-text);
+  background: rgba(242, 240, 234, 0.08);
+  color: var(--color-text);
+}
+
+.panel-pane {
+  display: none;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 var(--space-3) var(--space-4);
+  /* Rows that run past the fold fade out instead of being sliced mid-thumbnail. */
+  -webkit-mask-image: linear-gradient(180deg, #000 calc(100% - 1.5rem), transparent);
+  mask-image: linear-gradient(180deg, #000 calc(100% - 1.5rem), transparent);
+}
+
+.panel-pane.is-active {
+  display: block;
+}
+
+.queue-head {
+  padding: var(--space-2) var(--space-2);
+  color: var(--color-text-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: 500;
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+}
+
+.queue-item {
+  display: grid;
+  grid-template-columns: 2.5rem minmax(0, 1fr) auto;
+  gap: var(--space-3);
+  align-items: center;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  transition: background var(--dur-fast) var(--ease-out);
+}
+
+.queue-item[role="button"] {
+  cursor: pointer;
+}
+
+.queue-item:hover,
+.queue-item:focus-within {
+  background: var(--color-surface-hover);
+}
+
+.queue-item.is-playing {
+  box-shadow: inset 2px 0 0 var(--color-accent);
+}
+
+.queue-item__art {
+  width: 2.5rem;
+  height: 2.5rem;
+  padding: 0;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xs);
+  overflow: hidden;
+}
+
+.queue-item__art img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.queue-item__name {
+  display: block;
+  font-size: var(--text-sm);
+  font-weight: 500;
+}
+
+.queue-item__artist {
+  display: block;
+  color: var(--color-text-subtle);
+  font-size: var(--text-2xs);
+}
+
+.queue-item__dur {
+  color: var(--color-text-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.lyrics {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-2);
+  color: var(--color-text-subtle);
+  font-size: var(--text-md);
+  font-weight: 600;
+  letter-spacing: var(--tracking-tight);
+  line-height: var(--leading-snug);
+}
+
+.lyrics p {
+  transition: color var(--dur-slow) var(--ease-out);
+}
+
+.lyrics p.is-current {
+  color: var(--color-text);
+  box-shadow: inset 2px 0 0 var(--color-accent);
+  padding-left: var(--space-3);
+}
+
+/* --------------------------------------------------------------------------
+   17. Playbar
+   -------------------------------------------------------------------------- */
+
+.playbar {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  display: grid;
+  grid-template-columns: minmax(11rem, 1fr) minmax(18rem, 2fr) minmax(11rem, 1fr);
+  gap: var(--space-4);
+  align-items: center;
+  padding: 0 var(--space-2);
+}
+
+.playbar__now {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.playbar__art {
+  width: 2.75rem;
+  height: 2.75rem;
+  flex: none;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  object-fit: cover;
+}
+
+.playbar__text {
+  display: grid;
+  min-width: 0;
+}
+
+.playbar__title {
+  font-size: var(--text-sm);
+  font-weight: 500;
+}
+
+.playbar__title:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.playbar__artist {
+  color: var(--color-text-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: 0.02em;
+}
+
+.playbar__artist:hover {
+  color: var(--color-text);
+}
+
+.playbar__center {
+  display: grid;
+  gap: var(--space-1);
+  justify-items: center;
+}
+
+.playbar__buttons {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.playbar__play {
+  width: 2.125rem;
+  height: 2.125rem;
+  margin-inline: var(--space-2);
+}
+
+.playbar__progress {
+  display: grid;
+  grid-template-columns: 2.5rem minmax(0, 1fr) 2.5rem;
+  gap: var(--space-3);
+  align-items: center;
+  width: 100%;
+  max-width: 32rem;
+  margin-inline: auto;
+}
+
+.playbar__time {
+  color: var(--color-text-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.playbar__time--end {
+  text-align: right;
+}
+
+.playbar__extras {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-1);
+}
+
+.playbar__volume {
+  width: 4.5rem;
+  margin-inline: var(--space-2);
+}
+
+.playbar__minibar {
+  display: none;
+}
+
+/* --------------------------------------------------------------------------
+   18. Art credits
+   -------------------------------------------------------------------------- */
+
+.credits-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+  gap: var(--space-2);
+  padding: var(--space-5) 0;
+}
+
+.credit {
+  display: grid;
+  grid-template-columns: 2.5rem minmax(0, 1fr);
+  gap: var(--space-3);
+  align-items: center;
+  padding: var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+}
+
+.credit__art {
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: var(--radius-xs);
+  object-fit: cover;
+}
+
+.credit__name {
+  display: block;
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.credit__name:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.credit__note {
+  display: block;
+  color: var(--color-text-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+}
+
+/* --------------------------------------------------------------------------
+   19. Responsive — a desktop app that still behaves in a narrow window
+   -------------------------------------------------------------------------- */
+
+@media (max-width: 1360px) {
+  .app {
+    --nowplaying-w: 17rem;
+  }
+}
+
+@media (max-width: 1120px) {
+  .app {
+    grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
+  }
+
+  .now-playing {
+    display: none;
+  }
+}
+
+/* The bar sheds its least-used controls before it lets the track title
+   truncate to nothing. */
+@media (max-width: 1000px) {
+  .playbar {
+    grid-template-columns: minmax(9rem, 1fr) minmax(14rem, 1.5fr) auto;
+  }
+
+  .playbar__extras .icon-button:nth-child(1),
+  .playbar__extras .icon-button:nth-child(2),
+  .playbar__now .icon-button:last-child {
+    display: none;
+  }
+}
+
+@media (max-width: 900px) {
+  .app {
+    grid-template-columns: var(--sidebar-rail-w) minmax(0, 1fr);
+  }
+
+  .topbar__drawer-toggle {
+    display: grid;
+  }
+
+  .sidebar {
+    align-items: center;
+  }
+
+  .sidebar__brand {
+    padding: var(--space-3) 0;
+  }
+
+  .sidebar__wordmark,
+  .nav-item__label,
+  .library {
+    display: none;
+  }
+
+  .sidebar__nav {
+    gap: var(--space-1);
+    padding: 0;
+    justify-items: center;
+  }
+
+  .nav-item {
+    justify-content: center;
+    padding: var(--space-2);
+  }
+
+  /* Drawer: the sidebar contents, summoned by the rail's library button. */
+  .sidebar.is-open {
+    position: fixed;
+    top: var(--space-2);
+    left: var(--space-2);
+    bottom: calc(var(--playbar-h) + var(--space-3));
+    z-index: 30;
+    width: var(--sidebar-w);
+    align-items: stretch;
+    box-shadow: var(--shadow-lg);
+  }
+
+  .sidebar.is-open .sidebar__wordmark,
+  .sidebar.is-open .nav-item__label {
+    display: inline;
+  }
+
+  .sidebar.is-open .library {
+    display: flex;
+  }
+
+  .sidebar.is-open .nav-item {
+    justify-content: flex-start;
+  }
+
+  .sidebar.is-open .sidebar__nav {
+    padding: 0 var(--space-2);
+    justify-items: stretch;
+  }
+
+  .hero__art,
+  .mosaic {
+    width: 8rem;
+    height: 8rem;
+  }
+
+  .hero--artist {
+    min-height: 13rem;
+  }
+
+  /* Shorter band, so the scrim eases off sooner or the photograph vanishes. */
+  .hero--artist .hero__bg {
+    background: linear-gradient(
+      180deg,
+      rgba(0, 0, 0, 0.18) 0%,
+      rgba(0, 0, 0, 0.5) 55%,
+      var(--color-surface) 100%
+    );
+  }
+
+  .about {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .album-block__head {
+    grid-template-columns: 5rem minmax(0, 1fr);
+    gap: var(--space-4);
+  }
+
+  .album-block__art {
+    width: 5rem;
+    height: 5rem;
+  }
+
+  .album-block__actions {
+    grid-column: 2;
+  }
+}
+
+@media (max-width: 760px) {
+  .app {
+    grid-template-columns: minmax(0, 1fr);
+    /* Navigation owns the bottom edge; the mini player sits above it. */
+    grid-template-rows: minmax(0, 1fr) 3.5rem auto;
+    padding: 0;
+    gap: 0;
+  }
+
+  .app__main {
+    grid-column: 1;
+    grid-row: 1;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .sidebar {
+    display: none;
+  }
+
+  .playbar {
+    grid-column: 1;
+    grid-row: 2;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: minmax(0, 1fr) 2px;
+    gap: var(--space-3);
+    padding: 0 var(--space-3);
+    border-top: 1px solid var(--color-border);
+  }
+
+  /* The mini player keeps exactly one transport control and gives up the rest. */
+  .playbar__buttons > *,
+  .playbar__progress,
+  .playbar__extras,
+  .playbar__now .icon-button {
+    display: none;
+  }
+
+  .playbar__buttons > .playbar__play {
+    display: grid;
+    margin-inline: 0;
+  }
+
+  .playbar__center {
+    gap: 0;
+  }
+
+  .playbar__minibar {
+    grid-column: 1 / -1;
+    display: block;
+    height: 2px;
+    background: rgba(242, 240, 234, 0.18);
+    overflow: hidden;
+  }
+
+  .playbar__minibar .progress-bar__fill {
+    background: var(--color-accent);
+  }
+
+  .tabbar {
+    grid-column: 1;
+    grid-row: 3;
+    display: flex;
+    align-items: stretch;
+    justify-content: space-around;
+    height: 3.5rem;
+    border-top: 1px solid var(--color-border);
+    background: var(--color-surface);
+  }
+
+  .tabbar a {
+    display: grid;
+    place-content: center;
+    gap: 3px;
+    justify-items: center;
+    min-width: 3.25rem;
+    padding: 0 var(--space-2);
+    color: var(--color-text-subtle);
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    letter-spacing: var(--tracking-wide);
+    text-transform: uppercase;
+  }
+
+  .tabbar a[aria-current="page"] {
+    color: var(--color-text);
+  }
+
+  .topbar__history,
+  .topbar__account span,
+  .topbar__drawer-toggle,
+  .trail {
+    display: none;
+  }
+
+  .hero {
+    flex-direction: column;
+    align-items: flex-start;
+    padding: var(--space-4);
+    min-height: 0;
+  }
+
+  .hero__inner {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-4);
+  }
+
+  .hero__art,
+  .mosaic {
+    width: 7rem;
+    height: 7rem;
+  }
+
+  .hero__title {
+    font-size: clamp(1.5rem, 8vw, 2.25rem);
+  }
+
+  .hero--artist .hero__title {
+    font-size: clamp(1.75rem, 10vw, 2.75rem);
+  }
+
+  .view__inner,
+  .actionbar {
+    padding-inline: var(--space-4);
+  }
+
+  .topbar {
+    padding: 0 var(--space-4);
+  }
+
+  /* Flex is the right tool once cells are dropped: removed nodes leave no
+     empty column or orphan gap behind. */
+  .tracklist__head,
+  .track-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+  }
+
+  .tracklist__head-meta,
+  .track-row__meta,
+  .track-row__album,
+  .track-row__like {
+    display: none;
+  }
+
+  .tracklist__head-end {
+    margin-left: auto;
+  }
+
+  .track-row__title {
+    flex: 1;
+  }
+
+  .track-row__duration {
+    margin-left: auto;
+  }
+
+  .library-grid--list .media {
+    grid-template-columns: 2.25rem minmax(0, 1fr) 1.75rem;
+  }
+
+  .library-grid--list .media__meta,
+  .library-grid--list .media__dur {
+    display: none;
+  }
+
+  .card-grid,
+  .library-grid,
+  .genre-grid {
+    grid-template-columns: repeat(auto-fill, minmax(7.5rem, 1fr));
+    gap: var(--space-2);
+  }
+
+  /* These cards carry a headline plus a progress readout, so they need the
+     full width rather than a half-column. */
+  .continue-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* A stacked header reads better than two wrapped columns on a phone. */
+  .page-head {
+    display: block;
+    padding-bottom: var(--space-3);
+  }
+
+  .page-head__note {
+    padding-top: var(--space-2);
+  }
+
+  .tiles {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .album-block__head {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .album-block__art {
+    width: 6rem;
+    height: 6rem;
+  }
+
+  .album-block__actions {
+    grid-column: 1;
+  }
+
+  .episode {
+    grid-template-columns: 2.5rem minmax(0, 1fr);
+  }
+
+  .episode__meta {
+    display: none;
+  }
+}
+
+@media (min-width: 761px) {
+  .tabbar {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
