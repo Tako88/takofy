@@ -3,7 +3,7 @@
 //! Breakpoints and region visibility live here and nowhere else, so no view
 //! measures the window and there is nothing to keep in sync.
 
-use crate::theme::{Tokens, space};
+use crate::theme::extent;
 
 /// Recommended starting size of the window, in points.
 pub const WINDOW_DEFAULT: [f32; 2] = [1100.0, 720.0];
@@ -21,7 +21,7 @@ pub enum Width {
     Compact,
     /// Sidebar, list, now-playing.
     Regular,
-    /// Sidebar gets a second column of its own.
+    /// Room to spare. Resolves to the same shell as `Regular` today.
     Wide,
 }
 
@@ -62,17 +62,19 @@ pub fn regions_for(width: Width) -> Regions {
     }
 }
 
-/// Every width comes from a token.
-pub fn shell_for(width: Width, tokens: &Tokens) -> Shell {
+/// The breakpoints decide which regions show; every width here is an extent
+/// token, so no view measures the window for itself.
+pub fn shell_for(width: Width) -> Shell {
     let sidebar = match width {
         Width::Compact => None,
-        Width::Regular => Some(tokens.art_large + 3.0 * space::XL),
-        Width::Wide => Some(2.0 * tokens.art_large + 3.0 * space::XL),
+        // The reference has one sidebar width. A wider window spends the extra
+        // room on the regions beside the sidebar, not on a wider sidebar.
+        Width::Regular | Width::Wide => Some(extent::SIDEBAR_W),
     };
 
     Shell {
         sidebar,
-        now_playing: tokens.art_small + 2.0 * space::MD,
+        now_playing: extent::PLAYBAR_H,
     }
 }
 
@@ -117,19 +119,21 @@ mod tests {
     }
 
     #[test]
-    fn the_wide_sidebar_is_never_narrower_than_the_regular_one() {
-        let tokens = Tokens::DARK;
-        let regular = shell_for(Width::Regular, &tokens).sidebar.unwrap();
-        let wide = shell_for(Width::Wide, &tokens).sidebar.unwrap();
-        assert!(wide >= regular, "{wide} < {regular}");
+    fn both_wide_layouts_use_the_single_sidebar_width() {
+        for width in [Width::Regular, Width::Wide] {
+            assert_eq!(
+                shell_for(width).sidebar,
+                Some(extent::SIDEBAR_W),
+                "{width:?}"
+            );
+        }
     }
 
     #[test]
     fn no_region_is_hidden_without_a_width_that_hides_it() {
-        let tokens = Tokens::DARK;
         for width in [Width::Compact, Width::Regular, Width::Wide] {
             let regions = regions_for(width);
-            let shell = shell_for(width, &tokens);
+            let shell = shell_for(width);
             assert_eq!(regions.sidebar, shell.sidebar.is_some(), "{width:?}");
         }
     }
