@@ -224,6 +224,7 @@ pub(crate) fn start<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                 Event::Command(Some(Command::Pause)) => host.pause(),
                 Event::Command(Some(Command::Resume)) => host.resume(),
                 Event::Command(Some(Command::Stop)) => host.stop(),
+                Event::Command(Some(Command::Seek { position_ms })) => host.seek(position_ms),
                 Event::Command(None) => break,
             }
         }
@@ -384,6 +385,12 @@ pub(crate) fn transport_of(event: &PlaybackEvent) -> Update {
         PlaybackEvent::Ended => TransportUpdate::Ended,
         PlaybackEvent::Unavailable => TransportUpdate::Unavailable,
         PlaybackEvent::Stopped => TransportUpdate::Stopped,
+        PlaybackEvent::Duration { duration_ms } => TransportUpdate::Duration {
+            duration_ms: *duration_ms,
+        },
+        PlaybackEvent::Seeked { position_ms } => TransportUpdate::Seeked {
+            position_ms: *position_ms,
+        },
     })
 }
 
@@ -723,6 +730,8 @@ mod tests {
         pauses: AtomicUsize,
         resumes: AtomicUsize,
         stops: AtomicUsize,
+        seeks: AtomicUsize,
+        last_seek: AtomicUsize,
         players: AtomicUsize,
         player_started: AtomicBool,
         shutdowns: AtomicUsize,
@@ -859,6 +868,13 @@ mod tests {
 
         fn stop(&self) {
             self.shared.stops.fetch_add(1, Ordering::SeqCst);
+        }
+
+        fn seek(&self, position_ms: u32) {
+            self.shared.seeks.fetch_add(1, Ordering::SeqCst);
+            self.shared
+                .last_seek
+                .store(position_ms as usize, Ordering::SeqCst);
         }
 
         fn shutdown(self) -> impl Future<Output = Result<(), SessionError>> + Send {
@@ -1528,6 +1544,22 @@ mod tests {
             transport_of(&PlaybackEvent::Stopped),
             Update::Transport(TransportUpdate::Stopped)
         );
+        assert_eq!(
+            transport_of(&PlaybackEvent::Duration {
+                duration_ms: 222_000,
+            }),
+            Update::Transport(TransportUpdate::Duration {
+                duration_ms: 222_000,
+            })
+        );
+        assert_eq!(
+            transport_of(&PlaybackEvent::Seeked {
+                position_ms: 41_000
+            }),
+            Update::Transport(TransportUpdate::Seeked {
+                position_ms: 41_000,
+            })
+        );
     }
 
     #[test]
@@ -1746,6 +1778,80 @@ mod tests {
     }
 
     #[test]
+    fn a_seek_with_no_player_does_not_start_one() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+
+        run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::Seek { position_ms: 12 })
+                .expect("seek");
+            ui_end
+                .commands
+                .send(Command::ReloadLibrary)
+                .expect("reload");
+            loop {
+                if matches!(ui_end.updates.recv().expect("update"), Update::Playlists(_)) {
+                    break;
+                }
+            }
+        });
+
+        assert_eq!(shared.seeks.load(Ordering::SeqCst), 1);
+        assert_eq!(shared.players.load(Ordering::SeqCst), 0);
+        assert_eq!(shared.shutdowns.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_seek_reaches_the_host() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+        let (play_started_tx, play_started_rx) = channel();
+        *shared.play_started.lock().expect("lock") = Some(play_started_tx);
+
+        run_window(runtime(), host, store, source, move |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::Play {
+                    uri: "spotify:track:x".to_owned(),
+                })
+                .expect("play");
+            play_started_rx.recv().expect("play started");
+            ui_end
+                .commands
+                .send(Command::Seek {
+                    position_ms: 41_000,
+                })
+                .expect("seek");
+            ui_end
+                .commands
+                .send(Command::ReloadLibrary)
+                .expect("reload");
+            loop {
+                if matches!(ui_end.updates.recv().expect("update"), Update::Playlists(_)) {
+                    break;
+                }
+            }
+        });
+
+        assert_eq!(shared.seeks.load(Ordering::SeqCst), 1);
+        assert_eq!(shared.last_seek.load(Ordering::SeqCst), 41_000);
+        assert_eq!(shared.players.load(Ordering::SeqCst), 1);
+        assert_eq!(shared.shutdowns.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
     fn playback_events_reach_the_window() {
         let store = Arc::new(MemoryStore::seeded("stored"));
         let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
@@ -1865,6 +1971,159 @@ mod tests {
                 1,
                 "the shutdown must run after a player was started"
             );
+            assert_eq!(shared.players.load(Ordering::SeqCst), 1);
+        };
+
+        run_ordered(runtime, window, teardown);
+    }
+
+    #[test]
+    fn a_burst_of_play_seek_pause_resume_then_stop_shuts_down_once() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+        let (play_started_tx, play_started_rx) = channel();
+        *shared.play_started.lock().expect("lock") = Some(play_started_tx);
+
+        let runtime = runtime();
+        let (ui_end, _slot, worker) = start(runtime.handle(), host, store, source);
+        let commands = ui_end.commands.clone();
+
+        let window = move || {
+            loop {
+                if matches!(ui_end.updates.recv().expect("update"), Update::Playlists(_)) {
+                    break;
+                }
+            }
+            ui_end
+                .commands
+                .send(Command::Play {
+                    uri: "spotify:track:x".to_owned(),
+                })
+                .expect("play");
+            play_started_rx.recv().expect("play started");
+            ui_end
+                .commands
+                .send(Command::Seek {
+                    position_ms: 41_000,
+                })
+                .expect("seek");
+            ui_end.commands.send(Command::Pause).expect("pause");
+            ui_end.commands.send(Command::Resume).expect("resume");
+            ui_end.commands.send(Command::Stop).expect("stop");
+        };
+        let teardown = move || async move {
+            tokio::time::timeout(Duration::from_secs(1), worker.finish())
+                .await
+                .expect("finish must resolve after a burst of commands");
+            assert!(
+                commands.is_closed(),
+                "the task must have returned before finish resolves"
+            );
+            assert_eq!(
+                shared.shutdowns.load(Ordering::SeqCst),
+                1,
+                "a burst of commands must still shut down exactly once"
+            );
+            assert_eq!(shared.players.load(Ordering::SeqCst), 1);
+        };
+
+        run_ordered(runtime, window, teardown);
+    }
+
+    #[test]
+    fn commands_sent_after_the_stop_are_dropped_not_run() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Pending);
+        let shared = Arc::clone(&host.shared);
+        let (started_tx, started_rx) = channel();
+        *shared.rootlist_started.lock().expect("lock") = Some(started_tx);
+
+        let runtime = runtime();
+        let (ui_end, _slot, worker) = start(runtime.handle(), host, store, source);
+
+        let window = move || {
+            started_rx.recv().expect("rootlist started");
+        };
+        let teardown = move || async move {
+            // The task is parked on the pending rootlist, so these queue up
+            // behind it and the stop is what resumes the task.
+            ui_end
+                .commands
+                .send(Command::Play {
+                    uri: "spotify:track:x".to_owned(),
+                })
+                .expect("queued play");
+            ui_end
+                .commands
+                .send(Command::Seek { position_ms: 5 })
+                .expect("queued seek");
+            tokio::time::timeout(Duration::from_secs(1), worker.finish())
+                .await
+                .expect("finish must resolve");
+            assert!(
+                ui_end.commands.is_closed(),
+                "the task must have returned before finish resolves"
+            );
+            assert_eq!(shared.plays.load(Ordering::SeqCst), 0);
+            assert_eq!(shared.seeks.load(Ordering::SeqCst), 0);
+            assert_eq!(shared.shutdowns.load(Ordering::SeqCst), 1);
+        };
+
+        run_ordered(runtime, window, teardown);
+    }
+
+    #[test]
+    fn playback_events_after_the_window_closes_do_not_wedge_the_drain_thread() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+        let window_shared = Arc::clone(&shared);
+        let (play_started_tx, play_started_rx) = channel();
+        *shared.play_started.lock().expect("lock") = Some(play_started_tx);
+
+        let runtime = runtime();
+        let (ui_end, _slot, worker) = start(runtime.handle(), host, store, source);
+
+        let window = move || {
+            loop {
+                if matches!(ui_end.updates.recv().expect("update"), Update::Playlists(_)) {
+                    break;
+                }
+            }
+            ui_end
+                .commands
+                .send(Command::Play {
+                    uri: "spotify:track:x".to_owned(),
+                })
+                .expect("play");
+            play_started_rx.recv().expect("play started");
+
+            // The window goes away, then playback events keep arriving. The
+            // drain thread must survive the closed receiver.
+            let UiEnd { updates, commands } = ui_end;
+            drop(updates);
+            drop(commands);
+            let tx = window_shared
+                .event_tx
+                .lock()
+                .expect("lock")
+                .clone()
+                .expect("event sender");
+            tx.send(PlaybackEvent::Ended).expect("event");
+            tx.send(PlaybackEvent::Unavailable).expect("event");
+            window_shared.event_tx.lock().expect("lock").take();
+        };
+        let teardown = move || async move {
+            tokio::time::timeout(Duration::from_secs(1), worker.finish())
+                .await
+                .expect("finish must resolve with a window that closed first");
+            assert_eq!(shared.shutdowns.load(Ordering::SeqCst), 1);
             assert_eq!(shared.players.load(Ordering::SeqCst), 1);
         };
 
