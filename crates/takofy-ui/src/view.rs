@@ -3,8 +3,9 @@
 //! The view reads the state machine and the tokens it is handed, and returns a
 //! command when the user asks for one. It never transitions state itself.
 
+pub mod controls;
 mod shell;
-mod text;
+pub mod text;
 
 use egui::{Align, Button, Layout, Ui};
 
