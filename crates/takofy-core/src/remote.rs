@@ -7,6 +7,7 @@ use std::collections::{HashMap, HashSet};
 use futures_util::StreamExt;
 use librespot::core::{Session, SpotifyUri};
 use librespot::metadata::{Metadata, Playlist};
+use librespot::protocol::metadata::Track as TrackMessage;
 
 use crate::context::{ContextError, Page, PageSource, page_from_proto, parse_page_json};
 use crate::rootlist::{RootlistError, RootlistPage, RootlistSource, RootlistWire, parse_rootlist};
@@ -106,8 +107,18 @@ impl PageSource for RemoteContext<'_> {
     }
 }
 
-/// Names for tracks, keyed by URI, as `(title, artists)`.
-type Labels = HashMap<String, (String, String)>;
+/// What the wire says about one track: the name and artists the row already
+/// draws, plus the album and length it can now draw too.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TrackLabel {
+    title: String,
+    artists: String,
+    album: Option<String>,
+    duration_ms: Option<u32>,
+}
+
+/// Labels for tracks, keyed by URI.
+type Labels = HashMap<String, TrackLabel>;
 
 /// How many distinct URIs one metadata request asks for.
 ///
@@ -140,16 +151,20 @@ fn distinct_uris(uris: &[String]) -> Vec<String> {
 fn expand_labels(uris: &[String], labels: &Labels) -> Vec<TrackEntry> {
     uris.iter()
         .map(|uri| match labels.get(uri) {
-            Some((title, artists)) => TrackEntry {
+            Some(label) => TrackEntry {
                 uri: uri.clone(),
-                title: title.clone(),
-                artists: artists.clone(),
+                title: label.title.clone(),
+                artists: label.artists.clone(),
+                album: label.album.clone(),
+                duration_ms: label.duration_ms,
                 named: true,
             },
             None => TrackEntry {
                 uri: uri.clone(),
                 title: uri.clone(),
                 artists: String::new(),
+                album: None,
+                duration_ms: None,
                 named: false,
             },
         })
@@ -202,7 +217,6 @@ async fn request_labels(session: &Session, chunk: &[String]) -> Option<Labels> {
         BatchedEntityRequest, EntityRequest, ExtensionQuery,
     };
     use librespot::protocol::extension_kind::ExtensionKind;
-    use librespot::protocol::metadata::Track as TrackMessage;
     use protobuf::Message as _;
 
     let request = BatchedEntityRequest {
@@ -246,24 +260,57 @@ async fn request_labels(session: &Session, chunk: &[String]) -> Option<Labels> {
             let Ok(track) = TrackMessage::parse_from_bytes(&any.value) else {
                 continue;
             };
-            let Some(title) = track.name.clone().filter(|name| !name.is_empty()) else {
-                continue;
-            };
-            let artists = track
-                .artist
-                .iter()
-                .filter_map(|artist| artist.name.clone())
-                .collect::<Vec<_>>()
-                .join(", ");
-            labels.insert(data.entity_uri.clone(), (title, artists));
+            if let Some(label) = label_of(&track) {
+                labels.insert(data.entity_uri.clone(), label);
+            }
         }
     }
     Some(labels)
 }
 
+/// The label a parsed track message carries, or `None` when it has no name.
+///
+/// This is the whole mapping from the wire's `Track` into a `TrackLabel`, kept
+/// pure so it can be exercised with a constructed message and no session.
+fn label_of(track: &TrackMessage) -> Option<TrackLabel> {
+    let title = track.name.clone().filter(|name| !name.is_empty())?;
+    let artists = track
+        .artist
+        .iter()
+        .filter_map(|artist| artist.name.clone())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let album = track
+        .album
+        .as_ref()
+        .and_then(|album| album.name.clone())
+        .filter(|name| !name.is_empty());
+    Some(TrackLabel {
+        title,
+        artists,
+        album,
+        duration_ms: duration_ms(track.duration),
+    })
+}
+
+/// A wire length in milliseconds, or `None` when the wire did not give one.
+///
+/// The field is a signed 32-bit count, and the model stores an unsigned one. A
+/// negative value is not a length, so it becomes `None` rather than wrapping to
+/// nearly fifty days. Every non-negative value already fits a `u32`, so no
+/// non-negative value can wrap; an implausibly large one still reads as a large
+/// `m:ss` rather than a small one, and this does not invent a plausibility cap.
+fn duration_ms(duration: Option<i32>) -> Option<u32> {
+    duration.and_then(|milliseconds| u32::try_from(milliseconds).ok())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Labels, distinct_uris, expand_labels, playlist_label};
+    use librespot::protocol::metadata::{Album, Artist, Track as TrackMessage};
+
+    use super::{
+        Labels, TrackLabel, distinct_uris, duration_ms, expand_labels, label_of, playlist_label,
+    };
 
     fn owned(uris: &[&str]) -> Vec<String> {
         uris.iter().map(|uri| (*uri).to_owned()).collect()
@@ -275,10 +322,35 @@ mod tests {
             .map(|(uri, title, artists)| {
                 (
                     (*uri).to_owned(),
-                    ((*title).to_owned(), (*artists).to_owned()),
+                    TrackLabel {
+                        title: (*title).to_owned(),
+                        artists: (*artists).to_owned(),
+                        album: None,
+                        duration_ms: None,
+                    },
                 )
             })
             .collect()
+    }
+
+    fn labelled(
+        uri: &str,
+        title: &str,
+        artists: &str,
+        album: Option<&str>,
+        duration_ms: Option<u32>,
+    ) -> Labels {
+        let mut labels = Labels::new();
+        labels.insert(
+            uri.to_owned(),
+            TrackLabel {
+                title: title.to_owned(),
+                artists: artists.to_owned(),
+                album: album.map(str::to_owned),
+                duration_ms,
+            },
+        );
+        labels
     }
 
     #[test]
@@ -315,6 +387,8 @@ mod tests {
         assert_eq!(entries[1].title, "b");
         assert!(entries[1].artists.is_empty());
         assert_eq!(entries[1].uri, "b");
+        assert_eq!(entries[1].album, None);
+        assert_eq!(entries[1].duration_ms, None);
         assert!(!entries[1].named);
     }
 
@@ -325,6 +399,101 @@ mod tests {
         assert_eq!(entries[0].uri, "a");
         assert_eq!(entries[0].artists, "Band");
         assert!(entries[0].named);
+    }
+
+    #[test]
+    fn a_labelled_track_carries_its_album_and_length() {
+        let uris = owned(&["a"]);
+        let labels = labelled("a", "One", "Band", Some("Record"), Some(222_000));
+        let entries = expand_labels(&uris, &labels);
+        assert_eq!(entries[0].album.as_deref(), Some("Record"));
+        assert_eq!(entries[0].duration_ms, Some(222_000));
+        assert!(entries[0].named);
+    }
+
+    #[test]
+    fn a_track_with_no_album_or_length_carries_neither() {
+        let uris = owned(&["a"]);
+        let entries = expand_labels(&uris, &named(&[("a", "One", "Band")]));
+        assert_eq!(entries[0].album, None);
+        assert_eq!(entries[0].duration_ms, None);
+        assert!(entries[0].named);
+    }
+
+    #[test]
+    fn a_negative_wire_length_is_not_a_length() {
+        assert_eq!(duration_ms(Some(-1)), None);
+        assert_eq!(duration_ms(Some(i32::MIN)), None);
+        assert_eq!(duration_ms(None), None);
+    }
+
+    #[test]
+    fn a_non_negative_wire_length_is_kept() {
+        assert_eq!(duration_ms(Some(0)), Some(0));
+        assert_eq!(duration_ms(Some(222_000)), Some(222_000));
+        assert_eq!(duration_ms(Some(i32::MAX)), Some(i32::MAX as u32));
+    }
+
+    fn wire_track(album: Option<&str>, duration: Option<i32>) -> TrackMessage {
+        TrackMessage {
+            name: Some("One".to_owned()),
+            artist: vec![Artist {
+                name: Some("Band".to_owned()),
+                ..Default::default()
+            }],
+            album: album
+                .map(|name| Album {
+                    name: Some(name.to_owned()),
+                    ..Default::default()
+                })
+                .into(),
+            duration,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn label_of_reads_an_album_that_is_present() {
+        let label = label_of(&wire_track(Some("Record"), Some(222_000))).unwrap();
+        assert_eq!(label.album.as_deref(), Some("Record"));
+        assert_eq!(label.duration_ms, Some(222_000));
+        assert_eq!(label.title, "One");
+        assert_eq!(label.artists, "Band");
+    }
+
+    #[test]
+    fn label_of_reads_no_album_when_the_album_is_absent() {
+        let label = label_of(&wire_track(None, Some(222_000))).unwrap();
+        assert_eq!(label.album, None);
+    }
+
+    #[test]
+    fn label_of_reads_no_album_when_the_album_name_is_empty() {
+        let label = label_of(&wire_track(Some(""), Some(222_000))).unwrap();
+        assert_eq!(label.album, None);
+    }
+
+    #[test]
+    fn label_of_reads_a_length_that_is_present() {
+        let label = label_of(&wire_track(None, Some(222_000))).unwrap();
+        assert_eq!(label.duration_ms, Some(222_000));
+    }
+
+    #[test]
+    fn label_of_reads_no_length_when_it_is_negative_or_absent() {
+        let negative = label_of(&wire_track(None, Some(-1))).unwrap();
+        assert_eq!(negative.duration_ms, None);
+        let absent = label_of(&wire_track(None, None)).unwrap();
+        assert_eq!(absent.duration_ms, None);
+    }
+
+    #[test]
+    fn label_of_is_none_when_the_track_has_no_name() {
+        let unnamed = TrackMessage {
+            name: Some(String::new()),
+            ..Default::default()
+        };
+        assert_eq!(label_of(&unnamed), None);
     }
 
     #[test]

@@ -142,6 +142,8 @@ mod tests {
             uri: uri.to_owned(),
             title: uri.to_owned(),
             artists: String::new(),
+            album: None,
+            duration_ms: None,
             named: true,
         }
     }

@@ -8,6 +8,7 @@
 use egui::emath::GuiRounding;
 use egui::{FontId, Pos2, Rect, Sense, Ui, vec2};
 
+use crate::format::format_position;
 use crate::icon;
 use crate::layout::{Table, table as table_layout};
 use crate::library::{Library, Load};
@@ -80,16 +81,17 @@ pub fn tracks_view(
             if !visible.intersects(rect) {
                 continue;
             }
+            let duration = entry.duration_ms.map(format_position);
             let row = Row {
                 uri: &entry.uri,
                 number: index + 1,
                 title: &entry.title,
                 artist: &entry.artists,
-                // An album, a date added and a length are not in what the window is
-                // handed yet, so those columns are drawn only when they are.
-                album: None,
+                album: entry.album.as_deref(),
+                // The added date is playlist membership rather than track metadata,
+                // so the window is not handed one yet.
                 added: None,
-                duration: None,
+                duration: duration.as_deref(),
                 state: state_of(&entry.uri, transport),
             };
             if track_row::show(ui, rect, columns, &row, tokens) {
@@ -213,6 +215,18 @@ mod tests {
         output.textures_delta.clear();
     }
 
+    /// The text the frame actually painted, in paint order.
+    fn drawn_texts(output: &egui::FullOutput) -> Vec<&str> {
+        output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Text(text) => Some(text.galley.text()),
+                _ => None,
+            })
+            .collect()
+    }
+
     fn button(pos: Pos2, pressed: bool) -> Event {
         Event::PointerButton {
             pos,
@@ -227,6 +241,8 @@ mod tests {
             uri: uri.to_owned(),
             title: title.to_owned(),
             artists: String::new(),
+            album: None,
+            duration_ms: None,
             named: true,
         }
     }
@@ -394,9 +410,9 @@ mod tests {
     fn a_row_with_no_album_added_or_duration_still_lays_out() {
         let tokens = Tokens::DARK;
         let ctx = context();
-        // The window's TrackEntry carries no album, date added or duration, so
-        // every row it can produce is this shape. Solving its columns and
-        // double-clicking must still lay the row out and activate it.
+        // An album or an artist context carries neither an album name nor a
+        // playlist's added date, and a track may have no length. Solving its
+        // columns and double-clicking must still lay the row out and activate it.
         let columns = table_layout::columns(900.0, Table::Full.columns());
         let rect = table_layout::row_rect(
             Rect::from_min_size(Pos2::ZERO, vec2(900.0, extent::ROW_H)),
@@ -432,6 +448,79 @@ mod tests {
         assert!(
             clicked,
             "a row with no album, added or duration must still lay out and activate"
+        );
+    }
+
+    #[test]
+    fn a_row_given_an_album_and_a_duration_draws_them() {
+        let tokens = Tokens::DARK;
+        let ctx = context();
+        let columns = table_layout::columns(900.0, Table::Full.columns());
+        let rect = table_layout::row_rect(
+            Rect::from_min_size(Pos2::ZERO, vec2(900.0, extent::ROW_H)),
+            0,
+            extent::ROW_H,
+        );
+        let row = Row {
+            uri: "a",
+            number: 1,
+            title: "t0",
+            artist: "Band",
+            album: Some("Record"),
+            added: None,
+            duration: Some("3:42"),
+            state: State::Resting,
+        };
+
+        let mut output = ctx.run_ui(input(Vec::new()), |ui| {
+            let _ = track_row::show(ui, rect, columns, &row, &tokens);
+        });
+        output.textures_delta.clear();
+        let texts = drawn_texts(&output);
+        assert!(
+            texts.contains(&"Record"),
+            "the album column must draw its label: {texts:?}"
+        );
+        assert!(
+            texts.contains(&"3:42"),
+            "the duration column must draw its label: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn the_view_hands_a_tracks_album_and_length_to_its_row() {
+        let tokens = Tokens::DARK;
+        let ctx = context();
+        let mut library = library_with(vec![TrackEntry {
+            uri: "a".to_owned(),
+            title: "t0".to_owned(),
+            artists: "Band".to_owned(),
+            album: Some("Record".to_owned()),
+            duration_ms: Some(222_000),
+            named: true,
+        }]);
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+
+        let mut output = ctx.run_ui(input(Vec::new()), |ui| {
+            let _ = tracks_view(
+                ui,
+                Table::Full,
+                &mut library,
+                &mut transport,
+                &mut queue,
+                &tokens,
+            );
+        });
+        output.textures_delta.clear();
+        let texts = drawn_texts(&output);
+        assert!(
+            texts.contains(&"Record"),
+            "the row must be handed the track's album: {texts:?}"
+        );
+        assert!(
+            texts.contains(&"3:42"),
+            "the row must be handed the track's length as m:ss: {texts:?}"
         );
     }
 

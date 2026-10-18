@@ -20,6 +20,10 @@ pub struct TrackEntry {
     pub uri: String,
     pub title: String,
     pub artists: String,
+    /// The album the track belongs to, when the metadata carried one.
+    pub album: Option<String>,
+    /// The track's length in milliseconds, when the metadata carried a length.
+    pub duration_ms: Option<u32>,
     /// `false` when `title` is the URI fallback.
     pub named: bool,
 }
