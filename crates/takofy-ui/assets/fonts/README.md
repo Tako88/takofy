@@ -1,8 +1,12 @@
 # Bundled fonts
 
-Archivo carries the interface; JetBrains Mono carries every number and field
-label. Both are under the SIL Open Font License and neither declares a Reserved
-Font Name, so the full licence text for each ships beside the faces.
+Three voices, all under the SIL Open Font License, with each licence's full text
+beside the faces it covers:
+
+- **Archivo** carries the interface.
+- **JetBrains Mono** carries every number and field label.
+- **Noto Sans CJK** catches everything the other two cannot draw. It is only ever
+  a fallback.
 
 ## Why not the reference's own files
 
@@ -22,12 +26,46 @@ from a fallback in the prototype.
 
 egui instances a variable font rather than ignoring its axes:
 `FontData::variation_axes` reports them and `FontTweak::coords` selects a
-position. Both files here carry a single `wght` axis, so the app registers one
+position. Every file here carries a single `wght` axis, so the app registers one
 face per weight by sharing the same blob at different coordinates.
 
-Two files of 262 KB and 187 KB cover every weight the design uses, against 1.37 MB
-for static faces at the same weights. Archivo's `wdth` axis is pinned at 100 and
-dropped because the design never varies width, which alone saves 396 KB.
+Archivo's `wdth` axis is pinned at 100 and dropped because the design never varies
+width, which saves 396 KB. Its default instance is wght 600, so an embed that sets
+no coordinates draws Semibold.
+
+## The CJK fallback, and what it costs
+
+| file | size | glyphs |
+|---|---|---|
+| NotoSansJP-Variable.ttf | 9.15 MB | 16,732 |
+| NotoSansKR-Variable.ttf | 9.93 MB | 23,174 |
+| NotoSansSC-Variable.ttf | 16.95 MB | 30,890 |
+| NotoSansTC-Variable.ttf | 11.39 MB | 20,745 |
+
+47.4 MB in total, which is the real cost of not drawing boxes. egui has no system
+font fallback — it draws only the faces it is handed — so an unhandled script is
+tofu, and an artist's name is exactly where a rare character turns up.
+
+The regions overlap far more than the sizes suggest. Measured against each face's
+cmap:
+
+| character | JP | KR | SC | TC |
+|---|---|---|---|---|
+| `漢` | yes | yes | yes | yes |
+| `あ` kana | yes | yes | yes | yes |
+| `가` hangul | — | yes | — | — |
+| `汉` simplified | — | — | yes | yes |
+
+Only Korean carries hangul, and only the Chinese faces carry simplified forms. So
+the four are not four independent alphabets; they are four repertories with a
+large shared middle, which is why trimming one is tempting and why keeping all
+four is the cautious choice.
+
+**A missing glyph cannot be detected by measuring it.** Every one of these four
+gives `.notdef` an advance of one full em — 1.000 units at 14 pt — which is the
+same width as a real ideograph. Tofu is therefore invisible to layout, and the
+only defence is a fallback chain that covers the language. Anything that needs to
+know whether a glyph really exists has to read the cmap, not the rendered width.
 
 ## Provenance
 
@@ -36,15 +74,17 @@ dropped because the design never varies width, which alone saves 396 KB.
 
       fonttools varLib.instancer --update-name-table 'Archivo[wdth,wght].ttf' wdth=100
 
-  Its default instance is wght 600, so an embed that sets no coordinates draws
-  Semibold.
-
 - **JetBrains Mono** — `ofl/jetbrainsmono/JetBrainsMono[wght].ttf` from
   google/fonts.
 
-## Coverage, and the hole in it
+- **Noto Sans CJK** — `ofl/notosansjp`, `notosanskr`, `notosanssc` and
+  `notosanstc` from google/fonts. All four carry the same licence file, which is
+  Adobe's: these are Source Han Sans derivatives and the reserved name is
+  `Source`. Nothing here renames them, so that reservation does not apply.
 
-Archivo has 653 glyphs: latin, latin-ext, punctuation and arrows. JetBrains Mono
-has 1363 and adds Cyrillic and Greek. Neither has CJK, and egui has no system font
-fallback — it draws only the faces it is handed. A Japanese, Korean or Chinese
-artist name is boxes until that is decided (#15).
+## The other two faces
+
+Archivo has 653 glyphs — latin, latin-ext, punctuation and arrows. JetBrains Mono
+has 1363 and adds Cyrillic and Greek. Neither has CJK, which is what the Noto
+faces are for; they are registered last in the family so they are reached only
+when the two above them come up empty.
