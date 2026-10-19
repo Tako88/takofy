@@ -85,6 +85,8 @@ pub(crate) async fn label_playlists(session: &Session, uris: Vec<String>) -> Vec
                 name,
                 first_track,
                 picture,
+                description,
+                owner,
             } = meta;
             let cover = playlist_cover(picture, first_track.as_deref(), &labels);
             let (name, named) = playlist_label(&uri, name);
@@ -93,6 +95,8 @@ pub(crate) async fn label_playlists(session: &Session, uris: Vec<String>) -> Vec
                 name,
                 named,
                 cover,
+                description,
+                owner,
             }
         })
         .collect()
@@ -106,6 +110,10 @@ struct PlaylistMeta {
     first_track: Option<String>,
     /// The picture the user set, when the playlist carries a usable one.
     picture: Option<CoverUrl>,
+    /// The playlist's own description, collapsed to a line, when it has one.
+    description: Option<String>,
+    /// The playlist's owner as the wire names it, when it names one.
+    owner: Option<String>,
 }
 
 impl PlaylistMeta {
@@ -114,11 +122,41 @@ impl PlaylistMeta {
             name: None,
             first_track: None,
             picture: None,
+            description: None,
+            owner: None,
         }
     }
 }
 
-/// Reads one playlist's name, first track and picture in a single request.
+/// The text with its runs of whitespace collapsed, or `None` when nothing is left.
+///
+/// A wire string that is empty or only spaces is the wire saying nothing, which
+/// must not become a blank line in the band.
+fn non_blank(raw: &str) -> Option<String> {
+    let collapsed = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.is_empty() {
+        None
+    } else {
+        Some(collapsed)
+    }
+}
+
+/// The playlist's owner as the wire names it.
+///
+/// librespot keeps the owner only inside the playlist's `id`, and it fills the
+/// user even when the wire gave an empty one, so a blank is filtered here rather
+/// than drawn as `Made by `.
+fn playlist_owner(uri: &SpotifyUri) -> Option<String> {
+    match uri {
+        SpotifyUri::Playlist {
+            user: Some(user), ..
+        } => non_blank(user),
+        _ => None,
+    }
+}
+
+/// Reads one playlist's name, description, owner, first track and picture in a
+/// single request.
 async fn playlist_meta(session: &Session, uri: &str) -> PlaylistMeta {
     let Ok(id) = SpotifyUri::from_uri(uri) else {
         return PlaylistMeta::empty();
@@ -130,6 +168,8 @@ async fn playlist_meta(session: &Session, uri: &str) -> PlaylistMeta {
         name: Some(playlist.name().to_owned()),
         first_track: first_track_uri(playlist.tracks()),
         picture: CoverUrl::from_file_id(&playlist.attributes.picture),
+        description: non_blank(&playlist.attributes.description),
+        owner: playlist_owner(&playlist.id),
     }
 }
 
@@ -464,12 +504,13 @@ mod tests {
     use crate::context::PageTrack;
 
     use super::{
-        Labels, TrackLabel, context_cover, distinct_uris, duration_ms, expand_labels,
-        first_track_uri, label_of, playlist_cover, playlist_label,
+        Labels, PlaylistMeta, TrackLabel, context_cover, distinct_uris, duration_ms, expand_labels,
+        first_track_uri, label_of, non_blank, playlist_cover, playlist_label, playlist_owner,
     };
 
     const TRACK_ID: &str = "4uLU6hMCjMI75M1A2tKUQC";
     const EPISODE_ID: &str = "6rqhFgbbKwnb9MLmUQDhG6";
+    const PLAYLIST_ID: &str = "37i9dQZF1DXcBWIGoYBM5M";
 
     fn cover_url() -> CoverUrl {
         CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover url")
@@ -1118,5 +1159,39 @@ mod tests {
         let labels = Labels::new();
         assert_eq!(playlist_cover(None, None, &labels), None);
         assert_eq!(playlist_cover(None, Some("t"), &labels), None);
+    }
+
+    fn playlist_uri(user: Option<&str>) -> SpotifyUri {
+        SpotifyUri::Playlist {
+            user: user.map(str::to_owned),
+            id: SpotifyId::from_base62(PLAYLIST_ID).expect("a playlist id"),
+        }
+    }
+
+    #[test]
+    fn non_blank_collapses_whitespace_and_drops_a_blank() {
+        assert_eq!(non_blank(""), None);
+        assert_eq!(non_blank("  \n"), None);
+        assert_eq!(non_blank(" x "), Some("x".to_owned()));
+        assert_eq!(non_blank("a\n b"), Some("a b".to_owned()));
+    }
+
+    #[test]
+    fn playlist_owner_reads_a_named_owner_and_skips_a_blank_one() {
+        assert_eq!(
+            playlist_owner(&playlist_uri(Some("alice"))),
+            Some("alice".to_owned())
+        );
+        assert_eq!(playlist_owner(&playlist_uri(Some(""))), None);
+        assert_eq!(playlist_owner(&playlist_uri(Some("  "))), None);
+        assert_eq!(playlist_owner(&playlist_uri(None)), None);
+        assert_eq!(playlist_owner(&first_track()), None);
+    }
+
+    #[test]
+    fn empty_playlist_meta_has_no_description_or_owner() {
+        let meta = PlaylistMeta::empty();
+        assert_eq!(meta.description, None);
+        assert_eq!(meta.owner, None);
     }
 }

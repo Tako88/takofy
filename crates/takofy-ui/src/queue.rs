@@ -592,6 +592,8 @@ mod tests {
             name: "A".to_owned(),
             named: true,
             cover: None,
+            description: None,
+            owner: None,
         }]);
         assert_eq!(queue.apply(&playlists, &mut transport), None);
         assert_eq!(end(&mut queue, &mut transport), Some(play("t1")));

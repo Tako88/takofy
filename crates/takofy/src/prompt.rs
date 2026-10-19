@@ -117,6 +117,8 @@ mod tests {
             name: "Mix".to_owned(),
             named: true,
             cover: None,
+            description: None,
+            owner: None,
         };
         assert_eq!(
             format_playlist_line(2, &entry),

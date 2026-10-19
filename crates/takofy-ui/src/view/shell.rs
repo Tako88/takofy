@@ -616,6 +616,8 @@ mod tests {
             name: "Mix".to_owned(),
             named: true,
             cover: None,
+            description: None,
+            owner: None,
         }]));
         window.library.select(PLAYLIST);
         window.library.apply(&Update::Tracks {
@@ -1066,6 +1068,8 @@ mod tests {
             name: "Mix".to_owned(),
             named: true,
             cover: None,
+            description: None,
+            owner: None,
         }]));
         window.library.select(PLAYLIST);
         window.library.to_playlists();
@@ -1113,6 +1117,8 @@ mod tests {
             name: "Mix".to_owned(),
             named: true,
             cover: None,
+            description: None,
+            owner: None,
         }]));
         library.select(PLAYLIST);
         library.apply(&Update::TracksFailed {

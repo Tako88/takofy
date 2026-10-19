@@ -5,9 +5,14 @@
 //! actions that act on the whole context rather than on one track — of which only
 //! play can act today.
 //!
-//! What the reference puts here and this does not: the owner, the description, the
-//! four-cover mosaic, and the artist form of the band with a photograph behind it.
-//! The window holds none of those yet.
+//! The playlist's description sits under its title in the reference's own byline
+//! style — mono, muted, tracked apart — and its owner rides the meta line as
+//! `Made by <owner>` rather than the reference's inline link, because there is no
+//! user page to open. A description longer than two rows elides, where the
+//! reference lets it wrap.
+//!
+//! What the reference puts here and this does not: the four-cover mosaic, and the
+//! artist form of the band with a photograph behind it.
 
 use egui::{FontId, Pos2, Rect, Sense, Ui, Vec2, vec2};
 
@@ -29,6 +34,8 @@ pub struct Band<'a> {
     pub title: &'a str,
     /// The counts and the lengths under the title, already worded.
     pub meta: Vec<String>,
+    /// The playlist's description, already collapsed to a line; empty is absent.
+    pub description: &'a str,
     /// Whether there is anything to play.
     pub playable: bool,
     /// The context's cover, as the art pipeline resolves it.
@@ -94,7 +101,7 @@ fn inner(ui: &Ui, rect: Rect, band: &Band<'_>, tokens: &Tokens) {
         let byline = recipe::line(
             ui,
             &band.meta.join(" · "),
-            FontId::new(text::XS, fonts::mono(MonoWeight::Regular)),
+            recipe::hero_description(),
             tokens.palette.text_muted,
             recipe::tracking_pts(text::XS, tracking::SLIGHT),
             width,
@@ -102,6 +109,28 @@ fn inner(ui: &Ui, rect: Rect, band: &Band<'_>, tokens: &Tokens) {
         bottom -= byline.size().y;
         ui.painter()
             .galley(Pos2::new(left, bottom), byline, tokens.palette.text_muted);
+        bottom -= space::S2;
+    }
+
+    // The description is the reference's second byline: mono, muted and tracked
+    // apart like the meta line, but wrapped to two rows at most and elided past
+    // them. An empty one takes neither rows nor gap, so the band closes up.
+    if !band.description.is_empty() {
+        let description = recipe::clamped(
+            ui,
+            band.description,
+            recipe::hero_description(),
+            tokens.palette.text_muted,
+            recipe::tracking_pts(text::XS, tracking::SLIGHT),
+            width,
+            hero::DESCRIPTION_ROWS,
+        );
+        bottom -= description.size().y;
+        ui.painter().galley(
+            Pos2::new(left, bottom),
+            description,
+            tokens.palette.text_muted,
+        );
         bottom -= space::S2;
     }
 

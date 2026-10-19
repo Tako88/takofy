@@ -12,7 +12,7 @@ use egui::{FontId, Pos2, Rect, Sense, Ui, vec2};
 use takofy_model::{PlaylistEntry, TrackEntry};
 
 use crate::cover::{Art, Cover};
-use crate::format::{added_label, format_position, hero_meta};
+use crate::format::{added_label, byline, format_position, plain_description};
 use crate::icon;
 use crate::layout::{Table, cards, table as table_layout};
 use crate::library::{BandCover, Library, Load, band_cover};
@@ -77,18 +77,27 @@ pub fn tracks_view(
                 Load::Ready(tracks) => Some(tracks),
                 Load::Idle | Load::Loading | Load::Failed(_) => None,
             };
-            let (meta, playable) = match ready {
-                Some(tracks) if !tracks.tracks.is_empty() => (
-                    hero_meta(tracks.tracks.len(), total_duration_ms(&tracks.tracks)),
-                    true,
-                ),
-                _ => (Vec::new(), false),
-            };
+            let tracks = ready
+                .filter(|tracks| !tracks.tracks.is_empty())
+                .map(|tracks| (tracks.tracks.len(), total_duration_ms(&tracks.tracks)));
+            // The owner and the description come from the listing; the count and
+            // the total wait for the tracks. The description is owned here so the
+            // band can borrow it for as long as it is drawn.
+            let meta = byline(entry.owner.as_deref(), tracks);
+            // The description is drawn as the wire sends it: whitespace is
+            // collapsed, but markup it carries (entities, `spotify:` links)
+            // draws literally.
+            let description = entry
+                .description
+                .as_deref()
+                .and_then(plain_description)
+                .unwrap_or_default();
             let band = hero::Band {
                 eyebrow: "Playlist",
                 title: &entry.name,
                 meta,
-                playable,
+                description: &description,
+                playable: tracks.is_some(),
                 cover,
             };
             if hero::show(ui, &band, tokens)
@@ -557,6 +566,56 @@ mod tests {
         output
     }
 
+    /// Every galley the frame painted: its text, the top of its box and its
+    /// height. The band's stack is only visible in these numbers.
+    fn drawn_galleys(output: &egui::FullOutput) -> Vec<(String, f32, f32)> {
+        output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Text(text) => Some((
+                    text.galley.text().to_owned(),
+                    text.pos.y,
+                    text.galley.size().y,
+                )),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The top of the galley whose text is exactly `label`.
+    fn galley_top(drawn: &[(String, f32, f32)], label: &str) -> f32 {
+        drawn
+            .iter()
+            .find(|(text, _, _)| text == label)
+            .unwrap_or_else(|| panic!("{label:?} was not painted: {drawn:?}"))
+            .1
+    }
+
+    /// The height of the galley whose text is exactly `label`.
+    fn galley_height(drawn: &[(String, f32, f32)], label: &str) -> f32 {
+        drawn
+            .iter()
+            .find(|(text, _, _)| text == label)
+            .unwrap_or_else(|| panic!("{label:?} was not painted: {drawn:?}"))
+            .2
+    }
+
+    /// The galley whose text is exactly `label`, from whatever painted shapes
+    /// hold it.
+    fn galley_of(output: &egui::FullOutput, label: &str) -> std::sync::Arc<egui::Galley> {
+        output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Text(text) if text.galley.text() == label => {
+                    Some(text.galley.clone())
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{label:?} was not painted"))
+    }
+
     /// The text the frame actually painted, in paint order.
     fn drawn_texts(output: &egui::FullOutput) -> Vec<&str> {
         output
@@ -669,6 +728,26 @@ mod tests {
         })
     }
 
+    /// One frame of the tracklist in a window of `size`.
+    fn tracklist_frame_in(ctx: &Context, size: Vec2, library: &mut Library) -> egui::FullOutput {
+        let tokens = Tokens::DARK;
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        run(ctx, sized_input(size, Vec::new()), |ui| {
+            let _ = tracks_view(
+                ui,
+                Table::Full,
+                library,
+                &mut transport,
+                &mut queue,
+                &mut Art::default(),
+                Instant::now(),
+                NOW_MS,
+                &tokens,
+            );
+        })
+    }
+
     /// Draws one frame of the tracklist and returns the text it painted.
     fn painted_lines(ctx: &Context, table: Table, library: &mut Library) -> Vec<String> {
         drawn_texts(&tracklist_frame(ctx, table, library))
@@ -711,8 +790,53 @@ mod tests {
             name: name.to_owned(),
             named: true,
             cover: None,
+            description: None,
+            owner: None,
         }]));
         library
+    }
+
+    /// The same selection, with a playlist entry that carries a description and
+    /// an owner, so the band has both to draw.
+    fn library_detailed(
+        tracks: Vec<TrackEntry>,
+        name: &str,
+        description: Option<&str>,
+        owner: Option<&str>,
+    ) -> Library {
+        let mut library = library_with(tracks);
+        library.apply(&Update::Playlists(vec![listed(name, description, owner)]));
+        library
+    }
+
+    /// The selection listed but its tracks not asked for yet: the band draws
+    /// before anything is ready.
+    fn library_listed(name: &str, description: Option<&str>, owner: Option<&str>) -> Library {
+        let mut library = Library::default();
+        library.select("spotify:playlist:a");
+        library.apply(&Update::Playlists(vec![listed(name, description, owner)]));
+        library
+    }
+
+    fn listed(name: &str, description: Option<&str>, owner: Option<&str>) -> PlaylistEntry {
+        PlaylistEntry {
+            uri: "spotify:playlist:a".to_owned(),
+            name: name.to_owned(),
+            named: true,
+            cover: None,
+            description: description.map(str::to_owned),
+            owner: owner.map(str::to_owned),
+        }
+    }
+
+    /// `count` tracks, all `duration_ms` long, so the band's total is exact.
+    fn timed_tracks(count: usize, duration_ms: u32) -> Vec<TrackEntry> {
+        (0..count)
+            .map(|index| TrackEntry {
+                duration_ms: Some(duration_ms),
+                ..track(&format!("t{index}"), &format!("t{index}"))
+            })
+            .collect()
     }
 
     fn playlist(uri: &str, name: &str) -> PlaylistEntry {
@@ -721,6 +845,8 @@ mod tests {
             name: name.to_owned(),
             named: true,
             cover: None,
+            description: None,
+            owner: None,
         }
     }
 
@@ -734,6 +860,8 @@ mod tests {
             name: name.to_owned(),
             named: true,
             cover: Some(cover),
+            description: None,
+            owner: None,
         }
     }
 
@@ -881,6 +1009,7 @@ mod tests {
                     eyebrow: "Playlist",
                     title,
                     meta: Vec::new(),
+                    description: "",
                     playable: count > 0,
                     cover: Cover::Missing,
                 };
@@ -910,6 +1039,7 @@ mod tests {
                     eyebrow: "Playlist",
                     title,
                     meta: Vec::new(),
+                    description: "",
                     playable: true,
                     cover: Cover::Missing,
                 };
@@ -2757,5 +2887,212 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         art.begin_frame();
         assert_eq!(band_cover_for(&other, false, &mut art, now), Cover::Loading);
         assert!(fetch_urls(art.requests(now)).is_empty());
+    }
+
+    /// The band's worded parts below: 62 tracks of 223_548 ms sum to 13_859_976
+    /// ms, which the byline rounds to `3 hr 51 min`.
+    const DESCRIPTION: &str = "Windows down, city behind you.";
+    const META: &str = "Made by alice \u{b7} 62 songs \u{b7} 3 hr 51 min";
+    /// Long enough that two rows of the band's column cannot hold it.
+    const LONG_DESCRIPTION: &str = "Windows down, city behind you. Updated every \
+        Sunday, and again whenever the mood takes me, with no plan and no promise, \
+        only the long way home through the sodium light of the ring road, past the \
+        depot and the all-night garage, until the city runs out.";
+
+    /// A band whose description, owner and tracks are all known: the widest case
+    /// the tests below read.
+    fn library_full() -> Library {
+        library_detailed(
+            timed_tracks(62, 223_548),
+            "Evening",
+            Some(DESCRIPTION),
+            Some("alice"),
+        )
+    }
+
+    #[test]
+    fn the_band_draws_the_description_and_the_owner() {
+        let ctx = context();
+        let mut library = library_full();
+        let output = tracklist_frame(&ctx, Table::Full, &mut library);
+        let texts = drawn_texts(&output);
+        assert!(
+            texts.contains(&DESCRIPTION),
+            "the band must draw the description: {texts:?}"
+        );
+        assert!(
+            texts.contains(&META),
+            "the band must draw the owner ahead of the count and the total: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn the_band_stacks_the_eyebrow_the_title_the_description_and_the_meta() {
+        let ctx = context();
+        let mut library = library_full();
+        let output = tracklist_frame(&ctx, Table::Full, &mut library);
+        let drawn = drawn_galleys(&output);
+        let eyebrow = galley_top(&drawn, "PLAYLIST");
+        let title = galley_top(&drawn, "Evening");
+        let description = galley_top(&drawn, DESCRIPTION);
+        let meta = galley_top(&drawn, META);
+        assert!(
+            eyebrow < title && title < description && description < meta,
+            "the stack reads eyebrow, title, description, meta downwards: \
+             {eyebrow} {title} {description} {meta}"
+        );
+    }
+
+    #[test]
+    fn a_playlist_without_a_description_or_owner_draws_neither_and_leaves_no_gap() {
+        let ctx = context();
+        let mut library = library_detailed(timed_tracks(2, 1_000), "Evening", None, None);
+        let output = tracklist_frame(&ctx, Table::Full, &mut library);
+        let texts = drawn_texts(&output);
+        assert!(
+            !texts.iter().any(|text| text.starts_with("Made by")),
+            "no owner means no byline: {texts:?}"
+        );
+        assert!(
+            !texts.contains(&DESCRIPTION),
+            "no description means no description line: {texts:?}"
+        );
+
+        // With no description the title and the meta are one stack gap apart,
+        // not two: an absent description must not leave its own space behind.
+        let drawn = drawn_galleys(&output);
+        let title_bottom = galley_top(&drawn, "Evening") + galley_height(&drawn, "Evening");
+        let meta = galley_top(&drawn, "2 songs \u{b7} 0 min");
+        assert!(
+            (meta - title_bottom - space::S2).abs() < 0.01,
+            "the gap between the title and the meta is {} with no description, \
+             not the stack's own {}",
+            meta - title_bottom,
+            space::S2
+        );
+    }
+
+    #[test]
+    fn a_description_without_an_owner_or_tracks_draws_only_the_description() {
+        let ctx = context();
+        // The listing names a description but no owner, and the tracks are not
+        // asked for: the band has one byline and no meta line at all.
+        let mut library = library_listed("Evening", Some(DESCRIPTION), None);
+        let output = tracklist_frame(&ctx, Table::Full, &mut library);
+        let texts = drawn_texts(&output);
+        assert!(
+            texts.contains(&DESCRIPTION),
+            "the description draws with no owner and no tracks: {texts:?}"
+        );
+        assert!(
+            !texts.iter().any(|text| text.starts_with("Made by")),
+            "no owner means no byline: {texts:?}"
+        );
+        assert!(
+            !texts.iter().any(|text| text.contains("songs")),
+            "no ready tracks means no count: {texts:?}"
+        );
+        assert!(
+            !texts.iter().any(|text| text.contains('\u{b7}')),
+            "the meta line is absent, not drawn empty: {texts:?}"
+        );
+        assert_eq!(
+            texts.len(),
+            3,
+            "the band paints the eyebrow, the title and the description, and
+             nothing where the meta would be: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn the_band_names_the_owner_before_the_tracks_are_ready() {
+        let ctx = context();
+        let mut library = library_listed("Evening", None, Some("alice"));
+        let output = tracklist_frame(&ctx, Table::Full, &mut library);
+        let texts = drawn_texts(&output);
+        assert!(
+            texts.contains(&"Made by alice"),
+            "the owner must show while the tracks load: {texts:?}"
+        );
+        assert!(
+            !texts.iter().any(|text| text.contains("songs")),
+            "the count waits for the tracks: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn a_long_description_is_clamped_to_two_rows_and_elided() {
+        let ctx = context();
+        let mut library = library_detailed(
+            timed_tracks(2, 1_000),
+            "Evening",
+            Some(LONG_DESCRIPTION),
+            None,
+        );
+        let output = tracklist_frame(&ctx, Table::Full, &mut library);
+        let galley = galley_of(&output, LONG_DESCRIPTION);
+        assert_eq!(galley.rows.len(), 2, "two rows, no more");
+        assert!(galley.elided, "a description that does not fit elides");
+        let last = galley.rows[1].row.text();
+        assert!(
+            last.ends_with('\u{2026}'),
+            "the elided last row must end in an ellipsis: {last:?}"
+        );
+    }
+
+    #[test]
+    fn a_narrow_band_elides_the_byline() {
+        let ctx = context();
+        let mut library = library_detailed(
+            timed_tracks(62, 223_548),
+            "Evening",
+            None,
+            Some("alice-the-very-long-username"),
+        );
+        let output = tracklist_frame_in(&ctx, Vec2::new(560.0, 800.0), &mut library);
+        let galley = galley_of(
+            &output,
+            "Made by alice-the-very-long-username \u{b7} 62 songs \u{b7} 3 hr 51 min",
+        );
+        assert!(
+            galley.elided,
+            "a byline wider than the band elides: {:?}",
+            galley.text()
+        );
+    }
+
+    #[test]
+    fn the_band_does_not_clip_the_eyebrow_at_its_tallest_content() {
+        let ctx = context();
+        let tokens = Tokens::DARK;
+        let mut band_top = None;
+        let output = run(
+            &ctx,
+            sized_input(Vec2::new(1600.0, 900.0), Vec::new()),
+            |ui| {
+                band_top = Some(ui.cursor().min.y);
+                let band = hero::Band {
+                    eyebrow: "Playlist",
+                    title: "Late Night Drive",
+                    meta: vec![
+                        "Made by alice".to_owned(),
+                        "62 songs".to_owned(),
+                        "3 hr 51 min".to_owned(),
+                    ],
+                    description: LONG_DESCRIPTION,
+                    playable: true,
+                    cover: Cover::Missing,
+                };
+                let _ = hero::show(ui, &band, &tokens);
+            },
+        );
+        let band_top = band_top.expect("the band starts at the cursor");
+        let drawn = drawn_galleys(&output);
+        let eyebrow = galley_top(&drawn, "PLAYLIST");
+        assert!(
+            eyebrow >= band_top,
+            "the eyebrow's top {eyebrow} is above the band's top {band_top}: the \
+             tallest content does not fit the band's height"
+        );
     }
 }

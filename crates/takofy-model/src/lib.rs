@@ -106,6 +106,17 @@ pub struct PlaylistEntry {
     pub named: bool,
     /// The playlist's cover, once one of the three sources names it.
     pub cover: Option<CoverUrl>,
+    /// The playlist's own description, collapsed to a line, when it has one.
+    ///
+    /// `None` is the wire giving nothing; an empty description is `None` rather
+    /// than `Some("")`.
+    pub description: Option<String>,
+    /// The playlist's owner as the wire names it, when it names one.
+    ///
+    /// This is the wire's username, not a display name: for most accounts it is
+    /// an opaque id, so the band's line may read `Made by 31l6…`. It is drawn as
+    /// given, never hidden or heuristically filtered.
+    pub owner: Option<String>,
 }
 
 /// When a track joined the playlist it is drawn in, in epoch milliseconds.
