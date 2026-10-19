@@ -704,11 +704,6 @@ svg {
   color: var(--color-text-subtle);
 }
 
-/* Only one element in the bar may claim the free space. */
-.trail + .topbar__account {
-  margin-left: 0;
-}
-
 .trail a {
   color: var(--color-text-muted);
   white-space: nowrap;
@@ -765,37 +760,6 @@ svg {
 
 .searchbar input::placeholder {
   color: var(--color-text-subtle);
-}
-
-.topbar__account {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  margin-left: auto;
-  padding: 0.15rem 0.5rem 0.15rem 0.2rem;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  font-family: var(--font-mono);
-  font-size: var(--text-2xs);
-  letter-spacing: var(--tracking-wide);
-  text-transform: uppercase;
-}
-
-.topbar__account:hover {
-  border-color: var(--color-border-strong);
-}
-
-.avatar {
-  display: grid;
-  place-items: center;
-  width: 1.25rem;
-  height: 1.25rem;
-  border-radius: var(--radius-xs);
-  background: var(--color-surface-hover);
-  color: var(--color-text);
-  font-family: var(--font-mono);
-  font-size: 0.5rem;
-  font-weight: 700;
 }
 
 .topbar__drawer-toggle {
@@ -2753,7 +2717,6 @@ svg {
   }
 
   .topbar__history,
-  .topbar__account span,
   .topbar__drawer-toggle,
   .trail {
     display: none;

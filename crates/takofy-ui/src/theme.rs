@@ -154,8 +154,6 @@ pub mod extent {
     pub const VOLUME_W: f32 = 72.0;
     /// The playbar's cover tile, 2.75 rem.
     pub const PLAYBAR_ART: f32 = 44.0;
-    /// The account button's avatar tile, 1.25 rem.
-    pub const AVATAR: f32 = 20.0;
     /// A library row's cover tile, 2.25 rem. A track row's art is the same
     /// 2.25 rem box, so it is this token and not a second one of its own.
     pub const LIBRARY_ART: f32 = 36.0;

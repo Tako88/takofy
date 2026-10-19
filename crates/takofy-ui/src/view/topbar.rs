@@ -1,5 +1,4 @@
-//! The topbar: the drawer toggle, history, the search field, the trail and the
-//! account.
+//! The topbar: the drawer toggle, history, the search field and the trail.
 //!
 //! The trail is the one control here that does something: it says where you are
 //! and pops back to the library. Everything else waits for a view that does not
@@ -73,7 +72,6 @@ pub fn show(
     search(ui, places.search, tokens);
 
     let back_to_library = trail(ui, &crumbs, places.trail, tokens);
-    account(ui, places.account, tokens);
 
     rule(
         ui,
@@ -117,7 +115,7 @@ fn strokes(crumbs: &[crate::trail::Crumb<'_>]) -> f32 {
     }
 }
 
-/// The path you came by, flush against the account button.
+/// The path you came by, flush against the topbar's right padding.
 fn trail(ui: &mut Ui, crumbs: &[crate::trail::Crumb<'_>], rect: Rect, tokens: &Tokens) -> bool {
     let font = FontId::new(text::XXS, fonts::mono(MonoWeight::Medium));
     let spacing = recipe::tracking_pts(text::XXS, tracking::WIDE);
@@ -245,41 +243,6 @@ fn search(ui: &mut Ui, rect: Rect, tokens: &Tokens) {
         egui::Role::SearchInput,
         rect,
         "Search",
-        tokens,
-        true,
-    );
-}
-
-/// The account button: a tile with no initials, because there is no profile data
-/// anywhere in the app yet.
-fn account(ui: &mut Ui, rect: Rect, tokens: &Tokens) {
-    if rect.width() <= 0.0 {
-        return;
-    }
-
-    ui.painter().rect(
-        rect,
-        radius::SM,
-        tokens.palette.surface,
-        Stroke::new(stroke::HAIRLINE, tokens.palette.border),
-        StrokeKind::Inside,
-    );
-    let tile = Rect::from_center_size(
-        Pos2::new(
-            rect.left() + space::S1 + extent::AVATAR / 2.0,
-            rect.center().y,
-        ),
-        Vec2::splat(extent::AVATAR),
-    );
-    ui.painter()
-        .rect_filled(tile, radius::XS, tokens.palette.surface_hover);
-
-    controls::slot(
-        ui,
-        Control::Account,
-        egui::Role::Button,
-        rect,
-        "Account",
         tokens,
         true,
     );

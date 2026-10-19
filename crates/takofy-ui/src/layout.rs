@@ -94,7 +94,6 @@ pub struct TopbarCols {
     pub history: f32,
     pub search: f32,
     pub trail: f32,
-    pub account: f32,
 }
 
 impl TopbarCols {
@@ -104,18 +103,14 @@ impl TopbarCols {
     pub const PADDING: f32 = space::S4;
 
     /// Places the solved widths in their flex order, with the trail held to the
-    /// right against the account by the free space before it.
+    /// right by the free space before it.
     pub fn columns(self, rect: Rect) -> TopbarRects {
         let left = rect.left() + Self::PADDING;
         let right = rect.right() - Self::PADDING;
         let height = rect.height();
 
-        let account = Rect::from_min_size(
-            pos2(right - self.account, rect.top()),
-            vec2(self.account, height),
-        );
         let trail = Rect::from_min_size(
-            pos2(account.left() - Self::GAP - self.trail, rect.top()),
+            pos2(right - self.trail, rect.top()),
             vec2(self.trail, height),
         );
 
@@ -134,7 +129,6 @@ impl TopbarCols {
             history,
             search,
             trail,
-            account,
         }
     }
 }
@@ -146,7 +140,6 @@ pub struct TopbarRects {
     pub history: Rect,
     pub search: Rect,
     pub trail: Rect,
-    pub account: Rect,
 }
 
 /// How much room a track list has.
@@ -390,14 +383,13 @@ fn topbar_free(rect: Rect, sidebar: Sidebar) -> f32 {
         Sidebar::Rail => extent::BUTTON,
     };
     let items = match sidebar {
-        Sidebar::Full => 4.0,
-        Sidebar::Rail => 5.0,
+        Sidebar::Full => 3.0,
+        Sidebar::Rail => 4.0,
     };
     rect.width()
         - 2.0 * TopbarCols::PADDING
         - toggle
         - (2.0 * extent::BUTTON + space::S1)
-        - extent::BUTTON
         - TopbarCols::GAP * (items - 1.0)
 }
 
@@ -412,7 +404,6 @@ pub fn topbar_for(rect: Rect, sidebar: Sidebar, trail_natural: f32) -> TopbarCol
         Sidebar::Rail => Some(extent::BUTTON),
     };
     let history = 2.0 * extent::BUTTON + space::S1;
-    let account = extent::BUTTON;
     let free = topbar_free(rect, sidebar).max(0.0);
     let natural = if trail_natural.is_finite() && trail_natural > 0.0 {
         trail_natural
@@ -427,7 +418,6 @@ pub fn topbar_for(rect: Rect, sidebar: Sidebar, trail_natural: f32) -> TopbarCol
         history,
         search,
         trail,
-        account,
     }
 }
 
@@ -894,13 +884,9 @@ mod tests {
     }
 
     #[test]
-    fn the_account_is_flush_right_and_the_trail_ends_one_gap_before_it() {
+    fn the_trail_is_flush_right_against_the_padding() {
         let rect = topbar_rect(1440.0);
         let columns = topbar_for(rect, Sidebar::Full, 200.0).columns(rect);
-        assert_close(columns.account.right(), rect.right() - TopbarCols::PADDING);
-        assert_close(
-            columns.trail.right() + TopbarCols::GAP,
-            columns.account.left(),
-        );
+        assert_close(columns.trail.right(), rect.right() - TopbarCols::PADDING);
     }
 }

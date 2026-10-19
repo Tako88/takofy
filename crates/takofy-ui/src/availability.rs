@@ -21,7 +21,6 @@ pub enum Control {
     SearchField,
     TrailHome,
     TrailPlaylists,
-    Account,
     NowPlayingMore,
     Like,
     Miniplayer,
@@ -54,7 +53,7 @@ pub enum Control {
 }
 
 impl Control {
-    pub const ALL: [Self; 39] = [
+    pub const ALL: [Self; 38] = [
         Self::NavHome,
         Self::NavSearch,
         Self::LibraryCreate,
@@ -69,7 +68,6 @@ impl Control {
         Self::SearchField,
         Self::TrailHome,
         Self::TrailPlaylists,
-        Self::Account,
         Self::NowPlayingMore,
         Self::Like,
         Self::Miniplayer,
@@ -130,7 +128,6 @@ pub fn availability(control: Control) -> Availability {
         Control::HistoryForward => Availability::Waiting, // #16
         Control::SearchField => Availability::Waiting, // #16
         Control::TrailHome => Availability::Waiting, // #17
-        Control::Account => Availability::Waiting,   // #15
         Control::NowPlayingMore => Availability::Waiting, // #16
 
         // Transport and seek are their own issue.
@@ -208,6 +205,6 @@ mod tests {
             assert!(!seen.contains(&control), "{control:?} is listed twice");
             seen.push(control);
         }
-        assert_eq!(seen.len(), 39);
+        assert_eq!(seen.len(), 38);
     }
 }
