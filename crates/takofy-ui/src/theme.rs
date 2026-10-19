@@ -715,7 +715,8 @@ mod tests {
         assert_eq!(p.hero_scrim_top.to_srgba_unmultiplied()[3], 82);
         assert_eq!(p.hero_scrim_mid.to_srgba_unmultiplied()[3], 148);
         assert!(
-            p.hero_scrim_top.to_srgba_unmultiplied()[3] < p.hero_scrim_mid.to_srgba_unmultiplied()[3],
+            p.hero_scrim_top.to_srgba_unmultiplied()[3]
+                < p.hero_scrim_mid.to_srgba_unmultiplied()[3],
             "the scrim darkens toward the middle"
         );
         // The hero's title is drawn over the middle of the scrim, so the text

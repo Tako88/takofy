@@ -96,7 +96,7 @@ mod tests {
     use librespot::protocol::metadata::image::Size;
     use librespot::protocol::metadata::{Album, Image, ImageGroup};
 
-    use super::{TARGET_WIDTH, pick_images_cover, pick_cover};
+    use super::{TARGET_WIDTH, pick_cover, pick_images_cover};
 
     fn image(size: Size, width: i32, id: &[u8]) -> Image {
         let mut image = Image::new();

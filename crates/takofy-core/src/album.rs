@@ -378,7 +378,11 @@ mod tests {
         let album =
             Album::try_from(&wire_album("Record", &[], &[], 1997)).expect("a valid album message");
         assert_eq!(detail("spotify:album:x", &album, Vec::new()).artists, "");
-        assert_eq!(detail("spotify:album:x", &album, Vec::new()).artist_uris, Vec::<String>::new(), "no artist means no link either");
+        assert_eq!(
+            detail("spotify:album:x", &album, Vec::new()).artist_uris,
+            Vec::<String>::new(),
+            "no artist means no link either"
+        );
     }
 
     #[test]

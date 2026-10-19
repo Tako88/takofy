@@ -104,9 +104,22 @@ pub fn artist_view(
                         command = queue.start(&artist.top_tracks, 0, transport);
                     }
 
-                    popular(ui, table, width, artist, transport, queue, tokens, &mut command);
+                    popular(
+                        ui,
+                        table,
+                        width,
+                        artist,
+                        transport,
+                        queue,
+                        tokens,
+                        &mut command,
+                    );
 
-                    let tracks: usize = artist.releases.iter().map(|release| release.tracks.len()).sum();
+                    let tracks: usize = artist
+                        .releases
+                        .iter()
+                        .map(|release| release.tracks.len())
+                        .sum();
                     section::head(
                         ui,
                         "Discography",
@@ -236,7 +249,7 @@ fn block_rect(ui: &Ui, release: &Release) -> Rect {
 #[cfg(test)]
 mod tests {
     use egui::{Context, Event, Pos2, RawInput, Rect, Vec2, pos2, vec2};
-    use takofy_model::{ArtistDetail, Release, ReleaseKind, Release as _Release, TrackEntry};
+    use takofy_model::{ArtistDetail, Release, Release as _Release, ReleaseKind, TrackEntry};
 
     use super::*;
     use crate::cover::Cover;
@@ -368,6 +381,10 @@ mod tests {
         (command, output)
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one test click needs the frame's whole state"
+    )]
     fn click(
         ctx: &Context,
         size: Vec2,
@@ -394,14 +411,19 @@ mod tests {
         let mut found = None;
         run(ctx, input(size, Vec::new()), |ui| {
             ui.add_space(space::S3);
-            let (band, _) =
-                ui.allocate_exact_size(vec2(ui.available_width(), hero::ARTIST_MIN_H), Sense::hover());
+            let (band, _) = ui.allocate_exact_size(
+                vec2(ui.available_width(), hero::ARTIST_MIN_H),
+                Sense::hover(),
+            );
             let (row, _) = ui.allocate_exact_size(
                 vec2(ui.available_width(), hero::PLAY + 2.0 * space::S4),
                 Sense::hover(),
             );
             let play = Rect::from_min_size(
-                Pos2::new(row.left() + space::GUTTER, row.center().y - hero::PLAY / 2.0),
+                Pos2::new(
+                    row.left() + space::GUTTER,
+                    row.center().y - hero::PLAY / 2.0,
+                ),
                 Vec2::splat(hero::PLAY),
             );
             let size = crate::view::controls::text_button_size(ui, &tokens, "Follow");
@@ -422,14 +444,17 @@ mod tests {
         let mut found = None;
         run(ctx, input(size, Vec::new()), |ui| {
             ui.add_space(space::S3);
-            let _ =
-                ui.allocate_exact_size(vec2(ui.available_width(), hero::ARTIST_MIN_H), Sense::hover());
+            let _ = ui.allocate_exact_size(
+                vec2(ui.available_width(), hero::ARTIST_MIN_H),
+                Sense::hover(),
+            );
             let _ = ui.allocate_exact_size(
                 vec2(ui.available_width(), hero::PLAY + 2.0 * space::S4),
                 Sense::hover(),
             );
             section::head(ui, "Popular", "", &tokens);
-            let columns = table_layout::columns(ui.available_width(), Table::Full.columns().for_album());
+            let columns =
+                table_layout::columns(ui.available_width(), Table::Full.columns().for_album());
             head(ui, columns, &tokens);
             let list = list_rect(ui, count);
             found = Some(table_layout::row_rect(list, index, extent::ROW_H));
@@ -456,7 +481,10 @@ mod tests {
         );
         let texts = drawn_texts(&output);
 
-        assert!(texts.contains(&"Vela Moreno"), "the hero's title: {texts:?}");
+        assert!(
+            texts.contains(&"Vela Moreno"),
+            "the hero's title: {texts:?}"
+        );
         assert!(texts.contains(&"ARTIST"), "the hero's eyebrow: {texts:?}");
     }
 
@@ -712,7 +740,10 @@ mod tests {
         run(&ctx, input(size, Vec::new()), |ui| {
             let top = ui.cursor().min;
             let list_top = top.y + stroke::HAIRLINE + space::S5 + extent::RELEASE_ART + space::S4;
-            let list = Rect::from_min_size(pos2(top.x, list_top), vec2(ui.available_width(), 2.0 * extent::ROW_H));
+            let list = Rect::from_min_size(
+                pos2(top.x, list_top),
+                vec2(ui.available_width(), 2.0 * extent::ROW_H),
+            );
             row_rect = Some(table_layout::row_rect(list, 1, extent::ROW_H));
         });
         let row_rect = row_rect.expect("the block's body lays out");
@@ -727,7 +758,8 @@ mod tests {
                         on_screen: true,
                         playable: true,
                     };
-                    let out = super::release_block::show(ui, Table::Full, &block, &transport, &tokens);
+                    let out =
+                        super::release_block::show(ui, Table::Full, &block, &transport, &tokens);
                     clicked = Some(out);
                 });
             }

@@ -225,10 +225,7 @@ pub fn show(
     // click on either cell is a navigation, and takes precedence over playback.
     let mut link_hovered = false;
     let mut open = None;
-    for link in [title_link, artist_link, album_link]
-        .into_iter()
-        .flatten()
-    {
+    for link in [title_link, artist_link, album_link].into_iter().flatten() {
         link_hovered |= link.hovered;
         open = open.or(link.page);
     }
@@ -450,7 +447,11 @@ fn name_over_artist(
         Pos2::new(rect.left(), artist_top),
         vec2(measured.size().x, measured.size().y),
     );
-    let response = ui.interact(hit, ui.scope_id().with(("track-artist-subline", key)), Sense::CLICK);
+    let response = ui.interact(
+        hit,
+        ui.scope_id().with(("track-artist-subline", key)),
+        Sense::CLICK,
+    );
     response.widget_info(|| {
         egui::WidgetInfo::labeled(
             egui::Role::Link,

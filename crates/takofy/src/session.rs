@@ -194,7 +194,8 @@ impl SessionHost for LiveSession {
     async fn artist(&self, artist: &str) -> Result<ArtistPage, SessionError> {
         match &self.engine {
             Some(engine) => {
-                let (artist, followed) = engine.artist(artist).await.map_err(SessionError::Engine)?;
+                let (artist, followed) =
+                    engine.artist(artist).await.map_err(SessionError::Engine)?;
                 Ok(ArtistPage { artist, followed })
             }
             None => Err(SessionError::NotConnected),

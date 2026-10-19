@@ -3,9 +3,7 @@
 //! These types carry state, never credentials: `takofy-ui` has no path to a
 //! token or an auth error, so the compiler keeps secrets out of a view.
 
-use takofy_model::{
-    AlbumDetail, ArtistDetail, CoverImage, CoverUrl, PlaylistEntry, TrackEntry,
-};
+use takofy_model::{AlbumDetail, ArtistDetail, CoverImage, CoverUrl, PlaylistEntry, TrackEntry};
 
 /// A request from the window to the worker.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -19,7 +17,10 @@ pub enum Command {
     /// Load one artist, its discography and its followed state.
     LoadArtist { artist: String },
     /// Label one release's track URIs, in the release's own order.
-    LoadReleaseTracks { release: String, tracks: Vec<String> },
+    LoadReleaseTracks {
+        release: String,
+        tracks: Vec<String>,
+    },
     /// Write the artist into the user's followed set, or out of it.
     SetFollow { artist: String, followed: bool },
     /// Start playing a track.

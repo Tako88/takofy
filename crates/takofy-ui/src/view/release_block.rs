@@ -15,8 +15,8 @@ use takofy_model::Release;
 
 use crate::availability::Control;
 use crate::cover::Cover;
-use crate::icon::Icon;
 use crate::format::{format_position, release_meta, total_duration_ms};
+use crate::icon::Icon;
 use crate::layout::{Table, table as table_layout};
 use crate::player::Transport;
 use crate::releases::Labels;
@@ -50,11 +50,7 @@ pub struct Block<'a> {
 /// The body is reserved for every track whether or not its label has arrived, so
 /// a frame that fills rows in does not move the scrollbar.
 pub fn height(count: usize) -> f32 {
-    stroke::HAIRLINE
-        + space::S5
-        + extent::RELEASE_ART
-        + space::S4
-        + count as f32 * extent::ROW_H
+    stroke::HAIRLINE + space::S5 + extent::RELEASE_ART + space::S4 + count as f32 * extent::ROW_H
 }
 
 /// What a click inside the block asked for.
@@ -99,8 +95,7 @@ fn body(
     let mut clicked = Clicked::default();
 
     let (line, _) = ui.allocate_exact_size(vec2(width, stroke::HAIRLINE), Sense::hover());
-    ui.painter()
-        .rect_filled(line, 0.0, tokens.palette.border);
+    ui.painter().rect_filled(line, 0.0, tokens.palette.border);
     ui.add_space(space::S5);
 
     let (head, _) = ui.allocate_exact_size(vec2(width, extent::RELEASE_ART), Sense::hover());

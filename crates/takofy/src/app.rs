@@ -106,21 +106,22 @@ impl eframe::App for TakofyApp {
         let before = self.transport.anchor();
         // Before the draw, so `look` sees a fresh frame's wanted set.
         self.art.begin_frame();
-        let mut screen = view::Screen {
-            state: &mut self.state,
-            library: &mut self.library,
-            transport: &mut self.transport,
-            queue: &mut self.queue,
-            drawer: &mut self.drawer,
-            position_ms,
-            art: &mut self.art,
-            now,
-            now_ms: wall_clock_ms(),
+        // The draw's borrow of the library and the art store ends with this
+        // block, so the label wants it recorded can be drained below.
+        let command = {
+            let mut screen = view::Screen {
+                state: &mut self.state,
+                library: &mut self.library,
+                transport: &mut self.transport,
+                queue: &mut self.queue,
+                drawer: &mut self.drawer,
+                position_ms,
+                art: &mut self.art,
+                now,
+                now_ms: wall_clock_ms(),
+            };
+            view::show(ui, &mut screen, &self.tokens)
         };
-        let command = view::show(ui, &mut screen, &self.tokens);
-        // The draw's borrow of the library and the art store ends here, so the
-        // label wants it recorded can be drained.
-        drop(screen);
         if let Some(command) = command {
             let _ = self.ui_end.commands.send(command);
         }

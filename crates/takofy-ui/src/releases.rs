@@ -67,10 +67,11 @@ impl Releases {
     /// refetch what is already on screen. A failed entry is re-armed to `Idle`,
     /// which is what makes a reload the way out of a failure.
     pub fn retain(&mut self, releases: &[Release]) {
-        let kept: std::collections::HashSet<&str> =
-            releases.iter().map(|release| release.uri.as_str()).collect();
-        self.entries
-            .retain(|uri, _| kept.contains(uri.as_str()));
+        let kept: std::collections::HashSet<&str> = releases
+            .iter()
+            .map(|release| release.uri.as_str())
+            .collect();
+        self.entries.retain(|uri, _| kept.contains(uri.as_str()));
         self.wanted.retain(|uri| kept.contains(uri.as_str()));
 
         for release in releases {
@@ -290,7 +291,11 @@ mod tests {
             release: "gone".to_owned(),
             tracks: vec![track("x")],
         });
-        assert_eq!(store.look("a"), Labels::Loading, "the stray reply is not A's");
+        assert_eq!(
+            store.look("a"),
+            Labels::Loading,
+            "the stray reply is not A's"
+        );
     }
 
     #[test]
@@ -304,7 +309,10 @@ mod tests {
         });
 
         assert_eq!(store.look("a"), Labels::Failed(Failure::Load));
-        assert!(store.requests().is_empty(), "a failure is not retried by a look");
+        assert!(
+            store.requests().is_empty(),
+            "a failure is not retried by a look"
+        );
 
         store.retain(&[release("a", &["t1"])]);
         assert_eq!(store.look("a"), Labels::Idle, "a reload re-arms it");
@@ -328,7 +336,10 @@ mod tests {
             vec![load("a", &["t1"]), load("b", &["t2"])],
             "the cap holds at MAX_IN_FLIGHT"
         );
-        assert!(store.requests().is_empty(), "the leftover wants are re-looked");
+        assert!(
+            store.requests().is_empty(),
+            "the leftover wants are re-looked"
+        );
 
         store.apply(&Update::ReleaseTracks {
             release: "a".to_owned(),

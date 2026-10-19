@@ -730,7 +730,9 @@ mod tests {
 
     use takofy_core::credentials::{AccessToken, CredentialStore, RefreshToken, StoreError};
     use takofy_core::login::{SourceError, SourceErrorKind, TokenSet, TokenSource};
-    use takofy_model::{AlbumDetail, ArtistDetail, CoverImage, CoverUrl, PlaylistEntry, TrackEntry};
+    use takofy_model::{
+        AlbumDetail, ArtistDetail, CoverImage, CoverUrl, PlaylistEntry, TrackEntry,
+    };
     use takofy_ui::signin::failure_message;
     use tokio::runtime::Runtime;
 
@@ -2328,6 +2330,37 @@ mod tests {
             }
         );
         assert_eq!(shared.releases.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_failed_release_load_is_announced() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+        *shared.release_script.lock().expect("lock") = ReleaseScript::Fail;
+
+        let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::LoadReleaseTracks {
+                    release: "spotify:album:r".to_owned(),
+                    tracks: Vec::new(),
+                })
+                .expect("labels");
+            ui_end.updates.recv().expect("failure")
+        });
+
+        assert_eq!(
+            update,
+            Update::ReleaseTracksFailed {
+                release: "spotify:album:r".to_owned(),
+                failure: Failure::Load,
+            }
+        );
     }
 
     #[test]

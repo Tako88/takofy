@@ -66,11 +66,7 @@ pub fn release_kind_label(kind: ReleaseKind) -> &'static str {
 /// The parts are separate so the painter can place the dot separator between
 /// them, exactly as [`album_meta`] does for the band. An unknown year and an
 /// absent total are left out rather than drawn as blanks.
-pub fn release_meta(
-    kind: ReleaseKind,
-    year: Option<u16>,
-    tracks: (usize, u32),
-) -> Vec<String> {
+pub fn release_meta(kind: ReleaseKind, year: Option<u16>, tracks: (usize, u32)) -> Vec<String> {
     let mut parts = vec![release_kind_label(kind).to_owned()];
     if let Some(year) = year {
         parts.push(year.to_string());

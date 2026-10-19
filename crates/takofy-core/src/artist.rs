@@ -349,7 +349,9 @@ mod tests {
     #[test]
     fn top_tracks_carry_no_added_date_and_stop_at_ten() {
         let mut message = empty_artist_message();
-        message.top_track.push(top_tracks("US", &(1..=12).collect::<Vec<u8>>()));
+        message
+            .top_track
+            .push(top_tracks("US", &(1..=12).collect::<Vec<u8>>()));
 
         let positions = top_track_positions(&artist(message), "US");
         assert_eq!(positions.len(), TOP_TRACKS);
@@ -459,12 +461,7 @@ mod tests {
         );
         assert_eq!(
             release_of("spotify:album:x", &album).tracks,
-            vec![
-                track_uri(10),
-                track_uri(11),
-                track_uri(12),
-                track_uri(13)
-            ],
+            vec![track_uri(10), track_uri(11), track_uri(12), track_uri(13)],
             "disc one reads first however the wire listed the discs"
         );
     }
@@ -472,9 +469,10 @@ mod tests {
     #[test]
     fn a_malformed_disc_track_gid_is_skipped() {
         let mut album = wire_album("Release", AlbumType::ALBUM, 2024, &[(1, &[10])]);
-        let mut broken = TrackMessage::default();
-        broken.gid = Some(vec![7; 15]);
-        album.disc[0].track.push(broken);
+        album.disc[0].track.push(TrackMessage {
+            gid: Some(vec![7; 15]),
+            ..Default::default()
+        });
 
         assert_eq!(
             release_of("spotify:album:x", &album).tracks,
@@ -514,12 +512,15 @@ mod tests {
     fn response(entities: &[(&str, AlbumMessage)]) -> BatchedExtensionResponse {
         let mut array = EntityExtensionDataArray::default();
         for (uri, album) in entities {
-            let mut any = Any::default();
-            any.value = album.write_to_bytes().expect("a serialised album");
-            let mut data = EntityExtensionData::default();
-            data.entity_uri = (*uri).to_owned();
-            data.extension_data = MessageField::some(any);
-            array.extension_data.push(data);
+            let any = Any {
+                value: album.write_to_bytes().expect("a serialised album"),
+                ..Default::default()
+            };
+            array.extension_data.push(EntityExtensionData {
+                entity_uri: (*uri).to_owned(),
+                extension_data: MessageField::some(any),
+                ..Default::default()
+            });
         }
         BatchedExtensionResponse {
             extended_metadata: vec![array],
@@ -531,9 +532,18 @@ mod tests {
     fn releases_from_reads_the_request_order_not_the_answers() {
         let order = vec![album_uri(10), album_uri(20), album_uri(30)];
         let answer = response(&[
-            (&album_uri(30), wire_album("Third", AlbumType::ALBUM, 2020, &[])),
-            (&album_uri(10), wire_album("First", AlbumType::ALBUM, 2018, &[])),
-            (&album_uri(20), wire_album("Second", AlbumType::EP, 2019, &[])),
+            (
+                &album_uri(30),
+                wire_album("Third", AlbumType::ALBUM, 2020, &[]),
+            ),
+            (
+                &album_uri(10),
+                wire_album("First", AlbumType::ALBUM, 2018, &[]),
+            ),
+            (
+                &album_uri(20),
+                wire_album("Second", AlbumType::EP, 2019, &[]),
+            ),
         ]);
 
         let names: Vec<String> = releases_from(&answer, &order)
@@ -548,22 +558,28 @@ mod tests {
         let order = vec![album_uri(10), album_uri(20), album_uri(30)];
         let mut array = EntityExtensionDataArray::default();
 
-        let mut good = Any::default();
-        good.value = wire_album("First", AlbumType::ALBUM, 2018, &[])
-            .write_to_bytes()
-            .expect("a serialised album");
-        let mut data = EntityExtensionData::default();
-        data.entity_uri = album_uri(10);
-        data.extension_data = MessageField::some(good);
-        array.extension_data.push(data);
+        let good = Any {
+            value: wire_album("First", AlbumType::ALBUM, 2018, &[])
+                .write_to_bytes()
+                .expect("a serialised album"),
+            ..Default::default()
+        };
+        array.extension_data.push(EntityExtensionData {
+            entity_uri: album_uri(10),
+            extension_data: MessageField::some(good),
+            ..Default::default()
+        });
 
-        let mut broken = Any::default();
         // A truncated varint field: not an album message.
-        broken.value = vec![0x08];
-        let mut data = EntityExtensionData::default();
-        data.entity_uri = album_uri(20);
-        data.extension_data = MessageField::some(broken);
-        array.extension_data.push(data);
+        let broken = Any {
+            value: vec![0x08],
+            ..Default::default()
+        };
+        array.extension_data.push(EntityExtensionData {
+            entity_uri: album_uri(20),
+            extension_data: MessageField::some(broken),
+            ..Default::default()
+        });
 
         let answer = BatchedExtensionResponse {
             extended_metadata: vec![array],

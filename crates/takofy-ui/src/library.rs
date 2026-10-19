@@ -1545,7 +1545,6 @@ mod tests {
         assert_eq!(library.playlists, Load::Ready(vec![playlist("b", "B")]));
     }
 
-
     #[test]
     fn open_an_artist_starts_its_load_and_keeps_the_album() {
         let mut library = Library::default();

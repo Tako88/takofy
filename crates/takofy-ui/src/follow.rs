@@ -84,18 +84,18 @@ impl Follow {
     /// records why, and either way the button is pressable again.
     pub fn apply(&mut self, update: &Update) {
         match update {
-            Update::Followed { artist, followed } => {
-                if self.artist.as_deref() == Some(artist.as_str()) {
-                    self.confirmed = Some(*followed);
-                    self.pending = false;
-                    self.failed = None;
-                }
+            Update::Followed { artist, followed }
+                if self.artist.as_deref() == Some(artist.as_str()) =>
+            {
+                self.confirmed = Some(*followed);
+                self.pending = false;
+                self.failed = None;
             }
-            Update::FollowFailed { artist, failure } => {
-                if self.artist.as_deref() == Some(artist.as_str()) {
-                    self.pending = false;
-                    self.failed = Some(*failure);
-                }
+            Update::FollowFailed { artist, failure }
+                if self.artist.as_deref() == Some(artist.as_str()) =>
+            {
+                self.pending = false;
+                self.failed = Some(*failure);
             }
             _ => {}
         }
@@ -252,7 +252,11 @@ mod tests {
         });
 
         follow.open("a");
-        assert_eq!(follow.label(), "Following", "re-opening keeps what is known");
+        assert_eq!(
+            follow.label(),
+            "Following",
+            "re-opening keeps what is known"
+        );
 
         follow.open("b");
         assert_eq!(follow.label(), "Follow", "another artist is not followed");

@@ -17,9 +17,7 @@ use crate::cover::Cover;
 use crate::icon::Icon;
 use crate::layout::hero::artist_title_size;
 use crate::theme::icon::Size;
-use crate::theme::{
-    MonoWeight, Tokens, Weight, extent, fonts, hero, space, text, tracking,
-};
+use crate::theme::{MonoWeight, Tokens, Weight, extent, fonts, hero, space, text, tracking};
 
 use super::{art, controls, text as recipe};
 
