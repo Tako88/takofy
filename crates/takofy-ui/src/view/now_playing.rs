@@ -276,6 +276,8 @@ mod tests {
             title: format!("t{index}"),
             artists: format!("a{index}"),
             album: None,
+            album_uri: None,
+            artist_uris: Vec::new(),
             added_at: None,
             duration_ms: None,
             named: true,

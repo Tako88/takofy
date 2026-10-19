@@ -147,6 +147,17 @@ pub struct TrackEntry {
     pub artists: String,
     /// The album the track belongs to, when the metadata carried one.
     pub album: Option<String>,
+    /// The album's URI, when the metadata carried a resolvable album id.
+    ///
+    /// It does not depend on [`Self::album`] being named: an empty album name
+    /// still yields a URI, and the row decides whether it can draw a link.
+    pub album_uri: Option<String>,
+    /// The artists' URIs, in the same order as [`Self::artists`].
+    ///
+    /// The list stops at the first artist that contributes no name or whose id
+    /// does not resolve, so a link never points at a different artist than the
+    /// one named in the same place.
+    pub artist_uris: Vec<String>,
     /// When the track joined *this* playlist; per position, not per track.
     pub added_at: Option<AddedAt>,
     /// The track's length in milliseconds, when the metadata carried a length.

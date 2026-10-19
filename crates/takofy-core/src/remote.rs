@@ -5,7 +5,7 @@
 use std::collections::{HashMap, HashSet};
 
 use futures_util::StreamExt;
-use librespot::core::{Session, SpotifyUri};
+use librespot::core::{Session, SpotifyId, SpotifyUri};
 use librespot::metadata::{Metadata, Playlist};
 use librespot::protocol::metadata::Track as TrackMessage;
 
@@ -213,6 +213,8 @@ struct TrackLabel {
     title: String,
     artists: String,
     album: Option<String>,
+    album_uri: Option<String>,
+    artist_uris: Vec<String>,
     duration_ms: Option<u32>,
     cover: Option<CoverUrl>,
 }
@@ -264,6 +266,8 @@ fn expand_labels(items: &[PageTrack], labels: &Labels) -> Vec<TrackEntry> {
                 title: label.title.clone(),
                 artists: label.artists.clone(),
                 album: label.album.clone(),
+                album_uri: label.album_uri.clone(),
+                artist_uris: label.artist_uris.clone(),
                 added_at: item.added_at,
                 duration_ms: label.duration_ms,
                 named: true,
@@ -274,6 +278,8 @@ fn expand_labels(items: &[PageTrack], labels: &Labels) -> Vec<TrackEntry> {
                 title: item.uri.clone(),
                 artists: String::new(),
                 album: None,
+                album_uri: None,
+                artist_uris: Vec::new(),
                 added_at: item.added_at,
                 duration_ms: None,
                 named: false,
@@ -397,16 +403,41 @@ fn label_of(track: &TrackMessage) -> Option<TrackLabel> {
         .as_ref()
         .and_then(|album| album.name.clone())
         .filter(|name| !name.is_empty());
+    let album_uri = track
+        .album
+        .as_ref()
+        .and_then(|album| uri_of(album.gid.as_deref(), |id| SpotifyUri::Album { id }));
+    let artist_uris = track
+        .artist
+        .iter()
+        .map_while(|artist| {
+            artist
+                .name
+                .as_deref()
+                .filter(|name| !name.is_empty())
+                .and_then(|_| uri_of(artist.gid.as_deref(), |id| SpotifyUri::Artist { id }))
+        })
+        .collect();
     Some(TrackLabel {
         title,
         artists,
         album,
+        album_uri,
+        artist_uris,
         duration_ms: duration_ms(track.duration),
         cover: track
             .album
             .as_ref()
             .and_then(|album| pick_cover(album.cover_group.as_ref())),
     })
+}
+
+/// The URI a raw id names, when the bytes are a well-formed id for `page`.
+///
+/// A wrong length is not an id, so it gives no URI rather than an approximate
+/// one; the caller then has nothing to link to and draws plain text.
+fn uri_of(gid: Option<&[u8]>, page: fn(SpotifyId) -> SpotifyUri) -> Option<String> {
+    page(SpotifyId::from_raw(gid?).ok()?).to_uri().ok()
 }
 
 /// A wire length in milliseconds, or `None` when the wire did not give one.
@@ -495,6 +526,8 @@ mod tests {
                         title: (*title).to_owned(),
                         artists: (*artists).to_owned(),
                         album: None,
+                        album_uri: None,
+                        artist_uris: Vec::new(),
                         duration_ms: None,
                         cover: None,
                     },
@@ -517,6 +550,8 @@ mod tests {
                 title: title.to_owned(),
                 artists: artists.to_owned(),
                 album: album.map(str::to_owned),
+                album_uri: None,
+                artist_uris: Vec::new(),
                 duration_ms,
                 cover: None,
             },
@@ -586,6 +621,28 @@ mod tests {
         assert_eq!(entries[0].album, None);
         assert_eq!(entries[0].duration_ms, None);
         assert!(entries[0].named);
+    }
+
+    #[test]
+    fn expand_labels_copies_the_album_and_artist_uris() {
+        let mut labels = Labels::new();
+        labels.insert(
+            "a".to_owned(),
+            TrackLabel {
+                title: "One".to_owned(),
+                artists: "Band".to_owned(),
+                album: Some("Record".to_owned()),
+                album_uri: Some("spotify:album:x".to_owned()),
+                artist_uris: vec!["spotify:artist:y".to_owned()],
+                duration_ms: None,
+                cover: None,
+            },
+        );
+        let entries = expand_labels(&items(&["a", "b"]), &labels);
+        assert_eq!(entries[0].album_uri.as_deref(), Some("spotify:album:x"));
+        assert_eq!(entries[0].artist_uris, vec!["spotify:artist:y".to_owned()]);
+        assert_eq!(entries[1].album_uri, None);
+        assert!(entries[1].artist_uris.is_empty());
     }
 
     #[test]
@@ -676,6 +733,184 @@ mod tests {
     fn label_of_reads_no_album_when_the_album_name_is_empty() {
         let label = label_of(&wire_track(Some(""), Some(222_000))).unwrap();
         assert_eq!(label.album, None);
+    }
+
+    fn base62(gid: &[u8]) -> String {
+        SpotifyId::from_raw(gid)
+            .expect("a valid id")
+            .to_base62()
+            .expect("a base62 id")
+    }
+
+    fn artist(name: Option<&str>, gid: Option<Vec<u8>>) -> Artist {
+        Artist {
+            name: name.map(str::to_owned),
+            gid,
+            ..Default::default()
+        }
+    }
+
+    fn album(name: Option<&str>, gid: Option<Vec<u8>>) -> Album {
+        Album {
+            name: name.map(str::to_owned),
+            gid,
+            ..Default::default()
+        }
+    }
+
+    fn track_with(album: Album, artists: Vec<Artist>) -> TrackMessage {
+        TrackMessage {
+            name: Some("One".to_owned()),
+            artist: artists,
+            album: Some(album).into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn label_of_reads_the_album_and_artist_uris() {
+        let album_gid: Vec<u8> = (1..=16).collect();
+        let artist_gid: Vec<u8> = (17..=32).collect();
+        let track = track_with(
+            album(Some("Record"), Some(album_gid.clone())),
+            vec![artist(Some("Band"), Some(artist_gid.clone()))],
+        );
+        let label = label_of(&track).expect("a named track");
+        let album_uri = format!("spotify:album:{}", base62(&album_gid));
+        let artist_uri = format!("spotify:artist:{}", base62(&artist_gid));
+        assert_eq!(label.album_uri.as_deref(), Some(album_uri.as_str()));
+        assert_eq!(label.artist_uris, vec![artist_uri.clone()]);
+        // Cross-check the round trip against the raw id, not just the variant
+        // and not just the base62 formatting the implementation also uses.
+        let Ok(SpotifyUri::Album { id }) = SpotifyUri::from_uri(&album_uri) else {
+            panic!("an album uri parses as an album uri");
+        };
+        assert_eq!(id, SpotifyId::from_raw(&album_gid).expect("a valid id"));
+        let Ok(SpotifyUri::Artist { id }) = SpotifyUri::from_uri(&artist_uri) else {
+            panic!("an artist uri parses as an artist uri");
+        };
+        assert_eq!(id, SpotifyId::from_raw(&artist_gid).expect("a valid id"));
+    }
+
+    #[test]
+    fn label_of_reads_every_artist_uri_in_order() {
+        let first_gid: Vec<u8> = (17..=32).collect();
+        let second_gid: Vec<u8> = (33..=48).collect();
+        let track = track_with(
+            album(Some("Record"), None),
+            vec![
+                artist(Some("A"), Some(first_gid.clone())),
+                artist(Some("B"), Some(second_gid.clone())),
+            ],
+        );
+        let label = label_of(&track).expect("a named track");
+        assert_eq!(label.artists, "A, B");
+        assert_eq!(
+            label.artist_uris,
+            vec![
+                format!("spotify:artist:{}", base62(&first_gid)),
+                format!("spotify:artist:{}", base62(&second_gid)),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_gidless_artist_mid_list_keeps_only_the_uris_before_it() {
+        let first_gid: Vec<u8> = (17..=32).collect();
+        let track = track_with(
+            album(Some("Record"), None),
+            vec![
+                artist(Some("A"), Some(first_gid.clone())),
+                artist(Some("B"), None),
+                artist(Some("C"), Some(vec![49; 16])),
+            ],
+        );
+        let label = label_of(&track).expect("a named track");
+        assert_eq!(label.artists, "A, B, C");
+        assert_eq!(
+            label.artist_uris,
+            vec![format!("spotify:artist:{}", base62(&first_gid))]
+        );
+    }
+
+    #[test]
+    fn a_gid_of_the_wrong_length_gives_no_uri() {
+        let track = track_with(
+            album(Some("Record"), Some(vec![1; 15])),
+            vec![artist(Some("Band"), Some(vec![2; 17]))],
+        );
+        let label = label_of(&track).expect("a named track");
+        assert_eq!(label.album_uri, None);
+        assert!(label.artist_uris.is_empty());
+    }
+
+    #[test]
+    fn an_absent_gid_gives_no_uri() {
+        let track = track_with(
+            album(Some("Record"), None),
+            vec![artist(Some("Band"), None)],
+        );
+        let label = label_of(&track).expect("a named track");
+        assert_eq!(label.album_uri, None);
+        assert!(label.artist_uris.is_empty());
+    }
+
+    #[test]
+    fn an_artist_without_a_gid_ends_the_artist_uris() {
+        let track = track_with(
+            album(Some("Record"), None),
+            vec![
+                artist(Some("A"), None),
+                artist(Some("B"), Some(vec![3; 16])),
+            ],
+        );
+        let label = label_of(&track).expect("a named track");
+        assert_eq!(label.artists, "A, B");
+        assert!(label.artist_uris.is_empty());
+    }
+
+    #[test]
+    fn an_artist_without_a_name_ends_the_artist_uris_despite_a_gid() {
+        let track = track_with(
+            album(Some("Record"), None),
+            vec![
+                artist(Some("A"), Some(vec![5; 16])),
+                artist(None, Some(vec![6; 16])),
+                artist(Some("C"), Some(vec![7; 16])),
+            ],
+        );
+        let label = label_of(&track).expect("a named track");
+        assert_eq!(label.artists, "A, C");
+        assert_eq!(label.artist_uris.len(), 1, "only A's uri survives");
+    }
+
+    #[test]
+    fn an_artist_with_an_empty_name_ends_the_artist_uris() {
+        let track = track_with(
+            album(Some("Record"), None),
+            vec![artist(Some(""), Some(vec![4; 16]))],
+        );
+        let label = label_of(&track).expect("a named track");
+        assert!(label.artist_uris.is_empty());
+    }
+
+    #[test]
+    fn an_album_uri_survives_an_empty_album_name() {
+        let album_gid: Vec<u8> = (33..=48).collect();
+        let track = track_with(
+            album(Some(""), Some(album_gid.clone())),
+            vec![artist(Some("Band"), None)],
+        );
+        let label = label_of(&track).expect("a named track");
+        let album_uri = format!("spotify:album:{}", base62(&album_gid));
+        assert_eq!(label.album, None, "an empty name is not an album name");
+        assert_eq!(label.album_uri.as_deref(), Some(album_uri.as_str()));
+
+        let mut labels = Labels::new();
+        labels.insert("a".to_owned(), label);
+        let entries = expand_labels(&items(&["a"]), &labels);
+        assert_eq!(entries[0].album, None);
+        assert_eq!(entries[0].album_uri.as_deref(), Some(album_uri.as_str()));
     }
 
     #[test]
@@ -848,6 +1083,8 @@ mod tests {
                 title: "One".to_owned(),
                 artists: String::new(),
                 album: None,
+                album_uri: None,
+                artist_uris: Vec::new(),
                 duration_ms: None,
                 cover: Some(cover_url()),
             },
@@ -867,6 +1104,8 @@ mod tests {
                 title: "One".to_owned(),
                 artists: String::new(),
                 album: None,
+                album_uri: None,
+                artist_uris: Vec::new(),
                 duration_ms: None,
                 cover: Some(cover_url()),
             },

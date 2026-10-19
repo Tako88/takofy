@@ -354,6 +354,8 @@ mod tests {
             title: format!("t{index}"),
             artists: String::new(),
             album: None,
+            album_uri: None,
+            artist_uris: Vec::new(),
             added_at: None,
             duration_ms: None,
             named: true,
