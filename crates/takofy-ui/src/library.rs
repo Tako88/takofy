@@ -304,6 +304,8 @@ mod tests {
             name: name.to_owned(),
             named: true,
             cover: None,
+            description: None,
+            owner: None,
         }
     }
 
@@ -354,6 +356,8 @@ mod tests {
             name: name.to_owned(),
             named: true,
             cover: Some(cover),
+            description: None,
+            owner: None,
         }
     }
 

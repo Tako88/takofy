@@ -1,5 +1,6 @@
-//! The reference's wording for the numbers the shell prints: the playbar's
-//! clock, the hero's byline, and the age a playlist row gives its date.
+//! The reference's wording for the words and numbers the shell prints: the
+//! playbar's clock, the hero's byline, the playlist band's description, and the
+//! age a playlist row gives its date.
 
 use takofy_model::AddedAt;
 
@@ -79,6 +80,33 @@ pub fn added_label(added: AddedAt, now_ms: u64) -> Option<String> {
         28..=59 => "1 month ago".to_owned(),
         _ => format!("{} months ago", days / 30),
     })
+}
+
+/// The band's byline parts: the owner, then the count and the total.
+///
+/// The owner is dropped when it is blank, so a playlist whose wire owner is
+/// empty reads `62 songs · 3 hr 51 min` rather than `Made by ` with no name.
+pub fn byline(owner: Option<&str>, tracks: Option<(usize, u32)>) -> Vec<String> {
+    let mut parts = Vec::new();
+    if let Some(owner) = owner.map(str::trim).filter(|owner| !owner.is_empty()) {
+        parts.push(format!("Made by {owner}"));
+    }
+    if let Some((songs, total_ms)) = tracks {
+        parts.extend(hero_meta(songs, total_ms));
+    }
+    parts
+}
+
+/// The playlist's description as one line: whitespace collapsed and trimmed.
+///
+/// `None` when nothing is left, so a blank description draws no line at all.
+/// This collapses whitespace and nothing else: markup in the wire string — HTML
+/// entities such as `&#x27;` or `&amp;`, and `<a href="spotify:…">` tags — is
+/// passed through unchanged and draws literally. The name promises no more than
+/// that.
+pub fn plain_description(raw: &str) -> Option<String> {
+    let line = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    if line.is_empty() { None } else { Some(line) }
 }
 
 #[cfg(test)]
@@ -222,6 +250,61 @@ mod tests {
         assert_eq!(
             hero_meta(62, 13_860_000),
             vec!["62 songs".to_owned(), "3 hr 51 min".to_owned()]
+        );
+    }
+
+    #[test]
+    fn byline_puts_the_owner_before_the_count_and_the_total() {
+        assert_eq!(
+            byline(Some("alice"), Some((62, 13_860_000))),
+            vec![
+                "Made by alice".to_owned(),
+                "62 songs".to_owned(),
+                "3 hr 51 min".to_owned()
+            ]
+        );
+    }
+
+    #[test]
+    fn byline_keeps_the_owner_while_the_tracks_are_unknown() {
+        assert_eq!(
+            byline(Some("alice"), None),
+            vec!["Made by alice".to_owned()]
+        );
+    }
+
+    #[test]
+    fn byline_draws_the_count_alone_when_the_owner_is_absent() {
+        assert_eq!(byline(None, Some((1, 0))), vec!["1 song".to_owned()]);
+        assert_eq!(byline(None, Some((0, 0))), vec!["0 songs".to_owned()]);
+    }
+
+    #[test]
+    fn byline_is_empty_without_an_owner_or_tracks() {
+        assert!(byline(None, None).is_empty());
+    }
+
+    #[test]
+    fn byline_drops_a_blank_owner() {
+        assert_eq!(
+            byline(Some(""), Some((62, 13_860_000))),
+            vec!["62 songs".to_owned(), "3 hr 51 min".to_owned()]
+        );
+        assert_eq!(
+            byline(Some("  "), None),
+            Vec::<String>::new(),
+            "a spaces-only owner is not a name"
+        );
+    }
+
+    #[test]
+    fn plain_description_collapses_whitespace_and_drops_a_blank() {
+        assert_eq!(plain_description(""), None);
+        assert_eq!(plain_description("  \n "), None);
+        assert_eq!(plain_description("a\n\nb   c").as_deref(), Some("a b c"));
+        assert_eq!(
+            plain_description("  a single line  ").as_deref(),
+            Some("a single line")
         );
     }
 }

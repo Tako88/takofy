@@ -243,6 +243,11 @@ pub mod hero {
     /// The band's art tile, 11 rem. The same value as the band's own height, and
     /// a different role: the tile is square and the band may grow taller.
     pub const ART: f32 = 176.0;
+    /// How many rows a playlist description may take before it elides.
+    ///
+    /// The reference lets the description wrap without a bound; the band's height
+    /// is fixed, so the words are clamped to the two rows that fit it.
+    pub const DESCRIPTION_ROWS: usize = 2;
     /// The play tile under the band, 2.75 rem. Larger than a card's, because it
     /// is the band's own call to action.
     pub const PLAY: f32 = 44.0;

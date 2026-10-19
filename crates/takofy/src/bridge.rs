@@ -976,6 +976,8 @@ mod tests {
             name: name.to_owned(),
             named: true,
             cover: None,
+            description: None,
+            owner: None,
         }
     }
 
