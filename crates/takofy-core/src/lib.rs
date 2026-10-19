@@ -16,7 +16,7 @@ pub mod rootlist;
 mod cover;
 mod remote;
 
-pub use context::{ContextError, Page, page_from_proto, parse_page_json};
+pub use context::{ContextError, Page, PageTrack, page_from_proto, parse_page_json};
 pub use engine::{Engine, EngineError, TrackPages};
 pub use playback::{Outcome, Playback, PlaybackError, PlaybackEvent, drive, map_event};
 pub use rootlist::{RootlistError, RootlistPage, RootlistWire, parse_rootlist};

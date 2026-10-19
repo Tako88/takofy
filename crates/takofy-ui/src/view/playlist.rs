@@ -12,7 +12,7 @@ use egui::{FontId, Pos2, Rect, Sense, Ui, vec2};
 use takofy_model::{PlaylistEntry, TrackEntry};
 
 use crate::cover::{Art, Cover};
-use crate::format::{format_position, hero_meta};
+use crate::format::{added_label, format_position, hero_meta};
 use crate::icon;
 use crate::layout::{Table, cards, table as table_layout};
 use crate::library::{BandCover, Library, Load, band_cover};
@@ -30,7 +30,7 @@ use super::track_row::{self, Row, State};
 /// The main pane: the selected playlist's tracks, or the state of their load.
 #[expect(
     clippy::too_many_arguments,
-    reason = "the pane, its table, the state it draws and the frame's clock"
+    reason = "the pane, its table, the state it draws and the frame's clocks"
 )]
 pub fn tracks_view(
     ui: &mut Ui,
@@ -40,6 +40,7 @@ pub fn tracks_view(
     queue: &mut Queue,
     art: &mut Art,
     now: Instant,
+    now_ms: u64,
     tokens: &Tokens,
 ) -> Option<Command> {
     ui.add_space(space::S3);
@@ -56,7 +57,6 @@ pub fn tracks_view(
     let mut retry = false;
     egui::ScrollArea::vertical().show(ui, |ui| {
         let width = ui.available_width();
-        let columns = table_layout::columns(width, table.columns());
 
         // The band heads the playlist whenever the library can name the
         // selection; with no name there is nothing to say above the rows. It
@@ -107,6 +107,12 @@ pub fn tracks_view(
                 ui.label(recipe::muted("No tracks in this playlist.", tokens));
             }
             Load::Ready(tracks) => {
+                let columns = table_layout::columns(
+                    width,
+                    table
+                        .columns()
+                        .for_playlist(table_layout::is_playlist(&tracks.playlist)),
+                );
                 head(ui, columns, tokens);
                 let count = tracks.tracks.len();
                 // The whole list is reserved at once, so the scrollbar is right,
@@ -123,15 +129,14 @@ pub fn tracks_view(
                         continue;
                     }
                     let duration = entry.duration_ms.map(format_position);
+                    let added = entry.added_at.and_then(|added| added_label(added, now_ms));
                     let row = Row {
                         uri: &entry.uri,
                         number: index + 1,
                         title: &entry.title,
                         artist: &entry.artists,
                         album: entry.album.as_deref(),
-                        // The added date is playlist membership rather than track
-                        // metadata, so the window is not handed one yet.
-                        added: None,
+                        added: added.as_deref(),
                         duration: duration.as_deref(),
                         state: state_of(&entry.uri, transport),
                         cover: art.look(entry.cover.as_ref(), now),
@@ -482,10 +487,14 @@ mod tests {
     use crate::message::Update;
     use crate::theme::hero::PLAY;
     use crate::theme::{fonts, style};
-    use takofy_model::{CoverImage, CoverUrl, PlaylistEntry, TrackEntry};
+    use takofy_model::{AddedAt, CoverImage, CoverUrl, PlaylistEntry, TrackEntry};
 
     /// The probe window: 900 by 400, the size every bare-row test runs in.
     const PROBE: Vec2 = Vec2::new(900.0, 400.0);
+    /// The frame's wall clock in the tests: 2023-11-14T22:13:20Z.
+    const NOW_MS: u64 = 1_700_000_000_000;
+    /// One day in milliseconds.
+    const DAY: u64 = 86_400_000;
     /// A probe window tall enough to hold the band, the header and two rows in
     /// full, so a click under the band is not clipped away by the viewport.
     const TALL: Vec2 = Vec2::new(900.0, 800.0);
@@ -502,10 +511,12 @@ mod tests {
         }
     }
 
-    /// Runs one pass and consumes the font-atlas delta it may have produced.
-    fn run(ctx: &Context, input: RawInput, draw: impl FnMut(&mut Ui)) {
+    /// Runs one pass, consumes the font-atlas delta it may have produced, and
+    /// hands back the frame for reading.
+    fn run(ctx: &Context, input: RawInput, draw: impl FnMut(&mut Ui)) -> egui::FullOutput {
         let mut output = ctx.run_ui(input, draw);
         output.textures_delta.clear();
+        output
     }
 
     /// The text the frame actually painted, in paint order.
@@ -546,10 +557,76 @@ mod tests {
             title: title.to_owned(),
             artists: String::new(),
             album: None,
+            added_at: None,
             duration_ms: None,
             named: true,
             cover: None,
         }
+    }
+
+    fn date(millis: u64) -> AddedAt {
+        AddedAt::from_wire(&millis.to_string()).expect("a date above the floor")
+    }
+
+    fn dated(uri: &str, title: &str, added_at: Option<AddedAt>) -> TrackEntry {
+        TrackEntry {
+            added_at,
+            ..track(uri, title)
+        }
+    }
+
+    /// A library whose rows belong to `playlist`, with `tracks` loaded.
+    fn library_selected(playlist: &str, tracks: Vec<TrackEntry>) -> Library {
+        let mut library = Library::default();
+        library.select(playlist);
+        library.apply(&Update::Tracks {
+            playlist: playlist.to_owned(),
+            tracks,
+            cover: None,
+        });
+        library
+    }
+
+    /// One frame of the tracklist at the test's fixed clock.
+    fn tracklist_frame(ctx: &Context, table: Table, library: &mut Library) -> egui::FullOutput {
+        let tokens = Tokens::DARK;
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        run(ctx, input(Vec::new()), |ui| {
+            let _ = tracks_view(
+                ui,
+                table,
+                library,
+                &mut transport,
+                &mut queue,
+                &mut Art::default(),
+                Instant::now(),
+                NOW_MS,
+                &tokens,
+            );
+        })
+    }
+
+    /// Draws one frame of the tracklist and returns the text it painted.
+    fn painted_lines(ctx: &Context, table: Table, library: &mut Library) -> Vec<String> {
+        drawn_texts(&tracklist_frame(ctx, table, library))
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// The visible run of every painted line: an elided line is read as what it
+    /// shows, not as the string it was given.
+    fn painted_runs(ctx: &Context, table: Table, library: &mut Library) -> Vec<String> {
+        tracklist_frame(ctx, table, library)
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Text(text) => text.galley.rows.first(),
+                _ => None,
+            })
+            .map(|row| row.row.text().to_owned())
+            .collect()
     }
 
     fn library_with(tracks: Vec<TrackEntry>) -> Library {
@@ -604,6 +681,7 @@ mod tests {
             title: format!("t{index}"),
             artists: String::new(),
             album: None,
+            added_at: None,
             duration_ms: None,
             named: true,
             cover: Some(cover_url(&format!("c{index}"))),
@@ -793,6 +871,7 @@ mod tests {
                 queue,
                 &mut Art::default(),
                 Instant::now(),
+                NOW_MS,
                 &tokens,
             );
         });
@@ -811,6 +890,7 @@ mod tests {
                         queue,
                         &mut Art::default(),
                         Instant::now(),
+                        NOW_MS,
                         &tokens,
                     ) {
                         *command = Some(next);
@@ -861,6 +941,7 @@ mod tests {
                 queue,
                 &mut Art::default(),
                 Instant::now(),
+                NOW_MS,
                 &tokens,
             );
         });
@@ -878,6 +959,7 @@ mod tests {
                         queue,
                         &mut Art::default(),
                         Instant::now(),
+                        NOW_MS,
                         &tokens,
                     );
                 },
@@ -900,6 +982,7 @@ mod tests {
                     queue,
                     &mut Art::default(),
                     Instant::now(),
+                    NOW_MS,
                     &tokens,
                 ) {
                     *command = Some(next);
@@ -941,6 +1024,7 @@ mod tests {
                 queue,
                 &mut Art::default(),
                 Instant::now(),
+                NOW_MS,
                 &tokens,
             );
         });
@@ -1101,6 +1185,7 @@ mod tests {
             title: "t0".to_owned(),
             artists: "Band".to_owned(),
             album: Some("Record".to_owned()),
+            added_at: None,
             duration_ms: Some(222_000),
             named: true,
             cover: None,
@@ -1117,6 +1202,7 @@ mod tests {
                 &mut queue,
                 &mut Art::default(),
                 Instant::now(),
+                NOW_MS,
                 &tokens,
             );
         });
@@ -1129,6 +1215,129 @@ mod tests {
         assert!(
             texts.contains(&"3:42"),
             "the row must be handed the track's length as m:ss: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn a_playlist_row_draws_its_added_label() {
+        let ctx = context();
+        let mut library = library_with(vec![dated("a", "t0", Some(date(NOW_MS - 4 * DAY)))]);
+
+        let texts = painted_lines(&ctx, Table::Full, &mut library);
+        assert!(
+            texts.contains(&"ADDED".to_owned()),
+            "the header must keep the added column: {texts:?}"
+        );
+        assert!(
+            texts.contains(&"4 days ago".to_owned()),
+            "the row must show when the track was added: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn a_playlist_without_dates_keeps_its_rows_and_header() {
+        // The column is a playlist's, not a date's: a playlist whose dates are
+        // all absent still heads it and still draws every row.
+        let ctx = context();
+        let mut library = library_with(vec![dated("a", "t0", None), dated("b", "t1", None)]);
+
+        let texts = painted_lines(&ctx, Table::Full, &mut library);
+        assert!(
+            texts.contains(&"ADDED".to_owned()),
+            "the header must stay with no dates loaded: {texts:?}"
+        );
+        assert!(texts.contains(&"t0".to_owned()), "row 0 must draw");
+        assert!(texts.contains(&"t1".to_owned()), "row 1 must draw");
+        assert!(
+            !texts
+                .iter()
+                .any(|text| text == "Today" || text.ends_with(" ago")),
+            "an absent date must paint no cell: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn a_future_date_draws_no_cell() {
+        let ctx = context();
+        let mut library = library_with(vec![dated("a", "t0", Some(date(NOW_MS + DAY)))]);
+
+        let texts = painted_lines(&ctx, Table::Full, &mut library);
+        assert!(texts.contains(&"t0".to_owned()), "the row must still draw");
+        assert!(
+            !texts
+                .iter()
+                .any(|text| text == "Today" || text.ends_with(" ago")),
+            "a date after now is not an age: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn a_context_that_is_not_a_playlist_draws_no_added_column() {
+        let ctx = context();
+        // Long enough to elide at the probe width in both contexts, so the
+        // visible run is a measure of the column the title was given.
+        let title = "The Extremely Long-Named Orchestra of the Northern Coast and Its Friends \
+Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
+        let rows = || vec![dated("a", title, Some(date(NOW_MS - 2 * DAY)))];
+
+        let mut playlist = library_selected("spotify:playlist:a", rows());
+        let playlist_texts = painted_runs(&ctx, Table::Full, &mut playlist);
+
+        let mut album = library_selected("spotify:album:a", rows());
+        let album_texts = painted_runs(&ctx, Table::Full, &mut album);
+
+        assert!(
+            playlist_texts.contains(&"ADDED".to_owned()),
+            "a playlist heads the date column: {playlist_texts:?}"
+        );
+        assert!(
+            !album_texts.contains(&"ADDED".to_owned()),
+            "an album must not head a date column: {album_texts:?}"
+        );
+        assert!(
+            !album_texts
+                .iter()
+                .any(|text| text == "Today" || text.ends_with(" ago")),
+            "an album's rows must show no date even when they carry one: {album_texts:?}"
+        );
+
+        // The dropped column's width goes to the title: the same title shows
+        // more of itself in the album than in the playlist.
+        let painted_title = |texts: &[String]| {
+            texts
+                .iter()
+                .find(|text| text.starts_with("The Extremely"))
+                .cloned()
+                .expect("the row paints its title")
+        };
+        let playlist_title = painted_title(&playlist_texts);
+        let album_title = painted_title(&album_texts);
+        assert!(
+            playlist_title.ends_with('…'),
+            "the playlist's title must be squeezed: {playlist_title:?}"
+        );
+        assert!(
+            album_title.chars().count() > playlist_title.chars().count(),
+            "the album's title must take the freed width: {album_title:?} vs {playlist_title:?}"
+        );
+    }
+
+    #[test]
+    fn the_same_track_twice_shows_each_rows_own_date() {
+        let ctx = context();
+        let mut library = library_with(vec![
+            dated("a", "t0", Some(date(NOW_MS - 4 * DAY))),
+            dated("a", "t0", Some(date(NOW_MS - 14 * DAY))),
+        ]);
+
+        let texts = painted_lines(&ctx, Table::Full, &mut library);
+        assert!(
+            texts.contains(&"4 days ago".to_owned()),
+            "the first row must show its own date: {texts:?}"
+        );
+        assert!(
+            texts.contains(&"2 weeks ago".to_owned()),
+            "the second row must show its own date: {texts:?}"
         );
     }
 
@@ -1269,6 +1478,7 @@ mod tests {
             title: "t0".to_owned(),
             artists: "Band".to_owned(),
             album: Some("Record".to_owned()),
+            added_at: None,
             duration_ms: Some(222_000),
             named: true,
             cover: None,
@@ -1285,6 +1495,7 @@ mod tests {
                 &mut queue,
                 &mut Art::default(),
                 Instant::now(),
+                NOW_MS,
                 &Tokens::DARK,
             );
         });
@@ -1376,6 +1587,7 @@ mod tests {
                 &mut queue,
                 &mut Art::default(),
                 Instant::now(),
+                NOW_MS,
                 &tokens,
             );
         });
@@ -1401,6 +1613,7 @@ mod tests {
                 &mut queue,
                 &mut Art::default(),
                 Instant::now(),
+                NOW_MS,
                 &tokens,
             );
         });
@@ -1427,6 +1640,7 @@ mod tests {
                 &mut queue,
                 &mut Art::default(),
                 Instant::now(),
+                NOW_MS,
                 &tokens,
             );
         });
@@ -1596,6 +1810,7 @@ mod tests {
                 &mut queue,
                 &mut Art::default(),
                 Instant::now(),
+                NOW_MS,
                 &tokens,
             );
         });
@@ -1612,6 +1827,7 @@ mod tests {
                         &mut queue,
                         &mut Art::default(),
                         Instant::now(),
+                        NOW_MS,
                         &tokens,
                     ) {
                         loads += 1;
@@ -1762,6 +1978,7 @@ mod tests {
                     &mut queue,
                     &mut art,
                     now,
+                    NOW_MS,
                     &tokens,
                 );
             });
@@ -1824,6 +2041,7 @@ mod tests {
                 &mut queue,
                 &mut art,
                 now,
+                NOW_MS,
                 &tokens,
             );
         });
@@ -1847,6 +2065,7 @@ mod tests {
                 &mut queue,
                 &mut art,
                 now,
+                NOW_MS,
                 &tokens,
             );
         });
@@ -1883,6 +2102,7 @@ mod tests {
                 &mut queue,
                 &mut art,
                 now,
+                NOW_MS,
                 &tokens,
             );
         });
@@ -1910,6 +2130,7 @@ mod tests {
                 &mut queue,
                 &mut art,
                 now,
+                NOW_MS,
                 &tokens,
             );
         });

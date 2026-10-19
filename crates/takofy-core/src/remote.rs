@@ -9,7 +9,9 @@ use librespot::core::{Session, SpotifyUri};
 use librespot::metadata::{Metadata, Playlist};
 use librespot::protocol::metadata::Track as TrackMessage;
 
-use crate::context::{ContextError, Page, PageSource, Resolved, page_from_proto, parse_page_json};
+use crate::context::{
+    ContextError, Page, PageSource, PageTrack, Resolved, page_from_proto, parse_page_json,
+};
 use crate::cover::pick_cover;
 use crate::rootlist::{RootlistError, RootlistPage, RootlistSource, RootlistWire, parse_rootlist};
 use takofy_model::{CoverUrl, PlaylistEntry, TrackEntry};
@@ -225,14 +227,18 @@ type Labels = HashMap<String, TrackLabel>;
 /// clear of it, and a short answer is retried in smaller pieces anyway.
 const LABEL_CHUNK: usize = 250;
 
-/// Names each track, falling back to its URI when metadata is missing.
-pub(crate) async fn label_tracks(session: &Session, uris: Vec<String>) -> Vec<TrackEntry> {
+/// Names each position, falling back to its URI when metadata is missing.
+///
+/// The URIs are deduplicated for the network request only: the result keeps one
+/// entry per position, with that position's own added date.
+pub(crate) async fn label_tracks(session: &Session, items: Vec<PageTrack>) -> Vec<TrackEntry> {
+    let uris: Vec<String> = items.iter().map(|item| item.uri.clone()).collect();
     let labels = fetch_labels(session, &distinct_uris(&uris)).await;
     let unnamed = uris.iter().filter(|uri| !labels.contains_key(*uri)).count();
     if unnamed > 0 {
         log::warn!("{unnamed} of {} tracks could not be named", uris.len());
     }
-    expand_labels(&uris, &labels)
+    expand_labels(&items, &labels)
 }
 
 /// The distinct URIs, in first-seen order.
@@ -246,23 +252,29 @@ fn distinct_uris(uris: &[String]) -> Vec<String> {
 
 /// One named track per input position. A position with no name falls back to
 /// its URI, which is visible rather than plausible.
-fn expand_labels(uris: &[String], labels: &Labels) -> Vec<TrackEntry> {
-    uris.iter()
-        .map(|uri| match labels.get(uri) {
+///
+/// The added date is read from the position, never looked up by URI: one track
+/// may sit in the same playlist twice with two different dates.
+fn expand_labels(items: &[PageTrack], labels: &Labels) -> Vec<TrackEntry> {
+    items
+        .iter()
+        .map(|item| match labels.get(&item.uri) {
             Some(label) => TrackEntry {
-                uri: uri.clone(),
+                uri: item.uri.clone(),
                 title: label.title.clone(),
                 artists: label.artists.clone(),
                 album: label.album.clone(),
+                added_at: item.added_at,
                 duration_ms: label.duration_ms,
                 named: true,
                 cover: label.cover.clone(),
             },
             None => TrackEntry {
-                uri: uri.clone(),
-                title: uri.clone(),
+                uri: item.uri.clone(),
+                title: item.uri.clone(),
                 artists: String::new(),
                 album: None,
+                added_at: item.added_at,
                 duration_ms: None,
                 named: false,
                 cover: None,
@@ -416,7 +428,9 @@ mod tests {
     use librespot::core::{SpotifyId, SpotifyUri};
     use librespot::protocol::metadata::image::Size;
     use librespot::protocol::metadata::{Album, Artist, Image, ImageGroup, Track as TrackMessage};
-    use takofy_model::CoverUrl;
+    use takofy_model::{AddedAt, CoverUrl};
+
+    use crate::context::PageTrack;
 
     use super::{
         Labels, TrackLabel, context_cover, distinct_uris, duration_ms, expand_labels,
@@ -453,6 +467,22 @@ mod tests {
 
     fn owned(uris: &[&str]) -> Vec<String> {
         uris.iter().map(|uri| (*uri).to_owned()).collect()
+    }
+
+    fn items(uris: &[&str]) -> Vec<PageTrack> {
+        uris.iter()
+            .map(|uri| PageTrack {
+                uri: (*uri).to_owned(),
+                added_at: None,
+            })
+            .collect()
+    }
+
+    fn dated(uri: &str, millis: u64) -> PageTrack {
+        PageTrack {
+            uri: uri.to_owned(),
+            added_at: AddedAt::from_wire(&millis.to_string()),
+        }
     }
 
     fn named(pairs: &[(&str, &str, &str)]) -> Labels {
@@ -507,24 +537,24 @@ mod tests {
 
     #[test]
     fn every_position_is_named_when_a_track_repeats() {
-        let uris = owned(&["a", "b", "a"]);
-        let entries = expand_labels(&uris, &named(&[("a", "One", "Band"), ("b", "Two", "Band")]));
+        let entries = expand_labels(
+            &items(&["a", "b", "a"]),
+            &named(&[("a", "One", "Band"), ("b", "Two", "Band")]),
+        );
         let titles: Vec<&str> = entries.iter().map(|entry| entry.title.as_str()).collect();
         assert_eq!(titles, vec!["One", "Two", "One"]);
     }
 
     #[test]
     fn a_track_repeated_six_times_is_named_six_times_from_one_entity() {
-        let uris = owned(&["a"; 6]);
-        let entries = expand_labels(&uris, &named(&[("a", "One", "Band")]));
+        let entries = expand_labels(&items(&["a"; 6]), &named(&[("a", "One", "Band")]));
         assert_eq!(entries.len(), 6);
         assert!(entries.iter().all(|entry| entry.title == "One"));
     }
 
     #[test]
     fn an_unnamed_track_falls_back_to_its_uri() {
-        let uris = owned(&["a", "b"]);
-        let entries = expand_labels(&uris, &named(&[("a", "One", "Band")]));
+        let entries = expand_labels(&items(&["a", "b"]), &named(&[("a", "One", "Band")]));
         assert_eq!(entries[1].title, "b");
         assert!(entries[1].artists.is_empty());
         assert_eq!(entries[1].uri, "b");
@@ -535,8 +565,7 @@ mod tests {
 
     #[test]
     fn a_named_track_keeps_its_uri() {
-        let uris = owned(&["a"]);
-        let entries = expand_labels(&uris, &named(&[("a", "One", "Band")]));
+        let entries = expand_labels(&items(&["a"]), &named(&[("a", "One", "Band")]));
         assert_eq!(entries[0].uri, "a");
         assert_eq!(entries[0].artists, "Band");
         assert!(entries[0].named);
@@ -544,9 +573,8 @@ mod tests {
 
     #[test]
     fn a_labelled_track_carries_its_album_and_length() {
-        let uris = owned(&["a"]);
         let labels = labelled("a", "One", "Band", Some("Record"), Some(222_000));
-        let entries = expand_labels(&uris, &labels);
+        let entries = expand_labels(&items(&["a"]), &labels);
         assert_eq!(entries[0].album.as_deref(), Some("Record"));
         assert_eq!(entries[0].duration_ms, Some(222_000));
         assert!(entries[0].named);
@@ -554,11 +582,47 @@ mod tests {
 
     #[test]
     fn a_track_with_no_album_or_length_carries_neither() {
-        let uris = owned(&["a"]);
-        let entries = expand_labels(&uris, &named(&[("a", "One", "Band")]));
+        let entries = expand_labels(&items(&["a"]), &named(&[("a", "One", "Band")]));
         assert_eq!(entries[0].album, None);
         assert_eq!(entries[0].duration_ms, None);
         assert!(entries[0].named);
+    }
+
+    #[test]
+    fn a_repeated_track_keeps_each_positions_own_date() {
+        let positions = vec![
+            dated("a", 1_700_000_000_000),
+            dated("b", 1_710_000_000_000),
+            dated("a", 1_720_000_000_000),
+        ];
+        let entries = expand_labels(
+            &positions,
+            &named(&[("a", "One", "Band"), ("b", "Two", "Band")]),
+        );
+        let dates: Vec<Option<u64>> = entries
+            .iter()
+            .map(|entry| entry.added_at.map(AddedAt::as_millis))
+            .collect();
+        assert_eq!(
+            dates,
+            vec![
+                Some(1_700_000_000_000),
+                Some(1_710_000_000_000),
+                Some(1_720_000_000_000)
+            ],
+            "a URI-keyed date would repeat one of the three"
+        );
+    }
+
+    #[test]
+    fn an_unnamed_track_keeps_its_date() {
+        let entries = expand_labels(&[dated("a", 1_700_000_000_000)], &Labels::new());
+        assert!(!entries[0].named);
+        assert_eq!(entries[0].uri, "a");
+        assert_eq!(
+            entries[0].added_at.map(AddedAt::as_millis),
+            Some(1_700_000_000_000)
+        );
     }
 
     #[test]

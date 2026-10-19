@@ -276,6 +276,7 @@ mod tests {
             title: format!("t{index}"),
             artists: format!("a{index}"),
             album: None,
+            added_at: None,
             duration_ms: None,
             named: true,
             cover: None,

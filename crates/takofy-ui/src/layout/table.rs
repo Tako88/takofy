@@ -32,6 +32,40 @@ pub struct Present {
     pub actions: bool,
 }
 
+impl Present {
+    /// Drops the date column unless the rows are a playlist's membership.
+    ///
+    /// The width solver keeps its one job; which context the row belongs to is
+    /// decided here, from the loaded context's own URI.
+    pub fn for_playlist(self, is_playlist: bool) -> Self {
+        Self {
+            added: self.added && is_playlist,
+            ..self
+        }
+    }
+}
+
+/// Whether a context URI names a playlist: `spotify:playlist:<id>`, or the named
+/// `spotify:user:<user>:playlist:<id>`. The id must be non-empty.
+///
+/// The first segment is matched exactly and the id is only checked for
+/// emptiness: the loaded URI was already validated where it came from, so this
+/// is a question of identity, not of well-formedness.
+pub fn is_playlist(uri: &str) -> bool {
+    let Some(rest) = uri.strip_prefix("spotify:") else {
+        return false;
+    };
+    let mut parts = rest.split(':');
+    match parts.next() {
+        Some("playlist") => parts.next().is_some_and(|id| !id.is_empty()),
+        Some("user") => {
+            parts.next();
+            parts.next() == Some("playlist") && parts.next().is_some_and(|id| !id.is_empty())
+        }
+        _ => false,
+    }
+}
+
 /// The eight top-level rects of a track row, in the reference's order.
 ///
 /// An absent column keeps a zero-width rect at the cursor rather than vanishing,
@@ -262,7 +296,7 @@ pub fn row_rect(list: Rect, index: usize, row_h: f32) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layout::WINDOW_MIN;
+    use crate::layout::{Table, WINDOW_MIN};
 
     fn all() -> Present {
         Present {
@@ -310,6 +344,53 @@ mod tests {
 
     fn assert_close(left: f32, right: f32) {
         assert!((left - right).abs() < 0.01, "{left} is not {right}");
+    }
+
+    #[test]
+    fn only_a_playlist_uri_is_a_playlist() {
+        for uri in [
+            "spotify:playlist:abc",
+            "spotify:user:u:playlist:abc",
+            "spotify:playlist:abc:extra",
+        ] {
+            assert!(is_playlist(uri), "must accept {uri}");
+        }
+        for uri in [
+            "spotify:album:abc",
+            "spotify:artist:playlist-fan",
+            "spotify:track:abc",
+            "spotify:local:Artist:Album:Title:222",
+            "spotify:user:u:collection",
+            "spotify:user:someone:folder:abc",
+            "spotify:playlist",
+            "spotify:playlist:",
+            "spotify:user:u:playlist",
+            "spotify:user:u:playlist:",
+            "",
+            "https://i.scdn.co/image/abc",
+        ] {
+            assert!(!is_playlist(uri), "must reject {uri}");
+        }
+    }
+
+    #[test]
+    fn only_a_playlist_presents_the_date_added() {
+        for table in [Table::Full, Table::Reduced, Table::Narrow] {
+            let present = table.columns();
+            assert_eq!(
+                present.for_playlist(true),
+                present,
+                "{table:?} must keep its own columns for a playlist"
+            );
+            assert_eq!(
+                present.for_playlist(false),
+                Present {
+                    added: false,
+                    ..present
+                },
+                "{table:?} must drop only the date for a non-playlist"
+            );
+        }
     }
 
     #[test]
