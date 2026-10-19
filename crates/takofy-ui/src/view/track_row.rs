@@ -7,7 +7,10 @@
 //!
 //! The row is one focus stop. The like and the more are waiting controls, so they
 //! never join the tab order, and a list of sixty tracks is sixty stops rather than
-//! a hundred and eighty.
+//! a hundred and eighty. The album and artist cells are links that take a single
+//! click anywhere on the cell, but their interaction is deliberately not
+//! focusable, so they add no stop of their own: the cost is that a keyboard can
+//! reach neither link yet, while Enter and Space on the row still play.
 //!
 //! A liked state is not drawn here because nothing can produce one yet: the track
 //! model carries no such flag. The like's column is reserved and its control is
@@ -21,6 +24,7 @@ use crate::availability::Control;
 use crate::cover::Cover;
 use crate::icon::{self, Icon};
 use crate::layout::table::{Columns, number_box, title_parts};
+use crate::route::Page;
 use crate::theme::icon::Size;
 use crate::theme::{Tokens, ease, eq, motion, radius, stroke, text};
 
@@ -56,7 +60,13 @@ pub struct Row<'a> {
     pub number: usize,
     pub title: &'a str,
     pub artist: &'a str,
+    /// The first artist's page, when labelling resolved one. The cell links only
+    /// when this is set and `artist` is non-empty.
+    pub artist_uri: Option<&'a str>,
     pub album: Option<&'a str>,
+    /// The album's page, when labelling resolved one. The cell links only when
+    /// this is set and `album` is non-empty.
+    pub album_uri: Option<&'a str>,
     pub added: Option<&'a str>,
     pub duration: Option<&'a str>,
     pub state: State,
@@ -64,12 +74,38 @@ pub struct Row<'a> {
     pub cover: Cover,
 }
 
-/// Draws one row into `rect`, and reports a double click on it.
+/// What a click on a row asked for.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Click {
+    /// Start the track.
+    Play,
+    /// Open the page its album or first artist cell links to.
+    Open(Page),
+}
+
+/// What a link cell's interaction reports to the row.
+///
+/// A cell that is not linkable paints its label without an interaction, so it
+/// reports nothing rather than an empty hit area.
+struct Link {
+    /// Whether the pointer is resting on the cell.
+    hovered: bool,
+    /// The page a click on the cell opens.
+    page: Option<Page>,
+}
+
+/// Draws one row into `rect`, and reports what a click on it asked for.
 ///
 /// `rect` is `layout::table::row_rect` for this row and `columns` is what
 /// `layout::table::columns` solved for the same width, so a header and its rows
 /// can never disagree about where a column is.
-pub fn show(ui: &mut Ui, rect: Rect, columns: Columns, row: &Row<'_>, tokens: &Tokens) -> bool {
+pub fn show(
+    ui: &mut Ui,
+    rect: Rect,
+    columns: Columns,
+    row: &Row<'_>,
+    tokens: &Tokens,
+) -> Option<Click> {
     // The table solves its rects row-local; this is where they reach the screen.
     let columns = columns.at(rect.min);
     // The position is part of the key, because a playlist may hold the same track
@@ -92,7 +128,13 @@ pub fn show(ui: &mut Ui, rect: Rect, columns: Columns, row: &Row<'_>, tokens: &T
     }
     // The reference reveals the play glyph and the like on hover *and* on
     // focus-within, because a keyboard has no pointer.
-    let revealed = response.hovered() || response.has_focus();
+    //
+    // `hovered()` is ownership, not position: the album and artist cells are
+    // interacted after this row, and egui marks only the top hit widget as
+    // hovered, so the row loses the hover the moment the pointer enters a link
+    // cell. `contains_pointer()` asks whether the pointer is in the row's rect
+    // at all, which is what the highlight, the play glyph and the like follow.
+    let revealed = response.hovered() || response.contains_pointer() || response.has_focus();
     let fill = ui.ctx().animate_bool_with_time_and_easing(
         ui.scope_id().with(("track-row-hover", key)),
         revealed,
@@ -123,22 +165,50 @@ pub fn show(ui: &mut Ui, rect: Rect, columns: Columns, row: &Row<'_>, tokens: &T
 
     index(ui, number_box(columns.index), row, revealed, tokens);
     title(ui, columns.title, row, tokens);
-    artist(ui, columns.artist, row.artist, tokens);
-    album(ui, columns.album, row.album, tokens);
+    let artist_link = artist(ui, columns.artist, row, key, tokens);
+    let album_link = album(ui, columns.album, row, key, tokens);
     added(ui, columns.added, row.added, tokens);
     let on_like = like(ui, columns.like, key, revealed, tokens);
     duration(ui, columns.duration, row.duration, tokens);
     let on_more = more(ui, columns.actions, key, row, tokens);
 
-    // A double click on a control inside the row is not a double click on the row,
-    // or the like and the more would start playback as a side effect. Neither can
-    // act yet, so neither takes the click; they only keep it.
+    // The row's own keyboard activation is answered before the link cells are
+    // read, so a link click landing in the same frame can never swallow it.
+    // (egui surrenders the row's focus on the frame a link's click is reported,
+    // so the two cannot in fact both be true today; reading the keyboard first
+    // keeps the play whatever the hit test does.) A double click on a control
+    // inside the row is not a double click on the row, or the like and the more
+    // would start playback as a side effect. Neither can act yet, so neither
+    // takes the click; they only keep it.
     let on_control = on_like || on_more;
     let keyboard = response.has_focus()
         && ui.input(|input| {
             input.key_pressed(egui::Key::Enter) || input.key_pressed(egui::Key::Space)
         });
-    (response.double_clicked() || keyboard) && !on_control
+    if keyboard && !on_control {
+        return Some(Click::Play);
+    }
+
+    // The link cells are interacted after the row, so on a hit-test tie the cell
+    // wins the click and the row never sees the double click that would play. A
+    // click on either cell is a navigation, and takes precedence over playback.
+    let mut link_hovered = false;
+    let mut open = None;
+    for link in [artist_link, album_link].into_iter().flatten() {
+        link_hovered |= link.hovered;
+        open = open.or(link.page);
+    }
+    if let Some(page) = open {
+        return Some(Click::Open(page));
+    }
+
+    // `link_hovered` is a belt-and-braces guard, not the mechanism: when a link
+    // wins the hit test, the row's `double_clicked()` is already false because
+    // egui tells only the hit widget, so the second click of a double click on a
+    // link rides on the first click's navigation, which has already re-laid out
+    // the page. The keyboard was answered above, before any link click could
+    // take it.
+    (response.double_clicked() && !link_hovered && !on_control).then_some(Click::Play)
 }
 
 /// The index column: the number, or the play glyph under the pointer, or the
@@ -242,25 +312,51 @@ fn title(ui: &Ui, rect: Rect, row: &Row<'_>, tokens: &Tokens) {
 }
 
 /// The artist column, which only a playlist carries.
-fn artist(ui: &Ui, rect: Rect, label: &str, tokens: &Tokens) {
-    if !drawable(rect) || label.is_empty() {
-        return;
+///
+/// The cell is a link when its first artist resolved a page and its name is
+/// non-empty: an empty cell painted nothing, so it gets no hit area either.
+fn artist(
+    ui: &mut Ui,
+    rect: Rect,
+    row: &Row<'_>,
+    key: (&str, usize),
+    tokens: &Tokens,
+) -> Option<Link> {
+    if !drawable(rect) || row.artist.is_empty() {
+        return None;
     }
-    left(
-        ui,
-        rect,
-        label,
-        recipe::track_secondary(),
-        tokens.palette.text_muted,
-    );
+    let Some(uri) = row.artist_uri else {
+        left(
+            ui,
+            rect,
+            row.artist,
+            recipe::track_secondary(),
+            tokens.palette.text_muted,
+        );
+        return None;
+    };
+    let response = link_cell(ui, rect, "track-artist", row.artist, "artist", key, tokens);
+    Some(Link {
+        hovered: response.hovered(),
+        page: response.clicked().then(|| Page::Artist(uri.to_owned())),
+    })
 }
 
 /// The album column, which an album's own tracklist does not carry.
-fn album(ui: &Ui, rect: Rect, label: Option<&str>, tokens: &Tokens) {
-    if !drawable(rect) {
-        return;
+///
+/// The cell is a link under the same rule as [`artist`]'s.
+fn album(
+    ui: &mut Ui,
+    rect: Rect,
+    row: &Row<'_>,
+    key: (&str, usize),
+    tokens: &Tokens,
+) -> Option<Link> {
+    let label = row.album?;
+    if !drawable(rect) || label.is_empty() {
+        return None;
     }
-    if let Some(label) = label {
+    let Some(uri) = row.album_uri else {
         left(
             ui,
             rect,
@@ -268,7 +364,56 @@ fn album(ui: &Ui, rect: Rect, label: Option<&str>, tokens: &Tokens) {
             recipe::track_secondary(),
             tokens.palette.text_muted,
         );
+        return None;
+    };
+    let response = link_cell(ui, rect, "track-album", label, "album", key, tokens);
+    Some(Link {
+        hovered: response.hovered(),
+        page: response.clicked().then(|| Page::Album(uri.to_owned())),
+    })
+}
+
+/// Paints a link cell's label and returns its interaction.
+///
+/// The hit area is the whole cell, padding included, not only the painted text.
+/// The interaction is created before the label is painted so the painter can
+/// read its hover, and after the row's own so the cell takes the hit on a tie.
+/// The sense is `Sense::CLICK` rather than `Sense::click()`: a link must not add
+/// a focus stop to a sixty-row list.
+fn link_cell(
+    ui: &mut Ui,
+    rect: Rect,
+    id: &'static str,
+    label: &str,
+    kind: &str,
+    key: (&str, usize),
+    tokens: &Tokens,
+) -> egui::Response {
+    let response = ui.interact(rect, ui.scope_id().with((id, key)), Sense::CLICK);
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::Role::Link, true, format!("Open {kind} {label}"))
+    });
+    let hovered = response.hovered();
+    if hovered {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
+    let reveal = ui.ctx().animate_bool_with_time_and_easing(
+        ui.scope_id().with((id, "hover", key)),
+        hovered,
+        motion::FAST,
+        ease::out,
+    );
+    left(
+        ui,
+        rect,
+        label,
+        recipe::track_secondary(),
+        tokens
+            .palette
+            .text_muted
+            .lerp_to_gamma(tokens.palette.text, reveal),
+    );
+    response
 }
 
 /// The date the track was added, which only a playlist carries.
