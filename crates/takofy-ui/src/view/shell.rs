@@ -74,9 +74,14 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
     // library they were built from. It is applied here, before the view, and
     // only if no region has asked for a command yet: a nav can move the page and
     // start a load, and one whose command was then dropped would leave that load
-    // marked in flight with nothing fetching it.
+    // marked in flight with nothing fetching it. Side buttons and browser keys
+    // ride the same request; a click wins.
     let bar = topbar::show(ui, screen.library, regions.sidebar, grid.topbar, tokens);
-    command = apply_nav(screen.library, bar.nav, command);
+    command = apply_nav(
+        screen.library,
+        bar.nav.or_else(|| nav_from_input(ui)),
+        command,
+    );
 
     command = command.or(region(
         ui,
@@ -240,6 +245,27 @@ fn apply_nav(
             None
         }
     }
+}
+
+/// The side buttons and browser keys ask for the same nav as the topbar
+/// buttons and go through `apply_nav`.
+///
+/// Auto-repeat is deliberate: `key_pressed` also counts repeat events, so a held
+/// browser Back key steps back one page per repeat, the way a browser does.
+fn nav_from_input(ui: &Ui) -> Option<topbar::Nav> {
+    ui.input(|input| {
+        if input.key_pressed(egui::Key::BrowserBack)
+            || input.pointer.button_pressed(egui::PointerButton::Extra1)
+        {
+            Some(topbar::Nav::Back)
+        } else if input.key_pressed(egui::Key::BrowserForward)
+            || input.pointer.button_pressed(egui::PointerButton::Extra2)
+        {
+            Some(topbar::Nav::Forward)
+        } else {
+            None
+        }
+    })
 }
 
 /// The topbar and the view share one panel, so they share one frame.
@@ -492,6 +518,53 @@ mod tests {
         layout::grid_for(content, &shell).topbar
     }
 
+    /// The view's rect, solved the same way the shell solves it. A same-frame
+    /// destination is read from the text the view paints here, never from the
+    /// sidebar, which draws before the nav is applied.
+    fn view_rect(window: &Window) -> Rect {
+        let content = Rect::from_min_size(egui::Pos2::ZERO, window.size);
+        let regions = layout::regions_for(content.width());
+        let shell = layout::shell_for(&regions);
+        layout::grid_for(content, &shell).view
+    }
+
+    /// One press or release of `key` with no modifiers.
+    fn key(key: egui::Key, pressed: bool) -> egui::Event {
+        key_with_repeat(key, pressed, false)
+    }
+
+    /// One press of `key` as a held key's auto-repeat, never a release.
+    fn key_repeat(key: egui::Key) -> egui::Event {
+        key_with_repeat(key, true, true)
+    }
+
+    fn key_with_repeat(key: egui::Key, pressed: bool, repeat: bool) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed,
+            repeat,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    /// One press or release of `button` at `pos`.
+    ///
+    /// The side buttons are read globally, so most tests pass `Pos2::ZERO`: a
+    /// `Primary` press there only arms a click on whatever sits top-left, which
+    /// is benign without a release. A frame that also clicks passes the click's
+    /// own position, because that is where the press would arrive on real
+    /// hardware. `test_support::button` is `Primary`-only, so it is not used
+    /// here.
+    fn side(pos: egui::Pos2, button: egui::PointerButton, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton {
+            pos,
+            button,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
     /// The history pair, left to right, found from the buttons' painted frames
     /// rather than from coordinates a test guessed.
     fn history_buttons(output: &egui::FullOutput) -> Vec<Rect> {
@@ -534,6 +607,7 @@ mod tests {
 
     const PLAYLIST: &str = "spotify:playlist:a";
     const ALBUM: &str = "spotify:album:b";
+    const ALBUM_B: &str = "spotify:album:c";
 
     /// Puts one named, ready playlist on screen.
     fn ready_playlist(window: &mut Window) {
@@ -549,6 +623,15 @@ mod tests {
             tracks: Vec::new(),
             cover: None,
         });
+    }
+
+    /// The middle of a three-page history: album A on screen, the playlist
+    /// behind it and album B ahead.
+    fn history_of_three(window: &mut Window) {
+        ready_playlist(window);
+        window.library.open(Page::Album(ALBUM.to_owned()));
+        window.library.open(Page::Album(ALBUM_B.to_owned()));
+        window.library.back();
     }
 
     #[test]
@@ -599,6 +682,347 @@ mod tests {
             );
             assert_eq!(window.library.page(), None);
         }
+    }
+
+    #[test]
+    fn the_back_side_button_goes_back() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        history_of_three(&mut window);
+
+        let (command, frame) = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![side(egui::Pos2::ZERO, egui::PointerButton::Extra1, true)],
+        );
+        assert_eq!(command, None, "back onto a ready playlist needs no load");
+        assert_eq!(
+            window.library.page(),
+            Some(&Page::Playlist(PLAYLIST.to_owned()))
+        );
+        assert!(
+            text_in(&frame, "Mix", view_rect(&window)).is_some(),
+            "the view paints the playlist in the frame the nav applies"
+        );
+
+        let _ = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![side(egui::Pos2::ZERO, egui::PointerButton::Extra1, false)],
+        );
+    }
+
+    #[test]
+    fn the_forward_side_button_goes_forward() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        history_of_three(&mut window);
+        window.library.back();
+        assert_eq!(
+            window.library.page(),
+            Some(&Page::Playlist(PLAYLIST.to_owned()))
+        );
+
+        // The control frame: the predicate the next frame asserts on is live.
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(text_in(&frame, "Mix", view_rect(&window)).is_some());
+
+        let (command, frame) = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![side(egui::Pos2::ZERO, egui::PointerButton::Extra2, true)],
+        );
+        assert_eq!(command, None);
+        assert_eq!(window.library.page(), Some(&Page::Album(ALBUM.to_owned())));
+        // An album page draws no body in this milestone, so the same-frame proof
+        // that the view moved is that the playlist band is no longer painted in
+        // the view's own rect. The sidebar and topbar are excluded: both draw
+        // before the nav is applied.
+        assert!(
+            text_in(&frame, "Mix", view_rect(&window)).is_none(),
+            "the view leaves the playlist in the frame the nav applies"
+        );
+
+        let _ = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![side(egui::Pos2::ZERO, egui::PointerButton::Extra2, false)],
+        );
+    }
+
+    #[test]
+    fn browser_back_and_forward_keys_do_the_same() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        history_of_three(&mut window);
+
+        let (command, frame) = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![key(egui::Key::BrowserBack, true)],
+        );
+        assert_eq!(command, None, "back onto a ready playlist needs no load");
+        assert_eq!(
+            window.library.page(),
+            Some(&Page::Playlist(PLAYLIST.to_owned()))
+        );
+        assert!(text_in(&frame, "Mix", view_rect(&window)).is_some());
+
+        // A fresh window, so the two cases share no input state.
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        history_of_three(&mut window);
+        window.library.back();
+
+        // The control frame: the predicate the next frame asserts on is live.
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(text_in(&frame, "Mix", view_rect(&window)).is_some());
+
+        let (command, frame) = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![key(egui::Key::BrowserForward, true)],
+        );
+        assert_eq!(command, None);
+        assert_eq!(window.library.page(), Some(&Page::Album(ALBUM.to_owned())));
+        assert!(text_in(&frame, "Mix", view_rect(&window)).is_none());
+    }
+
+    /// Auto-repeat is intended, the way a browser behaves: a held Back key
+    /// steps back once per repeat, so each frame moves exactly one page rather
+    /// than draining the history in one go.
+    #[test]
+    fn a_held_browser_key_steps_back_once_per_frame() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        ready_playlist(&mut window);
+        window.library.open(Page::Album(ALBUM.to_owned()));
+        window.library.open(Page::Album(ALBUM_B.to_owned()));
+
+        let (command, _frame) = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![key_repeat(egui::Key::BrowserBack)],
+        );
+        assert_eq!(command, None, "back onto album A needs no load");
+        assert_eq!(
+            window.library.page(),
+            Some(&Page::Album(ALBUM.to_owned())),
+            "one repeat takes one step back, not two"
+        );
+
+        let (command, _frame) = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![key_repeat(egui::Key::BrowserBack)],
+        );
+        assert_eq!(command, None, "back onto a ready playlist needs no load");
+        assert_eq!(
+            window.library.page(),
+            Some(&Page::Playlist(PLAYLIST.to_owned())),
+            "the next repeat takes the next step, one page per frame"
+        );
+    }
+
+    #[test]
+    fn side_button_back_into_a_stale_playlist_loads_it() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        stale_playlist_behind_an_album(&mut window.library);
+
+        let (command, _frame) = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![side(egui::Pos2::ZERO, egui::PointerButton::Extra1, true)],
+        );
+        assert_eq!(
+            command,
+            Some(Command::LoadTracks {
+                playlist: PLAYLIST.to_owned()
+            })
+        );
+        assert_eq!(window.library.tracks, Load::Loading);
+
+        let _ = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![side(egui::Pos2::ZERO, egui::PointerButton::Extra1, false)],
+        );
+    }
+
+    #[test]
+    fn back_beats_forward_in_one_frame() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        history_of_three(&mut window);
+
+        let (command, frame) = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![
+                side(egui::Pos2::ZERO, egui::PointerButton::Extra2, true),
+                side(egui::Pos2::ZERO, egui::PointerButton::Extra1, true),
+            ],
+        );
+        assert_eq!(command, None);
+        assert_eq!(
+            window.library.page(),
+            Some(&Page::Playlist(PLAYLIST.to_owned())),
+            "Back is checked first, so one frame gives one action"
+        );
+        assert!(text_in(&frame, "Mix", view_rect(&window)).is_some());
+
+        let _ = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![
+                side(egui::Pos2::ZERO, egui::PointerButton::Extra1, false),
+                side(egui::Pos2::ZERO, egui::PointerButton::Extra2, false),
+            ],
+        );
+    }
+
+    #[test]
+    fn side_buttons_do_nothing_with_no_history() {
+        let cases = [
+            (
+                side(egui::Pos2::ZERO, egui::PointerButton::Extra1, true),
+                Some(side(egui::Pos2::ZERO, egui::PointerButton::Extra1, false)),
+            ),
+            (
+                side(egui::Pos2::ZERO, egui::PointerButton::Extra2, true),
+                Some(side(egui::Pos2::ZERO, egui::PointerButton::Extra2, false)),
+            ),
+            (key(egui::Key::BrowserBack, true), None),
+            (key(egui::Key::BrowserForward, true), None),
+        ];
+
+        for (input, release) in cases {
+            let mut transport = Transport::default();
+            let mut queue = Queue::default();
+            let mut window = Window::new(Vec2::new(1400.0, 900.0));
+
+            let (command, _frame) = window.frame(&mut transport, &mut queue, vec![input]);
+            assert_eq!(command, None, "there is nowhere to go");
+            assert_eq!(window.library.page(), None);
+            assert_eq!(window.library.tracks, Load::Idle);
+
+            if let Some(release) = release {
+                let _ = window.frame(&mut transport, &mut queue, vec![release]);
+            }
+        }
+    }
+
+    #[test]
+    fn releases_and_other_buttons_are_ignored() {
+        let cases = [
+            side(egui::Pos2::ZERO, egui::PointerButton::Extra1, false),
+            side(egui::Pos2::ZERO, egui::PointerButton::Primary, true),
+            side(egui::Pos2::ZERO, egui::PointerButton::Secondary, true),
+            side(egui::Pos2::ZERO, egui::PointerButton::Middle, true),
+            key(egui::Key::Escape, true),
+            key(egui::Key::ArrowLeft, true),
+            key(egui::Key::BrowserBack, false),
+        ];
+
+        for input in cases {
+            let mut transport = Transport::default();
+            let mut queue = Queue::default();
+            let mut window = Window::new(Vec2::new(1400.0, 900.0));
+            history_of_three(&mut window);
+
+            let (command, _frame) = window.frame(&mut transport, &mut queue, vec![input]);
+            assert_eq!(command, None);
+            assert_eq!(
+                window.library.page(),
+                Some(&Page::Album(ALBUM.to_owned())),
+                "only a press of a nav input moves the page"
+            );
+        }
+    }
+
+    /// The end-to-end pin of click-wins: one frame carries a primary press, a
+    /// primary release and an `Extra2` press, and the click's Back must win over
+    /// the side button's Forward.
+    ///
+    /// The `Extra2` press lands at the click's own position, which is where it
+    /// would arrive on real hardware, so the frame is shaped like a real one. The
+    /// second window is the control: the same events with the click on the inert
+    /// search field, so only the `Extra2` press can act, and it must move
+    /// Forward. That proves the side press is live in the frame where Back won,
+    /// so the test cannot pass with the side buttons unwired.
+    #[test]
+    fn a_topbar_click_beats_a_side_button() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        history_of_three(&mut window);
+
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let back = history_buttons(&frame)[0];
+        assert!(window.library.can_back(), "history exists, so Back is live");
+
+        // The hover frame, so frame 3's hit test sees the button there.
+        let _ = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![egui::Event::PointerMoved(back.center())],
+        );
+
+        let (command, frame) = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![
+                crate::view::test_support::button(back.center(), true),
+                crate::view::test_support::button(back.center(), false),
+                side(back.center(), egui::PointerButton::Extra2, true),
+            ],
+        );
+        assert_eq!(command, None);
+        assert_eq!(
+            window.library.page(),
+            Some(&Page::Playlist(PLAYLIST.to_owned())),
+            "the click's Back wins over the side button's Forward"
+        );
+        assert!(text_in(&frame, "Mix", view_rect(&window)).is_some());
+
+        let _ = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![side(back.center(), egui::PointerButton::Extra2, false)],
+        );
+
+        // The liveness control: no click to win, so the same-frame `Extra2`
+        // press must move Forward. The click lands on the topbar's right edge,
+        // where the search field paints no widget.
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        history_of_three(&mut window);
+        let inert = topbar_rect(&window).right_center() - Vec2::new(40.0, 0.0);
+
+        let (command, _frame) = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![
+                crate::view::test_support::button(inert, true),
+                crate::view::test_support::button(inert, false),
+                side(inert, egui::PointerButton::Extra2, true),
+            ],
+        );
+        assert_eq!(command, None);
+        assert_eq!(
+            window.library.page(),
+            Some(&Page::Album(ALBUM_B.to_owned())),
+            "with no click to win, the same-frame side press moves Forward"
+        );
     }
 
     #[test]
@@ -708,6 +1132,11 @@ mod tests {
     /// the harness above cannot stage: egui resolves one click position per
     /// frame. So the collision is driven through the shell's nav step, which is
     /// where the fix lives.
+    ///
+    /// A nav from a side button or a browser key merges into the same call, so
+    /// this guard covers it too. The sidebar-command case is not duplicated with
+    /// a second shell frame: the shell keeps the region's command before the nav
+    /// is ever looked at.
     #[test]
     fn a_nav_that_loses_the_frame_leaves_the_library_alone() {
         let mut library = Library::default();
