@@ -65,7 +65,6 @@ pub fn album_view(
     egui::ScrollArea::vertical()
         .id_salt(uri.as_str())
         .show(ui, |ui| {
-            let width = ui.available_width();
             match &library.album {
                 Load::Idle => {}
                 Load::Loading => {
@@ -113,59 +112,62 @@ pub fn album_view(
                         command = queue.start(&album.tracks, 0, transport);
                     }
 
-                    if album.tracks.is_empty() {
-                        ui.label(recipe::muted("No tracks on this album.", tokens));
-                        return;
-                    }
-
-                    // The album's own columns, solved once and handed to the head and
-                    // every row, so the two cannot disagree about where a column is.
-                    let columns = table_layout::columns(width, table.columns().for_album());
-                    head(ui, columns, tokens);
-                    let count = album.tracks.len();
-                    // The whole list is reserved at once, so the scrollbar is right,
-                    // and only the rows the viewport can show are laid out and given
-                    // interaction.
-                    let list = list_rect(ui, count);
-                    ui.allocate_rect(list, Sense::hover());
-                    let visible = ui.clip_rect();
-
-                    for (index, entry) in album.tracks.iter().enumerate() {
-                        let rect = table_layout::row_rect(list, index, extent::ROW_H);
-                        if !visible.intersects(rect) {
-                            continue;
+                    super::inner(ui, |ui| {
+                        let width = ui.available_width();
+                        if album.tracks.is_empty() {
+                            ui.label(recipe::muted("No tracks on this album.", tokens));
+                            return;
                         }
-                        let duration = entry.duration_ms.map(format_position);
-                        let row = Row {
-                            uri: &entry.uri,
-                            // The number is the position in this one continuous list,
-                            // which is what makes a multi-disc album read 1..N.
-                            number: index + 1,
-                            title: &entry.title,
-                            title_cell: TitleCell::NameOverArtist,
-                            artist: &entry.artists,
-                            // The subline opens the artist it names, which on a
-                            // compilation or a feature is not the album's.
-                            artist_uri: entry.artist_uris.first().map(String::as_str),
-                            // No album cell and no added date in an album's own table.
-                            album: None,
-                            album_uri: None,
-                            added: None,
-                            duration: duration.as_deref(),
-                            state: state_of(&entry.uri, transport),
-                            // The band already holds the record's one picture.
-                            cover: Cover::Missing,
-                        };
-                        // A row plays; its artist subline, when the album named
-                        // a resolvable artist, opens that artist's page.
-                        match track_row::show(ui, rect, columns, &row, tokens) {
-                            Some(Click::Play) => {
-                                command = queue.start(&album.tracks, index, transport);
+
+                        // The album's own columns, solved once and handed to the head and
+                        // every row, so the two cannot disagree about where a column is.
+                        let columns = table_layout::columns(width, table.columns().for_album());
+                        head(ui, columns, tokens);
+                        let count = album.tracks.len();
+                        // The whole list is reserved at once, so the scrollbar is right,
+                        // and only the rows the viewport can show are laid out and given
+                        // interaction.
+                        let list = list_rect(ui, count);
+                        ui.allocate_rect(list, Sense::hover());
+                        let visible = ui.clip_rect();
+
+                        for (index, entry) in album.tracks.iter().enumerate() {
+                            let rect = table_layout::row_rect(list, index, extent::ROW_H);
+                            if !visible.intersects(rect) {
+                                continue;
                             }
-                            Some(Click::Open(page)) => open = Some(page),
-                            None => {}
+                            let duration = entry.duration_ms.map(format_position);
+                            let row = Row {
+                                uri: &entry.uri,
+                                // The number is the position in this one continuous list,
+                                // which is what makes a multi-disc album read 1..N.
+                                number: index + 1,
+                                title: &entry.title,
+                                title_cell: TitleCell::NameOverArtist,
+                                artist: &entry.artists,
+                                // The subline opens the artist it names, which on a
+                                // compilation or a feature is not the album's.
+                                artist_uri: entry.artist_uris.first().map(String::as_str),
+                                // No album cell and no added date in an album's own table.
+                                album: None,
+                                album_uri: None,
+                                added: None,
+                                duration: duration.as_deref(),
+                                state: state_of(&entry.uri, transport),
+                                // The band already holds the record's one picture.
+                                cover: Cover::Missing,
+                            };
+                            // A row plays; its artist subline, when the album named
+                            // a resolvable artist, opens that artist's page.
+                            match track_row::show(ui, rect, columns, &row, tokens) {
+                                Some(Click::Play) => {
+                                    command = queue.start(&album.tracks, index, transport);
+                                }
+                                Some(Click::Open(page)) => open = Some(page),
+                                None => {}
+                            }
                         }
-                    }
+                    });
                 }
             }
         });
@@ -330,11 +332,13 @@ mod tests {
                 cover: Cover::Missing,
             };
             let _ = hero::show(ui, &band, &tokens);
-            let columns =
-                table_layout::columns(ui.available_width(), Table::Full.columns().for_album());
-            track_list::head(ui, columns, &tokens);
-            let list = track_list::list_rect(ui, count);
-            found = Some(table_layout::row_rect(list, index, extent::ROW_H));
+            crate::view::inner(ui, |ui| {
+                let columns =
+                    table_layout::columns(ui.available_width(), Table::Full.columns().for_album());
+                track_list::head(ui, columns, &tokens);
+                let list = track_list::list_rect(ui, count);
+                found = Some(table_layout::row_rect(list, index, extent::ROW_H));
+            });
         });
         found.expect("the head and the list lay out")
     }
@@ -862,6 +866,44 @@ mod tests {
             cover: None,
         });
         library
+    }
+
+    /// The album's content sits one gutter inside the pane, so its table lines up
+    /// under the band's own padding rather than rubbing the panel's edge.
+    #[test]
+    fn the_album_table_sits_one_gutter_inside_the_pane() {
+        let ctx = context();
+        let mut library = library_with(detail(vec![track(
+            "spotify:track:a",
+            "First",
+            "Band",
+            222_000,
+        )]));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let (_, output) = frame(
+            &ctx,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut Art::default(),
+        );
+
+        let heading = text_rect(&output, "TITLE").expect("the table head is painted");
+        // The head paints the title column's heading, so the gutter shows up as
+        // the difference between the painted left and the column solved at the
+        // pane's width less the two gutters.
+        let columns = table_layout::columns(
+            PROBE.x - 2.0 * space::GUTTER,
+            Table::Full.columns().for_album(),
+        );
+        assert!(
+            (heading.left() - (space::GUTTER + columns.title.left())).abs() < 0.01,
+            "the table head sits at {}, one gutter plus the title column is {}",
+            heading.left(),
+            space::GUTTER + columns.title.left()
+        );
     }
 
     /// The album page starts where every other page starts. The leading gap is
