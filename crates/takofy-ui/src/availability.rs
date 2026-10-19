@@ -38,6 +38,11 @@ pub enum Control {
     Fullscreen,
     TrackLike,
     TrackMore,
+    /// The queue tab of the Now Playing panel. The list behind it exists.
+    NowPlayingQueueTab,
+    /// The lyrics tab. Drawn present and dim: lyrics data belongs to the next
+    /// phase's fetch and parse.
+    NowPlayingLyricsTab,
     HeroShuffle,
     HeroLike,
     HeroMore,
@@ -49,7 +54,7 @@ pub enum Control {
 }
 
 impl Control {
-    pub const ALL: [Self; 37] = [
+    pub const ALL: [Self; 39] = [
         Self::NavHome,
         Self::NavSearch,
         Self::LibraryCreate,
@@ -81,6 +86,8 @@ impl Control {
         Self::Fullscreen,
         Self::TrackLike,
         Self::TrackMore,
+        Self::NowPlayingQueueTab,
+        Self::NowPlayingLyricsTab,
         Self::HeroShuffle,
         Self::HeroLike,
         Self::HeroMore,
@@ -149,6 +156,11 @@ pub fn availability(control: Control) -> Availability {
         Control::TrackLike => Availability::Waiting,
         Control::TrackMore => Availability::Waiting,
 
+        // The panel's tabs: the queue is state the window already holds, and
+        // lyrics are a fetch and a parse it does not make. #15
+        Control::NowPlayingQueueTab => Availability::Ready,
+        Control::NowPlayingLyricsTab => Availability::Waiting,
+
         // The hero's tools have no command yet. Its play has one, so the view
         // is Ready and the moment decides whether it can act.
         Control::HeroShuffle => Availability::Waiting,
@@ -178,6 +190,7 @@ mod tests {
                     | Control::Next
                     | Control::Seek
                     | Control::HeroPlay
+                    | Control::NowPlayingQueueTab
                     | Control::Authorize
             );
             assert_eq!(
@@ -195,6 +208,6 @@ mod tests {
             assert!(!seen.contains(&control), "{control:?} is listed twice");
             seen.push(control);
         }
-        assert_eq!(seen.len(), 37);
+        assert_eq!(seen.len(), 39);
     }
 }

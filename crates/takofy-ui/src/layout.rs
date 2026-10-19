@@ -9,6 +9,8 @@ use crate::theme::{extent, space};
 
 pub mod cards;
 pub mod hero;
+pub mod panel;
+pub mod queue;
 pub mod table;
 pub mod tracks;
 

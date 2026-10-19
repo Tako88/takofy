@@ -103,11 +103,20 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
         .and_then(|now| now.cover.as_ref());
     let now_playing_cover = screen.art.look(playing_cover, screen.now);
 
+    let mut clicked_row = None;
     if let Some(panel) = grid.now_playing
         && regions.now_playing != NowPlaying::Hidden
     {
-        region(ui, "now-playing", panel, panel.shrink(inset), |ui| {
-            now_playing::show(ui, screen.transport, now_playing_cover, tokens);
+        clicked_row = region(ui, "now-playing", panel, panel.shrink(inset), |ui| {
+            now_playing::show(
+                ui,
+                screen.transport,
+                screen.queue,
+                screen.art,
+                screen.now,
+                now_playing_cover,
+                tokens,
+            )
         });
     }
 
@@ -129,6 +138,13 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
             )
         },
     ));
+
+    // The panel only reports the row it was clicked on. Applying the jump here,
+    // and only when no other region asked for a command, keeps a frame from
+    // moving the queue past a click whose `Play` would then be dropped.
+    if command.is_none() {
+        command = clicked_row.and_then(|index| screen.queue.jump(index, screen.transport));
+    }
 
     // The drawer is stepped after the regions, so a playlist picked from the rail
     // closes it in the same frame it is picked.
@@ -270,7 +286,7 @@ pub(super) fn rule(ui: &Ui, rect: Rect, color: Color32) {
 mod tests {
     use std::time::Instant;
 
-    use takofy_model::CoverUrl;
+    use takofy_model::{CoverUrl, TrackEntry};
 
     use super::*;
     use crate::cover::Art;
@@ -280,65 +296,216 @@ mod tests {
     use crate::signin::SignIn;
     use crate::theme::{fonts, style};
 
-    #[test]
-    fn the_playbar_tile_is_requested_even_with_the_panel_hidden() {
-        let tokens = Tokens::DARK;
-        let ctx = egui::Context::default();
-        ctx.set_fonts(fonts::definitions());
-        ctx.set_global_style(style(&tokens));
+    fn cover(tail: &str) -> CoverUrl {
+        CoverUrl::from_wire(&format!("https://i.scdn.co/image/{tail}")).expect("a cover url")
+    }
 
-        let url = CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover url");
-        let mut transport = Transport {
+    fn playing(cover: CoverUrl) -> Transport {
+        Transport {
             now_playing: Some(NowPlaying {
                 uri: "spotify:track:x".to_owned(),
                 title: "A Title".to_owned(),
-                cover: Some(url.clone()),
+                artists: "A Band".to_owned(),
+                cover: Some(cover),
             }),
             ..Transport::default()
-        };
-        let mut state = SignIn::SignedIn;
-        let mut library = Library::default();
-        let mut queue = Queue::default();
-        let mut drawer = Drawer::default();
-        let mut art = Art::default();
-        let now = Instant::now();
+        }
+    }
 
-        // Narrower than the panel breakpoint, so the Now Playing panel is not
-        // drawn and only the playbar can want the tile.
-        let input = egui::RawInput {
-            screen_rect: Some(Rect::from_min_size(
-                egui::Pos2::ZERO,
-                Vec2::new(900.0, 600.0),
-            )),
-            ..Default::default()
-        };
+    fn track(index: usize, cover: Option<CoverUrl>) -> TrackEntry {
+        TrackEntry {
+            uri: format!("t{index}"),
+            title: format!("t{index}"),
+            artists: String::new(),
+            album: None,
+            duration_ms: None,
+            named: true,
+            cover,
+        }
+    }
 
-        art.begin_frame();
-        {
-            let mut screen = Screen {
-                state: &mut state,
-                library: &mut library,
-                transport: &mut transport,
-                queue: &mut queue,
-                drawer: &mut drawer,
-                position_ms: 0,
-                art: &mut art,
-                now,
-            };
-            let mut output = ctx.run_ui(input, |ui| {
-                let _ = show(ui, &mut screen, &tokens);
-            });
-            output.textures_delta.clear();
+    /// The window's own frame, kept across passes because egui's hit test reads
+    /// the previous one.
+    struct Window {
+        ctx: egui::Context,
+        size: Vec2,
+        state: SignIn,
+        library: Library,
+        drawer: Drawer,
+        art: Art,
+        now: Instant,
+    }
+
+    impl Window {
+        fn new(size: Vec2) -> Self {
+            let tokens = Tokens::DARK;
+            let ctx = egui::Context::default();
+            ctx.set_fonts(fonts::definitions());
+            ctx.set_global_style(style(&tokens));
+            Self {
+                ctx,
+                size,
+                state: SignIn::SignedIn,
+                library: Library::default(),
+                drawer: Drawer::default(),
+                art: Art::default(),
+                now: Instant::now(),
+            }
         }
 
-        let requested: Vec<CoverUrl> = art
-            .requests(now)
-            .into_iter()
-            .filter_map(|command| match command {
-                Command::Fetch { url } => Some(url),
+        /// Draws one frame, returning the command the shell reported and the
+        /// frame's output.
+        fn frame(
+            &mut self,
+            transport: &mut Transport,
+            queue: &mut Queue,
+            events: Vec<egui::Event>,
+        ) -> (Option<Command>, egui::FullOutput) {
+            let tokens = Tokens::DARK;
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, self.size)),
+                events,
+                ..Default::default()
+            };
+            self.art.begin_frame();
+            let mut command = None;
+            let mut screen = Screen {
+                state: &mut self.state,
+                library: &mut self.library,
+                transport,
+                queue,
+                drawer: &mut self.drawer,
+                position_ms: 0,
+                art: &mut self.art,
+                now: self.now,
+            };
+            let mut output = self.ctx.run_ui(input, |ui| {
+                command = show(ui, &mut screen, &tokens);
+            });
+            output.textures_delta.clear();
+            (command, output)
+        }
+
+        /// The covers the last frame's draw asked for.
+        fn requests(&mut self) -> Vec<CoverUrl> {
+            self.art
+                .requests(self.now)
+                .into_iter()
+                .filter_map(|command| match command {
+                    Command::Fetch { url } => Some(url),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        /// Clicks `at` over the passes egui's hit test needs, returning the
+        /// command the shell reported.
+        fn click(
+            &mut self,
+            transport: &mut Transport,
+            queue: &mut Queue,
+            at: egui::Pos2,
+        ) -> Option<Command> {
+            let _ = self.frame(transport, queue, Vec::new());
+            let mut command = None;
+            for event in crate::view::test_support::click_events(at) {
+                if let Some(next) = self.frame(transport, queue, vec![event]).0 {
+                    command = Some(next);
+                }
+            }
+            command
+        }
+    }
+
+    /// Where a label was painted, so a click lands on a row the shell drew
+    /// rather than on a coordinate a test guessed.
+    fn painted_at(output: &egui::FullOutput, label: &str) -> Option<egui::Pos2> {
+        output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::Shape::Text(text) if text.galley.text() == label => Some(text.pos),
                 _ => None,
             })
-            .collect();
-        assert_eq!(requested, vec![url]);
+    }
+
+    /// Draws one frame of the whole shell at `screen` and returns the covers it
+    /// asked for.
+    fn requested(screen: Vec2, transport: &mut Transport, queue: &mut Queue) -> Vec<CoverUrl> {
+        let mut window = Window::new(screen);
+        let _ = window.frame(transport, queue, Vec::new());
+        window.requests()
+    }
+
+    #[test]
+    fn the_playbar_tile_is_requested_even_with_the_panel_hidden() {
+        // Narrower than the panel breakpoint, so the Now Playing panel is not
+        // drawn and only the playbar can want a cover — the queue's rows too.
+        let mut transport = playing(cover("abc"));
+        let tracks = vec![
+            track(0, Some(cover("abc"))),
+            track(1, Some(cover("row1"))),
+            track(2, Some(cover("row2"))),
+        ];
+        let mut queue = Queue::default();
+        queue.start(&tracks, 0, &mut transport);
+
+        assert_eq!(
+            requested(Vec2::new(900.0, 600.0), &mut transport, &mut queue),
+            vec![cover("abc")],
+            "a hidden panel must not ask for its rows' covers"
+        );
+    }
+
+    #[test]
+    fn a_visible_panel_requests_the_visible_rows_covers() {
+        let mut transport = playing(cover("abc"));
+        let tracks = vec![
+            track(0, Some(cover("abc"))),
+            track(1, Some(cover("row1"))),
+            track(2, Some(cover("row2"))),
+        ];
+        let mut queue = Queue::default();
+        queue.start(&tracks, 0, &mut transport);
+
+        let mut asked = requested(Vec2::new(1400.0, 900.0), &mut transport, &mut queue);
+        asked.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+
+        let mut expected = vec![cover("abc"), cover("row1"), cover("row2")];
+        expected.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+        assert_eq!(
+            asked, expected,
+            "the panel must ask for the rows it draws, and the playbar for its tile"
+        );
+    }
+
+    #[test]
+    fn a_click_on_a_queue_row_plays_that_entry() {
+        // The panel reports the row and the shell is what moves the queue and
+        // the transport, so nothing can name a track the transport never got.
+        let mut transport = playing(cover("abc"));
+        let tracks = vec![
+            track(0, Some(cover("abc"))),
+            track(1, Some(cover("row1"))),
+            track(2, Some(cover("row2"))),
+        ];
+        let mut queue = Queue::default();
+        queue.start(&tracks, 0, &mut transport);
+
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let at = painted_at(&frame, "t2").expect("row t2 is painted");
+
+        assert_eq!(
+            window.click(&mut transport, &mut queue, at + Vec2::new(6.0, 6.0)),
+            Some(Command::Play {
+                uri: "t2".to_owned()
+            })
+        );
+        assert_eq!(
+            transport.now_playing.as_ref().map(|now| now.uri.as_str()),
+            Some("t2"),
+            "the shell's jump must reach the transport, not only the queue"
+        );
     }
 }

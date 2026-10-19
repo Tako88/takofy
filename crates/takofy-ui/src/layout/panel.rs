@@ -1,0 +1,338 @@
+//! The vertical stack inside the Now Playing panel.
+//!
+//! `layout.rs` owns which regions a window shows and how wide each one is; this
+//! is the arithmetic inside one region. The reference's panel is a flex column —
+//! head, art, meta, tabs, pane — so the stack is solved top down, and the art is
+//! the one element that gives way: it shrinks so the pane keeps its minimum, and
+//! stops at its floor rather than vanishing.
+//!
+//! Everything is clamped. A band shorter than its own contents yields a stack
+//! that still ends at the band's bottom, with the pane's height never negative.
+
+use egui::{Rect, pos2, vec2};
+
+use crate::layout::queue;
+use crate::theme::{extent, space, text};
+
+/// The panel's head: the caption and the more button.
+pub const HEAD_H: f32 = extent::BUTTON;
+
+/// The queue pane's caption, `space-2` above and below a line of caps.
+pub const CAPTION_H: f32 = text::XXS + 2.0 * space::S2;
+
+/// The least the pane is worth drawing: its caption and one row.
+pub const PANE_MIN_H: f32 = CAPTION_H + queue::ROW_H;
+
+/// The panel's five parts, top to bottom.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Stack {
+    pub head: Rect,
+    pub art: Rect,
+    pub meta: Rect,
+    pub tabs: Rect,
+    /// The scrollable pane. It spans the band's full width; its own content is
+    /// inset by the pane, which is the one thing that scrolls.
+    pub pane: Rect,
+}
+
+/// Solves the stack inside `band`.
+///
+/// `meta_h` is the height of the title, artist and state lines and `tabs_h` the
+/// height of the tab pair, both measured by the painter because they depend on
+/// the fonts.
+pub fn stack_for(band: Rect, meta_h: f32, tabs_h: f32) -> Stack {
+    let band = sane(band);
+    let meta_h = height(meta_h);
+    let tabs_h = height(tabs_h);
+    let inset = inset(band, space::S3);
+    let width = inset.width();
+
+    let head = Rect::from_min_size(inset.min, vec2(width, HEAD_H.min(inset.height())));
+
+    let art_top = head.bottom() + space::S3;
+    // What the art may take once everything below it holds its minimum.
+    let below = space::S4 + meta_h + space::S3 + tabs_h + space::S3 + PANE_MIN_H;
+    let room = band.bottom() - art_top - below;
+    let capped = width.min(extent::NOWPLAYING_ART_MAX);
+    let side = room.min(capped).max(extent::NOWPLAYING_ART_MIN);
+    let art = Rect::from_min_size(
+        pos2(band.center().x - side / 2.0, art_top),
+        vec2(side, side),
+    );
+
+    let meta = Rect::from_min_size(
+        pos2(inset.left(), art.bottom() + space::S4),
+        vec2(width, meta_h),
+    );
+    let tabs = Rect::from_min_size(
+        pos2(inset.left(), meta.bottom() + space::S3),
+        vec2(width, tabs_h),
+    );
+    let pane_top = (tabs.bottom() + space::S3).min(band.bottom());
+    let pane = Rect::from_min_max(
+        pos2(band.left(), pane_top),
+        pos2(band.right(), band.bottom()),
+    );
+
+    Stack {
+        head,
+        art,
+        meta,
+        tabs,
+        pane,
+    }
+}
+
+/// `rect` inset by `amount` on every side, collapsed to zero rather than
+/// inverted when it is too small to inset.
+fn inset(rect: Rect, amount: f32) -> Rect {
+    let left = rect.left() + amount;
+    let top = rect.top() + amount;
+    let right = (rect.right() - amount).max(left);
+    let bottom = (rect.bottom() - amount).max(top);
+    Rect::from_min_max(pos2(left, top), pos2(right, bottom))
+}
+
+/// A measured height, with anything unusable read as none.
+fn height(value: f32) -> f32 {
+    if value.is_finite() {
+        value.max(0.0)
+    } else {
+        0.0
+    }
+}
+
+/// A rect with a finite origin and a non-negative size.
+fn sane(rect: Rect) -> Rect {
+    if !rect.min.x.is_finite()
+        || !rect.min.y.is_finite()
+        || !rect.width().is_finite()
+        || !rect.height().is_finite()
+    {
+        return Rect::ZERO;
+    }
+    Rect::from_min_size(
+        rect.min,
+        vec2(rect.width().max(0.0), rect.height().max(0.0)),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The panel's content band: the region less the panel's own hairline.
+    fn band(width: f32, height: f32) -> Rect {
+        Rect::from_min_size(pos2(10.0, 20.0), vec2(width, height))
+    }
+
+    /// The two heights the painter measures, at values close to what the fonts
+    /// give: three text lines and the chip pair.
+    const META: f32 = 56.0;
+    const TABS: f32 = 22.0;
+
+    fn parts(stack: Stack) -> [(&'static str, Rect); 5] {
+        [
+            ("head", stack.head),
+            ("art", stack.art),
+            ("meta", stack.meta),
+            ("tabs", stack.tabs),
+            ("pane", stack.pane),
+        ]
+    }
+
+    /// The band a panel has at a given window size, solved the way the shell
+    /// solves it rather than copied: the region minus the window's padding, the
+    /// playbar row and the panel's hairline.
+    fn band_at(window: egui::Vec2) -> Rect {
+        use crate::layout::{grid_for, regions_for, shell_for};
+
+        let content = Rect::from_min_size(pos2(0.0, 0.0), window);
+        let shell = shell_for(&regions_for(window.x));
+        let grid = grid_for(content, &shell);
+        grid.now_playing
+            .expect("the panel is drawn at this width")
+            .shrink(crate::theme::stroke::HAIRLINE)
+    }
+
+    #[test]
+    fn the_stack_is_ordered_and_inside_the_band() {
+        let band = band(270.0, 390.0);
+        let stack = stack_for(band, META, TABS);
+        let order = [
+            stack.head.top(),
+            stack.head.bottom(),
+            stack.art.top(),
+            stack.art.bottom(),
+            stack.meta.top(),
+            stack.meta.bottom(),
+            stack.tabs.top(),
+            stack.tabs.bottom(),
+            stack.pane.top(),
+        ];
+        for pair in order.windows(2) {
+            assert!(
+                pair[0] <= pair[1] + 0.01,
+                "the stack is out of order: {order:?}"
+            );
+        }
+        for (name, rect) in parts(stack) {
+            assert!(
+                rect.top() >= band.top() - 0.01,
+                "{name} starts above the band"
+            );
+            assert!(
+                rect.bottom() <= band.bottom() + 0.01,
+                "{name} ends below the band"
+            );
+            assert!(
+                rect.left() >= band.left() - 0.01,
+                "{name} starts left of the band"
+            );
+            assert!(
+                rect.right() <= band.right() + 0.01,
+                "{name} ends right of the band"
+            );
+        }
+    }
+
+    #[test]
+    fn every_rect_is_inset_s3_except_the_pane() {
+        // A band tall enough that the art is not the thing giving way.
+        let band = band(270.0, 900.0);
+        let stack = stack_for(band, META, TABS);
+        for (name, rect) in [
+            ("head", stack.head),
+            ("meta", stack.meta),
+            ("tabs", stack.tabs),
+        ] {
+            assert!(
+                (rect.left() - band.left() - space::S3).abs() < 0.01,
+                "{name}"
+            );
+            assert!(
+                (rect.right() - band.right() + space::S3).abs() < 0.01,
+                "{name}"
+            );
+        }
+        assert!((stack.head.top() - band.top() - space::S3).abs() < 0.01);
+        assert!((stack.art.width() - (band.width() - 2.0 * space::S3)).abs() < 0.01);
+        // The pane is the scroller, so it takes the band's whole width and its
+        // own content is what gets inset.
+        assert_eq!(stack.pane.left(), band.left());
+        assert_eq!(stack.pane.right(), band.right());
+    }
+
+    #[test]
+    fn the_art_is_capped_in_a_tall_band_and_is_the_band_less_its_insets_in_a_narrow_one() {
+        let tall = stack_for(band(312.0, 900.0), META, TABS);
+        assert_eq!(tall.art.width(), extent::NOWPLAYING_ART_MAX);
+        assert_eq!(tall.art.height(), extent::NOWPLAYING_ART_MAX);
+        assert!(
+            (tall.art.center().x - band(312.0, 900.0).center().x).abs() < 0.01,
+            "the art is centred in the band"
+        );
+
+        let narrow = stack_for(band(270.0, 900.0), META, TABS);
+        assert_eq!(narrow.art.width(), 270.0 - 2.0 * space::S3);
+    }
+
+    #[test]
+    fn the_art_shrinks_so_the_pane_keeps_its_minimum() {
+        // A band tall enough for the cap, then shorter and shorter: the art gives
+        // way before the pane does.
+        let short = stack_for(band(270.0, 390.0), META, TABS);
+        assert!(
+            short.art.height() < extent::NOWPLAYING_ART_MAX,
+            "a 390-point band cannot hold the cap and the pane"
+        );
+        assert!(
+            short.pane.height() >= PANE_MIN_H - 0.01,
+            "the pane fell to {}",
+            short.pane.height()
+        );
+    }
+
+    #[test]
+    fn the_art_never_drops_below_its_floor() {
+        for height in [390.0, 300.0, 240.0, 120.0, 40.0, 0.0] {
+            let stack = stack_for(band(270.0, height), META, TABS);
+            assert!(
+                stack.art.height() >= extent::NOWPLAYING_ART_MIN,
+                "the art is {} at {height}",
+                stack.art.height()
+            );
+            assert_eq!(stack.art.width(), stack.art.height());
+        }
+    }
+
+    #[test]
+    fn the_pane_ends_at_the_bands_bottom_and_is_never_negative() {
+        for height in [390.0, 200.0, 100.0, 10.0, 0.0] {
+            let band = band(270.0, height);
+            let stack = stack_for(band, META, TABS);
+            assert_eq!(stack.pane.bottom(), band.bottom(), "at {height}");
+            assert!(
+                stack.pane.height() >= 0.0,
+                "the pane is {} at {height}",
+                stack.pane.height()
+            );
+        }
+    }
+
+    #[test]
+    fn the_narrowest_visible_window_clears_the_art_floor() {
+        // 1121 by 480 is the smallest window the panel is drawn at.
+        let band = band_at(vec2(1121.0, 480.0));
+        assert_eq!(band.width(), 270.0);
+        assert_eq!(band.height(), 390.0);
+
+        let stack = stack_for(band, META, TABS);
+        assert!(
+            stack.art.height() > extent::NOWPLAYING_ART_MIN,
+            "the art fell to {}, below its {} floor",
+            stack.art.height(),
+            extent::NOWPLAYING_ART_MIN
+        );
+        assert!(stack.pane.height() >= PANE_MIN_H, "{}", stack.pane.height());
+    }
+
+    #[test]
+    fn the_default_wide_window_holds_the_full_art_and_the_pane() {
+        let band = band_at(vec2(1440.0, 900.0));
+        let stack = stack_for(band, META, TABS);
+        assert_eq!(stack.art.width(), extent::NOWPLAYING_ART_MAX);
+        assert!(stack.pane.height() > PANE_MIN_H);
+    }
+
+    #[test]
+    fn a_zero_size_band_neither_panics_nor_produces_nan() {
+        for band in [
+            Rect::ZERO,
+            band(0.0, 0.0),
+            band(0.0, 400.0),
+            band(400.0, 0.0),
+            Rect::from_min_size(pos2(f32::NAN, 0.0), vec2(100.0, 100.0)),
+            Rect::from_min_size(pos2(0.0, 0.0), vec2(f32::INFINITY, f32::INFINITY)),
+            Rect::from_min_size(pos2(0.0, 0.0), vec2(-50.0, -50.0)),
+        ] {
+            for (meta, tabs) in [(META, TABS), (0.0, 0.0), (f32::NAN, f32::INFINITY)] {
+                let stack = stack_for(band, meta, tabs);
+                for (name, rect) in parts(stack) {
+                    assert!(
+                        rect.min.x.is_finite() && rect.min.y.is_finite(),
+                        "{name} in {band:?} has a non-finite origin: {rect:?}"
+                    );
+                    assert!(
+                        rect.width().is_finite() && rect.height().is_finite(),
+                        "{name} in {band:?} has a non-finite size: {rect:?}"
+                    );
+                    assert!(
+                        rect.width() >= 0.0 && rect.height() >= 0.0,
+                        "{name} in {band:?} is negative: {rect:?}"
+                    );
+                }
+            }
+        }
+    }
+}
