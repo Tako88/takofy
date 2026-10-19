@@ -10,7 +10,7 @@ use librespot::core::SessionConfig;
 use takofy_core::credentials::AccessToken;
 use takofy_core::engine::{Engine, EngineError};
 use takofy_core::playback::{Playback, PlaybackError, PlaybackEvent};
-use takofy_model::{CoverUrl, PlaylistEntry, TrackEntry};
+use takofy_model::{AlbumDetail, CoverUrl, PlaylistEntry, TrackEntry};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::oneshot::Receiver;
 
@@ -34,6 +34,7 @@ impl SessionError {
             Self::Engine(EngineError::Session(_)) => "session",
             Self::Engine(EngineError::Rootlist(_)) => "rootlist",
             Self::Engine(EngineError::Context(_)) => "context",
+            Self::Engine(EngineError::Album(_)) => "album",
             Self::Playback(error) => match error {
                 PlaybackError::NoAudioBackend => "no audio backend",
                 PlaybackError::NoAudioDevice => "no audio device",
@@ -70,6 +71,8 @@ pub(crate) trait SessionHost: Send + 'static {
         &mut self,
         playlist: &str,
     ) -> impl Future<Output = Result<TrackPage, SessionError>> + Send;
+
+    fn album(&self, album: &str) -> impl Future<Output = Result<AlbumDetail, SessionError>> + Send;
 
     fn play(&mut self, uri: &str) -> Result<(), SessionError>;
 
@@ -151,6 +154,13 @@ impl SessionHost for LiveSession {
             tracks,
             cover: pages.cover(),
         })
+    }
+
+    async fn album(&self, album: &str) -> Result<AlbumDetail, SessionError> {
+        match &self.engine {
+            Some(engine) => engine.album(album).await.map_err(SessionError::Engine),
+            None => Err(SessionError::NotConnected),
+        }
     }
 
     fn play(&mut self, uri: &str) -> Result<(), SessionError> {

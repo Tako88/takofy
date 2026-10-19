@@ -156,6 +156,8 @@ impl Library {
             }
             Update::NeedsAuthorization
             | Update::SignInFailed(_)
+            | Update::Album(_)
+            | Update::AlbumFailed { .. }
             | Update::Transport(_)
             | Update::Cover { .. }
             | Update::CoverFailed { .. } => {}
