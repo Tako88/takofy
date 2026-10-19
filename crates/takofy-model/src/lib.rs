@@ -150,7 +150,11 @@ impl AddedAt {
     }
 }
 
-/// A track inside a playlist.
+/// A track as a list row draws it.
+///
+/// A playlist position and an album position are both rows, so both use this.
+/// An album position is not a membership, so its [`Self::added_at`] is always
+/// `None`: an album is a record, not a date the track joined something.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrackEntry {
     pub uri: String,
