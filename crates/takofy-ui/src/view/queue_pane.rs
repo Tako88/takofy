@@ -164,7 +164,7 @@ mod tests {
     use takofy_model::{CoverUrl, TrackEntry};
 
     use super::*;
-    use crate::cover::{self, Cover};
+    use crate::cover::Cover;
     use crate::message::Command;
     use crate::player::Transport;
     use crate::theme::{fonts, style};
@@ -426,17 +426,20 @@ mod tests {
     }
 
     #[test]
-    fn a_row_outside_the_viewport_takes_no_click() {
+    fn a_click_below_the_pane_picks_no_row() {
+        // A culled row is by construction outside the pane's clip rect, so this
+        // click is stopped by egui's hit testing and never reaches a row to
+        // cull. That is the property pinned here; what pins the cull itself is
+        // `a_row_that_only_touches_the_fold_is_not_laid_out`.
         let ctx = context();
         let queue = queue_of(40, 0);
-        // Row ten sits far below a pane this short, so the pane culls it.
         let at = Pos2::new(
             PANE.left() + space::S3 + 100.0,
             PANE.top() + CAPTION_H + 10.0 * ROW_H + ROW_H / 2.0,
         );
         assert!(
             at.y > PANE.bottom(),
-            "the culled row must be below the pane: {at:?}"
+            "the row under the click must be below the pane: {at:?}"
         );
 
         assert_eq!(click(&ctx, PANE, &queue, at), None);
@@ -448,16 +451,17 @@ mod tests {
         let tokens = Tokens::DARK;
         let now = Instant::now();
         let mut art = Art::default();
-        // Twenty entries with distinct covers in a pane that shows no more than
-        // six rows, which is the fetch cap. The requested set must be exactly
-        // the visible entries' set, not merely a small number.
+        // Twenty entries with distinct covers in a pane showing two whole rows
+        // and part of a third, fewer than the fetch cap: the requested set must
+        // be exactly the visible entries' set, so a row laid out past the fold
+        // shows up as an extra request instead of hiding under the cap.
         let tracks: Vec<TrackEntry> = (0..20).map(track_with_cover).collect();
         let mut queue = Queue::default();
         queue.start(&tracks, 0, &mut Transport::default());
 
         let pane = Rect::from_min_size(
             Pos2::ZERO,
-            Vec2::new(PANE.width(), CAPTION_H + 5.0 * ROW_H + ROW_H / 2.0),
+            Vec2::new(PANE.width(), CAPTION_H + 2.0 * ROW_H + ROW_H / 2.0),
         );
         art.begin_frame();
         let mut output = ctx.run_ui(input(Vec::new()), |ui| {
@@ -466,13 +470,6 @@ mod tests {
         output.textures_delta.clear();
 
         let visible: HashSet<usize> = painted_rows(&output).into_iter().collect();
-        assert!(
-            visible.len() <= cover::MAX_IN_FLIGHT,
-            "the pane shows {} rows, more than the fetch cap",
-            visible.len()
-        );
-        assert!(!visible.is_empty(), "the pane must draw its rows");
-
         let requested: HashSet<usize> = art
             .requests(now)
             .into_iter()
@@ -481,10 +478,46 @@ mod tests {
                 _ => None,
             })
             .collect();
+
         assert_eq!(
-            requested, visible,
-            "the covers asked for must be exactly the visible rows'"
+            requested,
+            HashSet::from([1, 2, 3]),
+            "a row past the fold must not ask for a cover"
         );
+        assert_eq!(
+            visible,
+            HashSet::from([1, 2, 3]),
+            "the pane lays out exactly the rows that meet its fold"
+        );
+    }
+
+    #[test]
+    fn a_pane_too_short_for_a_row_or_with_no_height_still_draws() {
+        let ctx = context();
+        let now = Instant::now();
+        let queue = queue_of(4, 0);
+
+        // The caption alone no longer fits, then not even the pane.
+        for height in [CAPTION_H / 2.0, 0.0] {
+            let pane = Rect::from_min_size(Pos2::ZERO, Vec2::new(PANE.width(), height));
+            let mut art = Art::default();
+            let (picked, output) = pass(&ctx, pane, &queue, &mut art, now, Vec::new());
+
+            assert_eq!(picked, None, "{height}");
+            assert!(
+                painted_rows(&output).is_empty(),
+                "no row fits a {height}-tall pane"
+            );
+            for clipped in &output.shapes {
+                if let Shape::Rect(rect) = &clipped.shape {
+                    assert!(
+                        rect.rect.width() >= 0.0 && rect.rect.height() >= 0.0,
+                        "an inverted rect in a {height}-tall pane: {:?}",
+                        rect.rect
+                    );
+                }
+            }
+        }
     }
 
     #[test]

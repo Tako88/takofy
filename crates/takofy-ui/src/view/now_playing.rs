@@ -1,8 +1,9 @@
 //! The Now Playing panel: what the transport is on, and what is queued after it.
 //!
 //! The panel is handed everything it draws — the transport, the queue, the art
-//! store and the frame's clock — and returns the command a click asks for. It
-//! never reaches for any of them itself.
+//! store and the frame's clock — and reports the queue row a click picked. It
+//! never reaches for any of them itself, and applying the jump is the shell's
+//! job, once every region has drawn.
 //!
 //! The tabs are the reference's pair. Queue is live because the queue is state
 //! the window already holds; Lyrics is drawn present and dim, which is this
@@ -16,7 +17,6 @@ use crate::availability::Control;
 use crate::cover::{Art, Cover};
 use crate::icon::Icon;
 use crate::layout::panel::{self, Stack};
-use crate::message::Command;
 use crate::player::Transport;
 use crate::queue::Queue;
 use crate::theme::icon::Size;
@@ -33,17 +33,21 @@ const TABS: [(&str, Control); 2] = [
     ("Lyrics", Control::NowPlayingLyricsTab),
 ];
 
-/// Draws the panel's contents inside its own rect and returns the command a
-/// click asked for.
+/// Draws the panel's contents inside its own rect and reports the absolute index
+/// of a clicked queue row.
+///
+/// The jump is the caller's to apply, after every region has drawn: a frame that
+/// already carries a command must not move the queue, or the queue would name a
+/// track the transport was never asked to play.
 pub fn show(
     ui: &mut Ui,
-    transport: &mut Transport,
-    queue: &mut Queue,
+    transport: &Transport,
+    queue: &Queue,
     art: &mut Art,
     now: Instant,
     cover: Cover,
     tokens: &Tokens,
-) -> Option<Command> {
+) -> Option<usize> {
     let band = ui.available_rect_before_wrap();
     let meta_h = meta_height(ui, transport);
     let tabs_h = tabs_height(ui, tokens);
@@ -61,8 +65,7 @@ pub fn show(
     meta(ui, stack.meta, transport, tokens);
     tabs(ui, stack.tabs, tokens);
 
-    let jumped = queue_pane::show(ui, stack.pane, queue, art, now, tokens);
-    jumped.and_then(|index| queue.jump(index, transport))
+    queue_pane::show(ui, stack.pane, queue, art, now, tokens)
 }
 
 /// The head: the panel's caption and its more button, which waits.
@@ -310,8 +313,8 @@ mod tests {
             self
         }
 
-        /// Draws one frame and returns the command it reported.
-        fn frame(&mut self, ctx: &Context, events: Vec<Event>) -> Option<Command> {
+        /// Draws one frame and returns the row index it reported.
+        fn frame(&mut self, ctx: &Context, events: Vec<Event>) -> Option<usize> {
             let tokens = Tokens::DARK;
             let cover = self.art.look(
                 self.transport
@@ -322,7 +325,7 @@ mod tests {
             );
             self.art.begin_frame();
             let now = self.now;
-            let mut command = None;
+            let mut clicked = None;
             let Self {
                 transport,
                 queue,
@@ -330,9 +333,9 @@ mod tests {
                 ..
             } = self;
             run(ctx, input(events), |ui| {
-                command = show(ui, transport, queue, art, now, cover, &tokens);
+                clicked = show(ui, transport, queue, art, now, cover, &tokens);
             });
-            command
+            clicked
         }
 
         /// Draws one frame and returns the text it painted.
@@ -342,8 +345,8 @@ mod tests {
             let mut output = ctx.run_ui(input(Vec::new()), |ui| {
                 let _ = show(
                     ui,
-                    &mut self.transport,
-                    &mut self.queue,
+                    &self.transport,
+                    &self.queue,
                     &mut self.art,
                     self.now,
                     cover,
@@ -364,8 +367,8 @@ mod tests {
             let mut output = ctx.run_ui(input(Vec::new()), |ui| {
                 let _ = show(
                     ui,
-                    &mut self.transport,
-                    &mut self.queue,
+                    &self.transport,
+                    &self.queue,
                     &mut self.art,
                     self.now,
                     cover,
@@ -378,17 +381,17 @@ mod tests {
     }
 
     /// A click at `at` over the three passes egui's hit test needs, returning the
-    /// command the panel reported.
-    fn click(panel: &mut Panel, ctx: &Context, at: Pos2) -> Option<Command> {
+    /// row index the panel reported.
+    fn click(panel: &mut Panel, ctx: &Context, at: Pos2) -> Option<usize> {
         // Warm up so hit-testing has a previous pass to read.
         panel.frame(ctx, Vec::new());
-        let mut command = None;
+        let mut clicked = None;
         for event in crate::view::test_support::click_events(at) {
             if let Some(next) = panel.frame(ctx, vec![event]) {
-                command = Some(next);
+                clicked = Some(next);
             }
         }
-        command
+        clicked
     }
 
     #[test]
@@ -421,17 +424,9 @@ mod tests {
         // transport is untouched by the arrival.
         assert_eq!(transport.now_playing, before);
 
-        let mut queue = Queue::default();
+        let queue = Queue::default();
         let mut output = ctx.run_ui(input(Vec::new()), |ui| {
-            let _ = show(
-                ui,
-                &mut transport,
-                &mut queue,
-                &mut art,
-                now,
-                cover,
-                &tokens,
-            );
+            let _ = show(ui, &transport, &queue, &mut art, now, cover, &tokens);
         });
         output.textures_delta.clear();
         let texts: Vec<String> = drawn_texts(&output)
@@ -512,7 +507,7 @@ mod tests {
     }
 
     #[test]
-    fn a_click_on_a_row_jumps_the_queue_and_returns_the_play() {
+    fn a_click_on_a_row_reports_its_index_and_moves_nothing() {
         let ctx = context();
         let mut panel = Panel::new(playing("t0", "a0")).with_queue(5, 0);
         let frame = panel.output(&ctx);
@@ -520,9 +515,8 @@ mod tests {
 
         assert_eq!(
             click(&mut panel, &ctx, at + Vec2::new(6.0, 6.0)),
-            Some(Command::Play {
-                uri: "t3".to_owned()
-            })
+            Some(3),
+            "the click reports the queue's own index, not the row's position"
         );
         assert_eq!(
             panel
@@ -530,8 +524,13 @@ mod tests {
                 .now_playing
                 .as_ref()
                 .map(|now| now.uri.as_str()),
-            Some("t3"),
-            "the panel's click must reach the transport, not only the queue"
+            Some("t0"),
+            "the panel only reports the click; applying the jump is the shell's"
+        );
+        assert_eq!(
+            panel.queue.upcoming().next().map(|(index, _)| index),
+            Some(1),
+            "drawing must not move the queue either"
         );
     }
 
@@ -582,15 +581,13 @@ mod tests {
         let at = painted_at(&frame, &upcoming[0]).expect("the first remaining row is painted");
         assert_eq!(
             click(&mut panel, &ctx, at + Vec2::new(6.0, 6.0)),
-            Some(Command::Play {
-                uri: format!("t{}", crate::queue::MAX_CONSECUTIVE_SKIPS as usize + 1)
-            }),
-            "a click must still play after the cap stopped the run"
+            Some(crate::queue::MAX_CONSECUTIVE_SKIPS as usize + 1),
+            "a click must still reach the entry after the cap stopped the run"
         );
     }
 
     #[test]
-    fn a_paused_queue_still_lists_and_still_jumps() {
+    fn a_paused_queue_still_lists_and_its_rows_still_answer_a_click() {
         let ctx = context();
         let mut panel = Panel::new(playing("t0", "a0")).with_queue(4, 0);
         let paused = Update::Transport(TransportUpdate::Position {
@@ -608,9 +605,8 @@ mod tests {
         let at = painted_at(&frame, "t2").expect("row t2 is painted");
         assert_eq!(
             click(&mut panel, &ctx, at + Vec2::new(6.0, 6.0)),
-            Some(Command::Play {
-                uri: "t2".to_owned()
-            })
+            Some(2),
+            "a paused queue's rows must still report their index"
         );
     }
 
@@ -657,8 +653,8 @@ mod tests {
             let mut output = ctx.run_ui(input(vec![tab.clone()]), |ui| {
                 let _ = show(
                     ui,
-                    &mut panel.transport,
-                    &mut panel.queue,
+                    &panel.transport,
+                    &panel.queue,
                     &mut panel.art,
                     panel.now,
                     cover,

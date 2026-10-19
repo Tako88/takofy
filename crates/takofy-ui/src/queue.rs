@@ -784,6 +784,10 @@ mod tests {
 
     #[test]
     fn jump_sets_the_guard_so_a_stale_end_is_ignored() {
+        // The guard covers an event arriving before *any* event of the new load,
+        // not only its first: `Loading`, `Duration`, `Position` and `Failed` all
+        // clear it, so after one of them a trailing event is counted as the new
+        // load's own.
         let tracks = tracks(4);
         let mut queue = Queue::default();
         let mut transport = Transport::default();
@@ -794,13 +798,42 @@ mod tests {
         assert_eq!(
             end(&mut queue, &mut transport),
             None,
-            "an end arriving before the new load's first event is the old track's"
+            "an end arriving before any event of the new load is the old track's"
         );
         clear_guard(&mut queue, &mut transport);
         assert_eq!(
             end(&mut queue, &mut transport),
             Some(play("t3")),
             "a later end advances from the jumped-to entry"
+        );
+    }
+
+    #[test]
+    fn a_jump_during_a_failure_run_is_carried_past_its_own_entry() {
+        // An accepted race, shared with `next`: once the clicked entry's
+        // `Loading` has cleared the guard, a trailing `Unavailable` from the
+        // entry the run left behind is indistinguishable from the clicked
+        // entry's own, so the queue advances once more and skips the click.
+        let tracks = tracks(8);
+        let mut queue = Queue::default();
+        let mut transport = Transport::default();
+        queue.start(&tracks, 0, &mut transport);
+
+        // One failed load has already carried the queue to t1.
+        assert_eq!(skip(&mut queue, &mut transport), Some(play("t1")));
+
+        // The click lands while that failure's load is still in flight.
+        assert_eq!(queue.jump(4, &mut transport), Some(play("t4")));
+        clear_guard(&mut queue, &mut transport);
+        assert_eq!(
+            feed(&mut queue, &mut transport, TransportUpdate::Unavailable),
+            Some(play("t5")),
+            "the old load's trailing failure skips the clicked entry"
+        );
+        assert_eq!(
+            upcoming(&queue),
+            vec![(6, "t6".to_owned()), (7, "t7".to_owned())],
+            "the queue sits one past the entry the click picked"
         );
     }
 
