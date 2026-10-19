@@ -4,6 +4,7 @@
 
 pub mod availability;
 pub mod cover;
+pub mod discography;
 pub mod drawer;
 pub mod follow;
 pub mod format;

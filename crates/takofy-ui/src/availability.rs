@@ -48,6 +48,10 @@ pub enum Control {
     HeroPlay,
     /// The artist page's Follow/Following toggle. The write exists.
     Follow,
+    /// The artist page's discography filter row. It is one slot for the whole
+    /// row: each chip is drawn inside its own id scope, so the row has one
+    /// control and every chip still has its own widget id.
+    DiscographyFilter,
     /// A release block's play tile. The block's rows are already loaded state.
     ReleasePlay,
     /// A release block's like and more. Saving needs the Web API and the menu is
@@ -61,7 +65,7 @@ pub enum Control {
 }
 
 impl Control {
-    pub const ALL: [Self; 42] = [
+    pub const ALL: [Self; 43] = [
         Self::NavHome,
         Self::NavSearch,
         Self::LibraryCreate,
@@ -99,6 +103,7 @@ impl Control {
         Self::HeroMore,
         Self::HeroPlay,
         Self::Follow,
+        Self::DiscographyFilter,
         Self::ReleasePlay,
         Self::ReleaseLike,
         Self::ReleaseMore,
@@ -178,9 +183,11 @@ pub fn availability(control: Control) -> Availability {
         Control::HeroPlay => Availability::Ready,
         Control::CardPlay => Availability::Waiting,
 
-        // The artist page: following is a real write, the other three are the
-        // reference's chrome with nothing behind it yet.
+        // The artist page: following is a real write, the filter row is state
+        // the page already holds, and the other three are the reference's chrome
+        // with nothing behind it yet.
         Control::Follow => Availability::Ready,
+        Control::DiscographyFilter => Availability::Ready,
         Control::ReleasePlay => Availability::Ready,
         Control::ReleaseLike => Availability::Waiting,
         Control::ReleaseMore => Availability::Waiting,
@@ -209,6 +216,7 @@ mod tests {
                     | Control::Seek
                     | Control::HeroPlay
                     | Control::Follow
+                    | Control::DiscographyFilter
                     | Control::ReleasePlay
                     | Control::NowPlayingQueueTab
                     | Control::Authorize
@@ -228,6 +236,6 @@ mod tests {
             assert!(!seen.contains(&control), "{control:?} is listed twice");
             seen.push(control);
         }
-        assert_eq!(seen.len(), 42);
+        assert_eq!(seen.len(), 43);
     }
 }

@@ -11,7 +11,7 @@ use egui::{Layout, Pos2, Rect, RichText, Sense, Ui, UiBuilder, Vec2};
 use crate::availability::Control;
 use crate::cover::{Art, Cover};
 use crate::icon::{self, Icon};
-use crate::layout::Sidebar;
+use crate::layout::{Sidebar, chips};
 use crate::library::{Library, Load};
 use crate::message::Command;
 use crate::signin::failure_message;
@@ -175,25 +175,37 @@ fn library_block(
 
     // Playlists is the only kind the list holds, so it is drawn selected rather
     // than as a chip that could be toggled to no effect. The rest wait.
-    let chips_left = band.left() + space::S4;
-    let chips_width = band.width() - 2.0 * space::S4;
-    let mut left = chips_left;
-    for (control, label, selected) in [
+    let chips = [
         (Control::FilterPlaylists, "Playlists", true),
         (Control::FilterArtists, "Artists", false),
         (Control::FilterAlbums, "Albums", false),
         (Control::FilterPodcasts, "Podcasts", false),
-    ] {
-        let size = controls::chip_size(ui, tokens, label);
-        if left > chips_left && left + size.x > chips_left + chips_width {
-            left = chips_left;
-            y += extent::BUTTON + space::S1;
-        }
-        let rect = Rect::from_min_size(Pos2::new(left, y), size);
-        controls::chip_in(ui, tokens, control, rect, label, selected);
-        left = rect.right() + space::S1;
+    ];
+    let sizes: Vec<Vec2> = chips
+        .iter()
+        .map(|(_, label, _)| controls::chip_size(ui, tokens, label))
+        .collect();
+    // The sidebar's row is its buttons' pitch, not a chip's height: the chips
+    // are shorter than the row they sit in.
+    let wrapped = chips::wrap(
+        &sizes,
+        band.width() - 2.0 * space::S4,
+        space::S1,
+        extent::BUTTON,
+        space::S1,
+    );
+    let origin = Vec2::new(band.left() + space::S4, y);
+    for ((control, label, selected), rect) in chips.iter().zip(wrapped.rects) {
+        controls::chip_in(
+            ui,
+            tokens,
+            *control,
+            rect.translate(origin),
+            label,
+            *selected,
+        );
     }
-    y += extent::BUTTON + space::S3;
+    y += wrapped.height + space::S3;
 
     let list = Rect::from_min_size(
         Pos2::new(band.left() + space::S2, y),
@@ -366,4 +378,136 @@ fn state(ui: &mut Ui, rect: Rect, text: RichText) {
             ui.label(text);
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use egui::{Pos2, Vec2};
+    use takofy_model::PlaylistEntry;
+
+    use crate::message::Update;
+    use crate::theme::{fonts, style};
+
+    /// The chip rect and label rect the real sidebar paints, per label.
+    ///
+    /// A chip's label is painted at the chip's top-left plus its padding, so
+    /// this recovers both boxes from what the draw actually produced.
+    fn painted_chips(width: f32) -> Vec<(&'static str, Rect)> {
+        let tokens = Tokens::DARK;
+        let ctx = egui::Context::default();
+        ctx.set_fonts(fonts::definitions());
+        ctx.set_global_style(style(&tokens));
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(vec![PlaylistEntry {
+            uri: "spotify:playlist:a".to_owned(),
+            name: "A".to_owned(),
+            named: true,
+            cover: None,
+            description: None,
+            owner: None,
+        }]));
+        let mut art = Art::default();
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(
+                Pos2::ZERO,
+                Vec2::new(width, 800.0),
+            )),
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| {
+            let _ = show(
+                ui,
+                Sidebar::Full,
+                &mut library,
+                &mut art,
+                Instant::now(),
+                &tokens,
+            );
+        });
+        output.textures_delta.clear();
+
+        let mut chips = Vec::new();
+        for label in ["PLAYLISTS", "ARTISTS", "ALBUMS", "PODCASTS"] {
+            let Some((pos, size)) = output.shapes.iter().find_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Text(text) if text.galley.text() == label => {
+                    Some((text.pos, text.galley.size()))
+                }
+                _ => None,
+            }) else {
+                continue;
+            };
+            let rect = Rect::from_min_size(
+                Pos2::new(pos.x - extent::CHIP_PAD_X, pos.y - extent::CHIP_PAD_Y),
+                Vec2::new(
+                    size.x + 2.0 * extent::CHIP_PAD_X,
+                    size.y + 2.0 * extent::CHIP_PAD_Y,
+                ),
+            );
+            let label: &'static str = match label {
+                "PLAYLISTS" => "Playlists",
+                "ARTISTS" => "Artists",
+                "ALBUMS" => "Albums",
+                _ => "Podcasts",
+            };
+            chips.push((label, rect));
+        }
+        chips
+    }
+
+    /// The positions the inline loop produced before the row moved onto
+    /// [`chips::wrap`], pinned in [`chips::wrap`]'s own tests as well. This is
+    /// the half that catches a bad call site: the width, the origin or the row
+    /// pitch handed to `wrap` wrong.
+    #[test]
+    fn the_drawn_chips_keep_their_characterised_positions() {
+        for (width, expected) in [
+            (
+                254.0,
+                vec![
+                    ("Playlists", 16.0, 193.0),
+                    ("Artists", 93.213, 193.0),
+                    ("Albums", 157.206, 193.0),
+                    ("Podcasts", 16.0, 225.0),
+                ],
+            ),
+            (
+                200.0,
+                vec![
+                    ("Playlists", 16.0, 193.0),
+                    ("Artists", 93.213, 193.0),
+                    ("Albums", 16.0, 225.0),
+                    ("Podcasts", 73.4, 225.0),
+                ],
+            ),
+            (
+                140.0,
+                vec![
+                    ("Playlists", 16.0, 193.0),
+                    ("Artists", 16.0, 225.0),
+                    ("Albums", 16.0, 257.0),
+                    ("Podcasts", 16.0, 289.0),
+                ],
+            ),
+            (
+                100.0,
+                vec![
+                    ("Playlists", 16.0, 193.0),
+                    ("Artists", 16.0, 225.0),
+                    ("Albums", 16.0, 257.0),
+                    ("Podcasts", 16.0, 289.0),
+                ],
+            ),
+        ] {
+            let chips = painted_chips(width);
+            assert_eq!(chips.len(), expected.len(), "band width {width}");
+            for ((label, rect), (expected, left, top)) in chips.iter().zip(&expected) {
+                assert_eq!(label, expected, "band width {width}");
+                assert!(
+                    (rect.left() - left).abs() < 0.01 && (rect.top() - top).abs() < 0.01,
+                    "band width {width}: {label} at {rect:?}, not ({left}, {top})"
+                );
+            }
+        }
+    }
 }

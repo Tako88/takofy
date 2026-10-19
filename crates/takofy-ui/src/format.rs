@@ -4,6 +4,8 @@
 
 use takofy_model::{AddedAt, ReleaseKind, TrackEntry};
 
+use crate::discography::Chip;
+
 /// One day in milliseconds.
 const DAY_MS: u64 = 86_400_000;
 
@@ -58,6 +60,22 @@ pub fn release_kind_label(kind: ReleaseKind) -> &'static str {
         ReleaseKind::Single => "Single",
         ReleaseKind::Compilation => "Compilation",
         ReleaseKind::Other => "Release",
+    }
+}
+
+/// The word a filter chip carries.
+///
+/// Plural, because a chip counts a set while a block's own facts line names one
+/// release. `Other` never gets a chip; its word is here so the match stays
+/// exhaustive and no future kind can be added without deciding one.
+pub fn filter_label(chip: Chip) -> &'static str {
+    match chip {
+        Chip::All => "All",
+        Chip::Kind(ReleaseKind::Album) => "Albums",
+        Chip::Kind(ReleaseKind::Ep) => "EPs",
+        Chip::Kind(ReleaseKind::Single) => "Singles",
+        Chip::Kind(ReleaseKind::Compilation) => "Compilations",
+        Chip::Kind(ReleaseKind::Other) => "Releases",
     }
 }
 
@@ -246,6 +264,18 @@ mod tests {
         assert_eq!(release_kind_label(ReleaseKind::Compilation), "Compilation");
         assert_eq!(release_kind_label(ReleaseKind::Ep), "EP");
         assert_eq!(release_kind_label(ReleaseKind::Other), "Release");
+    }
+
+    #[test]
+    fn filter_labels_are_plural_and_match_the_reference_words() {
+        assert_eq!(filter_label(Chip::All), "All");
+        assert_eq!(filter_label(Chip::Kind(ReleaseKind::Album)), "Albums");
+        assert_eq!(filter_label(Chip::Kind(ReleaseKind::Ep)), "EPs");
+        assert_eq!(filter_label(Chip::Kind(ReleaseKind::Single)), "Singles");
+        assert_eq!(
+            filter_label(Chip::Kind(ReleaseKind::Compilation)),
+            "Compilations"
+        );
     }
 
     #[test]
