@@ -811,7 +811,13 @@ mod tests {
             &mut queue,
             vec![key_repeat(egui::Key::BrowserBack)],
         );
-        assert_eq!(command, None, "back onto album A needs no load");
+        assert_eq!(
+            command,
+            Some(Command::LoadAlbum {
+                album: ALBUM.to_owned()
+            }),
+            "album B's want superseded album A's, so Back asks for A again"
+        );
         assert_eq!(
             window.library.page(),
             Some(&Page::Album(ALBUM.to_owned())),
@@ -1019,7 +1025,13 @@ mod tests {
                 side(inert, egui::PointerButton::Extra2, true),
             ],
         );
-        assert_eq!(command, None);
+        assert_eq!(
+            command,
+            Some(Command::LoadAlbum {
+                album: ALBUM_B.to_owned()
+            }),
+            "album A's want superseded album B's, so Forward asks for B again"
+        );
         assert_eq!(
             window.library.page(),
             Some(&Page::Album(ALBUM_B.to_owned())),

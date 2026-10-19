@@ -9,10 +9,10 @@ use std::time::Instant;
 
 use egui::emath::GuiRounding;
 use egui::{FontId, Pos2, Rect, Sense, Ui, vec2};
-use takofy_model::{PlaylistEntry, TrackEntry};
+use takofy_model::PlaylistEntry;
 
 use crate::cover::{Art, Cover};
-use crate::format::{added_label, byline, format_position, plain_description};
+use crate::format::{added_label, byline, format_position, plain_description, total_duration_ms};
 use crate::icon;
 use crate::layout::{Table, cards, table as table_layout};
 use crate::library::{BandCover, Library, Load, band_cover};
@@ -382,28 +382,6 @@ fn grid_rect(ui: &mut Ui, grid: &cards::Grid, count: usize) -> Rect {
 /// repeat costs a fetch and nothing else.
 fn select_playlist(library: &mut Library, uri: &str) -> Option<Command> {
     Some(library.select(uri))
-}
-
-/// The sum of the track lengths, in milliseconds, or zero when any length is
-/// unknown.
-///
-/// The model holds each length as an `Option`: a track that could not be
-/// labelled carries none, exactly as it carries no album. A sum over only the
-/// lengths that happen to be present is a lower bound, not the runtime, but the
-/// byline would read an exact figure with nothing to mark it as a bound; the
-/// missing lengths are already blank on their own rows, so a total that hides
-/// its gap is worse than no total at all. A list with any unknown length
-/// therefore reports zero — the absent total `hero_meta` leaves out — and a
-/// wholly known list reports its honest sum. Saturating addition keeps an absurd
-/// list from wrapping.
-fn total_duration_ms(tracks: &[TrackEntry]) -> u32 {
-    if tracks.iter().any(|entry| entry.duration_ms.is_none()) {
-        return 0;
-    }
-    tracks
-        .iter()
-        .filter_map(|entry| entry.duration_ms)
-        .fold(0u32, u32::saturating_add)
 }
 
 /// The rect the rows are laid out in: the list's width, and the height of every
@@ -923,13 +901,6 @@ mod tests {
     /// click finds after hovering; the reveal only raises the tile from here.
     fn card_play_rect_for(ctx: &Context, index: usize) -> Rect {
         card::play_rect(card_rect_for(ctx, index))
-    }
-
-    fn track_ms(uri: &str, duration_ms: u32) -> TrackEntry {
-        TrackEntry {
-            duration_ms: Some(duration_ms),
-            ..track(uri, uri)
-        }
     }
 
     /// A context with the app's fonts and style installed.
@@ -1939,29 +1910,6 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
     }
 
     #[test]
-    fn the_total_is_withheld_when_any_length_is_unknown() {
-        assert_eq!(total_duration_ms(&[]), 0, "no tracks is the absent total");
-        assert_eq!(
-            total_duration_ms(&[track_ms("a", 1_000), track_ms("b", 2_000)]),
-            3_000
-        );
-        assert_eq!(
-            total_duration_ms(&[track_ms("a", 1_000), track("b", "t1")]),
-            0,
-            "one unknown length withholds the whole total"
-        );
-    }
-
-    #[test]
-    fn the_total_saturates_instead_of_wrapping() {
-        assert_eq!(
-            total_duration_ms(&[track_ms("a", u32::MAX), track_ms("b", u32::MAX)]),
-            u32::MAX,
-            "two maximal lengths saturate rather than wrap"
-        );
-    }
-
-    #[test]
     fn idle_view_reads_the_playlists_load() {
         // A list nobody has asked for yet and a list in flight are one state:
         // neither has anything to draw.
@@ -2213,7 +2161,13 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             Some(&Page::Album("spotify:album:rec".to_owned())),
             "a single click on the album cell must open the album"
         );
-        assert_eq!(command, None, "opening a page fetches nothing");
+        assert_eq!(
+            command,
+            Some(Command::LoadAlbum {
+                album: "spotify:album:rec".to_owned()
+            }),
+            "opening an album asks the worker for it"
+        );
         assert!(!queue.can_next(), "opening a page must not start the queue");
         assert_eq!(transport.now_playing, None, "opening a page must not play");
     }
@@ -2236,7 +2190,12 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             Some(&Page::Album("spotify:album:rec".to_owned())),
             "the whole album cell must take the click, padding included"
         );
-        assert_eq!(command, None);
+        assert_eq!(
+            command,
+            Some(Command::LoadAlbum {
+                album: "spotify:album:rec".to_owned()
+            })
+        );
         assert!(!queue.can_next());
     }
 
@@ -2416,7 +2375,13 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             Some(&Page::Album("spotify:album:rec".to_owned())),
             "the second click lands on the album page, not on the row"
         );
-        assert_eq!(command, None);
+        assert_eq!(
+            command,
+            Some(Command::LoadAlbum {
+                album: "spotify:album:rec".to_owned()
+            }),
+            "the album page's load is the command, not a play"
+        );
         assert!(!queue.can_next(), "a link cell must never start the queue");
         assert_eq!(transport.now_playing, None);
     }
@@ -2600,7 +2565,9 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         let mut library = library_with(vec![linkable("a")]);
         assert_eq!(
             library.open(Page::Album("spotify:album:rec".to_owned())),
-            None
+            Some(Command::LoadAlbum {
+                album: "spotify:album:rec".to_owned()
+            })
         );
         assert!(
             painted_lines(&ctx, Table::Full, &mut library).is_empty(),
@@ -2632,7 +2599,9 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         });
         assert_eq!(
             library.open(Page::Album("spotify:album:x".to_owned())),
-            None
+            Some(Command::LoadAlbum {
+                album: "spotify:album:x".to_owned()
+            })
         );
 
         let output = tracklist_frame(&ctx, Table::Full, &mut library);
