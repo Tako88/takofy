@@ -1,5 +1,10 @@
 //! Position and count formatting: the playbar's clock and the hero's byline.
 
+use takofy_model::AddedAt;
+
+/// One day in milliseconds.
+const DAY_MS: u64 = 86_400_000;
+
 /// Formats a position as minutes and seconds.
 pub fn format_position(position_ms: u32) -> String {
     let seconds = position_ms / 1_000;
@@ -55,9 +60,102 @@ pub fn hero_meta(songs: usize, total_ms: u32) -> Vec<String> {
     parts
 }
 
+/// The reference's relative wording for a date, or `None` for a date after
+/// `now_ms`.
+///
+/// A day is a fixed 24-hour span rather than a calendar day: the function has
+/// only an instant and a clock, and a local calendar would need a timezone.
+/// Months are `days / 30` with no cap, so the wording never repeats or skips a
+/// number across its boundaries.
+pub fn added_label(added: AddedAt, now_ms: u64) -> Option<String> {
+    let days = now_ms.checked_sub(added.as_millis())? / DAY_MS;
+    Some(match days {
+        0 => "Today".to_owned(),
+        1 => "1 day ago".to_owned(),
+        2..=6 => format!("{days} days ago"),
+        7..=13 => "1 week ago".to_owned(),
+        14..=27 => format!("{} weeks ago", days / 7),
+        28..=59 => "1 month ago".to_owned(),
+        _ => format!("{} months ago", days / 30),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A fixed clock: 2023-11-14T22:13:20Z.
+    const NOW: u64 = 1_700_000_000_000;
+    const D: u64 = 86_400_000;
+
+    fn at(millis: u64) -> AddedAt {
+        AddedAt::from_wire(&millis.to_string()).expect("a date above the floor")
+    }
+
+    /// The label for a track `age` milliseconds old at `NOW`.
+    fn aged(age: u64) -> Option<String> {
+        added_label(at(NOW - age), NOW)
+    }
+
+    #[test]
+    fn added_label_under_24_hours_is_today() {
+        assert_eq!(aged(0).as_deref(), Some("Today"));
+        assert_eq!(aged(86_399_999).as_deref(), Some("Today"));
+    }
+
+    #[test]
+    fn added_label_one_day_is_singular() {
+        assert_eq!(aged(D).as_deref(), Some("1 day ago"));
+        assert_eq!(aged(2 * D - 1).as_deref(), Some("1 day ago"));
+    }
+
+    #[test]
+    fn added_label_two_to_six_days_counts_days() {
+        assert_eq!(aged(2 * D).as_deref(), Some("2 days ago"));
+        assert_eq!(aged(6 * D + 86_399_999).as_deref(), Some("6 days ago"));
+    }
+
+    #[test]
+    fn added_label_weeks_cover_7_to_27_days() {
+        assert_eq!(aged(7 * D).as_deref(), Some("1 week ago"));
+        assert_eq!(aged(13 * D).as_deref(), Some("1 week ago"));
+        assert_eq!(aged(14 * D).as_deref(), Some("2 weeks ago"));
+        assert_eq!(aged(20 * D).as_deref(), Some("2 weeks ago"));
+        assert_eq!(aged(21 * D).as_deref(), Some("3 weeks ago"));
+        assert_eq!(aged(27 * D).as_deref(), Some("3 weeks ago"));
+    }
+
+    #[test]
+    fn added_label_28_to_59_days_is_one_month() {
+        assert_eq!(aged(28 * D - 1).as_deref(), Some("3 weeks ago"));
+        assert_eq!(aged(28 * D).as_deref(), Some("1 month ago"));
+        assert_eq!(aged(59 * D).as_deref(), Some("1 month ago"));
+    }
+
+    #[test]
+    fn added_label_months_are_days_over_30_unbounded() {
+        assert_eq!(aged(60 * D).as_deref(), Some("2 months ago"));
+        assert_eq!(aged(89 * D).as_deref(), Some("2 months ago"));
+        assert_eq!(aged(90 * D).as_deref(), Some("3 months ago"));
+        assert_eq!(aged(420 * D).as_deref(), Some("14 months ago"));
+        assert_eq!(aged(1200 * D).as_deref(), Some("40 months ago"));
+    }
+
+    #[test]
+    fn added_label_in_the_future_is_none() {
+        assert_eq!(added_label(at(NOW + 1), NOW), None);
+        assert_eq!(added_label(at(NOW + 365 * D), NOW), None);
+        assert_eq!(added_label(at(NOW), NOW).as_deref(), Some("Today"));
+    }
+
+    #[test]
+    fn added_label_extremes_do_not_overflow() {
+        assert_eq!(added_label(at(u64::MAX), 0), None);
+        assert_eq!(
+            added_label(at(1_000_000_000_000), u64::MAX).as_deref(),
+            Some("7116799025 months ago")
+        );
+    }
 
     #[test]
     fn format_remaining_counts_down_and_saturates() {
