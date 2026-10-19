@@ -88,6 +88,7 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
                 screen.queue,
                 screen.art,
                 screen.now,
+                screen.now_ms,
                 tokens,
             )
         },
@@ -379,6 +380,7 @@ mod tests {
                 position_ms: 0,
                 art: &mut self.art,
                 now: self.now,
+                now_ms: 0,
             };
             let mut output = self.ctx.run_ui(input, |ui| {
                 command = show(ui, &mut screen, &tokens);

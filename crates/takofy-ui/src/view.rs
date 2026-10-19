@@ -46,6 +46,9 @@ pub struct Screen<'a> {
     pub art: &'a mut Art,
     /// The frame's clock, read once at the frame entry.
     pub now: Instant,
+    /// The frame's wall clock in epoch milliseconds, read once at the frame
+    /// entry.
+    pub now_ms: u64,
 }
 
 /// Draws the current state, returning a command when the user asks for one.
