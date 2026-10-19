@@ -456,10 +456,10 @@ mod tests {
         chips
     }
 
-    /// The positions the inline loop produced before the row moved onto
-    /// [`chips::wrap`], pinned in [`chips::wrap`]'s own tests as well. This is
-    /// the half that catches a bad call site: the width, the origin or the row
-    /// pitch handed to `wrap` wrong.
+    /// The rects the real sidebar paints, per label and band width. The same
+    /// positions are pinned in [`chips::wrap`]'s own tests; this is the half
+    /// that catches a bad call site: the width, the origin or the row pitch
+    /// handed to `wrap` wrong.
     #[test]
     fn the_drawn_chips_keep_their_characterised_positions() {
         for (width, expected) in [

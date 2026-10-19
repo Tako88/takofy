@@ -86,8 +86,8 @@ pub struct Library {
     /// The artist page's Follow state.
     pub follow: Follow,
     /// The artist page's discography filter. Unlike `follow`, going home does
-    /// not reset it: the brief keeps the choice across home and Back onto the
-    /// same artist, and only another artist replaces it.
+    /// not reset it: home then Back reloads the same artist, so the choice is
+    /// kept, and opening a different artist is what resets it.
     pub filter: Filter,
     /// The per-release track labels the discography fills in as it scrolls.
     pub releases: Releases,
@@ -1783,7 +1783,7 @@ mod tests {
         assert_eq!(
             library.filter.chosen(),
             Chip::Kind(ReleaseKind::Single),
-            "home is not another artist: the brief keeps the choice across it"
+            "home then Back reloads the same artist, so the choice is kept"
         );
         assert_eq!(library.filter.artist(), Some("spotify:artist:a"));
 
@@ -1792,6 +1792,51 @@ mod tests {
             library.filter.chosen(),
             Chip::Kind(ReleaseKind::Single),
             "home then Back is still the same artist"
+        );
+    }
+
+    #[test]
+    fn reopening_the_same_artist_keeps_the_filter() {
+        let mut library = Library::default();
+        library.open(artist("spotify:artist:a"));
+        library.apply(&Update::Artist(artist_detail("spotify:artist:a")));
+        library.filter.choose(Chip::Kind(ReleaseKind::Ep));
+        library.to_playlists();
+
+        assert_eq!(
+            library.open(artist("spotify:artist:a")),
+            Some(artist_command("spotify:artist:a")),
+            "home cleared the want, so the page is loaded fresh rather than recalled"
+        );
+        assert_eq!(
+            library.filter.chosen(),
+            Chip::Kind(ReleaseKind::Ep),
+            "opening the artist the choice was made for keeps it"
+        );
+    }
+
+    #[test]
+    fn another_artists_ep_chip_does_not_keep_the_choice() {
+        let mut library = Library::default();
+        library.open(artist("spotify:artist:a"));
+        library.apply(&Update::Artist(artist_detail("spotify:artist:a")));
+        library.filter.choose(Chip::Kind(ReleaseKind::Ep));
+
+        library.open(artist("spotify:artist:b"));
+
+        let releases = vec![takofy_model::Release {
+            kind: ReleaseKind::Ep,
+            ..release("spotify:album:b-ep")
+        }];
+        let row = crate::discography::chips(&releases);
+        assert!(
+            row.contains(&Chip::Kind(ReleaseKind::Ep)),
+            "B has an EP, so its row offers the chip the choice named: {row:?}"
+        );
+        assert_eq!(
+            library.filter.effective(&row),
+            Chip::All,
+            "B still draws All pressed, because the choice belonged to A"
         );
     }
 

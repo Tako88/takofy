@@ -124,9 +124,9 @@ mod tests {
         assert_eq!(wrapped.height, 3.0 * ROW_H + 2.0 * GAP);
     }
 
-    /// The sidebar's chip positions, captured from the inline loop before it
-    /// moved onto [`wrap`]: four band widths, the sidebar's own gaps and button
-    /// pitch, and the rects the real sidebar drew.
+    /// The sidebar's chip positions: four band widths, wrapped with the
+    /// sidebar's own gaps and button pitch, pin the rects the row has to keep.
+    /// A change to [`wrap`]'s rule that moves a chip fails here.
     #[test]
     fn sidebar_numbers_are_unchanged() {
         // Measured from the bundled mono face at `text::XXS`.

@@ -883,8 +883,9 @@ mod tests {
     #[test]
     fn a_long_discography_asks_only_for_what_is_on_screen() {
         let ctx = context();
-        // 900 tall, not 800: the filter row is 35 points, and at 800 only one
-        // block fits, which would not exercise the two-request cap.
+        // 900 tall, not 800: the filter row takes its own height above the
+        // blocks, and at 800 only one block fits, which would not exercise the
+        // two-request cap.
         let size = Vec2::new(900.0, 900.0);
         let releases: Vec<Release> = (1..=48)
             .map(|index| {
@@ -1260,6 +1261,48 @@ mod tests {
         );
         for name in ["Album One", "An EP", "Album Two"] {
             assert!(drawn(&output, name), "{name} is drawn: {name}");
+        }
+    }
+
+    #[test]
+    fn opening_another_artist_draws_all_even_when_it_has_the_same_kind() {
+        let ctx = context();
+        let releases = mixed();
+        let mut library = library_with(detail(Vec::new(), releases.clone()));
+        library.filter.choose(Chip::Kind(ReleaseKind::Ep));
+        let mut other = detail(Vec::new(), releases);
+        other.uri = OTHER_ARTIST.to_owned();
+        library.open(Page::Artist(other.uri.clone()));
+        library.apply(&Update::Artist(other));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let (_, output) = frame(
+            &ctx,
+            tall(),
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+
+        assert_eq!(
+            library.filter.chosen(),
+            Chip::All,
+            "another artist's page starts on All"
+        );
+        assert!(
+            drawn(&output, "EPS"),
+            "the other artist has an EP chip too: {:?}",
+            drawn_texts(&output)
+        );
+        for name in ["Album One", "An EP", "Album Two"] {
+            assert!(
+                drawn(&output, name),
+                "All filters nothing on the new artist: {name}"
+            );
         }
     }
 

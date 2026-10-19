@@ -487,6 +487,13 @@ pub fn chip_in(
     );
     let slot = slot(ui, control, Role::Button, rect, label, tokens, true);
 
+    // The pressed chip is a selection, not only a fill: the fill is invisible to
+    // a screen reader, so the state is written onto the node as well. Written
+    // for both values, because the chips that do not filter the list are a
+    // selection of `false`, not an absent one.
+    ui.ctx()
+        .accesskit_node_builder(slot.response.id, |node| node.set_selected(selected));
+
     let border = if selected {
         tokens.palette.text
     } else if live && slot.hover > 0.0 {
@@ -687,6 +694,52 @@ mod tests {
         let (disabled, label) = node.expect("the slot has an AccessKit node");
         assert!(disabled, "a waiting control must be announced disabled");
         assert_eq!(label.as_deref(), Some("Home"));
+    }
+
+    /// Which chip filters the list is a selection, so it has to reach the
+    /// accessibility tree and not only the fill: the fill says nothing to a
+    /// screen reader.
+    #[test]
+    fn a_pressed_chip_is_announced_selected() {
+        let ctx = Context::default();
+        // AccessKit state exists only while the pass that built it is live.
+        ctx.enable_accesskit();
+        let mut states = None;
+        run(&ctx, input(Vec::new()), |ui| {
+            let pressed = chip_in(
+                ui,
+                &Tokens::DARK,
+                Control::FilterPlaylists,
+                cell(0.0),
+                "Playlists",
+                true,
+            );
+            let idle = chip_in(
+                ui,
+                &Tokens::DARK,
+                Control::FilterArtists,
+                cell(1.0),
+                "Artists",
+                false,
+            );
+            let read = |id| {
+                ui.ctx()
+                    .accesskit_node_builder(id, |node| node.is_selected())
+                    .expect("a chip has an AccessKit node")
+            };
+            states = Some((read(pressed.response.id), read(idle.response.id)));
+        });
+        let (pressed, idle) = states.expect("both chips drew");
+        assert_eq!(
+            pressed,
+            Some(true),
+            "the pressed chip is announced selected"
+        );
+        assert_eq!(
+            idle,
+            Some(false),
+            "the chips that do not filter the list are announced not selected"
+        );
     }
 
     #[test]

@@ -227,6 +227,21 @@ mod tests {
                 "{control:?}"
             );
         }
+
+        // The discography's filter row is live; the library's filter row is not,
+        // and one landing must not make the other look ready.
+        for control in [
+            Control::FilterPlaylists,
+            Control::FilterArtists,
+            Control::FilterAlbums,
+            Control::FilterPodcasts,
+        ] {
+            assert_eq!(
+                availability(control),
+                Availability::Waiting,
+                "the library's filter row still has no view: {control:?}"
+            );
+        }
     }
 
     #[test]
