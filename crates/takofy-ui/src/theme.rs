@@ -159,6 +159,12 @@ pub mod extent {
     /// A library row's cover tile, 2.25 rem. A track row's art is the same
     /// 2.25 rem box, so it is this token and not a second one of its own.
     pub const LIBRARY_ART: f32 = 36.0;
+    /// A queue row's cover tile, 2.5 rem. A different box from a library row's,
+    /// because the panel's rows are the reference's own grid.
+    pub const QUEUE_ART: f32 = 40.0;
+    /// The Now Playing art's floor, 4 rem. The art gives way to the pane's own
+    /// minimum at the shortest window the panel is drawn at, and stops here.
+    pub const NOWPLAYING_ART_MIN: f32 = 64.0;
     /// The search field's height, 2 rem.
     pub const SEARCH_H: f32 = 32.0;
     /// The search field's flex basis, 14 rem.
@@ -718,6 +724,9 @@ mod tests {
             assert!(extent::TRACK_DURATION_W == 3.5 * REM);
             assert!(extent::TRACK_ACTIONS_W == 1.75 * REM);
             assert!(extent::LIBRARY_ART == 2.25 * REM);
+            assert!(extent::QUEUE_ART == 2.5 * REM);
+            assert!(extent::NOWPLAYING_ART_MIN == 4.0 * REM);
+            assert!(extent::NOWPLAYING_ART_MIN < extent::NOWPLAYING_ART_MAX);
             assert!(extent::CARD_MIN_W == 9.0 * REM);
             assert!(extent::CARD_PLAY == 2.0 * REM);
             assert!(hero::MIN_H == 11.0 * REM);
