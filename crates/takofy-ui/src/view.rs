@@ -10,9 +10,13 @@ mod hero;
 pub mod now_playing;
 pub mod playbar;
 pub mod playlist;
+mod queue_pane;
+mod queue_row;
 mod shell;
 pub mod sidebar;
 mod sign_in;
+#[cfg(test)]
+pub(crate) mod test_support;
 pub mod text;
 pub mod topbar;
 mod track_row;

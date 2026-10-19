@@ -445,8 +445,7 @@ fn heading(ui: &Ui, rect: Rect, label: &str, right: bool, font: &FontId, tokens:
 #[cfg(test)]
 mod tests {
     use egui::{
-        Context, Event, Modifiers, MouseWheelSource, MouseWheelUnit, PointerButton, RawInput,
-        TouchPhase, Vec2,
+        Context, Event, Modifiers, MouseWheelSource, MouseWheelUnit, RawInput, TouchPhase, Vec2,
     };
 
     use super::*;
@@ -510,15 +509,6 @@ mod tests {
             .next()
             .and_then(|tail| tail.parse().ok())
             .expect("a cover URL names its row")
-    }
-
-    fn button(pos: Pos2, pressed: bool) -> Event {
-        Event::PointerButton {
-            pos,
-            button: PointerButton::Primary,
-            pressed,
-            modifiers: Modifiers::NONE,
-        }
     }
 
     fn track(uri: &str, title: &str) -> TrackEntry {
@@ -778,11 +768,7 @@ mod tests {
             );
         });
         for _ in 0..times {
-            for event in [
-                Event::PointerMoved(centre),
-                button(centre, true),
-                button(centre, false),
-            ] {
+            for event in crate::view::test_support::click_events(centre) {
                 let command = &mut command;
                 let library = &mut *library;
                 let transport = &mut *transport;
@@ -868,7 +854,10 @@ mod tests {
                 },
             );
         }
-        for event in [button(centre, true), button(centre, false)] {
+        for event in [
+            crate::view::test_support::button(centre, true),
+            crate::view::test_support::button(centre, false),
+        ] {
             let command = &mut command;
             let library = &mut *library;
             let transport = &mut *transport;
@@ -1023,8 +1012,8 @@ mod tests {
         for _ in 0..2 {
             for event in [
                 Event::PointerMoved(rect.center()),
-                button(rect.center(), true),
-                button(rect.center(), false),
+                crate::view::test_support::button(rect.center(), true),
+                crate::view::test_support::button(rect.center(), false),
             ] {
                 run(&ctx, input(vec![event]), |ui| {
                     clicked |= track_row::show(ui, rect, columns, &row, &tokens);
@@ -1484,11 +1473,7 @@ mod tests {
 
         let mut loads = 0;
         for _ in 0..2 {
-            for event in [
-                Event::PointerMoved(centre),
-                button(centre, true),
-                button(centre, false),
-            ] {
+            for event in crate::view::test_support::click_events(centre) {
                 run(&ctx, input(vec![event]), |ui| {
                     if let Some(Command::LoadTracks { .. }) = tracks_view(
                         ui,

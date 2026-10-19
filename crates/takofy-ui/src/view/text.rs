@@ -115,6 +115,34 @@ pub fn track_name() -> FontId {
     FontId::new(text::BASE, fonts::sans(Weight::Medium))
 }
 
+/// A queue row's name: a step below a track row's, because the panel's rows are
+/// denser and the reference sets them at `--text-sm`.
+pub fn queue_name() -> FontId {
+    FontId::new(text::SM, fonts::sans(Weight::Medium))
+}
+
+/// The Now Playing panel's title, the largest interface type the panel carries.
+pub fn panel_title() -> FontId {
+    FontId::new(text::MD, fonts::sans(Weight::Bold))
+}
+
+/// A queue row's artist line, at the reference's `--text-2xs`.
+pub fn queue_artist() -> FontId {
+    FontId::new(text::XXS, fonts::sans(Weight::Regular))
+}
+
+/// A caps label laid out for the painter: the mono tier the reference tracks
+/// apart. The panel's head and the queue's caption are the same recipe.
+pub fn caption(ui: &egui::Ui, label: &str, tokens: &Tokens) -> std::sync::Arc<egui::Galley> {
+    spaced(
+        ui,
+        &label.to_uppercase(),
+        FontId::new(text::XXS, fonts::mono(MonoWeight::Medium)),
+        tokens.palette.text_subtle,
+        tracking_pts(text::XXS, tracking::CAPS),
+    )
+}
+
 /// A track row's artist and album, which sit under the title and beside it.
 pub fn track_secondary() -> FontId {
     FontId::new(text::SM, fonts::sans(Weight::Regular))

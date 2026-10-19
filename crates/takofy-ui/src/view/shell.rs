@@ -106,9 +106,23 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
     if let Some(panel) = grid.now_playing
         && regions.now_playing != NowPlaying::Hidden
     {
-        region(ui, "now-playing", panel, panel.shrink(inset), |ui| {
-            now_playing::show(ui, screen.transport, now_playing_cover, tokens);
-        });
+        command = command.or(region(
+            ui,
+            "now-playing",
+            panel,
+            panel.shrink(inset),
+            |ui| {
+                now_playing::show(
+                    ui,
+                    screen.transport,
+                    screen.queue,
+                    screen.art,
+                    screen.now,
+                    now_playing_cover,
+                    tokens,
+                )
+            },
+        ));
     }
 
     command = command.or(region(
@@ -270,7 +284,7 @@ pub(super) fn rule(ui: &Ui, rect: Rect, color: Color32) {
 mod tests {
     use std::time::Instant;
 
-    use takofy_model::CoverUrl;
+    use takofy_model::{CoverUrl, TrackEntry};
 
     use super::*;
     use crate::cover::Art;
@@ -280,37 +294,49 @@ mod tests {
     use crate::signin::SignIn;
     use crate::theme::{fonts, style};
 
-    #[test]
-    fn the_playbar_tile_is_requested_even_with_the_panel_hidden() {
+    fn cover(tail: &str) -> CoverUrl {
+        CoverUrl::from_wire(&format!("https://i.scdn.co/image/{tail}")).expect("a cover url")
+    }
+
+    fn playing(cover: CoverUrl) -> Transport {
+        Transport {
+            now_playing: Some(NowPlaying {
+                uri: "spotify:track:x".to_owned(),
+                title: "A Title".to_owned(),
+                artists: "A Band".to_owned(),
+                cover: Some(cover),
+            }),
+            ..Transport::default()
+        }
+    }
+
+    fn track(index: usize, cover: Option<CoverUrl>) -> TrackEntry {
+        TrackEntry {
+            uri: format!("t{index}"),
+            title: format!("t{index}"),
+            artists: String::new(),
+            album: None,
+            duration_ms: None,
+            named: true,
+            cover,
+        }
+    }
+
+    /// Draws one frame of the whole shell at `screen` and returns the covers it
+    /// asked for.
+    fn requested(screen: Vec2, transport: &mut Transport, queue: &mut Queue) -> Vec<CoverUrl> {
         let tokens = Tokens::DARK;
         let ctx = egui::Context::default();
         ctx.set_fonts(fonts::definitions());
         ctx.set_global_style(style(&tokens));
 
-        let url = CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover url");
-        let mut transport = Transport {
-            now_playing: Some(NowPlaying {
-                uri: "spotify:track:x".to_owned(),
-                title: "A Title".to_owned(),
-                artists: "A Band".to_owned(),
-                cover: Some(url.clone()),
-            }),
-            ..Transport::default()
-        };
         let mut state = SignIn::SignedIn;
         let mut library = Library::default();
-        let mut queue = Queue::default();
         let mut drawer = Drawer::default();
         let mut art = Art::default();
         let now = Instant::now();
-
-        // Narrower than the panel breakpoint, so the Now Playing panel is not
-        // drawn and only the playbar can want the tile.
         let input = egui::RawInput {
-            screen_rect: Some(Rect::from_min_size(
-                egui::Pos2::ZERO,
-                Vec2::new(900.0, 600.0),
-            )),
+            screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, screen)),
             ..Default::default()
         };
 
@@ -319,8 +345,8 @@ mod tests {
             let mut screen = Screen {
                 state: &mut state,
                 library: &mut library,
-                transport: &mut transport,
-                queue: &mut queue,
+                transport,
+                queue,
                 drawer: &mut drawer,
                 position_ms: 0,
                 art: &mut art,
@@ -332,14 +358,54 @@ mod tests {
             output.textures_delta.clear();
         }
 
-        let requested: Vec<CoverUrl> = art
-            .requests(now)
+        art.requests(now)
             .into_iter()
             .filter_map(|command| match command {
                 Command::Fetch { url } => Some(url),
                 _ => None,
             })
-            .collect();
-        assert_eq!(requested, vec![url]);
+            .collect()
+    }
+
+    #[test]
+    fn the_playbar_tile_is_requested_even_with_the_panel_hidden() {
+        // Narrower than the panel breakpoint, so the Now Playing panel is not
+        // drawn and only the playbar can want a cover — the queue's rows too.
+        let mut transport = playing(cover("abc"));
+        let tracks = vec![
+            track(0, Some(cover("abc"))),
+            track(1, Some(cover("row1"))),
+            track(2, Some(cover("row2"))),
+        ];
+        let mut queue = Queue::default();
+        queue.start(&tracks, 0, &mut transport);
+
+        assert_eq!(
+            requested(Vec2::new(900.0, 600.0), &mut transport, &mut queue),
+            vec![cover("abc")],
+            "a hidden panel must not ask for its rows' covers"
+        );
+    }
+
+    #[test]
+    fn a_visible_panel_requests_the_visible_rows_covers() {
+        let mut transport = playing(cover("abc"));
+        let tracks = vec![
+            track(0, Some(cover("abc"))),
+            track(1, Some(cover("row1"))),
+            track(2, Some(cover("row2"))),
+        ];
+        let mut queue = Queue::default();
+        queue.start(&tracks, 0, &mut transport);
+
+        let mut asked = requested(Vec2::new(1400.0, 900.0), &mut transport, &mut queue);
+        asked.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+
+        let mut expected = vec![cover("abc"), cover("row1"), cover("row2")];
+        expected.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+        assert_eq!(
+            asked, expected,
+            "the panel must ask for the rows it draws, and the playbar for its tile"
+        );
     }
 }

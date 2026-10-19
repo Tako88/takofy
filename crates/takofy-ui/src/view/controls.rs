@@ -566,7 +566,7 @@ pub fn fraction_at(pointer_x: f32, left: f32, width: f32) -> f32 {
 mod tests {
     use super::*;
     use crate::theme::Tokens;
-    use egui::{Context, Event, Modifiers, PointerButton, Pos2, RawInput, Rect, Ui, Vec2};
+    use egui::{Context, Event, Modifiers, Pos2, RawInput, Rect, Ui, Vec2};
 
     fn input(events: Vec<Event>) -> RawInput {
         RawInput {
@@ -580,15 +580,6 @@ mod tests {
     fn run(ctx: &Context, input: RawInput, draw: impl FnMut(&mut Ui)) {
         let mut output = ctx.run_ui(input, draw);
         output.textures_delta.clear();
-    }
-
-    fn button(pos: Pos2, pressed: bool) -> Event {
-        Event::PointerButton {
-            pos,
-            button: PointerButton::Primary,
-            pressed,
-            modifiers: Modifiers::NONE,
-        }
     }
 
     fn cell(index: f32) -> Rect {
@@ -754,7 +745,7 @@ mod tests {
 
         // A press and release need several passes to register.
         let tap = |ctx: &Context, at: Pos2, clicked: &mut (bool, bool)| {
-            for event in [Event::PointerMoved(at), button(at, true), button(at, false)] {
+            for event in crate::view::test_support::click_events(at) {
                 run(ctx, input(vec![event]), |ui| {
                     let waiting_slot = slot(
                         ui,
@@ -890,7 +881,7 @@ mod tests {
 
         // A press and release need several passes to register.
         let tap = |ctx: &Context, at: Pos2, clicked: &mut bool| {
-            for event in [Event::PointerMoved(at), button(at, true), button(at, false)] {
+            for event in crate::view::test_support::click_events(at) {
                 run(ctx, input(vec![event]), |ui| {
                     let slot = text_button(
                         ui,

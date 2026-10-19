@@ -420,7 +420,7 @@ fn draw_run(
 mod tests {
     use std::time::Duration;
 
-    use egui::{Context, Event, Modifiers, PointerButton, RawInput};
+    use egui::{Context, Event, Modifiers, RawInput};
 
     use super::*;
     use crate::theme::style;
@@ -439,14 +439,7 @@ mod tests {
         output.textures_delta.clear();
     }
 
-    fn button(pos: Pos2, pressed: bool) -> Event {
-        Event::PointerButton {
-            pos,
-            button: PointerButton::Primary,
-            pressed,
-            modifiers: Modifiers::NONE,
-        }
-    }
+    use crate::view::test_support::{button, click_events};
 
     fn key(key: Key, modifiers: Modifiers) -> Event {
         Event::Key {
@@ -537,7 +530,7 @@ mod tests {
             let _ = seek_controls(ui, &mut *transport, tokens);
         });
         let mut command = None;
-        for event in [Event::PointerMoved(at), button(at, true), button(at, false)] {
+        for event in click_events(at) {
             let command = &mut command;
             run(ctx, input(vec![event]), |ui| {
                 *command = seek_controls(ui, &mut *transport, tokens).0;
