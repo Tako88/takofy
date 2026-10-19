@@ -9,6 +9,7 @@ use egui::{Align, Color32, Layout, Order, Rect, Stroke, StrokeKind, Ui, UiBuilde
 
 use crate::drawer::{Drawer, Input};
 use crate::layout::{self, Grid, NowPlaying, Sidebar};
+use crate::library::Library;
 use crate::message::Command;
 use crate::theme::{Tokens, radius, stroke};
 
@@ -69,10 +70,13 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
         ),
     };
 
+    // The topbar reports a nav as a request, because the crumbs borrow the
+    // library they were built from. It is applied here, before the view, and
+    // only if no region has asked for a command yet: a nav can move the page and
+    // start a load, and one whose command was then dropped would leave that load
+    // marked in flight with nothing fetching it.
     let bar = topbar::show(ui, screen.library, regions.sidebar, grid.topbar, tokens);
-    if bar.back_to_library {
-        screen.library.to_playlists();
-    }
+    command = apply_nav(screen.library, bar.nav, command);
 
     command = command.or(region(
         ui,
@@ -209,6 +213,35 @@ fn drawer_overlay(ui: &mut Ui, grid: Grid, screen: &mut Screen<'_>, tokens: &Tok
     inner.response.clicked_elsewhere()
 }
 
+/// Applies the topbar's nav request, unless another region already asked for a
+/// command this frame.
+///
+/// A nav can move the page and start a load: Back onto a playlist settles it,
+/// marking the tracks wanted and loading. The shell keeps the first command of
+/// the frame, so a nav that lost to an earlier one would have changed the
+/// library for a command nobody sends, and the page would spin for a reply that
+/// was never asked for. Yielding instead keeps the page and the load in step.
+fn apply_nav(
+    library: &mut Library,
+    nav: Option<topbar::Nav>,
+    command: Option<Command>,
+) -> Option<Command> {
+    if command.is_some() {
+        return command;
+    }
+    match nav {
+        None => None,
+        Some(topbar::Nav::Back) => library.back(),
+        Some(topbar::Nav::Forward) => library.forward(),
+        // The root is local state and never needs a fetch, so it adds no command
+        // of its own.
+        Some(topbar::Nav::Playlists) => {
+            library.to_playlists();
+            None
+        }
+    }
+}
+
 /// The topbar and the view share one panel, so they share one frame.
 fn main_panel(grid: &Grid) -> Rect {
     Rect::from_min_max(grid.topbar.min, grid.view.max)
@@ -287,15 +320,17 @@ pub(super) fn rule(ui: &Ui, rect: Rect, color: Color32) {
 mod tests {
     use std::time::Instant;
 
-    use takofy_model::{CoverUrl, TrackEntry};
+    use takofy_model::{CoverUrl, PlaylistEntry, TrackEntry};
 
     use super::*;
     use crate::cover::Art;
-    use crate::library::Library;
+    use crate::library::{Library, Load};
+    use crate::message::Update;
     use crate::player::{NowPlaying, Transport};
     use crate::queue::Queue;
+    use crate::route::Page;
     use crate::signin::SignIn;
-    use crate::theme::{fonts, style};
+    use crate::theme::{extent, fonts, style};
 
     fn cover(tail: &str) -> CoverUrl {
         CoverUrl::from_wire(&format!("https://i.scdn.co/image/{tail}")).expect("a cover url")
@@ -430,6 +465,287 @@ mod tests {
                 egui::Shape::Text(text) if text.galley.text() == label => Some(text.pos),
                 _ => None,
             })
+    }
+
+    /// The rect the first text shape with `label` inside `area` was painted in.
+    fn text_in(output: &egui::FullOutput, label: &str, area: Rect) -> Option<Rect> {
+        output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::Shape::Text(text)
+                    if text.galley.text() == label && area.contains(text.pos) =>
+                {
+                    Some(Rect::from_min_size(text.pos, text.galley.size()))
+                }
+                _ => None,
+            })
+    }
+
+    /// The topbar's rect, solved the same way the shell solves it.
+    fn topbar_rect(window: &Window) -> Rect {
+        let content = Rect::from_min_size(egui::Pos2::ZERO, window.size);
+        let regions = layout::regions_for(content.width());
+        let shell = layout::shell_for(&regions);
+        layout::grid_for(content, &shell).topbar
+    }
+
+    /// The history pair, left to right, found from the buttons' painted frames
+    /// rather than from coordinates a test guessed.
+    fn history_buttons(output: &egui::FullOutput) -> Vec<Rect> {
+        let mut rects = output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(shape)
+                    if shape.stroke.width > 0.0
+                        && (shape.rect.width() - extent::BUTTON).abs() < 0.01
+                        && (shape.rect.height() - extent::BUTTON).abs() < 0.01 =>
+                {
+                    Some(shape.rect)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        rects.sort_by(|left, right| left.left().total_cmp(&right.left()));
+        rects
+    }
+
+    /// The sidebar's highlighted library rows, which wear a bone rule at the
+    /// left edge.
+    fn selected_rows(output: &egui::FullOutput) -> usize {
+        let tokens = Tokens::DARK;
+        output
+            .shapes
+            .iter()
+            .filter(|clipped| match &clipped.shape {
+                egui::Shape::Rect(shape) => {
+                    shape.fill == tokens.palette.text
+                        && (shape.rect.width() - stroke::RULE).abs() < 0.01
+                        && shape.rect.height() > extent::ROW_H
+                        && shape.rect.left() < extent::SIDEBAR_W
+                }
+                _ => false,
+            })
+            .count()
+    }
+
+    const PLAYLIST: &str = "spotify:playlist:a";
+    const ALBUM: &str = "spotify:album:b";
+
+    /// Puts one named, ready playlist on screen.
+    fn ready_playlist(window: &mut Window) {
+        window.library.apply(&Update::Playlists(vec![PlaylistEntry {
+            uri: PLAYLIST.to_owned(),
+            name: "Mix".to_owned(),
+            named: true,
+            cover: None,
+        }]));
+        window.library.select(PLAYLIST);
+        window.library.apply(&Update::Tracks {
+            playlist: PLAYLIST.to_owned(),
+            tracks: Vec::new(),
+            cover: None,
+        });
+    }
+
+    #[test]
+    fn the_history_buttons_move_between_pages() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        ready_playlist(&mut window);
+        window.library.open(Page::Album(ALBUM.to_owned()));
+
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let buttons = history_buttons(&frame);
+        assert_eq!(buttons.len(), 2, "the topbar paints the history pair");
+
+        assert_eq!(
+            window.click(&mut transport, &mut queue, buttons[0].center()),
+            None,
+            "back into a ready playlist needs no load"
+        );
+        assert_eq!(
+            window.library.page(),
+            Some(&Page::Playlist(PLAYLIST.to_owned()))
+        );
+
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let buttons = history_buttons(&frame);
+        assert_eq!(
+            window.click(&mut transport, &mut queue, buttons[1].center()),
+            None
+        );
+        assert_eq!(window.library.page(), Some(&Page::Album(ALBUM.to_owned())));
+    }
+
+    #[test]
+    fn the_history_buttons_do_nothing_with_no_history() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let buttons = history_buttons(&frame);
+        assert_eq!(buttons.len(), 2, "the topbar paints the history pair");
+
+        for button in buttons {
+            assert_eq!(
+                window.click(&mut transport, &mut queue, button.center()),
+                None
+            );
+            assert_eq!(window.library.page(), None);
+        }
+    }
+
+    #[test]
+    fn the_playlists_crumb_returns_to_the_root_and_back_loads_the_playlist() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        ready_playlist(&mut window);
+
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let crumb = text_in(&frame, "Playlists", topbar_rect(&window))
+            .expect("the trail's Playlists crumb is painted");
+        assert_eq!(
+            window.click(&mut transport, &mut queue, crumb.center()),
+            None
+        );
+        assert_eq!(window.library.page(), None, "the crumb returns to the root");
+
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let back = history_buttons(&frame)[0];
+        assert_eq!(
+            window.click(&mut transport, &mut queue, back.center()),
+            Some(Command::LoadTracks {
+                playlist: PLAYLIST.to_owned()
+            }),
+            "the root cleared the wanted load, so Back reloads it"
+        );
+        assert_eq!(
+            window.library.page(),
+            Some(&Page::Playlist(PLAYLIST.to_owned()))
+        );
+    }
+
+    #[test]
+    fn back_into_a_playlist_whose_tracks_were_cleared_loads_it() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        window.library.apply(&Update::Playlists(vec![PlaylistEntry {
+            uri: PLAYLIST.to_owned(),
+            name: "Mix".to_owned(),
+            named: true,
+            cover: None,
+        }]));
+        window.library.select(PLAYLIST);
+        window.library.to_playlists();
+        assert_eq!(window.library.tracks, Load::Idle);
+        assert_eq!(window.library.page(), None);
+
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let back = history_buttons(&frame)[0];
+        assert_eq!(
+            window.click(&mut transport, &mut queue, back.center()),
+            Some(Command::LoadTracks {
+                playlist: PLAYLIST.to_owned()
+            })
+        );
+    }
+
+    #[test]
+    fn the_sidebar_highlight_clears_on_an_album_page() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        ready_playlist(&mut window);
+
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert_eq!(
+            selected_rows(&frame),
+            1,
+            "the current playlist is highlighted"
+        );
+
+        window.library.open(Page::Album(ALBUM.to_owned()));
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert_eq!(
+            selected_rows(&frame),
+            0,
+            "no playlist is current on an album page"
+        );
+    }
+
+    /// A history that holds a stale playlist behind an album, so Back has to
+    /// start the playlist's load again.
+    fn stale_playlist_behind_an_album(library: &mut Library) {
+        library.apply(&Update::Playlists(vec![PlaylistEntry {
+            uri: PLAYLIST.to_owned(),
+            name: "Mix".to_owned(),
+            named: true,
+            cover: None,
+        }]));
+        library.select(PLAYLIST);
+        library.apply(&Update::TracksFailed {
+            playlist: PLAYLIST.to_owned(),
+            failure: crate::message::Failure::Load,
+        });
+        library.open(Page::Album(ALBUM.to_owned()));
+    }
+
+    /// A nav can settle a page: Back onto a playlist marks its load wanted and
+    /// starts it. Keeping an earlier command of the frame and dropping the nav's
+    /// would leave that load marked in flight with nothing fetching it, so the
+    /// page would spin for a reply nobody asked for. A losing nav must therefore
+    /// not touch the library at all.
+    ///
+    /// Two activations in one frame need a keyboard and a pointer together, which
+    /// the harness above cannot stage: egui resolves one click position per
+    /// frame. So the collision is driven through the shell's nav step, which is
+    /// where the fix lives.
+    #[test]
+    fn a_nav_that_loses_the_frame_leaves_the_library_alone() {
+        let mut library = Library::default();
+        stale_playlist_behind_an_album(&mut library);
+        let page = library.page().cloned();
+        let tracks = library.tracks.clone();
+
+        let won = Command::LoadTracks {
+            playlist: ALBUM.to_owned(),
+        };
+        let command = apply_nav(&mut library, Some(topbar::Nav::Back), Some(won.clone()));
+
+        assert_eq!(command, Some(won), "the earlier command keeps the frame");
+        assert_eq!(
+            library.page(),
+            page.as_ref(),
+            "the losing nav must not move the page"
+        );
+        assert_eq!(
+            library.tracks, tracks,
+            "and must not mark a load that nothing would fetch"
+        );
+        assert_eq!(library.page(), Some(&Page::Album(ALBUM.to_owned())));
+    }
+
+    /// The same Back, with no other command in the frame, still settles the page
+    /// and reports the load it started.
+    #[test]
+    fn a_nav_applies_when_no_other_region_asked() {
+        let mut library = Library::default();
+        stale_playlist_behind_an_album(&mut library);
+
+        assert_eq!(
+            apply_nav(&mut library, Some(topbar::Nav::Back), None),
+            Some(Command::LoadTracks {
+                playlist: PLAYLIST.to_owned()
+            })
+        );
+        assert_eq!(library.page(), Some(&Page::Playlist(PLAYLIST.to_owned())));
+        assert_eq!(library.tracks, Load::Loading);
     }
 
     /// Draws one frame of the whole shell at `screen` and returns the covers it
