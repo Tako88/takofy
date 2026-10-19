@@ -1,7 +1,7 @@
 //! The eframe application: the window's state and its draw pass.
 
 use std::sync::mpsc::Receiver;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use eframe::egui;
 use takofy_ui::cover::Art;
@@ -115,6 +115,7 @@ impl eframe::App for TakofyApp {
             position_ms,
             art: &mut self.art,
             now,
+            now_ms: wall_clock_ms(),
         };
         if let Some(command) = view::show(ui, &mut screen, &self.tokens) {
             let _ = self.ui_end.commands.send(command);
@@ -130,6 +131,18 @@ impl eframe::App for TakofyApp {
             self.since = Some(now);
         }
     }
+}
+
+/// The frame's wall clock in epoch milliseconds.
+///
+/// A clock that cannot be read as a positive span since the epoch reads as `0`,
+/// which makes every date a future one and so draws no cell.
+fn wall_clock_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| {
+            u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
+        })
 }
 
 /// The window's background. The channels between panels read as the window
@@ -197,6 +210,20 @@ mod tests {
             named: true,
             cover: None,
         }
+    }
+
+    #[test]
+    fn wall_clock_ms_is_within_a_minute_of_the_system_clock() {
+        let system = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("the system clock is after the epoch")
+            .as_millis();
+        let reading = u128::from(wall_clock_ms());
+        assert!(
+            system.abs_diff(reading) < 60_000,
+            "read {reading} against the system's {system}"
+        );
+        assert!(reading > 1_700_000_000_000, "a 2024 floor, read {reading}");
     }
 
     #[test]
