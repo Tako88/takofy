@@ -444,8 +444,73 @@ mod tests {
         }
     }
 
+    /// One string each bundled file must shape on its own.
+    ///
+    /// epaint parses a blob lazily, the first time a face draws with it, and
+    /// panics at its own parse site when the file is unreadable — so a corrupted
+    /// asset is a crash on startup rather than a quiet fallback. Every face
+    /// drawing its sample here turns that into a test failure.
+    ///
+    /// Japanese and Traditional Chinese carry no BMP codepoint the other three
+    /// lack, so their samples come from the shared repertoire and pin only that
+    /// this file, alone, draws them. Hangul is Korean's and the simplified forms
+    /// are Chinese's, per the table in `assets/fonts/README.md`.
+    const FACE_SAMPLES: [(&str, &str); 6] = [
+        ("archivo", "Hana Sō Ünï Señor"),
+        ("jbmono", "fn main() -> i32 { 0x2A }"),
+        ("jp", "かなカナ漢字"),
+        ("kr", "한글"),
+        ("sc", "汉字"),
+        ("tc", "漢字"),
+    ];
+
     /// A missing glyph is invisible to layout — `.notdef` is a full em wide, the
     /// same as a real ideograph — so coverage has to be asked for directly.
+    #[test]
+    fn every_face_parses_and_shapes_its_sample() {
+        // A family per face, so the sample can only be drawn by its own file.
+        let mut defs = definitions();
+        let keys = our_keys();
+        for key in &keys {
+            let probe = FontFamily::Name(format!("probe-{key}").into());
+            defs.families.insert(probe, vec![key.clone()]);
+        }
+
+        let ctx = egui::Context::default();
+        ctx.set_fonts(defs);
+        ctx.set_missing_glyph_policy(egui::MissingGlyphPolicy::Panic);
+
+        // The policy applies from the next pass, and fonts exist only after one.
+        let mut warm_up = ctx.run_ui(egui::RawInput::default(), |_ui| {});
+        warm_up.textures_delta.clear();
+
+        for key in keys {
+            let family = key.split_once('-').expect("a key ends in its weight").0;
+            let sample = FACE_SAMPLES
+                .iter()
+                .find(|(name, _)| *name == family)
+                .map(|(_, sample)| *sample)
+                .expect("every bundled family has a sample");
+            let probe = FontFamily::Name(format!("probe-{key}").into());
+            let font_id = FontId::new(super::super::text::BASE, probe);
+
+            // Shaping the sample is what parses the blob, so this frame is the
+            // parse: an unreadable file panics here instead of in the window.
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                ui.label(egui::RichText::new(sample).font(font_id.clone()));
+            });
+            output.textures_delta.clear();
+            assert!(
+                !output.shapes.is_empty(),
+                "{key} drew nothing for {sample:?}"
+            );
+            assert!(
+                ctx.fonts_mut(|fonts| fonts.has_glyphs(&font_id, sample)),
+                "{key} has no glyph for {sample:?}"
+            );
+        }
+    }
+
     #[test]
     fn every_chain_can_draw_every_script_it_claims() {
         let ctx = egui::Context::default();

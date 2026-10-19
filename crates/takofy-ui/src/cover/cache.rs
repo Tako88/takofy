@@ -293,6 +293,50 @@ mod tests {
         assert_eq!(cache.entries.len(), MAX_HELD);
     }
 
+    /// Browsing is many distinct URLs arriving a screenful at a time, not one
+    /// entry overflowing a full cache. The bound has to hold under that, and what
+    /// goes must be the least recently used: the frames furthest back.
+    #[test]
+    fn browsing_holds_the_bound_and_evicts_the_oldest_frames() {
+        const PER_FRAME: usize = 32;
+        const FRAMES: usize = 10;
+
+        let now = base();
+        let mut cache = Cache::new();
+        for frame in 0..FRAMES {
+            cache.begin_frame();
+            for slot in 0..PER_FRAME {
+                // Looked at, then fetched: a tile that appears and resolves.
+                let url = cover_url(&format!("f{frame:02}-t{slot:02}"));
+                cache.look(&url, now);
+                cache.insert(&url);
+            }
+        }
+
+        assert_eq!(
+            cache.entries.len(),
+            MAX_HELD,
+            "the cache grew past its bound while browsing"
+        );
+
+        // The newest frames are exactly what still fits; every older frame went.
+        let held_frames = MAX_HELD / PER_FRAME;
+        assert!(held_frames < FRAMES, "the test never passes the bound");
+        for frame in 0..FRAMES {
+            let held = frame >= FRAMES - held_frames;
+            for slot in 0..PER_FRAME {
+                let tail = format!("f{frame:02}-t{slot:02}");
+                let url = cover_url(&tail);
+                assert_eq!(
+                    cache.entries.contains_key(&url),
+                    held,
+                    "{tail} should {} have been evicted",
+                    if held { "not" } else { "" }
+                );
+            }
+        }
+    }
+
     #[test]
     fn a_wanted_entry_survives_a_full_cache() {
         let now = base();
