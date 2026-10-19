@@ -5,6 +5,8 @@
 
 use std::time::Duration;
 
+use takofy_model::CoverUrl;
+
 use crate::message::{Command, Failure, TransportUpdate, Update};
 use crate::signin::failure_message;
 
@@ -59,6 +61,10 @@ impl TransportState {
 pub struct NowPlaying {
     pub uri: String,
     pub title: String,
+    /// The track's album cover, as it was known when the track started. The
+    /// panel and the playbar look it up each frame, so a cover that arrives
+    /// later still reaches them.
+    pub cover: Option<CoverUrl>,
 }
 
 /// The transport's anchor and the track it is about.
@@ -137,10 +143,11 @@ impl Transport {
     }
 
     /// Names the track and returns the command that plays it.
-    pub fn play(&mut self, uri: &str, title: &str) -> Command {
+    pub fn play(&mut self, uri: &str, title: &str, cover: Option<CoverUrl>) -> Command {
         self.now_playing = Some(NowPlaying {
             uri: uri.to_owned(),
             title: title.to_owned(),
+            cover,
         });
         self.position_ms = 0;
         self.duration_ms = None;
@@ -449,7 +456,7 @@ mod tests {
     fn playing_another_track_drops_a_drag() {
         let mut transport = seekable_transport();
         transport.scrub_to(0.5);
-        transport.play("spotify:track:y", "Another");
+        transport.play("spotify:track:y", "Another", None);
         assert_eq!(transport.shown_position(Duration::ZERO), 0);
     }
 
@@ -457,7 +464,7 @@ mod tests {
     fn play_names_the_track_and_asks_for_it() {
         let mut transport = Transport::default();
         assert_eq!(
-            transport.play("spotify:track:x", "A Title"),
+            transport.play("spotify:track:x", "A Title", None),
             Command::Play {
                 uri: "spotify:track:x".to_owned()
             }
@@ -467,6 +474,7 @@ mod tests {
             Some(NowPlaying {
                 uri: "spotify:track:x".to_owned(),
                 title: "A Title".to_owned(),
+                cover: None,
             })
         );
         assert_eq!(transport.state, TransportState::Loading);
@@ -483,7 +491,7 @@ mod tests {
         );
         assert_eq!(transport.duration_ms, Some(222_000));
 
-        transport.play("spotify:track:x", "A Title");
+        transport.play("spotify:track:x", "A Title", None);
         assert_eq!(transport.duration_ms, None);
     }
 

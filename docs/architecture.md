@@ -58,6 +58,18 @@ the queue. None of this changes the shutdown order — the command task still
 owns the engine and the player, and teardown still joins it before the runtime
 drops.
 
+Cover art runs through the same split. The binary fetches and decodes; the
+window only holds textures. A frame's protocol is `begin_frame` → `look` →
+`requests` → `next_wake`: the app starts the frame, the draw `look`s each cover
+box it is about to paint, the app asks the store for the fetches the draw said
+it wanted and sends at most a fixed number, and then it asks how long until the
+next retry or in-flight deadline so an idle window can wake itself for a retry
+it would otherwise never make. Nothing in the window fetches, and a box that is
+not drawn is never requested. Decode runs on a detached thread rather than
+tokio's blocking pool for the same reason sign-in does: a decode that hangs must
+not hold up the runtime drop, and a detached thread dies with the process
+instead.
+
 ## Who owns what
 
 - The binary owns the tokio runtime, and the `Engine` in headless mode. In the

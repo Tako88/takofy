@@ -4,9 +4,12 @@
 //! but the label and the padding, and which one is on screen comes from the
 //! region model rather than from a mode of its own.
 
+use std::time::Instant;
+
 use egui::{Layout, Pos2, Rect, RichText, Sense, Ui, UiBuilder, Vec2};
 
 use crate::availability::Control;
+use crate::cover::{Art, Cover};
 use crate::icon::{self, Icon};
 use crate::layout::Sidebar;
 use crate::library::{Library, Load};
@@ -26,14 +29,21 @@ use super::text as recipe;
 pub(super) const ROW_H: f32 = extent::LIBRARY_ART + 2.0 * space::S2;
 
 /// Draws the sidebar, returning a command if one of its controls asked for one.
-pub fn show(ui: &mut Ui, form: Sidebar, library: &mut Library, tokens: &Tokens) -> Option<Command> {
+pub fn show(
+    ui: &mut Ui,
+    form: Sidebar,
+    library: &mut Library,
+    art: &mut Art,
+    now: Instant,
+    tokens: &Tokens,
+) -> Option<Command> {
     let band = ui.available_rect_before_wrap();
     let y = brand(ui, form, tokens, band, band.top());
     let y = nav(ui, form, tokens, band, y);
 
     match form {
         Sidebar::Rail => None,
-        Sidebar::Full => library_block(ui, library, tokens, band, y),
+        Sidebar::Full => library_block(ui, library, art, now, tokens, band, y),
     }
 }
 
@@ -98,6 +108,8 @@ fn nav(ui: &mut Ui, form: Sidebar, tokens: &Tokens, band: Rect, top: f32) -> f32
 fn library_block(
     ui: &mut Ui,
     library: &mut Library,
+    art: &mut Art,
+    now: Instant,
     tokens: &Tokens,
     band: Rect,
     top: f32,
@@ -187,11 +199,18 @@ fn library_block(
         Pos2::new(band.left() + space::S2, y),
         Vec2::new(band.width() - 2.0 * space::S2, band.bottom() - y),
     );
-    rows(ui, list, library, tokens)
+    rows(ui, list, library, art, now, tokens)
 }
 
 /// The playlist rows, or the state of the load that fetches them.
-fn rows(ui: &mut Ui, rect: Rect, library: &mut Library, tokens: &Tokens) -> Option<Command> {
+fn rows(
+    ui: &mut Ui,
+    rect: Rect,
+    library: &mut Library,
+    art: &mut Art,
+    now: Instant,
+    tokens: &Tokens,
+) -> Option<Command> {
     if rect.height() < ROW_H {
         return None;
     }
@@ -225,7 +244,8 @@ fn rows(ui: &mut Ui, rect: Rect, library: &mut Library, tokens: &Tokens) -> Opti
                                 let (_, row) =
                                     ui.allocate_space(Vec2::new(ui.available_width(), ROW_H));
                                 let selected = current.as_deref() == Some(entry.uri.as_str());
-                                if one(ui, row, &entry.uri, &entry.name, selected, tokens) {
+                                let cover = art.look(entry.cover.as_ref(), now);
+                                if one(ui, row, &entry.uri, &entry.name, cover, selected, tokens) {
                                     picked = Some(entry.uri.clone());
                                 }
                             }
@@ -250,7 +270,15 @@ fn rows(ui: &mut Ui, rect: Rect, library: &mut Library, tokens: &Tokens) -> Opti
 /// The tile stands in until covers are fetched. A selected row borrows the
 /// reference's language for the current navigation item — a raised fill and a
 /// bone rule at the left edge — because the reference defines no selected row.
-fn one(ui: &mut Ui, rect: Rect, uri: &str, name: &str, selected: bool, tokens: &Tokens) -> bool {
+fn one(
+    ui: &mut Ui,
+    rect: Rect,
+    uri: &str,
+    name: &str,
+    cover: Cover,
+    selected: bool,
+    tokens: &Tokens,
+) -> bool {
     // The uri, not the name: two playlists may share a name, and two widgets may
     // not share an id.
     let response = ui.interact(
@@ -285,6 +313,7 @@ fn one(ui: &mut Ui, rect: Rect, uri: &str, name: &str, selected: bool, tokens: &
         tile,
         radius::SM,
         tokens.palette.border,
+        cover,
         tokens,
     );
 

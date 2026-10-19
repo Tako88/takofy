@@ -5,14 +5,17 @@
 //! columns line up by construction rather than because two pieces agree. The header
 //! scrolls with the list, which is what the reference's tracklist does.
 
+use std::time::Instant;
+
 use egui::emath::GuiRounding;
 use egui::{FontId, Pos2, Rect, Sense, Ui, vec2};
 use takofy_model::{PlaylistEntry, TrackEntry};
 
+use crate::cover::{Art, Cover};
 use crate::format::{format_position, hero_meta};
 use crate::icon;
 use crate::layout::{Table, cards, table as table_layout};
-use crate::library::{Library, Load};
+use crate::library::{BandCover, Library, Load, band_cover};
 use crate::message::{Command, Failure};
 use crate::player::{Transport, TransportState};
 use crate::queue::Queue;
@@ -25,101 +28,145 @@ use super::text as recipe;
 use super::track_row::{self, Row, State};
 
 /// The main pane: the selected playlist's tracks, or the state of their load.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the pane, its table, the state it draws and the frame's clock"
+)]
 pub fn tracks_view(
     ui: &mut Ui,
     table: Table,
     library: &mut Library,
     transport: &mut Transport,
     queue: &mut Queue,
+    art: &mut Art,
+    now: Instant,
     tokens: &Tokens,
 ) -> Option<Command> {
     ui.add_space(space::S3);
 
-    match &library.tracks {
-        Load::Idle => return idle(ui, library, tokens),
-        Load::Loading => {
-            ui.spinner();
-            return None;
-        }
-        Load::Ready(tracks) if tracks.tracks.is_empty() => {
-            ui.label(recipe::muted("No tracks in this playlist.", tokens));
-            return None;
-        }
-        Load::Failed(failure) => {
-            ui.label(recipe::muted(
-                crate::signin::failure_message(*failure),
-                tokens,
-            ));
-            if ui.button("Retry").clicked() {
-                let playlist = library.selected().map(str::to_owned);
-                return playlist.map(|playlist| library.select(&playlist));
-            }
-            return None;
-        }
-        Load::Ready(_) => {}
+    if matches!(library.tracks, Load::Idle) {
+        return idle(ui, library, art, now, tokens);
     }
 
+    // The band draws `Loading` until the selected playlist's tracks settle: it
+    // must not fetch a first-track cover it is about to replace with the
+    // context image.
+    let settled = !matches!(library.tracks, Load::Loading);
     let mut command = None;
+    let mut retry = false;
     egui::ScrollArea::vertical().show(ui, |ui| {
         let width = ui.available_width();
         let columns = table_layout::columns(width, table.columns());
 
-        let Load::Ready(tracks) = &library.tracks else {
-            return;
-        };
-        let count = tracks.tracks.len();
-
-        // The band heads the playlist and is drawn only when the library can name
-        // the selection; with no name there is nothing to say above the rows. It
+        // The band heads the playlist whenever the library can name the
+        // selection; with no name there is nothing to say above the rows. It
         // takes the width and starts at the cursor, so the header and the rows
-        // follow it down one scroll area. An empty playlist never reaches here —
-        // its own state returns above — so the band only ever heads a playable
-        // list.
-        if let Some(title) = library.selected_name() {
+        // follow it down one scroll area.
+        if let Some(entry) = library.selected_entry() {
+            let cover = band_cover_for(entry, settled, art, now);
+            let ready = match &library.tracks {
+                Load::Ready(tracks) => Some(tracks),
+                Load::Idle | Load::Loading | Load::Failed(_) => None,
+            };
+            let (meta, playable) = match ready {
+                Some(tracks) if !tracks.tracks.is_empty() => (
+                    hero_meta(tracks.tracks.len(), total_duration_ms(&tracks.tracks)),
+                    true,
+                ),
+                _ => (Vec::new(), false),
+            };
             let band = hero::Band {
                 eyebrow: "Playlist",
-                title,
-                meta: hero_meta(count, total_duration_ms(&tracks.tracks)),
-                playable: count > 0,
+                title: &entry.name,
+                meta,
+                playable,
+                cover,
             };
-            if hero::show(ui, &band, tokens) {
+            if hero::show(ui, &band, tokens)
+                && let Some(tracks) = ready
+            {
                 command = queue.start(&tracks.tracks, 0, transport);
             }
         }
 
-        head(ui, columns, tokens);
-        // The whole list is reserved at once, so the scrollbar is right, and only
-        // the rows the viewport can show are laid out and given interaction: a
-        // thousand-track playlist paints the dozen rows on screen.
-        let list = list_rect(ui, count);
-        ui.allocate_rect(list, Sense::hover());
-        let visible = ui.clip_rect();
-
-        for (index, entry) in tracks.tracks.iter().enumerate() {
-            let rect = table_layout::row_rect(list, index, extent::ROW_H);
-            if !visible.intersects(rect) {
-                continue;
+        match &library.tracks {
+            Load::Idle => {}
+            Load::Loading => {
+                ui.spinner();
             }
-            let duration = entry.duration_ms.map(format_position);
-            let row = Row {
-                uri: &entry.uri,
-                number: index + 1,
-                title: &entry.title,
-                artist: &entry.artists,
-                album: entry.album.as_deref(),
-                // The added date is playlist membership rather than track metadata,
-                // so the window is not handed one yet.
-                added: None,
-                duration: duration.as_deref(),
-                state: state_of(&entry.uri, transport),
-            };
-            if track_row::show(ui, rect, columns, &row, tokens) {
-                command = queue.start(&tracks.tracks, index, transport);
+            Load::Failed(failure) => {
+                ui.label(recipe::muted(
+                    crate::signin::failure_message(*failure),
+                    tokens,
+                ));
+                if ui.button("Retry").clicked() {
+                    retry = true;
+                }
+            }
+            Load::Ready(tracks) if tracks.tracks.is_empty() => {
+                ui.label(recipe::muted("No tracks in this playlist.", tokens));
+            }
+            Load::Ready(tracks) => {
+                head(ui, columns, tokens);
+                let count = tracks.tracks.len();
+                // The whole list is reserved at once, so the scrollbar is right,
+                // and only the rows the viewport can show are laid out and given
+                // interaction: a thousand-track playlist paints the dozen rows on
+                // screen.
+                let list = list_rect(ui, count);
+                ui.allocate_rect(list, Sense::hover());
+                let visible = ui.clip_rect();
+
+                for (index, entry) in tracks.tracks.iter().enumerate() {
+                    let rect = table_layout::row_rect(list, index, extent::ROW_H);
+                    if !visible.intersects(rect) {
+                        continue;
+                    }
+                    let duration = entry.duration_ms.map(format_position);
+                    let row = Row {
+                        uri: &entry.uri,
+                        number: index + 1,
+                        title: &entry.title,
+                        artist: &entry.artists,
+                        album: entry.album.as_deref(),
+                        // The added date is playlist membership rather than track
+                        // metadata, so the window is not handed one yet.
+                        added: None,
+                        duration: duration.as_deref(),
+                        state: state_of(&entry.uri, transport),
+                        cover: art.look(entry.cover.as_ref(), now),
+                    };
+                    if track_row::show(ui, rect, columns, &row, tokens) {
+                        command = queue.start(&tracks.tracks, index, transport);
+                    }
+                }
             }
         }
     });
 
+    if retry {
+        let playlist = library.selected().map(str::to_owned);
+        return playlist.map(|playlist| library.select(&playlist));
+    }
     command
+}
+
+/// The cover the band draws this frame.
+///
+/// Once the tracks have settled this is the entry's own cover. While they load
+/// it is `Pending`, but a texture the store already holds is kept on screen
+/// rather than flashing the placeholder: a reload that re-selected the same
+/// playlist shows the picture it already had, and only an entry with nothing
+/// held draws `Loading`.
+fn band_cover_for(entry: &PlaylistEntry, settled: bool, art: &mut Art, now: Instant) -> Cover {
+    match band_cover(entry, settled) {
+        BandCover::Pending => entry
+            .cover
+            .as_ref()
+            .and_then(|url| art.look_held(url, now))
+            .unwrap_or(Cover::Loading),
+        BandCover::Entry(url) => art.look(url, now),
+    }
 }
 
 /// What the idle main view shows: the grid of playlists, or the state of the
@@ -161,7 +208,13 @@ pub fn idle_view(library: &Library) -> IdleView<'_> {
 /// it and nothing else does, so phase 4 can lift it out when it builds the
 /// library route. The copy and the retry are the sidebar's, reusing
 /// `library.reload()` so the two library surfaces recover the same way.
-fn idle(ui: &mut Ui, library: &mut Library, tokens: &Tokens) -> Option<Command> {
+fn idle(
+    ui: &mut Ui,
+    library: &mut Library,
+    art: &mut Art,
+    now: Instant,
+    tokens: &Tokens,
+) -> Option<Command> {
     match idle_view(library) {
         IdleView::Loading => {
             // The sidebar's loading copy, so both library surfaces say the same
@@ -190,7 +243,7 @@ fn idle(ui: &mut Ui, library: &mut Library, tokens: &Tokens) -> Option<Command> 
             // through the library. The sidebar copies its list for the same
             // reason.
             let entries = entries.to_vec();
-            grid(ui, &entries, library, tokens)
+            grid(ui, &entries, library, art, now, tokens)
         }
     }
 }
@@ -205,6 +258,8 @@ fn grid(
     ui: &mut Ui,
     entries: &[PlaylistEntry],
     library: &mut Library,
+    art: &mut Art,
+    now: Instant,
     tokens: &Tokens,
 ) -> Option<Command> {
     let mut picked: Option<String> = None;
@@ -228,6 +283,7 @@ fn grid(
                     uri: &entry.uri,
                     name: &entry.name,
                     kind: "Playlist",
+                    cover: art.look(entry.cover.as_ref(), now),
                 };
                 if card::show(ui, rect, &card, tokens) {
                     picked = Some(entry.uri.clone());
@@ -388,14 +444,17 @@ fn heading(ui: &Ui, rect: Rect, label: &str, right: bool, font: &FontId, tokens:
 
 #[cfg(test)]
 mod tests {
-    use egui::{Context, Event, Modifiers, PointerButton, RawInput, Vec2};
+    use egui::{
+        Context, Event, Modifiers, MouseWheelSource, MouseWheelUnit, PointerButton, RawInput,
+        TouchPhase, Vec2,
+    };
 
     use super::*;
     use crate::library::Library;
     use crate::message::Update;
     use crate::theme::hero::PLAY;
     use crate::theme::{fonts, style};
-    use takofy_model::{PlaylistEntry, TrackEntry};
+    use takofy_model::{CoverImage, CoverUrl, PlaylistEntry, TrackEntry};
 
     /// The probe window: 900 by 400, the size every bare-row test runs in.
     const PROBE: Vec2 = Vec2::new(900.0, 400.0);
@@ -431,6 +490,26 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    /// The row indices whose title the frame painted. A row that is laid out
+    /// but clipped away paints nothing, so this is the row set the window shows.
+    fn painted_rows(output: &egui::FullOutput) -> Vec<usize> {
+        drawn_texts(output)
+            .into_iter()
+            .filter_map(|text| text.strip_prefix('t'))
+            .filter_map(|tail| tail.parse::<usize>().ok())
+            .collect()
+    }
+
+    /// The row a cover URL names, read from the tail the test's `track_with_cover`
+    /// wrote into the URL itself.
+    fn cover_row(url: &CoverUrl) -> usize {
+        url.as_str()
+            .rsplit('c')
+            .next()
+            .and_then(|tail| tail.parse().ok())
+            .expect("a cover URL names its row")
     }
 
     fn button(pos: Pos2, pressed: bool) -> Event {
@@ -485,6 +564,45 @@ mod tests {
             named: true,
             cover: None,
         }
+    }
+
+    fn cover_url(tail: &str) -> CoverUrl {
+        CoverUrl::from_wire(&format!("https://i.scdn.co/image/{tail}")).expect("a cover url")
+    }
+
+    fn playlist_with_cover(uri: &str, name: &str, cover: CoverUrl) -> PlaylistEntry {
+        PlaylistEntry {
+            uri: uri.to_owned(),
+            name: name.to_owned(),
+            named: true,
+            cover: Some(cover),
+        }
+    }
+
+    fn track_with_cover(index: usize) -> TrackEntry {
+        TrackEntry {
+            uri: format!("t{index}"),
+            title: format!("t{index}"),
+            artists: String::new(),
+            album: None,
+            duration_ms: None,
+            named: true,
+            cover: Some(cover_url(&format!("c{index}"))),
+        }
+    }
+
+    fn image() -> CoverImage {
+        CoverImage::new(1, 1, vec![0; 4]).expect("a 1x1 image")
+    }
+
+    fn fetch_urls(commands: Vec<Command>) -> Vec<CoverUrl> {
+        commands
+            .into_iter()
+            .filter_map(|command| match command {
+                Command::Fetch { url } => Some(url),
+                _ => None,
+            })
+            .collect()
     }
 
     /// A library whose playlists are ready and whose tracks are untouched: the
@@ -586,6 +704,7 @@ mod tests {
                     title,
                     meta: Vec::new(),
                     playable: count > 0,
+                    cover: Cover::Missing,
                 };
                 let _ = hero::show(ui, &band, &tokens);
                 head(ui, columns, &tokens);
@@ -614,6 +733,7 @@ mod tests {
                     title,
                     meta: Vec::new(),
                     playable: true,
+                    cover: Cover::Missing,
                 };
                 let _ = hero::show(ui, &band, &tokens);
                 let bottom = ui.cursor().min.y;
@@ -646,7 +766,16 @@ mod tests {
         let mut command = None;
         // Warm up so hit-testing has a previous pass to read.
         run(ctx, sized_input(screen, Vec::new()), |ui| {
-            let _ = tracks_view(ui, Table::Full, library, transport, queue, &tokens);
+            let _ = tracks_view(
+                ui,
+                Table::Full,
+                library,
+                transport,
+                queue,
+                &mut Art::default(),
+                Instant::now(),
+                &tokens,
+            );
         });
         for _ in 0..times {
             for event in [
@@ -659,9 +788,16 @@ mod tests {
                 let transport = &mut *transport;
                 let queue = &mut *queue;
                 run(ctx, sized_input(screen, vec![event]), |ui| {
-                    if let Some(next) =
-                        tracks_view(ui, Table::Full, library, transport, queue, &tokens)
-                    {
+                    if let Some(next) = tracks_view(
+                        ui,
+                        Table::Full,
+                        library,
+                        transport,
+                        queue,
+                        &mut Art::default(),
+                        Instant::now(),
+                        &tokens,
+                    ) {
                         *command = Some(next);
                     }
                 });
@@ -702,7 +838,16 @@ mod tests {
         let mut command = None;
         // Warm up so hit-testing has a previous pass to read, pointer away.
         run(ctx, sized_input(screen, Vec::new()), |ui| {
-            let _ = tracks_view(ui, Table::Full, library, transport, queue, &tokens);
+            let _ = tracks_view(
+                ui,
+                Table::Full,
+                library,
+                transport,
+                queue,
+                &mut Art::default(),
+                Instant::now(),
+                &tokens,
+            );
         });
         // Rest the pointer on the card until the reveal animation has finished.
         for _ in 0..hover_frames {
@@ -710,7 +855,16 @@ mod tests {
                 ctx,
                 sized_input(screen, vec![Event::PointerMoved(centre)]),
                 |ui| {
-                    let _ = tracks_view(ui, Table::Full, library, transport, queue, &tokens);
+                    let _ = tracks_view(
+                        ui,
+                        Table::Full,
+                        library,
+                        transport,
+                        queue,
+                        &mut Art::default(),
+                        Instant::now(),
+                        &tokens,
+                    );
                 },
             );
         }
@@ -720,8 +874,16 @@ mod tests {
             let transport = &mut *transport;
             let queue = &mut *queue;
             run(ctx, sized_input(screen, vec![event]), |ui| {
-                if let Some(next) = tracks_view(ui, Table::Full, library, transport, queue, &tokens)
-                {
+                if let Some(next) = tracks_view(
+                    ui,
+                    Table::Full,
+                    library,
+                    transport,
+                    queue,
+                    &mut Art::default(),
+                    Instant::now(),
+                    &tokens,
+                ) {
                     *command = Some(next);
                 }
             });
@@ -753,7 +915,16 @@ mod tests {
     ) -> f32 {
         let tokens = Tokens::DARK;
         let mut output = ctx.run_ui(input(Vec::new()), |ui| {
-            let _ = tracks_view(ui, Table::Full, library, transport, queue, &tokens);
+            let _ = tracks_view(
+                ui,
+                Table::Full,
+                library,
+                transport,
+                queue,
+                &mut Art::default(),
+                Instant::now(),
+                &tokens,
+            );
         });
         output.textures_delta.clear();
         let label = label.to_uppercase();
@@ -842,6 +1013,7 @@ mod tests {
             added: None,
             duration: None,
             state: State::Resting,
+            cover: Cover::Missing,
         };
 
         run(&ctx, input(Vec::new()), |ui| {
@@ -884,6 +1056,7 @@ mod tests {
             added: None,
             duration: Some("3:42"),
             state: State::Resting,
+            cover: Cover::Missing,
         };
 
         let mut output = ctx.run_ui(input(Vec::new()), |ui| {
@@ -924,6 +1097,8 @@ mod tests {
                 &mut library,
                 &mut transport,
                 &mut queue,
+                &mut Art::default(),
+                Instant::now(),
                 &tokens,
             );
         });
@@ -1081,6 +1256,8 @@ mod tests {
                 &mut library,
                 &mut transport,
                 &mut queue,
+                &mut Art::default(),
+                Instant::now(),
                 &tokens,
             );
         });
@@ -1104,6 +1281,8 @@ mod tests {
                 &mut named,
                 &mut transport,
                 &mut queue,
+                &mut Art::default(),
+                Instant::now(),
                 &tokens,
             );
         });
@@ -1128,6 +1307,8 @@ mod tests {
                 &mut unnamed,
                 &mut transport,
                 &mut queue,
+                &mut Art::default(),
+                Instant::now(),
                 &tokens,
             );
         });
@@ -1295,6 +1476,8 @@ mod tests {
                 &mut library,
                 &mut transport,
                 &mut queue,
+                &mut Art::default(),
+                Instant::now(),
                 &tokens,
             );
         });
@@ -1313,6 +1496,8 @@ mod tests {
                         &mut library,
                         &mut transport,
                         &mut queue,
+                        &mut Art::default(),
+                        Instant::now(),
                         &tokens,
                     ) {
                         loads += 1;
@@ -1366,6 +1551,7 @@ mod tests {
             uri: "a",
             name: "Evening",
             kind: "Playlist",
+            cover: Cover::Missing,
         };
         let mut output = ctx.run_ui(input(Vec::new()), |ui| {
             let _ = card::show(ui, rect, &card, &tokens);
@@ -1419,5 +1605,245 @@ mod tests {
         };
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].uri, "a");
+    }
+
+    #[test]
+    fn the_frame_loop_requests_only_visible_covers() {
+        let ctx = context();
+        let tokens = Tokens::DARK;
+        // A thousand distinct covers in a short window: only the dozen rows the
+        // viewport can show are ever laid out, even as the list is scrolled.
+        let tracks: Vec<TrackEntry> = (0..1_000).map(track_with_cover).collect();
+        let mut library = library_with(tracks);
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+        let now = Instant::now();
+        let mut requested: std::collections::HashMap<CoverUrl, usize> =
+            std::collections::HashMap::new();
+        let mut painted: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        let centre = Pos2::new(PROBE.x / 2.0, PROBE.y / 2.0);
+
+        // Scroll from the top down. Every requested cover must belong to a row
+        // the window painted in some frame, and the outstanding set must never
+        // exceed the cap.
+        for step in 0..240 {
+            art.begin_frame();
+            let mut events = vec![Event::PointerMoved(centre)];
+            if step > 0 {
+                events.push(Event::MouseWheel {
+                    unit: MouseWheelUnit::Point,
+                    delta: vec2(0.0, -extent::ROW_H),
+                    phase: TouchPhase::Move,
+                    source: MouseWheelSource::Unknown,
+                    modifiers: Modifiers::NONE,
+                });
+            }
+            let mut output = ctx.run_ui(input(events), |ui| {
+                let _ = tracks_view(
+                    ui,
+                    Table::Full,
+                    &mut library,
+                    &mut transport,
+                    &mut queue,
+                    &mut art,
+                    now,
+                    &tokens,
+                );
+            });
+            output.textures_delta.clear();
+            painted.extend(painted_rows(&output));
+
+            let commands = art.requests(now);
+            assert!(
+                art.outstanding() <= crate::cover::MAX_IN_FLIGHT,
+                "{} fetches outstanding",
+                art.outstanding()
+            );
+            for command in commands {
+                if let Command::Fetch { url } = command {
+                    requested.insert(url.clone(), cover_row(&url));
+                    // Answer it, so the next frame can ask for the next row.
+                    art.apply(
+                        &Update::Cover {
+                            url,
+                            image: image(),
+                        },
+                        now,
+                    );
+                }
+            }
+        }
+
+        assert!(!requested.is_empty(), "the visible rows must be fetched");
+        assert!(
+            painted.iter().copied().max().unwrap_or(0) > 50,
+            "the frame loop must scroll through the list to exercise the cap"
+        );
+        for (url, row) in &requested {
+            assert!(
+                painted.contains(row),
+                "{url:?} was requested for row {row}, which no frame ever painted"
+            );
+        }
+    }
+
+    #[test]
+    fn a_grid_card_switches_to_the_context_image_when_it_arrives() {
+        let ctx = context();
+        let tokens = Tokens::DARK;
+        let first = cover_url("first");
+        let context_cover = cover_url("context");
+        let mut library = library_idle(vec![playlist_with_cover("a", "A", first.clone())]);
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+        let now = Instant::now();
+
+        art.begin_frame();
+        run(&ctx, input(Vec::new()), |ui| {
+            let _ = tracks_view(
+                ui,
+                Table::Full,
+                &mut library,
+                &mut transport,
+                &mut queue,
+                &mut art,
+                now,
+                &tokens,
+            );
+        });
+        assert_eq!(fetch_urls(art.requests(now)), vec![first.clone()]);
+
+        // A context image for an unselected playlist still upgrades its entry,
+        // because the upgrade is keyed by the update's own playlist.
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: Vec::new(),
+            cover: Some(context_cover.clone()),
+        });
+
+        art.begin_frame();
+        run(&ctx, input(Vec::new()), |ui| {
+            let _ = tracks_view(
+                ui,
+                Table::Full,
+                &mut library,
+                &mut transport,
+                &mut queue,
+                &mut art,
+                now,
+                &tokens,
+            );
+        });
+        assert_eq!(fetch_urls(art.requests(now)), vec![context_cover.clone()]);
+    }
+
+    #[test]
+    fn the_band_waits_for_the_context_image_and_then_shows_it() {
+        let ctx = context();
+        let tokens = Tokens::DARK;
+        let first = cover_url("first");
+        let context_cover = cover_url("context");
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(vec![playlist_with_cover(
+            "a",
+            "Evening",
+            first.clone(),
+        )]));
+        library.select("a");
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+        let now = Instant::now();
+
+        // While the tracks load, the band is drawn waiting and asks for nothing:
+        // it must not fetch the first-track cover it is about to replace.
+        art.begin_frame();
+        let mut output = ctx.run_ui(input(Vec::new()), |ui| {
+            let _ = tracks_view(
+                ui,
+                Table::Full,
+                &mut library,
+                &mut transport,
+                &mut queue,
+                &mut art,
+                now,
+                &tokens,
+            );
+        });
+        output.textures_delta.clear();
+        assert!(
+            drawn_texts(&output).contains(&"PLAYLIST"),
+            "the band must head a loading playlist"
+        );
+        assert!(art.requests(now).is_empty(), "no cover yet");
+
+        // The first page lands with the context image: the entry is upgraded and
+        // the band wants it on the same frame.
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: vec![track("t", "t")],
+            cover: Some(context_cover.clone()),
+        });
+        art.begin_frame();
+        run(&ctx, input(Vec::new()), |ui| {
+            let _ = tracks_view(
+                ui,
+                Table::Full,
+                &mut library,
+                &mut transport,
+                &mut queue,
+                &mut art,
+                now,
+                &tokens,
+            );
+        });
+        assert_eq!(fetch_urls(art.requests(now)), vec![context_cover.clone()]);
+    }
+
+    #[test]
+    fn the_band_keeps_an_already_held_cover_while_the_tracks_reload() {
+        let ctx = context();
+        let cover = cover_url("held");
+        let entry = playlist_with_cover("a", "Evening", cover.clone());
+        let now = Instant::now();
+        let mut art = Art::default();
+
+        // An earlier visit to the playlist fetched and held its cover.
+        art.begin_frame();
+        assert_eq!(art.look(Some(&cover), now), Cover::Loading);
+        assert_eq!(fetch_urls(art.requests(now)), vec![cover.clone()]);
+        art.apply(
+            &Update::Cover {
+                url: cover.clone(),
+                image: image(),
+            },
+            now,
+        );
+        art.upload(&ctx);
+        assert!(matches!(art.look(Some(&cover), now), Cover::Ready(_)));
+
+        // Re-selecting the playlist puts the tracks back into `Loading`. The
+        // band still draws the picture it already holds rather than flashing the
+        // placeholder, and does not fetch it again.
+        art.begin_frame();
+        assert!(
+            matches!(
+                band_cover_for(&entry, false, &mut art, now),
+                Cover::Ready(_)
+            ),
+            "the band keeps the cover it already holds"
+        );
+        assert!(
+            fetch_urls(art.requests(now)).is_empty(),
+            "a held cover is not fetched again"
+        );
+
+        // A playlist whose cover is not held still waits without fetching it.
+        let other = playlist_with_cover("b", "Other", cover_url("unheld"));
+        art.begin_frame();
+        assert_eq!(band_cover_for(&other, false, &mut art, now), Cover::Loading);
+        assert!(fetch_urls(art.requests(now)).is_empty());
     }
 }

@@ -38,7 +38,16 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
             "sidebar",
             grid.sidebar,
             grid.sidebar.shrink(inset),
-            |ui| sidebar::show(ui, Sidebar::Full, screen.library, tokens),
+            |ui| {
+                sidebar::show(
+                    ui,
+                    Sidebar::Full,
+                    screen.library,
+                    screen.art,
+                    screen.now,
+                    tokens,
+                )
+            },
         ),
         // Below 900 the rail keeps the monogram and the nav icons and drops the
         // wordmark, the labels and the library, which is what the reference does.
@@ -47,7 +56,16 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
             "sidebar-rail",
             grid.sidebar,
             grid.sidebar.shrink(inset),
-            |ui| sidebar::show(ui, Sidebar::Rail, screen.library, tokens),
+            |ui| {
+                sidebar::show(
+                    ui,
+                    Sidebar::Rail,
+                    screen.library,
+                    screen.art,
+                    screen.now,
+                    tokens,
+                )
+            },
         ),
     };
 
@@ -68,16 +86,28 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
                 screen.library,
                 screen.transport,
                 screen.queue,
+                screen.art,
+                screen.now,
                 tokens,
             )
         },
     ));
 
+    // The panel and the playbar share one tile: the track the transport names,
+    // looked up each frame so a cover that arrives after `play` still reaches
+    // them.
+    let playing_cover = screen
+        .transport
+        .now_playing
+        .as_ref()
+        .and_then(|now| now.cover.as_ref());
+    let now_playing_cover = screen.art.look(playing_cover, screen.now);
+
     if let Some(panel) = grid.now_playing
         && regions.now_playing != NowPlaying::Hidden
     {
         region(ui, "now-playing", panel, panel.shrink(inset), |ui| {
-            now_playing::show(ui, screen.transport, tokens);
+            now_playing::show(ui, screen.transport, now_playing_cover, tokens);
         });
     }
 
@@ -94,6 +124,7 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
                 screen.position_ms,
                 regions.playbar,
                 ui.available_rect_before_wrap(),
+                now_playing_cover,
                 tokens,
             )
         },
@@ -148,7 +179,14 @@ fn drawer_overlay(ui: &mut Ui, grid: Grid, screen: &mut Screen<'_>, tokens: &Tok
                 .layout(Layout::top_down(Align::Min)),
         );
         child.set_clip_rect(grid.drawer);
-        sidebar::show(&mut child, Sidebar::Full, screen.library, tokens);
+        sidebar::show(
+            &mut child,
+            Sidebar::Full,
+            screen.library,
+            screen.art,
+            screen.now,
+            tokens,
+        );
     });
 
     inner.response.clicked_elsewhere()
@@ -226,4 +264,81 @@ pub(super) fn rule(ui: &Ui, rect: Rect, color: Color32) {
         0.0,
         color,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Instant;
+
+    use takofy_model::CoverUrl;
+
+    use super::*;
+    use crate::cover::Art;
+    use crate::library::Library;
+    use crate::player::{NowPlaying, Transport};
+    use crate::queue::Queue;
+    use crate::signin::SignIn;
+    use crate::theme::{fonts, style};
+
+    #[test]
+    fn the_playbar_tile_is_requested_even_with_the_panel_hidden() {
+        let tokens = Tokens::DARK;
+        let ctx = egui::Context::default();
+        ctx.set_fonts(fonts::definitions());
+        ctx.set_global_style(style(&tokens));
+
+        let url = CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover url");
+        let mut transport = Transport {
+            now_playing: Some(NowPlaying {
+                uri: "spotify:track:x".to_owned(),
+                title: "A Title".to_owned(),
+                cover: Some(url.clone()),
+            }),
+            ..Transport::default()
+        };
+        let mut state = SignIn::SignedIn;
+        let mut library = Library::default();
+        let mut queue = Queue::default();
+        let mut drawer = Drawer::default();
+        let mut art = Art::default();
+        let now = Instant::now();
+
+        // Narrower than the panel breakpoint, so the Now Playing panel is not
+        // drawn and only the playbar can want the tile.
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(
+                egui::Pos2::ZERO,
+                Vec2::new(900.0, 600.0),
+            )),
+            ..Default::default()
+        };
+
+        art.begin_frame();
+        {
+            let mut screen = Screen {
+                state: &mut state,
+                library: &mut library,
+                transport: &mut transport,
+                queue: &mut queue,
+                drawer: &mut drawer,
+                position_ms: 0,
+                art: &mut art,
+                now,
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                let _ = show(ui, &mut screen, &tokens);
+            });
+            output.textures_delta.clear();
+        }
+
+        let requested: Vec<CoverUrl> = art
+            .requests(now)
+            .into_iter()
+            .filter_map(|command| match command {
+                Command::Fetch { url } => Some(url),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(requested, vec![url]);
+    }
 }

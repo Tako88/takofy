@@ -6,9 +6,10 @@
 //! arrow into a command; a track with no known duration draws the track alone
 //! and a dash for the time left.
 
-use egui::{Align2, EventFilter, FontId, Key, Pos2, Rect, Stroke, StrokeKind, Ui, Vec2};
+use egui::{Align2, EventFilter, FontId, Key, Pos2, Rect, Ui, Vec2};
 
 use crate::availability::Control;
+use crate::cover::Cover;
 use crate::format::{format_position, format_remaining};
 use crate::icon::Icon;
 use crate::layout::{self, Playbar};
@@ -16,10 +17,9 @@ use crate::message::Command;
 use crate::player::{SEEK_STEP_MS, Transport, TransportState};
 use crate::queue::Queue;
 use crate::theme::icon::Size;
-use crate::theme::{
-    MonoWeight, Tokens, Weight, extent, fonts, radius, space, stroke, text, tracking,
-};
+use crate::theme::{MonoWeight, Tokens, Weight, extent, fonts, radius, space, text, tracking};
 
+use super::art;
 use super::controls;
 use super::shell::row_centred;
 use super::text as recipe;
@@ -65,6 +65,10 @@ fn extras_controls(form: Playbar) -> &'static [(Control, Icon)] {
 
 /// Draws the bar's three columns inside `rect` and returns the command a
 /// control in it asked for.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the bar draws three columns from the transport, the queue and the frame"
+)]
 pub fn show(
     ui: &mut Ui,
     transport: &mut Transport,
@@ -72,13 +76,14 @@ pub fn show(
     position_ms: u32,
     form: Playbar,
     rect: Rect,
+    cover: Cover,
     tokens: &Tokens,
 ) -> Option<Command> {
     let cols = layout::playbar_for(rect, form);
     let [now, centre, extras] = cols.columns(rect);
 
     row_centred(ui, "playbar-now", now, |ui| {
-        now_column(ui, transport, tokens, form);
+        now_column(ui, transport, cover, tokens, form);
     });
     let command = row_centred(ui, "playbar-centre", centre, |ui| {
         centre_column(ui, transport, queue, position_ms, tokens)
@@ -116,18 +121,19 @@ fn run_width(controls: &[(Control, Icon)]) -> f32 {
 }
 
 /// The art tile, the title, the state, and the buttons beside them.
-fn now_column(ui: &mut Ui, transport: &Transport, tokens: &Tokens, form: Playbar) {
+fn now_column(ui: &mut Ui, transport: &Transport, cover: Cover, tokens: &Tokens, form: Playbar) {
     let left = ui.cursor().min;
-    let art = Rect::from_min_size(left, Vec2::splat(extent::PLAYBAR_ART));
-    ui.painter().rect(
-        art,
+    let art_rect = Rect::from_min_size(left, Vec2::splat(extent::PLAYBAR_ART));
+    art::tile(
+        ui.painter(),
+        art_rect,
         radius::SM,
-        tokens.palette.surface_raised,
-        Stroke::new(stroke::HAIRLINE, tokens.palette.border_strong),
-        StrokeKind::Inside,
+        tokens.palette.border_strong,
+        cover,
+        tokens,
     );
 
-    let text_left = art.right() + space::S3;
+    let text_left = art_rect.right() + space::S3;
     let controls = run_width(now_controls(form));
     let text_right = (ui.max_rect().right() - controls - space::S3).max(text_left);
 
@@ -144,14 +150,14 @@ fn now_column(ui: &mut Ui, transport: &Transport, tokens: &Tokens, form: Playbar
         (text_right - text_left).max(0.0),
     );
     ui.painter().galley(
-        Pos2::new(text_left, art.center().y - text::SM - space::S1),
+        Pos2::new(text_left, art_rect.center().y - text::SM - space::S1),
         title_line,
         tokens.palette.text,
     );
     let label = transport.state.label();
     if !label.is_empty() {
         ui.painter().text(
-            Pos2::new(text_left, art.center().y + space::S1),
+            Pos2::new(text_left, art_rect.center().y + space::S1),
             Align2::LEFT_TOP,
             label,
             FontId::new(text::XXS, fonts::mono(MonoWeight::Regular)),
@@ -165,7 +171,7 @@ fn now_column(ui: &mut Ui, transport: &Transport, tokens: &Tokens, form: Playbar
         tokens,
         now_controls(form),
         &mut x,
-        art.center().y,
+        art_rect.center().y,
         &|_| true,
     );
 }

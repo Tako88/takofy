@@ -18,6 +18,7 @@ use egui::emath::GuiRounding;
 use egui::{Color32, FontId, Pos2, Rect, Sense, Ui, vec2};
 
 use crate::availability::Control;
+use crate::cover::Cover;
 use crate::icon::{self, Icon};
 use crate::layout::table::{Columns, title_parts};
 use crate::theme::icon::Size;
@@ -59,6 +60,8 @@ pub struct Row<'a> {
     pub added: Option<&'a str>,
     pub duration: Option<&'a str>,
     pub state: State,
+    /// The track's cover, as the art pipeline resolves it.
+    pub cover: Cover,
 }
 
 /// Draws one row into `rect`, and reports a double click on it.
@@ -222,6 +225,7 @@ fn title(ui: &Ui, rect: Rect, row: &Row<'_>, tokens: &Tokens) {
         parts.art,
         radius::XS,
         tokens.palette.border,
+        row.cover,
         tokens,
     );
 

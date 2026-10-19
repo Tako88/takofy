@@ -31,6 +31,31 @@ pub struct TracksFor {
     pub tracks: Vec<TrackEntry>,
 }
 
+/// What the playlist band draws for its cover.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BandCover<'a> {
+    /// The selected playlist's tracks are still loading, so the band waits
+    /// rather than fetching a first-track cover it may replace with the
+    /// context image a moment later.
+    Pending,
+    /// The cover the playlist entry names, if any.
+    Entry(Option<&'a CoverUrl>),
+}
+
+/// The band's cover source: the playlist entry alone, once its tracks have
+/// settled.
+///
+/// The band never derives a cover from the track list: the entry already holds
+/// the picture or the first track's album cover, and a second derivation could
+/// disagree with it.
+pub fn band_cover(entry: &PlaylistEntry, settled: bool) -> BandCover<'_> {
+    if settled {
+        BandCover::Entry(entry.cover.as_ref())
+    } else {
+        BandCover::Pending
+    }
+}
+
 /// The sidebar's playlists and the selected playlist's tracks.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Library {
@@ -143,12 +168,14 @@ impl Library {
 
     /// The selected playlist's name, once the list that names it is ready.
     pub fn selected_name(&self) -> Option<&str> {
+        self.selected_entry().map(|entry| entry.name.as_str())
+    }
+
+    /// The selected playlist's entry, once the list that holds it is ready.
+    pub fn selected_entry(&self) -> Option<&PlaylistEntry> {
         let selected = self.selected.as_deref()?;
         match &self.playlists {
-            Load::Ready(playlists) => playlists
-                .iter()
-                .find(|entry| entry.uri == selected)
-                .map(|entry| entry.name.as_str()),
+            Load::Ready(playlists) => playlists.iter().find(|entry| entry.uri == selected),
             Load::Idle | Load::Loading | Load::Failed(_) => None,
         }
     }
@@ -548,5 +575,54 @@ mod tests {
 
         assert!(library.context_covers.is_empty(), "the key must be pruned");
         assert_eq!(library.playlists, Load::Ready(vec![playlist("b", "B")]));
+    }
+
+    #[test]
+    fn band_cover_waits_until_the_tracks_settle() {
+        let cover = cover_url("context");
+        let entry = playlist_with_cover("a", "A", cover.clone());
+        assert_eq!(band_cover(&entry, false), BandCover::Pending);
+        assert_eq!(band_cover(&entry, true), BandCover::Entry(Some(&cover)));
+    }
+
+    #[test]
+    fn band_cover_is_missing_when_the_entry_names_none() {
+        let entry = playlist("a", "A");
+        assert_eq!(band_cover(&entry, true), BandCover::Entry(None));
+    }
+
+    #[test]
+    fn a_failed_context_still_settles_the_band_on_the_entry() {
+        // The band's rule is the load's settle state, not the context's success:
+        // a failed context settles onto whatever the entry already holds.
+        let cover = cover_url("first-track");
+        let entry = playlist_with_cover("a", "A", cover.clone());
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(vec![entry]));
+        library.select("a");
+        library.apply(&Update::TracksFailed {
+            playlist: "a".to_owned(),
+            failure: Failure::Load,
+        });
+        let settled = !matches!(library.tracks, Load::Loading | Load::Idle);
+        let entry = library.selected_entry().expect("the selected entry");
+        assert_eq!(band_cover(entry, settled), BandCover::Entry(Some(&cover)));
+    }
+
+    #[test]
+    fn band_cover_handles_an_empty_playlist() {
+        let mut library = Library::default();
+        library.select("a");
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: Vec::new(),
+            cover: None,
+        });
+        assert_eq!(library.tracks, Load::Ready(tracks_for("a", Vec::new())));
+        let settled = !matches!(library.tracks, Load::Loading | Load::Idle);
+        // With no list loaded there is no entry to read; the band's caller draws
+        // nothing. This pins the settled rule for the empty list itself.
+        assert!(settled);
+        assert!(library.selected_entry().is_none());
     }
 }

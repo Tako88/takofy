@@ -12,6 +12,7 @@
 use egui::{FontId, Pos2, Rect, Sense, Ui, Vec2, vec2};
 
 use crate::availability::Control;
+use crate::cover::Cover;
 use crate::icon::Icon;
 use crate::layout::hero::title_size;
 use crate::theme::icon::Size;
@@ -30,6 +31,8 @@ pub struct Band<'a> {
     pub meta: Vec<String>,
     /// Whether there is anything to play.
     pub playable: bool,
+    /// The context's cover, as the art pipeline resolves it.
+    pub cover: Cover,
 }
 
 /// Draws the band and its action row, and reports a request to play the context.
@@ -76,6 +79,7 @@ fn inner(ui: &Ui, rect: Rect, band: &Band<'_>, tokens: &Tokens) {
         art,
         radius::SM,
         tokens.palette.border_strong,
+        band.cover,
         tokens,
     );
 

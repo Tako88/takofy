@@ -17,8 +17,11 @@ pub mod text;
 pub mod topbar;
 mod track_row;
 
+use std::time::Instant;
+
 use egui::Ui;
 
+use crate::cover::Art;
 use crate::drawer::Drawer;
 use crate::library::Library;
 use crate::message::Command;
@@ -35,6 +38,10 @@ pub struct Screen<'a> {
     pub queue: &'a mut Queue,
     pub drawer: &'a mut Drawer,
     pub position_ms: u32,
+    /// The cover store every `look` goes through.
+    pub art: &'a mut Art,
+    /// The frame's clock, read once at the frame entry.
+    pub now: Instant,
 }
 
 /// Draws the current state, returning a command when the user asks for one.

@@ -9,6 +9,7 @@
 use egui::{FontId, Pos2, Rect, Sense, Ui, Vec2};
 
 use crate::availability::Control;
+use crate::cover::Cover;
 use crate::theme::{Tokens, ease, extent, motion, radius, space, stroke, text, tracking};
 
 use super::{art, controls, text as recipe};
@@ -20,6 +21,8 @@ pub struct Card<'a> {
     pub name: &'a str,
     /// The kind of thing this is, in the reference's one-word form.
     pub kind: &'a str,
+    /// The playlist's cover, as the art pipeline resolves it.
+    pub cover: Cover,
 }
 
 /// The height a card takes beyond its square art: its two gaps and its two lines.
@@ -73,7 +76,14 @@ pub fn show(ui: &mut Ui, rect: Rect, card: &Card<'_>, tokens: &Tokens) -> bool {
 
     let inner = rect.shrink(space::S2);
     let art = Rect::from_min_size(inner.min, Vec2::splat(inner.width()));
-    art::tile(ui.painter(), art, radius::SM, tokens.palette.border, tokens);
+    art::tile(
+        ui.painter(),
+        art,
+        radius::SM,
+        tokens.palette.border,
+        card.cover,
+        tokens,
+    );
 
     let mut top = art.bottom() + space::S2;
     let name = recipe::line(
