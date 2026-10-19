@@ -71,7 +71,7 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
 
     let bar = topbar::show(ui, screen.library, regions.sidebar, grid.topbar, tokens);
     if bar.back_to_library {
-        screen.library.deselect();
+        screen.library.to_playlists();
     }
 
     command = command.or(region(

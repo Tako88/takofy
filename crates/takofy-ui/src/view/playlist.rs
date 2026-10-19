@@ -19,6 +19,7 @@ use crate::library::{BandCover, Library, Load, band_cover};
 use crate::message::{Command, Failure};
 use crate::player::{Transport, TransportState};
 use crate::queue::Queue;
+use crate::route::Page;
 use crate::theme::icon::Size;
 use crate::theme::{Tokens, extent, space, stroke, text, tracking};
 
@@ -45,8 +46,13 @@ pub fn tracks_view(
 ) -> Option<Command> {
     ui.add_space(space::S3);
 
-    if matches!(library.tracks, Load::Idle) {
-        return idle(ui, library, art, now, tokens);
+    // Dispatch on the page, not on the tracks: the root is the grid, and the
+    // tracks may still hold a ready playlist that nothing draws.
+    match main_page(library) {
+        MainPage::Root => return idle(ui, library, art, now, tokens),
+        // A page with no body yet draws none, rather than pretending to be one.
+        MainPage::Other => return None,
+        MainPage::Playlist => {}
     }
 
     // The band draws `Loading` until the selected playlist's tracks settle: it
@@ -174,13 +180,34 @@ fn band_cover_for(entry: &PlaylistEntry, settled: bool, art: &mut Art, now: Inst
     }
 }
 
-/// What the idle main view shows: the grid of playlists, or the state of the
+/// What the page on screen asks the main pane to draw.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MainPage {
+    /// The library root: the playlists grid.
+    Root,
+    /// A playlist's tracklist.
+    Playlist,
+    /// An album, artist or show page, which has no body yet.
+    Other,
+}
+
+/// Reads the pane's dispatch from the current page.
+fn main_page(library: &Library) -> MainPage {
+    match library.page() {
+        None => MainPage::Root,
+        Some(Page::Playlist(_)) => MainPage::Playlist,
+        Some(Page::Album(_) | Page::Artist(_) | Page::Show(_)) => MainPage::Other,
+    }
+}
+
+/// What the root's main view shows: the grid of playlists, or the state of the
 /// load that fetches them.
 ///
-/// The main view is idle when no playlist is selected — the state `deselect`
-/// returns to. This reads that from the playlists' load alone: the tracks are
-/// already `Idle` by the time the branch that calls it is taken, so the grid
-/// never competes with the tracklist for a selection.
+/// The main view draws the grid whenever the page is the root, whatever the
+/// tracks hold: after a trip to the root a ready playlist is kept for the page
+/// Back returns to, and nothing draws it. It is dropped or reloaded when a
+/// playlist page is next entered. The grid reads only the playlists' load, so
+/// it never competes with a tracklist for a selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IdleView<'a> {
     /// The playlists are in flight, or have not been asked for yet.
@@ -209,9 +236,8 @@ pub fn idle_view(library: &Library) -> IdleView<'_> {
 
 /// Draws the idle main view and returns the command its controls asked for.
 ///
-/// This is the whole idle-grid wiring in one place: the `Load::Idle` arm calls
-/// it and nothing else does, so phase 4 can lift it out when it builds the
-/// library route. The copy and the retry are the sidebar's, reusing
+/// This is the whole idle-grid wiring in one place: the root page calls it and
+/// nothing else does. The copy and the retry are the sidebar's, reusing
 /// `library.reload()` so the two library surfaces recover the same way.
 fn idle(
     ui: &mut Ui,
@@ -324,15 +350,15 @@ fn grid_rect(ui: &mut Ui, grid: &cards::Grid, count: usize) -> Rect {
 /// Starts a playlist's load from an idle-grid card click.
 ///
 /// `Library::select` always starts a load and returns its command, and that is
-/// all this does. The grid is drawn only while the tracks are `Idle`, so the card
-/// under a click can never be the playlist whose tracks are already loading;
-/// there is nothing to suppress here.
+/// all this does. The grid is drawn only at the root, so the card under a click
+/// is never the playlist whose tracks are loading; there is nothing to suppress
+/// here.
 ///
-/// `deselect()` is the one way the same playlist can be clicked again while its
-/// first fetch is still coming back: it clears the selection and resets the
-/// tracks to `Idle`, and the library keeps no record of the in-flight request, so
-/// the second click does start it again. The first reply is discarded as stale,
-/// so the repeat costs a fetch and nothing else.
+/// Going to the root is the one way the same playlist can be clicked again while
+/// its first fetch is still coming back: it clears the stale-reply guard and the
+/// in-flight load, and the library keeps no record of the request, so the second
+/// click does start it again. The first reply is discarded as stale, so the
+/// repeat costs a fetch and nothing else.
 fn select_playlist(library: &mut Library, uri: &str) -> Option<Command> {
     Some(library.select(uri))
 }
@@ -1917,7 +1943,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
     }
 
     #[test]
-    fn deselect_returns_to_the_grid() {
+    fn to_playlists_returns_to_the_grid() {
         let mut library = library_idle(vec![playlist("a", "A")]);
         library.select("a");
         library.apply(&Update::Tracks {
@@ -1925,16 +1951,74 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             tracks: vec![track("t", "t")],
             cover: None,
         });
-        library.deselect();
+        library.to_playlists();
 
         let IdleView::Grid(entries) = idle_view(&library) else {
             panic!(
-                "deselect must return to the grid: {:?}",
+                "to_playlists must return to the grid: {:?}",
                 idle_view(&library)
             );
         };
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].uri, "a");
+        assert!(
+            matches!(library.tracks, Load::Ready(_)),
+            "the grid draws while the tracks stay ready"
+        );
+    }
+
+    #[test]
+    fn the_root_draws_the_grid_while_the_tracks_stay_ready() {
+        let ctx = context();
+        let mut library = library_idle(vec![playlist("a", "A")]);
+        library.select("a");
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: vec![track("t0", "t0")],
+            cover: None,
+        });
+        library.to_playlists();
+
+        assert_eq!(library.page(), None);
+        assert!(
+            matches!(library.tracks, Load::Ready(_)),
+            "the tracks stay ready behind the root"
+        );
+
+        let texts = painted_lines(&ctx, Table::Full, &mut library);
+
+        assert!(
+            texts.contains(&"A".to_owned()),
+            "the grid must draw its card: {texts:?}"
+        );
+        assert!(
+            !texts.contains(&"t0".to_owned()),
+            "the ready tracklist must not draw at the root: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn an_album_page_draws_no_body() {
+        let ctx = context();
+        let mut library = library_idle(vec![playlist("a", "A")]);
+        library.select("a");
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: vec![track("t0", "t0")],
+            cover: None,
+        });
+        assert_eq!(
+            library.open(Page::Album("spotify:album:x".to_owned())),
+            None
+        );
+
+        let output = tracklist_frame(&ctx, Table::Full, &mut library);
+
+        assert!(
+            drawn_texts(&output).is_empty(),
+            "an album page has no body yet: {:?}",
+            drawn_texts(&output)
+        );
     }
 
     #[test]
