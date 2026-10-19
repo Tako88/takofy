@@ -8,7 +8,7 @@ use crate::credentials::AccessToken;
 use crate::playback::{Playback, PlaybackError, PlaybackEvent};
 use crate::remote::{ROOTLIST_WIRE, RemoteContext, RemoteRootlist, label_playlists, label_tracks};
 use crate::rootlist::{RootlistError, fetch_all};
-use takofy_model::{PlaylistEntry, TrackEntry};
+use takofy_model::{CoverUrl, PlaylistEntry, TrackEntry};
 
 /// Why an [`Engine`] operation failed.
 #[derive(Debug, thiserror::Error)]
@@ -88,5 +88,10 @@ impl TrackPages<'_> {
             return Ok(None);
         };
         Ok(Some(label_tracks(self.session, page.tracks).await))
+    }
+
+    /// The context's own image, once the first page has been resolved.
+    pub fn cover(&self) -> Option<CoverUrl> {
+        self.walker.cover()
     }
 }

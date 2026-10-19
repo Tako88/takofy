@@ -5,6 +5,8 @@
 
 mod app;
 mod bridge;
+mod cover;
+mod decode;
 mod headless;
 mod keychain;
 mod prompt;

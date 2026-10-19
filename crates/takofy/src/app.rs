@@ -4,6 +4,7 @@ use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 use eframe::egui;
+use takofy_ui::cover::Art;
 use takofy_ui::drawer::Drawer;
 use takofy_ui::library::Library;
 use takofy_ui::message::{Command, Update};
@@ -39,6 +40,8 @@ pub(crate) struct TakofyApp {
     drawer: Drawer,
     ui_end: UiEnd,
     tokens: Tokens,
+    /// The decoded covers, the uploads and the fetches in flight.
+    art: Art,
     /// Restamped whenever the transport's anchor moves, so the interpolated
     /// position cannot drift from it.
     since: Option<Instant>,
@@ -58,6 +61,7 @@ impl TakofyApp {
             drawer: Drawer::default(),
             ui_end,
             tokens,
+            art: Art::new(),
             since: None,
         }
     }
@@ -65,6 +69,7 @@ impl TakofyApp {
 
 impl eframe::App for TakofyApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let now = Instant::now();
         let before = self.transport.anchor();
         let commands = drain(
             &self.ui_end.updates,
@@ -72,12 +77,17 @@ impl eframe::App for TakofyApp {
             &mut self.library,
             &mut self.transport,
             &mut self.queue,
+            &mut self.art,
+            now,
         );
         for command in commands {
             let _ = self.ui_end.commands.send(command);
         }
+        // After the drain and before the draw, so a cover that just arrived is
+        // ready in this same frame's `ui()`.
+        self.art.upload(ctx);
         if self.transport.anchor() != before {
-            self.since = Some(Instant::now());
+            self.since = Some(now);
         }
         if self.transport.state == TransportState::Playing {
             ctx.request_repaint_after(REDRAW);
@@ -89,10 +99,13 @@ impl eframe::App for TakofyApp {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let now = Instant::now();
         let position_ms = self
             .transport
             .shown_position(self.since.map_or(Duration::ZERO, |since| since.elapsed()));
         let before = self.transport.anchor();
+        // Before the draw, so `look` sees a fresh frame's wanted set.
+        self.art.begin_frame();
         let mut screen = view::Screen {
             state: &mut self.state,
             library: &mut self.library,
@@ -100,14 +113,21 @@ impl eframe::App for TakofyApp {
             queue: &mut self.queue,
             drawer: &mut self.drawer,
             position_ms,
+            art: &mut self.art,
+            now,
         };
         if let Some(command) = view::show(ui, &mut screen, &self.tokens) {
             let _ = self.ui_end.commands.send(command);
         }
+        // After the draw, because only the draw knows what was wanted this frame.
+        for command in self.art.requests(now) {
+            let _ = self.ui_end.commands.send(command);
+        }
+        schedule_wake(ui.ctx(), &self.art, now);
         // A control in the view can start a track or seek, so the anchor can
         // move during the draw and the clock has to follow it.
         if self.transport.anchor() != before {
-            self.since = Some(Instant::now());
+            self.since = Some(now);
         }
     }
 }
@@ -129,12 +149,15 @@ pub(crate) fn drain(
     library: &mut Library,
     transport: &mut Transport,
     queue: &mut Queue,
+    art: &mut Art,
+    now: Instant,
 ) -> Vec<Command> {
     let mut commands = Vec::new();
     while let Ok(update) = rx.try_recv() {
         state.apply(update.clone());
         library.apply(&update);
         transport.apply(&update);
+        art.apply(&update, now);
         if let Some(command) = queue.apply(&update, transport) {
             commands.push(command);
         }
@@ -142,11 +165,22 @@ pub(crate) fn drain(
     commands
 }
 
+/// Asks egui for the frame the cover store's next retry or deadline needs.
+///
+/// `logic()` repaints on its own only while a track plays, so without this an
+/// idle window would leave a failed cover at `Failed` forever. A delay of at
+/// least a millisecond avoids a zero-delay repaint storm.
+fn schedule_wake(ctx: &egui::Context, art: &Art, now: Instant) {
+    if let Some(delay) = art.next_wake(now) {
+        ctx.request_repaint_after(delay.max(Duration::from_millis(1)));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::mpsc::channel;
 
-    use takofy_model::TrackEntry;
+    use takofy_model::{CoverImage, CoverUrl, TrackEntry};
     use takofy_ui::library::Load;
     use takofy_ui::message::{Command, Failure, TransportUpdate};
 
@@ -160,6 +194,7 @@ mod tests {
             album: None,
             duration_ms: None,
             named: true,
+            cover: None,
         }
     }
 
@@ -174,7 +209,15 @@ mod tests {
         tx.send(Update::SignInFailed(Failure::PortBusy))
             .expect("send");
 
-        let commands = drain(&rx, &mut state, &mut library, &mut transport, &mut queue);
+        let commands = drain(
+            &rx,
+            &mut state,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut Art::default(),
+            Instant::now(),
+        );
 
         assert!(commands.is_empty());
         assert_eq!(state, SignIn::NeedsAuthorization);
@@ -190,7 +233,15 @@ mod tests {
         tx.send(Update::SignedIn).expect("send");
         tx.send(Update::Playlists(Vec::new())).expect("send");
 
-        let commands = drain(&rx, &mut state, &mut library, &mut transport, &mut queue);
+        let commands = drain(
+            &rx,
+            &mut state,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut Art::default(),
+            Instant::now(),
+        );
 
         assert!(commands.is_empty());
         assert_eq!(library.playlists, Load::Ready(Vec::new()));
@@ -209,7 +260,15 @@ mod tests {
         }))
         .expect("send");
 
-        let commands = drain(&rx, &mut state, &mut library, &mut transport, &mut queue);
+        let commands = drain(
+            &rx,
+            &mut state,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut Art::default(),
+            Instant::now(),
+        );
 
         assert!(commands.is_empty());
         assert_eq!(transport.state, TransportState::Playing);
@@ -225,7 +284,16 @@ mod tests {
         let mut queue = Queue::default();
 
         assert!(
-            drain(&rx, &mut state, &mut library, &mut transport, &mut queue).is_empty(),
+            drain(
+                &rx,
+                &mut state,
+                &mut library,
+                &mut transport,
+                &mut queue,
+                &mut Art::default(),
+                Instant::now()
+            )
+            .is_empty(),
             "an empty channel yields no commands"
         );
         assert_eq!(state, SignIn::Starting);
@@ -241,9 +309,31 @@ mod tests {
         tx.send(Update::SignedIn).expect("send");
         drop(tx);
 
-        assert!(drain(&rx, &mut state, &mut library, &mut transport, &mut queue).is_empty());
+        assert!(
+            drain(
+                &rx,
+                &mut state,
+                &mut library,
+                &mut transport,
+                &mut queue,
+                &mut Art::default(),
+                Instant::now()
+            )
+            .is_empty()
+        );
         assert_eq!(state, SignIn::SignedIn);
-        assert!(drain(&rx, &mut state, &mut library, &mut transport, &mut queue).is_empty());
+        assert!(
+            drain(
+                &rx,
+                &mut state,
+                &mut library,
+                &mut transport,
+                &mut queue,
+                &mut Art::default(),
+                Instant::now()
+            )
+            .is_empty()
+        );
     }
 
     #[test]
@@ -265,7 +355,15 @@ mod tests {
         tx.send(Update::Transport(TransportUpdate::Ended))
             .expect("send");
 
-        let commands = drain(&rx, &mut state, &mut library, &mut transport, &mut queue);
+        let commands = drain(
+            &rx,
+            &mut state,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut Art::default(),
+            Instant::now(),
+        );
 
         assert_eq!(
             commands,
@@ -294,7 +392,15 @@ mod tests {
         tx.send(Update::Transport(TransportUpdate::Unavailable))
             .expect("send");
 
-        let commands = drain(&rx, &mut state, &mut library, &mut transport, &mut queue);
+        let commands = drain(
+            &rx,
+            &mut state,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut Art::default(),
+            Instant::now(),
+        );
 
         assert_eq!(
             commands,
@@ -353,6 +459,129 @@ mod tests {
         assert_eq!(
             options.viewport.min_inner_size,
             Some(egui::vec2(layout::WINDOW_MIN[0], layout::WINDOW_MIN[1]))
+        );
+    }
+
+    #[test]
+    fn drain_routes_a_failed_cover_into_the_store() {
+        let (tx, rx) = channel();
+        let mut state = SignIn::SignedIn;
+        let mut library = Library::default();
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+        let now = Instant::now();
+        let url = CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover url");
+        // The URL must be known before its failure arrives, as it is in a frame:
+        // the draw looks it, sends the fetch, and the failure answers it.
+        assert_eq!(art.look(Some(&url), now), takofy_ui::cover::Cover::Loading);
+        let _ = art.requests(now);
+        tx.send(Update::CoverFailed { url: url.clone() })
+            .expect("send");
+
+        let commands = drain(
+            &rx,
+            &mut state,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+            now,
+        );
+
+        assert!(commands.is_empty());
+        assert_eq!(art.look(Some(&url), now), takofy_ui::cover::Cover::Failed);
+    }
+
+    #[test]
+    fn drain_routes_a_cover_into_the_store() {
+        let (tx, rx) = channel();
+        let mut state = SignIn::SignedIn;
+        let mut library = Library::default();
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+        let now = Instant::now();
+        let url = CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover url");
+        art.look(Some(&url), now);
+        let _ = art.requests(now);
+        tx.send(Update::Cover {
+            url: url.clone(),
+            image: CoverImage::new(1, 1, vec![0; 4]).expect("a 1x1 image"),
+        })
+        .expect("send");
+
+        let _ = drain(
+            &rx,
+            &mut state,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+            now,
+        );
+        let ctx = egui::Context::default();
+        art.upload(&ctx);
+
+        assert!(matches!(
+            art.look(Some(&url), now),
+            takofy_ui::cover::Cover::Ready(_)
+        ));
+    }
+
+    #[test]
+    fn a_failed_cover_asks_for_a_wake_at_its_retry() {
+        let mut art = Art::default();
+        let now = Instant::now();
+        let url = CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover url");
+        art.begin_frame();
+        art.look(Some(&url), now);
+        let _ = art.requests(now);
+        art.apply(&Update::CoverFailed { url: url.clone() }, now);
+        art.begin_frame();
+        assert_eq!(art.look(Some(&url), now), takofy_ui::cover::Cover::Failed);
+
+        let ctx = egui::Context::default();
+        // Warm up so egui's own first-frame work (the font atlas and its
+        // immediate repaint) is not mistaken for a cover wake.
+        for _ in 0..2 {
+            let mut warm = ctx.run_ui(egui::RawInput::default(), |_ui| {});
+            warm.textures_delta.clear();
+        }
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            schedule_wake(ui.ctx(), &art, now);
+        });
+        output.textures_delta.clear();
+        let delay = output
+            .viewport_output
+            .get(&egui::ViewportId::ROOT)
+            .expect("the root viewport")
+            .repaint_delay;
+        assert!(
+            delay <= Duration::from_secs(5),
+            "a retry in five seconds woke the window in {delay:?}"
+        );
+
+        // Nothing pending leaves egui's own default alone. A fresh context is
+        // used because the one above is holding the repaint it was asked for.
+        let idle = Art::default();
+        let ctx = egui::Context::default();
+        for _ in 0..2 {
+            let mut warm = ctx.run_ui(egui::RawInput::default(), |_ui| {});
+            warm.textures_delta.clear();
+        }
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            schedule_wake(ui.ctx(), &idle, now);
+        });
+        output.textures_delta.clear();
+        assert_eq!(
+            output
+                .viewport_output
+                .get(&egui::ViewportId::ROOT)
+                .expect("the root viewport")
+                .repaint_delay,
+            Duration::MAX,
+            "an idle window must not be woken"
         );
     }
 }

@@ -13,6 +13,7 @@ pub mod oauth;
 pub mod playback;
 pub mod rootlist;
 
+mod cover;
 mod remote;
 
 pub use context::{ContextError, Page, page_from_proto, parse_page_json};

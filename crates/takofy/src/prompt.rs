@@ -116,6 +116,7 @@ mod tests {
             uri: "spotify:playlist:x".to_owned(),
             name: "Mix".to_owned(),
             named: true,
+            cover: None,
         };
         assert_eq!(
             format_playlist_line(2, &entry),
@@ -132,6 +133,7 @@ mod tests {
             album: None,
             duration_ms: None,
             named: true,
+            cover: None,
         };
         assert_eq!(
             format_track_line(1, &track),

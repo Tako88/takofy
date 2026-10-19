@@ -158,13 +158,13 @@ impl Queue {
 
     /// Moves the index and asks the transport to play that entry.
     fn goto(&mut self, index: usize, transport: &mut Transport) -> Option<Command> {
-        let (uri, title) = {
+        let (uri, title, cover) = {
             let entry = self.tracks.get(index)?;
-            (entry.uri.clone(), entry.title.clone())
+            (entry.uri.clone(), entry.title.clone(), entry.cover.clone())
         };
         self.index = index;
         self.awaiting_start = true;
-        Some(transport.play(&uri, &title))
+        Some(transport.play(&uri, &title, cover))
     }
 }
 
@@ -183,6 +183,7 @@ mod tests {
             album: None,
             duration_ms: None,
             named: true,
+            cover: None,
         }
     }
 
@@ -544,6 +545,7 @@ mod tests {
             uri: "spotify:playlist:a".to_owned(),
             name: "A".to_owned(),
             named: true,
+            cover: None,
         }]);
         assert_eq!(queue.apply(&playlists, &mut transport), None);
         assert_eq!(end(&mut queue, &mut transport), Some(play("t1")));
@@ -596,5 +598,22 @@ mod tests {
         assert!(queue.can_next());
         assert!(queue.can_previous());
         assert!(queue.can_toggle());
+    }
+
+    #[test]
+    fn goto_passes_the_entrys_cover_into_now_playing() {
+        let cover =
+            takofy_model::CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover url");
+        let mut entry = track("a");
+        entry.cover = Some(cover.clone());
+        let mut queue = Queue::default();
+        let mut transport = Transport::default();
+
+        let _ = queue.start(&[entry], 0, &mut transport);
+
+        assert_eq!(
+            transport.now_playing.expect("a named track").cover,
+            Some(cover)
+        );
     }
 }

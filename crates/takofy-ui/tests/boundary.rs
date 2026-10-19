@@ -54,3 +54,17 @@ fn ui_links_the_model() {
         "takofy-ui draws model types and must depend on takofy-model"
     );
 }
+
+/// The decoder lives in the binary, not in the window. `cargo tree -p takofy-ui`
+/// alone would never show `image` if the decoder were kept in the binary as
+/// intended; this pins that the window has not grown one. The binary's own half
+/// of the boundary is asserted by construction, not from here.
+#[test]
+fn ui_does_not_link_an_image_decoder() {
+    for name in package_names() {
+        assert!(
+            name != "image" && name != "zune-jpeg" && name != "zune-core" && name != "png",
+            "takofy-ui must not decode images (found {name})"
+        );
+    }
+}

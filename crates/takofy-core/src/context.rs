@@ -8,6 +8,7 @@ use std::collections::{HashSet, VecDeque};
 use librespot::core::SpotifyUri;
 use librespot::protocol::context_page::ContextPage;
 use protobuf_json_mapping::ParseOptions;
+use takofy_model::CoverUrl;
 
 /// One page of a context.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,9 +36,18 @@ pub enum ContextError {
     TooManyPages,
 }
 
+/// A resolved context: its pages and the image the context itself carries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Resolved {
+    /// The inline pages, in order.
+    pub pages: Vec<Page>,
+    /// The context's own image, when the response carried a usable URL.
+    pub cover: Option<CoverUrl>,
+}
+
 /// Reads pages of a context. Implemented over librespot in `remote`.
 pub(crate) trait PageSource {
-    async fn resolve(&self, uri: &str) -> Result<Vec<Page>, ContextError>;
+    async fn resolve(&self, uri: &str) -> Result<Resolved, ContextError>;
     async fn next(&self, url: &str) -> Result<Page, ContextError>;
 }
 
@@ -100,6 +110,7 @@ pub(crate) struct Walker<S> {
     pending: VecDeque<String>,
     seen: HashSet<String>,
     count: usize,
+    cover: Option<CoverUrl>,
 }
 
 impl<S: PageSource> Walker<S> {
@@ -112,14 +123,21 @@ impl<S: PageSource> Walker<S> {
             pending: VecDeque::new(),
             seen: HashSet::new(),
             count: 0,
+            cover: None,
         }
+    }
+
+    /// The context's own image, once it has been resolved.
+    pub(crate) fn cover(&self) -> Option<CoverUrl> {
+        self.cover.clone()
     }
 
     pub(crate) async fn next_page(&mut self) -> Result<Option<Page>, ContextError> {
         if !self.resolved {
             self.resolved = true;
-            let pages = self.source.resolve(&self.uri).await?;
-            self.ready.extend(pages);
+            let resolved = self.source.resolve(&self.uri).await?;
+            self.cover = resolved.cover;
+            self.ready.extend(resolved.pages);
         }
         loop {
             if let Some(page) = self.ready.pop_front() {
@@ -152,11 +170,17 @@ mod tests {
     use librespot::protocol::context_track::ContextTrack;
 
     use super::{
-        ContextError, MAX_PAGES, Page, PageSource, Walker, page_from_proto, parse_page_json,
+        ContextError, MAX_PAGES, Page, PageSource, Resolved, Walker, page_from_proto,
+        parse_page_json,
     };
+    use takofy_model::CoverUrl;
 
     const TRACK_A: &str = "spotify:track:4uLU6hMCjMI75M1A2tKUQC";
     const TRACK_B: &str = "spotify:track:6rqhFgbbKwnb9MLmUQDhG6";
+
+    fn cover() -> CoverUrl {
+        CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover url")
+    }
 
     fn page(tracks: &[&str], next: Option<&str>) -> Page {
         Page {
@@ -167,6 +191,7 @@ mod tests {
 
     struct Fake {
         resolve: Vec<Page>,
+        cover: Option<CoverUrl>,
         nexts: Mutex<HashMap<String, Page>>,
         fail_resolve: bool,
         fail_next: bool,
@@ -176,10 +201,16 @@ mod tests {
         fn new(resolve: Vec<Page>) -> Self {
             Self {
                 resolve,
+                cover: None,
                 nexts: Mutex::new(HashMap::new()),
                 fail_resolve: false,
                 fail_next: false,
             }
+        }
+
+        fn with_cover(mut self, cover: CoverUrl) -> Self {
+            self.cover = Some(cover);
+            self
         }
 
         fn with_next(mut self, url: &str, page: Page) -> Self {
@@ -192,11 +223,14 @@ mod tests {
     }
 
     impl PageSource for Fake {
-        async fn resolve(&self, _uri: &str) -> Result<Vec<Page>, ContextError> {
+        async fn resolve(&self, _uri: &str) -> Result<Resolved, ContextError> {
             if self.fail_resolve {
                 return Err(ContextError::Source("resolve failed".to_owned()));
             }
-            Ok(self.resolve.clone())
+            Ok(Resolved {
+                pages: self.resolve.clone(),
+                cover: self.cover.clone(),
+            })
         }
 
         async fn next(&self, url: &str) -> Result<Page, ContextError> {
@@ -328,6 +362,39 @@ mod tests {
         walker.next_page().await.expect("inline");
         let error = walker.next_page().await.expect_err("source");
         assert!(matches!(error, ContextError::Source(_)));
+    }
+
+    #[tokio::test]
+    async fn the_cover_is_none_before_the_first_resolve() {
+        let fake = Fake::new(vec![page(&["a"], None)]).with_cover(cover());
+        let walker = Walker::new(fake, "context");
+        assert_eq!(walker.cover(), None);
+    }
+
+    #[tokio::test]
+    async fn the_cover_equals_the_sources_after_the_first_resolve() {
+        let fake = Fake::new(vec![page(&["a"], None)]).with_cover(cover());
+        let mut walker = Walker::new(fake, "context");
+        walker.next_page().await.expect("page");
+        assert_eq!(walker.cover(), Some(cover()));
+    }
+
+    #[tokio::test]
+    async fn the_cover_survives_an_empty_context() {
+        let fake = Fake::new(Vec::new()).with_cover(cover());
+        let mut walker = Walker::new(fake, "context");
+        assert_eq!(walker.next_page().await.expect("empty"), None);
+        assert_eq!(walker.cover(), Some(cover()));
+    }
+
+    #[tokio::test]
+    async fn a_source_error_leaves_the_cover_none() {
+        let mut fake = Fake::new(Vec::new()).with_cover(cover());
+        fake.fail_resolve = true;
+        let mut walker = Walker::new(fake, "context");
+        let error = walker.next_page().await.expect_err("source");
+        assert!(matches!(error, ContextError::Source(_)));
+        assert_eq!(walker.cover(), None);
     }
 
     #[test]

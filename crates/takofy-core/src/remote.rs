@@ -9,9 +9,10 @@ use librespot::core::{Session, SpotifyUri};
 use librespot::metadata::{Metadata, Playlist};
 use librespot::protocol::metadata::Track as TrackMessage;
 
-use crate::context::{ContextError, Page, PageSource, page_from_proto, parse_page_json};
+use crate::context::{ContextError, Page, PageSource, Resolved, page_from_proto, parse_page_json};
+use crate::cover::pick_cover;
 use crate::rootlist::{RootlistError, RootlistPage, RootlistSource, RootlistWire, parse_rootlist};
-use takofy_model::{PlaylistEntry, TrackEntry};
+use takofy_model::{CoverUrl, PlaylistEntry, TrackEntry};
 
 /// The wire the live rootlist is read as; flip to `Json` if the binary parse fails.
 pub(crate) const ROOTLIST_WIRE: RootlistWire = RootlistWire::Binary;
@@ -52,16 +53,106 @@ fn rootlist_endpoint(session: &Session, from: usize, len: usize) -> String {
 }
 
 /// Names each playlist, falling back to its URI when metadata is missing.
+///
+/// A playlist's cover is, in order: the picture the user set, or the cover of
+/// the first Track-kind item. The first-track cover needs one batched metadata
+/// request, only for the playlists that have no picture.
 pub(crate) async fn label_playlists(session: &Session, uris: Vec<String>) -> Vec<PlaylistEntry> {
-    futures_util::stream::iter(uris)
-        .map(|uri| async move {
-            let name = playlist_name(session, &uri).await;
-            let (name, named) = playlist_label(&uri, name);
-            PlaylistEntry { uri, name, named }
-        })
+    let metas = futures_util::stream::iter(uris.iter().cloned())
+        .map(|uri| async move { playlist_meta(session, &uri).await })
         .buffered(8)
         .collect::<Vec<_>>()
-        .await
+        .await;
+
+    let mut candidates: Vec<String> = Vec::new();
+    let mut seen = HashSet::new();
+    for meta in &metas {
+        if meta.picture.is_none()
+            && let Some(track) = &meta.first_track
+            && seen.insert(track.clone())
+        {
+            candidates.push(track.clone());
+        }
+    }
+    let labels = fetch_labels(session, &candidates).await;
+
+    uris.into_iter()
+        .zip(metas)
+        .map(|(uri, meta)| {
+            let PlaylistMeta {
+                name,
+                first_track,
+                picture,
+            } = meta;
+            let cover = playlist_cover(picture, first_track.as_deref(), &labels);
+            let (name, named) = playlist_label(&uri, name);
+            PlaylistEntry {
+                uri,
+                name,
+                named,
+                cover,
+            }
+        })
+        .collect()
+}
+
+/// What one playlist's metadata tells the listing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PlaylistMeta {
+    name: Option<String>,
+    /// The URI of the first Track-kind item, skipping episodes and local files.
+    first_track: Option<String>,
+    /// The picture the user set, when the playlist carries a usable one.
+    picture: Option<CoverUrl>,
+}
+
+impl PlaylistMeta {
+    fn empty() -> Self {
+        Self {
+            name: None,
+            first_track: None,
+            picture: None,
+        }
+    }
+}
+
+/// Reads one playlist's name, first track and picture in a single request.
+async fn playlist_meta(session: &Session, uri: &str) -> PlaylistMeta {
+    let Ok(id) = SpotifyUri::from_uri(uri) else {
+        return PlaylistMeta::empty();
+    };
+    let Ok(playlist) = Playlist::get(session, &id).await else {
+        return PlaylistMeta::empty();
+    };
+    PlaylistMeta {
+        name: Some(playlist.name().to_owned()),
+        first_track: first_track_uri(playlist.tracks()),
+        picture: CoverUrl::from_file_id(&playlist.attributes.picture),
+    }
+}
+
+/// The URI of the first Track-kind item, skipping episodes and local files.
+///
+/// Reads the head only: a truncated list still begins with an intact item, and
+/// the derivation never pages.
+fn first_track_uri<'a>(mut uris: impl Iterator<Item = &'a SpotifyUri>) -> Option<String> {
+    uris.find_map(|uri| match uri {
+        SpotifyUri::Track { .. } => uri.to_uri().ok(),
+        _ => None,
+    })
+}
+
+/// The picture if present, else the first track's album cover.
+fn playlist_cover(
+    picture: Option<CoverUrl>,
+    first_track: Option<&str>,
+    labels: &Labels,
+) -> Option<CoverUrl> {
+    picture.or_else(|| {
+        first_track
+            .and_then(|track| labels.get(track))
+            .and_then(|label| label.cover.clone())
+    })
 }
 
 /// The display name and whether it is a real name rather than the URI fallback.
@@ -72,28 +163,23 @@ fn playlist_label(uri: &str, name: Option<String>) -> (String, bool) {
     }
 }
 
-async fn playlist_name(session: &Session, uri: &str) -> Option<String> {
-    let id = SpotifyUri::from_uri(uri).ok()?;
-    Playlist::get(session, &id)
-        .await
-        .ok()
-        .map(|playlist| playlist.name().to_owned())
-}
-
 /// Reads context pages through librespot's spclient.
 pub(crate) struct RemoteContext<'a> {
     pub(crate) session: &'a Session,
 }
 
 impl PageSource for RemoteContext<'_> {
-    async fn resolve(&self, uri: &str) -> Result<Vec<Page>, ContextError> {
+    async fn resolve(&self, uri: &str) -> Result<Resolved, ContextError> {
         let context = self
             .session
             .spclient()
             .get_context(uri)
             .await
             .map_err(|error| ContextError::Source(error.to_string()))?;
-        Ok(context.pages.iter().map(page_from_proto).collect())
+        Ok(Resolved {
+            pages: context.pages.iter().map(page_from_proto).collect(),
+            cover: context_cover(&context.metadata),
+        })
     }
 
     async fn next(&self, url: &str) -> Result<Page, ContextError> {
@@ -107,6 +193,17 @@ impl PageSource for RemoteContext<'_> {
     }
 }
 
+/// The context's own image: `image_url`, else `header_image_url_desktop`.
+///
+/// A value that fails the host allowlist falls through to the next key rather
+/// than ending the search.
+fn context_cover(metadata: &HashMap<String, String>) -> Option<CoverUrl> {
+    ["image_url", "header_image_url_desktop"]
+        .iter()
+        .filter_map(|key| metadata.get(*key))
+        .find_map(|value| CoverUrl::from_wire(value))
+}
+
 /// What the wire says about one track: the name and artists the row already
 /// draws, plus the album and length it can now draw too.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,6 +212,7 @@ struct TrackLabel {
     artists: String,
     album: Option<String>,
     duration_ms: Option<u32>,
+    cover: Option<CoverUrl>,
 }
 
 /// Labels for tracks, keyed by URI.
@@ -158,6 +256,7 @@ fn expand_labels(uris: &[String], labels: &Labels) -> Vec<TrackEntry> {
                 album: label.album.clone(),
                 duration_ms: label.duration_ms,
                 named: true,
+                cover: label.cover.clone(),
             },
             None => TrackEntry {
                 uri: uri.clone(),
@@ -166,6 +265,7 @@ fn expand_labels(uris: &[String], labels: &Labels) -> Vec<TrackEntry> {
                 album: None,
                 duration_ms: None,
                 named: false,
+                cover: None,
             },
         })
         .collect()
@@ -290,6 +390,10 @@ fn label_of(track: &TrackMessage) -> Option<TrackLabel> {
         artists,
         album,
         duration_ms: duration_ms(track.duration),
+        cover: track
+            .album
+            .as_ref()
+            .and_then(|album| pick_cover(album.cover_group.as_ref())),
     })
 }
 
@@ -306,11 +410,46 @@ fn duration_ms(duration: Option<i32>) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
-    use librespot::protocol::metadata::{Album, Artist, Track as TrackMessage};
+    use std::collections::HashMap;
+    use std::time::Duration;
+
+    use librespot::core::{SpotifyId, SpotifyUri};
+    use librespot::protocol::metadata::image::Size;
+    use librespot::protocol::metadata::{Album, Artist, Image, ImageGroup, Track as TrackMessage};
+    use takofy_model::CoverUrl;
 
     use super::{
-        Labels, TrackLabel, distinct_uris, duration_ms, expand_labels, label_of, playlist_label,
+        Labels, TrackLabel, context_cover, distinct_uris, duration_ms, expand_labels,
+        first_track_uri, label_of, playlist_cover, playlist_label,
     };
+
+    const TRACK_ID: &str = "4uLU6hMCjMI75M1A2tKUQC";
+    const EPISODE_ID: &str = "6rqhFgbbKwnb9MLmUQDhG6";
+
+    fn cover_url() -> CoverUrl {
+        CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover url")
+    }
+
+    fn first_track() -> SpotifyUri {
+        SpotifyUri::Track {
+            id: SpotifyId::from_base62(TRACK_ID).expect("a track id"),
+        }
+    }
+
+    fn episode() -> SpotifyUri {
+        SpotifyUri::Episode {
+            id: SpotifyId::from_base62(EPISODE_ID).expect("an episode id"),
+        }
+    }
+
+    fn local() -> SpotifyUri {
+        SpotifyUri::Local {
+            artist: "Artist".to_owned(),
+            album_title: "Album".to_owned(),
+            track_title: "Title".to_owned(),
+            duration: Duration::from_secs(3),
+        }
+    }
 
     fn owned(uris: &[&str]) -> Vec<String> {
         uris.iter().map(|uri| (*uri).to_owned()).collect()
@@ -327,6 +466,7 @@ mod tests {
                         artists: (*artists).to_owned(),
                         album: None,
                         duration_ms: None,
+                        cover: None,
                     },
                 )
             })
@@ -348,6 +488,7 @@ mod tests {
                 artists: artists.to_owned(),
                 album: album.map(str::to_owned),
                 duration_ms,
+                cover: None,
             },
         );
         labels
@@ -508,5 +649,171 @@ mod tests {
         let (name, named) = playlist_label("spotify:playlist:x", None);
         assert_eq!(name, "spotify:playlist:x");
         assert!(!named);
+    }
+
+    fn wire_track_with_image(size: Size, file_id: &[u8]) -> TrackMessage {
+        let mut image = Image::new();
+        image.set_size(size);
+        image.set_file_id(file_id.to_vec());
+        TrackMessage {
+            name: Some("One".to_owned()),
+            artist: vec![Artist {
+                name: Some("Band".to_owned()),
+                ..Default::default()
+            }],
+            album: Some(Album {
+                cover_group: Some(ImageGroup {
+                    image: vec![image],
+                    ..Default::default()
+                })
+                .into(),
+                ..Default::default()
+            })
+            .into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn label_of_reads_a_grouped_cover() {
+        let label = label_of(&wire_track_with_image(Size::DEFAULT, &[7; 20])).unwrap();
+        let cover = label.cover.expect("a cover");
+        assert!(
+            cover
+                .as_str()
+                .ends_with("0707070707070707070707070707070707070707")
+        );
+    }
+
+    #[test]
+    fn label_of_reads_no_cover_when_the_group_is_absent() {
+        let label = label_of(&wire_track(Some("Record"), Some(222_000))).unwrap();
+        assert_eq!(label.cover, None);
+    }
+
+    #[test]
+    fn context_cover_prefers_image_url() {
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            "image_url".to_owned(),
+            "https://i.scdn.co/image/a".to_owned(),
+        );
+        metadata.insert(
+            "header_image_url_desktop".to_owned(),
+            "https://i.scdn.co/image/b".to_owned(),
+        );
+        assert_eq!(
+            context_cover(&metadata).map(|cover| cover.as_str().to_owned()),
+            Some("https://i.scdn.co/image/a".to_owned())
+        );
+    }
+
+    #[test]
+    fn context_cover_falls_back_to_the_header() {
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            "header_image_url_desktop".to_owned(),
+            "https://i.scdn.co/image/b".to_owned(),
+        );
+        assert_eq!(
+            context_cover(&metadata).map(|cover| cover.as_str().to_owned()),
+            Some("https://i.scdn.co/image/b".to_owned())
+        );
+    }
+
+    #[test]
+    fn context_cover_skips_an_off_allowlist_image_url() {
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            "image_url".to_owned(),
+            "https://evil.example/image/a".to_owned(),
+        );
+        metadata.insert(
+            "header_image_url_desktop".to_owned(),
+            "https://pickasso.spotifycdn.com/image/b".to_owned(),
+        );
+        assert_eq!(
+            context_cover(&metadata).map(|cover| cover.as_str().to_owned()),
+            Some("https://pickasso.spotifycdn.com/image/b".to_owned())
+        );
+    }
+
+    #[test]
+    fn context_cover_is_none_without_a_key_or_with_a_non_https_value() {
+        assert_eq!(context_cover(&HashMap::new()), None);
+        let mut metadata = HashMap::new();
+        metadata.insert("image_url".to_owned(), "/image/a".to_owned());
+        assert_eq!(context_cover(&metadata), None);
+    }
+
+    #[test]
+    fn first_track_uri_skips_episodes_and_locals() {
+        let uris = [episode(), local(), first_track()];
+        assert_eq!(
+            first_track_uri(uris.iter()),
+            Some(format!("spotify:track:{TRACK_ID}"))
+        );
+    }
+
+    #[test]
+    fn first_track_uri_reads_the_head_only() {
+        let second = SpotifyUri::Track {
+            id: SpotifyId::from_base62("6rqhFgbbKwnb9MLmUQDhG7").expect("a track id"),
+        };
+        let uris = [first_track(), second];
+        assert_eq!(
+            first_track_uri(uris.iter()),
+            Some(format!("spotify:track:{TRACK_ID}"))
+        );
+    }
+
+    #[test]
+    fn first_track_uri_is_none_for_an_empty_or_episode_only_list() {
+        let empty: Vec<SpotifyUri> = Vec::new();
+        assert_eq!(first_track_uri(empty.iter()), None);
+        let episodes = [episode()];
+        assert_eq!(first_track_uri(episodes.iter()), None);
+    }
+
+    #[test]
+    fn playlist_cover_prefers_the_picture() {
+        let mut labels = Labels::new();
+        labels.insert(
+            "t".to_owned(),
+            TrackLabel {
+                title: "One".to_owned(),
+                artists: String::new(),
+                album: None,
+                duration_ms: None,
+                cover: Some(cover_url()),
+            },
+        );
+        assert_eq!(
+            playlist_cover(Some(cover_url()), Some("t"), &labels),
+            Some(cover_url())
+        );
+    }
+
+    #[test]
+    fn playlist_cover_falls_back_to_the_first_track() {
+        let mut labels = Labels::new();
+        labels.insert(
+            "t".to_owned(),
+            TrackLabel {
+                title: "One".to_owned(),
+                artists: String::new(),
+                album: None,
+                duration_ms: None,
+                cover: Some(cover_url()),
+            },
+        );
+        assert_eq!(playlist_cover(None, Some("t"), &labels), Some(cover_url()));
+    }
+
+    #[test]
+    fn playlist_cover_is_none_without_a_picture_or_a_known_first_track() {
+        let labels = Labels::new();
+        assert_eq!(playlist_cover(None, None, &labels), None);
+        assert_eq!(playlist_cover(None, Some("t"), &labels), None);
     }
 }

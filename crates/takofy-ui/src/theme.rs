@@ -307,6 +307,24 @@ pub mod icon {
     }
 }
 
+/// How a decoded cover reaches the screen.
+pub mod art {
+    use egui::{Color32, TextureOptions};
+
+    /// The tint a textured rect multiplies its image by. Such a rect still needs
+    /// a fill even when it is nothing but a picture, and white is the one value
+    /// that leaves the pixels as they were decoded.
+    pub const TINT: Color32 = Color32::WHITE;
+
+    /// A cover is scaled, never tiled: smooth filters both ways, and the edge is
+    /// clamped. A stretched image that sampled the opposite edge would show a
+    /// smeared rim on the tile's last pixel.
+    ///
+    /// No mipmaps: the decoder already brings every cover down to a size close to
+    /// the tile, so the cost would buy nothing.
+    pub const TEXTURE: TextureOptions = TextureOptions::LINEAR;
+}
+
 /// Durations in seconds, and the one easing curve the design uses.
 pub mod motion {
     pub const FAST: f32 = 0.110;
@@ -661,6 +679,19 @@ mod tests {
     #[test]
     fn the_hero_play_tile_is_larger_than_a_card_tile() {
         const { assert!(extent::CARD_PLAY < hero::PLAY) };
+    }
+
+    #[test]
+    fn a_cover_is_filtered_and_never_tiled() {
+        use egui::{TextureFilter, TextureWrapMode};
+
+        assert!(matches!(
+            art::TEXTURE.wrap_mode,
+            TextureWrapMode::ClampToEdge
+        ));
+        assert!(matches!(art::TEXTURE.magnification, TextureFilter::Linear));
+        assert!(matches!(art::TEXTURE.minification, TextureFilter::Linear));
+        assert!(art::TEXTURE.mipmap_mode.is_none());
     }
 
     #[test]

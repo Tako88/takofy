@@ -6,19 +6,24 @@
 //! browser callback must not hold up runtime shutdown, and a detached thread
 //! dies with the process.
 
+use std::collections::HashSet;
 use std::future::Future;
 use std::sync::mpsc::{Receiver, Sender, channel};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use takofy_core::credentials::{AccessToken, CredentialStore};
 use takofy_core::login::{AuthError, SourceErrorKind, TokenSource, authorize, resume};
 use takofy_core::playback::{PlaybackError, PlaybackEvent};
+use takofy_model::CoverUrl;
 use takofy_ui::message::{Command, Failure, TransportUpdate, Update};
 use tokio::runtime::{Handle, Runtime};
+use tokio::sync::Semaphore;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot;
 use tokio::sync::oneshot::Receiver as StopReceiver;
+use tokio::task::JoinSet;
 
+use crate::cover::{FETCH_TIMEOUT, MAX_CONCURRENT_COVERS, fetch_cover, spawn_cover};
 use crate::session::{SessionError, SessionHost, stop_or};
 
 /// A handle the worker can wake to ask for the next frame.
@@ -60,7 +65,7 @@ pub(crate) struct Notifier {
 }
 
 impl Notifier {
-    fn send(&self, update: Update) {
+    pub(crate) fn send(&self, update: Update) {
         // The update must be readable before the waker runs: a wake that beats
         // the queue into the channel would be spent on a frame with nothing to
         // drain.
@@ -123,6 +128,48 @@ impl Step {
     }
 }
 
+/// Removes finished fetch tasks so their cells do not accumulate over a
+/// session, and logs a panic that would otherwise go unobserved.
+fn reap_finished_covers(tasks: &mut JoinSet<()>) {
+    while let Some(joined) = tasks.try_join_next() {
+        if let Err(error) = joined {
+            log::warn!("cover task ended: {error}");
+        }
+    }
+}
+
+/// Answers one cover request. Every request ends in exactly one update: the
+/// fetch is spawned, or a failure is sent straight back, so the window's
+/// in-flight entry always resolves.
+fn handle_fetch(
+    connected: bool,
+    client: Option<&reqwest::Client>,
+    tasks: &mut JoinSet<()>,
+    permits: Arc<Semaphore>,
+    in_flight: Arc<Mutex<HashSet<CoverUrl>>>,
+    url: CoverUrl,
+    notifier: Notifier,
+) {
+    let (true, Some(client)) = (connected, client) else {
+        // A signed-out window has no cover to want, and a client that failed
+        // to build can never serve one; both resolve the request now.
+        notifier.send(Update::CoverFailed { url });
+        return;
+    };
+    let client = client.clone();
+    let requested = url.clone();
+    let fetch = async move { fetch_cover(&client, &requested).await };
+    spawn_cover(
+        tasks,
+        permits,
+        in_flight,
+        url,
+        fetch,
+        |bytes| crate::decode::decode(&bytes),
+        notifier,
+    );
+}
+
 /// Starts the sign-in worker and kicks off the resume attempt immediately, so
 /// it overlaps window creation.
 pub(crate) fn start<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
@@ -162,7 +209,29 @@ pub(crate) fn start<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
         let mut host = host;
         let mut connected = false;
         let mut token: Option<AccessToken> = None;
+        // Built once: the timeout, the redirect ban, and the bounded pool live
+        // on the client, and covers are the only thing it is ever used for.
+        // Redirects are refused so an allowlisted host cannot hand the fetch to
+        // a host the allowlist never approved; a 3xx becomes a fetch error.
+        let cover_client = match reqwest::Client::builder()
+            .timeout(FETCH_TIMEOUT)
+            .redirect(reqwest::redirect::Policy::none())
+            .pool_max_idle_per_host(2)
+            .build()
+        {
+            Ok(client) => Some(client),
+            Err(error) => {
+                // Without a client no fetch can be served; the request handler
+                // answers each one instead of leaving it hanging.
+                log::warn!("cover client could not be built: {error}");
+                None
+            }
+        };
+        let cover_permits = Arc::new(Semaphore::new(MAX_CONCURRENT_COVERS));
+        let cover_in_flight: Arc<Mutex<HashSet<CoverUrl>>> = Arc::new(Mutex::new(HashSet::new()));
+        let mut cover_tasks = JoinSet::new();
         loop {
+            reap_finished_covers(&mut cover_tasks);
             let event = tokio::select! {
                 biased;
                 _ = &mut stop_rx => break,
@@ -225,9 +294,26 @@ pub(crate) fn start<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                 Event::Command(Some(Command::Resume)) => host.resume(),
                 Event::Command(Some(Command::Stop)) => host.stop(),
                 Event::Command(Some(Command::Seek { position_ms })) => host.seek(position_ms),
+                // The arm only spawns: the fetch must not park the command loop
+                // that also awaits host calls. A signed-out window has no cover
+                // to want, and every request is answered either way.
+                Event::Command(Some(Command::Fetch { url })) => {
+                    handle_fetch(
+                        connected,
+                        cover_client.as_ref(),
+                        &mut cover_tasks,
+                        Arc::clone(&cover_permits),
+                        Arc::clone(&cover_in_flight),
+                        url,
+                        task_notifier.clone(),
+                    );
+                }
                 Event::Command(None) => break,
             }
         }
+        // Cancels every in-flight fetch. A detached decode thread is left to
+        // finish and its result is dropped with the oneshot receiver.
+        cover_tasks.abort_all();
         let _ = host.shutdown().await;
     });
 
@@ -330,7 +416,8 @@ async fn load_tracks<H: SessionHost>(
                 result,
                 |page| Update::Tracks {
                     playlist: playlist.to_owned(),
-                    tracks: page.unwrap_or_default(),
+                    tracks: page.tracks,
+                    cover: page.cover,
                 },
                 |failure| Update::TracksFailed {
                     playlist: playlist.to_owned(),
@@ -496,12 +583,12 @@ mod tests {
 
     use takofy_core::credentials::{AccessToken, CredentialStore, RefreshToken, StoreError};
     use takofy_core::login::{SourceError, SourceErrorKind, TokenSet, TokenSource};
-    use takofy_model::{PlaylistEntry, TrackEntry};
+    use takofy_model::{CoverImage, CoverUrl, PlaylistEntry, TrackEntry};
     use takofy_ui::signin::failure_message;
     use tokio::runtime::Runtime;
 
     use super::*;
-    use crate::session::{SessionError, SessionHost};
+    use crate::session::{SessionError, SessionHost, TrackPage};
 
     fn runtime() -> Runtime {
         tokio::runtime::Builder::new_multi_thread()
@@ -703,17 +790,17 @@ mod tests {
         }
     }
 
-    /// `Ready(None)` is a playlist with no tracks.
+    /// `Ready(TrackPage::default())` is a playlist with no tracks and no cover.
     #[derive(Clone)]
     enum TracksScript {
-        Ready(Option<Vec<TrackEntry>>),
+        Ready(TrackPage),
         Fail,
         Pending,
     }
 
     impl Default for TracksScript {
         fn default() -> Self {
-            Self::Ready(None)
+            Self::Ready(TrackPage::default())
         }
     }
 
@@ -818,7 +905,7 @@ mod tests {
         fn tracks(
             &mut self,
             _playlist: &str,
-        ) -> impl Future<Output = Result<Option<Vec<TrackEntry>>, SessionError>> + Send {
+        ) -> impl Future<Output = Result<TrackPage, SessionError>> + Send {
             self.shared.tracks.fetch_add(1, Ordering::SeqCst);
             if let Some(tx) = self.shared.tracks_started.lock().expect("lock").take() {
                 let _ = tx.send(());
@@ -888,6 +975,7 @@ mod tests {
             uri: uri.to_owned(),
             name: name.to_owned(),
             named: true,
+            cover: None,
         }
     }
 
@@ -1511,6 +1599,7 @@ mod tests {
             album: None,
             duration_ms: None,
             named: true,
+            cover: None,
         }
     }
 
@@ -1588,12 +1677,17 @@ mod tests {
             slot: WakeSlot::default(),
         };
         let playlist = "spotify:playlist:a".to_owned();
+        let cover = CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover");
         announce(
             &notifier,
-            Ok(Some(vec![track("t")])),
+            Ok(TrackPage {
+                tracks: vec![track("t")],
+                cover: Some(cover.clone()),
+            }),
             |page| Update::Tracks {
                 playlist: playlist.clone(),
-                tracks: page.unwrap_or_default(),
+                tracks: page.tracks,
+                cover: page.cover,
             },
             |failure| Update::TracksFailed {
                 playlist: playlist.clone(),
@@ -1605,6 +1699,7 @@ mod tests {
             Update::Tracks {
                 playlist,
                 tracks: vec![track("t")],
+                cover: Some(cover),
             }
         );
     }
@@ -1617,13 +1712,14 @@ mod tests {
             slot: WakeSlot::default(),
         };
         let playlist = "spotify:playlist:a".to_owned();
-        let result: Result<Option<Vec<TrackEntry>>, SessionError> = Err(SessionError::NotConnected);
+        let result: Result<TrackPage, SessionError> = Err(SessionError::NotConnected);
         announce(
             &notifier,
             result,
             |page| Update::Tracks {
                 playlist: playlist.clone(),
-                tracks: page.unwrap_or_default(),
+                tracks: page.tracks,
+                cover: page.cover,
             },
             |failure| Update::TracksFailed {
                 playlist: playlist.clone(),
@@ -1702,6 +1798,504 @@ mod tests {
         );
         assert_eq!(shared.tracks.load(Ordering::SeqCst), 1);
         assert_eq!(shared.shutdowns.load(Ordering::SeqCst), 1);
+    }
+
+    /// Drives one scripted track page through the live `load_tracks` path and
+    /// returns the `Update::Tracks` the window receives. This is the end-to-end
+    /// guard the direct-`Update` tests cannot give: every hop from the host's
+    /// page to the update is real.
+    fn run_track_page(page: TrackPage) -> Update {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+        *shared.tracks_script.lock().expect("lock") = TracksScript::Ready(page);
+
+        run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::LoadTracks {
+                    playlist: "spotify:playlist:a".to_owned(),
+                })
+                .expect("load");
+            ui_end.updates.recv().expect("tracks")
+        })
+    }
+
+    #[test]
+    fn a_track_page_cover_reaches_the_update() {
+        let cover = CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover");
+        let update = run_track_page(TrackPage {
+            tracks: vec![track("t")],
+            cover: Some(cover.clone()),
+        });
+        assert_eq!(
+            update,
+            Update::Tracks {
+                playlist: "spotify:playlist:a".to_owned(),
+                tracks: vec![track("t")],
+                cover: Some(cover),
+            }
+        );
+    }
+
+    #[test]
+    fn a_track_page_without_a_cover_reaches_the_update_as_none() {
+        let update = run_track_page(TrackPage {
+            tracks: vec![track("t")],
+            cover: None,
+        });
+        assert_eq!(
+            update,
+            Update::Tracks {
+                playlist: "spotify:playlist:a".to_owned(),
+                tracks: vec![track("t")],
+                cover: None,
+            }
+        );
+    }
+
+    #[test]
+    fn a_fetched_cover_decodes_and_reaches_the_window() {
+        let runtime = runtime();
+        let (tx, rx) = channel();
+        let notifier = Notifier {
+            tx,
+            slot: WakeSlot::default(),
+        };
+        let url = CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover");
+        let in_flight = Arc::new(Mutex::new(HashSet::new()));
+
+        let update = runtime.block_on(async {
+            let mut tasks = JoinSet::new();
+            spawn_cover(
+                &mut tasks,
+                Arc::new(Semaphore::new(MAX_CONCURRENT_COVERS)),
+                Arc::clone(&in_flight),
+                url.clone(),
+                async { Ok(include_bytes!("../tests/fixtures/cover.jpg").to_vec()) },
+                |bytes| crate::decode::decode(&bytes),
+                notifier,
+            );
+            let finished = tasks.join_next().await.expect("one task");
+            finished.expect("the task does not panic");
+            rx.recv().expect("update")
+        });
+
+        match update {
+            Update::Cover { url: seen, image } => {
+                assert_eq!(seen, url);
+                assert_eq!((image.width, image.height), (16, 8));
+            }
+            other => panic!("expected a cover, got {other:?}"),
+        }
+        assert!(in_flight.lock().expect("lock").is_empty());
+    }
+
+    #[test]
+    fn a_failed_fetch_reaches_the_window_as_cover_failed() {
+        let runtime = runtime();
+        let (tx, rx) = channel();
+        let notifier = Notifier {
+            tx,
+            slot: WakeSlot::default(),
+        };
+        let url = CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover");
+        let in_flight = Arc::new(Mutex::new(HashSet::new()));
+
+        let update = runtime.block_on(async {
+            let mut tasks = JoinSet::new();
+            spawn_cover(
+                &mut tasks,
+                Arc::new(Semaphore::new(MAX_CONCURRENT_COVERS)),
+                Arc::clone(&in_flight),
+                url.clone(),
+                async { Err(crate::cover::CoverError::Fetch) },
+                |_| Err(crate::cover::CoverError::Decode),
+                notifier,
+            );
+            let finished = tasks.join_next().await.expect("one task");
+            finished.expect("the task does not panic");
+            rx.recv().expect("update")
+        });
+
+        assert_eq!(update, Update::CoverFailed { url });
+        assert!(in_flight.lock().expect("lock").is_empty());
+    }
+
+    #[test]
+    fn a_fetch_with_no_session_or_client_is_answered_with_cover_failed() {
+        let url = CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover");
+        for (connected, client) in [
+            (
+                false,
+                Some(reqwest::Client::builder().build().expect("client")),
+            ),
+            (true, None),
+        ] {
+            let (tx, rx) = channel();
+            let notifier = Notifier {
+                tx,
+                slot: WakeSlot::default(),
+            };
+            let mut tasks = JoinSet::new();
+            handle_fetch(
+                connected,
+                client.as_ref(),
+                &mut tasks,
+                Arc::new(Semaphore::new(MAX_CONCURRENT_COVERS)),
+                Arc::new(Mutex::new(HashSet::new())),
+                url.clone(),
+                notifier,
+            );
+            assert!(tasks.is_empty(), "no fetch is spawned");
+            assert_eq!(
+                rx.try_recv().expect("one reply"),
+                Update::CoverFailed { url: url.clone() }
+            );
+            assert!(rx.try_recv().is_err(), "exactly one reply");
+        }
+    }
+
+    #[test]
+    fn a_fetch_before_sign_in_is_answered_with_cover_failed() {
+        let store = Arc::new(MemoryStore::default());
+        let source = Arc::new(FixedSource::default());
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::default());
+
+        run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            assert_eq!(
+                ui_end.updates.recv().expect("resume update"),
+                Update::NeedsAuthorization
+            );
+            let url = CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover");
+            ui_end
+                .commands
+                .send(Command::Fetch { url: url.clone() })
+                .expect("fetch");
+            assert_eq!(
+                ui_end.updates.recv().expect("cover reply"),
+                Update::CoverFailed { url }
+            );
+        });
+    }
+
+    #[test]
+    fn a_failed_decode_reaches_the_window_as_cover_failed() {
+        let runtime = runtime();
+        let (tx, rx) = channel();
+        let notifier = Notifier {
+            tx,
+            slot: WakeSlot::default(),
+        };
+        let url = CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover");
+        let in_flight = Arc::new(Mutex::new(HashSet::new()));
+
+        let update = runtime.block_on(async {
+            let mut tasks = JoinSet::new();
+            spawn_cover(
+                &mut tasks,
+                Arc::new(Semaphore::new(MAX_CONCURRENT_COVERS)),
+                Arc::clone(&in_flight),
+                url.clone(),
+                async { Ok(vec![0u8; 16]) },
+                |bytes| crate::decode::decode(&bytes),
+                notifier,
+            );
+            let finished = tasks.join_next().await.expect("one task");
+            finished.expect("the task does not panic");
+            rx.recv().expect("update")
+        });
+
+        assert_eq!(update, Update::CoverFailed { url });
+        assert!(in_flight.lock().expect("lock").is_empty());
+    }
+
+    #[test]
+    fn a_decode_that_outruns_its_budget_fails_instead_of_hanging() {
+        let runtime = runtime();
+        let (tx, rx) = channel();
+        let notifier = Notifier {
+            tx,
+            slot: WakeSlot::default(),
+        };
+        let url = CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover");
+        let in_flight = Arc::new(Mutex::new(HashSet::new()));
+
+        let update = runtime.block_on(async {
+            let mut tasks = JoinSet::new();
+            crate::cover::spawn_cover_with_timeout(
+                &mut tasks,
+                Arc::new(Semaphore::new(MAX_CONCURRENT_COVERS)),
+                Arc::clone(&in_flight),
+                url.clone(),
+                async { Ok(include_bytes!("../tests/fixtures/cover.jpg").to_vec()) },
+                |_| {
+                    std::thread::sleep(Duration::from_millis(500));
+                    Ok(CoverImage::new(1, 1, vec![0, 0, 0, 255]).expect("one pixel"))
+                },
+                notifier,
+                Duration::from_millis(20),
+            );
+            let finished = tasks.join_next().await.expect("one task");
+            finished.expect("the task does not panic");
+            rx.recv().expect("update")
+        });
+
+        assert_eq!(update, Update::CoverFailed { url });
+        assert!(in_flight.lock().expect("lock").is_empty());
+    }
+
+    /// Records whether the in-flight set was already empty when the wake ran,
+    /// which is the moment the reply itself has just been queued.
+    struct InFlightProbe {
+        in_flight: Arc<Mutex<HashSet<CoverUrl>>>,
+        empty_at_wake: AtomicBool,
+    }
+
+    impl Waker for InFlightProbe {
+        fn wake(&self) {
+            let empty = self.in_flight.lock().expect("lock").is_empty();
+            self.empty_at_wake.store(empty, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn a_retry_after_a_failed_fetch_is_not_deduped() {
+        let runtime = runtime();
+        let (tx, rx) = channel();
+        let url = CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover");
+        let in_flight = Arc::new(Mutex::new(HashSet::new()));
+        let probe = Arc::new(InFlightProbe {
+            in_flight: Arc::clone(&in_flight),
+            empty_at_wake: AtomicBool::new(false),
+        });
+        let slot = WakeSlot::default();
+        slot.install(probe.clone());
+        let notifier = Notifier { tx, slot };
+        let fetches = Arc::new(AtomicUsize::new(0));
+
+        runtime.block_on(async {
+            let mut tasks = JoinSet::new();
+            let permits = Arc::new(Semaphore::new(MAX_CONCURRENT_COVERS));
+            for _ in 0..2 {
+                let counting = Arc::clone(&fetches);
+                spawn_cover(
+                    &mut tasks,
+                    Arc::clone(&permits),
+                    Arc::clone(&in_flight),
+                    url.clone(),
+                    async move {
+                        counting.fetch_add(1, Ordering::SeqCst);
+                        Err(crate::cover::CoverError::Fetch)
+                    },
+                    |_| Err(crate::cover::CoverError::Decode),
+                    notifier.clone(),
+                );
+                assert_eq!(
+                    rx.recv().expect("failure"),
+                    Update::CoverFailed { url: url.clone() }
+                );
+            }
+            while tasks.join_next().await.is_some() {}
+        });
+
+        // The second request is a real fetch: the first released its claim
+        // before it announced the failure.
+        assert_eq!(fetches.load(Ordering::SeqCst), 2);
+        assert!(
+            probe.empty_at_wake.load(Ordering::SeqCst),
+            "the in-flight entry must be gone before the reply"
+        );
+        assert!(in_flight.lock().expect("lock").is_empty());
+    }
+
+    #[test]
+    fn a_finished_cover_task_is_reaped() {
+        let runtime = current_thread_runtime();
+        runtime.block_on(async {
+            let mut tasks = JoinSet::new();
+            tasks.spawn(async {});
+            // One yield runs the ready task to completion, leaving its cell in
+            // the set until something joins it.
+            tokio::task::yield_now().await;
+            assert_eq!(tasks.len(), 1);
+            reap_finished_covers(&mut tasks);
+            assert_eq!(tasks.len(), 0);
+        });
+    }
+
+    #[test]
+    fn a_duplicate_fetch_for_an_in_flight_url_spawns_one_task() {
+        let runtime = runtime();
+        let (tx, _rx) = channel();
+        let notifier = Notifier {
+            tx,
+            slot: WakeSlot::default(),
+        };
+        let url = CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover");
+        let in_flight = Arc::new(Mutex::new(HashSet::new()));
+        let fetches = Arc::new(AtomicUsize::new(0));
+
+        runtime.block_on(async {
+            let mut tasks = JoinSet::new();
+            let permits = Arc::new(Semaphore::new(MAX_CONCURRENT_COVERS));
+            let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+            spawn_cover(
+                &mut tasks,
+                Arc::clone(&permits),
+                Arc::clone(&in_flight),
+                url.clone(),
+                async move {
+                    let _ = started_tx.send(());
+                    std::future::pending().await
+                },
+                |_| Err(crate::cover::CoverError::Decode),
+                notifier.clone(),
+            );
+            started_rx.await.expect("the first fetch started");
+
+            // A second request for the same URL while it is in flight is
+            // dropped rather than fetched again.
+            let counting = Arc::clone(&fetches);
+            spawn_cover(
+                &mut tasks,
+                Arc::clone(&permits),
+                Arc::clone(&in_flight),
+                url.clone(),
+                async move {
+                    counting.fetch_add(1, Ordering::SeqCst);
+                    Ok(Vec::new())
+                },
+                |_| Err(crate::cover::CoverError::Decode),
+                notifier.clone(),
+            );
+            assert_eq!(tasks.len(), 1);
+
+            tasks.abort_all();
+            while tasks.join_next().await.is_some() {}
+        });
+
+        assert_eq!(fetches.load(Ordering::SeqCst), 0);
+        assert!(in_flight.lock().expect("lock").is_empty());
+    }
+
+    #[test]
+    fn a_fetch_after_completion_spawns_a_new_task() {
+        let runtime = runtime();
+        let (tx, _rx) = channel();
+        let notifier = Notifier {
+            tx,
+            slot: WakeSlot::default(),
+        };
+        let url = CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover");
+        let in_flight = Arc::new(Mutex::new(HashSet::new()));
+        let fetches = Arc::new(AtomicUsize::new(0));
+
+        runtime.block_on(async {
+            let permits = Arc::new(Semaphore::new(MAX_CONCURRENT_COVERS));
+            for _ in 0..2 {
+                let mut tasks = JoinSet::new();
+                let counting = Arc::clone(&fetches);
+                spawn_cover(
+                    &mut tasks,
+                    Arc::clone(&permits),
+                    Arc::clone(&in_flight),
+                    url.clone(),
+                    async move {
+                        counting.fetch_add(1, Ordering::SeqCst);
+                        Ok(include_bytes!("../tests/fixtures/cover.jpg").to_vec())
+                    },
+                    |bytes| crate::decode::decode(&bytes),
+                    notifier.clone(),
+                );
+                while tasks.join_next().await.is_some() {}
+            }
+        });
+
+        // Nothing completed is retained, so the second request is a real fetch.
+        assert_eq!(fetches.load(Ordering::SeqCst), 2);
+        assert!(in_flight.lock().expect("lock").is_empty());
+    }
+
+    #[test]
+    fn an_aborted_fetch_clears_the_in_flight_set_promptly() {
+        let runtime = runtime();
+        let (tx, _rx) = channel();
+        let notifier = Notifier {
+            tx,
+            slot: WakeSlot::default(),
+        };
+        let url = CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover");
+        let in_flight = Arc::new(Mutex::new(HashSet::new()));
+
+        let started = std::time::Instant::now();
+        runtime.block_on(async {
+            let mut tasks = JoinSet::new();
+            let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+            spawn_cover(
+                &mut tasks,
+                Arc::new(Semaphore::new(MAX_CONCURRENT_COVERS)),
+                Arc::clone(&in_flight),
+                url.clone(),
+                async move {
+                    let _ = started_tx.send(());
+                    std::future::pending().await
+                },
+                |_| Err(crate::cover::CoverError::Decode),
+                notifier,
+            );
+            started_rx.await.expect("the fetch started");
+            tasks.abort_all();
+            while tasks.join_next().await.is_some() {}
+        });
+
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(in_flight.lock().expect("lock").is_empty());
+    }
+
+    #[test]
+    fn a_slow_decode_does_not_hold_up_the_runtime_drop() {
+        let runtime = runtime();
+        let (tx, _rx) = channel();
+        let notifier = Notifier {
+            tx,
+            slot: WakeSlot::default(),
+        };
+        let url = CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover");
+        let in_flight = Arc::new(Mutex::new(HashSet::new()));
+        let (decode_started_tx, decode_started_rx) = channel();
+
+        runtime.block_on(async {
+            let mut tasks = JoinSet::new();
+            spawn_cover(
+                &mut tasks,
+                Arc::new(Semaphore::new(MAX_CONCURRENT_COVERS)),
+                Arc::clone(&in_flight),
+                url.clone(),
+                async { Ok(include_bytes!("../tests/fixtures/cover.jpg").to_vec()) },
+                move |_bytes| {
+                    let _ = decode_started_tx.send(());
+                    std::thread::sleep(Duration::from_millis(400));
+                    Ok(CoverImage::new(1, 1, vec![0, 0, 0, 255]).expect("one pixel"))
+                },
+                notifier,
+            );
+            // The task is parked on its oneshot while the thread sleeps.
+            decode_started_rx.recv().expect("the decode started");
+            tasks.abort_all();
+        });
+
+        let dropped = std::time::Instant::now();
+        drop(runtime);
+        assert!(
+            dropped.elapsed() < Duration::from_millis(300),
+            "dropping the runtime must not join the detached decode thread"
+        );
     }
 
     #[test]
