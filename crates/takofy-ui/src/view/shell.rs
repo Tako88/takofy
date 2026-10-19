@@ -83,6 +83,13 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
         command,
     );
 
+    // Hazard, deferred: if an earlier region already reported a command, this
+    // `or` drops whatever the view asked for — including a `LoadAlbum` the
+    // library has already marked `Loading`. `settle` sees the want and the
+    // in-flight load and refuses to re-issue it, so the album page would spin
+    // for a reply nobody asked for. The playlist's `select` has had the same
+    // hazard all along; the album page has just newly reached it. Fixing it means
+    // restructuring this merge, which is not this slice's work.
     command = command.or(region(
         ui,
         "view",
@@ -738,10 +745,11 @@ mod tests {
         );
         assert_eq!(command, None);
         assert_eq!(window.library.page(), Some(&Page::Album(ALBUM.to_owned())));
-        // An album page draws no body in this milestone, so the same-frame proof
-        // that the view moved is that the playlist band is no longer painted in
-        // the view's own rect. The sidebar and topbar are excluded: both draw
-        // before the nav is applied.
+        // The album page draws a spinner until its load settles, and a band and
+        // a table after that. Its load has only just started here, so the
+        // same-frame proof that the view moved is that the playlist band is no
+        // longer painted in the view's own rect. The sidebar and topbar are
+        // excluded: both draw before the nav is applied.
         assert!(
             text_in(&frame, "Mix", view_rect(&window)).is_none(),
             "the view leaves the playlist in the frame the nav applies"

@@ -7,7 +7,8 @@
 //!
 //! The page draws only what the library already has. `Load::Idle` has nothing to
 //! say because the route asks for the album when it opens, so it draws nothing at
-//! all rather than a second spinner.
+//! all rather than a second spinner. A ready record that does not name this page
+//! is another album's, so it draws the spinner instead of that record's band.
 
 use std::time::Instant;
 
@@ -21,7 +22,7 @@ use crate::message::Command;
 use crate::player::Transport;
 use crate::queue::Queue;
 use crate::route::Page;
-use crate::theme::{Tokens, extent, space};
+use crate::theme::{Tokens, extent};
 use crate::view::text as recipe;
 
 use super::hero;
@@ -50,102 +51,123 @@ pub fn album_view(
     };
     let uri = uri.clone();
 
-    ui.add_space(space::S3);
+    // No leading gap here: `tracks_view` adds the page's one gap before it
+    // dispatches, and a second would start the album a step lower than every
+    // other page.
     let mut command = None;
     let mut retry = false;
 
-    egui::ScrollArea::vertical().show(ui, |ui| {
-        let width = ui.available_width();
-        match &library.album {
-            Load::Idle => {}
-            Load::Loading => {
-                ui.spinner();
-            }
-            Load::Failed(failure) => {
-                ui.label(recipe::muted(
-                    crate::signin::failure_message(*failure),
-                    tokens,
-                ));
-                if ui.button("Retry").clicked() {
-                    retry = true;
+    // The scroll area is salted with the album's own URI, so the offset it keeps
+    // is this album's and not the playlist page's that shares the pane.
+    egui::ScrollArea::vertical()
+        .id_salt(uri.as_str())
+        .show(ui, |ui| {
+            let width = ui.available_width();
+            match &library.album {
+                Load::Idle => {}
+                Load::Loading => {
+                    ui.spinner();
                 }
-            }
-            Load::Ready(album) => {
-                // The one cover lookup on this page: the rows carry none, so the
-                // band's picture is the only fetch a frame can ask for.
-                let cover = art.look(album.cover.as_ref(), now);
-                let meta = album_meta(
-                    &album.artists,
-                    album.year,
-                    (album.tracks.len(), total_duration_ms(&album.tracks)),
-                );
-                let band = hero::Band {
-                    eyebrow: "Album",
-                    title: &album.name,
-                    meta,
-                    // An album's label and copyright are out of this slice, so
-                    // there is no second byline to draw.
-                    description: "",
-                    playable: !album.tracks.is_empty(),
-                    // The reference's album action bar has like and more, not
-                    // shuffle.
-                    shuffle: false,
-                    cover,
-                };
-                if hero::show(ui, &band, tokens) && !album.tracks.is_empty() {
-                    command = queue.start(&album.tracks, 0, transport);
-                }
-
-                if album.tracks.is_empty() {
-                    ui.label(recipe::muted("No tracks on this album.", tokens));
-                    return;
-                }
-
-                // The album's own columns, solved once and handed to the head and
-                // every row, so the two cannot disagree about where a column is.
-                let columns = table_layout::columns(width, table.columns().for_album());
-                head(ui, columns, tokens);
-                let count = album.tracks.len();
-                // The whole list is reserved at once, so the scrollbar is right,
-                // and only the rows the viewport can show are laid out and given
-                // interaction.
-                let list = list_rect(ui, count);
-                ui.allocate_rect(list, Sense::hover());
-                let visible = ui.clip_rect();
-
-                for (index, entry) in album.tracks.iter().enumerate() {
-                    let rect = table_layout::row_rect(list, index, extent::ROW_H);
-                    if !visible.intersects(rect) {
-                        continue;
+                Load::Failed(failure) => {
+                    ui.label(recipe::muted(
+                        crate::signin::failure_message(*failure),
+                        tokens,
+                    ));
+                    if ui.button("Retry").clicked() {
+                        retry = true;
                     }
-                    let duration = entry.duration_ms.map(format_position);
-                    let row = Row {
-                        uri: &entry.uri,
-                        // The number is the position in this one continuous list,
-                        // which is what makes a multi-disc album read 1..N.
-                        number: index + 1,
-                        title: &entry.title,
-                        title_cell: TitleCell::NameOverArtist,
-                        artist: &entry.artists,
-                        // The artist line is the row's subline, not a link: there
-                        // is no artist page to open yet.
-                        artist_uri: None,
-                        // No album cell and no added date in an album's own table.
-                        album: None,
-                        album_uri: None,
-                        added: None,
-                        duration: duration.as_deref(),
-                        state: state_of(&entry.uri, transport),
-                        // The band already holds the record's one picture.
-                        cover: Cover::Missing,
+                }
+                Load::Ready(_) => {
+                    // A ready detail that does not name this page is another album's:
+                    // the page keeps its loading state rather than painting that
+                    // album's band and rows.
+                    let Some(album) = library.current_album() else {
+                        ui.spinner();
+                        return;
                     };
-                    if let Some(Click::Play) = track_row::show(ui, rect, columns, &row, tokens) {
-                        command = queue.start(&album.tracks, index, transport);
+                    // The one cover lookup on this page: the rows carry none, so the
+                    // band's picture is the only fetch a frame can ask for.
+                    let cover = art.look(album.cover.as_ref(), now);
+                    let meta = album_meta(
+                        &album.artists,
+                        album.year,
+                        (album.tracks.len(), total_duration_ms(&album.tracks)),
+                    );
+                    let band = hero::Band {
+                        eyebrow: "Album",
+                        title: &album.name,
+                        meta,
+                        // An album's label and copyright are out of this slice, so
+                        // there is no second byline to draw.
+                        description: "",
+                        playable: !album.tracks.is_empty(),
+                        // The reference's album action bar has like and more, not
+                        // shuffle.
+                        shuffle: false,
+                        cover,
+                    };
+                    if hero::show(ui, &band, tokens) && !album.tracks.is_empty() {
+                        command = queue.start(&album.tracks, 0, transport);
+                    }
+
+                    if album.tracks.is_empty() {
+                        ui.label(recipe::muted("No tracks on this album.", tokens));
+                        return;
+                    }
+
+                    // The album's own columns, solved once and handed to the head and
+                    // every row, so the two cannot disagree about where a column is.
+                    let columns = table_layout::columns(width, table.columns().for_album());
+                    head(ui, columns, tokens);
+                    let count = album.tracks.len();
+                    // The whole list is reserved at once, so the scrollbar is right,
+                    // and only the rows the viewport can show are laid out and given
+                    // interaction.
+                    let list = list_rect(ui, count);
+                    ui.allocate_rect(list, Sense::hover());
+                    let visible = ui.clip_rect();
+
+                    for (index, entry) in album.tracks.iter().enumerate() {
+                        let rect = table_layout::row_rect(list, index, extent::ROW_H);
+                        if !visible.intersects(rect) {
+                            continue;
+                        }
+                        let duration = entry.duration_ms.map(format_position);
+                        let row = Row {
+                            uri: &entry.uri,
+                            // The number is the position in this one continuous list,
+                            // which is what makes a multi-disc album read 1..N.
+                            number: index + 1,
+                            title: &entry.title,
+                            title_cell: TitleCell::NameOverArtist,
+                            artist: &entry.artists,
+                            // The artist line is the row's subline, not a link: there
+                            // is no artist page to open yet.
+                            artist_uri: None,
+                            // No album cell and no added date in an album's own table.
+                            album: None,
+                            album_uri: None,
+                            added: None,
+                            duration: duration.as_deref(),
+                            state: state_of(&entry.uri, transport),
+                            // The band already holds the record's one picture.
+                            cover: Cover::Missing,
+                        };
+                        // An album's own table has no linkable cell, so the only
+                        // click it reports is a play.
+                        match track_row::show(ui, rect, columns, &row, tokens) {
+                            Some(Click::Play) => {
+                                command = queue.start(&album.tracks, index, transport);
+                            }
+                            // A linkable cell would land here. Nothing in an album's
+                            // table links today, so this arm is unreachable and
+                            // ignored rather than silently swallowed by a wildcard.
+                            Some(Click::Open(_)) | None => {}
+                        }
                     }
                 }
             }
-        }
-    });
+        });
 
     if retry {
         return library.open(Page::Album(uri));
@@ -158,7 +180,7 @@ mod tests {
     use std::time::Instant;
 
     use egui::{Context, Event, Pos2, RawInput, Rect, Vec2};
-    use takofy_model::{AlbumDetail, CoverUrl, TrackEntry};
+    use takofy_model::{AlbumDetail, CoverUrl, PlaylistEntry, TrackEntry};
 
     use super::*;
     use crate::cover::Cover;
@@ -172,6 +194,9 @@ mod tests {
     use crate::view::{hero, track_list};
 
     const ALBUM: &str = "spotify:album:a";
+    /// The album a stale ready detail names while the page is on [`ALBUM`].
+    const OTHER_ALBUM: &str = "spotify:album:b";
+    const PLAYLIST: &str = "spotify:playlist:a";
     /// The probe window: 900 by 800, tall enough for the band, the head and two
     /// rows in full.
     const PROBE: Vec2 = Vec2::new(900.0, 800.0);
@@ -713,5 +738,145 @@ mod tests {
             "the rows carry no art, so the band's cover is the one lookup: {requests:?}"
         );
         assert!(matches!(requests[0], Command::Fetch { .. }), "{requests:?}");
+    }
+
+    /// The band's height: the art plus its padding, or the band's own minimum.
+    fn band_height() -> f32 {
+        (crate::theme::hero::ART + 2.0 * space::S5).max(crate::theme::hero::MIN_H)
+    }
+
+    /// The top of the band a frame painted, read back from the frame: the band's
+    /// wash is the one full-pane-width rect as tall as the band itself.
+    fn band_top(output: &egui::FullOutput, width: f32) -> Option<f32> {
+        output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Rect(rect)
+                    if (rect.rect.width() - width).abs() < 0.5
+                        && (rect.rect.height() - band_height()).abs() < 0.5 =>
+                {
+                    Some(rect.rect.top())
+                }
+                _ => None,
+            })
+    }
+
+    /// The band's top as the shell's entry point draws it: `tracks_view` adds the
+    /// page's one leading gap and dispatches, so this is the offset a viewer sees
+    /// rather than one of the page's internal solves.
+    fn pane_band_top(library: &mut Library) -> f32 {
+        let ctx = context();
+        let tokens = Tokens::DARK;
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+        let output = run(&ctx, input(Vec::new()), |ui| {
+            let _ = crate::view::playlist::tracks_view(
+                ui,
+                Table::Full,
+                library,
+                &mut transport,
+                &mut queue,
+                &mut art,
+                Instant::now(),
+                0,
+                &tokens,
+            );
+        });
+        band_top(&output, PROBE.x).expect("the pane paints a band")
+    }
+
+    /// A library on a ready playlist page, so the album page can be measured
+    /// against the page every other page is laid out beside.
+    fn playlist_library() -> Library {
+        let mut library = Library::default();
+        library.select(PLAYLIST);
+        library.apply(&Update::Playlists(vec![PlaylistEntry {
+            uri: PLAYLIST.to_owned(),
+            name: "Mix".to_owned(),
+            named: true,
+            cover: None,
+            description: None,
+            owner: None,
+        }]));
+        library.apply(&Update::Tracks {
+            playlist: PLAYLIST.to_owned(),
+            tracks: vec![track("spotify:track:a", "One", "Band", 222_000)],
+            cover: None,
+        });
+        library
+    }
+
+    /// The album page starts where every other page starts. The leading gap is
+    /// the pane's, added once by `tracks_view`; a page that adds its own sits a
+    /// whole step lower, which no painted string can catch.
+    #[test]
+    fn the_album_page_starts_at_the_playlists_leading_gap() {
+        let album = pane_band_top(&mut library_with(detail(vec![track(
+            "spotify:track:a",
+            "One",
+            "Band",
+            222_000,
+        )])));
+        let playlist = pane_band_top(&mut playlist_library());
+
+        assert_eq!(
+            album,
+            space::S3,
+            "the album band's top is the page's leading gap"
+        );
+        assert_eq!(
+            album, playlist,
+            "the album band's top {album} is not the playlist's {playlist}"
+        );
+    }
+
+    /// A ready detail that does not name this page belongs to another album: the
+    /// page keeps its loading state rather than painting that album's band and
+    /// rows.
+    #[test]
+    fn a_ready_album_for_another_page_draws_the_loading_state() {
+        let ctx = context();
+        let mut library = Library::default();
+        library.open(Page::Album(ALBUM.to_owned()));
+        // The state the library guard exists for: a ready detail left from an
+        // earlier page. `open` marks this page loading again, so it is staged
+        // directly, as the library's own guard test does.
+        library.album = Load::Ready(AlbumDetail {
+            uri: OTHER_ALBUM.to_owned(),
+            name: "Another Record".to_owned(),
+            tracks: vec![track("spotify:track:z", "Elsewhere", "Other Band", 111_000)],
+            ..detail(Vec::new())
+        });
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let (_, output) = frame(
+            &ctx,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let texts = drawn_texts(&output);
+
+        assert!(
+            band_top(&output, PROBE.x).is_none(),
+            "the page draws no band for an album it does not name: {texts:?}"
+        );
+        assert!(
+            texts.is_empty(),
+            "the page paints no words for another album: {texts:?}"
+        );
+        assert!(
+            output
+                .shapes
+                .iter()
+                .any(|clipped| matches!(clipped.shape, egui::epaint::Shape::Path(_))),
+            "the loading state's spinner arc is painted"
+        );
     }
 }

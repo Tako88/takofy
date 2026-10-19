@@ -170,7 +170,10 @@ fn inner(ui: &Ui, rect: Rect, band: &Band<'_>, tokens: &Tokens) {
         .galley(Pos2::new(left, bottom), eyebrow, tokens.palette.text_muted);
 }
 
-/// The row under the band: play, and the three that cannot act yet.
+/// The row under the band: play, and the tools that cannot act yet.
+///
+/// A playlist's row holds three of them, an album's two: the shuffle is the one
+/// the flag drops.
 fn actions(ui: &mut Ui, band: &Band<'_>, tokens: &Tokens) -> bool {
     let width = ui.available_width();
     let height = hero::PLAY + 2.0 * space::S4;

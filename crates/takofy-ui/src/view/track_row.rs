@@ -766,11 +766,11 @@ mod tests {
     fn the_stacked_title_fits_the_rows_inner_box() {
         let (name_h, artist_h) = font_heights();
         let inner_h = crate::theme::extent::ROW_H - 2.0 * crate::theme::space::S1;
-        eprintln!("name {name_h} artist {artist_h} inner {inner_h}");
 
         assert!(
             name_h + artist_h <= inner_h,
-            "the two title lines take {} but the row's inner box is {inner_h}",
+            "the two title lines take {} (name {name_h}, artist {artist_h}) but the \
+             row's inner box is {inner_h}",
             name_h + artist_h
         );
     }
