@@ -146,6 +146,28 @@ impl Queue {
         !self.tracks.is_empty()
     }
 
+    /// Every entry after the current one, with its absolute index in the queue.
+    ///
+    /// The index is the position in the list `start` was given, so it stays the
+    /// row's identity across advances: advancing only moves the current index.
+    pub fn upcoming(&self) -> impl ExactSizeIterator<Item = (usize, &TrackEntry)> + '_ {
+        let first = self.index + 1;
+        self.tracks.iter().enumerate().skip(first)
+    }
+
+    /// Plays the entry at `index`, leaving every other entry in place.
+    ///
+    /// An index past the end is refused and changes nothing at all: a click on a
+    /// row that has since gone must not move the queue or disarm an in-flight
+    /// load's guard.
+    pub fn jump(&mut self, index: usize, transport: &mut Transport) -> Option<Command> {
+        if index >= self.tracks.len() {
+            return None;
+        }
+        self.skips = 0;
+        self.goto(index, transport)
+    }
+
     /// Whether there is an entry to pause, resume or replay.
     pub fn can_toggle(&self) -> bool {
         !self.tracks.is_empty()
@@ -158,13 +180,18 @@ impl Queue {
 
     /// Moves the index and asks the transport to play that entry.
     fn goto(&mut self, index: usize, transport: &mut Transport) -> Option<Command> {
-        let (uri, title, cover) = {
+        let (uri, title, artists, cover) = {
             let entry = self.tracks.get(index)?;
-            (entry.uri.clone(), entry.title.clone(), entry.cover.clone())
+            (
+                entry.uri.clone(),
+                entry.title.clone(),
+                entry.artists.clone(),
+                entry.cover.clone(),
+            )
         };
         self.index = index;
         self.awaiting_start = true;
-        Some(transport.play(&uri, &title, cover))
+        Some(transport.play(&uri, &title, &artists, cover))
     }
 }
 
@@ -185,6 +212,22 @@ mod tests {
             named: true,
             cover: None,
         }
+    }
+
+    fn track_by(uri: &str, artists: &str) -> TrackEntry {
+        TrackEntry {
+            artists: artists.to_owned(),
+            ..track(uri)
+        }
+    }
+
+    /// The upcoming entries as `(index, uri)` pairs, which is what every
+    /// `upcoming` test asserts on.
+    fn upcoming(queue: &Queue) -> Vec<(usize, String)> {
+        queue
+            .upcoming()
+            .map(|(index, entry)| (index, entry.uri.clone()))
+            .collect()
     }
 
     fn tracks(count: usize) -> Vec<TrackEntry> {
@@ -614,6 +657,288 @@ mod tests {
         assert_eq!(
             transport.now_playing.expect("a named track").cover,
             Some(cover)
+        );
+    }
+
+    #[test]
+    fn goto_passes_the_entrys_artists_into_now_playing() {
+        let mut queue = Queue::default();
+        let mut transport = Transport::default();
+
+        let _ = queue.start(&[track_by("a", "A Band")], 0, &mut transport);
+
+        assert_eq!(
+            transport.now_playing.expect("a named track").artists,
+            "A Band"
+        );
+    }
+
+    #[test]
+    fn an_empty_queue_has_nothing_upcoming() {
+        let queue = Queue::default();
+        assert_eq!(upcoming(&queue), Vec::new());
+        assert_eq!(queue.upcoming().len(), 0);
+    }
+
+    #[test]
+    fn the_last_entry_has_nothing_upcoming() {
+        let tracks = tracks(3);
+        let mut queue = Queue::default();
+        let mut transport = Transport::default();
+        queue.start(&tracks, 2, &mut transport);
+
+        assert_eq!(upcoming(&queue), Vec::new());
+        assert!(!queue.can_next(), "nothing upcoming is exactly `!can_next`");
+    }
+
+    #[test]
+    fn upcoming_lists_what_follows_the_current_entry_with_absolute_indices() {
+        let tracks = tracks(5);
+        let mut queue = Queue::default();
+        let mut transport = Transport::default();
+        queue.start(&tracks, 1, &mut transport);
+
+        assert_eq!(
+            upcoming(&queue),
+            vec![
+                (2, "t2".to_owned()),
+                (3, "t3".to_owned()),
+                (4, "t4".to_owned()),
+            ],
+            "the current entry is never listed, and the indices are absolute"
+        );
+    }
+
+    #[test]
+    fn upcoming_shrinks_as_the_queue_advances() {
+        let tracks = tracks(4);
+        let mut queue = Queue::default();
+        let mut transport = Transport::default();
+        queue.start(&tracks, 0, &mut transport);
+
+        assert_eq!(queue.upcoming().len(), 3);
+        for (step, remaining) in [(1, 2), (2, 1), (3, 0)] {
+            assert_eq!(queue.next(&mut transport), Some(play(&format!("t{step}"))));
+            assert_eq!(
+                queue.upcoming().len(),
+                remaining,
+                "after advancing to t{step}"
+            );
+        }
+    }
+
+    #[test]
+    fn upcoming_reports_an_exact_length() {
+        let tracks = tracks(6);
+        let mut queue = Queue::default();
+        let mut transport = Transport::default();
+        queue.start(&tracks, 2, &mut transport);
+
+        let mut iter = queue.upcoming();
+        assert_eq!(iter.len(), 3);
+        let _ = iter.next();
+        assert_eq!(iter.len(), 2, "`ExactSizeIterator` counts what is left");
+        let _ = iter.next();
+        let _ = iter.next();
+        assert_eq!(iter.len(), 0);
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn duplicate_entries_get_distinct_upcoming_indices() {
+        let duplicates = vec![track("same"), track("same"), track("same")];
+        let mut queue = Queue::default();
+        let mut transport = Transport::default();
+        queue.start(&duplicates, 0, &mut transport);
+
+        assert_eq!(
+            upcoming(&queue),
+            vec![(1, "same".to_owned()), (2, "same".to_owned())],
+            "identical uris are two entries, not one"
+        );
+    }
+
+    #[test]
+    fn jump_plays_that_entry_and_keeps_the_rest_of_the_list() {
+        let tracks = tracks(4);
+        let mut queue = Queue::default();
+        let mut transport = Transport::default();
+        queue.start(&tracks, 0, &mut transport);
+
+        assert_eq!(queue.jump(2, &mut transport), Some(play("t2")));
+        assert_eq!(
+            transport.now_playing.as_ref().map(|now| now.uri.as_str()),
+            Some("t2")
+        );
+        assert_eq!(
+            upcoming(&queue),
+            vec![(3, "t3".to_owned())],
+            "the entries after the target stay reachable"
+        );
+        assert_eq!(
+            queue.previous(1_000, &mut transport),
+            Some(play("t1")),
+            "the entries before the target stay reachable"
+        );
+    }
+
+    #[test]
+    fn jump_sets_the_guard_so_a_stale_end_is_ignored() {
+        let tracks = tracks(4);
+        let mut queue = Queue::default();
+        let mut transport = Transport::default();
+        queue.start(&tracks, 0, &mut transport);
+        clear_guard(&mut queue, &mut transport);
+
+        assert_eq!(queue.jump(2, &mut transport), Some(play("t2")));
+        assert_eq!(
+            end(&mut queue, &mut transport),
+            None,
+            "an end arriving before the new load's first event is the old track's"
+        );
+        clear_guard(&mut queue, &mut transport);
+        assert_eq!(
+            end(&mut queue, &mut transport),
+            Some(play("t3")),
+            "a later end advances from the jumped-to entry"
+        );
+    }
+
+    #[test]
+    fn jump_resets_the_skip_streak() {
+        let tracks = tracks(16);
+        let mut queue = Queue::default();
+        let mut transport = Transport::default();
+        queue.start(&tracks, 0, &mut transport);
+
+        for _ in 0..=MAX_CONSECUTIVE_SKIPS {
+            skip(&mut queue, &mut transport);
+        }
+        assert_eq!(skip(&mut queue, &mut transport), None, "capped");
+
+        assert_eq!(queue.jump(7, &mut transport), Some(play("t7")));
+        for i in 8..=12 {
+            assert_eq!(
+                skip(&mut queue, &mut transport),
+                Some(play(&format!("t{i}"))),
+                "the jump must have reset the streak"
+            );
+        }
+        assert_eq!(skip(&mut queue, &mut transport), None);
+    }
+
+    #[test]
+    fn an_out_of_range_jump_changes_nothing_at_all() {
+        let tracks = tracks(3);
+        let mut queue = Queue::default();
+        let mut transport = Transport::default();
+        queue.start(&tracks, 1, &mut transport);
+        // A load is in flight: the guard must survive a refused click.
+        let before = transport.clone();
+
+        for index in [3, 4, usize::MAX] {
+            assert_eq!(queue.jump(index, &mut transport), None, "{index}");
+        }
+
+        assert_eq!(
+            transport, before,
+            "a refused jump must not touch the transport"
+        );
+        assert_eq!(
+            queue.previous(1_000, &mut transport),
+            Some(play("t0")),
+            "the index never moved"
+        );
+    }
+
+    #[test]
+    fn an_out_of_range_jump_leaves_the_guard_armed() {
+        let tracks = tracks(3);
+        let mut queue = Queue::default();
+        let mut transport = Transport::default();
+        queue.start(&tracks, 0, &mut transport);
+
+        assert_eq!(queue.jump(9, &mut transport), None);
+        assert_eq!(
+            end(&mut queue, &mut transport),
+            None,
+            "a refused click must not disarm an in-flight load"
+        );
+        clear_guard(&mut queue, &mut transport);
+        assert_eq!(end(&mut queue, &mut transport), Some(play("t1")));
+    }
+
+    #[test]
+    fn jump_to_the_last_entry_leaves_nothing_upcoming() {
+        let tracks = tracks(3);
+        let mut queue = Queue::default();
+        let mut transport = Transport::default();
+        queue.start(&tracks, 0, &mut transport);
+
+        assert_eq!(queue.jump(2, &mut transport), Some(play("t2")));
+        assert!(queue.upcoming().next().is_none());
+        assert!(!queue.can_next());
+    }
+
+    #[test]
+    fn jump_back_to_the_first_entry_still_restarts_it() {
+        let tracks = tracks(3);
+        let mut queue = Queue::default();
+        let mut transport = Transport::default();
+        queue.start(&tracks, 2, &mut transport);
+
+        assert_eq!(queue.jump(0, &mut transport), Some(play("t0")));
+        seekable(&mut queue, &mut transport, 1_000);
+        assert_eq!(
+            queue.previous(1_000, &mut transport),
+            Some(Command::Seek { position_ms: 0 }),
+            "the first entry has nothing before it, so Previous restarts it"
+        );
+    }
+
+    #[test]
+    fn previous_after_a_jump_steps_to_the_entry_before_the_target() {
+        let tracks = tracks(5);
+        let mut queue = Queue::default();
+        let mut transport = Transport::default();
+        queue.start(&tracks, 0, &mut transport);
+
+        assert_eq!(queue.jump(3, &mut transport), Some(play("t3")));
+        // A position inside the restart threshold is a step back, not a restart.
+        assert_eq!(
+            queue.previous(RESTART_AFTER_MS, &mut transport),
+            Some(play("t2")),
+            "the threshold itself is a step back"
+        );
+    }
+
+    #[test]
+    fn jump_to_the_current_index_replays_it() {
+        let tracks = tracks(3);
+        let mut queue = Queue::default();
+        let mut transport = Transport::default();
+        queue.start(&tracks, 1, &mut transport);
+        clear_guard(&mut queue, &mut transport);
+
+        assert_eq!(queue.jump(1, &mut transport), Some(play("t1")));
+        assert_eq!(
+            upcoming(&queue),
+            vec![(2, "t2".to_owned())],
+            "replaying leaves what follows it alone"
+        );
+    }
+
+    #[test]
+    fn jump_passes_the_entrys_artists_into_now_playing() {
+        let tracks = vec![track_by("a", "A Band"), track_by("b", "B Band")];
+        let mut queue = Queue::default();
+        let mut transport = Transport::default();
+        queue.start(&tracks, 0, &mut transport);
+
+        assert_eq!(queue.jump(1, &mut transport), Some(play("b")));
+        assert_eq!(
+            transport.now_playing.expect("a named track").artists,
+            "B Band"
         );
     }
 }

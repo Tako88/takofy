@@ -292,6 +292,7 @@ mod tests {
             now_playing: Some(NowPlaying {
                 uri: "spotify:track:x".to_owned(),
                 title: "A Title".to_owned(),
+                artists: "A Band".to_owned(),
                 cover: Some(url.clone()),
             }),
             ..Transport::default()

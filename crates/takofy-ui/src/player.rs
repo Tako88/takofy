@@ -61,6 +61,9 @@ impl TransportState {
 pub struct NowPlaying {
     pub uri: String,
     pub title: String,
+    /// The track's artists, as one line. Held for the same reason as the title:
+    /// the list the track came from may no longer be on screen.
+    pub artists: String,
     /// The track's album cover, as it was known when the track started. The
     /// panel and the playbar look it up each frame, so a cover that arrives
     /// later still reaches them.
@@ -143,10 +146,17 @@ impl Transport {
     }
 
     /// Names the track and returns the command that plays it.
-    pub fn play(&mut self, uri: &str, title: &str, cover: Option<CoverUrl>) -> Command {
+    pub fn play(
+        &mut self,
+        uri: &str,
+        title: &str,
+        artists: &str,
+        cover: Option<CoverUrl>,
+    ) -> Command {
         self.now_playing = Some(NowPlaying {
             uri: uri.to_owned(),
             title: title.to_owned(),
+            artists: artists.to_owned(),
             cover,
         });
         self.position_ms = 0;
@@ -456,7 +466,7 @@ mod tests {
     fn playing_another_track_drops_a_drag() {
         let mut transport = seekable_transport();
         transport.scrub_to(0.5);
-        transport.play("spotify:track:y", "Another", None);
+        transport.play("spotify:track:y", "Another", "Someone", None);
         assert_eq!(transport.shown_position(Duration::ZERO), 0);
     }
 
@@ -464,7 +474,7 @@ mod tests {
     fn play_names_the_track_and_asks_for_it() {
         let mut transport = Transport::default();
         assert_eq!(
-            transport.play("spotify:track:x", "A Title", None),
+            transport.play("spotify:track:x", "A Title", "A Band", None),
             Command::Play {
                 uri: "spotify:track:x".to_owned()
             }
@@ -474,10 +484,34 @@ mod tests {
             Some(NowPlaying {
                 uri: "spotify:track:x".to_owned(),
                 title: "A Title".to_owned(),
+                artists: "A Band".to_owned(),
                 cover: None,
             })
         );
         assert_eq!(transport.state, TransportState::Loading);
+    }
+
+    #[test]
+    fn play_replaces_the_artist_with_the_new_tracks() {
+        let mut transport = Transport::default();
+        transport.play("spotify:track:x", "A Title", "A Band", None);
+        transport.play("spotify:track:y", "Another", "Another Band", None);
+
+        let now = transport
+            .now_playing
+            .as_ref()
+            .expect("the second track is named");
+        assert_eq!(now.artists, "Another Band");
+        assert_eq!(now.title, "Another");
+
+        // An entry the metadata gave no artist for is one with an empty line, not
+        // the previous track's artist left standing.
+        transport.play("spotify:track:z", "Third", "", None);
+        let now = transport
+            .now_playing
+            .as_ref()
+            .expect("the third track is named");
+        assert!(now.artists.is_empty());
     }
 
     #[test]
@@ -491,7 +525,7 @@ mod tests {
         );
         assert_eq!(transport.duration_ms, Some(222_000));
 
-        transport.play("spotify:track:x", "A Title", None);
+        transport.play("spotify:track:x", "A Title", "A Band", None);
         assert_eq!(transport.duration_ms, None);
     }
 

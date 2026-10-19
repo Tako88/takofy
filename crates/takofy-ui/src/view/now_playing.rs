@@ -144,7 +144,7 @@ mod tests {
         let ctx = context();
         let url = CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover url");
         let mut transport = Transport::default();
-        transport.play("spotify:track:x", "A Title", Some(url.clone()));
+        transport.play("spotify:track:x", "A Title", "A Band", Some(url.clone()));
         let before = transport.now_playing.clone();
 
         let mut art = Art::default();
