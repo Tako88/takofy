@@ -6,9 +6,11 @@
 
 use std::collections::HashMap;
 
-use takofy_model::{AlbumDetail, CoverUrl, PlaylistEntry, TrackEntry};
+use takofy_model::{AlbumDetail, ArtistDetail, CoverUrl, PlaylistEntry, TrackEntry};
 
+use crate::follow::Follow;
 use crate::message::{Command, Failure, Update};
+use crate::releases::Releases;
 use crate::route::{History, Page};
 
 /// What a loadable value is doing.
@@ -57,6 +59,18 @@ pub fn band_cover(entry: &PlaylistEntry, settled: bool) -> BandCover<'_> {
     }
 }
 
+/// The artist page's state, borrowed for one frame.
+pub struct ArtistPage<'a> {
+    /// The artist's load, so the page can draw its spinner or failure.
+    pub load: &'a Load<ArtistDetail>,
+    /// The loaded artist, only when it names the page on screen.
+    pub current: Option<&'a ArtistDetail>,
+    /// The Follow button's state.
+    pub follow: &'a mut Follow,
+    /// The per-release label store the discography fills in.
+    pub releases: &'a mut Releases,
+}
+
 /// The sidebar's playlists and the tracks the current page has loaded.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Library {
@@ -64,6 +78,12 @@ pub struct Library {
     pub tracks: Load<TracksFor>,
     /// The album the album page draws.
     pub album: Load<AlbumDetail>,
+    /// The artist the artist page draws.
+    pub artist: Load<ArtistDetail>,
+    /// The artist page's Follow state.
+    pub follow: Follow,
+    /// The per-release track labels the discography fills in as it scrolls.
+    pub releases: Releases,
     /// The playlist `tracks` currently concerns; keeps a stale reply out.
     ///
     /// It is not the page: a reply that lands while the user is on an album
@@ -71,6 +91,8 @@ pub struct Library {
     wanted: Option<String>,
     /// The album `album` currently concerns; keeps a stale reply out.
     wanted_album: Option<String>,
+    /// The artist `artist` currently concerns; keeps a stale reply out.
+    wanted_artist: Option<String>,
     /// Where the library is, and the pages Back and Forward return to.
     history: History,
     /// Context images, keyed by the playlist that owns them, so an upgrade that
@@ -174,6 +196,29 @@ impl Library {
                     self.album = Load::Failed(*failure);
                 }
             }
+            // The artist's reply is guarded the same way the album's is, and it
+            // is the one thing that registers the releases the page may label.
+            Update::Artist(detail) => {
+                if self.wanted_artist.as_deref() == Some(detail.uri.as_str())
+                    && matches!(self.artist, Load::Loading)
+                {
+                    self.releases.retain(&detail.releases);
+                    self.artist = Load::Ready(detail.clone());
+                }
+            }
+            Update::ArtistFailed { artist, failure } => {
+                if self.wanted_artist.as_deref() == Some(artist.as_str())
+                    && matches!(self.artist, Load::Loading)
+                {
+                    self.artist = Load::Failed(*failure);
+                }
+            }
+            Update::ReleaseTracks { .. } | Update::ReleaseTracksFailed { .. } => {
+                self.releases.apply(update);
+            }
+            Update::Followed { .. } | Update::FollowFailed { .. } => {
+                self.follow.apply(update);
+            }
             Update::NeedsAuthorization
             | Update::SignInFailed(_)
             | Update::Transport(_)
@@ -224,11 +269,16 @@ impl Library {
         self.history.go(None);
         self.wanted = None;
         self.wanted_album = None;
+        self.wanted_artist = None;
+        self.follow = Follow::default();
         if matches!(self.tracks, Load::Loading | Load::Failed(_)) {
             self.tracks = Load::Idle;
         }
         if matches!(self.album, Load::Loading | Load::Failed(_)) {
             self.album = Load::Idle;
+        }
+        if matches!(self.artist, Load::Loading | Load::Failed(_)) {
+            self.artist = Load::Idle;
         }
     }
 
@@ -288,6 +338,20 @@ impl Library {
         }
     }
 
+    /// Points the artist page at `artist` and returns the command that loads it.
+    ///
+    /// Like [`Self::load`] it never touches the history. It also opens the
+    /// Follow state at this artist, so a label confirmed for another one cannot
+    /// be drawn over this page.
+    fn load_artist(&mut self, artist: &str) -> Command {
+        self.wanted_artist = Some(artist.to_owned());
+        self.artist = Load::Loading;
+        self.follow.open(artist);
+        Command::LoadArtist {
+            artist: artist.to_owned(),
+        }
+    }
+
     /// Returns the command the current page needs, if any.
     ///
     /// A page whose wanted load is in flight or ready is left alone; any other
@@ -316,6 +380,15 @@ impl Library {
                 }
                 Some(self.load_album(&album))
             }
+            Some(Page::Artist(artist)) => {
+                let artist = artist.clone();
+                if self.wanted_artist.as_deref() == Some(artist.as_str())
+                    && matches!(self.artist, Load::Loading | Load::Ready(_))
+                {
+                    return None;
+                }
+                Some(self.load_artist(&artist))
+            }
             _ => None,
         }
     }
@@ -341,6 +414,49 @@ impl Library {
         }
     }
 
+    /// The artist the artist page draws, once it is loaded and named by that
+    /// page.
+    ///
+    /// The URI check is the album's: a ready detail from an earlier page must
+    /// not name a crumb, or fill a hero, for a page loading something else.
+    pub fn current_artist(&self) -> Option<&ArtistDetail> {
+        let Page::Artist(uri) = self.history.current()? else {
+            return None;
+        };
+        match &self.artist {
+            Load::Ready(detail) if detail.uri == *uri => Some(detail),
+            Load::Idle | Load::Loading | Load::Ready(_) | Load::Failed(_) => None,
+        }
+    }
+
+    /// The artist page's three state pieces, borrowed for one frame.
+    ///
+    /// They are handed out together because the draw needs all three and the
+    /// borrow checker will not let it take them one call at a time; the page's
+    /// own URI is read from [`Self::page`] before this borrow starts.
+    pub fn artist_page(&mut self) -> ArtistPage<'_> {
+        let Self {
+            artist,
+            follow,
+            releases,
+            history,
+            ..
+        } = self;
+        let current = match history.current() {
+            Some(Page::Artist(uri)) => match &*artist {
+                Load::Ready(detail) if detail.uri == *uri => Some(detail),
+                Load::Idle | Load::Loading | Load::Ready(_) | Load::Failed(_) => None,
+            },
+            _ => None,
+        };
+        ArtistPage {
+            load: artist,
+            current,
+            follow,
+            releases,
+        }
+    }
+
     /// The selected playlist's name, once the list that names it is ready.
     pub fn selected_name(&self) -> Option<&str> {
         self.selected_entry().map(|entry| entry.name.as_str())
@@ -358,7 +474,7 @@ impl Library {
 
 #[cfg(test)]
 mod tests {
-    use takofy_model::{AddedAt, AlbumDetail, CoverUrl, PlaylistEntry, TrackEntry};
+    use takofy_model::{AddedAt, AlbumDetail, ArtistDetail, CoverUrl, PlaylistEntry, TrackEntry};
 
     use super::*;
     use crate::message::TransportUpdate;
@@ -407,11 +523,39 @@ mod tests {
         Page::Album(uri.to_owned())
     }
 
+    fn artist_command(uri: &str) -> Command {
+        Command::LoadArtist {
+            artist: uri.to_owned(),
+        }
+    }
+
+    fn artist_detail(uri: &str) -> ArtistDetail {
+        ArtistDetail {
+            uri: uri.to_owned(),
+            name: "Vela".to_owned(),
+            portrait: None,
+            top_tracks: vec![track("top")],
+            releases: vec![release("spotify:album:r1")],
+        }
+    }
+
+    fn release(uri: &str) -> takofy_model::Release {
+        takofy_model::Release {
+            uri: uri.to_owned(),
+            name: uri.to_owned(),
+            kind: takofy_model::ReleaseKind::Album,
+            year: None,
+            cover: None,
+            tracks: vec![uri.to_owned()],
+        }
+    }
+
     fn album_detail(uri: &str) -> AlbumDetail {
         AlbumDetail {
             uri: uri.to_owned(),
             name: "Record".to_owned(),
             artists: "Band".to_owned(),
+            artist_uris: Vec::new(),
             year: Some(1997),
             cover: None,
             tracks: vec![track("t")],
@@ -634,7 +778,11 @@ mod tests {
         let mut library = Library::default();
         library.open(album("spotify:album:a"));
         library.apply(&Update::Album(album_detail("spotify:album:a")));
-        assert_eq!(library.open(artist("spotify:artist:a")), None);
+        assert_eq!(
+            library.open(artist("spotify:artist:a")),
+            Some(artist_command("spotify:artist:a")),
+            "the artist page starts its own load"
+        );
 
         assert_eq!(library.back(), None, "a ready album is already settled");
         assert_eq!(library.page(), Some(&album("spotify:album:a")));
@@ -648,7 +796,10 @@ mod tests {
             album: "spotify:album:a".to_owned(),
             failure: Failure::Load,
         });
-        assert_eq!(library.open(artist("spotify:artist:a")), None);
+        assert_eq!(
+            library.open(artist("spotify:artist:a")),
+            Some(artist_command("spotify:artist:a"))
+        );
 
         assert_eq!(
             library.back(),
@@ -1392,6 +1543,298 @@ mod tests {
 
         assert!(library.context_covers.is_empty(), "the key must be pruned");
         assert_eq!(library.playlists, Load::Ready(vec![playlist("b", "B")]));
+    }
+
+
+    #[test]
+    fn open_an_artist_starts_its_load_and_keeps_the_album() {
+        let mut library = Library::default();
+        library.open(album("spotify:album:a"));
+        library.apply(&Update::Album(album_detail("spotify:album:a")));
+
+        assert_eq!(
+            library.open(artist("spotify:artist:a")),
+            Some(artist_command("spotify:artist:a"))
+        );
+        assert_eq!(library.page(), Some(&artist("spotify:artist:a")));
+        assert_eq!(library.artist, Load::Loading);
+        assert_eq!(
+            library.album,
+            Load::Ready(album_detail("spotify:album:a")),
+            "the album behind the artist stays ready for Back"
+        );
+    }
+
+    #[test]
+    fn an_artist_reply_lands_only_on_its_own_want_while_loading() {
+        let mut library = Library::default();
+        library.open(artist("spotify:artist:a"));
+        library.apply(&Update::Artist(artist_detail("spotify:artist:a")));
+        assert_eq!(
+            library.artist,
+            Load::Ready(artist_detail("spotify:artist:a"))
+        );
+
+        library.apply(&Update::Artist(artist_detail("spotify:artist:b")));
+        assert_eq!(
+            library.artist,
+            Load::Ready(artist_detail("spotify:artist:a")),
+            "a reply nobody asked for is discarded"
+        );
+    }
+
+    #[test]
+    fn a_stale_artist_reply_is_discarded() {
+        let mut library = Library::default();
+        library.open(artist("spotify:artist:a"));
+        library.open(artist("spotify:artist:b"));
+
+        library.apply(&Update::Artist(artist_detail("spotify:artist:a")));
+        assert_eq!(library.artist, Load::Loading, "A's reply is not B's");
+
+        library.apply(&Update::Artist(artist_detail("spotify:artist:b")));
+        assert_eq!(
+            library.artist,
+            Load::Ready(artist_detail("spotify:artist:b"))
+        );
+    }
+
+    #[test]
+    fn a_stale_artist_failure_is_discarded() {
+        let mut library = Library::default();
+        library.open(artist("spotify:artist:a"));
+        library.open(artist("spotify:artist:b"));
+
+        library.apply(&Update::ArtistFailed {
+            artist: "spotify:artist:a".to_owned(),
+            failure: Failure::Load,
+        });
+        assert_eq!(library.artist, Load::Loading, "A's failure is not B's");
+
+        library.apply(&Update::ArtistFailed {
+            artist: "spotify:artist:b".to_owned(),
+            failure: Failure::Load,
+        });
+        assert_eq!(library.artist, Load::Failed(Failure::Load));
+    }
+
+    #[test]
+    fn the_first_artist_reply_wins() {
+        let mut library = Library::default();
+        library.open(artist("spotify:artist:a"));
+        let first = ArtistDetail {
+            name: "First".to_owned(),
+            ..artist_detail("spotify:artist:a")
+        };
+        let second = ArtistDetail {
+            name: "Second".to_owned(),
+            ..artist_detail("spotify:artist:a")
+        };
+
+        library.apply(&Update::Artist(first.clone()));
+        library.apply(&Update::Artist(second));
+
+        assert_eq!(library.artist, Load::Ready(first));
+    }
+
+    #[test]
+    fn back_onto_a_ready_artist_needs_no_command() {
+        let mut library = Library::default();
+        library.open(artist("spotify:artist:a"));
+        library.apply(&Update::Artist(artist_detail("spotify:artist:a")));
+        library.to_playlists();
+
+        assert_eq!(library.back(), Some(artist_command("spotify:artist:a")));
+        assert_eq!(library.artist, Load::Loading);
+        library.apply(&Update::Artist(artist_detail("spotify:artist:a")));
+
+        library.select("p");
+        assert_eq!(library.back(), None, "a ready artist is already settled");
+        assert_eq!(library.page(), Some(&artist("spotify:artist:a")));
+    }
+
+    #[test]
+    fn back_onto_a_failed_artist_reloads_it() {
+        let mut library = Library::default();
+        library.open(artist("spotify:artist:a"));
+        library.apply(&Update::ArtistFailed {
+            artist: "spotify:artist:a".to_owned(),
+            failure: Failure::Load,
+        });
+        library.select("p");
+
+        assert_eq!(
+            library.back(),
+            Some(artist_command("spotify:artist:a")),
+            "a failed artist has nothing to draw, so Back asks again"
+        );
+        assert_eq!(library.artist, Load::Loading);
+    }
+
+    #[test]
+    fn reopening_a_failed_artist_retries_it() {
+        let mut library = Library::default();
+        library.open(artist("spotify:artist:a"));
+        library.apply(&Update::ArtistFailed {
+            artist: "spotify:artist:a".to_owned(),
+            failure: Failure::Load,
+        });
+
+        assert_eq!(
+            library.open(artist("spotify:artist:a")),
+            Some(artist_command("spotify:artist:a")),
+            "the page's Retry is this call, so it must re-issue the load"
+        );
+        assert_eq!(library.artist, Load::Loading);
+    }
+
+    #[test]
+    fn to_playlists_clears_the_artist_want_and_drops_an_unsettled_load() {
+        let mut loading = Library::default();
+        loading.open(artist("spotify:artist:a"));
+        loading.to_playlists();
+        assert_eq!(loading.artist, Load::Idle, "a load nobody wants is dropped");
+        assert_eq!(
+            loading.open(artist("spotify:artist:a")),
+            Some(artist_command("spotify:artist:a")),
+            "the want was cleared, so the artist is asked for again"
+        );
+
+        let mut failed = Library::default();
+        failed.open(artist("spotify:artist:a"));
+        failed.apply(&Update::ArtistFailed {
+            artist: "spotify:artist:a".to_owned(),
+            failure: Failure::Load,
+        });
+        failed.to_playlists();
+        assert_eq!(failed.artist, Load::Idle);
+
+        let mut ready = Library::default();
+        ready.open(artist("spotify:artist:a"));
+        ready.apply(&Update::Artist(artist_detail("spotify:artist:a")));
+        ready.to_playlists();
+        assert_eq!(
+            ready.artist,
+            Load::Ready(artist_detail("spotify:artist:a")),
+            "a settled artist is kept for the page Back returns to"
+        );
+        assert_eq!(
+            ready.open(artist("spotify:artist:a")),
+            Some(artist_command("spotify:artist:a")),
+            "the want is cleared even when the artist stays ready"
+        );
+    }
+
+    #[test]
+    fn to_playlists_resets_the_follow_state() {
+        let mut library = Library::default();
+        library.open(artist("spotify:artist:a"));
+        library.follow.apply(&Update::Followed {
+            artist: "spotify:artist:a".to_owned(),
+            followed: true,
+        });
+        assert_eq!(library.follow.label(), "Following");
+
+        library.to_playlists();
+
+        assert_eq!(library.follow.label(), "Follow");
+        assert_eq!(library.follow.artist(), None);
+    }
+
+    #[test]
+    fn current_artist_is_none_while_loading_or_for_another_uri() {
+        let mut library = Library::default();
+        library.open(artist("spotify:artist:a"));
+        assert_eq!(library.current_artist(), None);
+
+        library.artist = Load::Ready(artist_detail("spotify:artist:b"));
+        assert_eq!(
+            library.current_artist(),
+            None,
+            "B's detail must not name A's page"
+        );
+
+        library.artist = Load::Ready(artist_detail("spotify:artist:a"));
+        assert_eq!(
+            library.current_artist(),
+            Some(&artist_detail("spotify:artist:a"))
+        );
+    }
+
+    #[test]
+    fn a_playlist_prune_leaves_the_artist_alone() {
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(vec![playlist("p", "P")]));
+        library.select("p");
+        library.open(artist("spotify:artist:a"));
+        library.apply(&Update::Artist(artist_detail("spotify:artist:a")));
+
+        library.apply(&Update::Playlists(vec![playlist("q", "Q")]));
+
+        assert_eq!(library.page(), Some(&artist("spotify:artist:a")));
+        assert_eq!(
+            library.artist,
+            Load::Ready(artist_detail("spotify:artist:a")),
+            "a playlist prune never touches the artist"
+        );
+    }
+
+    #[test]
+    fn an_artist_reply_retains_only_its_own_releases() {
+        let mut library = Library::default();
+        library.open(artist("spotify:artist:a"));
+        library.apply(&Update::Artist(artist_detail("spotify:artist:a")));
+
+        // R1 is asked for, so its entry is in flight rather than idle: that is
+        // what makes a dropped entry distinguishable from a retained one below.
+        library.releases.look("spotify:album:r1");
+        assert_eq!(
+            library.releases.requests(),
+            vec![Command::LoadReleaseTracks {
+                release: "spotify:album:r1".to_owned(),
+                tracks: vec!["spotify:album:r1".to_owned()],
+            }]
+        );
+
+        // Coming back to the artist reloads it; the reply no longer names R1.
+        library.open(artist("spotify:artist:b"));
+        library.open(artist("spotify:artist:a"));
+        let mut other = artist_detail("spotify:artist:a");
+        other.releases = vec![release("spotify:album:r2")];
+        library.apply(&Update::Artist(other));
+
+        assert_eq!(
+            library.releases.look("spotify:album:r1"),
+            crate::releases::Labels::Idle,
+            "a release the artist no longer names is forgotten"
+        );
+        library.releases.look("spotify:album:r2");
+        assert_eq!(
+            library.releases.requests(),
+            vec![Command::LoadReleaseTracks {
+                release: "spotify:album:r2".to_owned(),
+                tracks: vec!["spotify:album:r2".to_owned()],
+            }]
+        );
+    }
+
+    #[test]
+    fn a_release_reply_reaches_the_release_store() {
+        let mut library = Library::default();
+        library.open(artist("spotify:artist:a"));
+        library.apply(&Update::Artist(artist_detail("spotify:artist:a")));
+        library.releases.look("spotify:album:r1");
+        let _ = library.releases.requests();
+
+        library.apply(&Update::ReleaseTracks {
+            release: "spotify:album:r1".to_owned(),
+            tracks: vec![track("t")],
+        });
+
+        assert!(matches!(
+            library.releases.look("spotify:album:r1"),
+            crate::releases::Labels::Ready(_)
+        ));
     }
 
     #[test]

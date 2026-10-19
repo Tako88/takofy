@@ -5,17 +5,28 @@
 use std::collections::{HashMap, HashSet};
 
 use futures_util::StreamExt;
+use http::header::{ACCEPT, CONTENT_TYPE};
+use http::{HeaderMap, Method};
 use librespot::core::{Session, SpotifyId, SpotifyUri};
-use librespot::metadata::{Album, Metadata, Playlist};
+use librespot::metadata::{Album, Artist, Metadata, Playlist};
+use librespot::protocol::extended_metadata::{
+    BatchedEntityRequest, BatchedExtensionResponse, EntityRequest, ExtensionQuery,
+};
+use librespot::protocol::extension_kind::ExtensionKind;
 use librespot::protocol::metadata::Track as TrackMessage;
+use protobuf::Message as _;
+use takofy_model::{AlbumDetail, ArtistDetail, CoverUrl, PlaylistEntry, TrackEntry};
 
 use crate::album::{AlbumError, detail, positions};
+use crate::artist::{
+    ArtistError, detail as artist_detail, release_uris, releases_from, top_track_positions,
+};
+use crate::collection;
 use crate::context::{
     ContextError, Page, PageSource, PageTrack, Resolved, page_from_proto, parse_page_json,
 };
 use crate::cover::pick_cover;
 use crate::rootlist::{RootlistError, RootlistPage, RootlistSource, RootlistWire, parse_rootlist};
-use takofy_model::{AlbumDetail, CoverUrl, PlaylistEntry, TrackEntry};
 
 /// The wire the live rootlist is read as; flip to `Json` if the binary parse fails.
 pub(crate) const ROOTLIST_WIRE: RootlistWire = RootlistWire::Binary;
@@ -224,6 +235,124 @@ pub(crate) async fn read_album(session: &Session, uri: &str) -> Result<AlbumDeta
     Ok(detail(uri, &album, tracks))
 }
 
+/// One artist with its top tracks, its discography and the followed state.
+///
+/// Four requests in one command: the artist itself, one batched `ALBUM_V4` over
+/// every release the payload names, one batched `TRACK_V4` over the top tracks,
+/// and the collection probe the Follow label reads. The probe is best-effort: a
+/// failure leaves the label at `Follow` and the page otherwise intact.
+///
+/// A failed release-metadata request leaves the discography empty rather than
+/// failing the page: the hero and the top tracks are worth drawing on their own,
+/// and the empty discography is visible.
+pub(crate) async fn read_artist(
+    session: &Session,
+    uri: &str,
+) -> Result<(ArtistDetail, Option<bool>), ArtistError> {
+    let id = SpotifyUri::from_uri(uri).map_err(|_| ArtistError::NotAnArtist)?;
+    if !matches!(id, SpotifyUri::Artist { .. }) {
+        return Err(ArtistError::NotAnArtist);
+    }
+    let artist = Artist::get(session, &id)
+        .await
+        .map_err(|error| ArtistError::Source(error.to_string()))?;
+
+    let order = release_uris(&artist);
+    let releases = match batched_request(session, &order, ExtensionKind::ALBUM_V4).await {
+        Some(response) => releases_from(&response, &order),
+        None => Vec::new(),
+    };
+
+    let country = session.country();
+    let top_tracks = label_tracks(session, top_track_positions(&artist, &country)).await;
+    let followed = read_follow(session, uri).await;
+    Ok((artist_detail(uri, &artist, top_tracks, releases), followed))
+}
+
+/// One release's track names, in the release's own order.
+///
+/// Unlike a position list this carries no added date: a release is a record, not
+/// a membership. A URI that cannot be labelled falls back to itself, exactly as
+/// a playlist row does.
+pub(crate) async fn read_release_tracks(session: &Session, uris: &[String]) -> Vec<TrackEntry> {
+    let positions = uris
+        .iter()
+        .map(|uri| PageTrack {
+            uri: uri.clone(),
+            added_at: None,
+        })
+        .collect();
+    label_tracks(session, positions).await
+}
+
+/// Whether the artist is in the user's followed set, or `None` when the probe
+/// did not answer.
+async fn read_follow(session: &Session, uri: &str) -> Option<bool> {
+    let headers = collection_headers()?;
+    let username = session.username();
+    let body = collection::contains_body(&username, &[uri]);
+    match session
+        .spclient()
+        .request(
+            &Method::POST,
+            "/collection/v2/contains",
+            Some(headers),
+            Some(&body),
+        )
+        .await
+    {
+        Ok(bytes) => collection::parse_contains(&bytes).into_iter().next(),
+        Err(error) => {
+            log::warn!("collection probe failed: {error}");
+            None
+        }
+    }
+}
+
+/// Writes the artist into the followed set, or out of it.
+pub(crate) async fn write_follow(
+    session: &Session,
+    uri: &str,
+    follow: bool,
+) -> Result<(), ArtistError> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs() as i64);
+    let username = session.username();
+    let body = if follow {
+        collection::write_body(&username, uri, Some(now), false)
+    } else {
+        collection::write_body(&username, uri, None, true)
+    };
+    let headers = collection_headers().ok_or_else(|| {
+        ArtistError::Source("the collection media type is not a valid header".to_owned())
+    })?;
+    session
+        .spclient()
+        .request(
+            &Method::POST,
+            "/collection/v2/write",
+            Some(headers),
+            Some(&body),
+        )
+        .await
+        .map(|_| ())
+        .map_err(|error| ArtistError::Source(error.to_string()))
+}
+
+/// The two headers both collection endpoints want: the vendor media type on
+/// `Content-Type` and `Accept`.
+///
+/// `request` is used rather than `request_with_protobuf` because the latter
+/// hardcodes `application/x-protobuf`, which these endpoints refuse.
+fn collection_headers() -> Option<HeaderMap> {
+    let vendor: http::HeaderValue = collection::VENDOR.parse().ok()?;
+    let mut headers = HeaderMap::new();
+    headers.insert(CONTENT_TYPE, vendor.clone());
+    headers.insert(ACCEPT, vendor);
+    Some(headers)
+}
+
 /// Reads context pages through librespot's spclient.
 pub(crate) struct RemoteContext<'a> {
     pub(crate) session: &'a Session,
@@ -387,22 +516,23 @@ async fn fetch_labels(session: &Session, distinct: &[String]) -> Labels {
     labels
 }
 
-/// One batched request. `None` when the request itself failed, which asking for
-/// less will not fix.
-async fn request_labels(session: &Session, chunk: &[String]) -> Option<Labels> {
-    use librespot::protocol::extended_metadata::{
-        BatchedEntityRequest, EntityRequest, ExtensionQuery,
-    };
-    use librespot::protocol::extension_kind::ExtensionKind;
-    use protobuf::Message as _;
-
+/// One batched extended-metadata request over `uris`.
+///
+/// `None` when the request itself failed, which asking for less will not fix.
+/// The answer's order is not the request's, so callers key their entities by the
+/// `entity_uri` the answer echoes.
+async fn batched_request(
+    session: &Session,
+    uris: &[String],
+    extension: ExtensionKind,
+) -> Option<BatchedExtensionResponse> {
     let request = BatchedEntityRequest {
-        entity_request: chunk
+        entity_request: uris
             .iter()
             .map(|uri| EntityRequest {
                 entity_uri: uri.clone(),
                 query: vec![ExtensionQuery {
-                    extension_kind: ExtensionKind::TRACK_V4.into(),
+                    extension_kind: extension.into(),
                     ..Default::default()
                 }],
                 ..Default::default()
@@ -411,16 +541,22 @@ async fn request_labels(session: &Session, chunk: &[String]) -> Option<Labels> {
         ..Default::default()
     };
 
-    let response = match session.spclient().get_extended_metadata(request).await {
-        Ok(response) => response,
+    match session.spclient().get_extended_metadata(request).await {
+        Ok(response) => Some(response),
         Err(error) => {
             log::warn!(
-                "metadata request for {} tracks failed: {error}",
-                chunk.len()
+                "metadata request for {} entities failed: {error}",
+                uris.len()
             );
-            return None;
+            None
         }
-    };
+    }
+}
+
+/// One batched request for track labels. `None` when the request itself failed,
+/// which asking for less will not fix.
+async fn request_labels(session: &Session, chunk: &[String]) -> Option<Labels> {
+    let response = batched_request(session, chunk, ExtensionKind::TRACK_V4).await?;
 
     let mut labels = Labels::new();
     for array in &response.extended_metadata {

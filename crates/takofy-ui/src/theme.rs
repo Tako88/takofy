@@ -203,6 +203,11 @@ pub mod extent {
     pub const CARD_MIN_W: f32 = 144.0;
     /// A card's play tile, 2 rem.
     pub const CARD_PLAY: f32 = 32.0;
+    /// A release block's art, 7 rem.
+    pub const RELEASE_ART: f32 = 112.0;
+    /// A release block's own play tile, 2.5 rem, which is the reference's
+    /// `.play-button` rather than the hero's larger call to action.
+    pub const RELEASE_PLAY: f32 = 40.0;
     /// The sign-in card's width. Not a reference value: the reference draws no
     /// sign-in card. 24 rem is the measure it gives a narrow field, and it
     /// leaves a margin to spare at the minimum window.
@@ -256,6 +261,17 @@ pub mod hero {
     pub const TITLE_MIN: f32 = 32.0;
     /// The title's share of the viewport width, 4.5 vw, as a fraction of it.
     pub const TITLE_VW: f32 = 0.045;
+    /// The artist band's minimum height, 17 rem: the reference's artist hero is
+    /// taller than a playlist's band because the photograph carries it.
+    pub const ARTIST_MIN_H: f32 = 272.0;
+    /// The artist title's floor, 2.25 rem, and its cap, 4.5 rem: the reference
+    /// clamps the artist's name wider than a playlist's.
+    pub const ARTIST_TITLE_MIN: f32 = 36.0;
+    pub const ARTIST_TITLE_MAX: f32 = 72.0;
+    /// The artist title's share of the viewport width, 5.5 vw, as a fraction.
+    pub const ARTIST_TITLE_VW: f32 = 0.055;
+    /// Where the artist scrim's middle stop sits down the hero, 45%.
+    pub const SCRIM_MID_STOP: f32 = 0.45;
 }
 
 /// The equaliser that stands in for a playing row's number.
@@ -408,6 +424,11 @@ pub struct Palette {
     /// under a 0.4 opacity; a fill has one channel to carry that, so it is
     /// folded into the alpha here.
     pub hero_wash: Color32,
+    /// The artist hero's photo scrim at its top edge: black at 32%.
+    pub hero_scrim_top: Color32,
+    /// The artist hero's photo scrim at its middle: black at 58%, where the
+    /// name sits.
+    pub hero_scrim_mid: Color32,
     /// A verified mark, which is not the playback colour.
     pub verified: Color32,
     pub shadow_sm: egui::Shadow,
@@ -438,6 +459,8 @@ impl Palette {
         pressed: Color32::from_rgba_unmultiplied_const(0xf2, 0xf0, 0xea, 20),
         row_hover: Color32::from_rgba_unmultiplied_const(0xf2, 0xf0, 0xea, 15),
         hero_wash: Color32::from_rgba_unmultiplied_const(0x3a, 0x3a, 0x3a, 102),
+        hero_scrim_top: Color32::from_rgba_unmultiplied_const(0x00, 0x00, 0x00, 82),
+        hero_scrim_mid: Color32::from_rgba_unmultiplied_const(0x00, 0x00, 0x00, 148),
         verified: Color32::from_rgb(0x9f, 0xc6, 0xe8),
         shadow_sm: egui::Shadow {
             offset: [0, 1],
@@ -679,6 +702,29 @@ mod tests {
     }
 
     #[test]
+    fn the_artist_scrim_darkens_from_top_to_middle() {
+        let p = &Palette::DARK;
+        // The reference's gradient: black at 0.32, then black at 0.58.
+        for (name, color) in [
+            ("hero_scrim_top", p.hero_scrim_top),
+            ("hero_scrim_mid", p.hero_scrim_mid),
+        ] {
+            let [r, g, b, _] = color.to_srgba_unmultiplied();
+            assert_eq!((r, g, b), (0, 0, 0), "{name} is not black: {r},{g},{b}");
+        }
+        assert_eq!(p.hero_scrim_top.to_srgba_unmultiplied()[3], 82);
+        assert_eq!(p.hero_scrim_mid.to_srgba_unmultiplied()[3], 148);
+        assert!(
+            p.hero_scrim_top.to_srgba_unmultiplied()[3] < p.hero_scrim_mid.to_srgba_unmultiplied()[3],
+            "the scrim darkens toward the middle"
+        );
+        // The hero's title is drawn over the middle of the scrim, so the text
+        // tier must stay readable there.
+        let ratio = contrast_ratio(p.text, p.hero_scrim_mid);
+        assert!(ratio >= 4.5, "text over the artist scrim is {ratio:.2}:1");
+    }
+
+    #[test]
     fn the_rule_is_heavier_than_the_hairline() {
         const { assert!(stroke::HAIRLINE < stroke::RULE) };
     }
@@ -741,6 +787,13 @@ mod tests {
             assert!(extent::NOWPLAYING_ART_MIN == 4.0 * REM);
             assert!(extent::NOWPLAYING_ART_MIN < extent::NOWPLAYING_ART_MAX);
             assert!(extent::CARD_MIN_W == 9.0 * REM);
+            assert!(extent::RELEASE_ART == 7.0 * REM);
+            assert!(extent::RELEASE_PLAY == 2.5 * REM);
+            assert!(hero::ARTIST_MIN_H == 17.0 * REM);
+            assert!(hero::ARTIST_TITLE_MIN == 2.25 * REM);
+            assert!(hero::ARTIST_TITLE_MAX == 4.5 * REM);
+            assert!(hero::ARTIST_TITLE_VW > hero::TITLE_VW);
+            assert!(hero::SCRIM_MID_STOP > 0.0 && hero::SCRIM_MID_STOP < 1.0);
             assert!(extent::CARD_PLAY == 2.0 * REM);
             assert!(hero::MIN_H == 11.0 * REM);
             assert!(hero::ART == 11.0 * REM);

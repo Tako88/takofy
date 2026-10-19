@@ -46,6 +46,14 @@ pub enum Control {
     HeroLike,
     HeroMore,
     HeroPlay,
+    /// The artist page's Follow/Following toggle. The write exists.
+    Follow,
+    /// A release block's play tile. The block's rows are already loaded state.
+    ReleasePlay,
+    /// A release block's like and more. Saving needs the Web API and the menu is
+    /// a later phase.
+    ReleaseLike,
+    ReleaseMore,
     /// A card's own play control in the library grid. The card selects its playlist;
     /// playing from the card needs the tracks loaded first, which no path does yet.
     CardPlay,
@@ -53,7 +61,7 @@ pub enum Control {
 }
 
 impl Control {
-    pub const ALL: [Self; 38] = [
+    pub const ALL: [Self; 42] = [
         Self::NavHome,
         Self::NavSearch,
         Self::LibraryCreate,
@@ -90,6 +98,10 @@ impl Control {
         Self::HeroLike,
         Self::HeroMore,
         Self::HeroPlay,
+        Self::Follow,
+        Self::ReleasePlay,
+        Self::ReleaseLike,
+        Self::ReleaseMore,
         Self::CardPlay,
         Self::Authorize,
     ];
@@ -166,6 +178,13 @@ pub fn availability(control: Control) -> Availability {
         Control::HeroPlay => Availability::Ready,
         Control::CardPlay => Availability::Waiting,
 
+        // The artist page: following is a real write, the other three are the
+        // reference's chrome with nothing behind it yet.
+        Control::Follow => Availability::Ready,
+        Control::ReleasePlay => Availability::Ready,
+        Control::ReleaseLike => Availability::Waiting,
+        Control::ReleaseMore => Availability::Waiting,
+
         // The sign-in card's one control; the state decides whether it acts.
         Control::Authorize => Availability::Ready,
     }
@@ -189,6 +208,8 @@ mod tests {
                     | Control::Next
                     | Control::Seek
                     | Control::HeroPlay
+                    | Control::Follow
+                    | Control::ReleasePlay
                     | Control::NowPlayingQueueTab
                     | Control::Authorize
             );
@@ -207,6 +228,6 @@ mod tests {
             assert!(!seen.contains(&control), "{control:?} is listed twice");
             seen.push(control);
         }
-        assert_eq!(seen.len(), 38);
+        assert_eq!(seen.len(), 42);
     }
 }

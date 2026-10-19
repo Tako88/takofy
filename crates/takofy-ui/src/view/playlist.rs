@@ -2118,7 +2118,13 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             Some(&Page::Artist("spotify:artist:band".to_owned())),
             "a single click on the artist cell must open the first artist"
         );
-        assert_eq!(command, None);
+        assert_eq!(
+            command,
+            Some(Command::LoadArtist {
+                artist: "spotify:artist:band".to_owned()
+            }),
+            "opening an artist asks the worker for it"
+        );
         assert!(!queue.can_next());
         assert_eq!(transport.now_playing, None);
     }
@@ -2139,7 +2145,12 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             Some(&Page::Artist("spotify:artist:band".to_owned())),
             "the whole artist cell must take the click, padding included"
         );
-        assert_eq!(command, None);
+        assert_eq!(
+            command,
+            Some(Command::LoadArtist {
+                artist: "spotify:artist:band".to_owned()
+            })
+        );
         assert!(!queue.can_next());
     }
 
@@ -2464,6 +2475,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             uri: uri.to_owned(),
             name: name.to_owned(),
             artists: "Band".to_owned(),
+            artist_uris: Vec::new(),
             year: Some(1997),
             cover: None,
             tracks: vec![TrackEntry {

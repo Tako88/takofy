@@ -13,7 +13,7 @@ use librespot::metadata::Album;
 use takofy_model::{AlbumDetail, TrackEntry};
 
 use crate::context::PageTrack;
-use crate::cover::pick_album_cover;
+use crate::cover::pick_images_cover;
 
 /// Why an album read failed.
 #[derive(Debug, thiserror::Error)]
@@ -70,10 +70,30 @@ pub(crate) fn detail(uri: &str, album: &Album, tracks: Vec<TrackEntry>) -> Album
         uri: uri.to_owned(),
         name,
         artists,
+        artist_uris: artist_uris(album),
         year: year_of(album),
-        cover: pick_album_cover(&album.cover_group),
+        cover: pick_images_cover(&album.cover_group),
         tracks,
     }
+}
+
+/// The album's artist URIs, in the same order as `detail`'s joined names.
+///
+/// The list stops at the first artist that contributes no name, so the subline's
+/// link can never point at a different artist than the one named beside it. That
+/// is [`takofy_model::TrackEntry::artist_uris`]' rule, applied to the album's own
+/// credits.
+fn artist_uris(album: &Album) -> Vec<String> {
+    album
+        .artists
+        .iter()
+        .map_while(|artist| {
+            if artist.name.trim().is_empty() {
+                return None;
+            }
+            artist.id.to_uri().ok()
+        })
+        .collect()
 }
 
 /// The album's release year, or `None` when it has none worth drawing.
@@ -358,6 +378,53 @@ mod tests {
         let album =
             Album::try_from(&wire_album("Record", &[], &[], 1997)).expect("a valid album message");
         assert_eq!(detail("spotify:album:x", &album, Vec::new()).artists, "");
+        assert_eq!(detail("spotify:album:x", &album, Vec::new()).artist_uris, Vec::<String>::new(), "no artist means no link either");
+    }
+
+    #[test]
+    fn artist_uris_follow_the_joined_names() {
+        let album = Album::try_from(&wire_album(
+            "Record",
+            &[("Band", 2), ("Guest", 3)],
+            &[],
+            1997,
+        ))
+        .expect("a valid album message");
+        let detail = detail("spotify:album:x", &album, Vec::new());
+        assert_eq!(detail.artists, "Band, Guest");
+        assert_eq!(
+            detail.artist_uris,
+            vec![
+                SpotifyUri::Artist {
+                    id: SpotifyId::from_raw(&gid(2)).expect("a 16-byte id"),
+                }
+                .to_uri()
+                .expect("a uri"),
+                SpotifyUri::Artist {
+                    id: SpotifyId::from_raw(&gid(3)).expect("a 16-byte id"),
+                }
+                .to_uri()
+                .expect("a uri"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_blank_artist_ends_the_artist_uris() {
+        let album = Album::try_from(&wire_album(
+            "Record",
+            &[("Band", 2), ("  ", 3), ("Guest", 4)],
+            &[],
+            1997,
+        ))
+        .expect("a valid album message");
+        let detail = detail("spotify:album:x", &album, Vec::new());
+        assert_eq!(detail.artists, "Band, Guest", "the names skip the blank");
+        assert_eq!(
+            detail.artist_uris.len(),
+            1,
+            "the uri list stops where the name list cannot name one"
+        );
     }
 
     #[test]

@@ -6,6 +6,7 @@
 //! even by accident.
 
 pub mod album;
+pub mod artist;
 pub mod context;
 pub mod credentials;
 pub mod engine;
@@ -14,6 +15,7 @@ pub mod oauth;
 pub mod playback;
 pub mod rootlist;
 
+mod collection;
 mod cover;
 mod remote;
 
