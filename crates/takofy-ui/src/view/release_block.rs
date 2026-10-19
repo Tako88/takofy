@@ -195,6 +195,9 @@ fn body(
     let count = release.tracks.len();
     let list = list_rect(ui, count);
     ui.allocate_rect(list, Sense::hover());
+    // The reference's discography gap, so one block's last row does not touch
+    // the next block's rule.
+    ui.add_space(space::S6);
     if !block.on_screen || count == 0 {
         return clicked;
     }
