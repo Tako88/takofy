@@ -47,7 +47,7 @@ pub fn tracks_view(
     // Dispatch on the page, not on the tracks: the root is the grid, and the
     // tracks may still hold a ready playlist that nothing draws.
     match main_page(library) {
-        MainPage::Root => return idle(ui, library, art, now, tokens),
+        MainPage::Root => return super::inner(ui, |ui| idle(ui, library, art, now, tokens)),
         MainPage::Album => {
             return super::album::album_view(
                 ui, table, library, transport, queue, art, now, tokens,
@@ -73,8 +73,6 @@ pub fn tracks_view(
     // borrow the tracks it has to move away from.
     let mut open: Option<Page> = None;
     egui::ScrollArea::vertical().show(ui, |ui| {
-        let width = ui.available_width();
-
         // The band heads the playlist whenever the library can name the
         // selection; with no name there is nothing to say above the rows. It
         // takes the width and starts at the cursor, so the header and the rows
@@ -116,71 +114,74 @@ pub fn tracks_view(
             }
         }
 
-        match &library.tracks {
-            Load::Idle => {}
-            Load::Loading => {
-                ui.spinner();
-            }
-            Load::Failed(failure) => {
-                ui.label(recipe::muted(
-                    crate::signin::failure_message(*failure),
-                    tokens,
-                ));
-                if ui.button("Retry").clicked() {
-                    retry = true;
+        super::inner(ui, |ui| {
+            let width = ui.available_width();
+            match &library.tracks {
+                Load::Idle => {}
+                Load::Loading => {
+                    ui.spinner();
                 }
-            }
-            Load::Ready(tracks) if tracks.tracks.is_empty() => {
-                ui.label(recipe::muted("No tracks in this playlist.", tokens));
-            }
-            Load::Ready(tracks) => {
-                let columns = table_layout::columns(
-                    width,
-                    table
-                        .columns()
-                        .for_playlist(table_layout::is_playlist(&tracks.playlist)),
-                );
-                head(ui, columns, tokens);
-                let count = tracks.tracks.len();
-                // The whole list is reserved at once, so the scrollbar is right,
-                // and only the rows the viewport can show are laid out and given
-                // interaction: a thousand-track playlist paints the dozen rows on
-                // screen.
-                let list = list_rect(ui, count);
-                ui.allocate_rect(list, Sense::hover());
-                let visible = ui.clip_rect();
+                Load::Failed(failure) => {
+                    ui.label(recipe::muted(
+                        crate::signin::failure_message(*failure),
+                        tokens,
+                    ));
+                    if ui.button("Retry").clicked() {
+                        retry = true;
+                    }
+                }
+                Load::Ready(tracks) if tracks.tracks.is_empty() => {
+                    ui.label(recipe::muted("No tracks in this playlist.", tokens));
+                }
+                Load::Ready(tracks) => {
+                    let columns = table_layout::columns(
+                        width,
+                        table
+                            .columns()
+                            .for_playlist(table_layout::is_playlist(&tracks.playlist)),
+                    );
+                    head(ui, columns, tokens);
+                    let count = tracks.tracks.len();
+                    // The whole list is reserved at once, so the scrollbar is right,
+                    // and only the rows the viewport can show are laid out and given
+                    // interaction: a thousand-track playlist paints the dozen rows on
+                    // screen.
+                    let list = list_rect(ui, count);
+                    ui.allocate_rect(list, Sense::hover());
+                    let visible = ui.clip_rect();
 
-                for (index, entry) in tracks.tracks.iter().enumerate() {
-                    let rect = table_layout::row_rect(list, index, extent::ROW_H);
-                    if !visible.intersects(rect) {
-                        continue;
-                    }
-                    let duration = entry.duration_ms.map(format_position);
-                    let added = entry.added_at.and_then(|added| added_label(added, now_ms));
-                    let row = Row {
-                        uri: &entry.uri,
-                        number: index + 1,
-                        title: &entry.title,
-                        title_cell: track_row::TitleCell::ArtThenName,
-                        artist: &entry.artists,
-                        artist_uri: entry.artist_uris.first().map(String::as_str),
-                        album: entry.album.as_deref(),
-                        album_uri: entry.album_uri.as_deref(),
-                        added: added.as_deref(),
-                        duration: duration.as_deref(),
-                        state: state_of(&entry.uri, transport),
-                        cover: art.look(entry.cover.as_ref(), now),
-                    };
-                    match track_row::show(ui, rect, columns, &row, tokens) {
-                        Some(Click::Play) => {
-                            command = queue.start(&tracks.tracks, index, transport);
+                    for (index, entry) in tracks.tracks.iter().enumerate() {
+                        let rect = table_layout::row_rect(list, index, extent::ROW_H);
+                        if !visible.intersects(rect) {
+                            continue;
                         }
-                        Some(Click::Open(page)) => open = Some(page),
-                        None => {}
+                        let duration = entry.duration_ms.map(format_position);
+                        let added = entry.added_at.and_then(|added| added_label(added, now_ms));
+                        let row = Row {
+                            uri: &entry.uri,
+                            number: index + 1,
+                            title: &entry.title,
+                            title_cell: track_row::TitleCell::ArtThenName,
+                            artist: &entry.artists,
+                            artist_uri: entry.artist_uris.first().map(String::as_str),
+                            album: entry.album.as_deref(),
+                            album_uri: entry.album_uri.as_deref(),
+                            added: added.as_deref(),
+                            duration: duration.as_deref(),
+                            state: state_of(&entry.uri, transport),
+                            cover: art.look(entry.cover.as_ref(), now),
+                        };
+                        match track_row::show(ui, rect, columns, &row, tokens) {
+                            Some(Click::Play) => {
+                                command = queue.start(&tracks.tracks, index, transport);
+                            }
+                            Some(Click::Open(page)) => open = Some(page),
+                            None => {}
+                        }
                     }
                 }
             }
-        }
+        });
     });
 
     if retry {
@@ -789,11 +790,26 @@ mod tests {
         run(ctx, input(Vec::new()), |ui| {
             ui.add_space(space::S3);
             egui::ScrollArea::vertical().show(ui, |ui| {
-                let solved = card_grid(ui);
-                found = Some(solved.card_rect(index));
+                crate::view::inner(ui, |ui| {
+                    let solved = card_grid(ui);
+                    found = Some(solved.card_rect(index));
+                });
             });
         });
         found.expect("the idle grid lays out")
+    }
+
+    /// The grid sits one gutter inside the pane, like every other page's content.
+    #[test]
+    fn the_grid_sits_one_gutter_inside_the_pane() {
+        let ctx = context();
+        let card = card_rect_for(&ctx, 0);
+        assert!(
+            (card.left() - space::GUTTER).abs() < 0.01,
+            "the first card starts at {}, the pane's gutter is {}",
+            card.left(),
+            space::GUTTER
+        );
     }
 
     /// The rect the idle grid draws the `index`-th card's play tile into at rest,
@@ -827,11 +843,13 @@ mod tests {
         run(ctx, input(Vec::new()), |ui| {
             ui.add_space(space::S3);
             egui::ScrollArea::vertical().show(ui, |ui| {
-                let width = ui.available_width();
-                let columns = table_layout::columns(width, table.columns());
-                head(ui, columns, &tokens);
-                let list = list_rect(ui, count);
-                found = Some(table_layout::row_rect(list, index, extent::ROW_H));
+                crate::view::inner(ui, |ui| {
+                    let width = ui.available_width();
+                    let columns = table_layout::columns(width, table.columns());
+                    head(ui, columns, &tokens);
+                    let list = list_rect(ui, count);
+                    found = Some(table_layout::row_rect(list, index, extent::ROW_H));
+                });
             });
         });
         found.expect("the header and the list lay out")
@@ -875,8 +893,6 @@ mod tests {
         run(ctx, sized_input(screen, Vec::new()), |ui| {
             ui.add_space(space::S3);
             egui::ScrollArea::vertical().show(ui, |ui| {
-                let width = ui.available_width();
-                let columns = table_layout::columns(width, table.columns());
                 let band = hero::Band {
                     eyebrow: "Playlist",
                     title,
@@ -887,9 +903,13 @@ mod tests {
                     cover: Cover::Missing,
                 };
                 let _ = hero::show(ui, &band, &tokens);
-                head(ui, columns, &tokens);
-                let list = list_rect(ui, count);
-                found = Some(table_layout::row_rect(list, index, extent::ROW_H));
+                crate::view::inner(ui, |ui| {
+                    let width = ui.available_width();
+                    let columns = table_layout::columns(width, table.columns());
+                    head(ui, columns, &tokens);
+                    let list = list_rect(ui, count);
+                    found = Some(table_layout::row_rect(list, index, extent::ROW_H));
+                });
             });
         });
         found.expect("the hero, header and list lay out")
@@ -1559,6 +1579,24 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
                 column.left()
             );
         }
+    }
+
+    /// The table sits one gutter inside the pane, so its first heading lines up
+    /// under the band's own padding rather than rubbing the panel's edge.
+    #[test]
+    fn the_heading_sits_one_gutter_inside_the_pane() {
+        let ctx = context();
+        let mut library = library_with(vec![track("a", "t0")]);
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+
+        let painted = heading_left(&ctx, "Title", &mut library, &mut transport, &mut queue);
+        let columns = table_layout::columns(PROBE.x - 2.0 * space::GUTTER, Table::Full.columns());
+        assert!(
+            (painted - (space::GUTTER + columns.title.left())).abs() < 0.01,
+            "the title heading is painted at {painted}, one gutter plus its column is {}",
+            space::GUTTER + columns.title.left()
+        );
     }
 
     #[test]

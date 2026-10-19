@@ -64,7 +64,6 @@ pub fn artist_view(
     egui::ScrollArea::vertical()
         .id_salt(("artist", uri.as_str()))
         .show(ui, |ui| {
-            let width = ui.available_width();
             let page = library.artist_page();
             match page.load {
                 Load::Idle => {}
@@ -105,68 +104,71 @@ pub fn artist_view(
                         command = queue.start(&artist.top_tracks, 0, transport);
                     }
 
-                    popular(
-                        ui,
-                        table,
-                        width,
-                        artist,
-                        transport,
-                        queue,
-                        tokens,
-                        &mut command,
-                    );
+                    super::inner(ui, |ui| {
+                        let width = ui.available_width();
+                        popular(
+                            ui,
+                            table,
+                            width,
+                            artist,
+                            transport,
+                            queue,
+                            tokens,
+                            &mut command,
+                        );
 
-                    let tracks: usize = artist
-                        .releases
-                        .iter()
-                        .map(|release| release.tracks.len())
-                        .sum();
-                    section::head(
-                        ui,
-                        "Discography",
-                        &discography_meta(artist.releases.len(), tracks),
-                        tokens,
-                    );
-                    if artist.releases.is_empty() {
-                        ui.label(recipe::muted("No releases.", tokens));
-                        return;
-                    }
-                    for release in &artist.releases {
-                        let on_screen = ui.clip_rect().intersects(block_rect(ui, release));
-                        if !on_screen {
+                        let tracks: usize = artist
+                            .releases
+                            .iter()
+                            .map(|release| release.tracks.len())
+                            .sum();
+                        section::head(
+                            ui,
+                            "Discography",
+                            &discography_meta(artist.releases.len(), tracks),
+                            tokens,
+                        );
+                        if artist.releases.is_empty() {
+                            ui.label(recipe::muted("No releases.", tokens));
+                            return;
+                        }
+                        for release in &artist.releases {
+                            let on_screen = ui.clip_rect().intersects(block_rect(ui, release));
+                            if !on_screen {
+                                let block = Block {
+                                    release,
+                                    labels: Labels::Idle,
+                                    cover: Cover::Missing,
+                                    on_screen: false,
+                                    playable: false,
+                                };
+                                let _ = release_block::show(ui, table, &block, transport, tokens);
+                                continue;
+                            }
+                            let labels = page.releases.look(&release.uri);
+                            let cover = art.look(release.cover.as_ref(), now);
                             let block = Block {
                                 release,
-                                labels: Labels::Idle,
-                                cover: Cover::Missing,
-                                on_screen: false,
-                                playable: false,
+                                labels,
+                                cover,
+                                on_screen: true,
+                                playable: matches!(labels, Labels::Ready(_)),
                             };
-                            let _ = release_block::show(ui, table, &block, transport, tokens);
-                            continue;
+                            let clicked = release_block::show(ui, table, &block, transport, tokens);
+                            let ready = match labels {
+                                Labels::Ready(tracks) => Some(tracks),
+                                Labels::Idle | Labels::Loading | Labels::Failed(_) => None,
+                            };
+                            if clicked.played
+                                && let Some(tracks) = ready
+                            {
+                                command = queue.start(tracks, 0, transport);
+                            }
+                            if let (Some(index), Some(tracks)) = (clicked.row, ready) {
+                                command = queue.start(tracks, index, transport);
+                            }
                         }
-                        let labels = page.releases.look(&release.uri);
-                        let cover = art.look(release.cover.as_ref(), now);
-                        let block = Block {
-                            release,
-                            labels,
-                            cover,
-                            on_screen: true,
-                            playable: matches!(labels, Labels::Ready(_)),
-                        };
-                        let clicked = release_block::show(ui, table, &block, transport, tokens);
-                        let ready = match labels {
-                            Labels::Ready(tracks) => Some(tracks),
-                            Labels::Idle | Labels::Loading | Labels::Failed(_) => None,
-                        };
-                        if clicked.played
-                            && let Some(tracks) = ready
-                        {
-                            command = queue.start(tracks, 0, transport);
-                        }
-                        if let (Some(index), Some(tracks)) = (clicked.row, ready) {
-                            command = queue.start(tracks, index, transport);
-                        }
-                    }
+                    });
                 }
             }
         });
@@ -874,6 +876,70 @@ mod tests {
             "the row under the double click is what plays"
         );
         let _ = &mut transport;
+    }
+
+    /// The sections sit one gutter inside the pane, so a release's art does not
+    /// rub the panel's edge and the count does not touch the far one. The hero
+    /// stays full-bleed above them.
+    #[test]
+    fn the_sections_sit_one_gutter_inside_the_pane() {
+        let ctx = context();
+        let mut library = library_with(detail(
+            vec![track(
+                "spotify:track:1",
+                "Slow Tide",
+                "Vela Moreno",
+                222_000,
+            )],
+            vec![release(
+                "spotify:album:r1",
+                "Slow Tide",
+                &["spotify:track:1"],
+            )],
+        ));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let art = &mut Art::default();
+
+        let probe = Vec2::new(900.0, 800.0);
+        let (_, output) = frame(
+            &ctx,
+            probe,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            art,
+        );
+
+        let popular = text_rect(&output, "Popular").expect("the section head is painted");
+        assert!(
+            (popular.left() - space::GUTTER).abs() < 0.01,
+            "the section title sits at {}, the pane's gutter is {}",
+            popular.left(),
+            space::GUTTER
+        );
+
+        let aside = drawn_texts(&output)
+            .into_iter()
+            .find(|text| text.contains("RELEASE"))
+            .expect("the discography counts its releases");
+        let aside = text_rect(&output, aside).expect("the aside is painted");
+        assert!(
+            (aside.right() - (probe.x - space::GUTTER)).abs() < 0.01,
+            "the aside ends at {}, the pane's far gutter starts at {}",
+            aside.right(),
+            probe.x - space::GUTTER
+        );
+
+        // The hero above them is still full-bleed: its title starts at the
+        // gutter because the band pads itself, and its photograph spans the pane.
+        let title = text_rect(&output, "Vela Moreno").expect("the hero title is painted");
+        assert!(
+            (title.left() - space::GUTTER).abs() < 0.01,
+            "the hero title sits at {}",
+            title.left()
+        );
     }
 
     #[test]

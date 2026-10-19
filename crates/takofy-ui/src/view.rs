@@ -38,7 +38,7 @@ use crate::message::Command;
 use crate::player::Transport;
 use crate::queue::Queue;
 use crate::signin::SignIn;
-use crate::theme::Tokens;
+use crate::theme::{Tokens, space};
 
 /// The state the window draws from, borrowed for one pass.
 pub struct Screen<'a> {
@@ -55,6 +55,17 @@ pub struct Screen<'a> {
     /// The frame's wall clock in epoch milliseconds, read once at the frame
     /// entry.
     pub now_ms: u64,
+}
+
+/// Draws a page's content inside the reference's `.view__inner` gutter.
+///
+/// The band above it stays full-bleed and carries its own gutter padding, so
+/// only what sits under a band is inset here.
+pub(crate) fn inner<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
+    egui::Frame::new()
+        .inner_margin(egui::Margin::symmetric(space::GUTTER as i8, 0))
+        .show(ui, add)
+        .inner
 }
 
 /// Draws the current state, returning a command when the user asks for one.
