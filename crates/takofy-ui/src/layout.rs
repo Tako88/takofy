@@ -17,7 +17,9 @@ pub mod tracks;
 use tracks::{Track, solve};
 
 /// Recommended starting size of the window, in points.
-pub const WINDOW_DEFAULT: [f32; 2] = [1100.0, 720.0];
+/// Wide enough that the Now Playing column is on screen in a window nobody has
+/// touched: a default that hides a region is a region a user never finds.
+pub const WINDOW_DEFAULT: [f32; 2] = [1240.0, 720.0];
 /// Smallest the window may be dragged, in points.
 pub const WINDOW_MIN: [f32; 2] = [640.0, 480.0];
 
@@ -560,10 +562,8 @@ mod tests {
     }
 
     #[test]
-    fn the_default_window_hides_the_now_playing_column() {
-        // The same thing the reference does at 1100; whether the default should
-        // change is a question for when the column has contents.
-        assert_eq!(
+    fn the_default_window_shows_the_now_playing_column() {
+        assert_ne!(
             regions_for(WINDOW_DEFAULT[0]).now_playing,
             NowPlaying::Hidden
         );
