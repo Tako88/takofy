@@ -108,6 +108,37 @@ pub struct PlaylistEntry {
     pub cover: Option<CoverUrl>,
 }
 
+/// When a track joined the playlist it is drawn in, in epoch milliseconds.
+///
+/// A separate type from a duration, which is also a millisecond count, so the
+/// two can never be passed for each other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AddedAt(u64);
+
+/// The earliest plausible date, 2001-09-09: a value below it is a unit
+/// mistake rather than a date, so it is read as no date at all.
+const ADDED_AT_FLOOR_MS: u64 = 1_000_000_000_000;
+
+impl AddedAt {
+    /// Reads the wire's decimal millisecond count.
+    ///
+    /// Only digits are accepted, so a sign, a space or an exponent is not a
+    /// count, and a value below [`ADDED_AT_FLOOR_MS`] is rejected as a
+    /// seconds-vs-milliseconds mix-up rather than read as a date.
+    pub fn from_wire(wire: &str) -> Option<Self> {
+        if wire.is_empty() || !wire.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        let millis: u64 = wire.parse().ok()?;
+        (millis >= ADDED_AT_FLOOR_MS).then_some(Self(millis))
+    }
+
+    /// The instant as epoch milliseconds.
+    pub fn as_millis(self) -> u64 {
+        self.0
+    }
+}
+
 /// A track inside a playlist.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrackEntry {
@@ -126,7 +157,40 @@ pub struct TrackEntry {
 
 #[cfg(test)]
 mod tests {
-    use super::{CoverImage, CoverUrl};
+    use super::{AddedAt, CoverImage, CoverUrl};
+
+    #[test]
+    fn added_at_from_wire_reads_milliseconds_in_a_string() {
+        let added = AddedAt::from_wire("1792357200000").expect("the issue's sample");
+        assert_eq!(added.as_millis(), 1_792_357_200_000);
+    }
+
+    #[test]
+    fn added_at_from_wire_rejects_what_is_not_a_plain_count() {
+        for wire in [
+            "",
+            " 1792357200000",
+            "+1792357200000",
+            "-1",
+            "1.7e12",
+            "abc",
+            "1792357200000ms",
+            "99999999999999999999999",
+        ] {
+            assert_eq!(AddedAt::from_wire(wire), None, "must reject {wire:?}");
+        }
+    }
+
+    #[test]
+    fn added_at_from_wire_rejects_a_value_in_seconds() {
+        assert_eq!(AddedAt::from_wire("1792357200"), None);
+    }
+
+    #[test]
+    fn added_at_floor_is_the_inclusive_boundary() {
+        assert_eq!(AddedAt::from_wire("999999999999"), None);
+        assert!(AddedAt::from_wire("1000000000000").is_some());
+    }
 
     #[test]
     fn a_20_byte_file_id_becomes_a_cdn_url() {
