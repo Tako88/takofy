@@ -8,6 +8,7 @@
 //! The row wraps with [`layout::chips::wrap`], the sidebar's rule, and reports
 //! the height its rows took so the blocks below move down by exactly that much.
 
+use egui::emath::GuiRounding;
 use egui::{Sense, Ui, Vec2};
 
 use crate::availability::Control;
@@ -36,24 +37,19 @@ pub fn show(ui: &mut Ui, tokens: &Tokens, row: &[Chip], active: Chip) -> Option<
 
     let mut picked = None;
     for (chip, rect) in row.iter().zip(wrapped.rects) {
-        let rect = rect.translate(area.min.to_vec2());
+        // Snapped to the pixel grid: a hairline on a half pixel is soft, and an
+        // unrounded widget rect is what egui's debug overlay flags.
+        let rect = rect.translate(area.min.to_vec2()).round_ui();
         let label = filter_label(*chip);
-        let slot = ui
-            .scope_builder(egui::UiBuilder::new().id_salt(label).max_rect(rect), |ui| {
-                // The row has already been allocated, so the scope's extent
-                // is the chip itself: the parent's cursor stays where the
-                // row left it rather than moving to each chip in turn.
-                ui.expand_to_include_rect(rect);
-                controls::chip_in(
-                    ui,
-                    tokens,
-                    Control::DiscographyFilter,
-                    rect,
-                    label,
-                    *chip == active,
-                )
-            })
-            .inner;
+        let slot = controls::chip_in_keyed(
+            ui,
+            tokens,
+            Control::DiscographyFilter,
+            label,
+            rect,
+            label,
+            *chip == active,
+        );
         if slot.response.clicked() {
             picked = Some(*chip);
         }
@@ -61,4 +57,132 @@ pub fn show(ui: &mut Ui, tokens: &Tokens, row: &[Chip], active: Chip) -> Option<
 
     ui.add_space(space::S4);
     picked
+}
+
+#[cfg(test)]
+mod tests {
+    use egui::emath::GuiRounding;
+
+    use super::*;
+    use crate::discography::chips;
+    use takofy_model::{Release, ReleaseKind};
+
+    fn release(kind: ReleaseKind) -> Release {
+        Release {
+            uri: format!("spotify:album:{kind:?}"),
+            name: "Release".to_owned(),
+            kind,
+            year: None,
+            cover: None,
+            tracks: Vec::new(),
+        }
+    }
+
+    fn row() -> Vec<Chip> {
+        chips(&[
+            release(ReleaseKind::Album),
+            release(ReleaseKind::Ep),
+            release(ReleaseKind::Single),
+            release(ReleaseKind::Compilation),
+        ])
+    }
+
+    fn frame(width: f32) -> egui::FullOutput {
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::Vec2::new(width, 400.0),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                let _ = show(ui, &Tokens::DARK, &row(), Chip::All);
+            },
+        );
+        output.textures_delta.clear();
+        output
+    }
+
+    /// The chips are a row, not a stack: each label starts to the right of the
+    /// previous one, and no chip's box overlaps the next.
+    #[test]
+    fn the_chips_sit_side_by_side() {
+        let output = frame(1200.0);
+        let labels: Vec<(String, f32)> = output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Text(text) => {
+                    Some((text.galley.text().to_owned(), text.pos.x))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            labels
+                .iter()
+                .map(|(label, _)| label.as_str())
+                .collect::<Vec<_>>(),
+            ["ALL", "ALBUMS", "EPS", "SINGLES", "COMPILATIONS"]
+        );
+        for pair in labels.windows(2) {
+            assert!(
+                pair[1].1 > pair[0].1,
+                "{} starts at {}, {} at {}",
+                pair[0].0,
+                pair[0].1,
+                pair[1].0,
+                pair[1].1
+            );
+        }
+
+        let boxes: Vec<egui::Rect> = output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Rect(shape) if shape.fill == Tokens::DARK.palette.pressed => {
+                    Some(shape.rect)
+                }
+                _ => None,
+            })
+            .collect();
+        let mut right = f32::MIN;
+        for rect in &boxes {
+            assert!(rect.left() >= right, "a chip overlaps the one before it");
+            right = rect.right();
+        }
+    }
+
+    /// A chip on a half pixel is soft, and a fractional widget rect is what
+    /// egui's debug overlay flags with its orange `Unaligned` marker — which sits
+    /// inside the chip and makes the row unreadable in a debug build.
+    #[test]
+    fn the_chips_land_on_the_pixel_grid() {
+        let output = frame(1200.0);
+        assert!(
+            !output.shapes.iter().any(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Text(text) => text.galley.text() == "Unaligned",
+                _ => false,
+            }),
+            "the row paints an unaligned widget"
+        );
+        for clipped in &output.shapes {
+            if let egui::epaint::Shape::Rect(shape) = &clipped.shape
+                && shape.stroke.width > 0.0
+            {
+                let rect = shape.rect;
+                // The same criterion egui's debug overlay uses: every edge on
+                // the GUI rounding grid, which is what keeps the hairline crisp.
+                for edge in [rect.min.x, rect.min.y, rect.max.x, rect.max.y] {
+                    assert_eq!(
+                        edge,
+                        edge.round_ui(),
+                        "a chip edge is off the rounding grid: {rect:?}"
+                    );
+                }
+            }
+        }
+    }
 }

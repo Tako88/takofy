@@ -463,11 +463,14 @@ pub fn play_tile(
     slot
 }
 
-/// A chip drawn into a rect the caller chose.
-pub fn chip_in(
+/// A chip drawn into a rect the caller chose, keyed so one control can appear
+/// several times on a page without its chips sharing hover, focus or an
+/// AccessKit node.
+pub fn chip_in_keyed(
     ui: &mut Ui,
     tokens: &Tokens,
     control: Control,
+    key: impl std::hash::Hash + std::fmt::Debug,
     rect: Rect,
     label: &str,
     selected: bool,
@@ -485,14 +488,7 @@ pub fn chip_in(
         color,
         crate::view::text::tracking_pts(text::XXS, tracking::WIDE),
     );
-    let slot = slot(ui, control, Role::Button, rect, label, tokens, true);
-
-    // The pressed chip is a selection, not only a fill: the fill is invisible to
-    // a screen reader, so the state is written onto the node as well. Written
-    // for both values, because the chips that do not filter the list are a
-    // selection of `false`, not an absent one.
-    ui.ctx()
-        .accesskit_node_builder(slot.response.id, |node| node.set_selected(selected));
+    let slot = slot_keyed(ui, control, key, Role::Button, rect, label, tokens, true);
 
     let border = if selected {
         tokens.palette.text
@@ -516,8 +512,23 @@ pub fn chip_in(
         galley,
         color,
     );
+    let _ = ui
+        .ctx()
+        .accesskit_node_builder(slot.response.id, |node| node.set_selected(selected));
 
     slot
+}
+
+/// A chip drawn into a rect the caller chose.
+pub fn chip_in(
+    ui: &mut Ui,
+    tokens: &Tokens,
+    control: Control,
+    rect: Rect,
+    label: &str,
+    selected: bool,
+) -> Slot {
+    chip_in_keyed(ui, tokens, control, (), rect, label, selected)
 }
 
 /// A slider. `None` draws the track alone, which is what a bar with no known

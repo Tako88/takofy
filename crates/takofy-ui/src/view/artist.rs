@@ -990,6 +990,45 @@ mod tests {
         let _ = &mut transport;
     }
 
+    /// A debug build paints egui's `Unaligned` marker inside any widget whose
+    /// rect is off the rounding grid, which makes the chip row unreadable. The
+    /// page must draw none.
+    #[test]
+    fn the_page_paints_no_unaligned_marker() {
+        let ctx = context();
+        let mut library = library_with(detail(
+            vec![track(
+                "spotify:track:1",
+                "Slow Tide",
+                "Vela Moreno",
+                222_000,
+            )],
+            vec![
+                release("spotify:album:r1", "Slow Tide", &["spotify:track:1"]),
+                release("spotify:album:r2", "Kestrel", &["spotify:track:1"]),
+            ],
+        ));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let art = &mut Art::default();
+
+        let (_, output) = frame(
+            &ctx,
+            Vec2::new(900.0, 800.0),
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            art,
+        );
+
+        assert!(
+            !drawn_texts(&output).contains(&"Unaligned"),
+            "the page paints an unaligned widget: {:?}",
+            drawn_texts(&output)
+        );
+    }
+
     /// The sections sit one gutter inside the pane, so a release's art does not
     /// rub the panel's edge and the count does not touch the far one. The hero
     /// stays full-bleed above them.
