@@ -131,6 +131,8 @@ mod tests {
             title: "Song".to_owned(),
             artists: "Band".to_owned(),
             album: None,
+            album_uri: None,
+            artist_uris: Vec::new(),
             added_at: None,
             duration_ms: None,
             named: true,

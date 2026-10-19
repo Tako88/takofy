@@ -111,10 +111,12 @@ pub enum Availability {
 /// when there is none.
 pub fn availability(control: Control) -> Availability {
     match control {
-        // The drawer and the crumb are the two controls whose views ship with
-        // the shell.
+        // The drawer, the crumb and the history pair are the controls whose
+        // views ship with the shell.
         Control::DrawerToggle => Availability::Ready, // #17
         Control::TrailPlaylists => Availability::Ready, // #3
+        Control::HistoryBack => Availability::Ready,  // #16
+        Control::HistoryForward => Availability::Ready, // #16
 
         Control::NavHome => Availability::Waiting,   // #17
         Control::NavSearch => Availability::Waiting, // #17
@@ -124,8 +126,6 @@ pub fn availability(control: Control) -> Availability {
         Control::FilterArtists => Availability::Waiting, // #3
         Control::FilterAlbums => Availability::Waiting, // #3
         Control::FilterPodcasts => Availability::Waiting, // #3
-        Control::HistoryBack => Availability::Waiting, // #16
-        Control::HistoryForward => Availability::Waiting, // #16
         Control::SearchField => Availability::Waiting, // #16
         Control::TrailHome => Availability::Waiting, // #17
         Control::NowPlayingMore => Availability::Waiting, // #16
@@ -182,6 +182,8 @@ mod tests {
                 control,
                 Control::DrawerToggle
                     | Control::TrailPlaylists
+                    | Control::HistoryBack
+                    | Control::HistoryForward
                     | Control::Previous
                     | Control::PlayPause
                     | Control::Next

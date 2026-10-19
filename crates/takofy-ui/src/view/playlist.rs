@@ -19,13 +19,14 @@ use crate::library::{BandCover, Library, Load, band_cover};
 use crate::message::{Command, Failure};
 use crate::player::{Transport, TransportState};
 use crate::queue::Queue;
+use crate::route::Page;
 use crate::theme::icon::Size;
 use crate::theme::{Tokens, extent, space, stroke, text, tracking};
 
 use super::card;
 use super::hero;
 use super::text as recipe;
-use super::track_row::{self, Row, State};
+use super::track_row::{self, Click, Row, State};
 
 /// The main pane: the selected playlist's tracks, or the state of their load.
 #[expect(
@@ -45,8 +46,13 @@ pub fn tracks_view(
 ) -> Option<Command> {
     ui.add_space(space::S3);
 
-    if matches!(library.tracks, Load::Idle) {
-        return idle(ui, library, art, now, tokens);
+    // Dispatch on the page, not on the tracks: the root is the grid, and the
+    // tracks may still hold a ready playlist that nothing draws.
+    match main_page(library) {
+        MainPage::Root => return idle(ui, library, art, now, tokens),
+        // A page with no body yet draws none, rather than pretending to be one.
+        MainPage::Other => return None,
+        MainPage::Playlist => {}
     }
 
     // The band draws `Loading` until the selected playlist's tracks settle: it
@@ -55,6 +61,9 @@ pub fn tracks_view(
     let settled = !matches!(library.tracks, Load::Loading);
     let mut command = None;
     let mut retry = false;
+    // A link click is applied after the scroll area, because the matches below
+    // borrow the tracks it has to move away from.
+    let mut open: Option<Page> = None;
     egui::ScrollArea::vertical().show(ui, |ui| {
         let width = ui.available_width();
 
@@ -135,14 +144,20 @@ pub fn tracks_view(
                         number: index + 1,
                         title: &entry.title,
                         artist: &entry.artists,
+                        artist_uri: entry.artist_uris.first().map(String::as_str),
                         album: entry.album.as_deref(),
+                        album_uri: entry.album_uri.as_deref(),
                         added: added.as_deref(),
                         duration: duration.as_deref(),
                         state: state_of(&entry.uri, transport),
                         cover: art.look(entry.cover.as_ref(), now),
                     };
-                    if track_row::show(ui, rect, columns, &row, tokens) {
-                        command = queue.start(&tracks.tracks, index, transport);
+                    match track_row::show(ui, rect, columns, &row, tokens) {
+                        Some(Click::Play) => {
+                            command = queue.start(&tracks.tracks, index, transport);
+                        }
+                        Some(Click::Open(page)) => open = Some(page),
+                        None => {}
                     }
                 }
             }
@@ -152,6 +167,9 @@ pub fn tracks_view(
     if retry {
         let playlist = library.selected().map(str::to_owned);
         return playlist.map(|playlist| library.select(&playlist));
+    }
+    if let Some(page) = open {
+        return library.open(page);
     }
     command
 }
@@ -174,13 +192,34 @@ fn band_cover_for(entry: &PlaylistEntry, settled: bool, art: &mut Art, now: Inst
     }
 }
 
-/// What the idle main view shows: the grid of playlists, or the state of the
+/// What the page on screen asks the main pane to draw.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MainPage {
+    /// The library root: the playlists grid.
+    Root,
+    /// A playlist's tracklist.
+    Playlist,
+    /// An album, artist or show page, which has no body yet.
+    Other,
+}
+
+/// Reads the pane's dispatch from the current page.
+fn main_page(library: &Library) -> MainPage {
+    match library.page() {
+        None => MainPage::Root,
+        Some(Page::Playlist(_)) => MainPage::Playlist,
+        Some(Page::Album(_) | Page::Artist(_) | Page::Show(_)) => MainPage::Other,
+    }
+}
+
+/// What the root's main view shows: the grid of playlists, or the state of the
 /// load that fetches them.
 ///
-/// The main view is idle when no playlist is selected — the state `deselect`
-/// returns to. This reads that from the playlists' load alone: the tracks are
-/// already `Idle` by the time the branch that calls it is taken, so the grid
-/// never competes with the tracklist for a selection.
+/// The main view draws the grid whenever the page is the root, whatever the
+/// tracks hold: after a trip to the root a ready playlist is kept for the page
+/// Back returns to, and nothing draws it. It is dropped or reloaded when a
+/// playlist page is next entered. The grid reads only the playlists' load, so
+/// it never competes with a tracklist for a selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IdleView<'a> {
     /// The playlists are in flight, or have not been asked for yet.
@@ -209,9 +248,8 @@ pub fn idle_view(library: &Library) -> IdleView<'_> {
 
 /// Draws the idle main view and returns the command its controls asked for.
 ///
-/// This is the whole idle-grid wiring in one place: the `Load::Idle` arm calls
-/// it and nothing else does, so phase 4 can lift it out when it builds the
-/// library route. The copy and the retry are the sidebar's, reusing
+/// This is the whole idle-grid wiring in one place: the root page calls it and
+/// nothing else does. The copy and the retry are the sidebar's, reusing
 /// `library.reload()` so the two library surfaces recover the same way.
 fn idle(
     ui: &mut Ui,
@@ -324,15 +362,15 @@ fn grid_rect(ui: &mut Ui, grid: &cards::Grid, count: usize) -> Rect {
 /// Starts a playlist's load from an idle-grid card click.
 ///
 /// `Library::select` always starts a load and returns its command, and that is
-/// all this does. The grid is drawn only while the tracks are `Idle`, so the card
-/// under a click can never be the playlist whose tracks are already loading;
-/// there is nothing to suppress here.
+/// all this does. The grid is drawn only at the root, so the card under a click
+/// is never the playlist whose tracks are loading; there is nothing to suppress
+/// here.
 ///
-/// `deselect()` is the one way the same playlist can be clicked again while its
-/// first fetch is still coming back: it clears the selection and resets the
-/// tracks to `Idle`, and the library keeps no record of the in-flight request, so
-/// the second click does start it again. The first reply is discarded as stale,
-/// so the repeat costs a fetch and nothing else.
+/// Going to the root is the one way the same playlist can be clicked again while
+/// its first fetch is still coming back: it clears the stale-reply guard and the
+/// in-flight load, and the library keeps no record of the request, so the second
+/// click does start it again. The first reply is discarded as stale, so the
+/// repeat costs a fetch and nothing else.
 fn select_playlist(library: &mut Library, uri: &str) -> Option<Command> {
     Some(library.select(uri))
 }
@@ -557,10 +595,34 @@ mod tests {
             title: title.to_owned(),
             artists: String::new(),
             album: None,
+            album_uri: None,
+            artist_uris: Vec::new(),
             added_at: None,
             duration_ms: None,
             named: true,
             cover: None,
+        }
+    }
+
+    /// A track whose album and first artist both name a page, so both cells link.
+    fn linkable(uri: &str) -> TrackEntry {
+        TrackEntry {
+            artists: "Band".to_owned(),
+            album: Some("Record".to_owned()),
+            album_uri: Some("spotify:album:rec".to_owned()),
+            artist_uris: vec!["spotify:artist:band".to_owned()],
+            ..track(uri, "t0")
+        }
+    }
+
+    /// One press of `key` with no modifiers.
+    fn key(key: egui::Key) -> Event {
+        Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
         }
     }
 
@@ -681,6 +743,8 @@ mod tests {
             title: format!("t{index}"),
             artists: String::new(),
             album: None,
+            album_uri: None,
+            artist_uris: Vec::new(),
             added_at: None,
             duration_ms: None,
             named: true,
@@ -771,6 +835,23 @@ mod tests {
             });
         });
         found.expect("the header and the list lay out")
+    }
+
+    /// The rect `tracks_view` draws the `index`-th row's `cell` into, solved the
+    /// way the painter solves it: the row's own rect, then the columns at its
+    /// origin.
+    ///
+    /// The cell is the whole column, padding included. Its label is painted at
+    /// the left edge, so a point near the far edge is padding the cell must also
+    /// take a click on.
+    fn cell_rect_for(
+        ctx: &Context,
+        count: usize,
+        index: usize,
+        cell: fn(table_layout::Columns) -> Rect,
+    ) -> Rect {
+        let row = row_rect_for(ctx, count, index);
+        cell(table_layout::columns(row.width(), Table::Full.columns()).at(row.min))
     }
 
     /// The rect `tracks_view` draws the `index`-th row into while the band is
@@ -1111,7 +1192,9 @@ mod tests {
             number: 1,
             title: "t0",
             artist: "",
+            artist_uri: None,
             album: None,
+            album_uri: None,
             added: None,
             duration: None,
             state: State::Resting,
@@ -1129,7 +1212,7 @@ mod tests {
                 crate::view::test_support::button(rect.center(), false),
             ] {
                 run(&ctx, input(vec![event]), |ui| {
-                    clicked |= track_row::show(ui, rect, columns, &row, &tokens);
+                    clicked |= track_row::show(ui, rect, columns, &row, &tokens).is_some();
                 });
             }
         }
@@ -1154,7 +1237,9 @@ mod tests {
             number: 1,
             title: "t0",
             artist: "Band",
+            artist_uri: None,
             album: Some("Record"),
+            album_uri: None,
             added: None,
             duration: Some("3:42"),
             state: State::Resting,
@@ -1185,6 +1270,8 @@ mod tests {
             title: "t0".to_owned(),
             artists: "Band".to_owned(),
             album: Some("Record".to_owned()),
+            album_uri: None,
+            artist_uris: Vec::new(),
             added_at: None,
             duration_ms: Some(222_000),
             named: true,
@@ -1478,6 +1565,8 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             title: "t0".to_owned(),
             artists: "Band".to_owned(),
             album: Some("Record".to_owned()),
+            album_uri: None,
+            artist_uris: Vec::new(),
             added_at: None,
             duration_ms: Some(222_000),
             named: true,
@@ -1532,7 +1621,9 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             number: 1,
             title: "t0",
             artist,
+            artist_uri: None,
             album: Some("Record"),
+            album_uri: None,
             added: None,
             duration: Some("3:42"),
             state: State::Resting,
@@ -1917,7 +2008,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
     }
 
     #[test]
-    fn deselect_returns_to_the_grid() {
+    fn to_playlists_returns_to_the_grid() {
         let mut library = library_idle(vec![playlist("a", "A")]);
         library.select("a");
         library.apply(&Update::Tracks {
@@ -1925,16 +2016,502 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             tracks: vec![track("t", "t")],
             cover: None,
         });
-        library.deselect();
+        library.to_playlists();
 
         let IdleView::Grid(entries) = idle_view(&library) else {
             panic!(
-                "deselect must return to the grid: {:?}",
+                "to_playlists must return to the grid: {:?}",
                 idle_view(&library)
             );
         };
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].uri, "a");
+        assert!(
+            matches!(library.tracks, Load::Ready(_)),
+            "the grid draws while the tracks stay ready"
+        );
+    }
+
+    #[test]
+    fn the_root_draws_the_grid_while_the_tracks_stay_ready() {
+        let ctx = context();
+        let mut library = library_idle(vec![playlist("a", "A")]);
+        library.select("a");
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: vec![track("t0", "t0")],
+            cover: None,
+        });
+        library.to_playlists();
+
+        assert_eq!(library.page(), None);
+        assert!(
+            matches!(library.tracks, Load::Ready(_)),
+            "the tracks stay ready behind the root"
+        );
+
+        let texts = painted_lines(&ctx, Table::Full, &mut library);
+
+        assert!(
+            texts.contains(&"A".to_owned()),
+            "the grid must draw its card: {texts:?}"
+        );
+        assert!(
+            !texts.contains(&"t0".to_owned()),
+            "the ready tracklist must not draw at the root: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn a_click_on_the_album_cell_opens_the_album() {
+        let ctx = context();
+        let mut library = library_with(vec![linkable("a")]);
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+
+        let cell = cell_rect_for(&ctx, 1, 0, |columns| columns.album);
+        let command = click(
+            &ctx,
+            cell.center(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+        );
+
+        assert_eq!(
+            library.page(),
+            Some(&Page::Album("spotify:album:rec".to_owned())),
+            "a single click on the album cell must open the album"
+        );
+        assert_eq!(command, None, "opening a page fetches nothing");
+        assert!(!queue.can_next(), "opening a page must not start the queue");
+        assert_eq!(transport.now_playing, None, "opening a page must not play");
+    }
+
+    #[test]
+    fn a_click_in_the_album_cells_padding_opens_the_album() {
+        // The brief's link is the cell, not the painted text: a click past the end
+        // of "Record" is still a click on the album.
+        let ctx = context();
+        let mut library = library_with(vec![linkable("a")]);
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+
+        let cell = cell_rect_for(&ctx, 1, 0, |columns| columns.album);
+        let padding = Pos2::new(cell.right() - space::S3, cell.center().y);
+        let command = click(&ctx, padding, &mut library, &mut transport, &mut queue);
+
+        assert_eq!(
+            library.page(),
+            Some(&Page::Album("spotify:album:rec".to_owned())),
+            "the whole album cell must take the click, padding included"
+        );
+        assert_eq!(command, None);
+        assert!(!queue.can_next());
+    }
+
+    #[test]
+    fn a_click_on_the_artist_cell_opens_the_first_artist() {
+        let ctx = context();
+        let mut library = library_with(vec![linkable("a")]);
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+
+        let cell = cell_rect_for(&ctx, 1, 0, |columns| columns.artist);
+        let command = click(
+            &ctx,
+            cell.center(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+        );
+
+        assert_eq!(
+            library.page(),
+            Some(&Page::Artist("spotify:artist:band".to_owned())),
+            "a single click on the artist cell must open the first artist"
+        );
+        assert_eq!(command, None);
+        assert!(!queue.can_next());
+        assert_eq!(transport.now_playing, None);
+    }
+
+    #[test]
+    fn a_click_in_the_artist_cells_padding_opens_the_first_artist() {
+        let ctx = context();
+        let mut library = library_with(vec![linkable("a")]);
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+
+        let cell = cell_rect_for(&ctx, 1, 0, |columns| columns.artist);
+        let padding = Pos2::new(cell.right() - space::S3, cell.center().y);
+        let command = click(&ctx, padding, &mut library, &mut transport, &mut queue);
+
+        assert_eq!(
+            library.page(),
+            Some(&Page::Artist("spotify:artist:band".to_owned())),
+            "the whole artist cell must take the click, padding included"
+        );
+        assert_eq!(command, None);
+        assert!(!queue.can_next());
+    }
+
+    #[test]
+    fn a_link_cell_points_the_hand_and_brightens_its_label() {
+        // A screenshot shows the colour but not the cursor the window reports, so
+        // both of the hover's effects are pinned here.
+        let ctx = context();
+        let tokens = Tokens::DARK;
+        let mut library = library_with(vec![linkable("a")]);
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let cell = cell_rect_for(&ctx, 1, 0, |columns| columns.album);
+
+        let mut frame = |events: Vec<Event>| {
+            let mut output = run(&ctx, input(events), |ui| {
+                let _ = tracks_view(
+                    ui,
+                    Table::Full,
+                    &mut library,
+                    &mut transport,
+                    &mut queue,
+                    &mut Art::default(),
+                    Instant::now(),
+                    NOW_MS,
+                    &tokens,
+                );
+            });
+            output.textures_delta.clear();
+            let color = output
+                .shapes
+                .iter()
+                .find_map(|clipped| match &clipped.shape {
+                    egui::epaint::Shape::Text(text) if text.galley.text() == "Record" => {
+                        Some(text.galley.job.sections[0].format.color)
+                    }
+                    _ => None,
+                })
+                .expect("the album label is painted");
+            (output.platform_output.cursor_icon, color)
+        };
+
+        // At rest the label is muted and the cursor is the window's own.
+        let (rest_cursor, rest_color) = frame(Vec::new());
+        assert_eq!(rest_color, tokens.palette.text_muted);
+        assert_ne!(rest_cursor, egui::CursorIcon::PointingHand);
+
+        // Resting on the cell points the hand and brightens the label to the
+        // body colour, over the reveal's own time.
+        for _ in 0..12 {
+            frame(vec![Event::PointerMoved(cell.center())]);
+        }
+        let (hover_cursor, hover_color) = frame(vec![Event::PointerMoved(cell.center())]);
+        assert_eq!(hover_cursor, egui::CursorIcon::PointingHand);
+        assert_eq!(hover_color, tokens.palette.text);
+    }
+
+    #[test]
+    fn the_row_keeps_its_hover_over_a_link_cell() {
+        // A link cell's interact is created after the row's, and egui marks only
+        // the top hit widget as hovered, so the row's own `hovered()` goes false
+        // over the album and artist columns. The row must read where the pointer
+        // is instead, or its highlight, its index play glyph and its like all
+        // vanish there. The fill is the visible half of that; the glyph and the
+        // like follow the same `revealed` value.
+        let ctx = context();
+        let tokens = Tokens::DARK;
+        let mut library = library_with(vec![linkable("a")]);
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let row = row_rect_for(&ctx, 1, 0);
+        let cell = cell_rect_for(&ctx, 1, 0, |columns| columns.album);
+
+        // The frame's fill behind this row, read back from the shapes painted.
+        let mut fill = |events: Vec<Event>| {
+            let output = run(&ctx, input(events), |ui| {
+                let _ = tracks_view(
+                    ui,
+                    Table::Full,
+                    &mut library,
+                    &mut transport,
+                    &mut queue,
+                    &mut Art::default(),
+                    Instant::now(),
+                    NOW_MS,
+                    &tokens,
+                );
+            });
+            output
+                .shapes
+                .iter()
+                .find_map(|clipped| match &clipped.shape {
+                    egui::epaint::Shape::Rect(shape) if shape.rect == row => Some(shape.fill),
+                    _ => None,
+                })
+        };
+
+        // With the pointer away the row paints no fill at all.
+        assert_eq!(fill(Vec::new()), None, "a resting row paints no fill");
+
+        // Resting on the album link must light the row to the same fill the
+        // title would, over the reveal's own time.
+        for _ in 0..12 {
+            fill(vec![Event::PointerMoved(cell.center())]);
+        }
+        assert_eq!(
+            fill(vec![Event::PointerMoved(cell.center())]),
+            Some(tokens.palette.row_hover),
+            "the row must keep its hover fill over the album link"
+        );
+    }
+
+    #[test]
+    fn a_double_click_in_the_album_cell_opens_it_without_playing() {
+        let ctx = context();
+        let mut library = library_with(vec![linkable("a")]);
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+
+        let cell = cell_rect_for(&ctx, 1, 0, |columns| columns.album);
+        let command = double_click(
+            &ctx,
+            cell.center(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+        );
+
+        assert_eq!(
+            library.page(),
+            Some(&Page::Album("spotify:album:rec".to_owned())),
+            "the second click lands on the album page, not on the row"
+        );
+        assert_eq!(command, None);
+        assert!(!queue.can_next(), "a link cell must never start the queue");
+        assert_eq!(transport.now_playing, None);
+    }
+
+    #[test]
+    fn a_double_click_on_the_title_still_plays() {
+        let ctx = context();
+        let mut library = library_with(vec![linkable("a"), linkable("b")]);
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+
+        let cell = cell_rect_for(&ctx, 2, 0, |columns| columns.title);
+        let command = double_click(
+            &ctx,
+            cell.center(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+        );
+
+        assert_eq!(
+            command,
+            Some(Command::Play {
+                uri: "a".to_owned()
+            })
+        );
+        assert_eq!(
+            library.page(),
+            Some(&Page::Playlist("spotify:playlist:a".to_owned()))
+        );
+        assert!(
+            queue.can_next(),
+            "the double-clicked row must start the queue"
+        );
+    }
+
+    #[test]
+    fn a_row_without_an_album_uri_keeps_a_plain_cell() {
+        let ctx = context();
+        let mut library = library_with(vec![TrackEntry {
+            album_uri: None,
+            ..linkable("a")
+        }]);
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+
+        let cell = cell_rect_for(&ctx, 1, 0, |columns| columns.album);
+        let command = click(
+            &ctx,
+            cell.center(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+        );
+        assert_eq!(
+            command, None,
+            "a cell with no URI must take no click of its own"
+        );
+        assert_eq!(
+            library.page(),
+            Some(&Page::Playlist("spotify:playlist:a".to_owned())),
+            "a plain cell must not navigate"
+        );
+
+        // The cell still belongs to the row, so a double click there plays.
+        let command = double_click(
+            &ctx,
+            cell.center(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+        );
+        assert_eq!(
+            command,
+            Some(Command::Play {
+                uri: "a".to_owned()
+            })
+        );
+    }
+
+    #[test]
+    fn an_album_with_no_displayed_name_is_not_a_link() {
+        // The labelling can resolve a gid for an album the row never names. An
+        // empty cell painted nothing, so it must offer no hit area either.
+        let ctx = context();
+        let mut library = library_with(vec![TrackEntry {
+            album: Some(String::new()),
+            ..linkable("a")
+        }]);
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+
+        let cell = cell_rect_for(&ctx, 1, 0, |columns| columns.album);
+        let command = click(
+            &ctx,
+            cell.center(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+        );
+
+        assert_eq!(command, None);
+        assert_eq!(
+            library.page(),
+            Some(&Page::Playlist("spotify:playlist:a".to_owned())),
+            "an unnamed album must not navigate"
+        );
+    }
+
+    #[test]
+    fn enter_and_space_play_with_the_pointer_on_a_link_cell() {
+        // The pointer's hover gates only the pointer's double click. A keyboard
+        // activation of the focused row is never taken by a link.
+        for pressed in [egui::Key::Enter, egui::Key::Space] {
+            let ctx = context();
+            let tokens = Tokens::DARK;
+            let mut library = library_with(vec![linkable("a")]);
+            let mut transport = Transport::default();
+            let mut queue = Queue::default();
+            let cell = cell_rect_for(&ctx, 1, 0, |columns| columns.album);
+
+            // Warm up so focus traversal and the hit test read a previous pass.
+            for events in [Vec::new(), vec![key(egui::Key::Tab)]] {
+                run(&ctx, input(events), |ui| {
+                    let _ = tracks_view(
+                        ui,
+                        Table::Full,
+                        &mut library,
+                        &mut transport,
+                        &mut queue,
+                        &mut Art::default(),
+                        Instant::now(),
+                        NOW_MS,
+                        &tokens,
+                    );
+                });
+            }
+
+            // Rest the pointer on the album cell, then press the key.
+            let mut command = None;
+            for events in [vec![Event::PointerMoved(cell.center())], vec![key(pressed)]] {
+                let command = &mut command;
+                let library = &mut library;
+                let transport = &mut transport;
+                let queue = &mut queue;
+                run(&ctx, input(events), |ui| {
+                    if let Some(next) = tracks_view(
+                        ui,
+                        Table::Full,
+                        library,
+                        transport,
+                        queue,
+                        &mut Art::default(),
+                        Instant::now(),
+                        NOW_MS,
+                        &tokens,
+                    ) {
+                        *command = Some(next);
+                    }
+                });
+            }
+
+            assert_eq!(
+                command,
+                Some(Command::Play {
+                    uri: "a".to_owned()
+                }),
+                "{pressed:?} on the focused row must play with the pointer on a link"
+            );
+            assert_eq!(
+                library.page(),
+                Some(&Page::Playlist("spotify:playlist:a".to_owned())),
+                "{pressed:?} must not navigate"
+            );
+        }
+    }
+
+    #[test]
+    fn back_from_an_album_page_redraws_the_playlist() {
+        let ctx = context();
+        let mut library = library_with(vec![linkable("a")]);
+        assert_eq!(
+            library.open(Page::Album("spotify:album:rec".to_owned())),
+            None
+        );
+        assert!(
+            painted_lines(&ctx, Table::Full, &mut library).is_empty(),
+            "the album page has no body to draw"
+        );
+
+        assert_eq!(
+            library.back(),
+            None,
+            "a ready playlist with a matching wanted load needs no command"
+        );
+
+        let texts = painted_lines(&ctx, Table::Full, &mut library);
+        assert!(
+            texts.contains(&"t0".to_owned()),
+            "Back must redraw the ready tracklist: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn an_album_page_draws_no_body() {
+        let ctx = context();
+        let mut library = library_idle(vec![playlist("a", "A")]);
+        library.select("a");
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: vec![track("t0", "t0")],
+            cover: None,
+        });
+        assert_eq!(
+            library.open(Page::Album("spotify:album:x".to_owned())),
+            None
+        );
+
+        let output = tracklist_frame(&ctx, Table::Full, &mut library);
+
+        assert!(
+            drawn_texts(&output).is_empty(),
+            "an album page has no body yet: {:?}",
+            drawn_texts(&output)
+        );
     }
 
     #[test]

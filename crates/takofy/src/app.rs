@@ -205,6 +205,8 @@ mod tests {
             title: uri.to_owned(),
             artists: String::new(),
             album: None,
+            album_uri: None,
+            artist_uris: Vec::new(),
             added_at: None,
             duration_ms: None,
             named: true,

@@ -1,8 +1,8 @@
 //! The topbar: the drawer toggle, history, the search field and the trail.
 //!
-//! The trail is the one control here that does something: it says where you are
-//! and pops back to the library. Everything else waits for a view that does not
-//! exist yet, so all of it is drawn disabled and none of it pretends.
+//! The trail, the history pair and the drawer toggle do something: they say
+//! where you are and how to leave. The search field waits for a view that does
+//! not exist yet, so it is drawn disabled and does not pretend.
 
 use egui::{FontId, Pos2, Rect, Stroke, StrokeKind, Ui, Vec2};
 
@@ -19,13 +19,24 @@ use super::text as recipe;
 
 /// What the topbar did this frame.
 pub struct Topbar {
-    /// The trail's link was clicked, so the selection clears. It is a flag and
-    /// not a command because it is local state, and because the crumbs borrow
-    /// the library they were built from.
-    pub back_to_library: bool,
+    /// The move the trail or the history pair asked for. It is a request, not a
+    /// move: the shell applies it to the library, because the crumbs borrow the
+    /// library they were built from.
+    pub nav: Option<Nav>,
     /// The drawer toggle's response, so the shell can read a click from it and
     /// hand focus back to it when the drawer closes.
     pub toggle: Option<egui::Response>,
+}
+
+/// A move the topbar can ask the shell for.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Nav {
+    /// Back to the previous page.
+    Back,
+    /// Forward to the page Back left behind.
+    Forward,
+    /// Back to the playlists grid.
+    Playlists,
 }
 
 /// Draws the topbar inside `rect`.
@@ -40,6 +51,8 @@ pub fn show(
     let natural = measure(ui, &crumbs, tokens);
     let cols = layout::topbar_for(rect, form, natural);
     let places = cols.columns(rect);
+    let (can_back, can_forward) = (library.can_back(), library.can_forward());
+    let mut nav = None;
 
     let toggle = places.toggle.map(|rect| {
         controls::round_button(
@@ -56,12 +69,28 @@ pub fn show(
     });
 
     row_centred(ui, "history", places.history, |ui| {
-        for (control, glyph, label) in [
-            (Control::HistoryBack, Icon::ArrowLeft, "Go back"),
-            (Control::HistoryForward, Icon::ArrowRight, "Go forward"),
+        for (control, glyph, label, requested, live) in [
+            (
+                Control::HistoryBack,
+                Icon::ArrowLeft,
+                "Go back",
+                Nav::Back,
+                can_back,
+            ),
+            (
+                Control::HistoryForward,
+                Icon::ArrowRight,
+                "Go forward",
+                Nav::Forward,
+                can_forward,
+            ),
         ] {
             let rect = Rect::from_min_size(ui.cursor().min, Vec2::splat(extent::BUTTON));
-            controls::round_button(ui, tokens, control, rect, glyph, Size::BASE, label, true);
+            let slot =
+                controls::round_button(ui, tokens, control, rect, glyph, Size::BASE, label, live);
+            if slot.response.clicked() {
+                nav = Some(requested);
+            }
             ui.advance_cursor_after_rect(Rect::from_min_size(
                 rect.min,
                 Vec2::new(extent::BUTTON + space::S1, extent::BUTTON),
@@ -71,7 +100,9 @@ pub fn show(
 
     search(ui, places.search, tokens);
 
-    let back_to_library = trail(ui, &crumbs, places.trail, tokens);
+    if trail(ui, &crumbs, places.trail, tokens) {
+        nav = Some(Nav::Playlists);
+    }
 
     rule(
         ui,
@@ -82,10 +113,7 @@ pub fn show(
         tokens.palette.border,
     );
 
-    Topbar {
-        back_to_library,
-        toggle,
-    }
+    Topbar { nav, toggle }
 }
 
 /// The natural width of the trail's text, which the solver needs before it can
