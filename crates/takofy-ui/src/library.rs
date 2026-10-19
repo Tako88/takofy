@@ -183,7 +183,7 @@ impl Library {
 
 #[cfg(test)]
 mod tests {
-    use takofy_model::{CoverUrl, PlaylistEntry, TrackEntry};
+    use takofy_model::{AddedAt, CoverUrl, PlaylistEntry, TrackEntry};
 
     use super::*;
     use crate::message::TransportUpdate;
@@ -207,6 +207,13 @@ mod tests {
             duration_ms: None,
             named: true,
             cover: None,
+        }
+    }
+
+    fn dated(uri: &str, wire: &str) -> TrackEntry {
+        TrackEntry {
+            added_at: AddedAt::from_wire(wire),
+            ..track(uri)
         }
     }
 
@@ -284,6 +291,24 @@ mod tests {
         );
         assert_eq!(library.tracks, Load::Loading);
         assert_eq!(library.selected(), Some("spotify:playlist:a"));
+    }
+
+    #[test]
+    fn tracks_keep_their_added_at_through_apply() {
+        let mut library = Library::default();
+        library.select("a");
+        let tracks = vec![
+            dated("t0", "1700000000000"),
+            track("t1"),
+            dated("t2", "1792357200000"),
+        ];
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: tracks.clone(),
+            cover: None,
+        });
+
+        assert_eq!(library.tracks, Load::Ready(tracks_for("a", tracks)));
     }
 
     #[test]
