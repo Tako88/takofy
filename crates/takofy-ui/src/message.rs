@@ -3,7 +3,7 @@
 //! These types carry state, never credentials: `takofy-ui` has no path to a
 //! token or an auth error, so the compiler keeps secrets out of a view.
 
-use takofy_model::{PlaylistEntry, TrackEntry};
+use takofy_model::{CoverUrl, PlaylistEntry, TrackEntry};
 
 /// A request from the window to the worker.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,6 +24,8 @@ pub enum Command {
     Seek { position_ms: u32 },
     /// Fetch the playlists again.
     ReloadLibrary,
+    /// Fetch one cover image from the worker.
+    Fetch { url: CoverUrl },
 }
 
 /// Why an operation failed, with no field that could carry a secret.
@@ -77,10 +79,11 @@ pub enum Update {
     Playlists(Vec<PlaylistEntry>),
     /// The playlists could not be loaded.
     PlaylistFailed(Failure),
-    /// A playlist's tracks.
+    /// A playlist's tracks, plus the context's own image when it carried one.
     Tracks {
         playlist: String,
         tracks: Vec<TrackEntry>,
+        cover: Option<CoverUrl>,
     },
     /// A playlist's tracks could not be loaded.
     TracksFailed { playlist: String, failure: Failure },

@@ -183,6 +183,7 @@ mod tests {
             album: None,
             duration_ms: None,
             named: true,
+            cover: None,
         }
     }
 
@@ -544,6 +545,7 @@ mod tests {
             uri: "spotify:playlist:a".to_owned(),
             name: "A".to_owned(),
             named: true,
+            cover: None,
         }]);
         assert_eq!(queue.apply(&playlists, &mut transport), None);
         assert_eq!(end(&mut queue, &mut transport), Some(play("t1")));

@@ -160,6 +160,7 @@ mod tests {
             album: None,
             duration_ms: None,
             named: true,
+            cover: None,
         }
     }
 

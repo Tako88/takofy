@@ -64,6 +64,7 @@ mod tests {
             uri: uri.to_owned(),
             name: name.to_owned(),
             named: true,
+            cover: None,
         }
     }
 

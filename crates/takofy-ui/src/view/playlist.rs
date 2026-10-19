@@ -450,6 +450,7 @@ mod tests {
             album: None,
             duration_ms: None,
             named: true,
+            cover: None,
         }
     }
 
@@ -459,6 +460,7 @@ mod tests {
         library.apply(&Update::Tracks {
             playlist: "spotify:playlist:a".to_owned(),
             tracks,
+            cover: None,
         });
         library
     }
@@ -471,6 +473,7 @@ mod tests {
             uri: "spotify:playlist:a".to_owned(),
             name: name.to_owned(),
             named: true,
+            cover: None,
         }]));
         library
     }
@@ -480,6 +483,7 @@ mod tests {
             uri: uri.to_owned(),
             name: name.to_owned(),
             named: true,
+            cover: None,
         }
     }
 
@@ -908,6 +912,7 @@ mod tests {
             album: Some("Record".to_owned()),
             duration_ms: Some(222_000),
             named: true,
+            cover: None,
         }]);
         let mut transport = Transport::default();
         let mut queue = Queue::default();
@@ -1402,6 +1407,7 @@ mod tests {
         library.apply(&Update::Tracks {
             playlist: "a".to_owned(),
             tracks: vec![track("t", "t")],
+            cover: None,
         });
         library.deselect();
 
