@@ -144,8 +144,9 @@ pub fn album_view(
                             title: &entry.title,
                             title_cell: TitleCell::NameOverArtist,
                             artist: &entry.artists,
-                            // The subline opens the album's own first artist.
-                            artist_uri: album.artist_uris.first().map(String::as_str),
+                            // The subline opens the artist it names, which on a
+                            // compilation or a feature is not the album's.
+                            artist_uri: entry.artist_uris.first().map(String::as_str),
                             // No album cell and no added date in an album's own table.
                             album: None,
                             album_uri: None,
@@ -271,7 +272,6 @@ mod tests {
             uri: ALBUM.to_owned(),
             name: "Signal Decay".to_owned(),
             artists: "Nils Aker".to_owned(),
-            artist_uris: Vec::new(),
             year: Some(1997),
             cover: None,
             tracks,
@@ -549,12 +549,16 @@ mod tests {
     }
 
     #[test]
-    fn a_click_on_the_albums_artist_subline_opens_the_artist() {
+    fn a_row_opens_its_own_track_artist_not_the_albums() {
+        // A compilation or a feature: the row names a guest, and the album names
+        // the record's artist. The subline draw and the link are the same name.
         let ctx = context();
-        let mut library = library_with(AlbumDetail {
-            artist_uris: vec!["spotify:artist:band".to_owned()],
-            ..detail(vec![track("spotify:track:a", "One", "Nils Aker", 222_000)])
-        });
+        let row_track = TrackEntry {
+            artists: "Guest".to_owned(),
+            artist_uris: vec!["spotify:artist:guest".to_owned()],
+            ..track("spotify:track:a", "One", "Guest", 222_000)
+        };
+        let mut library = library_with(detail(vec![row_track]));
         let mut transport = Transport::default();
         let mut queue = Queue::default();
         let mut art = Art::default();
@@ -567,7 +571,11 @@ mod tests {
             &mut queue,
             &mut art,
         );
-        let subline = text_rect(&output, "Nils Aker").expect("the artist subline");
+        assert!(
+            drawn_texts(&output).contains(&"Guest"),
+            "the row draws the track's own artist"
+        );
+        let subline = text_rect(&output, "Guest").expect("the track artist subline");
         let command = click(
             &ctx,
             subline.center(),
@@ -580,13 +588,13 @@ mod tests {
 
         assert_eq!(
             library.page(),
-            Some(&Page::Artist("spotify:artist:band".to_owned())),
-            "the album's artist subline opens the artist"
+            Some(&Page::Artist("spotify:artist:guest".to_owned())),
+            "the row's subline opens the artist it names, not the album's"
         );
         assert_eq!(
             command,
             Some(Command::LoadArtist {
-                artist: "spotify:artist:band".to_owned()
+                artist: "spotify:artist:guest".to_owned()
             })
         );
         assert!(!queue.can_next(), "opening a page must not start the queue");

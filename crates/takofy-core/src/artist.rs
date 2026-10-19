@@ -38,6 +38,19 @@ pub enum ArtistError {
 /// is cut here: the reference's Popular list is a preview, not the discography.
 pub(crate) const TOP_TRACKS: usize = 10;
 
+/// How many release URIs one `ALBUM_V4` request asks for.
+///
+/// An artist payload can name a few hundred releases, and one request over all
+/// of them can answer only part of the set. Fifty keeps each request inside what
+/// the provider answers in full, so a short answer costs its own chunk rather
+/// than the discography.
+pub(crate) const RELEASE_CHUNK: usize = 50;
+
+/// The release URIs split into the requests one read sends.
+pub(crate) fn release_chunks(order: &[String]) -> impl Iterator<Item = &[String]> + '_ {
+    order.chunks(RELEASE_CHUNK)
+}
+
 /// Every release URI the payload names, in the order the page draws them.
 ///
 /// Albums, then singles, then compilations, each group's current variant only,
@@ -191,6 +204,23 @@ pub(crate) fn releases_from(response: &BatchedExtensionResponse, order: &[String
         .collect()
 }
 
+/// The releases a chunked read answered, in the request's own order.
+///
+/// Each answer is mapped against its own chunk, so a chunk that failed or came
+/// back short costs only its releases rather than the whole discography.
+pub(crate) fn releases_of(
+    order: &[String],
+    answers: Vec<Option<BatchedExtensionResponse>>,
+) -> Vec<Release> {
+    release_chunks(order)
+        .zip(answers)
+        .flat_map(|(chunk, answer)| match answer {
+            Some(response) => releases_from(&response, chunk),
+            None => Vec::new(),
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use librespot::core::{SpotifyId, SpotifyUri};
@@ -211,8 +241,8 @@ mod tests {
     use takofy_model::{CoverUrl, ReleaseKind};
 
     use super::{
-        TOP_TRACKS, detail, portrait_of, release_of, release_uris, releases_from,
-        top_track_positions,
+        RELEASE_CHUNK, TOP_TRACKS, detail, portrait_of, release_chunks, release_of, release_uris,
+        releases_from, releases_of, top_track_positions,
     };
 
     /// A 16-byte gid. `SpotifyId::from_raw` rejects anything else.
@@ -589,6 +619,57 @@ mod tests {
         let releases = releases_from(&answer, &order);
         assert_eq!(releases.len(), 1, "the unanswered URI is skipped too");
         assert_eq!(releases[0].name, "First");
+    }
+
+    #[test]
+    fn three_hundred_release_uris_are_split_into_full_chunks() {
+        let order: Vec<String> = (0..300)
+            .map(|index| format!("spotify:album:{index}"))
+            .collect();
+
+        let chunks: Vec<&[String]> = release_chunks(&order).collect();
+
+        assert_eq!(chunks.len(), 300 / RELEASE_CHUNK, "one request per chunk");
+        assert_eq!(chunks.len(), 6, "300 URIs at {RELEASE_CHUNK} each");
+        assert!(
+            chunks.iter().all(|chunk| !chunk.is_empty()),
+            "a request is never sent empty"
+        );
+        assert!(
+            chunks.iter().all(|chunk| chunk.len() <= RELEASE_CHUNK),
+            "no request asks for more than the bound allows"
+        );
+        assert_eq!(
+            chunks.iter().map(|chunk| chunk.len()).sum::<usize>(),
+            300,
+            "every URI is asked for exactly once"
+        );
+    }
+
+    #[test]
+    fn a_short_answer_still_maps_the_releases_that_answered() {
+        let order = vec![album_uri(10), album_uri(20), album_uri(30)];
+        let answer = response(&[
+            (
+                &album_uri(10),
+                wire_album("First", AlbumType::ALBUM, 2018, &[]),
+            ),
+            (
+                &album_uri(20),
+                wire_album("Second", AlbumType::ALBUM, 2019, &[]),
+            ),
+        ]);
+
+        let names: Vec<String> = releases_of(&order, vec![Some(answer)])
+            .into_iter()
+            .map(|release| release.name)
+            .collect();
+
+        assert_eq!(
+            names,
+            vec!["First", "Second"],
+            "the unanswered URI costs only its own release"
+        );
     }
 
     #[test]

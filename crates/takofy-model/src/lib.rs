@@ -195,12 +195,6 @@ pub struct AlbumDetail {
     pub name: String,
     /// The album's artists joined with `, `; empty when the wire named none.
     pub artists: String,
-    /// The album's own artist URIs, in the same order as [`Self::artists`].
-    ///
-    /// It stops at the first artist that contributes no name or whose id does
-    /// not resolve, matching [`TrackEntry::artist_uris`], so the subline's link
-    /// never points at a different artist than the one named beside it.
-    pub artist_uris: Vec<String>,
     /// The release year, or `None` for a wire year of zero or none at all.
     ///
     /// A `time::Date` cannot hold a year past 9999, so a wider integer is not a

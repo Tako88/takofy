@@ -19,7 +19,8 @@ use takofy_model::{AlbumDetail, ArtistDetail, CoverUrl, PlaylistEntry, TrackEntr
 
 use crate::album::{AlbumError, detail, positions};
 use crate::artist::{
-    ArtistError, detail as artist_detail, release_uris, releases_from, top_track_positions,
+    ArtistError, detail as artist_detail, release_chunks, release_uris, releases_of,
+    top_track_positions,
 };
 use crate::collection;
 use crate::context::{
@@ -237,14 +238,16 @@ pub(crate) async fn read_album(session: &Session, uri: &str) -> Result<AlbumDeta
 
 /// One artist with its top tracks, its discography and the followed state.
 ///
-/// Four requests in one command: the artist itself, one batched `ALBUM_V4` over
-/// every release the payload names, one batched `TRACK_V4` over the top tracks,
-/// and the collection probe the Follow label reads. The probe is best-effort: a
-/// failure leaves the label at `Follow` and the page otherwise intact.
+/// Four requests in one command: the artist itself, batched `ALBUM_V4` requests
+/// over every release the payload names, one batched `TRACK_V4` over the top
+/// tracks, and the collection probe the Follow label reads. The probe is
+/// best-effort: a failure leaves the label at `Follow` and the page otherwise
+/// intact.
 ///
-/// A failed release-metadata request leaves the discography empty rather than
-/// failing the page: the hero and the top tracks are worth drawing on their own,
-/// and the empty discography is visible.
+/// The release metadata is asked for in chunks, and a failed or short chunk
+/// leaves its own releases out rather than emptying the discography: the hero
+/// and the top tracks are worth drawing on their own, and what arrived is
+/// visible.
 pub(crate) async fn read_artist(
     session: &Session,
     uri: &str,
@@ -258,10 +261,18 @@ pub(crate) async fn read_artist(
         .map_err(|error| ArtistError::Source(error.to_string()))?;
 
     let order = release_uris(&artist);
-    let releases = match batched_request(session, &order, ExtensionKind::ALBUM_V4).await {
-        Some(response) => releases_from(&response, &order),
-        None => Vec::new(),
-    };
+    let mut answers = Vec::new();
+    for chunk in release_chunks(&order) {
+        answers.push(batched_request(session, chunk, ExtensionKind::ALBUM_V4).await);
+    }
+    let releases = releases_of(&order, answers);
+    if releases.len() < order.len() {
+        log::warn!(
+            "{} of {} releases came back from metadata",
+            releases.len(),
+            order.len()
+        );
+    }
 
     let country = session.country();
     let top_tracks = label_tracks(session, top_track_positions(&artist, &country)).await;

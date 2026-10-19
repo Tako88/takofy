@@ -4,6 +4,10 @@
 //! not flip the label, it sends the write, and the label moves when the answer
 //! says so. While a write is in flight the button cannot be pressed again, and a
 //! failure leaves the label where the server last left it.
+//!
+//! The page's probe and the write's own reply arrive as the same update, so a
+//! write in flight is remembered by the value it asked for: only that value
+//! ends the wait.
 
 use crate::message::{Command, Failure, Update};
 
@@ -15,9 +19,11 @@ pub struct Follow {
     /// The last confirmed state. `None` means the probe has not answered, which
     /// reads as not followed and stays pressable: the write is idempotent.
     confirmed: Option<bool>,
-    /// A write is in flight. Nothing may be pressed until it answers.
-    pending: bool,
-    /// The last write's failure, cleared by the next successful answer.
+    /// The value the in-flight write asked for. `None` means no write is in
+    /// flight. The probe's answer and the write's answer both arrive as
+    /// `Followed`, so the requested value is what says which one answered.
+    pending: Option<bool>,
+    /// The last write's failure, cleared when the write's own answer arrives.
     failed: Option<Failure>,
 }
 
@@ -54,7 +60,7 @@ impl Follow {
 
     /// Whether the button can be pressed at all.
     pub fn pressable(&self) -> bool {
-        self.artist.is_some() && !self.pending
+        self.artist.is_some() && self.pending.is_none()
     }
 
     /// The failure the button's hint shows, if the last write failed.
@@ -69,32 +75,35 @@ impl Follow {
     /// opened, so a double press cannot send two writes.
     pub fn pressed(&mut self) -> Option<Command> {
         let artist = self.artist.clone()?;
-        if self.pending {
+        if self.pending.is_some() {
             return None;
         }
         let followed = !self.confirmed.unwrap_or(false);
-        self.pending = true;
+        self.pending = Some(followed);
         Some(Command::SetFollow { artist, followed })
     }
 
     /// Folds one worker update into the state.
     ///
-    /// Only an answer for the artist this state concerns is read. A success
-    /// moves the label and clears the failure; a failure keeps the label and
-    /// records why, and either way the button is pressable again.
+    /// Only an answer for the artist this state concerns is read. Every such
+    /// answer moves the label; only the answer the in-flight write asked for
+    /// ends the wait and clears the failure. A `Followed` that reports some
+    /// other value is the page's own probe, which says nothing about the write.
     pub fn apply(&mut self, update: &Update) {
         match update {
             Update::Followed { artist, followed }
                 if self.artist.as_deref() == Some(artist.as_str()) =>
             {
                 self.confirmed = Some(*followed);
-                self.pending = false;
-                self.failed = None;
+                if self.pending == Some(*followed) {
+                    self.pending = None;
+                    self.failed = None;
+                }
             }
             Update::FollowFailed { artist, failure }
                 if self.artist.as_deref() == Some(artist.as_str()) =>
             {
-                self.pending = false;
+                self.pending = None;
                 self.failed = Some(*failure);
             }
             _ => {}
@@ -223,6 +232,64 @@ mod tests {
         assert_eq!(follow.failed(), Some(Failure::Save));
         assert!(follow.pressable(), "the retry is the next press");
         assert_eq!(follow.pressed(), Some(set_follow("a", false)));
+    }
+
+    #[test]
+    fn a_probe_answer_while_a_write_is_pending_keeps_it_pending() {
+        let mut follow = Follow::default();
+        follow.open("a");
+        follow.apply(&Update::Followed {
+            artist: "a".to_owned(),
+            followed: true,
+        });
+        assert_eq!(follow.pressed(), Some(set_follow("a", false)));
+
+        // The page's own probe answers the artist it opened, with the value the
+        // server confirmed before the press. The write has not answered yet.
+        follow.apply(&Update::Followed {
+            artist: "a".to_owned(),
+            followed: true,
+        });
+        assert!(
+            !follow.pressable(),
+            "the probe must not let a second write be sent"
+        );
+        assert_eq!(follow.pressed(), None);
+    }
+
+    #[test]
+    fn the_reply_the_write_asked_for_clears_the_pending_write() {
+        let mut follow = Follow::default();
+        follow.open("a");
+        assert_eq!(follow.pressed(), Some(set_follow("a", true)));
+
+        follow.apply(&Update::Followed {
+            artist: "a".to_owned(),
+            followed: true,
+        });
+        assert_eq!(follow.label(), "Following");
+        assert!(follow.pressable());
+    }
+
+    #[test]
+    fn a_mismatched_reply_moves_the_label_and_clears_nothing() {
+        let mut follow = Follow::default();
+        follow.open("a");
+        follow.apply(&Update::FollowFailed {
+            artist: "a".to_owned(),
+            failure: Failure::Save,
+        });
+        let _ = follow.pressed();
+
+        // Not the value the write asked for, so the write is still in flight and
+        // the failure it must clear is still shown.
+        follow.apply(&Update::Followed {
+            artist: "a".to_owned(),
+            followed: false,
+        });
+        assert_eq!(follow.label(), "Follow", "the reply still moved the label");
+        assert_eq!(follow.failed(), Some(Failure::Save), "nothing was cleared");
+        assert!(!follow.pressable(), "the write is still in flight");
     }
 
     #[test]

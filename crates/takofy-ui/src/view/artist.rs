@@ -95,6 +95,7 @@ pub fn artist_view(
                         playable: !artist.top_tracks.is_empty(),
                         follow: page.follow.label(),
                         follow_live: page.follow.pressable(),
+                        follow_failed: page.follow.failed(),
                     };
                     let pressed = artist_hero::show(ui, &hero, tokens);
                     if pressed.followed {
@@ -634,6 +635,57 @@ mod tests {
                 artist: ARTIST.to_owned(),
                 followed: false,
             })
+        );
+    }
+
+    #[test]
+    fn a_follow_failure_draws_its_copy_beside_the_confirmed_label() {
+        let ctx = context();
+        let size = Vec2::new(900.0, 800.0);
+        let mut library = library_with(detail(Vec::new(), Vec::new()));
+        library.apply(&Update::Followed {
+            artist: ARTIST.to_owned(),
+            followed: true,
+        });
+        let _ = library.follow.pressed();
+        library.apply(&Update::FollowFailed {
+            artist: ARTIST.to_owned(),
+            failure: Failure::Save,
+        });
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let (_, output) = frame(
+            &ctx,
+            size,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let texts = drawn_texts(&output);
+        let copy = crate::signin::failure_message(Failure::Save);
+        assert!(
+            texts.contains(&copy),
+            "the failed write's copy is drawn: {texts:?}"
+        );
+        assert!(
+            texts.contains(&"Following"),
+            "the label stays where the server last left it: {texts:?}"
+        );
+
+        // Beside the button, on its own centre line, not over the tools.
+        let (_, follow) = hero_rects(&ctx, size);
+        let hint = text_rect(&output, copy).expect("the failure's copy is painted");
+        assert!(
+            hint.left() > follow.left(),
+            "the copy sits beside the button: {hint:?} against {follow:?}"
+        );
+        assert!(
+            (hint.center().y - follow.center().y).abs() < 1.0,
+            "the copy shares the button's centre line: {hint:?} against {follow:?}"
         );
     }
 

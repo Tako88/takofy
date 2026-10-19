@@ -16,6 +16,7 @@ use crate::availability::Control;
 use crate::cover::Cover;
 use crate::icon::Icon;
 use crate::layout::hero::artist_title_size;
+use crate::message::Failure;
 use crate::theme::icon::Size;
 use crate::theme::{MonoWeight, Tokens, Weight, extent, fonts, hero, space, text, tracking};
 
@@ -32,6 +33,8 @@ pub struct ArtistHero<'a> {
     pub follow: &'a str,
     /// Whether the Follow control can act right now.
     pub follow_live: bool,
+    /// Why the last Follow write failed, shown beside the button.
+    pub follow_failed: Option<Failure>,
 }
 
 /// What a press on the hero asked for.
@@ -171,6 +174,28 @@ fn actions(ui: &mut Ui, hero: &ArtistHero<'_>, tokens: &Tokens) -> Pressed {
         );
         controls::icon_button(ui, tokens, control, rect, icon, Size::MD, label, false);
         right = rect.left() - space::S2;
+    }
+
+    if let Some(failure) = hero.follow_failed {
+        let left = follow.right() + space::S4;
+        // The hint stops short of the glyphs, so a long message never draws over
+        // a control.
+        let width = (right - left).max(0.0);
+        if width > 0.0 {
+            let hint = recipe::line(
+                ui,
+                crate::signin::failure_message(failure),
+                recipe::track_secondary(),
+                tokens.palette.text_muted,
+                0.0,
+                width,
+            );
+            ui.painter().galley(
+                Pos2::new(left, centre - hint.size().y / 2.0),
+                hint,
+                tokens.palette.text_muted,
+            );
+        }
     }
 
     Pressed { played, followed }

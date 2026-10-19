@@ -25,7 +25,6 @@ use crate::theme::{
     MonoWeight, Tokens, Weight, extent, fonts, radius, space, stroke, text, tracking,
 };
 
-use super::track_list::list_rect;
 use super::track_row::{self, Click, Row, TitleCell, state_of};
 use super::{art, controls, text as recipe};
 
@@ -44,13 +43,19 @@ pub struct Block<'a> {
     pub playable: bool,
 }
 
-/// The height a block occupies: its hairline, the head, the gap under it, and
-/// one row per track.
+/// The height a block occupies: its hairline, the head, the gap under it, one
+/// row per track, and the discography's trailing gap.
 ///
 /// The body is reserved for every track whether or not its label has arrived, so
-/// a frame that fills rows in does not move the scrollbar.
+/// a frame that fills rows in does not move the scrollbar. [`body`] draws into
+/// exactly this rect, so the height the page culls with is the height drawn.
 pub fn height(count: usize) -> f32 {
-    stroke::HAIRLINE + space::S5 + extent::RELEASE_ART + space::S4 + count as f32 * extent::ROW_H
+    stroke::HAIRLINE
+        + space::S5
+        + extent::RELEASE_ART
+        + space::S4
+        + count as f32 * extent::ROW_H
+        + space::S6
 }
 
 /// What a click inside the block asked for.
@@ -92,13 +97,20 @@ fn body(
 ) -> Clicked {
     let release = block.release;
     let width = ui.available_width();
+    let count = release.tracks.len();
     let mut clicked = Clicked::default();
 
-    let (line, _) = ui.allocate_exact_size(vec2(width, stroke::HAIRLINE), Sense::hover());
-    ui.painter().rect_filled(line, 0.0, tokens.palette.border);
-    ui.add_space(space::S5);
+    // One allocation for the whole block: the page culls with `height`, and what
+    // it culls is exactly what is drawn, so a block never blanks early.
+    let (rect, _) = ui.allocate_exact_size(vec2(width, height(count)), Sense::hover());
 
-    let (head, _) = ui.allocate_exact_size(vec2(width, extent::RELEASE_ART), Sense::hover());
+    let line = Rect::from_min_size(rect.min, vec2(width, stroke::HAIRLINE));
+    ui.painter().rect_filled(line, 0.0, tokens.palette.border);
+
+    let head = Rect::from_min_size(
+        pos2(rect.left(), line.bottom() + space::S5),
+        vec2(width, extent::RELEASE_ART),
+    );
     let art = Rect::from_min_size(head.min, Vec2::splat(extent::RELEASE_ART));
     art::tile(
         ui.painter(),
@@ -187,17 +199,14 @@ fn body(
             tokens.palette.text_subtle,
         );
     }
-    ui.add_space(space::S4);
 
     // The body: no column head, the whole list reserved so the scrollbar does
     // not move as rows fill in, and rows only while the block is on screen and
     // its labels have landed.
-    let count = release.tracks.len();
-    let list = list_rect(ui, count);
-    ui.allocate_rect(list, Sense::hover());
-    // The reference's discography gap, so one block's last row does not touch
-    // the next block's rule.
-    ui.add_space(space::S6);
+    let list = Rect::from_min_size(
+        pos2(rect.left(), head.bottom() + space::S4),
+        vec2(width, extent::ROW_H * count as f32),
+    );
     if !block.on_screen || count == 0 {
         return clicked;
     }
@@ -251,4 +260,76 @@ fn body(
     }
 
     clicked
+}
+
+#[cfg(test)]
+mod tests {
+    use egui::{Context, Pos2, RawInput, Rect, Vec2};
+    use takofy_model::{Release, ReleaseKind};
+
+    use super::*;
+    use crate::cover::Cover;
+    use crate::releases::Labels;
+    use crate::theme::{Tokens, fonts, style};
+
+    fn context() -> Context {
+        let tokens = Tokens::DARK;
+        let ctx = Context::default();
+        ctx.set_fonts(fonts::definitions());
+        ctx.set_global_style(style(&tokens));
+        ctx
+    }
+
+    fn release(count: usize) -> Release {
+        Release {
+            uri: "spotify:album:r1".to_owned(),
+            name: "One".to_owned(),
+            kind: ReleaseKind::Album,
+            year: Some(2024),
+            cover: None,
+            tracks: (0..count)
+                .map(|index| format!("spotify:track:{index}"))
+                .collect(),
+        }
+    }
+
+    /// The cursor's advance across one block, less the gap the parent adds
+    /// between its widgets: the block's own extent, measured at `width`.
+    fn advance(width: f32, count: usize) -> f32 {
+        let ctx = context();
+        let tokens = Tokens::DARK;
+        let transport = Transport::default();
+        let release = release(count);
+        let block = Block {
+            release: &release,
+            labels: Labels::Idle,
+            cover: Cover::Missing,
+            on_screen: false,
+            playable: false,
+        };
+
+        let mut measured = None;
+        let input = RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(width, 2000.0))),
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| {
+            ui.set_max_width(width);
+            let top = ui.cursor().min.y;
+            let _ = show(ui, Table::Full, &block, &transport, &tokens);
+            measured = Some(ui.cursor().min.y - top - ui.spacing().item_spacing.y);
+        });
+        output.textures_delta.clear();
+        measured.expect("the block lays out")
+    }
+
+    /// The page culls with [`height`] and then draws at the cursor, so the two
+    /// numbers must be the same one or a block blanks before it leaves the top.
+    #[test]
+    fn the_cursor_advance_is_the_height_the_culling_uses() {
+        for width in [420.0, 900.0] {
+            assert_eq!(advance(width, 3), height(3), "three rows at {width} px");
+            assert_eq!(advance(width, 0), height(0), "no rows at {width} px");
+        }
+    }
 }

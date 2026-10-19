@@ -88,7 +88,6 @@ mod tests {
             uri: uri.to_owned(),
             name: name.to_owned(),
             artists: "Band".to_owned(),
-            artist_uris: Vec::new(),
             year: Some(1997),
             cover: None,
             tracks: Vec::new(),
