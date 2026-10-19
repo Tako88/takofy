@@ -389,20 +389,43 @@ fn head(ui: &mut Ui, columns: table_layout::Columns, tokens: &Tokens) {
     let columns = columns.at(Pos2::new(band.left(), band.top()));
     let cell = |rect: Rect| Rect::from_x_y_ranges(rect.x_range(), band.y_range());
 
-    heading(ui, cell(columns.index), "#", true, &font, tokens);
-    heading(ui, cell(columns.title), "Title", false, &font, tokens);
-    heading(ui, cell(columns.album), "Album", false, &font, tokens);
-    heading(ui, cell(columns.added), "Added", false, &font, tokens);
+    // The header mirrors the row: the number sits in the same right-justified
+    // box the row draws it in.
+    heading(
+        ui,
+        table_layout::number_box(cell(columns.index)),
+        "#",
+        Align::Centre,
+        &font,
+        tokens,
+    );
+    heading(ui, cell(columns.title), "Title", Align::Left, &font, tokens);
+    heading(
+        ui,
+        cell(columns.artist),
+        "Artist",
+        Align::Left,
+        &font,
+        tokens,
+    );
+    heading(ui, cell(columns.album), "Album", Align::Left, &font, tokens);
+    heading(ui, cell(columns.added), "Added", Align::Left, &font, tokens);
 
     // The duration column is headed by a clock rather than by a word, and the like
     // and the actions columns carry no heading: a label over a glyph repeats it.
+    // A block-level glyph ignores text alignment, so the clock is placed at the
+    // column's right edge explicitly, where the row's duration ends.
     let clock = cell(columns.duration);
     if clock.width() > 0.0 {
+        let side = Size::SM.side;
         icon::paint(
             ui.painter(),
             icon::Icon::Clock,
-            Rect::from_center_size(clock.center(), vec2(Size::SM.side, Size::SM.side))
-                .round_to_pixels(ui.pixels_per_point()),
+            Rect::from_min_size(
+                Pos2::new(clock.right() - side, clock.center().y - side / 2.0),
+                vec2(side, side),
+            )
+            .round_to_pixels(ui.pixels_per_point()),
             Size::SM,
             tokens.palette.text_subtle,
         );
@@ -419,8 +442,15 @@ fn head(ui: &mut Ui, columns: table_layout::Columns, tokens: &Tokens) {
     ui.add_space(space::S1);
 }
 
+/// Where a heading sits across its column.
+#[derive(Clone, Copy)]
+enum Align {
+    Left,
+    Centre,
+}
+
 /// One heading, upper-cased and tracked apart, in its column.
-fn heading(ui: &Ui, rect: Rect, label: &str, right: bool, font: &FontId, tokens: &Tokens) {
+fn heading(ui: &Ui, rect: Rect, label: &str, align: Align, font: &FontId, tokens: &Tokens) {
     if rect.width() <= 0.0 || label.is_empty() {
         return;
     }
@@ -432,10 +462,9 @@ fn heading(ui: &Ui, rect: Rect, label: &str, right: bool, font: &FontId, tokens:
         recipe::tracking_pts(text::XXS, tracking::CAPS),
         rect.width(),
     );
-    let x = if right {
-        rect.right() - galley.size().x
-    } else {
-        rect.left()
+    let x = match align {
+        Align::Left => rect.left(),
+        Align::Centre => rect.center().x - galley.size().x / 2.0,
     };
     let y = rect.center().y - galley.size().y / 2.0;
     ui.painter()
@@ -1217,6 +1246,7 @@ mod tests {
         let columns = table_layout::columns(row.width(), Table::Full.columns()).at(row.min);
         for (label, column) in [
             ("Title", columns.title),
+            ("Artist", columns.artist),
             ("Album", columns.album),
             ("Added", columns.added),
         ] {
@@ -1227,6 +1257,105 @@ mod tests {
                 column.left()
             );
         }
+    }
+
+    #[test]
+    fn below_1000_the_playlist_heads_and_draws_the_artist_but_not_the_album() {
+        // The reference drops the album at the same width it reduces the
+        // playbar, from the header and from every row, and keeps the artist.
+        let ctx = context();
+        let mut library = library_with(vec![TrackEntry {
+            uri: "a".to_owned(),
+            title: "t0".to_owned(),
+            artists: "Band".to_owned(),
+            album: Some("Record".to_owned()),
+            duration_ms: Some(222_000),
+            named: true,
+            cover: None,
+        }]);
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+
+        let mut output = ctx.run_ui(input(Vec::new()), |ui| {
+            let _ = tracks_view(
+                ui,
+                Table::Reduced,
+                &mut library,
+                &mut transport,
+                &mut queue,
+                &mut Art::default(),
+                Instant::now(),
+                &Tokens::DARK,
+            );
+        });
+        output.textures_delta.clear();
+        let texts = drawn_texts(&output);
+        assert!(
+            texts.contains(&"ARTIST"),
+            "the header must keep the artist heading: {texts:?}"
+        );
+        assert!(
+            texts.contains(&"Band"),
+            "the row must keep the artist: {texts:?}"
+        );
+        assert!(
+            !texts.contains(&"ALBUM"),
+            "the header must drop the album heading: {texts:?}"
+        );
+        assert!(
+            !texts.contains(&"Record"),
+            "the row must drop the album: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn a_long_artist_elides_inside_its_column() {
+        let tokens = Tokens::DARK;
+        let ctx = context();
+        let width = 700.0;
+        let columns = table_layout::columns(width, Table::Reduced.columns());
+        let rect = Rect::from_min_size(Pos2::ZERO, vec2(width, extent::ROW_H));
+        let artist = "The Extremely Long-Named Orchestra of the Northern Coast and Its Friends";
+        let row = Row {
+            uri: "a",
+            number: 1,
+            title: "t0",
+            artist,
+            album: Some("Record"),
+            added: None,
+            duration: Some("3:42"),
+            state: State::Resting,
+            cover: Cover::Missing,
+        };
+
+        let mut output = ctx.run_ui(input(Vec::new()), |ui| {
+            let _ = track_row::show(ui, rect, columns, &row, &tokens);
+        });
+        output.textures_delta.clear();
+        let galley = output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Text(text) if text.galley.text() == artist => {
+                    Some(text.galley.clone())
+                }
+                _ => None,
+            })
+            .expect("the artist column paints its label");
+
+        assert_eq!(galley.rows.len(), 1, "the artist must not wrap");
+        assert!(galley.elided, "the artist must elide");
+        assert!(
+            galley.rows[0].row.text().ends_with('…'),
+            "the elided artist must end in an ellipsis: {:?}",
+            galley.rows[0].row.text()
+        );
+        assert!(
+            galley.size().x <= columns.artist.width() + 0.01,
+            "the artist is {} wide in a {} column",
+            galley.size().x,
+            columns.artist.width()
+        );
     }
 
     #[test]

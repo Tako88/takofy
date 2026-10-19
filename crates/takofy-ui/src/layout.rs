@@ -31,10 +31,14 @@ pub const NOWPLAYING_HIDDEN_MAX: f32 = 1120.0;
 pub const PLAYBAR_REDUCED_MAX: f32 = 1000.0;
 /// At and below this width the sidebar becomes the rail.
 pub const RAIL_MAX: f32 = 900.0;
+/// At and below this width a playlist drops the album column and keeps the
+/// artist. The reference does it in the same media query that reduces the
+/// playbar, and the artist is what tells a listener which record is playing.
+pub const TABLE_REDUCED_MAX: f32 = 1000.0;
 /// At and below this width a track list drops the album, the date added and the
-/// like, keeping the title and the duration. The reference does it in a media
-/// query on the window, which is why it is a threshold here and not a measure of
-/// the table.
+/// like, keeping the title, the artist and the duration. The reference does it
+/// in a media query on the window, which is why it is a threshold here and not a
+/// measure of the table.
 pub const TABLE_NARROW_MAX: f32 = 760.0;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -147,7 +151,10 @@ pub struct TopbarRects {
 pub enum Table {
     /// Every column the reference draws.
     Full,
-    /// The title takes what the album, the date and the like were using.
+    /// The playlist has dropped the album so the artist can stay.
+    Reduced,
+    /// The title and the artist take what the album, the date and the like were
+    /// using.
     Narrow,
 }
 
@@ -156,13 +163,23 @@ impl Table {
     pub fn columns(self) -> table::Present {
         match self {
             Self::Full => table::Present {
+                artist: true,
                 album: true,
                 added: true,
                 like: true,
                 duration: true,
                 actions: true,
             },
+            Self::Reduced => table::Present {
+                artist: true,
+                album: false,
+                added: true,
+                like: true,
+                duration: true,
+                actions: true,
+            },
             Self::Narrow => table::Present {
+                artist: true,
                 album: false,
                 added: false,
                 like: false,
@@ -220,6 +237,8 @@ pub fn regions_for(width: f32) -> Regions {
         },
         table: if width <= TABLE_NARROW_MAX {
             Table::Narrow
+        } else if width <= TABLE_REDUCED_MAX {
+            Table::Reduced
         } else {
             Table::Full
         },
@@ -468,19 +487,34 @@ mod tests {
         assert_eq!(regions_for(RAIL_MAX + 0.1).sidebar, Sidebar::Full);
 
         assert_eq!(regions_for(TABLE_NARROW_MAX).table, Table::Narrow);
-        assert_eq!(regions_for(TABLE_NARROW_MAX + 0.1).table, Table::Full);
+        assert_eq!(regions_for(TABLE_NARROW_MAX + 0.1).table, Table::Reduced);
+        assert_eq!(regions_for(TABLE_REDUCED_MAX).table, Table::Reduced);
+        assert_eq!(regions_for(TABLE_REDUCED_MAX + 0.1).table, Table::Full);
     }
 
     #[test]
-    fn a_narrow_table_keeps_the_title_its_duration_and_its_controls() {
+    fn a_narrow_table_keeps_the_title_the_artist_its_duration_and_its_controls() {
         let narrow = Table::Narrow.columns();
         assert!(!narrow.album && !narrow.added && !narrow.like);
-        // The duration is what a listener scrubs by, and the more button is the
-        // only way to reach a track's actions, so neither is ever dropped.
+        // A playlist is the one list whose artist cannot be inferred from the
+        // list itself, so it is never dropped. The duration is what a listener
+        // scrubs by, and the more button is the only way to reach a track's
+        // actions, so neither is ever dropped either.
+        assert!(narrow.artist);
         assert!(narrow.duration && narrow.actions);
 
         let full = Table::Full.columns();
-        assert!(full.album && full.added && full.like && full.duration && full.actions);
+        assert!(full.artist && full.album && full.added && full.like);
+        assert!(full.duration && full.actions);
+    }
+
+    #[test]
+    fn the_album_goes_before_the_artist_below_1000() {
+        let reduced = Table::Reduced.columns();
+        assert!(!reduced.album);
+        assert!(reduced.artist);
+        // The date added and the like stay until the window is much narrower.
+        assert!(reduced.added && reduced.like);
     }
 
     #[test]

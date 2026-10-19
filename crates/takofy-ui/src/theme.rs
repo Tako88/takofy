@@ -195,6 +195,9 @@ pub mod extent {
     pub const TRACK_LIKE_W: f32 = 28.0;
     pub const TRACK_DURATION_W: f32 = 56.0;
     pub const TRACK_ACTIONS_W: f32 = 28.0;
+    /// The box a row's number or glyph sits in, 1.5 rem. The reference
+    /// right-justifies it inside the wider index column.
+    pub const TRACK_NUMBER_W: f32 = 24.0;
 
     /// A card's minimum width, 9 rem, which is what the grid's auto-fill counts.
     pub const CARD_MIN_W: f32 = 144.0;
@@ -216,14 +219,21 @@ pub mod extent {
 /// A row's fixed columns take their width and these share what is left, so their
 /// ratio decides how a track list reads: the title is what a listener scans.
 ///
+/// A playlist is the one list whose credit changes track to track, so it carries
+/// an artist column and a denser set of weights and gutters to pay for it.
+///
 /// A nested title's gutter is not a token. The reference composes it as a grid
 /// track and a gap, so the sum is not a value it names; whoever lays the title
 /// out writes `extent::LIBRARY_ART + space::S3` and invents nothing.
 pub mod grow {
-    /// The title column, `1fr`.
+    /// The title column of a library or album-block list, `1fr`.
     pub const TITLE: f32 = 1.0;
-    /// The album column, `0.65fr` in the reference's playlist template.
-    pub const ALBUM: f32 = 0.65;
+    /// The album column of a library list, `0.7fr`.
+    pub const ALBUM: f32 = 0.7;
+    /// The playlist's denser template: title `1.35fr`, artist and album `0.9fr`.
+    pub const TITLE_PLAYLIST: f32 = 1.35;
+    pub const ARTIST: f32 = 0.9;
+    pub const ALBUM_PLAYLIST: f32 = 0.9;
 }
 
 /// A header band: its height, its art, and the clamp its title is drawn at.

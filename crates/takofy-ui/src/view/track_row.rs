@@ -20,7 +20,7 @@ use egui::{Color32, FontId, Pos2, Rect, Sense, Ui, vec2};
 use crate::availability::Control;
 use crate::cover::Cover;
 use crate::icon::{self, Icon};
-use crate::layout::table::{Columns, title_parts};
+use crate::layout::table::{Columns, number_box, title_parts};
 use crate::theme::icon::Size;
 use crate::theme::{Tokens, ease, eq, motion, radius, stroke, text};
 
@@ -121,8 +121,9 @@ pub fn show(ui: &mut Ui, rect: Rect, columns: Columns, row: &Row<'_>, tokens: &T
         );
     }
 
-    index(ui, columns.index, row, revealed, tokens);
+    index(ui, number_box(columns.index), row, revealed, tokens);
     title(ui, columns.title, row, tokens);
+    artist(ui, columns.artist, row.artist, tokens);
     album(ui, columns.album, row.album, tokens);
     added(ui, columns.added, row.added, tokens);
     let on_like = like(ui, columns.like, key, revealed, tokens);
@@ -157,7 +158,7 @@ fn index(ui: &Ui, rect: Rect, row: &Row<'_>, revealed: bool, tokens: &Tokens) {
     } else if row.state.current() {
         equaliser(ui, rect, row.state, tokens);
     } else {
-        right(
+        centred_line(
             ui,
             rect,
             &row.number.to_string(),
@@ -214,7 +215,7 @@ fn bar_scales(time: f32) -> [f32; eq::BARS] {
     })
 }
 
-/// The title column: the cover's box, then the name over the artist.
+/// The title column: the cover's box, then the name.
 fn title(ui: &Ui, rect: Rect, row: &Row<'_>, tokens: &Tokens) {
     if !drawable(rect) {
         return;
@@ -229,20 +230,26 @@ fn title(ui: &Ui, rect: Rect, row: &Row<'_>, tokens: &Tokens) {
         tokens,
     );
 
-    let text_rect = parts.text;
-    if !drawable(text_rect) {
+    if drawable(parts.text) {
+        left(
+            ui,
+            parts.text,
+            row.title,
+            recipe::track_name(),
+            tokens.palette.text,
+        );
+    }
+}
+
+/// The artist column, which only a playlist carries.
+fn artist(ui: &Ui, rect: Rect, label: &str, tokens: &Tokens) {
+    if !drawable(rect) || label.is_empty() {
         return;
     }
-    let name = recipe::track_name();
-    let name_h = line_height(ui, &name);
-    let stacked = name_h + line_height(ui, &recipe::track_secondary());
-    let top = text_rect.center().y - stacked / 2.0;
-    left_at(ui, text_rect, top, row.title, name, tokens.palette.text);
-    left_at(
+    left(
         ui,
-        text_rect,
-        top + name_h,
-        row.artist,
+        rect,
+        label,
         recipe::track_secondary(),
         tokens.palette.text_muted,
     );
@@ -371,6 +378,13 @@ fn left_at(ui: &Ui, rect: Rect, top: f32, label: &str, font: FontId, color: Colo
     let galley = recipe::line(ui, label, font, color, 0.0, rect.width());
     ui.painter()
         .galley(Pos2::new(rect.left(), top), galley, color);
+}
+
+/// Paints a line centred in `rect`.
+fn centred_line(ui: &Ui, rect: Rect, label: &str, font: FontId, color: Color32) {
+    let galley = recipe::line(ui, label, font, color, 0.0, rect.width());
+    let pos = rect.center() - galley.size() / 2.0;
+    ui.painter().galley(pos, galley, color);
 }
 
 /// Paints a line against the right edge of `rect`.
