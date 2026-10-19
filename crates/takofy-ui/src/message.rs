@@ -3,7 +3,7 @@
 //! These types carry state, never credentials: `takofy-ui` has no path to a
 //! token or an auth error, so the compiler keeps secrets out of a view.
 
-use takofy_model::{PlaylistEntry, TrackEntry};
+use takofy_model::{CoverImage, CoverUrl, PlaylistEntry, TrackEntry};
 
 /// A request from the window to the worker.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,8 +20,12 @@ pub enum Command {
     Resume,
     /// Stop playback.
     Stop,
+    /// Jump to `position_ms` within the loaded track.
+    Seek { position_ms: u32 },
     /// Fetch the playlists again.
     ReloadLibrary,
+    /// Fetch one cover image from the worker.
+    Fetch { url: CoverUrl },
 }
 
 /// Why an operation failed, with no field that could carry a secret.
@@ -54,6 +58,10 @@ pub enum TransportUpdate {
     Unavailable,
     /// Playback was stopped on request.
     Stopped,
+    /// A track is loaded and this is how long it is.
+    Duration { duration_ms: u32 },
+    /// The player jumped to `position_ms` within the loaded track.
+    Seeked { position_ms: u32 },
     /// The command could not be carried out; carries no detail.
     Failed(Failure),
 }
@@ -71,13 +79,18 @@ pub enum Update {
     Playlists(Vec<PlaylistEntry>),
     /// The playlists could not be loaded.
     PlaylistFailed(Failure),
-    /// A playlist's tracks.
+    /// A playlist's tracks, plus the context's own image when it carried one.
     Tracks {
         playlist: String,
         tracks: Vec<TrackEntry>,
+        cover: Option<CoverUrl>,
     },
     /// A playlist's tracks could not be loaded.
     TracksFailed { playlist: String, failure: Failure },
+    /// A decoded cover, ready to upload.
+    Cover { url: CoverUrl, image: CoverImage },
+    /// A cover could not be fetched or decoded.
+    CoverFailed { url: CoverUrl },
     /// A playback change.
     Transport(TransportUpdate),
 }

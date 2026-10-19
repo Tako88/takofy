@@ -10,7 +10,7 @@ use librespot::core::SessionConfig;
 use takofy_core::credentials::AccessToken;
 use takofy_core::engine::{Engine, EngineError};
 use takofy_core::playback::{Playback, PlaybackError, PlaybackEvent};
-use takofy_model::{PlaylistEntry, TrackEntry};
+use takofy_model::{CoverUrl, PlaylistEntry, TrackEntry};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::oneshot::Receiver;
 
@@ -45,6 +45,13 @@ impl SessionError {
     }
 }
 
+/// One page of a playlist's tracks, plus the context's own image.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct TrackPage {
+    pub tracks: Vec<TrackEntry>,
+    pub cover: Option<CoverUrl>,
+}
+
 /// The session work the command task drives.
 ///
 /// Returns `impl Future + Send` rather than being an `async fn` because an
@@ -62,9 +69,12 @@ pub(crate) trait SessionHost: Send + 'static {
     fn tracks(
         &mut self,
         playlist: &str,
-    ) -> impl Future<Output = Result<Option<Vec<TrackEntry>>, SessionError>> + Send;
+    ) -> impl Future<Output = Result<TrackPage, SessionError>> + Send;
 
     fn play(&mut self, uri: &str) -> Result<(), SessionError>;
+
+    /// Jumps within the loaded track. A call with no player is a no-op.
+    fn seek(&self, position_ms: u32);
 
     /// The event stream of a player started since the last call, so the one
     /// drain thread can be handed it exactly once.
@@ -127,15 +137,20 @@ impl SessionHost for LiveSession {
         }
     }
 
-    async fn tracks(&mut self, playlist: &str) -> Result<Option<Vec<TrackEntry>>, SessionError> {
+    async fn tracks(&mut self, playlist: &str) -> Result<TrackPage, SessionError> {
         let Some(engine) = &self.engine else {
             return Err(SessionError::NotConnected);
         };
-        engine
-            .tracks(playlist)
+        let mut pages = engine.tracks(playlist);
+        let tracks = pages
             .next()
             .await
-            .map_err(SessionError::Engine)
+            .map_err(SessionError::Engine)?
+            .unwrap_or_default();
+        Ok(TrackPage {
+            tracks,
+            cover: pages.cover(),
+        })
     }
 
     fn play(&mut self, uri: &str) -> Result<(), SessionError> {
@@ -164,6 +179,12 @@ impl SessionHost for LiveSession {
     fn resume(&self) {
         if let Some(playback) = &self.playback {
             playback.resume();
+        }
+    }
+
+    fn seek(&self, position_ms: u32) {
+        if let Some(playback) = &self.playback {
+            playback.seek(position_ms);
         }
     }
 

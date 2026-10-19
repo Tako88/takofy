@@ -49,6 +49,27 @@ testable; one that carries the whole state is not: it moves the UI's state into
 core and leaves the reducer with nothing to assert. The first shape is what
 earns the boilerplate the second one avoids.
 
+Playback events carry the loaded track's duration and the position a seek
+landed on, so the window can draw the time left and follow the player's truth
+rather than a guess. The play queue is a window reducer too: it owns the index
+and the advance rule, folds the same updates the transport does, and hands back
+an ordinary `Play`, so the worker stays a dumb executor and never learns about
+the queue. None of this changes the shutdown order — the command task still
+owns the engine and the player, and teardown still joins it before the runtime
+drops.
+
+Cover art runs through the same split. The binary fetches and decodes; the
+window only holds textures. A frame's protocol is `begin_frame` → `look` →
+`requests` → `next_wake`: the app starts the frame, the draw `look`s each cover
+box it is about to paint, the app asks the store for the fetches the draw said
+it wanted and sends at most a fixed number, and then it asks how long until the
+next retry or in-flight deadline so an idle window can wake itself for a retry
+it would otherwise never make. Nothing in the window fetches, and a box that is
+not drawn is never requested. Decode runs on a detached thread rather than
+tokio's blocking pool for the same reason sign-in does: a decode that hangs must
+not hold up the runtime drop, and a detached thread dies with the process
+instead.
+
 ## Who owns what
 
 - The binary owns the tokio runtime, and the `Engine` in headless mode. In the
@@ -98,6 +119,15 @@ on the blocking pool, and a detached thread dies with the process instead.
 egui is immediate mode, so `ui()` re-runs each frame and reads a plain struct.
 That suits a music player, which is lists and a transport bar rather than an
 animation showcase, and it has AccessKit support by default.
+
+The icons are data. The reference draws them from an SVG sprite, so
+`crates/takofy-ui/src/icon/data.rs` holds the flattened coordinates and the
+binary carries no SVG parser: `convex_polygon` for the filled glyphs, polylines
+for the stroked ones, and two pure functions that round the corners and cap the
+ends at draw time, because the sprite asks for round joins and epaint mitres.
+The table is generated, and the generator is a local script rather than repo
+content, so `assets/icons/README.md` documents the conversion and a test
+re-checks every glyph against `docs/reference/main.js`.
 
 What it costs: egui has no stylesheet. The token layer in
 `crates/takofy-ui/src/theme.rs` is therefore the only place a colour, spacing

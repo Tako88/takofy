@@ -4,7 +4,9 @@
 //! and which load a reply belongs to, and it hands the view a command when the
 //! user asks for one.
 
-use takofy_model::{PlaylistEntry, TrackEntry};
+use std::collections::HashMap;
+
+use takofy_model::{CoverUrl, PlaylistEntry, TrackEntry};
 
 use crate::message::{Command, Failure, Update};
 
@@ -29,6 +31,31 @@ pub struct TracksFor {
     pub tracks: Vec<TrackEntry>,
 }
 
+/// What the playlist band draws for its cover.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BandCover<'a> {
+    /// The selected playlist's tracks are still loading, so the band waits
+    /// rather than fetching a first-track cover it may replace with the
+    /// context image a moment later.
+    Pending,
+    /// The cover the playlist entry names, if any.
+    Entry(Option<&'a CoverUrl>),
+}
+
+/// The band's cover source: the playlist entry alone, once its tracks have
+/// settled.
+///
+/// The band never derives a cover from the track list: the entry already holds
+/// the picture or the first track's album cover, and a second derivation could
+/// disagree with it.
+pub fn band_cover(entry: &PlaylistEntry, settled: bool) -> BandCover<'_> {
+    if settled {
+        BandCover::Entry(entry.cover.as_ref())
+    } else {
+        BandCover::Pending
+    }
+}
+
 /// The sidebar's playlists and the selected playlist's tracks.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Library {
@@ -36,6 +63,9 @@ pub struct Library {
     pub tracks: Load<TracksFor>,
     /// The playlist a reply must name to be drawn; keeps a stale reply out.
     selected: Option<String>,
+    /// Context images, keyed by the playlist that owns them, so an upgrade that
+    /// arrives before the playlists list is ready is not lost.
+    context_covers: HashMap<String, CoverUrl>,
 }
 
 impl Library {
@@ -52,11 +82,19 @@ impl Library {
                 }
             }
             Update::Playlists(playlists) => {
-                self.playlists = Load::Ready(playlists.clone());
+                let mut playlists = playlists.clone();
+                for entry in &mut playlists {
+                    if let Some(cover) = self.context_covers.get(&entry.uri) {
+                        entry.cover = Some(cover.clone());
+                    }
+                }
+                self.context_covers
+                    .retain(|uri, _| playlists.iter().any(|entry| entry.uri == *uri));
                 let gone = self
                     .selected
                     .as_deref()
                     .is_some_and(|selected| !playlists.iter().any(|entry| entry.uri == selected));
+                self.playlists = Load::Ready(playlists);
                 if gone {
                     self.selected = None;
                     self.tracks = Load::Idle;
@@ -65,7 +103,22 @@ impl Library {
             Update::PlaylistFailed(failure) => {
                 self.playlists = Load::Failed(*failure);
             }
-            Update::Tracks { playlist, tracks } => {
+            Update::Tracks {
+                playlist,
+                tracks,
+                cover,
+            } => {
+                // The cover upgrade is keyed by the update's own playlist, never
+                // the selected one, so a reply for A cannot land on B.
+                if let Some(cover) = cover {
+                    self.context_covers.insert(playlist.clone(), cover.clone());
+                    if let Load::Ready(playlists) = &mut self.playlists
+                        && let Some(entry) =
+                            playlists.iter_mut().find(|entry| entry.uri == *playlist)
+                    {
+                        entry.cover = Some(cover.clone());
+                    }
+                }
                 if self.selected.as_deref() == Some(playlist.as_str()) {
                     self.tracks = Load::Ready(TracksFor {
                         playlist: playlist.clone(),
@@ -78,7 +131,11 @@ impl Library {
                     self.tracks = Load::Failed(*failure);
                 }
             }
-            Update::NeedsAuthorization | Update::SignInFailed(_) | Update::Transport(_) => {}
+            Update::NeedsAuthorization
+            | Update::SignInFailed(_)
+            | Update::Transport(_)
+            | Update::Cover { .. }
+            | Update::CoverFailed { .. } => {}
         }
     }
 
@@ -102,11 +159,31 @@ impl Library {
         self.playlists = Load::Loading;
         Command::ReloadLibrary
     }
+
+    /// Clears the selection and the tracks that belonged to it.
+    pub fn deselect(&mut self) {
+        self.selected = None;
+        self.tracks = Load::Idle;
+    }
+
+    /// The selected playlist's name, once the list that names it is ready.
+    pub fn selected_name(&self) -> Option<&str> {
+        self.selected_entry().map(|entry| entry.name.as_str())
+    }
+
+    /// The selected playlist's entry, once the list that holds it is ready.
+    pub fn selected_entry(&self) -> Option<&PlaylistEntry> {
+        let selected = self.selected.as_deref()?;
+        match &self.playlists {
+            Load::Ready(playlists) => playlists.iter().find(|entry| entry.uri == selected),
+            Load::Idle | Load::Loading | Load::Failed(_) => None,
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use takofy_model::{PlaylistEntry, TrackEntry};
+    use takofy_model::{CoverUrl, PlaylistEntry, TrackEntry};
 
     use super::*;
     use crate::message::TransportUpdate;
@@ -116,6 +193,7 @@ mod tests {
             uri: uri.to_owned(),
             name: name.to_owned(),
             named: true,
+            cover: None,
         }
     }
 
@@ -124,7 +202,10 @@ mod tests {
             uri: uri.to_owned(),
             title: uri.to_owned(),
             artists: String::new(),
+            album: None,
+            duration_ms: None,
             named: true,
+            cover: None,
         }
     }
 
@@ -132,6 +213,19 @@ mod tests {
         TracksFor {
             playlist: playlist.to_owned(),
             tracks,
+        }
+    }
+
+    fn cover_url(tail: &str) -> CoverUrl {
+        CoverUrl::from_wire(&format!("https://i.scdn.co/image/{tail}")).expect("a cover url")
+    }
+
+    fn playlist_with_cover(uri: &str, name: &str, cover: CoverUrl) -> PlaylistEntry {
+        PlaylistEntry {
+            uri: uri.to_owned(),
+            name: name.to_owned(),
+            named: true,
+            cover: Some(cover),
         }
     }
 
@@ -161,6 +255,7 @@ mod tests {
         library.apply(&Update::Tracks {
             playlist: "a".to_owned(),
             tracks: vec![track("t")],
+            cover: None,
         });
         library.apply(&Update::Playlists(vec![playlist("a", "A")]));
 
@@ -197,6 +292,7 @@ mod tests {
         library.apply(&Update::Tracks {
             playlist: "a".to_owned(),
             tracks: vec![track("t")],
+            cover: None,
         });
 
         assert_eq!(
@@ -213,6 +309,7 @@ mod tests {
         library.apply(&Update::Tracks {
             playlist: "a".to_owned(),
             tracks: vec![track("t")],
+            cover: None,
         });
 
         assert_eq!(library.tracks, Load::Loading);
@@ -250,6 +347,7 @@ mod tests {
         library.apply(&Update::Tracks {
             playlist: "a".to_owned(),
             tracks: vec![track("t")],
+            cover: None,
         });
         assert_eq!(library.tracks, Load::Idle);
     }
@@ -271,6 +369,7 @@ mod tests {
         library.apply(&Update::Tracks {
             playlist: "a".to_owned(),
             tracks: vec![track("t")],
+            cover: None,
         });
 
         library.apply(&Update::Playlists(vec![
@@ -293,6 +392,7 @@ mod tests {
         library.apply(&Update::Tracks {
             playlist: "a".to_owned(),
             tracks: vec![track("t")],
+            cover: None,
         });
 
         library.apply(&Update::Playlists(vec![playlist("b", "B")]));
@@ -302,10 +402,227 @@ mod tests {
     }
 
     #[test]
+    fn deselect_clears_the_selection_and_the_tracks() {
+        let mut library = Library::default();
+        library.select("a");
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: vec![track("t")],
+            cover: None,
+        });
+
+        library.deselect();
+
+        assert_eq!(library.selected(), None);
+        assert_eq!(library.tracks, Load::Idle);
+    }
+
+    #[test]
+    fn a_reply_for_a_deselected_playlist_is_discarded() {
+        let mut library = Library::default();
+        library.select("a");
+        library.deselect();
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: vec![track("t")],
+            cover: None,
+        });
+
+        assert_eq!(library.tracks, Load::Idle);
+    }
+
+    #[test]
+    fn the_selected_name_comes_from_a_ready_list() {
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(vec![playlist("a", "A")]));
+        library.select("a");
+        assert_eq!(library.selected_name(), Some("A"));
+    }
+
+    #[test]
+    fn the_selected_name_is_none_while_the_list_reloads() {
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(vec![playlist("a", "A")]));
+        library.select("a");
+        library.reload();
+        assert_eq!(library.selected(), Some("a"));
+        assert_eq!(library.selected_name(), None);
+    }
+
+    #[test]
     fn transport_updates_are_ignored() {
         let mut library = Library::default();
         library.apply(&Update::Transport(TransportUpdate::Ended));
         assert_eq!(library.playlists, Load::Idle);
         assert_eq!(library.tracks, Load::Idle);
+    }
+
+    #[test]
+    fn a_tracks_cover_upgrades_an_entry_that_already_had_a_cover() {
+        let first = cover_url("first");
+        let context = cover_url("context");
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(vec![playlist_with_cover(
+            "a", "A", first,
+        )]));
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: vec![track("t")],
+            cover: Some(context.clone()),
+        });
+
+        assert_eq!(
+            library.playlists,
+            Load::Ready(vec![playlist_with_cover("a", "A", context)])
+        );
+    }
+
+    #[test]
+    fn a_tracks_without_a_cover_leaves_the_entry_alone() {
+        let first = cover_url("first");
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(vec![playlist_with_cover(
+            "a",
+            "A",
+            first.clone(),
+        )]));
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: vec![track("t")],
+            cover: None,
+        });
+
+        assert_eq!(
+            library.playlists,
+            Load::Ready(vec![playlist_with_cover("a", "A", first)])
+        );
+    }
+
+    #[test]
+    fn a_tracks_cover_upgrades_the_update_playlist_not_the_selected_one() {
+        let a_first = cover_url("a-first");
+        let a_context = cover_url("a-context");
+        let b_cover = cover_url("b");
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(vec![
+            playlist_with_cover("a", "A", a_first),
+            playlist_with_cover("b", "B", b_cover.clone()),
+        ]));
+        library.select("b");
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: vec![track("t")],
+            cover: Some(a_context.clone()),
+        });
+
+        assert_eq!(
+            library.playlists,
+            Load::Ready(vec![
+                playlist_with_cover("a", "A", a_context),
+                playlist_with_cover("b", "B", b_cover),
+            ])
+        );
+        // A's reply must not fill B's tracks.
+        assert_eq!(library.tracks, Load::Loading);
+    }
+
+    #[test]
+    fn a_cover_arriving_before_playlists_is_applied_after_them() {
+        let context = cover_url("context");
+        let mut library = Library::default();
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: Vec::new(),
+            cover: Some(context.clone()),
+        });
+        library.apply(&Update::Playlists(vec![playlist("a", "A")]));
+
+        assert_eq!(
+            library.playlists,
+            Load::Ready(vec![playlist_with_cover("a", "A", context)])
+        );
+    }
+
+    #[test]
+    fn a_playlists_reload_keeps_a_recorded_upgrade() {
+        let context = cover_url("context");
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(vec![playlist("a", "A")]));
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: Vec::new(),
+            cover: Some(context.clone()),
+        });
+        library.apply(&Update::Playlists(vec![playlist("a", "A")]));
+
+        assert_eq!(
+            library.playlists,
+            Load::Ready(vec![playlist_with_cover("a", "A", context)])
+        );
+    }
+
+    #[test]
+    fn a_removed_playlists_cover_is_pruned() {
+        let context = cover_url("context");
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(vec![playlist("a", "A")]));
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: Vec::new(),
+            cover: Some(context),
+        });
+        library.apply(&Update::Playlists(vec![playlist("b", "B")]));
+
+        assert!(library.context_covers.is_empty(), "the key must be pruned");
+        assert_eq!(library.playlists, Load::Ready(vec![playlist("b", "B")]));
+    }
+
+    #[test]
+    fn band_cover_waits_until_the_tracks_settle() {
+        let cover = cover_url("context");
+        let entry = playlist_with_cover("a", "A", cover.clone());
+        assert_eq!(band_cover(&entry, false), BandCover::Pending);
+        assert_eq!(band_cover(&entry, true), BandCover::Entry(Some(&cover)));
+    }
+
+    #[test]
+    fn band_cover_is_missing_when_the_entry_names_none() {
+        let entry = playlist("a", "A");
+        assert_eq!(band_cover(&entry, true), BandCover::Entry(None));
+    }
+
+    #[test]
+    fn a_failed_context_still_settles_the_band_on_the_entry() {
+        // The band's rule is the load's settle state, not the context's success:
+        // a failed context settles onto whatever the entry already holds.
+        let cover = cover_url("first-track");
+        let entry = playlist_with_cover("a", "A", cover.clone());
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(vec![entry]));
+        library.select("a");
+        library.apply(&Update::TracksFailed {
+            playlist: "a".to_owned(),
+            failure: Failure::Load,
+        });
+        let settled = !matches!(library.tracks, Load::Loading | Load::Idle);
+        let entry = library.selected_entry().expect("the selected entry");
+        assert_eq!(band_cover(entry, settled), BandCover::Entry(Some(&cover)));
+    }
+
+    #[test]
+    fn band_cover_handles_an_empty_playlist() {
+        let mut library = Library::default();
+        library.select("a");
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: Vec::new(),
+            cover: None,
+        });
+        assert_eq!(library.tracks, Load::Ready(tracks_for("a", Vec::new())));
+        let settled = !matches!(library.tracks, Load::Loading | Load::Idle);
+        // With no list loaded there is no entry to read; the band's caller draws
+        // nothing. This pins the settled rule for the empty list itself.
+        assert!(settled);
+        assert!(library.selected_entry().is_none());
     }
 }

@@ -152,6 +152,8 @@ fn print_playback_event(event: &PlaybackEvent) {
         PlaybackEvent::Ended => println!("ended"),
         PlaybackEvent::Unavailable => println!("unavailable"),
         PlaybackEvent::Stopped => println!("stopped"),
+        PlaybackEvent::Duration { duration_ms } => println!("track length {duration_ms} ms"),
+        PlaybackEvent::Seeked { position_ms } => println!("seeked to {position_ms} ms"),
     }
 }
 

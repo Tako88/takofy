@@ -704,11 +704,6 @@ svg {
   color: var(--color-text-subtle);
 }
 
-/* Only one element in the bar may claim the free space. */
-.trail + .topbar__account {
-  margin-left: 0;
-}
-
 .trail a {
   color: var(--color-text-muted);
   white-space: nowrap;
@@ -765,37 +760,6 @@ svg {
 
 .searchbar input::placeholder {
   color: var(--color-text-subtle);
-}
-
-.topbar__account {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  margin-left: auto;
-  padding: 0.15rem 0.5rem 0.15rem 0.2rem;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  font-family: var(--font-mono);
-  font-size: var(--text-2xs);
-  letter-spacing: var(--tracking-wide);
-  text-transform: uppercase;
-}
-
-.topbar__account:hover {
-  border-color: var(--color-border-strong);
-}
-
-.avatar {
-  display: grid;
-  place-items: center;
-  width: 1.25rem;
-  height: 1.25rem;
-  border-radius: var(--radius-xs);
-  background: var(--color-surface-hover);
-  color: var(--color-text);
-  font-family: var(--font-mono);
-  font-size: 0.5rem;
-  font-weight: 700;
 }
 
 .topbar__drawer-toggle {
@@ -1342,9 +1306,13 @@ svg {
   --track-cols: 2.25rem minmax(0, 1fr) minmax(0, 0.7fr) 6rem 3.5rem 1.75rem;
 }
 
-/* A playlist carries both the album and the date it was added. */
+/* A playlist is the one list where the credit changes track to track, so the
+   artist and the album each get a column — and the denser set tightens the
+   gutters to pay for them. */
 .tracks--playlist {
-  --track-cols: 2.25rem minmax(0, 1fr) minmax(0, 0.65fr) 5.5rem 1.75rem 3.5rem 1.75rem;
+  --track-cols: 2.25rem minmax(0, 1.35fr) minmax(0, 0.9fr) minmax(0, 0.9fr) 5.5rem 1.75rem 3.5rem
+    1.75rem;
+  --track-gap: var(--space-3);
 }
 
 .tracks--library .track-row {
@@ -1363,7 +1331,7 @@ svg {
 .tracklist__head {
   display: grid;
   grid-template-columns: var(--track-cols);
-  gap: var(--space-4);
+  gap: var(--track-gap, var(--space-4));
   align-items: center;
   padding: 0 var(--space-3) var(--space-2);
   border-bottom: 1px solid var(--color-border);
@@ -1376,18 +1344,24 @@ svg {
   margin-bottom: var(--space-1);
 }
 
+/* Both header cells mirror the row cells exactly: the number sits in the same
+   1.5rem right-aligned box the row uses, and the glyph is pushed with flex
+   because a block-level <svg> ignores text-align. */
 .tracklist__head-number {
-  text-align: right;
+  width: 1.5rem;
+  justify-self: end;
+  text-align: center;
 }
 
 .tracklist__head-end {
-  text-align: right;
+  display: flex;
+  justify-content: flex-end;
 }
 
 .track-row {
   display: grid;
   grid-template-columns: var(--track-cols);
-  gap: var(--space-4);
+  gap: var(--track-gap, var(--space-4));
   align-items: center;
   min-height: var(--row-h);
   padding: var(--space-1) var(--space-3);
@@ -2559,6 +2533,17 @@ svg {
   .playbar__now .icon-button:last-child {
     display: none;
   }
+
+  /* The album column goes before the artist does — the artist is what tells you
+     which record you are actually hearing. */
+  .tracks--playlist {
+    --track-cols: 2.25rem minmax(0, 1.4fr) minmax(0, 1fr) 5.5rem 1.75rem 3.5rem 1.75rem;
+  }
+
+  .tracks--playlist .track-row__album,
+  .tracks--playlist .tracklist__head-album {
+    display: none;
+  }
 }
 
 @media (max-width: 900px) {
@@ -2753,7 +2738,6 @@ svg {
   }
 
   .topbar__history,
-  .topbar__account span,
   .topbar__drawer-toggle,
   .trail {
     display: none;
@@ -2821,6 +2805,38 @@ svg {
 
   .track-row__duration {
     margin-left: auto;
+  }
+
+  /* A playlist is the one list where the artist cannot simply be dropped, so it
+     wraps under the title, indented to the title's text axis. */
+  .tracks--playlist .track-row {
+    flex-wrap: wrap;
+    row-gap: 0;
+  }
+
+  .tracks--playlist .track-row__index {
+    order: 0;
+  }
+
+  .tracks--playlist .track-row__title {
+    order: 1;
+  }
+
+  .tracks--playlist .track-row__duration {
+    order: 2;
+  }
+
+  .tracks--playlist .track-row__actions {
+    order: 3;
+  }
+
+  .tracks--playlist .track-row__artist {
+    order: 4;
+    flex: 1 1 100%;
+    /* Lands on the title's text axis: index (1.75rem) + gap + artwork (2.25rem)
+       + gap, which is where .track-row__text starts. */
+    padding-left: calc(4rem + var(--space-3) * 2);
+    padding-bottom: var(--space-1);
   }
 
   .library-grid--list .media {

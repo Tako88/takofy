@@ -2469,6 +2469,8 @@ dependencies = [
  "num-traits",
  "png",
  "tiff",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -5430,9 +5432,11 @@ dependencies = [
  "eframe",
  "egui",
  "env_logger",
+ "image",
  "keyring",
  "librespot",
  "log",
+ "reqwest",
  "takofy-core",
  "takofy-model",
  "takofy-ui",
