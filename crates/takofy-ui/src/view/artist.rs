@@ -715,6 +715,57 @@ mod tests {
         );
     }
 
+    /// A realistic discography: forty-eight releases, far more than fits. The
+    /// frame must draw, and must ask only for the blocks it can show.
+    #[test]
+    fn a_long_discography_asks_only_for_what_is_on_screen() {
+        let ctx = context();
+        let size = Vec2::new(900.0, 800.0);
+        let releases: Vec<Release> = (1..=48)
+            .map(|index| {
+                release(
+                    &format!("spotify:album:r{index}"),
+                    &format!("Release {index}"),
+                    &["spotify:track:a", "spotify:track:b"],
+                )
+            })
+            .collect();
+        let mut library = library_with(detail(Vec::new(), releases));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let (_, output) = frame(
+            &ctx,
+            size,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+
+        assert!(
+            drawn_texts(&output).contains(&"Release 1"),
+            "the first block's head is drawn"
+        );
+        let requests = library.releases.requests();
+        assert_eq!(
+            requests.len(),
+            2,
+            "the top of the discography is what fits, and the cap holds: {requests:?}"
+        );
+        for command in &requests {
+            let Command::LoadReleaseTracks { release, .. } = command else {
+                panic!("a label drain emits only label requests: {command:?}");
+            };
+            assert!(
+                release == "spotify:album:r1" || release == "spotify:album:r2",
+                "a block far below the fold was asked for: {release}"
+            );
+        }
+    }
+
     #[test]
     fn a_release_rows_double_click_plays_that_track() {
         let ctx = context();
