@@ -3,12 +3,15 @@
 use librespot::core::authentication::Credentials;
 use librespot::core::{Session, SessionConfig};
 
+use crate::album::AlbumError;
 use crate::context::{ContextError, Walker};
 use crate::credentials::AccessToken;
 use crate::playback::{Playback, PlaybackError, PlaybackEvent};
-use crate::remote::{ROOTLIST_WIRE, RemoteContext, RemoteRootlist, label_playlists, label_tracks};
+use crate::remote::{
+    ROOTLIST_WIRE, RemoteContext, RemoteRootlist, label_playlists, label_tracks, read_album,
+};
 use crate::rootlist::{RootlistError, fetch_all};
-use takofy_model::{CoverUrl, PlaylistEntry, TrackEntry};
+use takofy_model::{AlbumDetail, CoverUrl, PlaylistEntry, TrackEntry};
 
 /// Why an [`Engine`] operation failed.
 #[derive(Debug, thiserror::Error)]
@@ -19,6 +22,8 @@ pub enum EngineError {
     Rootlist(#[from] RootlistError),
     #[error(transparent)]
     Context(#[from] ContextError),
+    #[error(transparent)]
+    Album(#[from] AlbumError),
 }
 
 /// A connected Spotify session.
@@ -72,6 +77,14 @@ impl Engine {
                 playlist_uri,
             ),
         }
+    }
+
+    /// One album, its tracks labelled.
+    ///
+    /// Unlike a playlist this is a single request and a single labelling pass:
+    /// an album's order comes from the album, so there is no context to walk.
+    pub async fn album(&self, album_uri: &str) -> Result<AlbumDetail, EngineError> {
+        Ok(read_album(&self.session, album_uri).await?)
     }
 }
 

@@ -24,6 +24,7 @@ use crate::availability::Control;
 use crate::cover::Cover;
 use crate::icon::{self, Icon};
 use crate::layout::table::{Columns, number_box, title_parts};
+use crate::player::{Transport, TransportState};
 use crate::route::Page;
 use crate::theme::icon::Size;
 use crate::theme::{Tokens, ease, eq, motion, radius, stroke, text};
@@ -49,6 +50,34 @@ impl State {
     }
 }
 
+/// How a row relates to the transport.
+///
+/// The row never reaches for the transport itself: the view reads it once per
+/// row and hands the row the answer.
+pub fn state_of(uri: &str, transport: &Transport) -> State {
+    let current = transport
+        .now_playing
+        .as_ref()
+        .is_some_and(|now| now.uri == uri);
+    match (current, transport.state) {
+        (false, _) => State::Resting,
+        (true, TransportState::Playing) => State::Playing,
+        (true, _) => State::Paused,
+    }
+}
+
+/// How a row draws its title cell.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TitleCell {
+    /// The cover's box, then the name on one line: a playlist's row.
+    ArtThenName,
+    /// The name over the artist's name, with no art: an album's row.
+    ///
+    /// The artist line is not a link in this slice: it is the row's subline, not
+    /// the artist column the playlist carries.
+    NameOverArtist,
+}
+
 /// What one row draws, as text and flags.
 ///
 /// The view assembles it from the track, the library and the transport. The row
@@ -59,6 +88,8 @@ pub struct Row<'a> {
     /// The number in the index column: the position in the list, from one.
     pub number: usize,
     pub title: &'a str,
+    /// How the title cell is drawn at this table's breakpoint.
+    pub title_cell: TitleCell,
     pub artist: &'a str,
     /// The first artist's page, when labelling resolved one. The cell links only
     /// when this is set and `artist` is non-empty.
@@ -211,6 +242,28 @@ pub fn show(
     (response.double_clicked() && !link_hovered && !on_control).then_some(Click::Play)
 }
 
+/// The tops of a stacked title's two lines, centred together in `rect`.
+///
+/// Pure, so the stacking is pinned without a window: the pair is treated as one
+/// block and centred as a whole, which is what makes a short name over a long
+/// artist read as a single cell rather than as two loose lines. A zero or
+/// non-finite height takes no room, so the result is always finite.
+pub fn stacked_tops(rect: Rect, name_h: f32, artist_h: f32) -> (f32, f32) {
+    let name_h = room(name_h);
+    let artist_h = room(artist_h);
+    let top = rect.center().y - (name_h + artist_h) / 2.0;
+    (top, top + name_h)
+}
+
+/// A height that takes room: anything zero, negative or non-finite takes none.
+fn room(height: f32) -> f32 {
+    if height.is_finite() && height > 0.0 {
+        height
+    } else {
+        0.0
+    }
+}
+
 /// The index column: the number, or the play glyph under the pointer, or the
 /// equaliser while this is the transport's track.
 fn index(ui: &Ui, rect: Rect, row: &Row<'_>, revealed: bool, tokens: &Tokens) {
@@ -285,11 +338,23 @@ fn bar_scales(time: f32) -> [f32; eq::BARS] {
     })
 }
 
-/// The title column: the cover's box, then the name.
+/// The title column.
+///
+/// A playlist's row nests the cover's box inside the title and draws the name
+/// beside it. An album's row has no per-row art — the band already holds the
+/// record's one picture — so the whole cell is the two lines of text.
 fn title(ui: &Ui, rect: Rect, row: &Row<'_>, tokens: &Tokens) {
     if !drawable(rect) {
         return;
     }
+    match row.title_cell {
+        TitleCell::ArtThenName => art_then_name(ui, rect, row, tokens),
+        TitleCell::NameOverArtist => name_over_artist(ui, rect, row, tokens),
+    }
+}
+
+/// The playlist's title cell: the cover's box, then the name.
+fn art_then_name(ui: &Ui, rect: Rect, row: &Row<'_>, tokens: &Tokens) {
     let parts = title_parts(rect);
     art::tile(
         ui.painter(),
@@ -307,6 +372,41 @@ fn title(ui: &Ui, rect: Rect, row: &Row<'_>, tokens: &Tokens) {
             row.title,
             recipe::track_name(),
             tokens.palette.text,
+        );
+    }
+}
+
+/// The album's title cell: the name over its artist, centred together.
+///
+/// Nothing here is a link: the artist line is the row's subline, not the artist
+/// column a playlist carries, and the artist page does not exist yet.
+fn name_over_artist(ui: &Ui, rect: Rect, row: &Row<'_>, tokens: &Tokens) {
+    let name_font = recipe::track_name();
+    let artist_font = recipe::track_secondary();
+    let name_h = line_height(ui, &name_font);
+    let artist_h = if row.artist.is_empty() {
+        0.0
+    } else {
+        line_height(ui, &artist_font)
+    };
+    let (name_top, artist_top) = stacked_tops(rect, name_h, artist_h);
+
+    left_at(
+        ui,
+        rect,
+        name_top,
+        row.title,
+        name_font,
+        tokens.palette.text,
+    );
+    if !row.artist.is_empty() {
+        left_at(
+            ui,
+            rect,
+            artist_top,
+            row.artist,
+            artist_font,
+            tokens.palette.text_muted,
         );
     }
 }
@@ -603,6 +703,75 @@ mod tests {
         assert!(
             spread,
             "the bars pulse in unison, so the stagger is invisible"
+        );
+    }
+
+    /// The two stacked lines' heights at the app's own fonts, read the way a
+    /// frame reads them: after one pass, because egui has no metrics before it.
+    fn font_heights() -> (f32, f32) {
+        let tokens = Tokens::DARK;
+        let ctx = egui::Context::default();
+        ctx.set_fonts(crate::theme::fonts::definitions());
+        ctx.set_global_style(crate::theme::style(&tokens));
+        let mut heights = None;
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            heights = Some(ui.ctx().fonts_mut(|fonts| {
+                (
+                    fonts.row_height(&recipe::track_name()),
+                    fonts.row_height(&recipe::track_secondary()),
+                )
+            }));
+        });
+        output.textures_delta.clear();
+        heights.expect("a frame ran")
+    }
+
+    #[test]
+    fn stacked_tops_centres_the_two_lines_as_one_block() {
+        let rect = Rect::from_min_size(Pos2::new(10.0, 20.0), vec2(200.0, 44.0));
+        let (name_top, artist_top) = stacked_tops(rect, 16.0, 12.0);
+
+        // The block is 28 tall, so it starts 8 above and ends 8 below the centre.
+        assert!((name_top - (rect.center().y - 14.0)).abs() < 1e-4);
+        assert!((artist_top - (name_top + 16.0)).abs() < 1e-4);
+    }
+
+    #[test]
+    fn stacked_tops_keeps_both_lines_inside_the_rect() {
+        let rect = Rect::from_min_size(Pos2::new(10.0, 20.0), vec2(200.0, 44.0));
+        for (name_h, artist_h) in [(16.0, 12.0), (20.0, 0.0), (0.0, 12.0), (44.0, 0.0)] {
+            let (name_top, artist_top) = stacked_tops(rect, name_h, artist_h);
+            assert!(name_top >= rect.top() - 1e-4, "{name_h}/{artist_h}");
+            assert!(
+                artist_top + artist_h <= rect.bottom() + 1e-4,
+                "{name_h}/{artist_h}: the block spills below the rect"
+            );
+        }
+    }
+
+    #[test]
+    fn stacked_tops_is_finite_for_a_zero_height() {
+        let empty = Rect::from_min_size(Pos2::ZERO, vec2(0.0, 0.0));
+        for (name_h, artist_h) in [(0.0, 0.0), (f32::NAN, 0.0), (0.0, f32::INFINITY)] {
+            let (name_top, artist_top) = stacked_tops(empty, name_h, artist_h);
+            assert!(name_top.is_finite(), "{name_h}/{artist_h}: {name_top}");
+            assert!(artist_top.is_finite(), "{name_h}/{artist_h}: {artist_top}");
+        }
+    }
+
+    /// The measured fit, not an assumed one: the two lines must fit the row's
+    /// inner box at today's tokens. If a token grows, this fails before a page
+    /// can clip its own subtitle.
+    #[test]
+    fn the_stacked_title_fits_the_rows_inner_box() {
+        let (name_h, artist_h) = font_heights();
+        let inner_h = crate::theme::extent::ROW_H - 2.0 * crate::theme::space::S1;
+
+        assert!(
+            name_h + artist_h <= inner_h,
+            "the two title lines take {} (name {name_h}, artist {artist_h}) but the \
+             row's inner box is {inner_h}",
+            name_h + artist_h
         );
     }
 

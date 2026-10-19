@@ -43,6 +43,21 @@ impl Present {
             ..self
         }
     }
+
+    /// Drops the columns an album's own tracklist does not carry.
+    ///
+    /// The band already names the record, so neither the artist nor the album
+    /// takes a column, and an album position has no membership date. What is
+    /// left is the reference's album table: the number, the title over its
+    /// artist, the length, the like and the more.
+    pub fn for_album(self) -> Self {
+        Self {
+            artist: false,
+            album: false,
+            added: false,
+            ..self
+        }
+    }
 }
 
 /// Whether a context URI names a playlist: `spotify:playlist:<id>`, or the named
@@ -321,12 +336,7 @@ mod tests {
     /// An album block: the block header names the record, so neither the artist
     /// nor the album takes a column, and its rows carry no added date.
     fn album_block() -> Present {
-        Present {
-            artist: false,
-            album: false,
-            added: false,
-            ..all()
-        }
+        all().for_album()
     }
 
     fn rects(columns: Columns) -> [(&'static str, Rect); 8] {
@@ -429,6 +439,74 @@ mod tests {
 
         // The title takes the dropped columns' share of the growth.
         assert!(hidden.title.width() > columns(width, all()).title.width());
+    }
+
+    #[test]
+    fn an_album_block_clears_the_artist_album_and_added_columns() {
+        let width = 1000.0;
+        let present = all().for_album();
+        assert!(!present.artist, "an album block names no artist column");
+        assert!(!present.album, "an album block names no album column");
+        assert!(!present.added, "an album position has no membership date");
+
+        let columns = columns(width, present);
+        assert_eq!(columns.artist.width(), 0.0);
+        assert_eq!(columns.album.width(), 0.0);
+        assert_eq!(columns.added.width(), 0.0);
+
+        // The controls the album table keeps: the like, the length, the more.
+        assert!(columns.like.width() > 0.0, "the album keeps the like");
+        assert!(columns.duration.width() > 0.0);
+        assert!(columns.actions.width() > 0.0);
+
+        // The title starts one space-4 after the index, with no artist between.
+        assert_close(columns.title.left(), columns.index.right() + space::S4);
+
+        // Five present columns tile the inner width with four space-4 gutters.
+        let sum = columns.index.width()
+            + columns.title.width()
+            + columns.like.width()
+            + columns.duration.width()
+            + columns.actions.width()
+            + 4.0 * space::S4;
+        assert_close(sum, width - 2.0 * space::S3);
+    }
+
+    #[test]
+    fn the_album_title_takes_all_the_growth_the_dropped_columns_had() {
+        // The title is the only grower left, so its width is exactly what the
+        // fixed columns and the four gutters leave: this pins `grow::TITLE` as
+        // the album block's weight rather than a second flexible column.
+        let width = 1000.0;
+        let columns = columns(width, all().for_album());
+        let fixed = extent::TRACK_INDEX_W
+            + extent::TRACK_LIKE_W
+            + extent::TRACK_DURATION_W
+            + extent::TRACK_ACTIONS_W;
+        assert_close(
+            columns.title.width(),
+            width - 2.0 * space::S3 - fixed - 4.0 * space::S4,
+        );
+    }
+
+    #[test]
+    fn only_the_widest_album_block_keeps_the_like() {
+        for table in [Table::Full, Table::Reduced, Table::Narrow] {
+            let present = table.columns().for_album();
+            assert!(
+                !present.artist && !present.album && !present.added,
+                "{table:?} must clear the same three columns"
+            );
+            assert_eq!(
+                present.like,
+                table != Table::Narrow,
+                "{table:?} keeps the like exactly until its breakpoint drops it"
+            );
+            assert!(
+                present.duration && present.actions,
+                "{table:?} always keeps the length and the more"
+            );
+        }
     }
 
     #[test]

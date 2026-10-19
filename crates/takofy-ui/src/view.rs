@@ -3,6 +3,7 @@
 //! The view reads the state machine and the tokens it is handed, and returns a
 //! command when the user asks for one. It never transitions state itself.
 
+mod album;
 mod art;
 pub mod card;
 pub mod controls;
@@ -19,6 +20,7 @@ mod sign_in;
 pub(crate) mod test_support;
 pub mod text;
 pub mod topbar;
+mod track_list;
 mod track_row;
 
 use std::time::Instant;

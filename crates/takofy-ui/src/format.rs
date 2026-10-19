@@ -2,7 +2,7 @@
 //! playbar's clock, the hero's byline, the playlist band's description, and the
 //! age a playlist row gives its date.
 
-use takofy_model::AddedAt;
+use takofy_model::{AddedAt, TrackEntry};
 
 /// One day in milliseconds.
 const DAY_MS: u64 = 86_400_000;
@@ -25,11 +25,81 @@ pub fn format_remaining(position_ms: u32, duration_ms: u32) -> String {
 ///
 /// Zero is `0 songs`, not a special case.
 pub fn count_label(count: usize) -> String {
+    count_noun(count, "song")
+}
+
+/// A count and its noun, singular only for one. Zero is `0 <noun>s`.
+///
+/// One wording rule, two nouns: the playlist counts songs and the album counts
+/// tracks, and neither may drift from the other's pluralisation.
+fn count_noun(count: usize, noun: &str) -> String {
     if count == 1 {
-        "1 song".to_owned()
+        format!("1 {noun}")
     } else {
-        format!("{count} songs")
+        format!("{count} {noun}s")
     }
+}
+
+/// An album's track count as its band writes it: `1 track`, `N tracks`.
+pub fn track_count_label(count: usize) -> String {
+    count_noun(count, "track")
+}
+
+/// The album's total length as the reference writes it, or `None` for no total.
+///
+/// Minutes and then seconds, always both, with the seconds truncated rather than
+/// rounded: `38 min 58 sec`. Minutes are never carried into hours, so a long
+/// album reads `72 min 5 sec`. A total of exactly zero is the absent total.
+pub fn runtime_label(total_ms: u32) -> Option<String> {
+    if total_ms == 0 {
+        return None;
+    }
+    let seconds = total_ms / 1_000;
+    Some(format!("{} min {} sec", seconds / 60, seconds % 60))
+}
+
+/// The album band's byline parts: the artists, the year, the count and the total.
+///
+/// The parts are separate so the painter can place the dot separator between
+/// them and leave no trailing dot when a part is absent. A blank artist line is
+/// dropped rather than drawn as an empty part, and an unknown total is left out.
+pub fn album_meta(artists: &str, year: Option<u16>, tracks: (usize, u32)) -> Vec<String> {
+    let mut parts = Vec::new();
+    let artists = artists.trim();
+    if !artists.is_empty() {
+        parts.push(artists.to_owned());
+    }
+    if let Some(year) = year {
+        parts.push(year.to_string());
+    }
+    let (count, total_ms) = tracks;
+    parts.push(track_count_label(count));
+    if let Some(runtime) = runtime_label(total_ms) {
+        parts.push(runtime);
+    }
+    parts
+}
+
+/// The sum of the track lengths, in milliseconds, or zero when any length is
+/// unknown.
+///
+/// The model holds each length as an `Option`: a track that could not be
+/// labelled carries none, exactly as it carries no album. A sum over only the
+/// lengths that happen to be present is a lower bound, not the runtime, but the
+/// byline would read an exact figure with nothing to mark it as a bound; the
+/// missing lengths are already blank on their own rows, so a total that hides
+/// its gap is worse than no total at all. A list with any unknown length
+/// therefore reports zero — the absent total the band leaves out — and a wholly
+/// known list reports its honest sum. Saturating addition keeps an absurd list
+/// from wrapping.
+pub fn total_duration_ms(tracks: &[TrackEntry]) -> u32 {
+    if tracks.iter().any(|entry| entry.duration_ms.is_none()) {
+        return 0;
+    }
+    tracks
+        .iter()
+        .filter_map(|entry| entry.duration_ms)
+        .fold(0u32, u32::saturating_add)
 }
 
 /// The total runtime as the reference writes it, or `None` when there is no
@@ -213,6 +283,103 @@ mod tests {
         assert_eq!(count_label(0), "0 songs");
         assert_eq!(count_label(2), "2 songs");
         assert_eq!(count_label(62), "62 songs");
+    }
+
+    fn track(uri: &str, duration_ms: Option<u32>) -> TrackEntry {
+        TrackEntry {
+            uri: uri.to_owned(),
+            title: uri.to_owned(),
+            artists: String::new(),
+            album: None,
+            album_uri: None,
+            artist_uris: Vec::new(),
+            added_at: None,
+            duration_ms,
+            named: true,
+            cover: None,
+        }
+    }
+
+    #[test]
+    fn count_noun_is_singular_only_for_one() {
+        assert_eq!(count_noun(1, "song"), "1 song");
+        assert_eq!(count_noun(0, "song"), "0 songs");
+        assert_eq!(count_noun(2, "song"), "2 songs");
+    }
+
+    #[test]
+    fn track_count_label_counts_tracks() {
+        assert_eq!(track_count_label(1), "1 track");
+        assert_eq!(track_count_label(0), "0 tracks");
+        assert_eq!(track_count_label(12), "12 tracks");
+    }
+
+    #[test]
+    fn runtime_label_reads_minutes_and_seconds_the_reference_way() {
+        assert_eq!(runtime_label(2_338_000).as_deref(), Some("38 min 58 sec"));
+        // Minutes are never carried into hours, so 72 minutes stays minutes.
+        assert_eq!(runtime_label(4_325_000).as_deref(), Some("72 min 5 sec"));
+        assert_eq!(runtime_label(1_000).as_deref(), Some("0 min 1 sec"));
+    }
+
+    #[test]
+    fn runtime_label_truncates_whole_seconds() {
+        assert_eq!(runtime_label(2_338_999).as_deref(), Some("38 min 58 sec"));
+        assert_eq!(runtime_label(1_999).as_deref(), Some("0 min 1 sec"));
+    }
+
+    #[test]
+    fn runtime_label_is_none_for_an_absent_total() {
+        assert_eq!(runtime_label(0), None);
+    }
+
+    #[test]
+    fn album_meta_reads_artist_year_count_and_runtime() {
+        assert_eq!(
+            album_meta("Band", Some(1997), (12, 2_338_000)),
+            vec![
+                "Band".to_owned(),
+                "1997".to_owned(),
+                "12 tracks".to_owned(),
+                "38 min 58 sec".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn album_meta_drops_a_blank_artist_and_an_absent_year() {
+        assert_eq!(
+            album_meta("  ", None, (1, 0)),
+            vec!["1 track".to_owned()],
+            "a blank artist and a zero runtime are both absent"
+        );
+        assert_eq!(
+            album_meta("Band", None, (2, 0)),
+            vec!["Band".to_owned(), "2 tracks".to_owned()]
+        );
+    }
+
+    #[test]
+    fn the_total_is_withheld_when_any_length_is_unknown() {
+        assert_eq!(total_duration_ms(&[]), 0, "no tracks is the absent total");
+        assert_eq!(
+            total_duration_ms(&[track("a", Some(1_000)), track("b", Some(2_000))]),
+            3_000
+        );
+        assert_eq!(
+            total_duration_ms(&[track("a", Some(1_000)), track("b", None)]),
+            0,
+            "one unknown length withholds the whole total"
+        );
+    }
+
+    #[test]
+    fn the_total_saturates_instead_of_wrapping() {
+        assert_eq!(
+            total_duration_ms(&[track("a", Some(u32::MAX)), track("b", Some(u32::MAX))]),
+            u32::MAX,
+            "two maximal lengths saturate rather than wrap"
+        );
     }
 
     #[test]

@@ -20,9 +20,10 @@ pub struct Crumb<'a> {
 ///
 /// With the root on screen, Playlists is where you are. On any page the
 /// Playlists crumb becomes a link and the last crumb is current: the playlist's
-/// name once the list that names it is ready, or the page's kind when there is
-/// no name to show. A playlist whose entry is not in a ready list is the one
-/// page that draws no current crumb at all.
+/// name once the list that names it is ready, the album's own name once its
+/// detail names this page, or the page's kind when there is no name to show. A
+/// playlist whose entry is not in a ready list is the one page that draws no
+/// current crumb at all.
 pub fn trail(library: &Library) -> Vec<Crumb<'_>> {
     let mut crumbs = vec![Crumb {
         label: "Home",
@@ -46,7 +47,14 @@ pub fn trail(library: &Library) -> Vec<Crumb<'_>> {
     });
     let label = match page {
         Page::Playlist(_) => library.selected_name(),
-        Page::Album(_) | Page::Artist(_) | Page::Show(_) => Some(page.kind()),
+        // The album's name only once it is loaded, and only for this page: a
+        // ready detail left over from the last album must not name this one.
+        Page::Album(_) => Some(
+            library
+                .current_album()
+                .map_or(page.kind(), |album| album.name.as_str()),
+        ),
+        Page::Artist(_) | Page::Show(_) => Some(page.kind()),
     };
     if let Some(label) = label {
         crumbs.push(Crumb {
@@ -61,11 +69,31 @@ pub fn trail(library: &Library) -> Vec<Crumb<'_>> {
 
 #[cfg(test)]
 mod tests {
-    use takofy_model::PlaylistEntry;
+    use takofy_model::{AlbumDetail, PlaylistEntry};
 
     use super::*;
-    use crate::message::Update;
+    use crate::library::Load;
+    use crate::message::{Failure, Update};
     use crate::route::Page;
+
+    fn album_detail(uri: &str, name: &str) -> AlbumDetail {
+        AlbumDetail {
+            uri: uri.to_owned(),
+            name: name.to_owned(),
+            artists: "Band".to_owned(),
+            year: Some(1997),
+            cover: None,
+            tracks: Vec::new(),
+        }
+    }
+
+    /// The current crumb's label: the last crumb that is not a link.
+    fn current_label(library: &Library) -> Option<&str> {
+        trail(library)
+            .into_iter()
+            .find(|crumb| crumb.current)
+            .map(|crumb| crumb.label)
+    }
 
     fn playlist(uri: &str, name: &str) -> PlaylistEntry {
         PlaylistEntry {
@@ -165,6 +193,72 @@ mod tests {
         assert_eq!(crumbs[1].label, "Playlists");
         assert!(crumbs[1].link);
         assert!(!crumbs.iter().any(|crumb| crumb.current));
+    }
+
+    #[test]
+    fn an_album_page_names_the_loaded_album() {
+        let mut library = Library::default();
+        library.open(Page::Album("spotify:album:a".to_owned()));
+        library.apply(&Update::Album(album_detail(
+            "spotify:album:a",
+            "Signal Decay",
+        )));
+
+        assert_eq!(current_label(&library), Some("Signal Decay"));
+    }
+
+    #[test]
+    fn an_album_page_names_its_kind_while_loading() {
+        let mut library = Library::default();
+        library.open(Page::Album("spotify:album:a".to_owned()));
+
+        assert_eq!(current_label(&library), Some("Album"));
+    }
+
+    #[test]
+    fn an_album_page_names_its_kind_after_a_failure() {
+        let mut library = Library::default();
+        library.open(Page::Album("spotify:album:a".to_owned()));
+        library.apply(&Update::AlbumFailed {
+            album: "spotify:album:a".to_owned(),
+            failure: Failure::Load,
+        });
+
+        assert_eq!(current_label(&library), Some("Album"));
+    }
+
+    #[test]
+    fn an_album_page_names_its_kind_for_another_uri() {
+        let mut library = Library::default();
+        library.open(Page::Album("spotify:album:b".to_owned()));
+        library.album = Load::Ready(album_detail("spotify:album:a", "Signal Decay"));
+
+        assert_eq!(
+            current_label(&library),
+            Some("Album"),
+            "A's name must not name B's crumb"
+        );
+    }
+
+    #[test]
+    fn a_loaded_album_crumb_is_still_the_only_current_one() {
+        let mut library = Library::default();
+        library.open(Page::Album("spotify:album:a".to_owned()));
+        library.apply(&Update::Album(album_detail(
+            "spotify:album:a",
+            "Signal Decay",
+        )));
+
+        let crumbs = trail(&library);
+        assert_eq!(crumbs.len(), 3);
+        assert_eq!(crumbs[2].label, "Signal Decay");
+        assert!(crumbs[2].current);
+        assert!(!crumbs[2].link);
+        assert_eq!(
+            crumbs.iter().filter(|crumb| crumb.current).count(),
+            1,
+            "one current crumb, whatever it is named"
+        );
     }
 
     #[test]

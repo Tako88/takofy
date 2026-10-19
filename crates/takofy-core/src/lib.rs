@@ -5,6 +5,7 @@
 //! `takofy-model`, which has no network. So a view cannot reach the network,
 //! even by accident.
 
+pub mod album;
 pub mod context;
 pub mod credentials;
 pub mod engine;

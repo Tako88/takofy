@@ -38,6 +38,12 @@ pub struct Band<'a> {
     pub description: &'a str,
     /// Whether there is anything to play.
     pub playable: bool,
+    /// Whether the reference gives this context a shuffle control.
+    ///
+    /// A playlist has one; an album's action bar has like and more only, so the
+    /// flag drops the control rather than duplicating the band. The tools are
+    /// laid out right-to-left, so dropping the leftmost keeps the others still.
+    pub shuffle: bool,
     /// The context's cover, as the art pipeline resolves it.
     pub cover: Cover,
 }
@@ -164,7 +170,10 @@ fn inner(ui: &Ui, rect: Rect, band: &Band<'_>, tokens: &Tokens) {
         .galley(Pos2::new(left, bottom), eyebrow, tokens.palette.text_muted);
 }
 
-/// The row under the band: play, and the three that cannot act yet.
+/// The row under the band: play, and the tools that cannot act yet.
+///
+/// A playlist's row holds three of them, an album's two: the shuffle is the one
+/// the flag drops.
 fn actions(ui: &mut Ui, band: &Band<'_>, tokens: &Tokens) -> bool {
     let width = ui.available_width();
     let height = hero::PLAY + 2.0 * space::S4;
@@ -187,11 +196,12 @@ fn actions(ui: &mut Ui, band: &Band<'_>, tokens: &Tokens) -> bool {
 
     // The tools hug the right edge, in the reference's order. None of them can act
     // yet: shuffle and a save need the Web API, and the menu is a later phase.
-    let tools = [
-        (Control::HeroShuffle, Icon::Shuffle, "Shuffle"),
-        (Control::HeroLike, Icon::Heart, "Save to your library"),
-        (Control::HeroMore, Icon::More, "More options"),
-    ];
+    let mut tools = Vec::with_capacity(3);
+    if band.shuffle {
+        tools.push((Control::HeroShuffle, Icon::Shuffle, "Shuffle"));
+    }
+    tools.push((Control::HeroLike, Icon::Heart, "Save to your library"));
+    tools.push((Control::HeroMore, Icon::More, "More options"));
     let mut right = row.right() - space::GUTTER;
     for (control, icon, label) in tools.into_iter().rev() {
         let rect = Rect::from_min_size(

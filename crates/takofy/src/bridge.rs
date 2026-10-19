@@ -287,6 +287,12 @@ pub(crate) fn start<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                         break;
                     }
                 }
+                Event::Command(Some(Command::LoadAlbum { album })) => {
+                    let step = load_album(&mut host, &mut stop_rx, &task_notifier, &album).await;
+                    if step.stopped() {
+                        break;
+                    }
+                }
                 Event::Command(Some(Command::Play { uri })) => {
                     play(&mut host, &task_notifier, &uri);
                 }
@@ -424,6 +430,27 @@ async fn load_tracks<H: SessionHost>(
                     failure,
                 },
             );
+            Step::Done
+        }
+    }
+}
+
+/// Loads one album with its labelled tracks and announces it.
+async fn load_album<H: SessionHost>(
+    host: &mut H,
+    stop: &mut StopReceiver<()>,
+    notifier: &Notifier,
+    album: &str,
+) -> Step {
+    match stop_or(stop, host.album(album)).await {
+        None => Step::Stopped,
+        Some(result) => {
+            announce(notifier, result, Update::Album, |failure| {
+                Update::AlbumFailed {
+                    album: album.to_owned(),
+                    failure,
+                }
+            });
             Step::Done
         }
     }
@@ -583,7 +610,7 @@ mod tests {
 
     use takofy_core::credentials::{AccessToken, CredentialStore, RefreshToken, StoreError};
     use takofy_core::login::{SourceError, SourceErrorKind, TokenSet, TokenSource};
-    use takofy_model::{CoverImage, CoverUrl, PlaylistEntry, TrackEntry};
+    use takofy_model::{AlbumDetail, CoverImage, CoverUrl, PlaylistEntry, TrackEntry};
     use takofy_ui::signin::failure_message;
     use tokio::runtime::Runtime;
 
@@ -804,15 +831,30 @@ mod tests {
         }
     }
 
+    /// A scripted album answer; the default is a bare one at [`ALBUM`].
+    #[derive(Clone)]
+    enum AlbumScript {
+        Ready(AlbumDetail),
+        Fail,
+    }
+
+    impl Default for AlbumScript {
+        fn default() -> Self {
+            Self::Ready(album_detail(ALBUM))
+        }
+    }
+
     #[derive(Default)]
     struct FakeState {
         connect_scripts: Mutex<Vec<ConnectScript>>,
         rootlist_script: Mutex<RootlistScript>,
         tracks_script: Mutex<TracksScript>,
+        album_script: Mutex<AlbumScript>,
         connected: AtomicBool,
         connects: AtomicUsize,
         rootlists: AtomicUsize,
         tracks: AtomicUsize,
+        albums: AtomicUsize,
         plays: AtomicUsize,
         pauses: AtomicUsize,
         resumes: AtomicUsize,
@@ -825,6 +867,7 @@ mod tests {
         connect_started: Mutex<Option<Sender<()>>>,
         rootlist_started: Mutex<Option<Sender<()>>>,
         tracks_started: Mutex<Option<Sender<()>>>,
+        album_started: Mutex<Option<Sender<()>>>,
         play_started: Mutex<Option<Sender<()>>>,
         events: Mutex<Option<UnboundedReceiver<PlaybackEvent>>>,
         event_tx: Mutex<Option<UnboundedSender<PlaybackEvent>>>,
@@ -924,6 +967,27 @@ mod tests {
             }
         }
 
+        fn album(
+            &self,
+            _album: &str,
+        ) -> impl Future<Output = Result<AlbumDetail, SessionError>> + Send {
+            self.shared.albums.fetch_add(1, Ordering::SeqCst);
+            if let Some(tx) = self.shared.album_started.lock().expect("lock").take() {
+                let _ = tx.send(());
+            }
+            let connected = self.shared.connected.load(Ordering::SeqCst);
+            let script = self.shared.album_script.lock().expect("lock").clone();
+            async move {
+                if !connected {
+                    return Err(SessionError::NotConnected);
+                }
+                match script {
+                    AlbumScript::Ready(detail) => Ok(detail),
+                    AlbumScript::Fail => Err(SessionError::NotConnected),
+                }
+            }
+        }
+
         fn play(&mut self, _uri: &str) -> Result<(), SessionError> {
             self.shared.plays.fetch_add(1, Ordering::SeqCst);
             if !self.shared.connected.load(Ordering::SeqCst) {
@@ -967,6 +1031,21 @@ mod tests {
         fn shutdown(self) -> impl Future<Output = Result<(), SessionError>> + Send {
             self.shared.shutdowns.fetch_add(1, Ordering::SeqCst);
             async move { Ok(()) }
+        }
+    }
+
+    /// The album the shell tests open; one name, so a URI and its detail agree.
+    const ALBUM: &str = "spotify:album:a";
+
+    /// One album page's data, with no tracks, so a test names only what it reads.
+    fn album_detail(uri: &str) -> AlbumDetail {
+        AlbumDetail {
+            uri: uri.to_owned(),
+            name: "Record".to_owned(),
+            artists: "Band".to_owned(),
+            year: Some(1997),
+            cover: None,
+            tracks: Vec::new(),
         }
     }
 
@@ -1771,6 +1850,100 @@ mod tests {
         );
         assert_eq!(shared.tracks.load(Ordering::SeqCst), 1);
         assert_eq!(shared.shutdowns.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_load_album_before_connect_announces_a_failure() {
+        let store = Arc::new(MemoryStore::default());
+        let source = Arc::new(FixedSource::default());
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::default());
+        let shared = Arc::clone(&host.shared);
+
+        let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            assert_eq!(
+                ui_end.updates.recv().expect("resume update"),
+                Update::NeedsAuthorization
+            );
+            ui_end
+                .commands
+                .send(Command::LoadAlbum {
+                    album: "spotify:album:a".to_owned(),
+                })
+                .expect("load");
+            ui_end.updates.recv().expect("failure")
+        });
+
+        assert_eq!(
+            update,
+            Update::AlbumFailed {
+                album: "spotify:album:a".to_owned(),
+                failure: Failure::Load,
+            }
+        );
+        assert_eq!(shared.albums.load(Ordering::SeqCst), 1);
+        assert_eq!(shared.shutdowns.load(Ordering::SeqCst), 1);
+    }
+
+    /// Drives one scripted album through the live `load_album` path and returns
+    /// the update the window receives, so every hop from the host's answer to the
+    /// window's vocabulary is real.
+    fn run_album(detail: AlbumDetail) -> Update {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+        *shared.album_script.lock().expect("lock") = AlbumScript::Ready(detail);
+
+        run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::LoadAlbum {
+                    album: "spotify:album:a".to_owned(),
+                })
+                .expect("load");
+            ui_end.updates.recv().expect("album")
+        })
+    }
+
+    #[test]
+    fn a_scripted_album_reaches_the_window() {
+        let detail = album_detail("spotify:album:a");
+        assert_eq!(run_album(detail.clone()), Update::Album(detail));
+    }
+
+    #[test]
+    fn a_failed_album_load_is_announced() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+        *shared.album_script.lock().expect("lock") = AlbumScript::Fail;
+
+        let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::LoadAlbum {
+                    album: "spotify:album:a".to_owned(),
+                })
+                .expect("load");
+            ui_end.updates.recv().expect("failure")
+        });
+
+        assert_eq!(
+            update,
+            Update::AlbumFailed {
+                album: "spotify:album:a".to_owned(),
+                failure: Failure::Load,
+            }
+        );
+        assert_eq!(shared.albums.load(Ordering::SeqCst), 1);
     }
 
     #[test]

@@ -45,6 +45,8 @@ impl SignIn {
                 | Update::PlaylistFailed(_)
                 | Update::Tracks { .. }
                 | Update::TracksFailed { .. }
+                | Update::Album(_)
+                | Update::AlbumFailed { .. }
                 | Update::Cover { .. }
                 | Update::CoverFailed { .. }
                 | Update::Transport(_),

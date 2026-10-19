@@ -7,26 +7,24 @@
 
 use std::time::Instant;
 
-use egui::emath::GuiRounding;
-use egui::{FontId, Pos2, Rect, Sense, Ui, vec2};
-use takofy_model::{PlaylistEntry, TrackEntry};
+use egui::{Rect, Sense, Ui, vec2};
+use takofy_model::PlaylistEntry;
 
 use crate::cover::{Art, Cover};
-use crate::format::{added_label, byline, format_position, plain_description};
-use crate::icon;
+use crate::format::{added_label, byline, format_position, plain_description, total_duration_ms};
 use crate::layout::{Table, cards, table as table_layout};
 use crate::library::{BandCover, Library, Load, band_cover};
 use crate::message::{Command, Failure};
-use crate::player::{Transport, TransportState};
+use crate::player::Transport;
 use crate::queue::Queue;
 use crate::route::Page;
-use crate::theme::icon::Size;
-use crate::theme::{Tokens, extent, space, stroke, text, tracking};
+use crate::theme::{Tokens, extent, space};
 
 use super::card;
 use super::hero;
 use super::text as recipe;
-use super::track_row::{self, Click, Row, State};
+use super::track_list::{head, list_rect};
+use super::track_row::{self, Click, Row, state_of};
 
 /// The main pane: the selected playlist's tracks, or the state of their load.
 #[expect(
@@ -50,6 +48,11 @@ pub fn tracks_view(
     // tracks may still hold a ready playlist that nothing draws.
     match main_page(library) {
         MainPage::Root => return idle(ui, library, art, now, tokens),
+        MainPage::Album => {
+            return super::album::album_view(
+                ui, table, library, transport, queue, art, now, tokens,
+            );
+        }
         // A page with no body yet draws none, rather than pretending to be one.
         MainPage::Other => return None,
         MainPage::Playlist => {}
@@ -98,6 +101,7 @@ pub fn tracks_view(
                 meta,
                 description: &description,
                 playable: tracks.is_some(),
+                shuffle: true,
                 cover,
             };
             if hero::show(ui, &band, tokens)
@@ -152,6 +156,7 @@ pub fn tracks_view(
                         uri: &entry.uri,
                         number: index + 1,
                         title: &entry.title,
+                        title_cell: track_row::TitleCell::ArtThenName,
                         artist: &entry.artists,
                         artist_uri: entry.artist_uris.first().map(String::as_str),
                         album: entry.album.as_deref(),
@@ -208,7 +213,9 @@ enum MainPage {
     Root,
     /// A playlist's tracklist.
     Playlist,
-    /// An album, artist or show page, which has no body yet.
+    /// An album's band and table.
+    Album,
+    /// An artist or show page, which has no body yet.
     Other,
 }
 
@@ -217,7 +224,8 @@ fn main_page(library: &Library) -> MainPage {
     match library.page() {
         None => MainPage::Root,
         Some(Page::Playlist(_)) => MainPage::Playlist,
-        Some(Page::Album(_) | Page::Artist(_) | Page::Show(_)) => MainPage::Other,
+        Some(Page::Album(_)) => MainPage::Album,
+        Some(Page::Artist(_) | Page::Show(_)) => MainPage::Other,
     }
 }
 
@@ -384,149 +392,11 @@ fn select_playlist(library: &mut Library, uri: &str) -> Option<Command> {
     Some(library.select(uri))
 }
 
-/// The sum of the track lengths, in milliseconds, or zero when any length is
-/// unknown.
-///
-/// The model holds each length as an `Option`: a track that could not be
-/// labelled carries none, exactly as it carries no album. A sum over only the
-/// lengths that happen to be present is a lower bound, not the runtime, but the
-/// byline would read an exact figure with nothing to mark it as a bound; the
-/// missing lengths are already blank on their own rows, so a total that hides
-/// its gap is worse than no total at all. A list with any unknown length
-/// therefore reports zero — the absent total `hero_meta` leaves out — and a
-/// wholly known list reports its honest sum. Saturating addition keeps an absurd
-/// list from wrapping.
-fn total_duration_ms(tracks: &[TrackEntry]) -> u32 {
-    if tracks.iter().any(|entry| entry.duration_ms.is_none()) {
-        return 0;
-    }
-    tracks
-        .iter()
-        .filter_map(|entry| entry.duration_ms)
-        .fold(0u32, u32::saturating_add)
-}
-
-/// The rect the rows are laid out in: the list's width, and the height of every
-/// row, starting where the cursor is — which is under the header.
-///
-/// The view and its test both call this, so a row's place and a test's click
-/// cannot drift apart.
-fn list_rect(ui: &mut Ui, count: usize) -> Rect {
-    Rect::from_min_size(
-        ui.cursor().min,
-        vec2(ui.available_width(), extent::ROW_H * count as f32),
-    )
-}
-
-/// How a row relates to the transport.
-fn state_of(uri: &str, transport: &Transport) -> State {
-    let current = transport
-        .now_playing
-        .as_ref()
-        .is_some_and(|now| now.uri == uri);
-    match (current, transport.state) {
-        (false, _) => State::Resting,
-        (true, TransportState::Playing) => State::Playing,
-        (true, _) => State::Paused,
-    }
-}
-
-/// The column headings, in the same columns as the rows beneath them.
-fn head(ui: &mut Ui, columns: table_layout::Columns, tokens: &Tokens) {
-    let font = recipe::track_mono(text::XXS);
-    let line = ui.ctx().fonts_mut(|fonts| fonts.row_height(&font));
-    let band = ui
-        .allocate_space(vec2(ui.available_width(), line + space::S2))
-        .1;
-    let columns = columns.at(Pos2::new(band.left(), band.top()));
-    let cell = |rect: Rect| Rect::from_x_y_ranges(rect.x_range(), band.y_range());
-
-    // The header mirrors the row: the number sits in the same right-justified
-    // box the row draws it in.
-    heading(
-        ui,
-        table_layout::number_box(cell(columns.index)),
-        "#",
-        Align::Centre,
-        &font,
-        tokens,
-    );
-    heading(ui, cell(columns.title), "Title", Align::Left, &font, tokens);
-    heading(
-        ui,
-        cell(columns.artist),
-        "Artist",
-        Align::Left,
-        &font,
-        tokens,
-    );
-    heading(ui, cell(columns.album), "Album", Align::Left, &font, tokens);
-    heading(ui, cell(columns.added), "Added", Align::Left, &font, tokens);
-
-    // The duration column is headed by a clock rather than by a word, and the like
-    // and the actions columns carry no heading: a label over a glyph repeats it.
-    // A block-level glyph ignores text alignment, so the clock is placed at the
-    // column's right edge explicitly, where the row's duration ends.
-    let clock = cell(columns.duration);
-    if clock.width() > 0.0 {
-        let side = Size::SM.side;
-        icon::paint(
-            ui.painter(),
-            icon::Icon::Clock,
-            Rect::from_min_size(
-                Pos2::new(clock.right() - side, clock.center().y - side / 2.0),
-                vec2(side, side),
-            )
-            .round_to_pixels(ui.pixels_per_point()),
-            Size::SM,
-            tokens.palette.text_subtle,
-        );
-    }
-
-    ui.painter().rect_filled(
-        Rect::from_min_size(
-            Pos2::new(band.left(), band.bottom()),
-            vec2(band.width(), stroke::HAIRLINE),
-        ),
-        0.0,
-        tokens.palette.border,
-    );
-    ui.add_space(space::S1);
-}
-
-/// Where a heading sits across its column.
-#[derive(Clone, Copy)]
-enum Align {
-    Left,
-    Centre,
-}
-
-/// One heading, upper-cased and tracked apart, in its column.
-fn heading(ui: &Ui, rect: Rect, label: &str, align: Align, font: &FontId, tokens: &Tokens) {
-    if rect.width() <= 0.0 || label.is_empty() {
-        return;
-    }
-    let galley = recipe::line(
-        ui,
-        &label.to_uppercase(),
-        font.clone(),
-        tokens.palette.text_subtle,
-        recipe::tracking_pts(text::XXS, tracking::CAPS),
-        rect.width(),
-    );
-    let x = match align {
-        Align::Left => rect.left(),
-        Align::Centre => rect.center().x - galley.size().x / 2.0,
-    };
-    let y = rect.center().y - galley.size().y / 2.0;
-    ui.painter()
-        .galley(Pos2::new(x, y), galley, tokens.palette.text_subtle);
-}
-
 #[cfg(test)]
 mod tests {
     use egui::{
-        Context, Event, Modifiers, MouseWheelSource, MouseWheelUnit, RawInput, TouchPhase, Vec2,
+        Context, Event, Modifiers, MouseWheelSource, MouseWheelUnit, Pos2, RawInput, TouchPhase,
+        Vec2,
     };
 
     use super::*;
@@ -534,7 +404,8 @@ mod tests {
     use crate::message::Update;
     use crate::theme::hero::PLAY;
     use crate::theme::{fonts, style};
-    use takofy_model::{AddedAt, CoverImage, CoverUrl, PlaylistEntry, TrackEntry};
+    use crate::view::track_row::State;
+    use takofy_model::{AddedAt, AlbumDetail, CoverImage, CoverUrl, PlaylistEntry, TrackEntry};
 
     /// The probe window: 900 by 400, the size every bare-row test runs in.
     const PROBE: Vec2 = Vec2::new(900.0, 400.0);
@@ -925,13 +796,6 @@ mod tests {
         card::play_rect(card_rect_for(ctx, index))
     }
 
-    fn track_ms(uri: &str, duration_ms: u32) -> TrackEntry {
-        TrackEntry {
-            duration_ms: Some(duration_ms),
-            ..track(uri, uri)
-        }
-    }
-
     /// A context with the app's fonts and style installed.
     fn context() -> Context {
         let tokens = Tokens::DARK;
@@ -1011,6 +875,7 @@ mod tests {
                     meta: Vec::new(),
                     description: "",
                     playable: count > 0,
+                    shuffle: true,
                     cover: Cover::Missing,
                 };
                 let _ = hero::show(ui, &band, &tokens);
@@ -1041,6 +906,7 @@ mod tests {
                     meta: Vec::new(),
                     description: "",
                     playable: true,
+                    shuffle: true,
                     cover: Cover::Missing,
                 };
                 let _ = hero::show(ui, &band, &tokens);
@@ -1321,6 +1187,7 @@ mod tests {
             uri: "a",
             number: 1,
             title: "t0",
+            title_cell: track_row::TitleCell::ArtThenName,
             artist: "",
             artist_uri: None,
             album: None,
@@ -1366,6 +1233,7 @@ mod tests {
             uri: "a",
             number: 1,
             title: "t0",
+            title_cell: track_row::TitleCell::ArtThenName,
             artist: "Band",
             artist_uri: None,
             album: Some("Record"),
@@ -1750,6 +1618,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             uri: "a",
             number: 1,
             title: "t0",
+            title_cell: track_row::TitleCell::ArtThenName,
             artist,
             artist_uri: None,
             album: Some("Record"),
@@ -1935,29 +1804,6 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         assert_eq!(
             transport.now_playing.as_ref().map(|now| now.uri.as_str()),
             Some("b")
-        );
-    }
-
-    #[test]
-    fn the_total_is_withheld_when_any_length_is_unknown() {
-        assert_eq!(total_duration_ms(&[]), 0, "no tracks is the absent total");
-        assert_eq!(
-            total_duration_ms(&[track_ms("a", 1_000), track_ms("b", 2_000)]),
-            3_000
-        );
-        assert_eq!(
-            total_duration_ms(&[track_ms("a", 1_000), track("b", "t1")]),
-            0,
-            "one unknown length withholds the whole total"
-        );
-    }
-
-    #[test]
-    fn the_total_saturates_instead_of_wrapping() {
-        assert_eq!(
-            total_duration_ms(&[track_ms("a", u32::MAX), track_ms("b", u32::MAX)]),
-            u32::MAX,
-            "two maximal lengths saturate rather than wrap"
         );
     }
 
@@ -2213,7 +2059,13 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             Some(&Page::Album("spotify:album:rec".to_owned())),
             "a single click on the album cell must open the album"
         );
-        assert_eq!(command, None, "opening a page fetches nothing");
+        assert_eq!(
+            command,
+            Some(Command::LoadAlbum {
+                album: "spotify:album:rec".to_owned()
+            }),
+            "opening an album asks the worker for it"
+        );
         assert!(!queue.can_next(), "opening a page must not start the queue");
         assert_eq!(transport.now_playing, None, "opening a page must not play");
     }
@@ -2236,7 +2088,12 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             Some(&Page::Album("spotify:album:rec".to_owned())),
             "the whole album cell must take the click, padding included"
         );
-        assert_eq!(command, None);
+        assert_eq!(
+            command,
+            Some(Command::LoadAlbum {
+                album: "spotify:album:rec".to_owned()
+            })
+        );
         assert!(!queue.can_next());
     }
 
@@ -2416,7 +2273,13 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             Some(&Page::Album("spotify:album:rec".to_owned())),
             "the second click lands on the album page, not on the row"
         );
-        assert_eq!(command, None);
+        assert_eq!(
+            command,
+            Some(Command::LoadAlbum {
+                album: "spotify:album:rec".to_owned()
+            }),
+            "the album page's load is the command, not a play"
+        );
         assert!(!queue.can_next(), "a link cell must never start the queue");
         assert_eq!(transport.now_playing, None);
     }
@@ -2594,17 +2457,41 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         }
     }
 
+    /// The album's own page data for the view tests: one track, so a page can be
+    /// told apart from the playlist behind it by its rows alone.
+    fn album_page(uri: &str, name: &str) -> AlbumDetail {
+        AlbumDetail {
+            uri: uri.to_owned(),
+            name: name.to_owned(),
+            artists: "Band".to_owned(),
+            year: Some(1997),
+            cover: None,
+            tracks: vec![TrackEntry {
+                artists: "Band".to_owned(),
+                ..track("spotify:track:t1", "Album Song")
+            }],
+        }
+    }
+
     #[test]
     fn back_from_an_album_page_redraws_the_playlist() {
         let ctx = context();
         let mut library = library_with(vec![linkable("a")]);
         assert_eq!(
             library.open(Page::Album("spotify:album:rec".to_owned())),
-            None
+            Some(Command::LoadAlbum {
+                album: "spotify:album:rec".to_owned()
+            })
+        );
+        library.apply(&Update::Album(album_page("spotify:album:rec", "Record")));
+        let texts = painted_lines(&ctx, Table::Full, &mut library);
+        assert!(
+            texts.contains(&"Record".to_owned()),
+            "the album page draws its own band: {texts:?}"
         );
         assert!(
-            painted_lines(&ctx, Table::Full, &mut library).is_empty(),
-            "the album page has no body to draw"
+            !texts.contains(&"t0".to_owned()),
+            "the playlist behind it is not what is drawn: {texts:?}"
         );
 
         assert_eq!(
@@ -2618,10 +2505,14 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             texts.contains(&"t0".to_owned()),
             "Back must redraw the ready tracklist: {texts:?}"
         );
+        assert!(
+            !texts.contains(&"Album Song".to_owned()),
+            "the album's rows are gone: {texts:?}"
+        );
     }
 
     #[test]
-    fn an_album_page_draws_no_body() {
+    fn an_album_page_draws_the_album_view() {
         let ctx = context();
         let mut library = library_idle(vec![playlist("a", "A")]);
         library.select("a");
@@ -2632,15 +2523,32 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         });
         assert_eq!(
             library.open(Page::Album("spotify:album:x".to_owned())),
-            None
+            Some(Command::LoadAlbum {
+                album: "spotify:album:x".to_owned()
+            })
         );
+        library.apply(&Update::Album(album_page(
+            "spotify:album:x",
+            "Signal Decay",
+        )));
 
-        let output = tracklist_frame(&ctx, Table::Full, &mut library);
+        let texts = painted_lines(&ctx, Table::Full, &mut library);
 
         assert!(
-            drawn_texts(&output).is_empty(),
-            "an album page has no body yet: {:?}",
-            drawn_texts(&output)
+            texts.contains(&"ALBUM".to_owned()),
+            "the band's eyebrow: {texts:?}"
+        );
+        assert!(
+            texts.contains(&"Signal Decay".to_owned()),
+            "the band names the album: {texts:?}"
+        );
+        assert!(
+            texts.contains(&"Album Song".to_owned()),
+            "the album's table lists its own track: {texts:?}"
+        );
+        assert!(
+            !texts.contains(&"t0".to_owned()),
+            "the playlist behind the page is not what is drawn: {texts:?}"
         );
     }
 
@@ -3081,6 +2989,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
                     ],
                     description: LONG_DESCRIPTION,
                     playable: true,
+                    shuffle: true,
                     cover: Cover::Missing,
                 };
                 let _ = hero::show(ui, &band, &tokens);

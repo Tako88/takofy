@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use takofy_model::{CoverUrl, PlaylistEntry, TrackEntry};
+use takofy_model::{AlbumDetail, CoverUrl, PlaylistEntry, TrackEntry};
 
 use crate::message::{Command, Failure, Update};
 use crate::route::{History, Page};
@@ -62,11 +62,15 @@ pub fn band_cover(entry: &PlaylistEntry, settled: bool) -> BandCover<'_> {
 pub struct Library {
     pub playlists: Load<Vec<PlaylistEntry>>,
     pub tracks: Load<TracksFor>,
+    /// The album the album page draws.
+    pub album: Load<AlbumDetail>,
     /// The playlist `tracks` currently concerns; keeps a stale reply out.
     ///
     /// It is not the page: a reply that lands while the user is on an album
     /// page is kept, so Back finds it ready.
     wanted: Option<String>,
+    /// The album `album` currently concerns; keeps a stale reply out.
+    wanted_album: Option<String>,
     /// Where the library is, and the pages Back and Forward return to.
     history: History,
     /// Context images, keyed by the playlist that owns them, so an upgrade that
@@ -154,6 +158,22 @@ impl Library {
                     self.tracks = Load::Failed(*failure);
                 }
             }
+            // A reply lands only while its own load is in flight: a stale one is
+            // discarded, and a second reply cannot replace the first.
+            Update::Album(detail) => {
+                if self.wanted_album.as_deref() == Some(detail.uri.as_str())
+                    && matches!(self.album, Load::Loading)
+                {
+                    self.album = Load::Ready(detail.clone());
+                }
+            }
+            Update::AlbumFailed { album, failure } => {
+                if self.wanted_album.as_deref() == Some(album.as_str())
+                    && matches!(self.album, Load::Loading)
+                {
+                    self.album = Load::Failed(*failure);
+                }
+            }
             Update::NeedsAuthorization
             | Update::SignInFailed(_)
             | Update::Transport(_)
@@ -203,8 +223,12 @@ impl Library {
     pub fn to_playlists(&mut self) {
         self.history.go(None);
         self.wanted = None;
+        self.wanted_album = None;
         if matches!(self.tracks, Load::Loading | Load::Failed(_)) {
             self.tracks = Load::Idle;
+        }
+        if matches!(self.album, Load::Loading | Load::Failed(_)) {
+            self.album = Load::Idle;
         }
     }
 
@@ -252,21 +276,48 @@ impl Library {
         }
     }
 
+    /// Marks an album as wanted and returns the command that loads it.
+    ///
+    /// Like [`Self::load`] it never touches the history: Back and Forward move
+    /// the page first and only reload what they land on.
+    fn load_album(&mut self, album: &str) -> Command {
+        self.wanted_album = Some(album.to_owned());
+        self.album = Load::Loading;
+        Command::LoadAlbum {
+            album: album.to_owned(),
+        }
+    }
+
     /// Returns the command the current page needs, if any.
     ///
-    /// A playlist page whose wanted load is in flight or ready is left alone;
-    /// any other playlist page is reloaded through `load`.
+    /// A page whose wanted load is in flight or ready is left alone; any other
+    /// page of a loadable kind is reloaded through `load` or `load_album`. A
+    /// failed load therefore reloads, which is what makes the Retry control and a
+    /// Back onto a failed page the same request. An album page never matches
+    /// another album's want, so Back onto one whose load was superseded asks
+    /// again rather than showing nothing.
     fn settle(&mut self) -> Option<Command> {
-        let playlist = match self.history.current() {
-            Some(Page::Playlist(playlist)) => playlist.clone(),
-            _ => return None,
-        };
-        if self.wanted.as_deref() == Some(playlist.as_str())
-            && matches!(self.tracks, Load::Loading | Load::Ready(_))
-        {
-            return None;
+        match self.history.current() {
+            Some(Page::Playlist(playlist)) => {
+                let playlist = playlist.clone();
+                if self.wanted.as_deref() == Some(playlist.as_str())
+                    && matches!(self.tracks, Load::Loading | Load::Ready(_))
+                {
+                    return None;
+                }
+                Some(self.load(&playlist))
+            }
+            Some(Page::Album(album)) => {
+                let album = album.clone();
+                if self.wanted_album.as_deref() == Some(album.as_str())
+                    && matches!(self.album, Load::Loading | Load::Ready(_))
+                {
+                    return None;
+                }
+                Some(self.load_album(&album))
+            }
+            _ => None,
         }
-        Some(self.load(&playlist))
     }
 
     /// Marks the playlists loading again and returns the command that fetches
@@ -274,6 +325,20 @@ impl Library {
     pub fn reload(&mut self) -> Command {
         self.playlists = Load::Loading;
         Command::ReloadLibrary
+    }
+
+    /// The album the album page draws, once it is loaded and named by that page.
+    ///
+    /// The URI check is not decoration: a ready detail from an earlier page must
+    /// not name a crumb for a page that is still loading something else.
+    pub fn current_album(&self) -> Option<&AlbumDetail> {
+        let Page::Album(uri) = self.history.current()? else {
+            return None;
+        };
+        match &self.album {
+            Load::Ready(detail) if detail.uri == *uri => Some(detail),
+            Load::Idle | Load::Loading | Load::Ready(_) | Load::Failed(_) => None,
+        }
     }
 
     /// The selected playlist's name, once the list that names it is ready.
@@ -293,7 +358,7 @@ impl Library {
 
 #[cfg(test)]
 mod tests {
-    use takofy_model::{AddedAt, CoverUrl, PlaylistEntry, TrackEntry};
+    use takofy_model::{AddedAt, AlbumDetail, CoverUrl, PlaylistEntry, TrackEntry};
 
     use super::*;
     use crate::message::TransportUpdate;
@@ -340,6 +405,17 @@ mod tests {
 
     fn album(uri: &str) -> Page {
         Page::Album(uri.to_owned())
+    }
+
+    fn album_detail(uri: &str) -> AlbumDetail {
+        AlbumDetail {
+            uri: uri.to_owned(),
+            name: "Record".to_owned(),
+            artists: "Band".to_owned(),
+            year: Some(1997),
+            cover: None,
+            tracks: vec![track("t")],
+        }
     }
 
     fn artist(uri: &str) -> Page {
@@ -459,7 +535,7 @@ mod tests {
     }
 
     #[test]
-    fn open_an_album_returns_no_command_and_keeps_the_tracks() {
+    fn open_an_album_starts_its_load_and_keeps_the_tracks() {
         let mut library = Library::default();
         library.apply(&Update::Playlists(vec![playlist("a", "A")]));
         library.select("a");
@@ -469,11 +545,232 @@ mod tests {
             cover: None,
         });
 
-        assert_eq!(library.open(album("album")), None);
-        assert_eq!(library.page(), Some(&album("album")));
+        assert_eq!(
+            library.open(album("spotify:album:rec")),
+            Some(Command::LoadAlbum {
+                album: "spotify:album:rec".to_owned()
+            })
+        );
+        assert_eq!(library.page(), Some(&album("spotify:album:rec")));
+        assert_eq!(library.album, Load::Loading);
         assert_eq!(
             library.tracks,
-            Load::Ready(tracks_for("a", vec![track("t")]))
+            Load::Ready(tracks_for("a", vec![track("t")])),
+            "the playlist behind the album stays ready for Back"
+        );
+    }
+
+    /// The reply path: only the wanted album's answer lands, the first one wins,
+    /// and a failure is recorded the same way a playlist's is.
+    #[test]
+    fn an_album_reply_lands_only_on_its_own_want() {
+        let mut library = Library::default();
+        library.open(album("spotify:album:a"));
+        library.apply(&Update::Album(album_detail("spotify:album:a")));
+
+        assert_eq!(library.album, Load::Ready(album_detail("spotify:album:a")));
+
+        library.apply(&Update::Album(album_detail("spotify:album:b")));
+        assert_eq!(
+            library.album,
+            Load::Ready(album_detail("spotify:album:a")),
+            "a reply nobody asked for is discarded"
+        );
+    }
+
+    #[test]
+    fn a_stale_album_reply_is_discarded() {
+        let mut library = Library::default();
+        library.open(album("spotify:album:a"));
+        library.open(album("spotify:album:b"));
+
+        library.apply(&Update::Album(album_detail("spotify:album:a")));
+
+        assert_eq!(library.album, Load::Loading, "A's reply is not B's");
+        library.apply(&Update::Album(album_detail("spotify:album:b")));
+        assert_eq!(library.album, Load::Ready(album_detail("spotify:album:b")));
+    }
+
+    #[test]
+    fn a_stale_album_failure_is_discarded() {
+        let mut library = Library::default();
+        library.open(album("spotify:album:a"));
+        library.open(album("spotify:album:b"));
+
+        library.apply(&Update::AlbumFailed {
+            album: "spotify:album:a".to_owned(),
+            failure: Failure::Load,
+        });
+        assert_eq!(library.album, Load::Loading, "A's failure is not B's");
+
+        library.apply(&Update::AlbumFailed {
+            album: "spotify:album:b".to_owned(),
+            failure: Failure::Load,
+        });
+        assert_eq!(library.album, Load::Failed(Failure::Load));
+    }
+
+    #[test]
+    fn the_first_album_reply_wins() {
+        let mut library = Library::default();
+        library.open(album("spotify:album:a"));
+        let first = AlbumDetail {
+            name: "First".to_owned(),
+            ..album_detail("spotify:album:a")
+        };
+        let second = AlbumDetail {
+            name: "Second".to_owned(),
+            ..album_detail("spotify:album:a")
+        };
+
+        library.apply(&Update::Album(first.clone()));
+        library.apply(&Update::Album(second));
+
+        assert_eq!(library.album, Load::Ready(first));
+    }
+
+    #[test]
+    fn back_onto_a_ready_album_needs_no_command() {
+        let mut library = Library::default();
+        library.open(album("spotify:album:a"));
+        library.apply(&Update::Album(album_detail("spotify:album:a")));
+        assert_eq!(library.open(artist("spotify:artist:a")), None);
+
+        assert_eq!(library.back(), None, "a ready album is already settled");
+        assert_eq!(library.page(), Some(&album("spotify:album:a")));
+    }
+
+    #[test]
+    fn back_onto_a_failed_album_reloads_it() {
+        let mut library = Library::default();
+        library.open(album("spotify:album:a"));
+        library.apply(&Update::AlbumFailed {
+            album: "spotify:album:a".to_owned(),
+            failure: Failure::Load,
+        });
+        assert_eq!(library.open(artist("spotify:artist:a")), None);
+
+        assert_eq!(
+            library.back(),
+            Some(Command::LoadAlbum {
+                album: "spotify:album:a".to_owned()
+            }),
+            "a failed album has nothing to draw, so Back asks again"
+        );
+        assert_eq!(library.album, Load::Loading);
+    }
+
+    #[test]
+    fn reopening_a_failed_album_retries_it() {
+        let mut library = Library::default();
+        library.open(album("spotify:album:a"));
+        library.apply(&Update::AlbumFailed {
+            album: "spotify:album:a".to_owned(),
+            failure: Failure::Load,
+        });
+
+        assert_eq!(
+            library.open(album("spotify:album:a")),
+            Some(Command::LoadAlbum {
+                album: "spotify:album:a".to_owned()
+            }),
+            "the page's Retry is this call, so it must re-issue the load"
+        );
+        assert_eq!(library.album, Load::Loading);
+    }
+
+    #[test]
+    fn to_playlists_clears_the_album_want_and_drops_an_unsettled_load() {
+        let mut loading = Library::default();
+        loading.open(album("spotify:album:a"));
+        loading.to_playlists();
+        assert_eq!(loading.album, Load::Idle, "a load nobody wants is dropped");
+        assert_eq!(
+            loading.open(album("spotify:album:a")),
+            Some(Command::LoadAlbum {
+                album: "spotify:album:a".to_owned()
+            }),
+            "the want was cleared, so the album is asked for again"
+        );
+
+        let mut failed = Library::default();
+        failed.open(album("spotify:album:a"));
+        failed.apply(&Update::AlbumFailed {
+            album: "spotify:album:a".to_owned(),
+            failure: Failure::Load,
+        });
+        failed.to_playlists();
+        assert_eq!(failed.album, Load::Idle);
+
+        let mut ready = Library::default();
+        ready.open(album("spotify:album:a"));
+        ready.apply(&Update::Album(album_detail("spotify:album:a")));
+        ready.to_playlists();
+        assert_eq!(
+            ready.album,
+            Load::Ready(album_detail("spotify:album:a")),
+            "a settled album is kept for the page Back returns to"
+        );
+        assert_eq!(
+            ready.open(album("spotify:album:a")),
+            Some(Command::LoadAlbum {
+                album: "spotify:album:a".to_owned()
+            }),
+            "the want is cleared even when the album stays ready"
+        );
+    }
+
+    #[test]
+    fn a_playlist_prune_leaves_the_album_alone() {
+        let mut library = Library::default();
+        library.select("a");
+        library.open(album("spotify:album:a"));
+        library.apply(&Update::Album(album_detail("spotify:album:a")));
+
+        // The list no longer holds the playlist, so its page is pruned.
+        library.apply(&Update::Playlists(vec![playlist("b", "B")]));
+
+        assert_eq!(library.page(), Some(&album("spotify:album:a")));
+        assert_eq!(
+            library.album,
+            Load::Ready(album_detail("spotify:album:a")),
+            "a playlist prune never touches the album"
+        );
+        assert_eq!(
+            library.current_album(),
+            Some(&album_detail("spotify:album:a"))
+        );
+    }
+
+    #[test]
+    fn current_album_is_none_while_loading() {
+        let mut library = Library::default();
+        library.open(album("spotify:album:a"));
+        assert_eq!(library.current_album(), None);
+    }
+
+    #[test]
+    fn current_album_is_none_when_a_ready_detail_names_another_page() {
+        let mut library = Library::default();
+        library.open(album("spotify:album:b"));
+        library.album = Load::Ready(album_detail("spotify:album:a"));
+
+        assert_eq!(
+            library.current_album(),
+            None,
+            "A's detail must not name B's page"
+        );
+    }
+
+    #[test]
+    fn current_album_is_some_when_it_names_the_page() {
+        let mut library = Library::default();
+        library.open(album("spotify:album:a"));
+        library.apply(&Update::Album(album_detail("spotify:album:a")));
+
+        assert_eq!(
+            library.current_album(),
+            Some(&album_detail("spotify:album:a"))
         );
     }
 
@@ -594,13 +891,26 @@ mod tests {
         assert!(library.can_back());
         assert!(!library.can_forward());
 
-        library.open(album("album"));
-        assert_eq!(library.back(), None);
+        assert_eq!(
+            library.open(album("spotify:album:rec")),
+            Some(Command::LoadAlbum {
+                album: "spotify:album:rec".to_owned()
+            })
+        );
+        assert_eq!(
+            library.back(),
+            None,
+            "back onto the playlist already wanted needs no load"
+        );
         assert!(library.can_forward());
 
-        assert_eq!(library.forward(), None);
+        assert_eq!(
+            library.forward(),
+            None,
+            "forward onto the album already wanted needs no load"
+        );
         assert!(!library.can_forward());
-        assert_eq!(library.page(), Some(&album("album")));
+        assert_eq!(library.page(), Some(&album("spotify:album:rec")));
     }
 
     #[test]

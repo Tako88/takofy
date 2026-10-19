@@ -150,7 +150,11 @@ impl AddedAt {
     }
 }
 
-/// A track inside a playlist.
+/// A track as a list row draws it.
+///
+/// A playlist position and an album position are both rows, so both use this.
+/// An album position is not a membership, so its [`Self::added_at`] is always
+/// `None`: an album is a record, not a date the track joined something.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrackEntry {
     pub uri: String,
@@ -169,7 +173,8 @@ pub struct TrackEntry {
     /// does not resolve, so a link never points at a different artist than the
     /// one named in the same place.
     pub artist_uris: Vec<String>,
-    /// When the track joined *this* playlist; per position, not per track.
+    /// When the track joined *the playlist that drew it*; per position, not per
+    /// track, and always `None` on an album's rows.
     pub added_at: Option<AddedAt>,
     /// The track's length in milliseconds, when the metadata carried a length.
     pub duration_ms: Option<u32>,
@@ -177,6 +182,28 @@ pub struct TrackEntry {
     pub named: bool,
     /// The track's own album cover, when the metadata carried one.
     pub cover: Option<CoverUrl>,
+}
+
+/// A loaded album, as its page draws it.
+///
+/// Plain data by design: `takofy-ui` has no librespot dependency, so the year is
+/// a number the engine already read from the wire's date.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlbumDetail {
+    pub uri: String,
+    /// The album's name, or the URI when the wire gave no name.
+    pub name: String,
+    /// The album's artists joined with `, `; empty when the wire named none.
+    pub artists: String,
+    /// The release year, or `None` for a wire year of zero or none at all.
+    ///
+    /// A `time::Date` cannot hold a year past 9999, so a wider integer is not a
+    /// case this can see.
+    pub year: Option<u16>,
+    pub cover: Option<CoverUrl>,
+    /// Every track, in the album's own order. [`TrackEntry::added_at`] is always
+    /// `None`: an album position carries no membership date.
+    pub tracks: Vec<TrackEntry>,
 }
 
 #[cfg(test)]

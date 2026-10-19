@@ -6,15 +6,16 @@ use std::collections::{HashMap, HashSet};
 
 use futures_util::StreamExt;
 use librespot::core::{Session, SpotifyId, SpotifyUri};
-use librespot::metadata::{Metadata, Playlist};
+use librespot::metadata::{Album, Metadata, Playlist};
 use librespot::protocol::metadata::Track as TrackMessage;
 
+use crate::album::{AlbumError, detail, positions};
 use crate::context::{
     ContextError, Page, PageSource, PageTrack, Resolved, page_from_proto, parse_page_json,
 };
 use crate::cover::pick_cover;
 use crate::rootlist::{RootlistError, RootlistPage, RootlistSource, RootlistWire, parse_rootlist};
-use takofy_model::{CoverUrl, PlaylistEntry, TrackEntry};
+use takofy_model::{AlbumDetail, CoverUrl, PlaylistEntry, TrackEntry};
 
 /// The wire the live rootlist is read as; flip to `Json` if the binary parse fails.
 pub(crate) const ROOTLIST_WIRE: RootlistWire = RootlistWire::Binary;
@@ -203,6 +204,24 @@ fn playlist_label(uri: &str, name: Option<String>) -> (String, bool) {
         Some(name) => (name, true),
         None => (uri.to_owned(), false),
     }
+}
+
+/// Reads one album: its metadata, then the labels for its tracks.
+///
+/// The album is fetched by its own route rather than by walking a context: its
+/// order and its numbering are the album's, not a playlist's. A URI that does not
+/// name an album never reaches the network, and a request that fails hands the
+/// caller the source's message so the page can show the failure with a retry.
+pub(crate) async fn read_album(session: &Session, uri: &str) -> Result<AlbumDetail, AlbumError> {
+    let id = SpotifyUri::from_uri(uri).map_err(|_| AlbumError::NotAnAlbum)?;
+    if !matches!(id, SpotifyUri::Album { .. }) {
+        return Err(AlbumError::NotAnAlbum);
+    }
+    let album = Album::get(session, &id)
+        .await
+        .map_err(|error| AlbumError::Source(error.to_string()))?;
+    let tracks = label_tracks(session, positions(&album)).await;
+    Ok(detail(uri, &album, tracks))
 }
 
 /// Reads context pages through librespot's spclient.
