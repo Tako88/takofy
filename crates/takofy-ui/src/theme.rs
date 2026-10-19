@@ -309,7 +309,12 @@ pub mod icon {
 
 /// How a decoded cover reaches the screen.
 pub mod art {
-    use egui::TextureOptions;
+    use egui::{Color32, TextureOptions};
+
+    /// The tint a textured rect multiplies its image by. Such a rect still needs
+    /// a fill even when it is nothing but a picture, and white is the one value
+    /// that leaves the pixels as they were decoded.
+    pub const TINT: Color32 = Color32::WHITE;
 
     /// A cover is scaled, never tiled: smooth filters both ways, and the edge is
     /// clamped. A stretched image that sampled the opposite edge would show a
