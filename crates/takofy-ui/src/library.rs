@@ -106,7 +106,11 @@ impl Library {
                     self.tracks = Load::Failed(*failure);
                 }
             }
-            Update::NeedsAuthorization | Update::SignInFailed(_) | Update::Transport(_) => {}
+            Update::NeedsAuthorization
+            | Update::SignInFailed(_)
+            | Update::Transport(_)
+            | Update::Cover { .. }
+            | Update::CoverFailed { .. } => {}
         }
     }
 

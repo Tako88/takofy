@@ -30,6 +30,10 @@ futures-util = "0.3"
 # The window: eframe runs the event loop and egui draws each frame.
 eframe = "0.37.0"
 egui = "0.37.0"
+# Cover art: `image` decodes JPEG under explicit limits; `reqwest` fetches the
+# public CDN URL with a timeout and a cancellable request.
+image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 
 [workspace.lints.rust]
 unsafe_code = "deny"

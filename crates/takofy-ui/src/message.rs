@@ -3,7 +3,7 @@
 //! These types carry state, never credentials: `takofy-ui` has no path to a
 //! token or an auth error, so the compiler keeps secrets out of a view.
 
-use takofy_model::{CoverUrl, PlaylistEntry, TrackEntry};
+use takofy_model::{CoverImage, CoverUrl, PlaylistEntry, TrackEntry};
 
 /// A request from the window to the worker.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -87,6 +87,10 @@ pub enum Update {
     },
     /// A playlist's tracks could not be loaded.
     TracksFailed { playlist: String, failure: Failure },
+    /// A decoded cover, ready to upload.
+    Cover { url: CoverUrl, image: CoverImage },
+    /// A cover could not be fetched or decoded.
+    CoverFailed { url: CoverUrl },
     /// A playback change.
     Transport(TransportUpdate),
 }
