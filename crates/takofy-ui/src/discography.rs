@@ -14,18 +14,13 @@
 use takofy_model::{Release, ReleaseKind};
 
 /// A chip in the discography's filter row.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Chip {
     /// Every block, whatever its kind.
+    #[default]
     All,
     /// Only the blocks of one kind.
     Kind(ReleaseKind),
-}
-
-impl Default for Chip {
-    fn default() -> Self {
-        Self::All
-    }
 }
 
 /// The kinds the row can offer a chip for, in the reference's order.

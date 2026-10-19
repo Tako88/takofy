@@ -409,10 +409,7 @@ mod tests {
         }]));
         let mut art = Art::default();
         let input = egui::RawInput {
-            screen_rect: Some(Rect::from_min_size(
-                Pos2::ZERO,
-                Vec2::new(width, 800.0),
-            )),
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(width, 800.0))),
             ..Default::default()
         };
         let mut output = ctx.run_ui(input, |ui| {
@@ -429,12 +426,16 @@ mod tests {
 
         let mut chips = Vec::new();
         for label in ["PLAYLISTS", "ARTISTS", "ALBUMS", "PODCASTS"] {
-            let Some((pos, size)) = output.shapes.iter().find_map(|clipped| match &clipped.shape {
-                egui::epaint::Shape::Text(text) if text.galley.text() == label => {
-                    Some((text.pos, text.galley.size()))
-                }
-                _ => None,
-            }) else {
+            let Some((pos, size)) = output
+                .shapes
+                .iter()
+                .find_map(|clipped| match &clipped.shape {
+                    egui::epaint::Shape::Text(text) if text.galley.text() == label => {
+                        Some((text.pos, text.galley.size()))
+                    }
+                    _ => None,
+                })
+            else {
                 continue;
             };
             let rect = Rect::from_min_size(
