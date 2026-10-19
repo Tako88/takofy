@@ -117,10 +117,19 @@ impl eframe::App for TakofyApp {
             now,
             now_ms: wall_clock_ms(),
         };
-        if let Some(command) = view::show(ui, &mut screen, &self.tokens) {
+        let command = view::show(ui, &mut screen, &self.tokens);
+        // The draw's borrow of the library and the art store ends here, so the
+        // label wants it recorded can be drained.
+        drop(screen);
+        if let Some(command) = command {
             let _ = self.ui_end.commands.send(command);
         }
         // After the draw, because only the draw knows what was wanted this frame.
+        // A label want is not a command returned by the view: the shell may keep
+        // only one of those, so the wants are drained from their own store.
+        for command in self.library.releases.requests() {
+            let _ = self.ui_end.commands.send(command);
+        }
         for command in self.art.requests(now) {
             let _ = self.ui_end.commands.send(command);
         }

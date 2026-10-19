@@ -70,6 +70,11 @@ tokio's blocking pool for the same reason sign-in does: a decode that hangs must
 not hold up the runtime drop, and a detached thread dies with the process
 instead.
 
+Following an artist is the first command that changes the account rather than
+reading it, and it crosses the same seam as everything else: the page sends a
+write and reports only what the server confirmed, so the label moves on the
+answer and never on the press.
+
 ## Who owns what
 
 - The binary owns the tokio runtime, and the `Engine` in headless mode. In the
