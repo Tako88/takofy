@@ -5,6 +5,7 @@
 pub mod availability;
 pub mod cover;
 pub mod drawer;
+pub mod follow;
 pub mod format;
 pub mod icon;
 pub mod layout;
@@ -12,6 +13,7 @@ pub mod library;
 pub mod message;
 pub mod player;
 pub mod queue;
+pub mod releases;
 pub mod route;
 pub mod signin;
 pub mod theme;

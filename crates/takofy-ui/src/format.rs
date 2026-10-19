@@ -2,7 +2,7 @@
 //! playbar's clock, the hero's byline, the playlist band's description, and the
 //! age a playlist row gives its date.
 
-use takofy_model::{AddedAt, TrackEntry};
+use takofy_model::{AddedAt, ReleaseKind, TrackEntry};
 
 /// One day in milliseconds.
 const DAY_MS: u64 = 86_400_000;
@@ -43,6 +43,55 @@ fn count_noun(count: usize, noun: &str) -> String {
 /// An album's track count as its band writes it: `1 track`, `N tracks`.
 pub fn track_count_label(count: usize) -> String {
     count_noun(count, "track")
+}
+
+/// A release count as the discography's aside writes it.
+pub fn release_count_label(count: usize) -> String {
+    count_noun(count, "release")
+}
+
+/// The word a release block's facts lead with.
+pub fn release_kind_label(kind: ReleaseKind) -> &'static str {
+    match kind {
+        ReleaseKind::Album => "Album",
+        ReleaseKind::Ep => "EP",
+        ReleaseKind::Single => "Single",
+        ReleaseKind::Compilation => "Compilation",
+        ReleaseKind::Other => "Release",
+    }
+}
+
+/// A release block's facts: the kind, the year, the count and the total.
+///
+/// The parts are separate so the painter can place the dot separator between
+/// them, exactly as [`album_meta`] does for the band. An unknown year and an
+/// absent total are left out rather than drawn as blanks.
+pub fn release_meta(kind: ReleaseKind, year: Option<u16>, tracks: (usize, u32)) -> Vec<String> {
+    let mut parts = vec![release_kind_label(kind).to_owned()];
+    if let Some(year) = year {
+        parts.push(year.to_string());
+    }
+    let (count, total_ms) = tracks;
+    parts.push(track_count_label(count));
+    if let Some(runtime) = runtime_label(total_ms) {
+        parts.push(runtime);
+    }
+    parts
+}
+
+/// The discography's aside: how many releases and how many tracks it holds.
+///
+/// Empty when there is no release to count, so an artist with no discography
+/// draws no aside rather than `0 releases · 0 tracks`.
+pub fn discography_meta(releases: usize, tracks: usize) -> String {
+    if releases == 0 {
+        return String::new();
+    }
+    format!(
+        "{} · {}",
+        release_count_label(releases),
+        track_count_label(tracks)
+    )
 }
 
 /// The album's total length as the reference writes it, or `None` for no total.
@@ -182,6 +231,54 @@ pub fn plain_description(raw: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn release_count_label_counts_releases() {
+        assert_eq!(release_count_label(1), "1 release");
+        assert_eq!(release_count_label(0), "0 releases");
+        assert_eq!(release_count_label(3), "3 releases");
+    }
+
+    #[test]
+    fn release_kind_label_names_every_kind() {
+        assert_eq!(release_kind_label(ReleaseKind::Album), "Album");
+        assert_eq!(release_kind_label(ReleaseKind::Single), "Single");
+        assert_eq!(release_kind_label(ReleaseKind::Compilation), "Compilation");
+        assert_eq!(release_kind_label(ReleaseKind::Ep), "EP");
+        assert_eq!(release_kind_label(ReleaseKind::Other), "Release");
+    }
+
+    #[test]
+    fn release_meta_reads_kind_year_count_and_runtime() {
+        assert_eq!(
+            release_meta(ReleaseKind::Album, Some(2024), (11, 2_338_000)),
+            vec![
+                "Album".to_owned(),
+                "2024".to_owned(),
+                "11 tracks".to_owned(),
+                "38 min 58 sec".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn release_meta_drops_a_blank_year_and_a_zero_total() {
+        assert_eq!(
+            release_meta(ReleaseKind::Single, None, (1, 0)),
+            vec!["Single".to_owned(), "1 track".to_owned()]
+        );
+    }
+
+    #[test]
+    fn discography_meta_counts_releases_and_tracks() {
+        assert_eq!(discography_meta(3, 24), "3 releases · 24 tracks");
+        assert_eq!(discography_meta(1, 1), "1 release · 1 track");
+    }
+
+    #[test]
+    fn discography_meta_is_empty_without_releases() {
+        assert_eq!(discography_meta(0, 0), "");
+    }
 
     /// A fixed clock: 2023-11-14T22:13:20Z.
     const NOW: u64 = 1_700_000_000_000;

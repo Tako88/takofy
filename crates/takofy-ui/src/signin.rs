@@ -47,6 +47,12 @@ impl SignIn {
                 | Update::TracksFailed { .. }
                 | Update::Album(_)
                 | Update::AlbumFailed { .. }
+                | Update::Artist(_)
+                | Update::ArtistFailed { .. }
+                | Update::ReleaseTracks { .. }
+                | Update::ReleaseTracksFailed { .. }
+                | Update::Followed { .. }
+                | Update::FollowFailed { .. }
                 | Update::Cover { .. }
                 | Update::CoverFailed { .. }
                 | Update::Transport(_),
@@ -80,6 +86,7 @@ pub fn failure_message(failure: Failure) -> &'static str {
         Failure::NoRefreshToken => "Spotify did not return a refresh token. Try again.",
         Failure::NoAudioDevice => "No audio output device is available.",
         Failure::Load => "Could not load the library. Check your connection and try again.",
+        Failure::Save => "Could not save that change. Try again.",
         Failure::Other => "Sign-in failed. Try again, or run with --headless for details.",
     }
 }
@@ -339,15 +346,29 @@ mod tests {
     }
 
     /// Every `Failure` value there is, so a test can sweep them all.
-    fn every_failure() -> [Failure; 6] {
+    fn every_failure() -> [Failure; 7] {
         [
             Failure::PortBusy,
             Failure::Keychain,
             Failure::NoRefreshToken,
             Failure::NoAudioDevice,
             Failure::Load,
+            Failure::Save,
             Failure::Other,
         ]
+    }
+
+    #[test]
+    fn a_save_failure_says_the_change_did_not_stick() {
+        let message = failure_message(Failure::Save);
+        assert!(
+            message.contains("save"),
+            "the copy must name the write that failed: {message}"
+        );
+        assert!(
+            !message.contains("Sign-in") && !message.contains("sign in"),
+            "a save failure is not a sign-in failure: {message}"
+        );
     }
 
     #[test]

@@ -13,7 +13,7 @@ use librespot::metadata::Album;
 use takofy_model::{AlbumDetail, TrackEntry};
 
 use crate::context::PageTrack;
-use crate::cover::pick_album_cover;
+use crate::cover::pick_images_cover;
 
 /// Why an album read failed.
 #[derive(Debug, thiserror::Error)]
@@ -71,7 +71,7 @@ pub(crate) fn detail(uri: &str, album: &Album, tracks: Vec<TrackEntry>) -> Album
         name,
         artists,
         year: year_of(album),
-        cover: pick_album_cover(&album.cover_group),
+        cover: pick_images_cover(&album.cover_group),
         tracks,
     }
 }

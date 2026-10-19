@@ -10,7 +10,7 @@ use librespot::core::SessionConfig;
 use takofy_core::credentials::AccessToken;
 use takofy_core::engine::{Engine, EngineError};
 use takofy_core::playback::{Playback, PlaybackError, PlaybackEvent};
-use takofy_model::{AlbumDetail, CoverUrl, PlaylistEntry, TrackEntry};
+use takofy_model::{AlbumDetail, ArtistDetail, CoverUrl, PlaylistEntry, TrackEntry};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::oneshot::Receiver;
 
@@ -35,6 +35,7 @@ impl SessionError {
             Self::Engine(EngineError::Rootlist(_)) => "rootlist",
             Self::Engine(EngineError::Context(_)) => "context",
             Self::Engine(EngineError::Album(_)) => "album",
+            Self::Engine(EngineError::Artist(_)) => "artist",
             Self::Playback(error) => match error {
                 PlaybackError::NoAudioBackend => "no audio backend",
                 PlaybackError::NoAudioDevice => "no audio device",
@@ -51,6 +52,17 @@ impl SessionError {
 pub(crate) struct TrackPage {
     pub tracks: Vec<TrackEntry>,
     pub cover: Option<CoverUrl>,
+}
+
+/// One artist's page data, plus whether the user follows it.
+///
+/// The followed state is `None` when the collection probe did not answer: the
+/// label then reads `Follow` and stays pressable, because the write is the only
+/// thing that can confirm it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ArtistPage {
+    pub artist: ArtistDetail,
+    pub followed: Option<bool>,
 }
 
 /// The session work the command task drives.
@@ -73,6 +85,22 @@ pub(crate) trait SessionHost: Send + 'static {
     ) -> impl Future<Output = Result<TrackPage, SessionError>> + Send;
 
     fn album(&self, album: &str) -> impl Future<Output = Result<AlbumDetail, SessionError>> + Send;
+
+    fn artist(&self, artist: &str)
+    -> impl Future<Output = Result<ArtistPage, SessionError>> + Send;
+
+    /// One release's track names, in the release's own order.
+    fn release_tracks(
+        &self,
+        tracks: &[String],
+    ) -> impl Future<Output = Result<Vec<TrackEntry>, SessionError>> + Send;
+
+    /// Writes the artist into the user's followed set, or out of it.
+    fn set_follow(
+        &self,
+        artist: &str,
+        follow: bool,
+    ) -> impl Future<Output = Result<(), SessionError>> + Send;
 
     fn play(&mut self, uri: &str) -> Result<(), SessionError>;
 
@@ -159,6 +187,34 @@ impl SessionHost for LiveSession {
     async fn album(&self, album: &str) -> Result<AlbumDetail, SessionError> {
         match &self.engine {
             Some(engine) => engine.album(album).await.map_err(SessionError::Engine),
+            None => Err(SessionError::NotConnected),
+        }
+    }
+
+    async fn artist(&self, artist: &str) -> Result<ArtistPage, SessionError> {
+        match &self.engine {
+            Some(engine) => {
+                let (artist, followed) =
+                    engine.artist(artist).await.map_err(SessionError::Engine)?;
+                Ok(ArtistPage { artist, followed })
+            }
+            None => Err(SessionError::NotConnected),
+        }
+    }
+
+    async fn release_tracks(&self, tracks: &[String]) -> Result<Vec<TrackEntry>, SessionError> {
+        match &self.engine {
+            Some(engine) => Ok(engine.release_tracks(tracks).await),
+            None => Err(SessionError::NotConnected),
+        }
+    }
+
+    async fn set_follow(&self, artist: &str, follow: bool) -> Result<(), SessionError> {
+        match &self.engine {
+            Some(engine) => engine
+                .set_follow(artist, follow)
+                .await
+                .map_err(SessionError::Engine),
             None => Err(SessionError::NotConnected),
         }
     }

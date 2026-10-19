@@ -4,14 +4,16 @@ use librespot::core::authentication::Credentials;
 use librespot::core::{Session, SessionConfig};
 
 use crate::album::AlbumError;
+use crate::artist::ArtistError;
 use crate::context::{ContextError, Walker};
 use crate::credentials::AccessToken;
 use crate::playback::{Playback, PlaybackError, PlaybackEvent};
 use crate::remote::{
     ROOTLIST_WIRE, RemoteContext, RemoteRootlist, label_playlists, label_tracks, read_album,
+    read_artist, read_release_tracks, write_follow,
 };
 use crate::rootlist::{RootlistError, fetch_all};
-use takofy_model::{AlbumDetail, CoverUrl, PlaylistEntry, TrackEntry};
+use takofy_model::{AlbumDetail, ArtistDetail, CoverUrl, PlaylistEntry, TrackEntry};
 
 /// Why an [`Engine`] operation failed.
 #[derive(Debug, thiserror::Error)]
@@ -24,6 +26,8 @@ pub enum EngineError {
     Context(#[from] ContextError),
     #[error(transparent)]
     Album(#[from] AlbumError),
+    #[error(transparent)]
+    Artist(#[from] ArtistError),
 }
 
 /// A connected Spotify session.
@@ -85,6 +89,26 @@ impl Engine {
     /// an album's order comes from the album, so there is no context to walk.
     pub async fn album(&self, album_uri: &str) -> Result<AlbumDetail, EngineError> {
         Ok(read_album(&self.session, album_uri).await?)
+    }
+
+    /// One artist: its page data plus whether the user follows it.
+    pub async fn artist(
+        &self,
+        artist_uri: &str,
+    ) -> Result<(ArtistDetail, Option<bool>), EngineError> {
+        Ok(read_artist(&self.session, artist_uri).await?)
+    }
+
+    /// One release's track names, in the release's own order.
+    ///
+    /// Cannot fail: a track that cannot be labelled falls back to its URI.
+    pub async fn release_tracks(&self, tracks: &[String]) -> Vec<TrackEntry> {
+        read_release_tracks(&self.session, tracks).await
+    }
+
+    /// Writes the artist into the user's followed set, or out of it.
+    pub async fn set_follow(&self, artist_uri: &str, follow: bool) -> Result<(), EngineError> {
+        Ok(write_follow(&self.session, artist_uri, follow).await?)
     }
 }
 

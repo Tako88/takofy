@@ -206,6 +206,53 @@ pub struct AlbumDetail {
     pub tracks: Vec<TrackEntry>,
 }
 
+/// What a release is, as its block labels it.
+///
+/// The wire distinguishes more kinds than the reference names; anything this
+/// build does not draw a word for is [`Self::Other`] rather than a guess.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReleaseKind {
+    Album,
+    Ep,
+    Single,
+    Compilation,
+    /// An audiobook, a podcast, or a wire value this build does not name.
+    Other,
+}
+
+/// One release in an artist's discography, as its block draws it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Release {
+    pub uri: String,
+    /// The release's name, or the URI when the wire gave no name.
+    pub name: String,
+    pub kind: ReleaseKind,
+    /// The release year, or `None` for a wire year of zero or none at all.
+    pub year: Option<u16>,
+    pub cover: Option<CoverUrl>,
+    /// The release's track URIs in disc order.
+    ///
+    /// Names are fetched only while the block is on screen, so this is what a
+    /// label request carries. It is not a [`TrackEntry`]: nothing has been
+    /// labelled yet.
+    pub tracks: Vec<String>,
+}
+
+/// A loaded artist, as the artist page draws it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtistDetail {
+    pub uri: String,
+    /// The artist's name, or the URI when the wire gave no name.
+    pub name: String,
+    /// The portrait the hero draws, when the wire carried one.
+    pub portrait: Option<CoverUrl>,
+    /// The artist's top tracks for the session's country.
+    pub top_tracks: Vec<TrackEntry>,
+    /// Every release the artist payload named: albums, then singles, then
+    /// compilations, deduped, in the wire's own order.
+    pub releases: Vec<Release>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::{AddedAt, CoverImage, CoverUrl};

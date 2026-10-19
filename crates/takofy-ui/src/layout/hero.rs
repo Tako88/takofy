@@ -24,6 +24,18 @@ pub fn title_size(viewport_w: f32) -> f32 {
     (hero::TITLE_VW * viewport_w).clamp(hero::TITLE_MIN, text::XXXXL)
 }
 
+/// The artist hero's title size for a viewport `viewport_w` points wide.
+///
+/// The same clamp with the reference's artist numbers: `2.25rem` floor,
+/// `5.5vw`, `4.5rem` cap. Every number differs from the playlist band's, so the
+/// artist's name is the largest type the design has.
+pub fn artist_title_size(viewport_w: f32) -> f32 {
+    if !viewport_w.is_finite() || viewport_w <= 0.0 {
+        return hero::ARTIST_TITLE_MIN;
+    }
+    (hero::ARTIST_TITLE_VW * viewport_w).clamp(hero::ARTIST_TITLE_MIN, hero::ARTIST_TITLE_MAX)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -60,6 +72,34 @@ mod tests {
             let size = title_size(width);
             assert!(size >= previous, "{width}: {size} < {previous}");
             previous = size;
+        }
+    }
+
+    #[test]
+    fn the_artist_title_clamp_is_wider_than_the_playlists() {
+        assert_eq!(artist_title_size(WINDOW_MIN[0]), hero::ARTIST_TITLE_MIN);
+        assert_eq!(artist_title_size(1.0), hero::ARTIST_TITLE_MIN);
+        assert_eq!(artist_title_size(1920.0), hero::ARTIST_TITLE_MAX);
+        assert_eq!(artist_title_size(f32::MAX), hero::ARTIST_TITLE_MAX);
+        // 5.5% of 1000 is 55, between the floor and the cap.
+        assert_close(artist_title_size(1000.0), 55.0);
+        assert!(artist_title_size(1000.0) > title_size(1000.0));
+    }
+
+    #[test]
+    fn the_artist_size_never_decreases_as_the_viewport_grows() {
+        let mut previous = artist_title_size(0.0);
+        for width in (1..=4000).map(|width| width as f32) {
+            let size = artist_title_size(width);
+            assert!(size >= previous, "{width}: {size} < {previous}");
+            previous = size;
+        }
+    }
+
+    #[test]
+    fn a_zero_or_non_finite_artist_width_returns_the_floor() {
+        for width in [0.0, -5.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert_eq!(artist_title_size(width), hero::ARTIST_TITLE_MIN, "{width}");
         }
     }
 

@@ -20,8 +20,9 @@ pub struct Crumb<'a> {
 ///
 /// With the root on screen, Playlists is where you are. On any page the
 /// Playlists crumb becomes a link and the last crumb is current: the playlist's
-/// name once the list that names it is ready, the album's own name once its
-/// detail names this page, or the page's kind when there is no name to show. A
+/// name once the list that names it is ready, the album's or artist's own name
+/// once its detail names this page, or the page's kind when there is no name to
+/// show. A
 /// playlist whose entry is not in a ready list is the one page that draws no
 /// current crumb at all.
 pub fn trail(library: &Library) -> Vec<Crumb<'_>> {
@@ -54,7 +55,13 @@ pub fn trail(library: &Library) -> Vec<Crumb<'_>> {
                 .current_album()
                 .map_or(page.kind(), |album| album.name.as_str()),
         ),
-        Page::Artist(_) | Page::Show(_) => Some(page.kind()),
+        // The artist's name only once it is loaded, and only for this page.
+        Page::Artist(_) => Some(
+            library
+                .current_artist()
+                .map_or(page.kind(), |artist| artist.name.as_str()),
+        ),
+        Page::Show(_) => Some(page.kind()),
     };
     if let Some(label) = label {
         crumbs.push(Crumb {
@@ -69,7 +76,7 @@ pub fn trail(library: &Library) -> Vec<Crumb<'_>> {
 
 #[cfg(test)]
 mod tests {
-    use takofy_model::{AlbumDetail, PlaylistEntry};
+    use takofy_model::{AlbumDetail, ArtistDetail, PlaylistEntry};
 
     use super::*;
     use crate::library::Load;
@@ -84,6 +91,16 @@ mod tests {
             year: Some(1997),
             cover: None,
             tracks: Vec::new(),
+        }
+    }
+
+    fn artist_detail(uri: &str, name: &str) -> ArtistDetail {
+        ArtistDetail {
+            uri: uri.to_owned(),
+            name: name.to_owned(),
+            portrait: None,
+            top_tracks: Vec::new(),
+            releases: Vec::new(),
         }
     }
 
@@ -258,6 +275,51 @@ mod tests {
             crumbs.iter().filter(|crumb| crumb.current).count(),
             1,
             "one current crumb, whatever it is named"
+        );
+    }
+
+    #[test]
+    fn an_artist_page_names_the_loaded_artist() {
+        let mut library = Library::default();
+        library.open(Page::Artist("spotify:artist:a".to_owned()));
+        library.apply(&Update::Artist(artist_detail(
+            "spotify:artist:a",
+            "Vela Moreno",
+        )));
+
+        assert_eq!(current_label(&library), Some("Vela Moreno"));
+    }
+
+    #[test]
+    fn an_artist_page_names_its_kind_while_loading() {
+        let mut library = Library::default();
+        library.open(Page::Artist("spotify:artist:a".to_owned()));
+
+        assert_eq!(current_label(&library), Some("Artist"));
+    }
+
+    #[test]
+    fn an_artist_page_names_its_kind_after_a_failure() {
+        let mut library = Library::default();
+        library.open(Page::Artist("spotify:artist:a".to_owned()));
+        library.apply(&Update::ArtistFailed {
+            artist: "spotify:artist:a".to_owned(),
+            failure: Failure::Load,
+        });
+
+        assert_eq!(current_label(&library), Some("Artist"));
+    }
+
+    #[test]
+    fn an_artist_page_names_its_kind_for_another_uri() {
+        let mut library = Library::default();
+        library.open(Page::Artist("spotify:artist:b".to_owned()));
+        library.artist = Load::Ready(artist_detail("spotify:artist:a", "Vela Moreno"));
+
+        assert_eq!(
+            current_label(&library),
+            Some("Artist"),
+            "A's name must not name B's crumb"
         );
     }
 

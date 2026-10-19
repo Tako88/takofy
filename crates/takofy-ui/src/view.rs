@@ -5,6 +5,8 @@
 
 mod album;
 mod art;
+mod artist;
+mod artist_hero;
 pub mod card;
 pub mod controls;
 mod hero;
@@ -13,6 +15,8 @@ pub mod playbar;
 pub mod playlist;
 mod queue_pane;
 mod queue_row;
+mod release_block;
+mod section;
 mod shell;
 pub mod sidebar;
 mod sign_in;

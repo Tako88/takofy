@@ -106,21 +106,31 @@ impl eframe::App for TakofyApp {
         let before = self.transport.anchor();
         // Before the draw, so `look` sees a fresh frame's wanted set.
         self.art.begin_frame();
-        let mut screen = view::Screen {
-            state: &mut self.state,
-            library: &mut self.library,
-            transport: &mut self.transport,
-            queue: &mut self.queue,
-            drawer: &mut self.drawer,
-            position_ms,
-            art: &mut self.art,
-            now,
-            now_ms: wall_clock_ms(),
+        // The draw's borrow of the library and the art store ends with this
+        // block, so the label wants it recorded can be drained below.
+        let command = {
+            let mut screen = view::Screen {
+                state: &mut self.state,
+                library: &mut self.library,
+                transport: &mut self.transport,
+                queue: &mut self.queue,
+                drawer: &mut self.drawer,
+                position_ms,
+                art: &mut self.art,
+                now,
+                now_ms: wall_clock_ms(),
+            };
+            view::show(ui, &mut screen, &self.tokens)
         };
-        if let Some(command) = view::show(ui, &mut screen, &self.tokens) {
+        if let Some(command) = command {
             let _ = self.ui_end.commands.send(command);
         }
         // After the draw, because only the draw knows what was wanted this frame.
+        // A label want is not a command returned by the view: the shell may keep
+        // only one of those, so the wants are drained from their own store.
+        for command in self.library.releases.requests() {
+            let _ = self.ui_end.commands.send(command);
+        }
         for command in self.art.requests(now) {
             let _ = self.ui_end.commands.send(command);
         }

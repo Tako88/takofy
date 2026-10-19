@@ -293,6 +293,33 @@ pub(crate) fn start<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                         break;
                     }
                 }
+                Event::Command(Some(Command::LoadArtist { artist })) => {
+                    let step = load_artist(&mut host, &mut stop_rx, &task_notifier, &artist).await;
+                    if step.stopped() {
+                        break;
+                    }
+                }
+                Event::Command(Some(Command::LoadReleaseTracks { release, tracks })) => {
+                    let step = load_release_tracks(
+                        &mut host,
+                        &mut stop_rx,
+                        &task_notifier,
+                        &release,
+                        &tracks,
+                    )
+                    .await;
+                    if step.stopped() {
+                        break;
+                    }
+                }
+                Event::Command(Some(Command::SetFollow { artist, followed })) => {
+                    let step =
+                        set_follow(&mut host, &mut stop_rx, &task_notifier, &artist, followed)
+                            .await;
+                    if step.stopped() {
+                        break;
+                    }
+                }
                 Event::Command(Some(Command::Play { uri })) => {
                     play(&mut host, &task_notifier, &uri);
                 }
@@ -456,6 +483,99 @@ async fn load_album<H: SessionHost>(
     }
 }
 
+/// Loads one artist and announces the page, then the followed state when the
+/// probe answered.
+///
+/// The two updates are separate because they are separate facts: the page is
+/// drawn from the first, and the Follow label moves only on the second. A probe
+/// that did not answer sends nothing, so the label stays where it was.
+async fn load_artist<H: SessionHost>(
+    host: &mut H,
+    stop: &mut StopReceiver<()>,
+    notifier: &Notifier,
+    artist: &str,
+) -> Step {
+    match stop_or(stop, host.artist(artist)).await {
+        None => Step::Stopped,
+        Some(Ok(page)) => {
+            notifier.send(Update::Artist(page.artist));
+            if let Some(followed) = page.followed {
+                notifier.send(Update::Followed {
+                    artist: artist.to_owned(),
+                    followed,
+                });
+            }
+            Step::Done
+        }
+        Some(Err(error)) => {
+            notifier.send(Update::ArtistFailed {
+                artist: artist.to_owned(),
+                failure: library_failure(&error),
+            });
+            Step::Done
+        }
+    }
+}
+
+/// Labels one release's tracks and announces them.
+async fn load_release_tracks<H: SessionHost>(
+    host: &mut H,
+    stop: &mut StopReceiver<()>,
+    notifier: &Notifier,
+    release: &str,
+    tracks: &[String],
+) -> Step {
+    match stop_or(stop, host.release_tracks(tracks)).await {
+        None => Step::Stopped,
+        Some(Ok(tracks)) => {
+            notifier.send(Update::ReleaseTracks {
+                release: release.to_owned(),
+                tracks,
+            });
+            Step::Done
+        }
+        Some(Err(error)) => {
+            notifier.send(Update::ReleaseTracksFailed {
+                release: release.to_owned(),
+                failure: library_failure(&error),
+            });
+            Step::Done
+        }
+    }
+}
+
+/// Writes the followed state and announces what the server accepted.
+///
+/// The announced value is the one that was requested, because the write either
+/// landed or it did not: there is no partial follow. A failure is `Save`, not
+/// `Load`, because the user asked for this and it did not stick.
+async fn set_follow<H: SessionHost>(
+    host: &mut H,
+    stop: &mut StopReceiver<()>,
+    notifier: &Notifier,
+    artist: &str,
+    followed: bool,
+) -> Step {
+    match stop_or(stop, host.set_follow(artist, followed)).await {
+        None => Step::Stopped,
+        Some(Ok(())) => {
+            notifier.send(Update::Followed {
+                artist: artist.to_owned(),
+                followed,
+            });
+            Step::Done
+        }
+        Some(Err(error)) => {
+            log::warn!("follow write failed: {}", error.kind());
+            notifier.send(Update::FollowFailed {
+                artist: artist.to_owned(),
+                failure: Failure::Save,
+            });
+            Step::Done
+        }
+    }
+}
+
 /// Starts the player if needed and hands the one drain thread its events.
 fn play<H: SessionHost>(host: &mut H, notifier: &Notifier, uri: &str) {
     match host.play(uri) {
@@ -610,12 +730,14 @@ mod tests {
 
     use takofy_core::credentials::{AccessToken, CredentialStore, RefreshToken, StoreError};
     use takofy_core::login::{SourceError, SourceErrorKind, TokenSet, TokenSource};
-    use takofy_model::{AlbumDetail, CoverImage, CoverUrl, PlaylistEntry, TrackEntry};
+    use takofy_model::{
+        AlbumDetail, ArtistDetail, CoverImage, CoverUrl, PlaylistEntry, TrackEntry,
+    };
     use takofy_ui::signin::failure_message;
     use tokio::runtime::Runtime;
 
     use super::*;
-    use crate::session::{SessionError, SessionHost, TrackPage};
+    use crate::session::{ArtistPage, SessionError, SessionHost, TrackPage};
 
     fn runtime() -> Runtime {
         tokio::runtime::Builder::new_multi_thread()
@@ -844,17 +966,58 @@ mod tests {
         }
     }
 
+    /// A scripted artist answer; the default is a bare one at [`ARTIST`].
+    #[derive(Clone)]
+    enum ArtistScript {
+        Ready(ArtistPage),
+        Fail,
+    }
+
+    impl Default for ArtistScript {
+        fn default() -> Self {
+            Self::Ready(ArtistPage {
+                artist: artist_detail(ARTIST),
+                followed: Some(false),
+            })
+        }
+    }
+
+    /// A scripted release-label answer.
+    #[derive(Clone, Default)]
+    enum ReleaseScript {
+        #[default]
+        Ready,
+        Named(Vec<TrackEntry>),
+        Fail,
+    }
+
+    /// A scripted follow write.
+    #[derive(Clone, Copy, Default)]
+    enum FollowScript {
+        #[default]
+        Ok,
+        Fail,
+    }
+
     #[derive(Default)]
     struct FakeState {
         connect_scripts: Mutex<Vec<ConnectScript>>,
         rootlist_script: Mutex<RootlistScript>,
         tracks_script: Mutex<TracksScript>,
         album_script: Mutex<AlbumScript>,
+        artist_script: Mutex<ArtistScript>,
+        release_script: Mutex<ReleaseScript>,
+        follow_script: Mutex<FollowScript>,
         connected: AtomicBool,
         connects: AtomicUsize,
         rootlists: AtomicUsize,
         tracks: AtomicUsize,
         albums: AtomicUsize,
+        artists: AtomicUsize,
+        releases: AtomicUsize,
+        follow_writes: AtomicUsize,
+        artist_started: Mutex<Option<Sender<()>>>,
+        last_follow: Mutex<Option<(String, bool)>>,
         plays: AtomicUsize,
         pauses: AtomicUsize,
         resumes: AtomicUsize,
@@ -988,6 +1151,66 @@ mod tests {
             }
         }
 
+        fn artist(
+            &self,
+            _artist: &str,
+        ) -> impl Future<Output = Result<ArtistPage, SessionError>> + Send {
+            self.shared.artists.fetch_add(1, Ordering::SeqCst);
+            if let Some(tx) = self.shared.artist_started.lock().expect("lock").take() {
+                let _ = tx.send(());
+            }
+            let connected = self.shared.connected.load(Ordering::SeqCst);
+            let script = self.shared.artist_script.lock().expect("lock").clone();
+            async move {
+                if !connected {
+                    return Err(SessionError::NotConnected);
+                }
+                match script {
+                    ArtistScript::Ready(page) => Ok(page),
+                    ArtistScript::Fail => Err(SessionError::NotConnected),
+                }
+            }
+        }
+
+        fn release_tracks(
+            &self,
+            _tracks: &[String],
+        ) -> impl Future<Output = Result<Vec<TrackEntry>, SessionError>> + Send {
+            self.shared.releases.fetch_add(1, Ordering::SeqCst);
+            let connected = self.shared.connected.load(Ordering::SeqCst);
+            let script = self.shared.release_script.lock().expect("lock").clone();
+            async move {
+                if !connected {
+                    return Err(SessionError::NotConnected);
+                }
+                match script {
+                    ReleaseScript::Ready => Ok(Vec::new()),
+                    ReleaseScript::Named(tracks) => Ok(tracks),
+                    ReleaseScript::Fail => Err(SessionError::NotConnected),
+                }
+            }
+        }
+
+        fn set_follow(
+            &self,
+            artist: &str,
+            follow: bool,
+        ) -> impl Future<Output = Result<(), SessionError>> + Send {
+            self.shared.follow_writes.fetch_add(1, Ordering::SeqCst);
+            *self.shared.last_follow.lock().expect("lock") = Some((artist.to_owned(), follow));
+            let connected = self.shared.connected.load(Ordering::SeqCst);
+            let script = *self.shared.follow_script.lock().expect("lock");
+            async move {
+                if !connected {
+                    return Err(SessionError::NotConnected);
+                }
+                match script {
+                    FollowScript::Ok => Ok(()),
+                    FollowScript::Fail => Err(SessionError::NotConnected),
+                }
+            }
+        }
+
         fn play(&mut self, _uri: &str) -> Result<(), SessionError> {
             self.shared.plays.fetch_add(1, Ordering::SeqCst);
             if !self.shared.connected.load(Ordering::SeqCst) {
@@ -1036,6 +1259,21 @@ mod tests {
 
     /// The album the shell tests open; one name, so a URI and its detail agree.
     const ALBUM: &str = "spotify:album:a";
+
+    /// The artist the shell tests open.
+    const ARTIST: &str = "spotify:artist:a";
+
+    /// One artist page's data, with no top tracks and no releases, so a test
+    /// names only what it reads.
+    fn artist_detail(uri: &str) -> ArtistDetail {
+        ArtistDetail {
+            uri: uri.to_owned(),
+            name: "Vela Moreno".to_owned(),
+            portrait: None,
+            top_tracks: Vec::new(),
+            releases: Vec::new(),
+        }
+    }
 
     /// One album page's data, with no tracks, so a test names only what it reads.
     fn album_detail(uri: &str) -> AlbumDetail {
@@ -1944,6 +2182,251 @@ mod tests {
             }
         );
         assert_eq!(shared.albums.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_scripted_artist_announces_the_page_then_the_followed_state() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+        let detail = artist_detail(ARTIST);
+        *shared.artist_script.lock().expect("lock") = ArtistScript::Ready(ArtistPage {
+            artist: detail.clone(),
+            followed: Some(true),
+        });
+
+        let (first, second) = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::LoadArtist {
+                    artist: ARTIST.to_owned(),
+                })
+                .expect("load");
+            let first = ui_end.updates.recv().expect("artist");
+            let second = ui_end.updates.recv().expect("followed");
+            (first, second)
+        });
+
+        assert_eq!(first, Update::Artist(detail));
+        assert_eq!(
+            second,
+            Update::Followed {
+                artist: ARTIST.to_owned(),
+                followed: true,
+            },
+            "the page is announced first, then what the server said about it"
+        );
+    }
+
+    #[test]
+    fn an_artist_without_a_probe_answer_announces_no_followed_state() {
+        let detail = artist_detail(ARTIST);
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+        *shared.artist_script.lock().expect("lock") = ArtistScript::Ready(ArtistPage {
+            artist: detail.clone(),
+            followed: None,
+        });
+
+        let (first, second) = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::LoadArtist {
+                    artist: ARTIST.to_owned(),
+                })
+                .expect("load");
+            let first = ui_end.updates.recv().expect("artist");
+            ui_end
+                .commands
+                .send(Command::LoadReleaseTracks {
+                    release: "spotify:album:r".to_owned(),
+                    tracks: Vec::new(),
+                })
+                .expect("labels");
+            let second = ui_end.updates.recv().expect("labels");
+            (first, second)
+        });
+
+        assert_eq!(first, Update::Artist(detail));
+        assert_eq!(
+            second,
+            Update::ReleaseTracks {
+                release: "spotify:album:r".to_owned(),
+                tracks: Vec::new(),
+            },
+            "no Followed state was queued behind the artist"
+        );
+    }
+
+    #[test]
+    fn a_failed_artist_load_is_announced() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+        *shared.artist_script.lock().expect("lock") = ArtistScript::Fail;
+
+        let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::LoadArtist {
+                    artist: ARTIST.to_owned(),
+                })
+                .expect("load");
+            ui_end.updates.recv().expect("failure")
+        });
+
+        assert_eq!(
+            update,
+            Update::ArtistFailed {
+                artist: ARTIST.to_owned(),
+                failure: Failure::Load,
+            }
+        );
+        assert_eq!(shared.artists.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_scripted_release_announces_its_labelled_tracks() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+        *shared.release_script.lock().expect("lock") =
+            ReleaseScript::Named(vec![track("spotify:track:a")]);
+
+        let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::LoadReleaseTracks {
+                    release: "spotify:album:r".to_owned(),
+                    tracks: vec!["spotify:track:a".to_owned()],
+                })
+                .expect("labels");
+            ui_end.updates.recv().expect("tracks")
+        });
+
+        assert_eq!(
+            update,
+            Update::ReleaseTracks {
+                release: "spotify:album:r".to_owned(),
+                tracks: vec![track("spotify:track:a")],
+            }
+        );
+        assert_eq!(shared.releases.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_failed_release_load_is_announced() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+        *shared.release_script.lock().expect("lock") = ReleaseScript::Fail;
+
+        let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::LoadReleaseTracks {
+                    release: "spotify:album:r".to_owned(),
+                    tracks: Vec::new(),
+                })
+                .expect("labels");
+            ui_end.updates.recv().expect("failure")
+        });
+
+        assert_eq!(
+            update,
+            Update::ReleaseTracksFailed {
+                release: "spotify:album:r".to_owned(),
+                failure: Failure::Load,
+            }
+        );
+    }
+
+    #[test]
+    fn a_set_follow_announces_the_requested_value() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+
+        let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::SetFollow {
+                    artist: ARTIST.to_owned(),
+                    followed: true,
+                })
+                .expect("follow");
+            ui_end.updates.recv().expect("followed")
+        });
+
+        assert_eq!(
+            update,
+            Update::Followed {
+                artist: ARTIST.to_owned(),
+                followed: true,
+            }
+        );
+        assert_eq!(shared.follow_writes.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            shared.last_follow.lock().expect("lock").clone(),
+            Some((ARTIST.to_owned(), true)),
+            "the write is sent with the state the user asked for"
+        );
+    }
+
+    #[test]
+    fn a_failed_follow_write_is_announced_as_a_save_failure() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+        *shared.follow_script.lock().expect("lock") = FollowScript::Fail;
+
+        let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::SetFollow {
+                    artist: ARTIST.to_owned(),
+                    followed: false,
+                })
+                .expect("follow");
+            ui_end.updates.recv().expect("follow failed")
+        });
+
+        assert_eq!(
+            update,
+            Update::FollowFailed {
+                artist: ARTIST.to_owned(),
+                failure: Failure::Save,
+            }
+        );
     }
 
     #[test]

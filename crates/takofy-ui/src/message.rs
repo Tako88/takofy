@@ -3,7 +3,7 @@
 //! These types carry state, never credentials: `takofy-ui` has no path to a
 //! token or an auth error, so the compiler keeps secrets out of a view.
 
-use takofy_model::{AlbumDetail, CoverImage, CoverUrl, PlaylistEntry, TrackEntry};
+use takofy_model::{AlbumDetail, ArtistDetail, CoverImage, CoverUrl, PlaylistEntry, TrackEntry};
 
 /// A request from the window to the worker.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -14,6 +14,15 @@ pub enum Command {
     LoadTracks { playlist: String },
     /// Load one album with its tracks.
     LoadAlbum { album: String },
+    /// Load one artist, its discography and its followed state.
+    LoadArtist { artist: String },
+    /// Label one release's track URIs, in the release's own order.
+    LoadReleaseTracks {
+        release: String,
+        tracks: Vec<String>,
+    },
+    /// Write the artist into the user's followed set, or out of it.
+    SetFollow { artist: String, followed: bool },
     /// Start playing a track.
     Play { uri: String },
     /// Pause playback.
@@ -43,6 +52,8 @@ pub enum Failure {
     NoAudioDevice,
     /// The library could not be loaded.
     Load,
+    /// A write the user asked for did not stick.
+    Save,
     /// Anything else; reproduce with `--headless` for the message.
     Other,
 }
@@ -93,6 +104,21 @@ pub enum Update {
     Album(AlbumDetail),
     /// An album could not be loaded.
     AlbumFailed { album: String, failure: Failure },
+    /// One artist, its top tracks and its discography.
+    Artist(ArtistDetail),
+    /// An artist could not be loaded.
+    ArtistFailed { artist: String, failure: Failure },
+    /// One release's labelled tracks, in the release's own order.
+    ReleaseTracks {
+        release: String,
+        tracks: Vec<TrackEntry>,
+    },
+    /// One release's tracks could not be loaded.
+    ReleaseTracksFailed { release: String, failure: Failure },
+    /// The followed state the server confirmed.
+    Followed { artist: String, followed: bool },
+    /// A follow or unfollow write did not stick.
+    FollowFailed { artist: String, failure: Failure },
     /// A decoded cover, ready to upload.
     Cover { url: CoverUrl, image: CoverImage },
     /// A cover could not be fetched or decoded.

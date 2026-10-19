@@ -38,16 +38,18 @@ pub(crate) fn pick_cover(group: Option<&ImageGroup>) -> Option<CoverUrl> {
     CoverUrl::from_file_id(choose(ranked(&candidates))?)
 }
 
-/// The cover an album's `cover_group` should use.
+/// The cover an album's or an artist's `Images` should use.
 ///
 /// The same rule [`pick_cover`] applies, reading the metadata wrapper instead of
-/// the protocol one.
+/// the protocol one: an album's `cover_group` and an artist's `portrait_group`
+/// are both `Images`, and both want the default tile or the width nearest the
+/// target.
 ///
 /// A caveat the wrapper cannot recover from: `FileId::from_raw` zero-pads an id
 /// shorter than twenty bytes, so a padded id looks real here and its CDN URL
 /// answers 404. The band then draws no art, which is the outcome skipping it
 /// would have had.
-pub(crate) fn pick_album_cover(images: &Images) -> Option<CoverUrl> {
+pub(crate) fn pick_images_cover(images: &Images) -> Option<CoverUrl> {
     let candidates = images
         .iter()
         .map(|image| (image.size == Size::DEFAULT, image.width, &image.id.0[..]))
@@ -94,7 +96,7 @@ mod tests {
     use librespot::protocol::metadata::image::Size;
     use librespot::protocol::metadata::{Album, Image, ImageGroup};
 
-    use super::{TARGET_WIDTH, pick_album_cover, pick_cover};
+    use super::{TARGET_WIDTH, pick_cover, pick_images_cover};
 
     fn image(size: Size, width: i32, id: &[u8]) -> Image {
         let mut image = Image::new();
@@ -202,7 +204,7 @@ mod tests {
             image(Size::LARGE, 640, &id(7)),
             image(Size::DEFAULT, 64, &id(8)),
         ]);
-        let cover = pick_album_cover(&images).expect("a cover");
+        let cover = pick_images_cover(&images).expect("a cover");
         assert!(
             cover
                 .as_str()
@@ -217,7 +219,7 @@ mod tests {
             image(Size::LARGE, 640, &id(9)),
             image(Size::SMALL, 64, &id(10)),
         ]);
-        let cover = pick_album_cover(&images).expect("a cover");
+        let cover = pick_images_cover(&images).expect("a cover");
         assert!(
             cover
                 .as_str()
@@ -234,7 +236,7 @@ mod tests {
             image(Size::LARGE, 400, &id(11)),
             image(Size::LARGE, 200, &id(12)),
         ]);
-        let cover = pick_album_cover(&images).expect("a cover");
+        let cover = pick_images_cover(&images).expect("a cover");
         assert!(
             cover
                 .as_str()
@@ -249,7 +251,7 @@ mod tests {
             image(Size::DEFAULT, TARGET_WIDTH, &[0; 20]),
             image(Size::LARGE, 640, &id(13)),
         ]);
-        let cover = pick_album_cover(&images).expect("a cover");
+        let cover = pick_images_cover(&images).expect("a cover");
         assert!(
             cover
                 .as_str()
@@ -265,7 +267,7 @@ mod tests {
     #[test]
     fn a_short_album_id_is_padded_and_accepted() {
         let images = album_images(vec![image(Size::DEFAULT, TARGET_WIDTH, &[3; 16])]);
-        let cover = pick_album_cover(&images).expect("a padded id still reads as an id");
+        let cover = pick_images_cover(&images).expect("a padded id still reads as an id");
         assert!(
             cover
                 .as_str()
@@ -276,6 +278,6 @@ mod tests {
 
     #[test]
     fn an_empty_album_group_is_no_cover() {
-        assert_eq!(pick_album_cover(&album_images(Vec::new())), None);
+        assert_eq!(pick_images_cover(&album_images(Vec::new())), None);
     }
 }
