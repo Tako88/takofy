@@ -192,6 +192,7 @@ mod tests {
             title: uri.to_owned(),
             artists: String::new(),
             album: None,
+            added_at: None,
             duration_ms: None,
             named: true,
             cover: None,

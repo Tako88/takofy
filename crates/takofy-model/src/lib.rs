@@ -147,6 +147,8 @@ pub struct TrackEntry {
     pub artists: String,
     /// The album the track belongs to, when the metadata carried one.
     pub album: Option<String>,
+    /// When the track joined *this* playlist; per position, not per track.
+    pub added_at: Option<AddedAt>,
     /// The track's length in milliseconds, when the metadata carried a length.
     pub duration_ms: Option<u32>,
     /// `false` when `title` is the URI fallback.

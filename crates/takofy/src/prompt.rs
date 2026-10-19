@@ -131,6 +131,7 @@ mod tests {
             title: "Song".to_owned(),
             artists: "Band".to_owned(),
             album: None,
+            added_at: None,
             duration_ms: None,
             named: true,
             cover: None,

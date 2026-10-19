@@ -318,6 +318,7 @@ mod tests {
             title: format!("t{index}"),
             artists: String::new(),
             album: None,
+            added_at: None,
             duration_ms: None,
             named: true,
             cover,
