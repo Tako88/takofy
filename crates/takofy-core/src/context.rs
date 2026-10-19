@@ -8,13 +8,24 @@ use std::collections::{HashSet, VecDeque};
 use librespot::core::SpotifyUri;
 use librespot::protocol::context_page::ContextPage;
 use protobuf_json_mapping::ParseOptions;
-use takofy_model::CoverUrl;
+use takofy_model::{AddedAt, CoverUrl};
+
+/// One position in a page: the URI the row draws and, for a playlist, when the
+/// track joined it.
+///
+/// The date belongs to the position rather than to the track, so two rows of the
+/// same track can carry two dates.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PageTrack {
+    pub uri: String,
+    pub added_at: Option<AddedAt>,
+}
 
 /// One page of a context.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Page {
-    /// Playable URIs kept from this page.
-    pub tracks: Vec<String>,
+    /// The playable positions kept from this page.
+    pub tracks: Vec<PageTrack>,
     /// The next page URL, when present and non-empty.
     pub next: Option<String>,
 }
@@ -54,14 +65,25 @@ pub(crate) trait PageSource {
 /// Hard cap on pages, so a source that keeps serving `next` cannot loop forever.
 const MAX_PAGES: usize = 500;
 
-/// Keeps only playable URIs and drops an empty `next`.
+/// Keeps only playable positions, with their membership dates, and drops an
+/// empty `next`.
 pub fn page_from_proto(page: &ContextPage) -> Page {
     let tracks = page
         .tracks
         .iter()
-        .filter_map(|track| track.uri.as_deref())
-        .filter(|uri| matches!(SpotifyUri::from_uri(uri), Ok(parsed) if parsed.is_playable()))
-        .map(str::to_owned)
+        .filter_map(|track| {
+            let uri = track.uri.as_deref()?;
+            match SpotifyUri::from_uri(uri) {
+                Ok(parsed) if parsed.is_playable() => Some(PageTrack {
+                    uri: uri.to_owned(),
+                    added_at: track
+                        .metadata
+                        .get("added_at")
+                        .and_then(|wire| AddedAt::from_wire(wire)),
+                }),
+                _ => None,
+            }
+        })
         .collect();
     let next = page
         .next_page_url
@@ -170,10 +192,10 @@ mod tests {
     use librespot::protocol::context_track::ContextTrack;
 
     use super::{
-        ContextError, MAX_PAGES, Page, PageSource, Resolved, Walker, page_from_proto,
+        ContextError, MAX_PAGES, Page, PageSource, PageTrack, Resolved, Walker, page_from_proto,
         parse_page_json,
     };
-    use takofy_model::CoverUrl;
+    use takofy_model::{AddedAt, CoverUrl};
 
     const TRACK_A: &str = "spotify:track:4uLU6hMCjMI75M1A2tKUQC";
     const TRACK_B: &str = "spotify:track:6rqhFgbbKwnb9MLmUQDhG6";
@@ -182,9 +204,19 @@ mod tests {
         CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover url")
     }
 
+    fn date(wire: &str) -> AddedAt {
+        AddedAt::from_wire(wire).expect("a date on the wire")
+    }
+
     fn page(tracks: &[&str], next: Option<&str>) -> Page {
         Page {
-            tracks: tracks.iter().map(|track| (*track).to_owned()).collect(),
+            tracks: tracks
+                .iter()
+                .map(|track| PageTrack {
+                    uri: (*track).to_owned(),
+                    added_at: None,
+                })
+                .collect(),
             next: next.map(str::to_owned),
         }
     }
@@ -405,8 +437,107 @@ mod tests {
         };
         assert_eq!(
             page_from_proto(&context_page).tracks,
-            vec![TRACK_A, TRACK_B]
+            page(&[TRACK_A, TRACK_B], None).tracks
         );
+    }
+
+    #[test]
+    fn page_from_proto_reads_added_at_per_item() {
+        let context_page = ContextPage {
+            tracks: vec![
+                track_with_meta(TRACK_A, Some("1792357200000")),
+                track_with_meta(TRACK_B, Some("1700000000000")),
+                track(TRACK_A),
+            ],
+            ..Default::default()
+        };
+        let dates: Vec<Option<u64>> = page_from_proto(&context_page)
+            .tracks
+            .iter()
+            .map(|track| track.added_at.map(AddedAt::as_millis))
+            .collect();
+        assert_eq!(
+            dates,
+            vec![Some(1_792_357_200_000), Some(1_700_000_000_000), None]
+        );
+    }
+
+    #[test]
+    fn a_junk_added_at_keeps_the_item_with_no_date() {
+        let context_page = ContextPage {
+            tracks: vec![
+                track_with_meta(TRACK_A, Some("soon")),
+                track_with_meta(TRACK_B, Some("")),
+                track_with_meta(TRACK_A, Some("1792357200")),
+            ],
+            ..Default::default()
+        };
+        let page = page_from_proto(&context_page);
+        assert_eq!(page.tracks.len(), 3, "a bad date must not drop the row");
+        assert!(page.tracks.iter().all(|track| track.added_at.is_none()));
+    }
+
+    #[test]
+    fn a_dropped_item_does_not_shift_the_dates_of_the_ones_kept() {
+        let context_page = ContextPage {
+            tracks: vec![
+                track_with_meta(TRACK_A, Some("1700000000000")),
+                track_with_meta("spotify:album:abc", Some("1800000000000")),
+                track_with_meta(TRACK_B, Some("1792357200000")),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(
+            page_from_proto(&context_page).tracks,
+            vec![
+                PageTrack {
+                    uri: TRACK_A.to_owned(),
+                    added_at: Some(date("1700000000000")),
+                },
+                PageTrack {
+                    uri: TRACK_B.to_owned(),
+                    added_at: Some(date("1792357200000")),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_local_item_keeps_its_added_at() {
+        let local = "spotify:local:Artist:Album:Title:222";
+        let context_page = ContextPage {
+            tracks: vec![track_with_meta(local, Some("1792357200000"))],
+            ..Default::default()
+        };
+        assert_eq!(
+            page_from_proto(&context_page).tracks,
+            vec![PageTrack {
+                uri: local.to_owned(),
+                added_at: Some(date("1792357200000")),
+            }]
+        );
+    }
+
+    #[test]
+    fn parse_page_json_carries_added_at() {
+        let snake = format!(
+            r#"{{"tracks":[{{"uri":"{TRACK_A}","metadata":{{"added_at":"1792357200000"}}}}]}}"#
+        );
+        let parsed = parse_page_json(snake.as_bytes()).expect("snake");
+        assert_eq!(
+            parsed.tracks,
+            vec![PageTrack {
+                uri: TRACK_A.to_owned(),
+                added_at: Some(date("1792357200000")),
+            }]
+        );
+
+        let camel = format!(
+            r#"{{"nextPageUrl":"u1","tracks":[{{"uri":"{TRACK_A}","metadata":{{"added_at":"1792357200000"}}}}]}}"#
+        );
+        let parsed = parse_page_json(camel.as_bytes()).expect("camel");
+        assert_eq!(parsed.next.as_deref(), Some("u1"));
+        assert_eq!(parsed.tracks[0].added_at, Some(date("1792357200000")));
     }
 
     #[test]
@@ -461,6 +592,18 @@ mod tests {
     fn track(uri: &str) -> ContextTrack {
         ContextTrack {
             uri: Some(uri.to_owned()),
+            ..Default::default()
+        }
+    }
+
+    fn track_with_meta(uri: &str, added_at: Option<&str>) -> ContextTrack {
+        let mut metadata = HashMap::new();
+        if let Some(added_at) = added_at {
+            metadata.insert("added_at".to_owned(), added_at.to_owned());
+        }
+        ContextTrack {
+            uri: Some(uri.to_owned()),
+            metadata,
             ..Default::default()
         }
     }

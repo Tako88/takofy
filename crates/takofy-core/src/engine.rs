@@ -87,7 +87,8 @@ impl TrackPages<'_> {
         let Some(page) = self.walker.next_page().await? else {
             return Ok(None);
         };
-        Ok(Some(label_tracks(self.session, page.tracks).await))
+        let uris = page.tracks.iter().map(|track| track.uri.clone()).collect();
+        Ok(Some(label_tracks(self.session, uris).await))
     }
 
     /// The context's own image, once the first page has been resolved.
