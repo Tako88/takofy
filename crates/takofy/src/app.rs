@@ -223,7 +223,7 @@ mod tests {
             system.abs_diff(reading) < 60_000,
             "read {reading} against the system's {system}"
         );
-        assert!(reading > 1_700_000_000_000, "a 2024 floor, read {reading}");
+        assert!(reading > 1_704_067_200_000, "a 2024 floor, read {reading}");
     }
 
     #[test]

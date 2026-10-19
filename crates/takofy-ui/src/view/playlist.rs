@@ -511,10 +511,12 @@ mod tests {
         }
     }
 
-    /// Runs one pass and consumes the font-atlas delta it may have produced.
-    fn run(ctx: &Context, input: RawInput, draw: impl FnMut(&mut Ui)) {
+    /// Runs one pass, consumes the font-atlas delta it may have produced, and
+    /// hands back the frame for reading.
+    fn run(ctx: &Context, input: RawInput, draw: impl FnMut(&mut Ui)) -> egui::FullOutput {
         let mut output = ctx.run_ui(input, draw);
         output.textures_delta.clear();
+        output
     }
 
     /// The text the frame actually painted, in paint order.
@@ -585,12 +587,12 @@ mod tests {
         library
     }
 
-    /// Draws one frame of the tracklist and returns the text it painted.
-    fn painted_lines(ctx: &Context, table: Table, library: &mut Library) -> Vec<String> {
+    /// One frame of the tracklist at the test's fixed clock.
+    fn tracklist_frame(ctx: &Context, table: Table, library: &mut Library) -> egui::FullOutput {
         let tokens = Tokens::DARK;
         let mut transport = Transport::default();
         let mut queue = Queue::default();
-        let mut output = ctx.run_ui(input(Vec::new()), |ui| {
+        run(ctx, input(Vec::new()), |ui| {
             let _ = tracks_view(
                 ui,
                 table,
@@ -602,9 +604,12 @@ mod tests {
                 NOW_MS,
                 &tokens,
             );
-        });
-        output.textures_delta.clear();
-        drawn_texts(&output)
+        })
+    }
+
+    /// Draws one frame of the tracklist and returns the text it painted.
+    fn painted_lines(ctx: &Context, table: Table, library: &mut Library) -> Vec<String> {
+        drawn_texts(&tracklist_frame(ctx, table, library))
             .into_iter()
             .map(str::to_owned)
             .collect()
@@ -613,24 +618,7 @@ mod tests {
     /// The visible run of every painted line: an elided line is read as what it
     /// shows, not as the string it was given.
     fn painted_runs(ctx: &Context, table: Table, library: &mut Library) -> Vec<String> {
-        let tokens = Tokens::DARK;
-        let mut transport = Transport::default();
-        let mut queue = Queue::default();
-        let mut output = ctx.run_ui(input(Vec::new()), |ui| {
-            let _ = tracks_view(
-                ui,
-                table,
-                library,
-                &mut transport,
-                &mut queue,
-                &mut Art::default(),
-                Instant::now(),
-                NOW_MS,
-                &tokens,
-            );
-        });
-        output.textures_delta.clear();
-        output
+        tracklist_frame(ctx, table, library)
             .shapes
             .iter()
             .filter_map(|clipped| match &clipped.shape {

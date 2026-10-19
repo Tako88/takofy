@@ -1,4 +1,5 @@
-//! Position and count formatting: the playbar's clock and the hero's byline.
+//! The reference's wording for the numbers the shell prints: the playbar's
+//! clock, the hero's byline, and the age a playlist row gives its date.
 
 use takofy_model::AddedAt;
 
@@ -65,8 +66,8 @@ pub fn hero_meta(songs: usize, total_ms: u32) -> Vec<String> {
 ///
 /// A day is a fixed 24-hour span rather than a calendar day: the function has
 /// only an instant and a clock, and a local calendar would need a timezone.
-/// Months are `days / 30` with no cap, so the wording never repeats or skips a
-/// number across its boundaries.
+/// Months are `days / 30`. The 28–59 band is its own arm so the run after three
+/// weeks reads as one month instead of falling through to `0 months ago`.
 pub fn added_label(added: AddedAt, now_ms: u64) -> Option<String> {
     let days = now_ms.checked_sub(added.as_millis())? / DAY_MS;
     Some(match days {
