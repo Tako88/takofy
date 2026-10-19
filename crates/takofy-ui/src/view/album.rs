@@ -56,6 +56,9 @@ pub fn album_view(
     // other page.
     let mut command = None;
     let mut retry = false;
+    // A link click is applied after the scroll area, because the matches below
+    // borrow the album it has to move away from.
+    let mut open: Option<Page> = None;
 
     // The scroll area is salted with the album's own URI, so the offset it keeps
     // is this album's and not the playlist page's that shares the pane.
@@ -141,9 +144,8 @@ pub fn album_view(
                             title: &entry.title,
                             title_cell: TitleCell::NameOverArtist,
                             artist: &entry.artists,
-                            // The artist line is the row's subline, not a link: there
-                            // is no artist page to open yet.
-                            artist_uri: None,
+                            // The subline opens the album's own first artist.
+                            artist_uri: album.artist_uris.first().map(String::as_str),
                             // No album cell and no added date in an album's own table.
                             album: None,
                             album_uri: None,
@@ -153,16 +155,14 @@ pub fn album_view(
                             // The band already holds the record's one picture.
                             cover: Cover::Missing,
                         };
-                        // An album's own table has no linkable cell, so the only
-                        // click it reports is a play.
+                        // A row plays; its artist subline, when the album named
+                        // a resolvable artist, opens that artist's page.
                         match track_row::show(ui, rect, columns, &row, tokens) {
                             Some(Click::Play) => {
                                 command = queue.start(&album.tracks, index, transport);
                             }
-                            // A linkable cell would land here. Nothing in an album's
-                            // table links today, so this arm is unreachable and
-                            // ignored rather than silently swallowed by a wildcard.
-                            Some(Click::Open(_)) | None => {}
+                            Some(Click::Open(page)) => open = Some(page),
+                            None => {}
                         }
                     }
                 }
@@ -171,6 +171,9 @@ pub fn album_view(
 
     if retry {
         return library.open(Page::Album(uri));
+    }
+    if let Some(page) = open {
+        return library.open(page);
     }
     command
 }
@@ -543,6 +546,50 @@ mod tests {
             name.left(),
             "both lines start at the same left"
         );
+    }
+
+    #[test]
+    fn a_click_on_the_albums_artist_subline_opens_the_artist() {
+        let ctx = context();
+        let mut library = library_with(AlbumDetail {
+            artist_uris: vec!["spotify:artist:band".to_owned()],
+            ..detail(vec![track("spotify:track:a", "One", "Nils Aker", 222_000)])
+        });
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let (_, output) = frame(
+            &ctx,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let subline = text_rect(&output, "Nils Aker").expect("the artist subline");
+        let command = click(
+            &ctx,
+            subline.center(),
+            1,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+
+        assert_eq!(
+            library.page(),
+            Some(&Page::Artist("spotify:artist:band".to_owned())),
+            "the album's artist subline opens the artist"
+        );
+        assert_eq!(
+            command,
+            Some(Command::LoadArtist {
+                artist: "spotify:artist:band".to_owned()
+            })
+        );
+        assert!(!queue.can_next(), "opening a page must not start the queue");
     }
 
     #[test]

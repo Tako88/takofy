@@ -53,6 +53,11 @@ pub fn tracks_view(
                 ui, table, library, transport, queue, art, now, tokens,
             );
         }
+        MainPage::Artist => {
+            return super::artist::artist_view(
+                ui, table, library, transport, queue, art, now, tokens,
+            );
+        }
         // A page with no body yet draws none, rather than pretending to be one.
         MainPage::Other => return None,
         MainPage::Playlist => {}
@@ -215,7 +220,9 @@ enum MainPage {
     Playlist,
     /// An album's band and table.
     Album,
-    /// An artist or show page, which has no body yet.
+    /// An artist's hero, Popular list and Discography.
+    Artist,
+    /// A show page, which has no body yet.
     Other,
 }
 
@@ -225,7 +232,8 @@ fn main_page(library: &Library) -> MainPage {
         None => MainPage::Root,
         Some(Page::Playlist(_)) => MainPage::Playlist,
         Some(Page::Album(_)) => MainPage::Album,
-        Some(Page::Artist(_) | Page::Show(_)) => MainPage::Other,
+        Some(Page::Artist(_)) => MainPage::Artist,
+        Some(Page::Show(_)) => MainPage::Other,
     }
 }
 

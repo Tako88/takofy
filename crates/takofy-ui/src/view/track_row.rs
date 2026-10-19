@@ -195,7 +195,7 @@ pub fn show(
     }
 
     index(ui, number_box(columns.index), row, revealed, tokens);
-    title(ui, columns.title, row, tokens);
+    let title_link = title(ui, columns.title, row, key, tokens);
     let artist_link = artist(ui, columns.artist, row, key, tokens);
     let album_link = album(ui, columns.album, row, key, tokens);
     added(ui, columns.added, row.added, tokens);
@@ -225,7 +225,10 @@ pub fn show(
     // click on either cell is a navigation, and takes precedence over playback.
     let mut link_hovered = false;
     let mut open = None;
-    for link in [artist_link, album_link].into_iter().flatten() {
+    for link in [title_link, artist_link, album_link]
+        .into_iter()
+        .flatten()
+    {
         link_hovered |= link.hovered;
         open = open.or(link.page);
     }
@@ -343,13 +346,25 @@ fn bar_scales(time: f32) -> [f32; eq::BARS] {
 /// A playlist's row nests the cover's box inside the title and draws the name
 /// beside it. An album's row has no per-row art — the band already holds the
 /// record's one picture — so the whole cell is the two lines of text.
-fn title(ui: &Ui, rect: Rect, row: &Row<'_>, tokens: &Tokens) {
+///
+/// Only the stacked form's artist line can be a link, and it reports its
+/// interaction so a click on it opens the artist rather than playing the row.
+fn title(
+    ui: &mut Ui,
+    rect: Rect,
+    row: &Row<'_>,
+    key: (&str, usize),
+    tokens: &Tokens,
+) -> Option<Link> {
     if !drawable(rect) {
-        return;
+        return None;
     }
     match row.title_cell {
-        TitleCell::ArtThenName => art_then_name(ui, rect, row, tokens),
-        TitleCell::NameOverArtist => name_over_artist(ui, rect, row, tokens),
+        TitleCell::ArtThenName => {
+            art_then_name(ui, rect, row, tokens);
+            None
+        }
+        TitleCell::NameOverArtist => name_over_artist(ui, rect, row, key, tokens),
     }
 }
 
@@ -378,9 +393,16 @@ fn art_then_name(ui: &Ui, rect: Rect, row: &Row<'_>, tokens: &Tokens) {
 
 /// The album's title cell: the name over its artist, centred together.
 ///
-/// Nothing here is a link: the artist line is the row's subline, not the artist
-/// column a playlist carries, and the artist page does not exist yet.
-fn name_over_artist(ui: &Ui, rect: Rect, row: &Row<'_>, tokens: &Tokens) {
+/// The artist line is a link when the row resolved an artist URI, and only the
+/// painted words take the click: the row's own double click still plays from the
+/// name line, which is where the cell's centre sits.
+fn name_over_artist(
+    ui: &mut Ui,
+    rect: Rect,
+    row: &Row<'_>,
+    key: (&str, usize),
+    tokens: &Tokens,
+) -> Option<Link> {
     let name_font = recipe::track_name();
     let artist_font = recipe::track_secondary();
     let name_h = line_height(ui, &name_font);
@@ -399,7 +421,10 @@ fn name_over_artist(ui: &Ui, rect: Rect, row: &Row<'_>, tokens: &Tokens) {
         name_font,
         tokens.palette.text,
     );
-    if !row.artist.is_empty() {
+    if row.artist.is_empty() {
+        return None;
+    }
+    let Some(uri) = row.artist_uri else {
         left_at(
             ui,
             rect,
@@ -408,7 +433,55 @@ fn name_over_artist(ui: &Ui, rect: Rect, row: &Row<'_>, tokens: &Tokens) {
             artist_font,
             tokens.palette.text_muted,
         );
+        return None;
+    };
+
+    // The link is the painted line, not the whole cell: a click below the name
+    // must stay the row's, and the row's centre is only a hair above this band.
+    let measured = recipe::line(
+        ui,
+        row.artist,
+        artist_font.clone(),
+        tokens.palette.text_muted,
+        0.0,
+        rect.width(),
+    );
+    let hit = Rect::from_min_size(
+        Pos2::new(rect.left(), artist_top),
+        vec2(measured.size().x, measured.size().y),
+    );
+    let response = ui.interact(hit, ui.scope_id().with(("track-artist-subline", key)), Sense::CLICK);
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::Role::Link,
+            true,
+            format!("Open artist {}", row.artist),
+        )
+    });
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
+    let reveal = ui.ctx().animate_bool_with_time_and_easing(
+        ui.scope_id().with(("track-artist-subline", "hover", key)),
+        response.hovered(),
+        motion::FAST,
+        ease::out,
+    );
+    left_at(
+        ui,
+        rect,
+        artist_top,
+        row.artist,
+        artist_font,
+        tokens
+            .palette
+            .text_muted
+            .lerp_to_gamma(tokens.palette.text, reveal),
+    );
+    Some(Link {
+        hovered: response.hovered(),
+        page: response.clicked().then(|| Page::Artist(uri.to_owned())),
+    })
 }
 
 /// The artist column, which only a playlist carries.
