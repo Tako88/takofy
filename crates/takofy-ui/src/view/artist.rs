@@ -10,6 +10,10 @@
 //! block asks the release store for its labels. The store's requests are drained
 //! by the app after the draw, because a want cannot be dropped the way a command
 //! can.
+//!
+//! The filter row hides a block entirely rather than drawing it shorter: a block
+//! the chosen chip does not match is skipped before its rect is solved, so it
+//! reserves no space and asks for no labels and no cover.
 
 use std::time::Instant;
 
@@ -29,6 +33,7 @@ use crate::theme::{Tokens, extent};
 use crate::view::text as recipe;
 
 use super::artist_hero::{self, ArtistHero};
+use super::filter_row;
 use super::release_block::{self, Block};
 use super::section;
 use super::track_list::{head, list_rect};
@@ -132,7 +137,24 @@ pub fn artist_view(
                             ui.label(recipe::muted("No releases.", tokens));
                             return;
                         }
-                        for release in &artist.releases {
+
+                        // The row the artist's own kinds allow, and the chip it
+                        // is filtered by. The effective chip, never the raw
+                        // choice: a choice whose kind this artist does not have
+                        // would otherwise hide every block.
+                        let row = crate::discography::chips(&artist.releases);
+                        let active = page.filter.effective(&row);
+                        if row.len() > 1
+                            && let Some(picked) = filter_row::show(ui, tokens, &row, active)
+                        {
+                            page.filter.choose(picked);
+                        }
+
+                        for release in artist
+                            .releases
+                            .iter()
+                            .filter(|release| active.matches(release.kind))
+                        {
                             let on_screen = ui.clip_rect().intersects(block_rect(ui, release));
                             if !on_screen {
                                 let block = Block {
@@ -252,10 +274,13 @@ fn block_rect(ui: &Ui, release: &Release) -> Rect {
 #[cfg(test)]
 mod tests {
     use egui::{Context, Event, Pos2, RawInput, Rect, Vec2, pos2, vec2};
-    use takofy_model::{ArtistDetail, Release, Release as _Release, ReleaseKind, TrackEntry};
+    use takofy_model::{
+        ArtistDetail, CoverUrl, Release, Release as _Release, ReleaseKind, TrackEntry,
+    };
 
     use super::*;
     use crate::cover::Cover;
+    use crate::discography::{Chip, chips};
     use crate::library::Library;
     use crate::message::{Failure, Update};
     use crate::releases::Labels;
@@ -328,14 +353,98 @@ mod tests {
     }
 
     fn release(uri: &str, name: &str, tracks: &[&str]) -> Release {
+        release_of_kind(uri, name, ReleaseKind::Album, tracks)
+    }
+
+    fn release_of_kind(uri: &str, name: &str, kind: ReleaseKind, tracks: &[&str]) -> Release {
         Release {
             uri: uri.to_owned(),
             name: name.to_owned(),
-            kind: ReleaseKind::Album,
+            kind,
             year: Some(2024),
             cover: None,
             tracks: tracks.iter().map(|track| (*track).to_owned()).collect(),
         }
+    }
+
+    /// The rect a chip occupies, recovered from the label it painted: a chip's
+    /// label sits at the chip's top-left plus its padding.
+    fn chip_rect(output: &egui::FullOutput, chip: Chip) -> Option<Rect> {
+        let label = crate::format::filter_label(chip).to_uppercase();
+        let text = text_rect(output, &label)?;
+        Some(text.expand2(Vec2::new(extent::CHIP_PAD_X, extent::CHIP_PAD_Y)))
+    }
+
+    /// The pane every block of the three-release fixture fits in.
+    fn tall() -> Vec2 {
+        Vec2::new(900.0, 1500.0)
+    }
+
+    /// Two albums and one EP: two chips beside `All`, and three blocks.
+    fn mixed() -> Vec<Release> {
+        vec![
+            release_of_kind(
+                "spotify:album:r1",
+                "Album One",
+                ReleaseKind::Album,
+                &["spotify:track:1"],
+            ),
+            release_of_kind(
+                "spotify:ep:r2",
+                "An EP",
+                ReleaseKind::Ep,
+                &["spotify:track:2"],
+            ),
+            release_of_kind(
+                "spotify:album:r3",
+                "Album Two",
+                ReleaseKind::Album,
+                &["spotify:track:3"],
+            ),
+        ]
+    }
+
+    /// One release of every kind, so the row has all five chips.
+    fn every_kind() -> Vec<Release> {
+        vec![
+            release_of_kind("spotify:a", "An Album", ReleaseKind::Album, &["t1"]),
+            release_of_kind("spotify:b", "An EP", ReleaseKind::Ep, &["t2"]),
+            release_of_kind("spotify:c", "A Single", ReleaseKind::Single, &["t3"]),
+            release_of_kind(
+                "spotify:d",
+                "A Compilation",
+                ReleaseKind::Compilation,
+                &["t4"],
+            ),
+        ]
+    }
+
+    /// The sizes the five chips need, as the row measures them.
+    fn chip_sizes(ctx: &Context) -> Vec<Vec2> {
+        let tokens = Tokens::DARK;
+        let row = chips(&every_kind());
+        let mut sizes = Vec::new();
+        run(ctx, input(Vec2::new(900.0, 800.0), Vec::new()), |ui| {
+            sizes = row
+                .iter()
+                .map(|chip| {
+                    crate::view::controls::chip_size(
+                        ui,
+                        &tokens,
+                        crate::format::filter_label(*chip),
+                    )
+                })
+                .collect();
+        });
+        sizes
+    }
+
+    fn drawn(output: &egui::FullOutput, name: &str) -> bool {
+        drawn_texts(output).contains(&name)
+    }
+
+    fn cover(tail: &str) -> CoverUrl {
+        CoverUrl::from_wire(&format!("https://i.scdn.co/image/{tail}")).expect("a cover url")
     }
 
     fn detail(top: Vec<TrackEntry>, releases: Vec<Release>) -> ArtistDetail {
@@ -774,7 +883,10 @@ mod tests {
     #[test]
     fn a_long_discography_asks_only_for_what_is_on_screen() {
         let ctx = context();
-        let size = Vec2::new(900.0, 800.0);
+        // 900 tall, not 800: the filter row takes its own height above the
+        // blocks, and at 800 only one block fits, which would not exercise the
+        // two-request cap.
+        let size = Vec2::new(900.0, 900.0);
         let releases: Vec<Release> = (1..=48)
             .map(|index| {
                 release(
@@ -1060,5 +1172,924 @@ mod tests {
                 .any(|clipped| matches!(clipped.shape, egui::epaint::Shape::Path(_))),
             "the loading state's spinner arc is painted"
         );
+    }
+
+    #[test]
+    fn the_row_has_all_plus_the_kinds_the_artist_has() {
+        let ctx = context();
+        let mut library = library_with(detail(Vec::new(), mixed()));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let (_, output) = frame(
+            &ctx,
+            tall(),
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let texts = drawn_texts(&output);
+
+        assert!(texts.contains(&"ALL"), "{texts:?}");
+        assert!(texts.contains(&"ALBUMS"), "{texts:?}");
+        assert!(texts.contains(&"EPS"), "{texts:?}");
+        assert!(!texts.contains(&"SINGLES"), "no single: {texts:?}");
+        assert!(
+            !texts.contains(&"COMPILATIONS"),
+            "no compilation: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn the_row_sits_between_the_head_and_the_first_block() {
+        let ctx = context();
+        let mut library = library_with(detail(Vec::new(), mixed()));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let (_, output) = frame(
+            &ctx,
+            tall(),
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+
+        let head = text_rect(&output, "Discography").expect("the section head");
+        let first_chip = chip_rect(&output, Chip::All).expect("the All chip");
+        let first_block = text_rect(&output, "Album One").expect("the first block");
+        assert!(
+            head.bottom() < first_chip.top(),
+            "the row is under the head: {head:?} against {first_chip:?}"
+        );
+        assert!(
+            first_chip.bottom() < first_block.top(),
+            "the row is above the first block: {first_chip:?} against {first_block:?}"
+        );
+    }
+
+    #[test]
+    fn all_is_pressed_on_first_draw() {
+        let ctx = context();
+        let releases = mixed();
+        let mut library = library_with(detail(Vec::new(), releases.clone()));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let (_, output) = frame(
+            &ctx,
+            tall(),
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+
+        assert_eq!(library.filter.chosen(), Chip::All);
+        assert_eq!(
+            library.filter.effective(&chips(&releases)),
+            Chip::All,
+            "the pressed chip is All, so every block draws"
+        );
+        for name in ["Album One", "An EP", "Album Two"] {
+            assert!(drawn(&output, name), "{name} is drawn: {name}");
+        }
+    }
+
+    #[test]
+    fn opening_another_artist_draws_all_even_when_it_has_the_same_kind() {
+        let ctx = context();
+        let releases = mixed();
+        let mut library = library_with(detail(Vec::new(), releases.clone()));
+        library.filter.choose(Chip::Kind(ReleaseKind::Ep));
+        let mut other = detail(Vec::new(), releases);
+        other.uri = OTHER_ARTIST.to_owned();
+        library.open(Page::Artist(other.uri.clone()));
+        library.apply(&Update::Artist(other));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let (_, output) = frame(
+            &ctx,
+            tall(),
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+
+        assert_eq!(
+            library.filter.chosen(),
+            Chip::All,
+            "another artist's page starts on All"
+        );
+        assert!(
+            drawn(&output, "EPS"),
+            "the other artist has an EP chip too: {:?}",
+            drawn_texts(&output)
+        );
+        for name in ["Album One", "An EP", "Album Two"] {
+            assert!(
+                drawn(&output, name),
+                "All filters nothing on the new artist: {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn pressing_a_chip_filters_the_blocks_in_place() {
+        let ctx = context();
+        let size = tall();
+        let mut library = library_with(detail(Vec::new(), mixed()));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let (_, before) = frame(
+            &ctx,
+            size,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let albums = chip_rect(&before, Chip::Kind(ReleaseKind::Album)).expect("the Albums chip");
+        let page = library.page().cloned();
+        let can_back = library.can_back();
+
+        let command = click(
+            &ctx,
+            size,
+            albums.center(),
+            1,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+
+        assert_eq!(command, None, "a filter press asks for nothing");
+        assert_eq!(library.page(), page.as_ref(), "it does not navigate");
+        assert_eq!(library.can_back(), can_back, "it adds no history entry");
+        assert!(
+            matches!(library.artist, Load::Ready(_)),
+            "the artist is not refetched"
+        );
+        assert_eq!(
+            library.filter.chosen(),
+            Chip::Kind(ReleaseKind::Album),
+            "the pressed chip is the choice"
+        );
+
+        let (_, after) = frame(
+            &ctx,
+            size,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        assert!(drawn(&after, "Album One"), "an album block stays");
+        assert!(drawn(&after, "Album Two"), "every album block stays");
+        assert!(
+            !drawn(&after, "An EP"),
+            "the EP block draws nothing at all: {:?}",
+            drawn_texts(&after)
+        );
+    }
+
+    #[test]
+    fn pressing_the_pressed_chip_does_nothing() {
+        let ctx = context();
+        let size = tall();
+        let mut library = library_with(detail(Vec::new(), mixed()));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let (_, before) = frame(
+            &ctx,
+            size,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let albums = chip_rect(&before, Chip::Kind(ReleaseKind::Album)).expect("the Albums chip");
+        let _ = click(
+            &ctx,
+            size,
+            albums.center(),
+            1,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let _ = frame(
+            &ctx,
+            size,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+
+        let _ = click(
+            &ctx,
+            size,
+            albums.center(),
+            1,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let (_, after) = frame(
+            &ctx,
+            size,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+
+        assert_eq!(
+            library.filter.chosen(),
+            Chip::Kind(ReleaseKind::Album),
+            "the row is exclusive: a second press is not a way back out"
+        );
+        assert!(!drawn(&after, "An EP"), "the filter is still applied");
+    }
+
+    #[test]
+    fn all_restores_every_block() {
+        let ctx = context();
+        let size = tall();
+        let mut library = library_with(detail(Vec::new(), mixed()));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let (_, before) = frame(
+            &ctx,
+            size,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let albums = chip_rect(&before, Chip::Kind(ReleaseKind::Album)).expect("the Albums chip");
+        let all = chip_rect(&before, Chip::All).expect("the All chip");
+        let _ = click(
+            &ctx,
+            size,
+            albums.center(),
+            1,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let _ = frame(
+            &ctx,
+            size,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+
+        let _ = click(
+            &ctx,
+            size,
+            all.center(),
+            1,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let (_, after) = frame(
+            &ctx,
+            size,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+
+        assert_eq!(library.filter.chosen(), Chip::All);
+        for name in ["Album One", "An EP", "Album Two"] {
+            assert!(drawn(&after, name), "{name} is back");
+        }
+    }
+
+    #[test]
+    fn a_hidden_block_draws_nothing_and_reserves_nothing() {
+        let ctx = context();
+        let size = tall();
+        let mut unfiltered = library_with(detail(Vec::new(), mixed()));
+        let mut filtered = library_with(detail(Vec::new(), mixed()));
+        filtered.filter.choose(Chip::Kind(ReleaseKind::Ep));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let (_, before) = frame(
+            &ctx,
+            size,
+            Vec::new(),
+            &mut unfiltered,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let (_, after) = frame(
+            &ctx,
+            size,
+            Vec::new(),
+            &mut filtered,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let texts = drawn_texts(&after);
+
+        assert!(!texts.contains(&"Album One"), "{texts:?}");
+        assert!(!texts.contains(&"Album Two"), "{texts:?}");
+
+        let first_unfiltered = text_rect(&before, "Album One").expect("the first block");
+        let first_filtered = text_rect(&after, "An EP").expect("the only block");
+        assert!(
+            (first_filtered.top() - first_unfiltered.top()).abs() < 0.01,
+            "the hidden blocks reserved no space: {} against {}",
+            first_filtered.top(),
+            first_unfiltered.top()
+        );
+    }
+
+    #[test]
+    fn a_hidden_block_has_no_wants() {
+        let ctx = context();
+        let size = tall();
+        let mut releases = mixed();
+        releases[0].cover = Some(cover("album"));
+        releases[1].cover = Some(cover("ep"));
+        let now = Instant::now();
+
+        // The control: unfiltered, both blocks are on screen and ask.
+        let mut open = library_with(detail(Vec::new(), releases.clone()));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+        art.begin_frame();
+        let (_, output) = frame(
+            &ctx,
+            size,
+            Vec::new(),
+            &mut open,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        assert!(drawn(&output, "An EP"), "the EP block is on screen");
+        assert!(drawn(&output, "Album One"), "the album block is on screen");
+        let wanted_labels = open.releases.requests();
+        let wanted_covers = art.requests(now);
+        assert!(
+            wanted_labels
+                .iter()
+                .any(|command| matches!(command, Command::LoadReleaseTracks { release, .. } if release == "spotify:album:r1")),
+            "the control frame asks for the album's labels: {wanted_labels:?}"
+        );
+        assert!(
+            wanted_covers
+                .iter()
+                .any(|command| matches!(command, Command::Fetch { url } if *url == cover("album"))),
+            "the control frame asks for the album's cover: {wanted_covers:?}"
+        );
+
+        // The hidden album asks for neither.
+        let mut hidden = library_with(detail(Vec::new(), releases));
+        hidden.filter.choose(Chip::Kind(ReleaseKind::Ep));
+        let mut art = Art::default();
+        art.begin_frame();
+        let _ = frame(
+            &ctx,
+            size,
+            Vec::new(),
+            &mut hidden,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let wanted_labels = hidden.releases.requests();
+        let wanted_covers = art.requests(now);
+        assert!(
+            !wanted_labels.iter().any(|command| matches!(
+                command,
+                Command::LoadReleaseTracks { release, .. } if release == "spotify:album:r1"
+            )),
+            "a hidden block asks for no labels: {wanted_labels:?}"
+        );
+        assert!(
+            !wanted_covers
+                .iter()
+                .any(|command| matches!(command, Command::Fetch { url } if *url == cover("album"))),
+            "a hidden block fetches no cover: {wanted_covers:?}"
+        );
+        assert!(
+            wanted_covers
+                .iter()
+                .any(|command| matches!(command, Command::Fetch { url } if *url == cover("ep"))),
+            "the block the filter keeps still fetches its cover: {wanted_covers:?}"
+        );
+    }
+
+    #[test]
+    fn an_on_screen_matching_block_still_asks_for_labels() {
+        let ctx = context();
+        let size = tall();
+        let mut library = library_with(detail(Vec::new(), mixed()));
+        library.filter.choose(Chip::Kind(ReleaseKind::Ep));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let (_, output) = frame(
+            &ctx,
+            size,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+
+        assert!(drawn(&output, "An EP"));
+        assert_eq!(
+            library.releases.requests(),
+            vec![Command::LoadReleaseTracks {
+                release: "spotify:ep:r2".to_owned(),
+                tracks: vec!["spotify:track:2".to_owned()],
+            }],
+            "the block the filter keeps is still labelled"
+        );
+    }
+
+    #[test]
+    fn the_aside_keeps_the_artists_totals_while_filtered() {
+        let ctx = context();
+        let size = tall();
+        let mut library = library_with(detail(Vec::new(), mixed()));
+        library.filter.choose(Chip::Kind(ReleaseKind::Album));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let (_, output) = frame(
+            &ctx,
+            size,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+
+        let aside = discography_meta(3, 3).to_uppercase();
+        assert!(
+            drawn(&output, &aside),
+            "the aside describes the artist, not the filter: {aside}"
+        );
+    }
+
+    #[test]
+    fn a_choice_with_no_chip_after_a_reload_draws_all() {
+        let ctx = context();
+        let size = tall();
+        let mut library = library_with(detail(Vec::new(), mixed()));
+        library.filter.choose(Chip::Kind(ReleaseKind::Single));
+
+        // A reload of the same artist: home, then Back, then the reply.
+        library.to_playlists();
+        let _ = library.back();
+        library.apply(&Update::Artist(detail(Vec::new(), mixed())));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let (_, output) = frame(
+            &ctx,
+            size,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+
+        for name in ["Album One", "An EP", "Album Two"] {
+            assert!(
+                drawn(&output, name),
+                "{name} draws under the fallback to All"
+            );
+        }
+        assert_eq!(
+            library.filter.chosen(),
+            Chip::Kind(ReleaseKind::Single),
+            "the choice is remembered, not replaced"
+        );
+    }
+
+    #[test]
+    fn a_single_kind_artist_still_gets_all_and_that_kind() {
+        let ctx = context();
+        let mut library = library_with(detail(
+            Vec::new(),
+            vec![release("spotify:album:r1", "One", &["spotify:track:1"])],
+        ));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let (_, output) = frame(
+            &ctx,
+            tall(),
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+
+        assert!(drawn(&output, "ALL"), "{:?}", drawn_texts(&output));
+        assert!(drawn(&output, "ALBUMS"), "{:?}", drawn_texts(&output));
+        assert!(!drawn(&output, "EPS"), "{:?}", drawn_texts(&output));
+    }
+
+    #[test]
+    fn an_artist_with_only_other_releases_draws_no_row() {
+        let ctx = context();
+        let mut library = library_with(detail(
+            Vec::new(),
+            vec![release_of_kind(
+                "spotify:audiobook:r1",
+                "A Book",
+                ReleaseKind::Other,
+                &["spotify:track:1"],
+            )],
+        ));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let (_, output) = frame(
+            &ctx,
+            tall(),
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+
+        assert!(
+            !drawn(&output, "ALL"),
+            "a row of All alone filters nothing: {:?}",
+            drawn_texts(&output)
+        );
+        assert!(
+            drawn(&output, "A Book"),
+            "the Other release stays reachable under All"
+        );
+    }
+
+    #[test]
+    fn no_releases_draws_no_row() {
+        let ctx = context();
+        let mut library = library_with(detail(Vec::new(), Vec::new()));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let (_, output) = frame(
+            &ctx,
+            tall(),
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let texts = drawn_texts(&output);
+
+        assert!(texts.contains(&"No releases."), "{texts:?}");
+        assert!(
+            !texts.contains(&"ALL"),
+            "there is nothing to filter: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn the_chip_row_starts_at_the_gutter() {
+        let ctx = context();
+        let mut library = library_with(detail(Vec::new(), mixed()));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let (_, output) = frame(
+            &ctx,
+            tall(),
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+
+        let all = chip_rect(&output, Chip::All).expect("the All chip");
+        assert!(
+            (all.left() - space::GUTTER).abs() < 0.01,
+            "the row starts at {}, the gutter is {}",
+            all.left(),
+            space::GUTTER
+        );
+    }
+
+    #[test]
+    fn at_a_wide_pane_the_row_is_one_line() {
+        let ctx = context();
+        let mut library = library_with(detail(Vec::new(), every_kind()));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let sizes = chip_sizes(&ctx);
+        let needed: f32 =
+            sizes.iter().map(|size| size.x).sum::<f32>() + space::S1 * (sizes.len() - 1) as f32;
+        let wide = needed + 2.0 * space::GUTTER + 32.0;
+
+        let (_, output) = frame(
+            &ctx,
+            Vec2::new(wide, 1500.0),
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+
+        let tops: Vec<f32> = [
+            Chip::All,
+            Chip::Kind(ReleaseKind::Album),
+            Chip::Kind(ReleaseKind::Ep),
+            Chip::Kind(ReleaseKind::Single),
+            Chip::Kind(ReleaseKind::Compilation),
+        ]
+        .into_iter()
+        .filter_map(|chip| chip_rect(&output, chip))
+        .map(|rect| rect.top())
+        .collect();
+        assert_eq!(tops.len(), 5, "every chip is drawn");
+        for top in &tops {
+            assert!(
+                (top - tops[0]).abs() < 0.01,
+                "one line: {tops:?} at {wide} wide"
+            );
+        }
+    }
+
+    #[test]
+    fn at_a_narrow_pane_the_row_wraps_inside_the_gutters() {
+        let ctx = context();
+        let mut library = library_with(detail(Vec::new(), every_kind()));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let sizes = chip_sizes(&ctx);
+        let needed: f32 =
+            sizes.iter().map(|size| size.x).sum::<f32>() + space::S1 * (sizes.len() - 1) as f32;
+        let narrow = 2.0 * space::GUTTER + needed / 2.0;
+
+        let (_, output) = frame(
+            &ctx,
+            Vec2::new(narrow, 1500.0),
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+
+        let rects: Vec<Rect> = [
+            Chip::All,
+            Chip::Kind(ReleaseKind::Album),
+            Chip::Kind(ReleaseKind::Ep),
+            Chip::Kind(ReleaseKind::Single),
+            Chip::Kind(ReleaseKind::Compilation),
+        ]
+        .into_iter()
+        .filter_map(|chip| chip_rect(&output, chip))
+        .collect();
+        assert_eq!(rects.len(), 5, "every chip is drawn");
+        let first = rects[0].top();
+        assert!(
+            rects.iter().any(|rect| (rect.top() - first).abs() > 0.01),
+            "the row wraps at {narrow}: {rects:?}"
+        );
+        for rect in &rects {
+            assert!(
+                rect.left() >= space::GUTTER - 0.01,
+                "inside the near gutter: {rect:?}"
+            );
+            assert!(
+                rect.right() <= narrow - space::GUTTER + 0.01,
+                "inside the far gutter: {rect:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_row_grows_with_its_wraps_and_pushes_the_blocks_down() {
+        let ctx = context();
+        let sizes = chip_sizes(&ctx);
+        let needed: f32 =
+            sizes.iter().map(|size| size.x).sum::<f32>() + space::S1 * (sizes.len() - 1) as f32;
+        let wide = needed + 2.0 * space::GUTTER + 32.0;
+        // One point short of fitting on one line: the row wraps a chip, and the
+        // blocks keep a legible width.
+        let narrow = 2.0 * space::GUTTER + needed - 1.0;
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let mut wide_library = library_with(detail(Vec::new(), every_kind()));
+        let (_, wide_out) = frame(
+            &ctx,
+            Vec2::new(wide, 1500.0),
+            Vec::new(),
+            &mut wide_library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let mut narrow_library = library_with(detail(Vec::new(), every_kind()));
+        let (_, narrow_out) = frame(
+            &ctx,
+            Vec2::new(narrow, 1500.0),
+            Vec::new(),
+            &mut narrow_library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+
+        let chips_on_narrow: Vec<Rect> = [
+            Chip::All,
+            Chip::Kind(ReleaseKind::Album),
+            Chip::Kind(ReleaseKind::Ep),
+            Chip::Kind(ReleaseKind::Single),
+            Chip::Kind(ReleaseKind::Compilation),
+        ]
+        .into_iter()
+        .filter_map(|chip| chip_rect(&narrow_out, chip))
+        .collect();
+        let mut tops: Vec<f32> = chips_on_narrow.iter().map(Rect::top).collect();
+        tops.dedup_by(|a, b| (*a - *b).abs() < 0.01);
+        let rows = tops.len();
+        assert!(rows >= 2, "the narrow row wraps: {tops:?}");
+
+        let chip_height = chips_on_narrow[0].height();
+        let expected = (rows - 1) as f32 * (chip_height + space::S1);
+        let wide_block = text_rect(&wide_out, "An Album").expect("the first block");
+        let narrow_block = text_rect(&narrow_out, "An Album").expect("the first block");
+        assert!(
+            (narrow_block.top() - wide_block.top() - expected).abs() < 0.01,
+            "the blocks move down by the wrapped rows: {} against {} for {rows} rows",
+            narrow_block.top() - wide_block.top(),
+            expected
+        );
+    }
+
+    /// The row reserves its whole height, not just its first line: the first
+    /// block sits below the row by the row's height plus the same gap the
+    /// section head leaves above it.
+    #[test]
+    fn the_row_reserves_its_height_above_the_first_block() {
+        let ctx = context();
+        let size = Vec2::new(900.0, 1500.0);
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        // The same block with no row above it: an Other-only artist has one
+        // chip, so the row is not drawn at all.
+        let mut plain = library_with(detail(
+            Vec::new(),
+            vec![release_of_kind(
+                "spotify:book:r1",
+                "A Book",
+                ReleaseKind::Other,
+                &["spotify:track:1"],
+            )],
+        ));
+        let (_, without) = frame(
+            &ctx,
+            size,
+            Vec::new(),
+            &mut plain,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let mut rowed = library_with(detail(
+            Vec::new(),
+            vec![release("spotify:album:r1", "A Book", &["spotify:track:1"])],
+        ));
+        let (_, with) = frame(
+            &ctx,
+            size,
+            Vec::new(),
+            &mut rowed,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+
+        let plain_top = text_rect(&without, "A Book").expect("the block with no row");
+        let rowed_top = text_rect(&with, "A Book").expect("the block under the row");
+        let head = text_rect(&with, "Discography").expect("the section head");
+        let chip = chip_rect(&with, Chip::All).expect("the All chip");
+        let above_row = chip.top() - head.bottom();
+        let above_block = rowed_top.top() - plain_top.top();
+
+        assert!(
+            (above_block - (chip.height() + above_row)).abs() < 0.01,
+            "the row pushes the block down by {} and is {} plus the head's {above_row}",
+            above_block,
+            chip.height()
+        );
+    }
+
+    #[test]
+    fn the_wrapped_row_never_overlaps_the_first_block() {
+        let ctx = context();
+        let sizes = chip_sizes(&ctx);
+        let needed: f32 =
+            sizes.iter().map(|size| size.x).sum::<f32>() + space::S1 * (sizes.len() - 1) as f32;
+        let narrow = 2.0 * space::GUTTER + needed - 1.0;
+        let mut library = library_with(detail(Vec::new(), every_kind()));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let (_, output) = frame(
+            &ctx,
+            Vec2::new(narrow, 1500.0),
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+
+        let first_block = text_rect(&output, "An Album").expect("the first block");
+        for chip in [
+            Chip::All,
+            Chip::Kind(ReleaseKind::Album),
+            Chip::Kind(ReleaseKind::Ep),
+            Chip::Kind(ReleaseKind::Single),
+            Chip::Kind(ReleaseKind::Compilation),
+        ] {
+            let rect = chip_rect(&output, chip).expect("every chip is drawn");
+            assert!(
+                rect.bottom() < first_block.top(),
+                "{chip:?} ends at {}, the first block starts at {}",
+                rect.bottom(),
+                first_block.top()
+            );
+        }
     }
 }

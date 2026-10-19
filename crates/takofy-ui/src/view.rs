@@ -9,6 +9,7 @@ mod artist;
 mod artist_hero;
 pub mod card;
 pub mod controls;
+mod filter_row;
 mod hero;
 pub mod now_playing;
 pub mod playbar;

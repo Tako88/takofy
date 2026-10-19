@@ -8,6 +8,7 @@ use std::collections::HashMap;
 
 use takofy_model::{AlbumDetail, ArtistDetail, CoverUrl, PlaylistEntry, TrackEntry};
 
+use crate::discography::Filter;
 use crate::follow::Follow;
 use crate::message::{Command, Failure, Update};
 use crate::releases::Releases;
@@ -67,6 +68,8 @@ pub struct ArtistPage<'a> {
     pub current: Option<&'a ArtistDetail>,
     /// The Follow button's state.
     pub follow: &'a mut Follow,
+    /// The discography's filter row.
+    pub filter: &'a mut Filter,
     /// The per-release label store the discography fills in.
     pub releases: &'a mut Releases,
 }
@@ -82,6 +85,10 @@ pub struct Library {
     pub artist: Load<ArtistDetail>,
     /// The artist page's Follow state.
     pub follow: Follow,
+    /// The artist page's discography filter. Unlike `follow`, going home does
+    /// not reset it: home then Back reloads the same artist, so the choice is
+    /// kept, and opening a different artist is what resets it.
+    pub filter: Filter,
     /// The per-release track labels the discography fills in as it scrolls.
     pub releases: Releases,
     /// The playlist `tracks` currently concerns; keeps a stale reply out.
@@ -341,12 +348,14 @@ impl Library {
     /// Points the artist page at `artist` and returns the command that loads it.
     ///
     /// Like [`Self::load`] it never touches the history. It also opens the
-    /// Follow state at this artist, so a label confirmed for another one cannot
-    /// be drawn over this page.
+    /// Follow state and the discography filter at this artist, so a label
+    /// confirmed for another one cannot be drawn over this page and another
+    /// artist's filter choice is not carried into this one.
     fn load_artist(&mut self, artist: &str) -> Command {
         self.wanted_artist = Some(artist.to_owned());
         self.artist = Load::Loading;
         self.follow.open(artist);
+        self.filter.open(artist);
         Command::LoadArtist {
             artist: artist.to_owned(),
         }
@@ -429,15 +438,16 @@ impl Library {
         }
     }
 
-    /// The artist page's three state pieces, borrowed for one frame.
+    /// The artist page's four state pieces, borrowed for one frame.
     ///
-    /// They are handed out together because the draw needs all three and the
+    /// They are handed out together because the draw needs all four and the
     /// borrow checker will not let it take them one call at a time; the page's
     /// own URI is read from [`Self::page`] before this borrow starts.
     pub fn artist_page(&mut self) -> ArtistPage<'_> {
         let Self {
             artist,
             follow,
+            filter,
             releases,
             history,
             ..
@@ -453,6 +463,7 @@ impl Library {
             load: artist,
             current,
             follow,
+            filter,
             releases,
         }
     }
@@ -474,9 +485,12 @@ impl Library {
 
 #[cfg(test)]
 mod tests {
-    use takofy_model::{AddedAt, AlbumDetail, ArtistDetail, CoverUrl, PlaylistEntry, TrackEntry};
+    use takofy_model::{
+        AddedAt, AlbumDetail, ArtistDetail, CoverUrl, PlaylistEntry, ReleaseKind, TrackEntry,
+    };
 
     use super::*;
+    use crate::discography::Chip;
     use crate::message::TransportUpdate;
 
     fn playlist(uri: &str, name: &str) -> PlaylistEntry {
@@ -1684,6 +1698,163 @@ mod tests {
             "the page's Retry is this call, so it must re-issue the load"
         );
         assert_eq!(library.artist, Load::Loading);
+    }
+
+    #[test]
+    fn the_filter_starts_on_all() {
+        assert_eq!(Library::default().filter.chosen(), Chip::All);
+        assert_eq!(Library::default().filter.artist(), None);
+    }
+
+    #[test]
+    fn opening_another_artist_resets_the_filter() {
+        let mut library = Library::default();
+        library.open(artist("spotify:artist:a"));
+        library.filter.choose(Chip::Kind(ReleaseKind::Ep));
+
+        library.open(artist("spotify:artist:b"));
+
+        assert_eq!(
+            library.filter.chosen(),
+            Chip::All,
+            "another artist's discs are not the ones that were filtered"
+        );
+        assert_eq!(library.filter.artist(), Some("spotify:artist:b"));
+    }
+
+    #[test]
+    fn back_onto_the_same_artist_keeps_the_filter() {
+        let mut library = Library::default();
+        library.open(artist("spotify:artist:a"));
+        library.apply(&Update::Artist(artist_detail("spotify:artist:a")));
+        library.filter.choose(Chip::Kind(ReleaseKind::Ep));
+
+        library.to_playlists();
+        let _ = library.back();
+
+        assert_eq!(
+            library.filter.chosen(),
+            Chip::Kind(ReleaseKind::Ep),
+            "Back onto the same artist draws what the user left"
+        );
+    }
+
+    #[test]
+    fn retrying_the_same_artist_keeps_the_filter() {
+        let mut library = Library::default();
+        library.open(artist("spotify:artist:a"));
+        library.apply(&Update::ArtistFailed {
+            artist: "spotify:artist:a".to_owned(),
+            failure: Failure::Load,
+        });
+        library.filter.choose(Chip::Kind(ReleaseKind::Single));
+
+        assert_eq!(
+            library.open(artist("spotify:artist:a")),
+            Some(artist_command("spotify:artist:a")),
+            "Retry re-issues the same load"
+        );
+        assert_eq!(library.filter.chosen(), Chip::Kind(ReleaseKind::Single));
+    }
+
+    #[test]
+    fn an_artist_reply_does_not_touch_the_filter() {
+        let mut library = Library::default();
+        library.open(artist("spotify:artist:a"));
+        library.filter.choose(Chip::Kind(ReleaseKind::Compilation));
+
+        library.apply(&Update::Artist(artist_detail("spotify:artist:a")));
+
+        assert_eq!(
+            library.filter.chosen(),
+            Chip::Kind(ReleaseKind::Compilation),
+            "a reply is not an artist change"
+        );
+    }
+
+    #[test]
+    fn to_playlists_keeps_the_filter() {
+        let mut library = Library::default();
+        library.open(artist("spotify:artist:a"));
+        library.apply(&Update::Artist(artist_detail("spotify:artist:a")));
+        library.filter.choose(Chip::Kind(ReleaseKind::Single));
+
+        library.to_playlists();
+        assert_eq!(
+            library.filter.chosen(),
+            Chip::Kind(ReleaseKind::Single),
+            "home then Back reloads the same artist, so the choice is kept"
+        );
+        assert_eq!(library.filter.artist(), Some("spotify:artist:a"));
+
+        let _ = library.back();
+        assert_eq!(
+            library.filter.chosen(),
+            Chip::Kind(ReleaseKind::Single),
+            "home then Back is still the same artist"
+        );
+    }
+
+    #[test]
+    fn reopening_the_same_artist_keeps_the_filter() {
+        let mut library = Library::default();
+        library.open(artist("spotify:artist:a"));
+        library.apply(&Update::Artist(artist_detail("spotify:artist:a")));
+        library.filter.choose(Chip::Kind(ReleaseKind::Ep));
+        library.to_playlists();
+
+        assert_eq!(
+            library.open(artist("spotify:artist:a")),
+            Some(artist_command("spotify:artist:a")),
+            "home cleared the want, so the page is loaded fresh rather than recalled"
+        );
+        assert_eq!(
+            library.filter.chosen(),
+            Chip::Kind(ReleaseKind::Ep),
+            "opening the artist the choice was made for keeps it"
+        );
+    }
+
+    #[test]
+    fn another_artists_ep_chip_does_not_keep_the_choice() {
+        let mut library = Library::default();
+        library.open(artist("spotify:artist:a"));
+        library.apply(&Update::Artist(artist_detail("spotify:artist:a")));
+        library.filter.choose(Chip::Kind(ReleaseKind::Ep));
+
+        library.open(artist("spotify:artist:b"));
+
+        let releases = vec![takofy_model::Release {
+            kind: ReleaseKind::Ep,
+            ..release("spotify:album:b-ep")
+        }];
+        let row = crate::discography::chips(&releases);
+        assert!(
+            row.contains(&Chip::Kind(ReleaseKind::Ep)),
+            "B has an EP, so its row offers the chip the choice named: {row:?}"
+        );
+        assert_eq!(
+            library.filter.effective(&row),
+            Chip::All,
+            "B still draws All pressed, because the choice belonged to A"
+        );
+    }
+
+    #[test]
+    fn artist_page_hands_out_the_filter() {
+        let mut library = Library::default();
+        library.open(artist("spotify:artist:a"));
+        library.filter.choose(Chip::Kind(ReleaseKind::Single));
+        {
+            let page = library.artist_page();
+            assert_eq!(page.filter.chosen(), Chip::Kind(ReleaseKind::Single));
+            page.filter.choose(Chip::All);
+        }
+        assert_eq!(
+            library.filter.chosen(),
+            Chip::All,
+            "the page borrows the library's own filter, not a copy"
+        );
     }
 
     #[test]
