@@ -188,6 +188,30 @@ pub fn track_mono(size: f32) -> FontId {
     FontId::new(size, fonts::mono(MonoWeight::Regular))
 }
 
+/// A page head's title: the reference's `--text-2xl` at 800, tracked tight.
+///
+/// Only the library root draws one today; the hero's title is its own recipe
+/// because its size follows the window.
+pub fn page_title() -> FontId {
+    FontId::new(text::XXL, fonts::sans(Weight::Black))
+}
+
+/// The page head's note, laid out for the painter: a small mono line tracked
+/// wide and upper-cased, the reference's `.page-head__note`.
+pub fn page_note_galley(
+    ui: &egui::Ui,
+    label: &str,
+    tokens: &Tokens,
+) -> std::sync::Arc<egui::Galley> {
+    spaced(
+        ui,
+        &label.to_uppercase(),
+        FontId::new(text::XXS, fonts::mono(MonoWeight::Medium)),
+        tokens.palette.text_subtle,
+        tracking_pts(text::XXS, tracking::WIDE),
+    )
+}
+
 /// The sign-in card's heading: the largest type in the window after the hero's,
 /// and the only place the interface face is set this heavy at this size.
 pub fn card_heading() -> FontId {

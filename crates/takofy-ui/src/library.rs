@@ -12,6 +12,7 @@ use takofy_model::{
 
 use crate::discography::Filter;
 use crate::follow::Follow;
+use crate::library_filter::RootFilter;
 use crate::message::{Command, Failure, Update};
 use crate::releases::Releases;
 use crate::route::{History, Page};
@@ -97,6 +98,10 @@ pub struct Library {
     pub filter: Filter,
     /// The per-release track labels the discography fills in as it scrolls.
     pub releases: Releases,
+    /// The library root's filter row. Unlike `filter`, going home does not
+    /// reset it: home then Back reloads the same root, so the choice is kept,
+    /// and the root is the page the choice belongs to.
+    pub root_filter: RootFilter,
     /// The playlist `tracks` currently concerns; keeps a stale reply out.
     ///
     /// It is not the page: a reply that lands while the user is on an album
@@ -594,6 +599,7 @@ mod tests {
 
     use super::*;
     use crate::discography::Chip;
+    use crate::library_filter::RootKind;
     use crate::message::TransportUpdate;
 
     fn playlist(uri: &str, name: &str) -> PlaylistEntry {
@@ -2233,6 +2239,31 @@ mod tests {
     fn the_filter_starts_on_all() {
         assert_eq!(Library::default().filter.chosen(), Chip::All);
         assert_eq!(Library::default().filter.artist(), None);
+    }
+
+    #[test]
+    fn the_chosen_chip_survives_a_trip_to_a_show_page_and_back() {
+        let mut library = Library::default();
+        library.root_filter.choose(RootKind::Podcasts);
+        assert_eq!(
+            library.root_filter.chosen(),
+            RootKind::Podcasts,
+            "a live chip is pressed"
+        );
+
+        library.open(show("spotify:show:a"));
+        assert_eq!(
+            library.root_filter.chosen(),
+            RootKind::Podcasts,
+            "opening a page keeps the root's choice"
+        );
+
+        library.back();
+        assert_eq!(
+            library.root_filter.chosen(),
+            RootKind::Podcasts,
+            "a Back to the root redraws the chip the user left"
+        );
     }
 
     #[test]

@@ -116,7 +116,16 @@ pub fn show(ui: &mut Ui, rect: Rect, row: &Row<'_>, tokens: &Tokens) -> Option<C
         && ui.input(|input| {
             input.key_pressed(egui::Key::Enter) || input.key_pressed(egui::Key::Space)
         });
-    if keyboard || played || response.double_clicked() {
+    if keyboard || played {
+        return Some(Click::Play);
+    }
+    // A double click is a second way to play the row, but not over the toggle:
+    // the toggle has already answered its own click, and counting the same
+    // press twice would restart the episode it just started.
+    let over_toggle = response
+        .interact_pointer_pos()
+        .is_some_and(|at| parts.toggle.contains(at));
+    if response.double_clicked() && !over_toggle {
         return Some(Click::Play);
     }
     None

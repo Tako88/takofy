@@ -5,6 +5,7 @@
 use takofy_model::{AddedAt, PublishedAt, ReleaseKind, TrackEntry};
 
 use crate::discography::Chip;
+use crate::library_filter::RootKind;
 
 /// One day in milliseconds.
 const DAY_MS: u64 = 86_400_000;
@@ -275,6 +276,29 @@ pub fn episode_meta(show: &str, published: Option<PublishedAt>, now_ms: u64) -> 
 /// saved`.
 pub fn library_note(count: usize) -> String {
     format!("{count} saved")
+}
+
+/// The root's filter row labels each chip as the reference writes it.
+pub fn root_filter_label(kind: RootKind) -> &'static str {
+    match kind {
+        RootKind::All => "All",
+        RootKind::Playlists => "Playlists",
+        RootKind::Artists => "Artists",
+        RootKind::Albums => "Albums",
+        RootKind::Podcasts => "Podcasts",
+    }
+}
+
+/// The message the root draws when the chosen chip shows nothing.
+///
+/// All and Playlists show playlists, Podcasts shows shows, and the two waiting
+/// chips show nothing yet, so each gets a message that fits what it would draw.
+pub fn root_empty_label(kind: RootKind) -> &'static str {
+    match kind {
+        RootKind::All | RootKind::Playlists => "No playlists yet.",
+        RootKind::Podcasts => "You don't follow any shows yet.",
+        RootKind::Artists | RootKind::Albums => "Nothing here yet.",
+    }
 }
 
 /// The band's byline parts: the owner, then the count and the total.
@@ -735,5 +759,26 @@ mod tests {
         assert_eq!(library_note(0), "0 saved");
         assert_eq!(library_note(1), "1 saved");
         assert_eq!(library_note(8), "8 saved");
+    }
+
+    #[test]
+    fn root_filter_labels_match_the_reference() {
+        assert_eq!(root_filter_label(RootKind::All), "All");
+        assert_eq!(root_filter_label(RootKind::Playlists), "Playlists");
+        assert_eq!(root_filter_label(RootKind::Artists), "Artists");
+        assert_eq!(root_filter_label(RootKind::Albums), "Albums");
+        assert_eq!(root_filter_label(RootKind::Podcasts), "Podcasts");
+    }
+
+    #[test]
+    fn root_empty_labels_per_chip() {
+        assert_eq!(root_empty_label(RootKind::All), "No playlists yet.");
+        assert_eq!(root_empty_label(RootKind::Playlists), "No playlists yet.");
+        assert_eq!(
+            root_empty_label(RootKind::Podcasts),
+            "You don't follow any shows yet."
+        );
+        assert!(!root_empty_label(RootKind::Artists).is_empty());
+        assert!(!root_empty_label(RootKind::Albums).is_empty());
     }
 }
