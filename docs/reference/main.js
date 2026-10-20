@@ -450,6 +450,11 @@
       chip.addEventListener("click", function () {
         var group = chip.closest("[data-chip-group]") || document;
         var wasPressed = chip.getAttribute("aria-pressed") === "true";
+
+        // Rows that carry an explicit "All" pill are exclusive: one is always
+        // active, and "All" is the documented way back out.
+        if (wasPressed && group.hasAttribute("data-chip-exclusive")) return;
+
         $$("[data-chip]", group).forEach(function (other) {
           other.setAttribute("aria-pressed", "false");
         });

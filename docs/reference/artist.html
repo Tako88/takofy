@@ -245,11 +245,18 @@
       <section class="section" id="discography" aria-labelledby="discography-heading">
         <div class="section__head">
           <h2 class="section__title" id="discography-heading">Discography</h2>
-          <span class="section__link">3 releases · 24 tracks</span>
+          <span class="section__link">4 releases · 26 tracks</span>
         </div>
 
-        <div class="discography">
-          <article class="album-block">
+        <div class="filters" data-chip-group data-chip-exclusive data-chip-target="#discography-list">
+          <button class="chip" type="button" data-chip="" aria-pressed="true">All</button>
+          <button class="chip" type="button" data-chip="album" aria-pressed="false">Albums</button>
+          <button class="chip" type="button" data-chip="ep" aria-pressed="false">EPs</button>
+          <button class="chip" type="button" data-chip="single" aria-pressed="false">Singles</button>
+        </div>
+
+        <div class="discography" id="discography-list">
+          <article class="album-block" data-kind="album">
             <div class="album-block__head">
               <img class="album-block__art" src="img/covers/slow-tide.jpg" alt="Slow Tide cover" loading="lazy" />
               <div class="album-block__meta">
@@ -460,7 +467,53 @@
             </ol>
           </article>
 
-          <article class="album-block">
+          <article class="album-block" data-kind="single">
+            <div class="album-block__head">
+              <img class="album-block__art" src="img/covers/kestrel-single.jpg" alt="Kestrel single cover" loading="lazy" />
+              <div class="album-block__meta">
+                <h3><a class="album-block__title" href="album.html">Kestrel</a></h3>
+                <p class="album-block__facts">Single · 2023 · 2 tracks · 8 min 44 sec</p>
+              </div>
+              <div class="album-block__actions">
+                <button class="play-button" type="button" data-track="Kestrel" data-artist="Vela Moreno" data-art="img/covers/kestrel-single.jpg" data-duration="236" aria-label="Play Kestrel">
+                  <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg>
+                </button>
+                <button class="icon-button icon-button--lg" type="button" data-like data-like-group="row" aria-pressed="false" aria-label="Save Kestrel to your library">
+                  <svg class="icon icon--md" aria-hidden="true"><use href="#i-heart"></use></svg>
+                </button>
+                <button class="icon-button icon-button--lg" type="button" aria-label="More options for Kestrel">
+                  <svg class="icon icon--md" aria-hidden="true"><use href="#i-more"></use></svg>
+                </button>
+              </div>
+            </div>
+
+            <ol class="tracklist tracks--slim" data-playing-scope>
+              <li class="track-row" data-track="Kestrel" data-artist="Vela Moreno" data-art="img/covers/kestrel-single.jpg" data-duration="236">
+                <span class="track-row__index">
+                  <span class="track-row__number">1</span>
+                  <button class="track-row__toggle" type="button" aria-label="Play Kestrel"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg></button>
+                  <span class="track-row__eq" aria-hidden="true"><span class="eq"><i></i><i></i><i></i></span></span>
+                </span>
+                <span class="track-row__title"><span class="track-row__text"><span class="track-row__name truncate">Kestrel</span></span></span>
+                <span><button class="icon-button track-row__like" type="button" data-like data-like-group="row" aria-pressed="false" aria-label="Save Kestrel to your library"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-heart"></use></svg></button></span>
+                <span class="track-row__duration">3:56</span>
+                <span class="track-row__actions"><button class="icon-button" type="button" aria-label="More options for Kestrel"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button></span>
+              </li>
+              <li class="track-row" data-track="Kestrel (Night Version)" data-artist="Vela Moreno" data-art="img/covers/kestrel-single.jpg" data-duration="288">
+                <span class="track-row__index">
+                  <span class="track-row__number">2</span>
+                  <button class="track-row__toggle" type="button" aria-label="Play Kestrel (Night Version)"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play" data-play-icon"></use></svg></button>
+                  <span class="track-row__eq" aria-hidden="true"><span class="eq"><i></i><i></i><i></i></span></span>
+                </span>
+                <span class="track-row__title"><span class="track-row__text"><span class="track-row__name truncate">Kestrel (Night Version)</span></span></span>
+                <span><button class="icon-button track-row__like" type="button" data-like data-like-group="row" aria-pressed="false" aria-label="Save Kestrel (Night Version) to your library"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-heart"></use></svg></button></span>
+                <span class="track-row__duration">4:48</span>
+                <span class="track-row__actions"><button class="icon-button" type="button" aria-label="More options for Kestrel (Night Version)"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button></span>
+              </li>
+            </ol>
+          </article>
+
+          <article class="album-block" data-kind="album">
             <div class="album-block__head">
               <img class="album-block__art" src="img/covers/saltglass.jpg" alt="Saltglass cover" loading="lazy" />
               <div class="album-block__meta">
@@ -583,7 +636,7 @@
             </ol>
           </article>
 
-          <article class="album-block">
+          <article class="album-block" data-kind="ep">
             <div class="album-block__head">
               <img class="album-block__art" src="img/covers/harbour-lights.jpg" alt="Harbour Lights EP cover" loading="lazy" />
               <div class="album-block__meta">
@@ -650,6 +703,11 @@
               </li>
             </ol>
           </article>
+        </div>
+
+        <div class="empty-state" id="discography-list-empty" hidden>
+          <p class="empty-state__title">Nothing in this format yet</p>
+          <p>Vela Moreno has no releases of that type.</p>
         </div>
       </section>
 
