@@ -16,6 +16,7 @@ use crate::library_filter::RootFilter;
 use crate::message::{Command, Failure, Update};
 use crate::releases::Releases;
 use crate::route::{History, Page};
+use crate::sidebar_kind::SidebarFilter;
 
 /// What a loadable value is doing.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -102,6 +103,9 @@ pub struct Library {
     /// reset it: home then Back reloads the same root, so the choice is kept,
     /// and the root is the page the choice belongs to.
     pub root_filter: RootFilter,
+    /// The sidebar's kind chips. Like `root_filter`, opening a page or going
+    /// home does not reset it.
+    pub sidebar_kind: SidebarFilter,
     /// The playlist `tracks` currently concerns; keeps a stale reply out.
     ///
     /// It is not the page: a reply that lands while the user is on an album
@@ -601,6 +605,7 @@ mod tests {
     use crate::discography::Chip;
     use crate::library_filter::RootKind;
     use crate::message::TransportUpdate;
+    use crate::sidebar_kind::SidebarKind;
 
     fn playlist(uri: &str, name: &str) -> PlaylistEntry {
         PlaylistEntry {
@@ -2239,6 +2244,33 @@ mod tests {
     fn the_filter_starts_on_all() {
         assert_eq!(Library::default().filter.chosen(), Chip::All);
         assert_eq!(Library::default().filter.artist(), None);
+    }
+
+    #[test]
+    fn the_sidebar_kind_starts_on_playlists() {
+        let mut library = Library::default();
+        assert_eq!(library.sidebar_kind.chosen(), SidebarKind::Playlists);
+
+        library.open(show("spotify:show:a"));
+        assert_eq!(
+            library.sidebar_kind.chosen(),
+            SidebarKind::Playlists,
+            "opening a page keeps the sidebar's choice"
+        );
+
+        library.back();
+        assert_eq!(
+            library.sidebar_kind.chosen(),
+            SidebarKind::Playlists,
+            "a Back keeps the sidebar's choice"
+        );
+
+        library.to_playlists();
+        assert_eq!(
+            library.sidebar_kind.chosen(),
+            SidebarKind::Playlists,
+            "going home keeps the sidebar's choice"
+        );
     }
 
     #[test]
