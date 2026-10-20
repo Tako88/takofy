@@ -353,6 +353,35 @@ pub struct FollowedShow {
     pub cover: Option<CoverUrl>,
 }
 
+/// One artist in the followed-artists list, as its card draws it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FollowedArtist {
+    pub uri: String,
+    /// The artist's name, or the URI when the metadata did not answer.
+    pub name: String,
+    /// `false` when `name` is the URI fallback.
+    pub named: bool,
+    pub portrait: Option<CoverUrl>,
+    /// How many current releases the artist has, when they could be read.
+    pub releases: Option<u32>,
+}
+
+/// One album in the saved-albums list, as its card draws it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SavedAlbum {
+    pub uri: String,
+    /// The album's name, or the URI when the metadata did not answer.
+    pub name: String,
+    /// `false` when `name` is the URI fallback.
+    pub named: bool,
+    /// The album's artists, joined with ", ". Empty when none were named.
+    pub artists: String,
+    pub year: Option<u16>,
+    pub cover: Option<CoverUrl>,
+    /// The album's track count, when its discs could be read.
+    pub tracks: Option<u32>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::{AddedAt, CoverImage, CoverUrl, Episode, PublishedAt};
