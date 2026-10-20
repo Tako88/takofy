@@ -389,9 +389,32 @@ pub struct SavedAlbum {
     pub tracks: Option<u32>,
 }
 
+/// One line of a track's lyrics, as the lyrics pane draws it.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct LyricLine {
+    /// When the line starts singing, in milliseconds, when the provider timed it.
+    pub start_ms: Option<u32>,
+    /// When the line stops singing, in milliseconds, when the provider timed it.
+    pub end_ms: Option<u32>,
+    /// The words themselves, empty when the provider sent a blank line.
+    pub words: String,
+}
+
+/// A track's lyrics, as the lyrics pane draws them.
+///
+/// Empty [`Self::lines`] is the same word as a provider that has none: the pane
+/// says so either way.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TrackLyrics {
+    /// Every line, in the provider's own order, never sorted.
+    pub lines: Vec<LyricLine>,
+    /// `true` when the provider timed the lines, so one of them can be lit.
+    pub synced: bool,
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{AddedAt, CoverImage, CoverUrl, Episode, PublishedAt};
+    use super::{AddedAt, CoverImage, CoverUrl, Episode, PublishedAt, TrackLyrics};
 
     fn episode() -> Episode {
         Episode {
@@ -405,6 +428,13 @@ mod tests {
             cover: Some(CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover url")),
             named: true,
         }
+    }
+
+    #[test]
+    fn default_lyrics_are_untimed_and_empty() {
+        let lyrics = TrackLyrics::default();
+        assert!(lyrics.lines.is_empty());
+        assert!(!lyrics.synced);
     }
 
     #[test]

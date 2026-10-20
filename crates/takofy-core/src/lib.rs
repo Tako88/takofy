@@ -12,6 +12,7 @@ pub mod credentials;
 pub mod engine;
 pub mod followed;
 pub mod login;
+pub mod lyrics;
 pub mod oauth;
 pub mod playback;
 pub mod rootlist;

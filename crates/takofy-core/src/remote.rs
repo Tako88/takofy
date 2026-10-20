@@ -9,7 +9,7 @@ use http::header::{ACCEPT, CONTENT_TYPE};
 use http::{HeaderMap, Method};
 use librespot::core::date::Date;
 use librespot::core::{Session, SpotifyId, SpotifyUri};
-use librespot::metadata::{Album, Artist, Metadata, Playlist, Show};
+use librespot::metadata::{Album, Artist, Lyrics, Metadata, Playlist, Show};
 use librespot::protocol::extended_metadata::{
     BatchedEntityRequest, BatchedExtensionResponse, EntityRequest, ExtensionQuery,
 };
@@ -20,7 +20,7 @@ use librespot::protocol::metadata::{
 use protobuf::Message as _;
 use takofy_model::{
     AlbumDetail, ArtistDetail, CoverUrl, Episode, FollowedArtist, FollowedShow, PlaylistEntry,
-    PublishedAt, SavedAlbum, ShowDetail, TrackEntry,
+    PublishedAt, SavedAlbum, ShowDetail, TrackEntry, TrackLyrics,
 };
 
 use crate::album::{AlbumError, detail, positions};
@@ -35,6 +35,7 @@ use crate::context::{
 };
 use crate::cover::{pick_cover, pick_images_cover};
 use crate::followed::{self, FollowedError, ShowCard};
+use crate::lyrics::{self, LyricsError};
 use crate::rootlist::{RootlistError, RootlistPage, RootlistSource, RootlistWire, parse_rootlist};
 use crate::show::{ShowError, detail as show_detail, episode_uris};
 
@@ -343,6 +344,20 @@ fn parse_show_uri(uri: &str) -> Result<SpotifyUri, ShowError> {
         return Err(ShowError::NotAShow);
     }
     Ok(id)
+}
+
+/// Reads one track's lyrics.
+///
+/// The lyrics endpoint is its own route, and it answers a track without lyrics
+/// with a not-found rather than an empty list; that answer is settled into empty
+/// lyrics, so the pane says the track has none instead of offering a retry. A URI
+/// that does not name a track never reaches the network.
+pub(crate) async fn read_lyrics(session: &Session, uri: &str) -> Result<TrackLyrics, LyricsError> {
+    let id = match SpotifyUri::from_uri(uri) {
+        Ok(SpotifyUri::Track { id, .. }) => id,
+        _ => return Err(LyricsError::NotATrack),
+    };
+    lyrics::settled(Lyrics::get(session, &id).await)
 }
 
 /// Whether the artist is in the user's followed set, or `None` when the probe
