@@ -54,14 +54,17 @@ pub fn show(
     let (can_back, can_forward) = (library.can_back(), library.can_forward());
     let mut nav = None;
 
-    let toggle = places.toggle.map(|rect| {
+    // The layout hands the toggle a whole column; the button in it is the same
+    // square as every other topbar button.
+    let toggle = places.toggle.map(|column| {
+        let rect = Rect::from_center_size(column.center(), Vec2::splat(extent::BUTTON));
         controls::round_button(
             ui,
             tokens,
             Control::DrawerToggle,
             rect,
-            Icon::Library,
-            Size::LG,
+            Icon::Panel,
+            Size::MD,
             "Open your library",
             true,
             false,

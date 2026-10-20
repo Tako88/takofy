@@ -214,6 +214,38 @@ const LIBRARY_FILLS: &[&[Point]] = &[
     &[(14.7, 5.4), (17.3, 4.7), (21.2, 19.0), (18.6, 19.7)],
 ];
 
+const PANEL_LINES: &[Line] = &[
+    Line {
+        points: &[
+            (19.618, 4.598),
+            (20.176, 4.882),
+            (20.618, 5.324),
+            (20.902, 5.882),
+            (21.0, 6.5),
+            (20.848, 18.265),
+            (20.414, 18.914),
+            (19.765, 19.348),
+            (19.0, 19.5),
+            (4.235, 19.348),
+            (3.586, 18.914),
+            (3.152, 18.265),
+            (3.0, 17.5),
+            (3.152, 5.735),
+            (3.586, 5.086),
+            (4.235, 4.652),
+            (5.0, 4.5),
+        ],
+        closed: true,
+        width: None,
+    },
+    Line {
+        points: &[(9.5, 4.5), (9.5, 19.5)],
+        closed: false,
+        width: None,
+    },
+];
+const PANEL_FILLS: &[&[Point]] = &[];
+
 const ARROW_LEFT_LINES: &[Line] = &[
     Line {
         points: &[(20.0, 12.0), (4.6, 12.0)],
@@ -974,6 +1006,11 @@ pub(super) fn glyph(icon: Icon) -> Glyph {
             lines: LIBRARY_LINES,
             fills: LIBRARY_FILLS,
         },
+        Icon::Panel => Glyph {
+            source: 0x632f66fc13708849,
+            lines: PANEL_LINES,
+            fills: PANEL_FILLS,
+        },
         Icon::ArrowLeft => Glyph {
             source: 0xd389706c26b65a36,
             lines: ARROW_LEFT_LINES,
@@ -1058,6 +1095,7 @@ pub(super) fn symbol_id(icon: Icon) -> &'static str {
         Icon::Home => "i-home",
         Icon::Search => "i-search",
         Icon::Library => "i-library",
+        Icon::Panel => "i-panel",
         Icon::ArrowLeft => "i-arrow-left",
         Icon::ArrowRight => "i-arrow-right",
         Icon::Heart => "i-heart",

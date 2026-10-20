@@ -635,6 +635,44 @@ mod tests {
         window.library.back();
     }
 
+    /// In drawer mode the layout hands the toggle a whole column; the button in
+    /// it is still a button, the same square as its neighbours.
+    #[test]
+    fn the_drawer_toggle_is_a_button_not_a_column() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(800.0, 900.0));
+        ready_playlist(&mut window);
+
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let bar = topbar_rect(&window);
+        let buttons = topbar_buttons(&frame);
+        assert_eq!(buttons.len(), 4, "the toggle, Home, back and forward");
+        for button in &buttons {
+            assert!(
+                (button.height() - extent::BUTTON).abs() < 0.01,
+                "a topbar button {button:?} is not one button tall"
+            );
+        }
+
+        // Nothing drawn as a frame in the bar is taller than a button: a frame
+        // stretched to the region came from placing a control on the column
+        // rather than in it. The search field is the one box with its own height.
+        for clipped in &frame.shapes {
+            if let egui::Shape::Rect(shape) = &clipped.shape
+                && shape.stroke.width > 0.0
+                && bar.contains_rect(shape.rect)
+                && (shape.rect.height() - extent::SEARCH_H).abs() > 0.01
+            {
+                assert!(
+                    shape.rect.height() <= extent::BUTTON + 0.01,
+                    "the topbar draws a {:?} frame, taller than a button",
+                    shape.rect
+                );
+            }
+        }
+    }
+
     #[test]
     fn every_topbar_item_shares_one_baseline() {
         let mut transport = Transport::default();

@@ -54,6 +54,7 @@ pub enum Icon {
     Home,
     Search,
     Library,
+    Panel,
     ArrowLeft,
     ArrowRight,
     Heart,
@@ -71,7 +72,7 @@ pub enum Icon {
 }
 
 impl Icon {
-    pub const ALL: [Self; 23] = [
+    pub const ALL: [Self; 24] = [
         Self::Play,
         Self::Pause,
         Self::Previous,
@@ -81,6 +82,7 @@ impl Icon {
         Self::Home,
         Self::Search,
         Self::Library,
+        Self::Panel,
         Self::ArrowLeft,
         Self::ArrowRight,
         Self::Heart,

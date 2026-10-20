@@ -45,6 +45,7 @@ const SCOPE: &[(&str, &str)] = &[
     ("i-home", "Home"),
     ("i-search", "Search"),
     ("i-library", "Library"),
+    ("i-panel", "Panel"),
     ("i-arrow-left", "ArrowLeft"),
     ("i-arrow-right", "ArrowRight"),
     ("i-heart", "Heart"),
