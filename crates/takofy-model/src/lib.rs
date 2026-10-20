@@ -150,6 +150,28 @@ impl AddedAt {
     }
 }
 
+/// When an episode was published, in epoch milliseconds.
+///
+/// A separate type from [`AddedAt`], which dates a playlist membership, so the
+/// two can never be passed for each other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PublishedAt(u64);
+
+impl PublishedAt {
+    /// Reads the wire's millisecond count.
+    ///
+    /// A failed `Date` conversion or non-positive millis gives `None`.
+    pub fn from_millis(millis: i64) -> Option<Self> {
+        let millis = u64::try_from(millis).ok()?;
+        (millis > 0).then_some(Self(millis))
+    }
+
+    /// The instant as epoch milliseconds.
+    pub fn as_millis(self) -> u64 {
+        self.0
+    }
+}
+
 /// A track as a list row draws it.
 ///
 /// A playlist position and an album position are both rows, so both use this.
@@ -182,6 +204,51 @@ pub struct TrackEntry {
     pub named: bool,
     /// The track's own album cover, when the metadata carried one.
     pub cover: Option<CoverUrl>,
+}
+
+/// An episode as a page or a list row draws it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Episode {
+    pub uri: String,
+    pub title: String,
+    /// The show's name, or empty when the wire named none.
+    pub show: String,
+    /// The show's URI, when the metadata carried a resolvable show id.
+    pub show_uri: Option<String>,
+    /// The episode's own description, collapsed to a line, when it has one.
+    pub description: Option<String>,
+    /// When the episode was published, when the wire gave a usable date.
+    pub published: Option<PublishedAt>,
+    /// The episode's length in milliseconds, when the metadata carried one.
+    pub duration_ms: Option<u32>,
+    pub cover: Option<CoverUrl>,
+    /// `false` when `title` is the URI fallback.
+    pub named: bool,
+}
+
+impl Episode {
+    /// The episode as a queue or playlist row draws it.
+    ///
+    /// The show stands in for the artists, and an unnamed show contributes no
+    /// credit URI because there is nothing to link to.
+    pub fn entry(&self) -> TrackEntry {
+        let mut artist_uris = Vec::new();
+        if !self.show.is_empty() {
+            artist_uris.extend(self.show_uri.clone());
+        }
+        TrackEntry {
+            uri: self.uri.clone(),
+            title: self.title.clone(),
+            artists: self.show.clone(),
+            album: None,
+            album_uri: None,
+            artist_uris,
+            added_at: None,
+            duration_ms: self.duration_ms,
+            named: self.named,
+            cover: self.cover.clone(),
+        }
+    }
 }
 
 /// A loaded album, as its page draws it.
@@ -253,9 +320,108 @@ pub struct ArtistDetail {
     pub releases: Vec<Release>,
 }
 
+/// A show, as its page and the followed-shows list draw it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Show {
+    pub uri: String,
+    /// The show's name, or the URI when the wire gave no name.
+    pub name: String,
+    /// The publisher, or empty when the wire named none.
+    pub publisher: String,
+    /// The show's own description as the wire sends it, empty when it has none.
+    pub description: String,
+    pub cover: Option<CoverUrl>,
+}
+
+/// A loaded show, as its page draws it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShowDetail {
+    pub show: Show,
+    /// Every episode, in the show's own order.
+    pub episodes: Vec<Episode>,
+}
+
+/// One show in the followed-shows list, as its card draws it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FollowedShow {
+    pub uri: String,
+    /// The show's name, or the URI when the metadata did not answer.
+    pub name: String,
+    /// `false` when `name` is the URI fallback.
+    pub named: bool,
+    pub publisher: Option<String>,
+    pub cover: Option<CoverUrl>,
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{AddedAt, CoverImage, CoverUrl};
+    use super::{AddedAt, CoverImage, CoverUrl, Episode, PublishedAt};
+
+    fn episode() -> Episode {
+        Episode {
+            uri: "spotify:episode:1".to_owned(),
+            title: "An episode".to_owned(),
+            show: "Lateral with Tom Scott".to_owned(),
+            show_uri: Some("spotify:show:abc".to_owned()),
+            description: Some("A description".to_owned()),
+            published: PublishedAt::from_millis(1_761_134_400_000),
+            duration_ms: Some(2_773_461),
+            cover: Some(CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover url")),
+            named: true,
+        }
+    }
+
+    #[test]
+    fn published_at_rejects_zero_and_negative_and_keeps_positive() {
+        assert_eq!(PublishedAt::from_millis(0), None);
+        assert_eq!(PublishedAt::from_millis(-1), None);
+        let published = PublishedAt::from_millis(1_761_134_400_000).expect("a positive instant");
+        assert_eq!(published.as_millis(), 1_761_134_400_000);
+        assert_eq!(PublishedAt::from_millis(i64::MIN), None);
+        let widest = PublishedAt::from_millis(i64::MAX).expect("the widest instant");
+        assert_eq!(widest.as_millis(), i64::MAX as u64);
+    }
+
+    #[test]
+    fn episode_entry_puts_the_show_name_in_artists_and_the_show_uri_in_artist_uris() {
+        let entry = episode().entry();
+        assert_eq!(entry.artists, "Lateral with Tom Scott");
+        assert_eq!(entry.artist_uris, vec!["spotify:show:abc".to_owned()]);
+    }
+
+    #[test]
+    fn episode_entry_has_no_artist_uris_when_the_show_name_is_empty() {
+        let mut value = episode();
+        value.show = String::new();
+        assert!(value.entry().artist_uris.is_empty());
+    }
+
+    #[test]
+    fn episode_entry_keeps_the_show_name_without_artist_uris_when_the_show_uri_is_missing() {
+        let mut value = episode();
+        value.show_uri = None;
+        let entry = value.entry();
+        assert_eq!(entry.artists, "Lateral with Tom Scott");
+        assert!(entry.artist_uris.is_empty());
+    }
+
+    #[test]
+    fn episode_entry_carries_named_duration_and_cover_and_no_album_or_added_at() {
+        let entry = episode().entry();
+        assert_eq!(entry.uri, "spotify:episode:1");
+        assert_eq!(entry.title, "An episode");
+        assert_eq!(entry.album, None);
+        assert_eq!(entry.album_uri, None);
+        assert_eq!(entry.added_at, None);
+        assert_eq!(entry.duration_ms, Some(2_773_461));
+        assert_eq!(entry.cover, episode().cover);
+        assert!(entry.named);
+
+        // An unnamed episode must not come out of the entry named.
+        let mut unnamed = episode();
+        unnamed.named = false;
+        assert!(!unnamed.entry().named);
+    }
 
     #[test]
     fn added_at_from_wire_reads_milliseconds_in_a_string() {
