@@ -6,7 +6,7 @@
 //! arrow into a command; a track with no known duration draws the track alone
 //! and a dash for the time left.
 
-use egui::{Align2, EventFilter, FontId, Key, Pos2, Rect, Ui, Vec2};
+use egui::{EventFilter, FontId, Key, Pos2, Rect, Ui, Vec2};
 
 use crate::availability::Control;
 use crate::cover::Cover;
@@ -154,18 +154,29 @@ fn now_column(ui: &mut Ui, transport: &Transport, cover: Cover, tokens: &Tokens,
         0.0,
         (text_right - text_left).max(0.0),
     );
-    ui.painter().galley(
-        Pos2::new(text_left, art_rect.center().y - text::SM - space::S1),
-        title_line,
-        tokens.palette.text,
-    );
+    // The title and the state word are one block, centred on the art like the
+    // reference's flex column: stacking them from fixed offsets puts the pair
+    // off-centre whenever either line's height is not the one assumed.
     let label = transport.state.label();
-    if !label.is_empty() {
-        ui.painter().text(
-            Pos2::new(text_left, art_rect.center().y + space::S1),
-            Align2::LEFT_TOP,
+    let state_line = (!label.is_empty()).then(|| {
+        recipe::spaced(
+            ui,
             label,
             FontId::new(text::XXS, fonts::mono(MonoWeight::Regular)),
+            tokens.palette.text_subtle,
+            0.0,
+        )
+    });
+    let block = title_line.size().y + state_line.as_ref().map_or(0.0, |line| line.size().y);
+    let mut y = art_rect.center().y - block / 2.0;
+    let title_height = title_line.size().y;
+    ui.painter()
+        .galley(Pos2::new(text_left, y), title_line, tokens.palette.text);
+    y += title_height;
+    if let Some(state_line) = state_line {
+        ui.painter().galley(
+            Pos2::new(text_left, y),
+            state_line,
             tokens.palette.text_subtle,
         );
     }
@@ -661,6 +672,64 @@ mod tests {
             );
             assert!(focused, "the arrow moved focus off the seek: {pressed:?}");
         }
+    }
+
+    /// The title and the state word are one block, centred on the art: stacking
+    /// them from fixed offsets left the pair sitting low.
+    #[test]
+    fn the_now_text_is_centred_on_the_art() {
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        let bar = Rect::from_min_size(Pos2::new(0.0, 100.0), Vec2::new(1200.0, extent::PLAYBAR_H));
+        let mut transport = playing(0);
+        transport.now_playing = Some(crate::player::NowPlaying {
+            uri: "spotify:track:signal-decay".to_owned(),
+            title: "Signal Decay".to_owned(),
+            artists: "Nils Aker".to_owned(),
+            cover: None,
+        });
+
+        let mut output = ctx.run_ui(
+            RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 300.0))),
+                ..Default::default()
+            },
+            |ui| {
+                let mut queue = Queue::default();
+                let _ = show(
+                    ui,
+                    &mut transport,
+                    &mut queue,
+                    0,
+                    Playbar::Full,
+                    bar,
+                    Cover::Missing,
+                    &tokens,
+                );
+            },
+        );
+        output.textures_delta.clear();
+
+        let painted = |label: &str| {
+            output
+                .shapes
+                .iter()
+                .find_map(|clipped| match &clipped.shape {
+                    egui::Shape::Text(text) if text.galley.text() == label => {
+                        Some(Rect::from_min_size(text.pos, text.galley.size()))
+                    }
+                    _ => None,
+                })
+        };
+        let title = painted("Signal Decay").expect("the bar paints the title");
+        let state = painted(transport.state.label()).expect("the bar paints the state");
+        let block = title.union(state);
+        let centre = bar.center().y;
+        assert!(
+            (block.center().y - centre).abs() < 0.01,
+            "the title and state block centres at {} rather than {centre}",
+            block.center().y
+        );
     }
 
     /// Every column centres on the bar, which is what `align-items: center` does
