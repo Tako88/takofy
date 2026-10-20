@@ -7,15 +7,20 @@ use std::collections::{HashMap, HashSet};
 use futures_util::StreamExt;
 use http::header::{ACCEPT, CONTENT_TYPE};
 use http::{HeaderMap, Method};
+use librespot::core::date::Date;
 use librespot::core::{Session, SpotifyId, SpotifyUri};
-use librespot::metadata::{Album, Artist, Metadata, Playlist};
+use librespot::metadata::{Album, Artist, Metadata, Playlist, Show};
 use librespot::protocol::extended_metadata::{
     BatchedEntityRequest, BatchedExtensionResponse, EntityRequest, ExtensionQuery,
 };
 use librespot::protocol::extension_kind::ExtensionKind;
-use librespot::protocol::metadata::Track as TrackMessage;
+use librespot::protocol::metadata::{
+    Date as DateMessage, Episode as EpisodeMessage, Track as TrackMessage,
+};
 use protobuf::Message as _;
-use takofy_model::{AlbumDetail, ArtistDetail, CoverUrl, PlaylistEntry, TrackEntry};
+use takofy_model::{
+    AlbumDetail, ArtistDetail, CoverUrl, Episode, PlaylistEntry, PublishedAt, TrackEntry,
+};
 
 use crate::album::{AlbumError, detail, positions};
 use crate::artist::{
@@ -26,7 +31,8 @@ use crate::collection;
 use crate::context::{
     ContextError, Page, PageSource, PageTrack, Resolved, page_from_proto, parse_page_json,
 };
-use crate::cover::pick_cover;
+use crate::cover::{pick_cover, pick_images_cover};
+use crate::followed::ShowCard;
 use crate::rootlist::{RootlistError, RootlistPage, RootlistSource, RootlistWire, parse_rootlist};
 
 /// The wire the live rootlist is read as; flip to `Json` if the binary parse fails.
@@ -442,6 +448,27 @@ pub(crate) async fn label_tracks(session: &Session, items: Vec<PageTrack>) -> Ve
     expand_labels(&items, &labels)
 }
 
+/// The wire's episode prefix: everything else is asked for as a track.
+const EPISODE_PREFIX: &str = "spotify:episode:";
+
+/// Splits distinct URIs into `(tracks, episodes)`.
+///
+/// Only the prefix decides, so a local file or a URI this build does not know is
+/// asked for as a track, exactly as it was before episodes had a kind. Order is
+/// kept within each group, because a chunk's answer is what the split retries.
+fn partition_by_kind(uris: &[String]) -> (Vec<String>, Vec<String>) {
+    let mut tracks = Vec::new();
+    let mut episodes = Vec::new();
+    for uri in uris {
+        if uri.starts_with(EPISODE_PREFIX) {
+            episodes.push(uri.clone());
+        } else {
+            tracks.push(uri.clone());
+        }
+    }
+    (tracks, episodes)
+}
+
 /// The distinct URIs, in first-seen order.
 fn distinct_uris(uris: &[String]) -> Vec<String> {
     let mut seen = HashSet::new();
@@ -488,26 +515,128 @@ fn expand_labels(items: &[PageTrack], labels: &Labels) -> Vec<TrackEntry> {
         .collect()
 }
 
-/// Fetches names for distinct URIs, splitting a chunk whenever the server
-/// answers only part of it.
+/// Fetches names for distinct track and episode URIs.
+///
+/// The one label seam branches on URI kind: tracks keep the `TRACK_V4` batch they
+/// always used, and episodes get `EPISODE_V4`. The two batches are independent,
+/// so one failing does not lose the other.
 async fn fetch_labels(session: &Session, distinct: &[String]) -> Labels {
-    let mut labels = Labels::new();
+    let (tracks, episodes) = partition_by_kind(distinct);
+    let tracks = fetch_chunked(session, &tracks, ExtensionKind::TRACK_V4, track_label_from).await;
+    let episodes = fetch_chunked(session, &episodes, ExtensionKind::EPISODE_V4, episode_from).await;
+    merge_labels(tracks, episode_labels(episodes))
+}
+
+/// The episode labels, keyed by URI, from the episode batch's answers.
+fn episode_labels(found: HashMap<String, Episode>) -> Labels {
+    found
+        .into_iter()
+        .map(|(uri, episode)| (uri, label_from_episode(&episode)))
+        .collect()
+}
+
+/// An episode as the one label a row draws, through its own [`Episode::entry`].
+///
+/// This is the whole episode-to-label conversion: an episode's show stands in
+/// for the artists, and it carries no album or membership date.
+fn label_from_episode(episode: &Episode) -> TrackLabel {
+    let entry = episode.entry();
+    TrackLabel {
+        title: entry.title,
+        artists: entry.artists,
+        album: entry.album,
+        album_uri: entry.album_uri,
+        artist_uris: entry.artist_uris,
+        duration_ms: entry.duration_ms,
+        cover: entry.cover,
+    }
+}
+
+/// The two batches' labels as one map.
+///
+/// The batches are independent: a failed episode batch arrives as an empty map
+/// and leaves every track label intact, and the other way round. Their keys are
+/// disjoint by construction, because a URI is in exactly one partition.
+fn merge_labels(tracks: Labels, episodes: Labels) -> Labels {
+    let mut merged = tracks;
+    merged.extend(episodes);
+    merged
+}
+
+/// Fetches the episodes for `uris`, one per requested URI in input order.
+///
+/// An unanswered URI falls back to itself and reads as unnamed, exactly as a
+/// track does, so a show page still draws every episode the wire listed.
+#[allow(
+    dead_code,
+    reason = "the show read in `remote` asks for its episodes with it"
+)]
+async fn fetch_episodes(session: &Session, uris: Vec<String>) -> Vec<Episode> {
+    let distinct = distinct_uris(&uris);
+    let found = fetch_chunked(session, &distinct, ExtensionKind::EPISODE_V4, episode_from).await;
+    let unnamed = uris.iter().filter(|uri| !found.contains_key(*uri)).count();
+    if unnamed > 0 {
+        log::warn!("{} of {} episodes could not be named", unnamed, uris.len());
+    }
+    expand_episodes(&uris, &found)
+}
+
+/// One episode per input position, falling back to the URI when it was not
+/// answered. The wire's order is the page's order, so this never sorts.
+///
+/// The position's own URI is what it draws: the answer is looked up by that URI,
+/// and an answer that carried a different one cannot move the episode to another
+/// position.
+fn expand_episodes(uris: &[String], found: &HashMap<String, Episode>) -> Vec<Episode> {
+    uris.iter()
+        .map(|uri| match found.get(uri) {
+            Some(episode) => Episode {
+                uri: uri.clone(),
+                ..episode.clone()
+            },
+            None => Episode {
+                uri: uri.clone(),
+                title: uri.clone(),
+                show: String::new(),
+                show_uri: None,
+                description: None,
+                published: None,
+                duration_ms: None,
+                cover: None,
+                named: false,
+            },
+        })
+        .collect()
+}
+
+/// Fetches values for distinct URIs with one extension kind, splitting a chunk
+/// whenever the server answers only part of it.
+///
+/// `parse` reads one answer's bytes together with the entity URI that answer
+/// echoed, so a value can be named by the URI the server answered for.
+async fn fetch_chunked<T>(
+    session: &Session,
+    distinct: &[String],
+    kind: ExtensionKind,
+    parse: fn(&[u8], &str) -> Option<T>,
+) -> HashMap<String, T> {
+    let mut found: HashMap<String, T> = HashMap::new();
     let mut queue: Vec<Vec<String>> = distinct
         .chunks(LABEL_CHUNK)
         .map(<[String]>::to_vec)
         .collect();
     queue.reverse();
     while let Some(chunk) = queue.pop() {
-        let Some(found) = request_labels(session, &chunk).await else {
+        let Some(answers) = request_parsed(session, &chunk, kind, parse).await else {
             continue;
         };
-        let answered = !found.is_empty();
+        let answered = !answers.is_empty();
         let mut missing: Vec<String> = chunk
             .iter()
-            .filter(|uri| !found.contains_key(*uri))
+            .filter(|uri| !answers.contains_key(*uri))
             .cloned()
             .collect();
-        labels.extend(found);
+        found.extend(answers);
         if missing.is_empty() || !answered || missing.len() == 1 {
             // Nothing arrived at all means the provider refused the chunk rather
             // than truncated it, and retrying one URI at a time is the request
@@ -516,7 +645,7 @@ async fn fetch_labels(session: &Session, distinct: &[String]) -> Labels {
             continue;
         }
         log::debug!(
-            "{} of {} tracks came back; retrying the rest in smaller requests",
+            "{} of {} entities came back; retrying the rest in smaller requests",
             chunk.len() - missing.len(),
             chunk.len()
         );
@@ -524,7 +653,7 @@ async fn fetch_labels(session: &Session, distinct: &[String]) -> Labels {
         queue.push(right);
         queue.push(missing);
     }
-    labels
+    found
 }
 
 /// One batched extended-metadata request over `uris`.
@@ -564,12 +693,22 @@ async fn batched_request(
     }
 }
 
-/// One batched request for track labels. `None` when the request itself failed,
-/// which asking for less will not fix.
-async fn request_labels(session: &Session, chunk: &[String]) -> Option<Labels> {
-    let response = batched_request(session, chunk, ExtensionKind::TRACK_V4).await?;
+/// One batched request for `uris` under `kind`. `None` when the request itself
+/// failed, which asking for less will not fix.
+///
+/// The answer is keyed by the `entity_uri` it echoes, and each value is read by
+/// `parse`, which is the only part that knows the kind's wire shape. That echoed
+/// URI is handed to `parse` too, so a value can carry the URI the server answered
+/// for instead of rebuilding one from its own id.
+async fn request_parsed<T>(
+    session: &Session,
+    chunk: &[String],
+    kind: ExtensionKind,
+    parse: fn(&[u8], &str) -> Option<T>,
+) -> Option<HashMap<String, T>> {
+    let response = batched_request(session, chunk, kind).await?;
 
-    let mut labels = Labels::new();
+    let mut found = HashMap::new();
     for array in &response.extended_metadata {
         if array.header.provider_error_status != 200 {
             log::warn!(
@@ -581,15 +720,34 @@ async fn request_labels(session: &Session, chunk: &[String]) -> Option<Labels> {
             let Some(any) = data.extension_data.as_ref() else {
                 continue;
             };
-            let Ok(track) = TrackMessage::parse_from_bytes(&any.value) else {
-                continue;
-            };
-            if let Some(label) = label_of(&track) {
-                labels.insert(data.entity_uri.clone(), label);
+            if let Some(value) = parse(&any.value, &data.entity_uri) {
+                found.insert(data.entity_uri.clone(), value);
             }
         }
     }
-    Some(labels)
+    Some(found)
+}
+
+/// The label an encoded `TRACK_V4` answer carries, or `None` when it is not a
+/// named track.
+///
+/// A track's label is already built from its own album and artist ids, so the
+/// echoed URI is not read here; the parameter is the seam's shape.
+fn track_label_from(bytes: &[u8], _entity_uri: &str) -> Option<TrackLabel> {
+    TrackMessage::parse_from_bytes(bytes)
+        .ok()
+        .and_then(|track| label_of(&track))
+}
+
+/// The episode an encoded `EPISODE_V4` answer carries, or `None` when it is not
+/// a named episode.
+///
+/// `entity_uri` is the URI the answer echoed, so it names the episode even when
+/// the message's own id is unusable.
+fn episode_from(bytes: &[u8], entity_uri: &str) -> Option<Episode> {
+    EpisodeMessage::parse_from_bytes(bytes)
+        .ok()
+        .and_then(|episode| episode_of(&episode, entity_uri))
 }
 
 /// The label a parsed track message carries, or `None` when it has no name.
@@ -638,6 +796,59 @@ fn label_of(track: &TrackMessage) -> Option<TrackLabel> {
     })
 }
 
+/// The episode a parsed wire message carries, or `None` when it has no name.
+///
+/// This is the whole mapping from the wire's `Episode` into an [`Episode`], kept
+/// pure so it can be exercised with a constructed message and no session.
+/// `entity_uri` is the URI the answer echoed, which names the episode; the
+/// message's own gid is only needed for the show link.
+fn episode_of(episode: &EpisodeMessage, entity_uri: &str) -> Option<Episode> {
+    let title = episode.name.clone().filter(|name| !name.is_empty())?;
+    let show = episode.show.as_ref();
+    Some(Episode {
+        // The echoed URI names the episode, so an answer whose gid is unusable
+        // still keeps the title the server did send.
+        uri: entity_uri.to_owned(),
+        title,
+        // A blank show name is no name: it would otherwise put a link to a
+        // nameless show in the row's credit.
+        show: show
+            .and_then(|show| show.name.as_deref())
+            .and_then(non_blank)
+            .unwrap_or_default(),
+        show_uri: show.and_then(|show| uri_of(show.gid.as_deref(), |id| SpotifyUri::Show { id })),
+        description: non_blank(episode.description.as_deref().unwrap_or_default()),
+        published: published_at(episode.publish_time.as_ref()),
+        duration_ms: duration_ms(episode.duration),
+        cover: pick_cover(episode.cover_image.as_ref()),
+        named: true,
+    })
+}
+
+/// The publish time as epoch milliseconds, or `None` when the wire's date fails
+/// to convert (an absent `publish_time` included) or lands at or before zero.
+fn published_at(publish_time: Option<&DateMessage>) -> Option<PublishedAt> {
+    let date = Date::try_from(publish_time?).ok()?;
+    PublishedAt::from_millis(date.as_timestamp_ms())
+}
+
+/// A show as its followed-list card draws it, or `None` when it has no name.
+///
+/// The card does not draw the description, so it is not read. A nameless show is
+/// no card, which lets the caller fall back to the URI.
+#[allow(
+    dead_code,
+    reason = "the followed-shows read in `remote` names its cards with it"
+)]
+fn show_card(show: &Show) -> Option<ShowCard> {
+    let name = Some(show.name.clone()).filter(|name| !name.is_empty())?;
+    Some(ShowCard {
+        name,
+        publisher: non_blank(&show.publisher),
+        cover: pick_images_cover(&show.covers),
+    })
+}
+
 /// The URI a raw id names, when the bytes are a well-formed id for `page`.
 ///
 /// A wrong length is not an id, so it gives no URI rather than an approximate
@@ -663,15 +874,22 @@ mod tests {
     use std::time::Duration;
 
     use librespot::core::{SpotifyId, SpotifyUri};
+    use librespot::metadata::Show;
     use librespot::protocol::metadata::image::Size;
-    use librespot::protocol::metadata::{Album, Artist, Image, ImageGroup, Track as TrackMessage};
-    use takofy_model::{AddedAt, CoverUrl};
+    use librespot::protocol::metadata::{
+        Album, Artist, Date as DateMessage, Episode as EpisodeMessage, Image, ImageGroup,
+        Show as ShowMessage, Track as TrackMessage,
+    };
+    use protobuf::Message as _;
+    use takofy_model::{AddedAt, CoverUrl, Episode, PublishedAt};
 
     use crate::context::PageTrack;
 
     use super::{
-        Labels, PlaylistMeta, TrackLabel, context_cover, distinct_uris, duration_ms, expand_labels,
-        first_track_uri, label_of, non_blank, playlist_cover, playlist_label, playlist_owner,
+        Labels, PlaylistMeta, TrackLabel, context_cover, distinct_uris, duration_ms, episode_from,
+        episode_labels, episode_of, expand_episodes, expand_labels, first_track_uri,
+        label_from_episode, label_of, merge_labels, non_blank, partition_by_kind, playlist_cover,
+        playlist_label, playlist_owner, published_at, show_card, track_label_from,
     };
 
     const TRACK_ID: &str = "4uLU6hMCjMI75M1A2tKUQC";
@@ -1359,5 +1577,455 @@ mod tests {
         let meta = PlaylistMeta::empty();
         assert_eq!(meta.description, None);
         assert_eq!(meta.owner, None);
+    }
+
+    /// A 16-byte gid, the only length `SpotifyId::from_raw` accepts.
+    fn gid(byte: u8) -> Vec<u8> {
+        vec![byte; 16]
+    }
+
+    fn episode_uri(byte: u8) -> String {
+        SpotifyUri::Episode {
+            id: SpotifyId::from_raw(&gid(byte)).expect("a 16-byte id"),
+        }
+        .to_uri()
+        .expect("a uri")
+    }
+
+    fn show_uri(byte: u8) -> String {
+        SpotifyUri::Show {
+            id: SpotifyId::from_raw(&gid(byte)).expect("a 16-byte id"),
+        }
+        .to_uri()
+        .expect("a uri")
+    }
+
+    /// An episode message with every field the label reads set.
+    fn wire_episode(name: &str) -> EpisodeMessage {
+        let mut episode = EpisodeMessage::default();
+        episode.set_gid(gid(2));
+        episode.set_name(name.to_owned());
+        episode.set_description("A description".to_owned());
+        episode.set_duration(2_773_461);
+        let mut date = DateMessage::default();
+        date.set_year(2026);
+        date.set_month(10);
+        date.set_day(16);
+        episode.publish_time = Some(date).into();
+        let mut show = ShowMessage::default();
+        show.set_gid(gid(3));
+        show.set_name("A Show".to_owned());
+        episode.show = Some(show).into();
+        episode
+    }
+
+    fn grouped_cover(size: Size, file_id: &[u8]) -> ImageGroup {
+        let mut image = Image::new();
+        image.set_size(size);
+        image.set_file_id(file_id.to_vec());
+        ImageGroup {
+            image: vec![image],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn partition_separates_episodes_from_tracks() {
+        let track = format!("spotify:track:{TRACK_ID}");
+        let episode = format!("spotify:episode:{EPISODE_ID}");
+        let (tracks, episodes) = partition_by_kind(&owned(&[&track, &episode]));
+        assert_eq!(tracks, vec![track]);
+        assert_eq!(episodes, vec![episode]);
+    }
+
+    #[test]
+    fn a_local_or_unknown_uri_goes_with_the_tracks() {
+        let local = local().to_uri().expect("a local uri");
+        let (tracks, episodes) =
+            partition_by_kind(&owned(&[&local, "not-a-uri", "spotify:episode:1"]));
+        assert_eq!(tracks, vec![local, "not-a-uri".to_owned()]);
+        assert_eq!(episodes, vec!["spotify:episode:1".to_owned()]);
+    }
+
+    #[test]
+    fn partition_keeps_order_within_each_group() {
+        let uris = owned(&[
+            "spotify:track:a",
+            "spotify:episode:b",
+            "spotify:track:c",
+            "spotify:episode:d",
+        ]);
+        let (tracks, episodes) = partition_by_kind(&uris);
+        assert_eq!(
+            tracks,
+            vec!["spotify:track:a".to_owned(), "spotify:track:c".to_owned()]
+        );
+        assert_eq!(
+            episodes,
+            vec![
+                "spotify:episode:b".to_owned(),
+                "spotify:episode:d".to_owned()
+            ]
+        );
+    }
+
+    #[test]
+    fn an_episode_uri_with_no_id_stays_in_the_episode_group() {
+        // Pinned: the split reads only the prefix, so an empty id is still asked
+        // for as an episode rather than falling back to the track batch.
+        let (tracks, episodes) = partition_by_kind(&owned(&["spotify:episode:"]));
+        assert!(tracks.is_empty());
+        assert_eq!(episodes, vec!["spotify:episode:".to_owned()]);
+    }
+
+    #[test]
+    fn track_label_from_reads_an_encoded_track_and_refuses_garbage() {
+        let bytes = wire_track(Some("Record"), Some(222_000))
+            .write_to_bytes()
+            .expect("encoded bytes");
+        let label =
+            track_label_from(&bytes, &format!("spotify:track:{TRACK_ID}")).expect("a named track");
+        assert_eq!(label.title, "One");
+        assert_eq!(label.artists, "Band");
+        assert_eq!(label.duration_ms, Some(222_000));
+        assert_eq!(track_label_from(&[0xff, 0xff], "spotify:track:a"), None);
+    }
+
+    #[test]
+    fn a_full_episode_message_maps_every_field() {
+        let mut wire = wire_episode("An episode");
+        wire.cover_image = Some(grouped_cover(Size::DEFAULT, &[7; 20])).into();
+        let episode = episode_of(&wire, &episode_uri(9)).expect("a named episode");
+        assert_eq!(
+            episode.uri,
+            episode_uri(9),
+            "the echoed URI, not the message gid's"
+        );
+        assert_eq!(episode.title, "An episode");
+        assert_eq!(episode.show, "A Show");
+        assert_eq!(episode.show_uri.as_deref(), Some(show_uri(3).as_str()));
+        assert_eq!(episode.description.as_deref(), Some("A description"));
+        assert_eq!(
+            episode.published.map(PublishedAt::as_millis),
+            Some(1_792_108_800_000),
+            "2026-10-16 at midnight UTC"
+        );
+        assert_eq!(episode.duration_ms, Some(2_773_461));
+        assert_eq!(
+            episode.cover.as_ref().map(CoverUrl::as_str),
+            Some("https://i.scdn.co/image/0707070707070707070707070707070707070707")
+        );
+        assert!(episode.named);
+    }
+
+    #[test]
+    fn a_missing_or_zero_publish_date_is_none() {
+        let uri = episode_uri(2);
+        let mut absent = wire_episode("An episode");
+        absent.publish_time = None.into();
+        assert_eq!(
+            episode_of(&absent, &uri)
+                .expect("a named episode")
+                .published,
+            None
+        );
+
+        let mut zero = wire_episode("An episode");
+        zero.publish_time = Some(DateMessage::default()).into();
+        assert_eq!(
+            episode_of(&zero, &uri).expect("a named episode").published,
+            None
+        );
+
+        let mut before_epoch = wire_episode("An episode");
+        let mut date = DateMessage::default();
+        date.set_year(1969);
+        date.set_month(1);
+        date.set_day(1);
+        before_epoch.publish_time = Some(date).into();
+        assert_eq!(
+            episode_of(&before_epoch, &uri)
+                .expect("a named episode")
+                .published,
+            None
+        );
+    }
+
+    #[test]
+    fn a_year_only_publish_date_is_january_first_midnight() {
+        let uri = episode_uri(2);
+        let mut date = DateMessage::default();
+        date.set_year(2026);
+        assert_eq!(
+            published_at(Some(&date)).map(PublishedAt::as_millis),
+            Some(1_767_225_600_000),
+            "no month or day means January 1 at 00:00 UTC"
+        );
+
+        let mut wire = wire_episode("An episode");
+        wire.publish_time = Some(date).into();
+        assert_eq!(
+            episode_of(&wire, &uri)
+                .expect("a named episode")
+                .published
+                .map(PublishedAt::as_millis),
+            Some(1_767_225_600_000)
+        );
+    }
+
+    #[test]
+    fn a_bad_show_gid_gives_no_show_uri() {
+        let mut wire = wire_episode("An episode");
+        let mut show = ShowMessage::default();
+        show.set_gid(vec![1; 15]);
+        show.set_name("A Show".to_owned());
+        wire.show = Some(show).into();
+        let episode = episode_of(&wire, &episode_uri(2)).expect("a named episode");
+        assert_eq!(episode.show_uri, None);
+        assert_eq!(episode.show, "A Show", "the name is still drawn");
+    }
+
+    #[test]
+    fn a_named_episode_with_a_bad_gid_keeps_the_requested_uri() {
+        let mut wire = wire_episode("An episode");
+        wire.set_gid(vec![1; 15]);
+        let bytes = wire.write_to_bytes().expect("encoded bytes");
+        let episode = episode_from(&bytes, &episode_uri(9)).expect("a named episode");
+        assert_eq!(episode.uri, episode_uri(9), "the URI the answer echoed");
+        assert_eq!(episode.title, "An episode", "the title is not lost");
+        assert!(episode.named);
+
+        let label = label_from_episode(&episode);
+        assert_eq!(label.title, "An episode");
+        assert_eq!(label.artists, "A Show");
+        assert_eq!(
+            label.artist_uris,
+            vec![show_uri(3)],
+            "the show gid is still all the link needs"
+        );
+    }
+
+    #[test]
+    fn a_blank_show_name_gives_neither_a_name_nor_a_link() {
+        let uri = episode_uri(2);
+        let mut wire = wire_episode("An episode");
+        let mut show = ShowMessage::default();
+        show.set_gid(gid(3));
+        show.set_name(" ".to_owned());
+        wire.show = Some(show).into();
+
+        let episode = episode_of(&wire, &uri).expect("a named episode");
+        assert_eq!(episode.show, "", "a blank show name normalises to none");
+        assert_eq!(
+            episode.show_uri.as_deref(),
+            Some(show_uri(3).as_str()),
+            "the show URI is still resolvable"
+        );
+
+        let label = label_from_episode(&episode);
+        assert_eq!(label.artists, "");
+        assert!(
+            label.artist_uris.is_empty(),
+            "a row with no visible show name links nowhere"
+        );
+    }
+
+    #[test]
+    fn a_negative_duration_is_none() {
+        let uri = episode_uri(2);
+        let mut wire = wire_episode("An episode");
+        wire.set_duration(-1);
+        assert_eq!(
+            episode_of(&wire, &uri)
+                .expect("a named episode")
+                .duration_ms,
+            None
+        );
+
+        let mut absent = wire_episode("An episode");
+        absent.duration = None;
+        assert_eq!(
+            episode_of(&absent, &uri)
+                .expect("a named episode")
+                .duration_ms,
+            None
+        );
+    }
+
+    #[test]
+    fn an_empty_name_is_no_label() {
+        let uri = episode_uri(2);
+        let mut empty = wire_episode("");
+        assert_eq!(episode_of(&empty, &uri), None);
+        empty.name = None;
+        assert_eq!(episode_of(&empty, &uri), None);
+    }
+
+    #[test]
+    fn episode_from_reads_encoded_bytes_and_refuses_garbage() {
+        let bytes = wire_episode("An episode")
+            .write_to_bytes()
+            .expect("encoded bytes");
+        let episode = episode_from(&bytes, &episode_uri(9)).expect("a named episode");
+        assert_eq!(episode.uri, episode_uri(9));
+        assert_eq!(episode.title, "An episode");
+        assert_eq!(episode_from(&[0xff, 0xff], &episode_uri(9)), None);
+    }
+
+    /// A protocol show, the way `Show::get` answers one.
+    fn wire_show(name: &str, publisher: &str, cover: Option<ImageGroup>) -> ShowMessage {
+        let mut show = ShowMessage::default();
+        show.set_gid(gid(1));
+        show.set_name(name.to_owned());
+        show.set_publisher(publisher.to_owned());
+        if let Some(group) = cover {
+            show.cover_image = Some(group).into();
+        }
+        show
+    }
+
+    /// The parsed show the wire's message converts to.
+    fn show(name: &str, publisher: &str, cover: Option<ImageGroup>) -> Show {
+        Show::try_from(&wire_show(name, publisher, cover)).expect("a valid show message")
+    }
+
+    #[test]
+    fn a_show_maps_name_publisher_and_cover() {
+        let card = show_card(&show(
+            "A Show",
+            "A Publisher",
+            Some(grouped_cover(Size::DEFAULT, &[7; 20])),
+        ))
+        .expect("a named show");
+        assert_eq!(card.name, "A Show");
+        assert_eq!(card.publisher.as_deref(), Some("A Publisher"));
+        assert_eq!(
+            card.cover.as_ref().map(CoverUrl::as_str),
+            Some("https://i.scdn.co/image/0707070707070707070707070707070707070707")
+        );
+    }
+
+    #[test]
+    fn a_blank_publisher_is_none() {
+        let card = show_card(&show("A Show", "  \n", None)).expect("a named show");
+        assert_eq!(card.publisher, None);
+    }
+
+    #[test]
+    fn an_empty_name_is_no_card() {
+        assert_eq!(show_card(&show("", "A Publisher", None)), None);
+    }
+
+    #[test]
+    fn a_show_without_a_cover_has_none() {
+        let card = show_card(&show("A Show", "A Publisher", None)).expect("a named show");
+        assert_eq!(card.cover, None);
+    }
+
+    #[test]
+    fn an_episode_becomes_a_track_label_with_the_show_as_its_credit() {
+        let episode =
+            episode_of(&wire_episode("An episode"), &episode_uri(2)).expect("a named episode");
+        let label = label_from_episode(&episode);
+        assert_eq!(label.title, "An episode");
+        assert_eq!(label.artists, "A Show");
+        assert_eq!(label.artist_uris, vec![show_uri(3)]);
+        assert_eq!(label.album, None);
+        assert_eq!(label.album_uri, None);
+        assert_eq!(label.duration_ms, Some(2_773_461));
+    }
+
+    #[test]
+    fn expand_labels_over_a_track_and_an_episode_names_both() {
+        let episode_uri = episode_uri(2);
+        let mut found = HashMap::new();
+        found.insert(
+            episode_uri.clone(),
+            episode_of(&wire_episode("An episode"), &episode_uri).expect("a named episode"),
+        );
+        let labels = merge_labels(named(&[("a", "One", "Band")]), episode_labels(found));
+        let entries = expand_labels(&items(&["a", &episode_uri]), &labels);
+        assert_eq!(entries[0].title, "One");
+        assert_eq!(entries[0].artists, "Band");
+        assert_eq!(entries[1].title, "An episode");
+        assert_eq!(entries[1].artists, "A Show");
+        assert_eq!(entries[1].artist_uris, vec![show_uri(3)]);
+        assert!(entries.iter().all(|entry| entry.named));
+    }
+
+    #[test]
+    fn a_missing_episode_falls_back_to_its_uri_unnamed() {
+        let uris = owned(&[&episode_uri(2), &episode_uri(4)]);
+        let mut found = HashMap::new();
+        found.insert(
+            episode_uri(2),
+            episode_of(&wire_episode("An episode"), &episode_uri(2)).expect("a named episode"),
+        );
+        let episodes = expand_episodes(&uris, &found);
+        assert_eq!(episodes.len(), 2);
+        assert_eq!(episodes[0].title, "An episode");
+        assert!(episodes[0].named);
+        assert_eq!(episodes[1].uri, episode_uri(4));
+        assert_eq!(episodes[1].title, episode_uri(4));
+        assert!(!episodes[1].named);
+        assert!(episodes[1].show.is_empty());
+        assert_eq!(episodes[1].published, None);
+        assert_eq!(episodes[1].duration_ms, None);
+    }
+
+    #[test]
+    fn expand_episodes_draws_each_position_with_its_own_uri() {
+        // The answer is found by the position's URI, so that URI is what the
+        // position draws even if the value carried another one.
+        let uri = episode_uri(2);
+        let mut found = HashMap::new();
+        found.insert(
+            uri.clone(),
+            Episode {
+                uri: episode_uri(9),
+                title: "An episode".to_owned(),
+                show: "A Show".to_owned(),
+                show_uri: Some(show_uri(3)),
+                description: None,
+                published: None,
+                duration_ms: None,
+                cover: None,
+                named: true,
+            },
+        );
+        let episodes = expand_episodes(&owned(&[&uri]), &found);
+        assert_eq!(episodes[0].uri, uri);
+        assert_eq!(episodes[0].title, "An episode");
+    }
+
+    #[test]
+    fn expand_episodes_keeps_one_episode_per_repeated_position() {
+        let uri = episode_uri(2);
+        let uris = vec![uri.clone(), episode_uri(4), uri.clone()];
+        let mut found = HashMap::new();
+        found.insert(
+            uri.clone(),
+            episode_of(&wire_episode("An episode"), &uri).expect("a named episode"),
+        );
+        let episodes = expand_episodes(&uris, &found);
+        assert_eq!(episodes.len(), 3, "one episode per input position");
+        assert_eq!(episodes[0].uri, uri);
+        assert_eq!(episodes[2].uri, uri, "the repeat is cloned, not dropped");
+        assert_eq!(episodes[0].title, "An episode");
+        assert_eq!(episodes[2].title, "An episode");
+        assert_eq!(episodes[1].uri, episode_uri(4));
+        assert!(!episodes[1].named);
+        assert!(episodes[0].named && episodes[2].named);
+    }
+
+    #[test]
+    fn a_failed_episode_batch_leaves_track_labels_intact() {
+        // A failed batch arrives as no answers at all, like an honestly empty one.
+        let merged = merge_labels(named(&[("a", "One", "Band")]), Labels::new());
+        assert_eq!(merged.len(), 1);
+        assert_eq!(
+            merged.get("a").map(|label| label.title.as_str()),
+            Some("One")
+        );
     }
 }

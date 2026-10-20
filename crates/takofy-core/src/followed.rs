@@ -112,6 +112,7 @@ pub(crate) fn show_order(items: Vec<Item>) -> Vec<String> {
 }
 
 /// A show as its card draws it, before it is joined to the followed order.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShowCard {
     pub name: String,
     pub publisher: Option<String>,
