@@ -311,9 +311,18 @@ pub(crate) fn start<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                         break;
                     }
                 }
-                // Nothing issues these yet, and there is no fetch to run, so
-                // the command is accepted and dropped.
-                Event::Command(Some(Command::LoadFollowedArtists | Command::LoadSavedAlbums)) => {}
+                Event::Command(Some(Command::LoadFollowedArtists)) => {
+                    let step = load_followed_artists(&mut host, &mut stop_rx, &task_notifier).await;
+                    if step.stopped() {
+                        break;
+                    }
+                }
+                Event::Command(Some(Command::LoadSavedAlbums)) => {
+                    let step = load_saved_albums(&mut host, &mut stop_rx, &task_notifier).await;
+                    if step.stopped() {
+                        break;
+                    }
+                }
                 Event::Command(Some(Command::LoadReleaseTracks { release, tracks })) => {
                     let step = load_release_tracks(
                         &mut host,
@@ -541,6 +550,50 @@ async fn load_followed_shows<H: SessionHost>(
     }
 }
 
+/// Loads the artists the user follows and announces the whole list.
+///
+/// It has its own failure, because the playlists beside it draw fine and
+/// "Could not load the library" would be false there.
+async fn load_followed_artists<H: SessionHost>(
+    host: &mut H,
+    stop: &mut StopReceiver<()>,
+    notifier: &Notifier,
+) -> Step {
+    match stop_or(stop, host.followed_artists()).await {
+        None => Step::Stopped,
+        Some(Ok(artists)) => {
+            notifier.send(Update::FollowedArtists(artists));
+            Step::Done
+        }
+        Some(Err(error)) => {
+            notifier.send(Update::FollowedArtistsFailed(artists_failure(&error)));
+            Step::Done
+        }
+    }
+}
+
+/// Loads the albums the user saved and announces the whole list.
+///
+/// It has its own failure, because the playlists beside it draw fine and
+/// "Could not load the library" would be false there.
+async fn load_saved_albums<H: SessionHost>(
+    host: &mut H,
+    stop: &mut StopReceiver<()>,
+    notifier: &Notifier,
+) -> Step {
+    match stop_or(stop, host.saved_albums()).await {
+        None => Step::Stopped,
+        Some(Ok(albums)) => {
+            notifier.send(Update::SavedAlbums(albums));
+            Step::Done
+        }
+        Some(Err(error)) => {
+            notifier.send(Update::SavedAlbumsFailed(albums_failure(&error)));
+            Step::Done
+        }
+    }
+}
+
 /// Loads one artist and announces the page, then the followed state when the
 /// probe answered.
 ///
@@ -711,6 +764,22 @@ pub(crate) fn followed_failure(error: &SessionError) -> Failure {
     Failure::Followed
 }
 
+/// The followed-artists list has its own failure: the playlists beside it draw
+/// fine, so the library did not fail. The reason is for the log, never the
+/// window.
+pub(crate) fn artists_failure(error: &SessionError) -> Failure {
+    log::warn!("session failure: {}", error.kind());
+    Failure::FollowedArtists
+}
+
+/// The saved-albums list has its own failure: the playlists beside it draw
+/// fine, so the library did not fail. The reason is for the log, never the
+/// window.
+pub(crate) fn albums_failure(error: &SessionError) -> Failure {
+    log::warn!("session failure: {}", error.kind());
+    Failure::SavedAlbums
+}
+
 /// Logs the failure variant, then hands the update to the window. The variant
 /// is a fixed name; the underlying error can embed a response body and is
 /// never formatted.
@@ -797,8 +866,8 @@ mod tests {
     use takofy_core::credentials::{AccessToken, CredentialStore, RefreshToken, StoreError};
     use takofy_core::login::{SourceError, SourceErrorKind, TokenSet, TokenSource};
     use takofy_model::{
-        AlbumDetail, ArtistDetail, CoverImage, CoverUrl, Episode, FollowedShow, PlaylistEntry,
-        Show, ShowDetail, TrackEntry,
+        AlbumDetail, ArtistDetail, CoverImage, CoverUrl, Episode, FollowedArtist, FollowedShow,
+        PlaylistEntry, SavedAlbum, Show, ShowDetail, TrackEntry,
     };
     use takofy_ui::signin::failure_message;
     use tokio::runtime::Runtime;
@@ -1063,6 +1132,32 @@ mod tests {
         }
     }
 
+    /// A scripted followed-artists answer; the default is an empty list.
+    #[derive(Clone)]
+    enum FollowedArtistsScript {
+        Ready(Vec<FollowedArtist>),
+        Fail,
+    }
+
+    impl Default for FollowedArtistsScript {
+        fn default() -> Self {
+            Self::Ready(Vec::new())
+        }
+    }
+
+    /// A scripted saved-albums answer; the default is an empty list.
+    #[derive(Clone)]
+    enum SavedAlbumsScript {
+        Ready(Vec<SavedAlbum>),
+        Fail,
+    }
+
+    impl Default for SavedAlbumsScript {
+        fn default() -> Self {
+            Self::Ready(Vec::new())
+        }
+    }
+
     /// A scripted artist answer; the default is a bare one at [`ARTIST`].
     #[derive(Clone)]
     enum ArtistScript {
@@ -1104,6 +1199,8 @@ mod tests {
         album_script: Mutex<AlbumScript>,
         show_script: Mutex<ShowScript>,
         followed_script: Mutex<FollowedScript>,
+        followed_artists_script: Mutex<FollowedArtistsScript>,
+        saved_albums_script: Mutex<SavedAlbumsScript>,
         artist_script: Mutex<ArtistScript>,
         release_script: Mutex<ReleaseScript>,
         follow_script: Mutex<FollowScript>,
@@ -1114,6 +1211,8 @@ mod tests {
         albums: AtomicUsize,
         shows: AtomicUsize,
         followed_lists: AtomicUsize,
+        followed_artist_lists: AtomicUsize,
+        saved_album_lists: AtomicUsize,
         artists: AtomicUsize,
         releases: AtomicUsize,
         follow_writes: AtomicUsize,
@@ -1293,6 +1392,52 @@ mod tests {
             }
         }
 
+        fn followed_artists(
+            &self,
+        ) -> impl Future<Output = Result<Vec<FollowedArtist>, SessionError>> + Send {
+            self.shared
+                .followed_artist_lists
+                .fetch_add(1, Ordering::SeqCst);
+            let connected = self.shared.connected.load(Ordering::SeqCst);
+            let script = self
+                .shared
+                .followed_artists_script
+                .lock()
+                .expect("lock")
+                .clone();
+            async move {
+                if !connected {
+                    return Err(SessionError::NotConnected);
+                }
+                match script {
+                    FollowedArtistsScript::Ready(artists) => Ok(artists),
+                    FollowedArtistsScript::Fail => Err(SessionError::NotConnected),
+                }
+            }
+        }
+
+        fn saved_albums(
+            &self,
+        ) -> impl Future<Output = Result<Vec<SavedAlbum>, SessionError>> + Send {
+            self.shared.saved_album_lists.fetch_add(1, Ordering::SeqCst);
+            let connected = self.shared.connected.load(Ordering::SeqCst);
+            let script = self
+                .shared
+                .saved_albums_script
+                .lock()
+                .expect("lock")
+                .clone();
+            async move {
+                if !connected {
+                    return Err(SessionError::NotConnected);
+                }
+                match script {
+                    SavedAlbumsScript::Ready(albums) => Ok(albums),
+                    SavedAlbumsScript::Fail => Err(SessionError::NotConnected),
+                }
+            }
+        }
+
         fn artist(
             &self,
             _artist: &str,
@@ -1465,6 +1610,31 @@ mod tests {
             named: true,
             publisher: None,
             cover: None,
+        }
+    }
+
+    /// One followed-artist card, named after its URI so a test can tell two
+    /// apart.
+    fn followed_artist(uri: &str) -> FollowedArtist {
+        FollowedArtist {
+            uri: uri.to_owned(),
+            name: uri.to_owned(),
+            named: true,
+            portrait: None,
+            releases: None,
+        }
+    }
+
+    /// One saved-album card, named after its URI so a test can tell two apart.
+    fn saved_album(uri: &str) -> SavedAlbum {
+        SavedAlbum {
+            uri: uri.to_owned(),
+            name: uri.to_owned(),
+            named: true,
+            artists: String::new(),
+            year: None,
+            cover: None,
+            tracks: None,
         }
     }
 
@@ -2603,6 +2773,228 @@ mod tests {
         });
         assert_eq!(
             shared.followed_lists.load(Ordering::SeqCst),
+            0,
+            "the list is want-driven, never chained onto the rootlist"
+        );
+    }
+
+    #[test]
+    fn a_followed_artists_load_before_connect_announces_followed_artists_failure() {
+        let store = Arc::new(MemoryStore::default());
+        let source = Arc::new(FixedSource::default());
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::default());
+        let shared = Arc::clone(&host.shared);
+
+        let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            assert_eq!(
+                ui_end.updates.recv().expect("resume update"),
+                Update::NeedsAuthorization
+            );
+            ui_end
+                .commands
+                .send(Command::LoadFollowedArtists)
+                .expect("load");
+            ui_end.updates.recv().expect("failure")
+        });
+
+        assert_eq!(
+            update,
+            Update::FollowedArtistsFailed(Failure::FollowedArtists),
+            "a followed-artists failure is not the library's"
+        );
+        assert_eq!(shared.followed_artist_lists.load(Ordering::SeqCst), 1);
+        assert_eq!(shared.shutdowns.load(Ordering::SeqCst), 1);
+    }
+
+    /// Drives one scripted followed-artist list through the live
+    /// `load_followed_artists` path and returns the update the window receives.
+    fn run_followed_artists(artists: Vec<FollowedArtist>) -> Update {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+        *shared.followed_artists_script.lock().expect("lock") =
+            FollowedArtistsScript::Ready(artists);
+
+        run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::LoadFollowedArtists)
+                .expect("load");
+            ui_end.updates.recv().expect("followed artists")
+        })
+    }
+
+    #[test]
+    fn a_scripted_followed_artist_list_reaches_the_window() {
+        let artists = vec![
+            followed_artist("spotify:artist:a"),
+            followed_artist("spotify:artist:b"),
+        ];
+        assert_eq!(
+            run_followed_artists(artists.clone()),
+            Update::FollowedArtists(artists)
+        );
+    }
+
+    #[test]
+    fn a_failed_followed_artists_load_is_announced_as_followed_artists() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+        *shared.followed_artists_script.lock().expect("lock") = FollowedArtistsScript::Fail;
+
+        let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::LoadFollowedArtists)
+                .expect("load");
+            ui_end.updates.recv().expect("failure")
+        });
+
+        assert_eq!(
+            update,
+            Update::FollowedArtistsFailed(Failure::FollowedArtists)
+        );
+        assert_eq!(shared.followed_artist_lists.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_signed_in_window_gets_no_followed_artist_update_unprompted() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+
+        run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            assert_eq!(
+                ui_end.updates.recv_timeout(Duration::from_millis(250)),
+                Err(RecvTimeoutError::Timeout),
+                "the worker must not load the followed-artist list on its own"
+            );
+        });
+        assert_eq!(
+            shared.followed_artist_lists.load(Ordering::SeqCst),
+            0,
+            "the list is want-driven, never chained onto the rootlist"
+        );
+    }
+
+    #[test]
+    fn a_saved_albums_load_before_connect_announces_saved_albums_failure() {
+        let store = Arc::new(MemoryStore::default());
+        let source = Arc::new(FixedSource::default());
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::default());
+        let shared = Arc::clone(&host.shared);
+
+        let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            assert_eq!(
+                ui_end.updates.recv().expect("resume update"),
+                Update::NeedsAuthorization
+            );
+            ui_end
+                .commands
+                .send(Command::LoadSavedAlbums)
+                .expect("load");
+            ui_end.updates.recv().expect("failure")
+        });
+
+        assert_eq!(
+            update,
+            Update::SavedAlbumsFailed(Failure::SavedAlbums),
+            "a saved-albums failure is not the library's"
+        );
+        assert_eq!(shared.saved_album_lists.load(Ordering::SeqCst), 1);
+        assert_eq!(shared.shutdowns.load(Ordering::SeqCst), 1);
+    }
+
+    /// Drives one scripted saved-album list through the live `load_saved_albums`
+    /// path and returns the update the window receives.
+    fn run_saved_albums(albums: Vec<SavedAlbum>) -> Update {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+        *shared.saved_albums_script.lock().expect("lock") = SavedAlbumsScript::Ready(albums);
+
+        run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::LoadSavedAlbums)
+                .expect("load");
+            ui_end.updates.recv().expect("saved albums")
+        })
+    }
+
+    #[test]
+    fn a_scripted_saved_album_list_reaches_the_window() {
+        let albums = vec![
+            saved_album("spotify:album:a"),
+            saved_album("spotify:album:b"),
+        ];
+        assert_eq!(
+            run_saved_albums(albums.clone()),
+            Update::SavedAlbums(albums)
+        );
+    }
+
+    #[test]
+    fn a_failed_saved_albums_load_is_announced_as_saved_albums() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+        *shared.saved_albums_script.lock().expect("lock") = SavedAlbumsScript::Fail;
+
+        let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::LoadSavedAlbums)
+                .expect("load");
+            ui_end.updates.recv().expect("failure")
+        });
+
+        assert_eq!(update, Update::SavedAlbumsFailed(Failure::SavedAlbums));
+        assert_eq!(shared.saved_album_lists.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_signed_in_window_gets_no_saved_album_update_unprompted() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+
+        run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            assert_eq!(
+                ui_end.updates.recv_timeout(Duration::from_millis(250)),
+                Err(RecvTimeoutError::Timeout),
+                "the worker must not load the saved-album list on its own"
+            );
+        });
+        assert_eq!(
+            shared.saved_album_lists.load(Ordering::SeqCst),
             0,
             "the list is want-driven, never chained onto the rootlist"
         );

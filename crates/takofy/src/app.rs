@@ -89,6 +89,14 @@ impl eframe::App for TakofyApp {
         if let Some(command) = self.library.followed_request() {
             let _ = self.ui_end.commands.send(command);
         }
+        // The two other followed lists are want-driven the same way: each asks
+        // only once its own chip is the one the user is looking at.
+        if let Some(command) = self.library.followed_artists_request() {
+            let _ = self.ui_end.commands.send(command);
+        }
+        if let Some(command) = self.library.saved_albums_request() {
+            let _ = self.ui_end.commands.send(command);
+        }
         // After the drain and before the draw, so a cover that just arrived is
         // ready in this same frame's `ui()`.
         self.art.upload(ctx);
