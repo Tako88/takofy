@@ -30,7 +30,7 @@ use super::episode_row;
 use super::hero;
 use super::section;
 use super::text as recipe;
-use super::track_list::list_rect;
+use super::track_list::list_rect_with;
 use super::track_row::{Click, state_of};
 
 /// Draws the show page and returns the command its controls asked for.
@@ -121,7 +121,7 @@ pub fn show_view(
                         // The whole list is reserved at once, so the scrollbar is
                         // right, and only the rows the viewport can show are laid
                         // out and given interaction.
-                        let list = list_rect(ui, count);
+                        let list = list_rect_with(ui, count, episode_layout::ROW_H);
                         ui.allocate_rect(list, Sense::hover());
                         let visible = ui.clip_rect();
 
@@ -171,7 +171,10 @@ fn entries(detail: &takofy_model::ShowDetail) -> Vec<takofy_model::TrackEntry> {
 mod tests {
     use std::time::Instant;
 
-    use egui::{Context, Event, Pos2, RawInput, Rect, Vec2};
+    use egui::{
+        Context, Event, Modifiers, MouseWheelSource, MouseWheelUnit, Pos2, RawInput, Rect,
+        TouchPhase, Vec2, vec2,
+    };
 
     use takofy_model::{CoverUrl, Episode, PublishedAt, Show, ShowDetail};
 
@@ -541,6 +544,53 @@ mod tests {
             !texts.contains(&"Episode 20"),
             "a row below the fold must not be laid out: {texts:?}"
         );
+    }
+
+    #[test]
+    fn the_last_episode_of_a_long_show_can_be_scrolled_to() {
+        // A show is routinely hundreds of rows tall. The scroll area learns its
+        // height from the list's rect, so a list reserved at the wrong row pitch
+        // stops short of its own end.
+        let ctx = context();
+        let episodes = (1..=252).map(episode).collect();
+        let mut library = library_with(detail(episodes));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let _ = frame(
+            &ctx,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let mut saw_last = false;
+        for _ in 0..400 {
+            let (_, output) = frame(
+                &ctx,
+                vec![
+                    Event::PointerMoved(Pos2::new(300.0, 300.0)),
+                    Event::MouseWheel {
+                        unit: MouseWheelUnit::Point,
+                        delta: vec2(0.0, -extent::EPISODE_ROW_H),
+                        phase: TouchPhase::Move,
+                        source: MouseWheelSource::Unknown,
+                        modifiers: Modifiers::NONE,
+                    },
+                ],
+                &mut library,
+                &mut transport,
+                &mut queue,
+                &mut art,
+            );
+            if drawn_texts(&output).contains(&"Episode 252") {
+                saw_last = true;
+                break;
+            }
+        }
+        assert!(saw_last, "the last episode must be reachable by scrolling");
     }
 
     #[test]

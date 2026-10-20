@@ -25,9 +25,19 @@ use super::text as recipe;
 /// The view and its test both call this, so a row's place and a test's click
 /// cannot drift apart.
 pub(crate) fn list_rect(ui: &mut Ui, count: usize) -> Rect {
+    list_rect_with(ui, count, extent::ROW_H)
+}
+
+/// The same reservation for a list whose row pitch is its own.
+///
+/// An episode row is taller than a track row, so a list that reserved the track
+/// pitch would stop scrolling two thirds of the way down its own content: the
+/// scroll area learns its height from this rect, while the rows are placed at
+/// their own pitch.
+pub(crate) fn list_rect_with(ui: &mut Ui, count: usize, pitch: f32) -> Rect {
     Rect::from_min_size(
         ui.cursor().min,
-        vec2(ui.available_width(), extent::ROW_H * count as f32),
+        vec2(ui.available_width(), pitch * count as f32),
     )
 }
 
