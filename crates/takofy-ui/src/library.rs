@@ -19,6 +19,19 @@ use crate::releases::Releases;
 use crate::route::{History, Page};
 use crate::sidebar_kind::{SidebarFilter, SidebarKind};
 
+/// How the library page draws its saved things.
+///
+/// The same items in either density, so the choice is one field and not two
+/// lists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MediaLayout {
+    /// A grid of tiles: art over a name and a subline.
+    #[default]
+    Grid,
+    /// Rows with type and size columns, under a head.
+    List,
+}
+
 /// What a loadable value is doing.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum Load<T> {
@@ -85,6 +98,8 @@ pub struct Library {
     pub playlists: Load<Vec<PlaylistEntry>>,
     /// The shows the user follows, as the library root draws them.
     pub followed: Load<Vec<FollowedShow>>,
+    /// Whether the root draws its saved things as tiles or as rows.
+    pub layout: MediaLayout,
     /// The artists the user follows, as the library root draws them.
     pub followed_artists: Load<Vec<FollowedArtist>>,
     /// The albums the user saved, as the library root draws them.
@@ -1586,6 +1601,20 @@ mod tests {
             Load::Ready(second),
             "the later whole-set reply wins and neither corrupts the state"
         );
+    }
+
+    #[test]
+    fn the_library_draws_tiles_until_rows_are_chosen() {
+        let mut library = Library::default();
+        assert_eq!(library.layout, MediaLayout::Grid);
+
+        library.layout = MediaLayout::List;
+        // The choice survives a page, because the library outlives it.
+        library.apply(&Update::SignedIn);
+        let _ = library.select("spotify:playlist:a");
+        assert_eq!(library.layout, MediaLayout::List);
+        library.back();
+        assert_eq!(library.layout, MediaLayout::List, "back keeps the density");
     }
 
     #[test]
