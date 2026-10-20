@@ -5,7 +5,7 @@
 
 use takofy_model::{
     AlbumDetail, ArtistDetail, CoverImage, CoverUrl, FollowedArtist, FollowedShow, PlaylistEntry,
-    SavedAlbum, ShowDetail, TrackEntry,
+    SavedAlbum, ShowDetail, TrackEntry, TrackLyrics,
 };
 
 /// A request from the window to the worker.
@@ -28,6 +28,8 @@ pub enum Command {
     },
     /// Write the artist into the user's followed set, or out of it.
     SetFollow { artist: String, followed: bool },
+    /// Load one track's lyrics.
+    LoadLyrics { track: String },
     /// Load the shows the user follows, as the library root draws them.
     LoadFollowedShows,
     /// Load the artists the user follows, as the library root draws them.
@@ -71,6 +73,8 @@ pub enum Failure {
     FollowedArtists,
     /// The albums the user saved could not be loaded.
     SavedAlbums,
+    /// A track's lyrics could not be loaded.
+    Lyrics,
     /// Anything else; reproduce with `--headless` for the message.
     Other,
 }
@@ -156,6 +160,10 @@ pub enum Update {
     Cover { url: CoverUrl, image: CoverImage },
     /// A cover could not be fetched or decoded.
     CoverFailed { url: CoverUrl },
+    /// One track's lyrics.
+    Lyrics { track: String, lyrics: TrackLyrics },
+    /// A track's lyrics could not be loaded.
+    LyricsFailed { track: String, failure: Failure },
     /// A playback change.
     Transport(TransportUpdate),
 }

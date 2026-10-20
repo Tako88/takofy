@@ -299,6 +299,12 @@ pub(crate) fn start<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                         break;
                     }
                 }
+                Event::Command(Some(Command::LoadLyrics { track })) => {
+                    let step = load_lyrics(&mut host, &mut stop_rx, &task_notifier, &track).await;
+                    if step.stopped() {
+                        break;
+                    }
+                }
                 Event::Command(Some(Command::LoadShow { show })) => {
                     let step = load_show(&mut host, &mut stop_rx, &task_notifier, &show).await;
                     if step.stopped() {
@@ -628,6 +634,35 @@ async fn load_artist<H: SessionHost>(
     }
 }
 
+/// Loads one track's lyrics and announces them.
+///
+/// Its failure is `Lyrics`, not `Load`: the page around the pane may draw fine,
+/// and the pane's own message names only the lyrics.
+async fn load_lyrics<H: SessionHost>(
+    host: &mut H,
+    stop: &mut StopReceiver<()>,
+    notifier: &Notifier,
+    track: &str,
+) -> Step {
+    match stop_or(stop, host.lyrics(track)).await {
+        None => Step::Stopped,
+        Some(Ok(lyrics)) => {
+            notifier.send(Update::Lyrics {
+                track: track.to_owned(),
+                lyrics,
+            });
+            Step::Done
+        }
+        Some(Err(error)) => {
+            notifier.send(Update::LyricsFailed {
+                track: track.to_owned(),
+                failure: lyrics_failure(&error),
+            });
+            Step::Done
+        }
+    }
+}
+
 /// Labels one release's tracks and announces them.
 async fn load_release_tracks<H: SessionHost>(
     host: &mut H,
@@ -780,6 +815,14 @@ pub(crate) fn albums_failure(error: &SessionError) -> Failure {
     Failure::SavedAlbums
 }
 
+/// The lyrics pane has its own failure: the page around it may draw fine, and
+/// its message names only the lyrics. The reason is for the log, never the
+/// window.
+pub(crate) fn lyrics_failure(error: &SessionError) -> Failure {
+    log::warn!("session failure: {}", error.kind());
+    Failure::Lyrics
+}
+
 /// Logs the failure variant, then hands the update to the window. The variant
 /// is a fixed name; the underlying error can embed a response body and is
 /// never formatted.
@@ -867,7 +910,7 @@ mod tests {
     use takofy_core::login::{SourceError, SourceErrorKind, TokenSet, TokenSource};
     use takofy_model::{
         AlbumDetail, ArtistDetail, CoverImage, CoverUrl, Episode, FollowedArtist, FollowedShow,
-        PlaylistEntry, SavedAlbum, Show, ShowDetail, TrackEntry,
+        LyricLine, PlaylistEntry, SavedAlbum, Show, ShowDetail, TrackEntry, TrackLyrics,
     };
     use takofy_ui::signin::failure_message;
     use tokio::runtime::Runtime;
@@ -1174,6 +1217,23 @@ mod tests {
         }
     }
 
+    /// A scripted lyrics answer; the default is no lines.
+    ///
+    /// `Pending` never answers, so a stop can be tested while the load is still
+    /// in flight (the same shape [`ShowScript`] uses).
+    #[derive(Clone)]
+    enum LyricsScript {
+        Ready(TrackLyrics),
+        Fail,
+        Pending,
+    }
+
+    impl Default for LyricsScript {
+        fn default() -> Self {
+            Self::Ready(TrackLyrics::default())
+        }
+    }
+
     /// A scripted release-label answer.
     #[derive(Clone, Default)]
     enum ReleaseScript {
@@ -1202,6 +1262,7 @@ mod tests {
         followed_artists_script: Mutex<FollowedArtistsScript>,
         saved_albums_script: Mutex<SavedAlbumsScript>,
         artist_script: Mutex<ArtistScript>,
+        lyrics_script: Mutex<LyricsScript>,
         release_script: Mutex<ReleaseScript>,
         follow_script: Mutex<FollowScript>,
         connected: AtomicBool,
@@ -1214,9 +1275,11 @@ mod tests {
         followed_artist_lists: AtomicUsize,
         saved_album_lists: AtomicUsize,
         artists: AtomicUsize,
+        lyrics_loads: AtomicUsize,
         releases: AtomicUsize,
         follow_writes: AtomicUsize,
         artist_started: Mutex<Option<Sender<()>>>,
+        lyrics_started: Mutex<Option<Sender<()>>>,
         show_started: Mutex<Option<Sender<()>>>,
 
         last_follow: Mutex<Option<(String, bool)>>,
@@ -1459,6 +1522,28 @@ mod tests {
             }
         }
 
+        fn lyrics(
+            &self,
+            _track: &str,
+        ) -> impl Future<Output = Result<TrackLyrics, SessionError>> + Send {
+            self.shared.lyrics_loads.fetch_add(1, Ordering::SeqCst);
+            if let Some(tx) = self.shared.lyrics_started.lock().expect("lock").take() {
+                let _ = tx.send(());
+            }
+            let connected = self.shared.connected.load(Ordering::SeqCst);
+            let script = self.shared.lyrics_script.lock().expect("lock").clone();
+            async move {
+                if !connected {
+                    return Err(SessionError::NotConnected);
+                }
+                match script {
+                    LyricsScript::Ready(lyrics) => Ok(lyrics),
+                    LyricsScript::Fail => Err(SessionError::NotConnected),
+                    LyricsScript::Pending => std::future::pending().await,
+                }
+            }
+        }
+
         fn release_tracks(
             &self,
             _tracks: &[String],
@@ -1553,6 +1638,9 @@ mod tests {
     /// The artist the shell tests open.
     const ARTIST: &str = "spotify:artist:a";
 
+    /// The track the lyrics tests open.
+    const TRACK: &str = "spotify:track:a";
+
     /// One artist page's data, with no top tracks and no releases, so a test
     /// names only what it reads.
     fn artist_detail(uri: &str) -> ArtistDetail {
@@ -1562,6 +1650,19 @@ mod tests {
             portrait: None,
             top_tracks: Vec::new(),
             releases: Vec::new(),
+        }
+    }
+
+    /// One track's lyrics with a single timed line, so a test names only what
+    /// it reads.
+    fn lyrics_of(words: &str) -> TrackLyrics {
+        TrackLyrics {
+            lines: vec![LyricLine {
+                start_ms: Some(0),
+                end_ms: Some(1_000),
+                words: words.to_owned(),
+            }],
+            synced: true,
         }
     }
 
@@ -3114,6 +3215,112 @@ mod tests {
             }
         );
         assert_eq!(shared.artists.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_scripted_lyrics_load_reaches_the_window() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+        let lyrics = lyrics_of("first line");
+        *shared.lyrics_script.lock().expect("lock") = LyricsScript::Ready(lyrics.clone());
+
+        let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::LoadLyrics {
+                    track: TRACK.to_owned(),
+                })
+                .expect("load");
+            ui_end.updates.recv().expect("lyrics")
+        });
+
+        assert_eq!(
+            update,
+            Update::Lyrics {
+                track: TRACK.to_owned(),
+                lyrics,
+            }
+        );
+        assert_eq!(shared.lyrics_loads.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_failed_lyrics_load_is_announced() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+        *shared.lyrics_script.lock().expect("lock") = LyricsScript::Fail;
+
+        let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::LoadLyrics {
+                    track: TRACK.to_owned(),
+                })
+                .expect("load");
+            ui_end.updates.recv().expect("failure")
+        });
+
+        assert_eq!(
+            update,
+            Update::LyricsFailed {
+                track: TRACK.to_owned(),
+                failure: Failure::Lyrics,
+            }
+        );
+        assert_eq!(shared.lyrics_loads.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_stop_during_a_lyrics_load_shuts_down() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+        *shared.lyrics_script.lock().expect("lock") = LyricsScript::Pending;
+        let (started_tx, started_rx) = channel();
+        *shared.lyrics_started.lock().expect("lock") = Some(started_tx);
+
+        let runtime = runtime();
+        let (ui_end, _slot, worker) = start(runtime.handle(), host, store, source);
+
+        let window = move || {
+            loop {
+                if matches!(ui_end.updates.recv().expect("update"), Update::Playlists(_)) {
+                    break;
+                }
+            }
+            ui_end
+                .commands
+                .send(Command::LoadLyrics {
+                    track: TRACK.to_owned(),
+                })
+                .expect("load");
+            started_rx.recv().expect("lyrics started");
+        };
+        let teardown = move || async move {
+            // A hung stop must fail the test, not hang the suite.
+            tokio::time::timeout(Duration::from_secs(1), worker.finish())
+                .await
+                .expect("finish must resolve when the stop interrupts the lyrics load");
+            assert_eq!(
+                shared.shutdowns.load(Ordering::SeqCst),
+                1,
+                "the shutdown must run when the stop interrupts the lyrics load"
+            );
+        };
+
+        run_ordered(runtime, window, teardown);
     }
 
     #[test]

@@ -96,21 +96,40 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
         .and_then(|now| now.cover.as_ref());
     let now_playing_cover = screen.art.look(playing_cover, screen.now);
 
-    let mut clicked_row = None;
+    // The panel's lyrics follow the transport: a different track drops the load
+    // and keeps the tab the reader chose.
+    if grid.now_playing.is_some() && regions.now_playing != NowPlaying::Hidden {
+        screen
+            .library
+            .lyrics
+            .sync(screen.transport.now_playing.as_ref());
+    }
+
+    let mut reply = now_playing::Reply::default();
     if let Some(panel) = grid.now_playing
         && regions.now_playing != NowPlaying::Hidden
     {
-        clicked_row = region(ui, "now-playing", panel, panel.shrink(inset), |ui| {
+        reply = region(ui, "now-playing", panel, panel.shrink(inset), |ui| {
             now_playing::show(
                 ui,
                 screen.transport,
                 screen.queue,
-                screen.art,
-                screen.now,
-                now_playing_cover,
-                tokens,
+                &screen.library.lyrics,
+                screen.position_ms,
+                &mut now_playing::Frame {
+                    art: screen.art,
+                    now: screen.now,
+                    cover: now_playing_cover,
+                    tokens,
+                },
             )
         });
+    }
+    if let Some(tab) = reply.tab {
+        screen.library.lyrics.select(tab);
+    }
+    if reply.retry {
+        screen.library.lyrics.retry();
     }
 
     command = command.or(region(
@@ -136,7 +155,18 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
     // and only when no other region asked for a command, keeps a frame from
     // moving the queue past a click whose `Play` would then be dropped.
     if command.is_none() {
-        command = clicked_row.and_then(|index| screen.queue.jump(index, screen.transport));
+        command = reply
+            .row
+            .and_then(|index| screen.queue.jump(index, screen.transport));
+    }
+    // The lyrics fetch is the open tab's, and it is asked for only once the
+    // frame's own command is settled: a load marked `Loading` for a command that
+    // was then dropped would wait forever.
+    if command.is_none() {
+        command = screen
+            .library
+            .lyrics
+            .request(screen.transport.now_playing.as_ref());
     }
 
     // The drawer is stepped after the regions, so a playlist picked from the rail
@@ -1315,6 +1345,35 @@ mod tests {
         assert_eq!(
             asked, expected,
             "the panel must ask for the rows it draws, and the playbar for its tile"
+        );
+    }
+
+    /// The Lyrics tab asks for the playing track's lyrics once, and the shell is
+    /// what sends it.
+    #[test]
+    fn opening_the_lyrics_tab_asks_for_the_lyrics_once() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let at = painted_at(&frame, "LYRICS").expect("the lyrics tab is painted");
+        let command = window.click(&mut transport, &mut queue, at + Vec2::new(2.0, 2.0));
+
+        assert_eq!(
+            command,
+            Some(Command::LoadLyrics {
+                track: "spotify:track:x".to_owned()
+            }),
+            "opening the tab asks for the track the transport names"
+        );
+
+        // The next frame does not ask again: the load is in flight.
+        let (_, _) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert_eq!(
+            window.frame(&mut transport, &mut queue, Vec::new()).0,
+            None,
+            "one request per track"
         );
     }
 

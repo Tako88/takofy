@@ -8,17 +8,18 @@ use crate::artist::ArtistError;
 use crate::context::{ContextError, Walker};
 use crate::credentials::AccessToken;
 use crate::followed::FollowedError;
+use crate::lyrics::LyricsError;
 use crate::playback::{Playback, PlaybackError, PlaybackEvent};
 use crate::remote::{
     ROOTLIST_WIRE, RemoteContext, RemoteRootlist, label_playlists, label_tracks, read_album,
-    read_artist, read_followed_artists, read_followed_shows, read_release_tracks,
+    read_artist, read_followed_artists, read_followed_shows, read_lyrics, read_release_tracks,
     read_saved_albums, read_show, write_follow,
 };
 use crate::rootlist::{RootlistError, fetch_all};
 use crate::show::ShowError;
 use takofy_model::{
     AlbumDetail, ArtistDetail, CoverUrl, FollowedArtist, FollowedShow, PlaylistEntry, SavedAlbum,
-    ShowDetail, TrackEntry,
+    ShowDetail, TrackEntry, TrackLyrics,
 };
 
 /// Why an [`Engine`] operation failed.
@@ -38,6 +39,8 @@ pub enum EngineError {
     Show(#[from] ShowError),
     #[error(transparent)]
     Followed(#[from] FollowedError),
+    #[error(transparent)]
+    Lyrics(#[from] LyricsError),
 }
 
 /// A connected Spotify session.
@@ -126,6 +129,15 @@ impl Engine {
     /// A URI that does not name a show fails before any request is made.
     pub async fn show(&self, show_uri: &str) -> Result<ShowDetail, EngineError> {
         Ok(read_show(&self.session, show_uri).await?)
+    }
+
+    /// One track's lyrics, empty when the track has none.
+    ///
+    /// A track without lyrics is an empty success rather than an error: the
+    /// endpoint's not-found is the answer, not a failure. A URI that does not
+    /// name a track fails before any request is made.
+    pub async fn lyrics(&self, track_uri: &str) -> Result<TrackLyrics, EngineError> {
+        Ok(read_lyrics(&self.session, track_uri).await?)
     }
 
     /// The shows the user follows, newest follow first, each as its card draws it.

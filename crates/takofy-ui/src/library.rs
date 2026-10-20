@@ -14,6 +14,7 @@ use takofy_model::{
 use crate::discography::Filter;
 use crate::follow::Follow;
 use crate::library_filter::{RootFilter, RootKind};
+use crate::lyrics::LyricsPanel;
 use crate::message::{Command, Failure, Update};
 use crate::releases::Releases;
 use crate::route::{History, Page};
@@ -104,6 +105,8 @@ pub struct Library {
     pub followed_artists: Load<Vec<FollowedArtist>>,
     /// The albums the user saved, as the library root draws them.
     pub saved_albums: Load<Vec<SavedAlbum>>,
+    /// The panel under the library: its tab and the playing track's lyrics.
+    pub lyrics: LyricsPanel,
     pub tracks: Load<TracksFor>,
     /// The album the album page draws.
     pub album: Load<AlbumDetail>,
@@ -310,6 +313,11 @@ impl Library {
             }
             Update::Followed { .. } | Update::FollowFailed { .. } => {
                 self.follow.apply(update);
+            }
+            // A lyrics reply is about a track, not a page, so it is forwarded
+            // whatever page is on screen; the panel keeps its own guard.
+            Update::Lyrics { .. } | Update::LyricsFailed { .. } => {
+                self.lyrics.apply(update);
             }
             Update::NeedsAuthorization
             | Update::SignInFailed(_)
@@ -698,13 +706,15 @@ impl Library {
 mod tests {
     use takofy_model::{
         AddedAt, AlbumDetail, ArtistDetail, CoverUrl, Episode, FollowedShow, PlaylistEntry,
-        ReleaseKind, Show, ShowDetail, TrackEntry,
+        ReleaseKind, Show, ShowDetail, TrackEntry, TrackLyrics,
     };
 
     use super::*;
     use crate::discography::Chip;
     use crate::library_filter::RootKind;
+    use crate::lyrics::Tab;
     use crate::message::TransportUpdate;
+    use crate::player::NowPlaying;
     use crate::sidebar_kind::SidebarKind;
 
     fn playlist(uri: &str, name: &str) -> PlaylistEntry {
@@ -1001,6 +1011,54 @@ mod tests {
             Load::Ready(tracks_for("a", vec![track("t")])),
             "the playlist behind the album stays ready for Back"
         );
+    }
+
+    /// A lyrics reply is keyed by track, not by page, so it reaches the panel
+    /// whatever page is on screen.
+    #[test]
+    fn a_lyrics_reply_reaches_the_panel_whatever_the_page() {
+        let mut library = Library::default();
+        library.open(album("spotify:album:a"));
+        library.lyrics.select(Tab::Lyrics);
+        let now = NowPlaying {
+            uri: "spotify:track:a".to_owned(),
+            title: "A track".to_owned(),
+            artists: String::new(),
+            cover: None,
+        };
+        assert_eq!(
+            library.lyrics.request(Some(&now)),
+            Some(Command::LoadLyrics {
+                track: "spotify:track:a".to_owned(),
+            })
+        );
+
+        let reply = TrackLyrics::default();
+        library.apply(&Update::Lyrics {
+            track: "spotify:track:a".to_owned(),
+            lyrics: reply.clone(),
+        });
+        assert_eq!(library.lyrics.load(), &Load::Ready(reply));
+
+        let next = NowPlaying {
+            uri: "spotify:track:b".to_owned(),
+            title: "Another track".to_owned(),
+            artists: String::new(),
+            cover: None,
+        };
+        library.lyrics.sync(Some(&next));
+        assert_eq!(
+            library.lyrics.request(Some(&next)),
+            Some(Command::LoadLyrics {
+                track: "spotify:track:b".to_owned(),
+            })
+        );
+
+        library.apply(&Update::LyricsFailed {
+            track: "spotify:track:b".to_owned(),
+            failure: Failure::Lyrics,
+        });
+        assert_eq!(library.lyrics.load(), &Load::Failed(Failure::Lyrics));
     }
 
     /// The reply path: only the wanted album's answer lands, the first one wins,

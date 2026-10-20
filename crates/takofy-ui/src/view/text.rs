@@ -132,6 +132,11 @@ pub fn card_kind() -> FontId {
     FontId::new(text::XS, fonts::mono(MonoWeight::Regular))
 }
 
+/// A lyric line: the interface face at the size the pane reads at.
+pub fn lyric_line() -> FontId {
+    FontId::new(text::BASE, fonts::sans(Weight::Medium))
+}
+
 /// A track row's title, in the interface face at 500.
 pub fn track_name() -> FontId {
     FontId::new(text::BASE, fonts::sans(Weight::Medium))

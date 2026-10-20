@@ -191,7 +191,7 @@ pub fn availability(control: Control) -> Availability {
         // The panel's tabs: the queue is state the window already holds, and
         // lyrics are a fetch and a parse it does not make. #15
         Control::NowPlayingQueueTab => Availability::Ready,
-        Control::NowPlayingLyricsTab => Availability::Waiting,
+        Control::NowPlayingLyricsTab => Availability::Ready,
 
         // The hero's tools have no command yet. Its play has one, so the view
         // is Ready and the moment decides whether it can act.
@@ -250,6 +250,7 @@ mod tests {
                     | Control::ReleasePlay
                     | Control::EpisodeToggle
                     | Control::NowPlayingQueueTab
+                    | Control::NowPlayingLyricsTab
                     | Control::Authorize
                     | Control::LibraryFilterAll
                     | Control::LibraryFilterPlaylists
