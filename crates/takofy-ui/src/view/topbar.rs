@@ -95,10 +95,12 @@ pub fn show(
                 false,
             ),
         ];
+        let side = extent::BUTTON;
+        let top = crate::view::shell::row_centre(ui) - side / 2.0;
         for (index, (control, glyph, label, requested, live, current)) in
             cluster.into_iter().enumerate()
         {
-            let rect = Rect::from_min_size(ui.cursor().min, Vec2::splat(extent::BUTTON));
+            let rect = Rect::from_min_size(Pos2::new(ui.cursor().min.x, top), Vec2::splat(side));
             let slot = controls::round_button(
                 ui,
                 tokens,
@@ -120,10 +122,7 @@ pub fn show(
             } else {
                 extent::BUTTON + space::S1
             };
-            ui.advance_cursor_after_rect(Rect::from_min_size(
-                rect.min,
-                Vec2::new(advance, extent::BUTTON),
-            ));
+            ui.advance_cursor_after_rect(Rect::from_min_size(rect.min, Vec2::new(advance, side)));
         }
     });
 
@@ -196,18 +195,20 @@ fn trail(ui: &mut Ui, crumbs: &[crate::trail::Crumb<'_>], rect: Rect, tokens: &T
         };
         let label = crumb.label.to_uppercase();
         let galley = recipe::spaced(ui, &label, font.clone(), base, spacing);
-        let width = galley.size().x.min((rect.right() - x).max(0.0));
+        // The current crumb leads with the reference's accent rule, inside its
+        // own box: a rule, a gap, then the name. Drawing it in the separator's
+        // gap would read as a second slash.
+        let lead = if crumb.current { space::S2 } else { 0.0 };
+        let text_left = x + lead;
+        let width = galley.size().x.min((rect.right() - text_left).max(0.0));
         let place = Rect::from_min_size(
-            Pos2::new(x, rect.center().y - galley.size().y / 2.0),
+            Pos2::new(text_left, rect.center().y - galley.size().y / 2.0),
             Vec2::new(width, galley.size().y),
         );
-
         if crumb.current {
-            // An accent rule a gap left of the crumb: a marker, not a
-            // separator, which is what a bone bar in this position reads as.
             ui.painter().rect_filled(
                 Rect::from_min_size(
-                    Pos2::new(place.left() - space::S2, place.top()),
+                    Pos2::new(x, place.top()),
                     Vec2::new(stroke::RULE, galley.size().y),
                 ),
                 radius::NONE,

@@ -21,7 +21,7 @@ use crate::theme::{MonoWeight, Tokens, Weight, extent, fonts, radius, space, tex
 
 use super::art;
 use super::controls;
-use super::shell::row_centred;
+use super::shell::{row_centre, row_centred};
 use super::text as recipe;
 
 /// The one control in each column that is not an icon button.
@@ -122,8 +122,13 @@ fn run_width(controls: &[(Control, Icon)]) -> f32 {
 
 /// The art tile, the title, the state, and the buttons beside them.
 fn now_column(ui: &mut Ui, transport: &Transport, cover: Cover, tokens: &Tokens, form: Playbar) {
-    let left = ui.cursor().min;
-    let art_rect = Rect::from_min_size(left, Vec2::splat(extent::PLAYBAR_ART));
+    let art_rect = Rect::from_min_size(
+        Pos2::new(
+            ui.cursor().min.x,
+            row_centre(ui) - extent::PLAYBAR_ART / 2.0,
+        ),
+        Vec2::splat(extent::PLAYBAR_ART),
+    );
     art::tile(
         ui.painter(),
         art_rect,
@@ -186,7 +191,8 @@ fn centre_column(
     position_ms: u32,
     tokens: &Tokens,
 ) -> Option<Command> {
-    let top = ui.cursor().min.y;
+    let stack = extent::BUTTON_LG + space::S1 + extent::SLIDER_H;
+    let top = row_centre(ui) - stack / 2.0;
     let down = [
         (Control::Shuffle, Icon::Shuffle),
         (Control::Previous, Icon::Previous),
@@ -357,14 +363,7 @@ fn extras_column(ui: &mut Ui, tokens: &Tokens, form: Playbar) {
     let controls = extras_controls(form);
     let width = run_width(controls);
     let mut x = ui.max_rect().right() - width;
-    draw_run(
-        ui,
-        tokens,
-        controls,
-        &mut x,
-        ui.cursor().min.y + extent::PLAYBAR_ART / 2.0,
-        &|_| true,
-    );
+    draw_run(ui, tokens, controls, &mut x, row_centre(ui), &|_| true);
 }
 
 /// Draws a run left to right, advancing `x` past it, and returns the one
@@ -662,6 +661,94 @@ mod tests {
             );
             assert!(focused, "the arrow moved focus off the seek: {pressed:?}");
         }
+    }
+
+    /// Every column centres on the bar, which is what `align-items: center` does
+    /// in the reference and what a row's cursor does not do on its own.
+    #[test]
+    fn every_column_sits_on_the_bars_centre() {
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        let bar = Rect::from_min_size(Pos2::new(0.0, 100.0), Vec2::new(1200.0, extent::PLAYBAR_H));
+        let mut transport = playing(0);
+
+        let mut output = ctx.run_ui(
+            RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 300.0))),
+                ..Default::default()
+            },
+            |ui| {
+                let mut queue = Queue::default();
+                let _ = show(
+                    ui,
+                    &mut transport,
+                    &mut queue,
+                    0,
+                    Playbar::Full,
+                    bar,
+                    Cover::Missing,
+                    &tokens,
+                );
+            },
+        );
+        output.textures_delta.clear();
+
+        let centre = bar.center().y;
+        let boxes = |height: f32| {
+            output
+                .shapes
+                .iter()
+                .filter_map(|clipped| match &clipped.shape {
+                    egui::Shape::Rect(shape) if (shape.rect.height() - height).abs() < 0.01 => {
+                        Some(shape.rect)
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+
+        // The art is the now column's tallest box, so it holds the column's
+        // height: its centre is the bar's.
+        let art = boxes(extent::PLAYBAR_ART);
+        assert!(!art.is_empty(), "the now column draws its art");
+        assert!(
+            (art[0].center().y - centre).abs() < 0.01,
+            "the art at {:?} is not on the bar's centre {centre}",
+            art[0].center()
+        );
+
+        // The transport and the seek row are one stack, centred together, so the
+        // play button's top is half the stack above the bar's centre.
+        let stack = extent::BUTTON_LG + space::S1 + extent::SLIDER_H;
+        let play = boxes(extent::BUTTON_LG);
+        assert!(!play.is_empty(), "the centre column draws the play button");
+        assert!(
+            (play[0].top() - (centre - stack / 2.0)).abs() < 0.01,
+            "the transport stack starts at {} rather than {}",
+            play[0].top(),
+            centre - stack / 2.0
+        );
+
+        // The extras' volume is the one box there whose width is its own token,
+        // so it identifies the run without guessing a coordinate.
+        let volume = output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(shape)
+                    if (shape.rect.width() - extent::VOLUME_W).abs() < 0.01 =>
+                {
+                    Some(shape.rect)
+                }
+                _ => None,
+            })
+            .next()
+            .expect("the extras draw the volume");
+        assert!(
+            (volume.center().y - centre).abs() < 0.01,
+            "the volume at {:?} is not on the bar's centre {centre}",
+            volume.center()
+        );
     }
 
     #[test]

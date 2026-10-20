@@ -299,6 +299,12 @@ pub(super) fn row_of<R>(ui: &mut Ui, id: &str, rect: Rect, add: impl FnOnce(&mut
     .inner
 }
 
+/// A row's vertical centre: a region is the whole column's height, so a row that
+/// draws its own rects has to centre them itself rather than trust the cursor.
+pub(super) fn row_centre(ui: &Ui) -> f32 {
+    ui.max_rect().center().y
+}
+
 /// The same, named for the rows that hold a run of controls.
 pub(super) fn row_centred<R>(
     ui: &mut Ui,
@@ -562,6 +568,23 @@ mod tests {
         rects
     }
 
+    /// The search field's painted box, found by its height rather than by a
+    /// coordinate a test guessed.
+    fn search_field(output: &egui::FullOutput) -> Option<Rect> {
+        output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(shape)
+                    if (shape.rect.height() - extent::SEARCH_H).abs() < 0.01
+                        && shape.rect.width() > 100.0 =>
+                {
+                    Some(shape.rect)
+                }
+                _ => None,
+            })
+    }
+
     /// The sidebar's highlighted library rows, which wear a bone rule at the
     /// left edge.
     fn selected_rows(output: &egui::FullOutput) -> usize {
@@ -610,6 +633,32 @@ mod tests {
         window.library.open(Page::Album(ALBUM.to_owned()));
         window.library.open(Page::Album(ALBUM_B.to_owned()));
         window.library.back();
+    }
+
+    #[test]
+    fn every_topbar_item_shares_one_baseline() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        ready_playlist(&mut window);
+
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let bar = topbar_rect(&window).center().y;
+        let buttons = topbar_buttons(&frame);
+        assert_eq!(buttons.len(), 3, "Home, back and forward");
+        for button in &buttons {
+            assert!(
+                (button.center().y - bar).abs() < 0.01,
+                "a topbar button at {:?} is not on the bar's centre {bar}",
+                button.center()
+            );
+        }
+        let field = search_field(&frame).expect("the topbar paints the search field");
+        assert!(
+            (field.center().y - bar).abs() < 0.01,
+            "the search field at {:?} is not on the bar's centre {bar}",
+            field.center()
+        );
     }
 
     #[test]
