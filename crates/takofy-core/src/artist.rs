@@ -10,6 +10,8 @@
 //! no particular order, so they are mapped back by `entity_uri` and then read in
 //! the order the release list asked for.
 
+use std::collections::HashMap;
+
 use librespot::core::{SpotifyId, SpotifyUri};
 use librespot::metadata::Artist;
 use librespot::protocol::extended_metadata::BatchedExtensionResponse;
@@ -176,14 +178,14 @@ fn track_uris(album: &AlbumMessage) -> Vec<String> {
         .collect()
 }
 
-/// The releases the batched answer carries, in the request's own order.
+/// The albums a batched answer carries, keyed by the URI the answer echoes.
 ///
-/// The answer's order is not the request's, so each entity is keyed by the URI
-/// the answer echoes and the request's order is walked. An entity that does not
-/// parse, and a URI nobody answered, are both skipped: one bad album must not
-/// cost the page the other forty-seven.
-pub(crate) fn releases_from(response: &BatchedExtensionResponse, order: &[String]) -> Vec<Release> {
-    let mut answered: std::collections::HashMap<&str, Release> = std::collections::HashMap::new();
+/// An entity that does not parse is skipped, so one unreadable album does not
+/// cost the page the others in the same answer.
+pub(crate) fn answered_albums(
+    response: &BatchedExtensionResponse,
+) -> HashMap<String, AlbumMessage> {
+    let mut answered: HashMap<String, AlbumMessage> = HashMap::new();
     for array in &response.extended_metadata {
         for data in &array.extension_data {
             let Some(any) = data.extension_data.as_ref() else {
@@ -192,15 +194,23 @@ pub(crate) fn releases_from(response: &BatchedExtensionResponse, order: &[String
             let Ok(album) = AlbumMessage::parse_from_bytes(&any.value) else {
                 continue;
             };
-            answered.insert(
-                data.entity_uri.as_str(),
-                release_of(&data.entity_uri, &album),
-            );
+            answered.insert(data.entity_uri.clone(), album);
         }
     }
+    answered
+}
+
+/// The releases the batched answer carries, in the request's own order.
+///
+/// The answer's order is not the request's, so each entity is keyed by the URI
+/// the answer echoes and the request's order is walked. An entity that does not
+/// parse, and a URI nobody answered, are both skipped: one bad album must not
+/// cost the page the other forty-seven.
+pub(crate) fn releases_from(response: &BatchedExtensionResponse, order: &[String]) -> Vec<Release> {
+    let mut answered = answered_albums(response);
     order
         .iter()
-        .filter_map(|uri| answered.remove(uri.as_str()))
+        .filter_map(|uri| answered.remove(uri).map(|album| release_of(uri, &album)))
         .collect()
 }
 

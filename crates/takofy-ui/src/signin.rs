@@ -53,6 +53,10 @@ impl SignIn {
                 | Update::ShowFailed { .. }
                 | Update::FollowedShows(_)
                 | Update::FollowedShowsFailed(_)
+                | Update::FollowedArtists(_)
+                | Update::FollowedArtistsFailed(_)
+                | Update::SavedAlbums(_)
+                | Update::SavedAlbumsFailed(_)
                 | Update::ReleaseTracks { .. }
                 | Update::ReleaseTracksFailed { .. }
                 | Update::Followed { .. }
@@ -93,6 +97,12 @@ pub fn failure_message(failure: Failure) -> &'static str {
         Failure::Save => "Could not save that change. Try again.",
         Failure::Followed => {
             "Could not load the shows you follow. Check your connection and try again."
+        }
+        Failure::FollowedArtists => {
+            "Could not load the artists you follow. Check the connection and try again."
+        }
+        Failure::SavedAlbums => {
+            "Could not load your saved albums. Check the connection and try again."
         }
         Failure::Other => "Sign-in failed. Try again, or run with --headless for details.",
     }
@@ -353,7 +363,7 @@ mod tests {
     }
 
     /// Every `Failure` value there is, so a test can sweep them all.
-    fn every_failure() -> [Failure; 8] {
+    fn every_failure() -> [Failure; 10] {
         [
             Failure::PortBusy,
             Failure::Keychain,
@@ -362,6 +372,8 @@ mod tests {
             Failure::Load,
             Failure::Save,
             Failure::Followed,
+            Failure::FollowedArtists,
+            Failure::SavedAlbums,
             Failure::Other,
         ]
     }
@@ -376,6 +388,32 @@ mod tests {
         assert!(
             !message.contains("library"),
             "the playlists beside it still draw, so the library did not fail: {message}"
+        );
+    }
+
+    #[test]
+    fn failure_message_for_followed_artists_is_its_own() {
+        let message = failure_message(Failure::FollowedArtists);
+        assert!(
+            message.contains("artists") && message.contains("follow"),
+            "the copy must name the list that failed: {message}"
+        );
+        assert!(
+            !message.contains("library") && !message.contains("shows"),
+            "the playlists and shows beside it still draw: {message}"
+        );
+    }
+
+    #[test]
+    fn failure_message_for_saved_albums_is_its_own() {
+        let message = failure_message(Failure::SavedAlbums);
+        assert!(
+            message.contains("albums") && message.contains("saved"),
+            "the copy must name the list that failed: {message}"
+        );
+        assert!(
+            !message.contains("library") && !message.contains("shows"),
+            "the playlists and shows beside it still draw: {message}"
         );
     }
 

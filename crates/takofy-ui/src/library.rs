@@ -7,16 +7,17 @@
 use std::collections::HashMap;
 
 use takofy_model::{
-    AlbumDetail, ArtistDetail, CoverUrl, FollowedShow, PlaylistEntry, ShowDetail, TrackEntry,
+    AlbumDetail, ArtistDetail, CoverUrl, FollowedArtist, FollowedShow, PlaylistEntry, SavedAlbum,
+    ShowDetail, TrackEntry,
 };
 
 use crate::discography::Filter;
 use crate::follow::Follow;
-use crate::library_filter::RootFilter;
+use crate::library_filter::{RootFilter, RootKind};
 use crate::message::{Command, Failure, Update};
 use crate::releases::Releases;
 use crate::route::{History, Page};
-use crate::sidebar_kind::SidebarFilter;
+use crate::sidebar_kind::{SidebarFilter, SidebarKind};
 
 /// What a loadable value is doing.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -84,6 +85,10 @@ pub struct Library {
     pub playlists: Load<Vec<PlaylistEntry>>,
     /// The shows the user follows, as the library root draws them.
     pub followed: Load<Vec<FollowedShow>>,
+    /// The artists the user follows, as the library root draws them.
+    pub followed_artists: Load<Vec<FollowedArtist>>,
+    /// The albums the user saved, as the library root draws them.
+    pub saved_albums: Load<Vec<SavedAlbum>>,
     pub tracks: Load<TracksFor>,
     /// The album the album page draws.
     pub album: Load<AlbumDetail>,
@@ -122,6 +127,19 @@ pub struct Library {
     /// Context images, keyed by the playlist that owns them, so an upgrade that
     /// arrives before the playlists list is ready is not lost.
     context_covers: HashMap<String, CoverUrl>,
+}
+
+/// Whether a chip naming artists is the one the user is looking at.
+///
+/// Either surface counts: the root's chip row and the sidebar's are two ways to
+/// ask for the same list.
+fn artists_chosen(root: RootKind, sidebar: SidebarKind) -> bool {
+    root == RootKind::Artists || sidebar == SidebarKind::Artists
+}
+
+/// Whether a chip naming albums is the one the user is looking at.
+fn albums_chosen(root: RootKind, sidebar: SidebarKind) -> bool {
+    root == RootKind::Albums || sidebar == SidebarKind::Albums
 }
 
 impl Library {
@@ -259,6 +277,18 @@ impl Library {
             }
             Update::FollowedShowsFailed(failure) => {
                 self.followed = Load::Failed(*failure);
+            }
+            Update::FollowedArtists(artists) => {
+                self.followed_artists = Load::Ready(artists.clone());
+            }
+            Update::FollowedArtistsFailed(failure) => {
+                self.followed_artists = Load::Failed(*failure);
+            }
+            Update::SavedAlbums(albums) => {
+                self.saved_albums = Load::Ready(albums.clone());
+            }
+            Update::SavedAlbumsFailed(failure) => {
+                self.saved_albums = Load::Failed(*failure);
             }
             Update::ReleaseTracks { .. } | Update::ReleaseTracksFailed { .. } => {
                 self.releases.apply(update);
@@ -471,13 +501,15 @@ impl Library {
     /// Marks the playlists loading again and returns the command that fetches
     /// them.
     ///
-    /// The followed-shows list restarts with them: a playlist retry is the
-    /// root's Retry, so both halves of the page ask again. A reply already in
-    /// flight from before the retry still lands, and its list is valid — only a
-    /// little older than the retry's.
+    /// The followed lists restart with them: a playlist retry is the root's
+    /// Retry, so every half of the page asks again. A reply already in flight
+    /// from before the retry still lands, and its list is valid — only a little
+    /// older than the retry's.
     pub fn reload(&mut self) -> Command {
         self.playlists = Load::Loading;
         self.followed = Load::Idle;
+        self.followed_artists = Load::Idle;
+        self.saved_albums = Load::Idle;
         Command::ReloadLibrary
     }
 
@@ -501,6 +533,59 @@ impl Library {
         if self.followed == Load::Idle && matches!(self.playlists, Load::Ready(_)) {
             self.followed = Load::Loading;
             Some(Command::LoadFollowedShows)
+        } else {
+            None
+        }
+    }
+
+    /// Marks the followed-artists list loading again and returns the command
+    /// that fetches it.
+    ///
+    /// This is the list's own Retry, so it asks directly rather than going
+    /// through the playlists. A reply already in flight from before the retry
+    /// still lands, and its list is valid — only a little older than the
+    /// retry's.
+    pub fn reload_followed_artists(&mut self) -> Command {
+        self.followed_artists = Load::Loading;
+        Command::LoadFollowedArtists
+    }
+
+    /// Marks the saved-albums list loading again and returns the command that
+    /// fetches it.
+    ///
+    /// The followed-artists shape, one list over.
+    pub fn reload_saved_albums(&mut self) -> Command {
+        self.saved_albums = Load::Loading;
+        Command::LoadSavedAlbums
+    }
+
+    /// The command that starts the followed-artists load, if one is due.
+    ///
+    /// Like the followed shows it is want-driven: it asks exactly when nothing
+    /// has been asked for yet, the playlists can name a signed-in window, and a
+    /// chip naming artists is the one the user is looking at.
+    pub fn followed_artists_request(&mut self) -> Option<Command> {
+        if self.followed_artists == Load::Idle
+            && matches!(self.playlists, Load::Ready(_))
+            && artists_chosen(self.root_filter.chosen(), self.sidebar_kind.chosen())
+        {
+            self.followed_artists = Load::Loading;
+            Some(Command::LoadFollowedArtists)
+        } else {
+            None
+        }
+    }
+
+    /// The command that starts the saved-albums load, if one is due.
+    ///
+    /// The followed-artists shape, one chip over.
+    pub fn saved_albums_request(&mut self) -> Option<Command> {
+        if self.saved_albums == Load::Idle
+            && matches!(self.playlists, Load::Ready(_))
+            && albums_chosen(self.root_filter.chosen(), self.sidebar_kind.chosen())
+        {
+            self.saved_albums = Load::Loading;
+            Some(Command::LoadSavedAlbums)
         } else {
             None
         }
@@ -737,6 +822,28 @@ mod tests {
             named: true,
             publisher: None,
             cover: None,
+        }
+    }
+
+    fn followed_artist(uri: &str) -> FollowedArtist {
+        FollowedArtist {
+            uri: uri.to_owned(),
+            name: uri.to_owned(),
+            named: true,
+            portrait: None,
+            releases: None,
+        }
+    }
+
+    fn saved_album(uri: &str) -> SavedAlbum {
+        SavedAlbum {
+            uri: uri.to_owned(),
+            name: uri.to_owned(),
+            named: true,
+            artists: String::new(),
+            year: None,
+            cover: None,
+            tracks: None,
         }
     }
 
@@ -1476,6 +1583,275 @@ mod tests {
             Load::Ready(second),
             "the later whole-set reply wins and neither corrupts the state"
         );
+    }
+
+    #[test]
+    fn followed_artists_and_saved_albums_start_idle() {
+        let library = Library::default();
+        assert_eq!(library.followed_artists, Load::Idle);
+        assert_eq!(library.saved_albums, Load::Idle);
+    }
+
+    #[test]
+    fn the_artist_and_album_requests_stay_silent_until_the_playlists_are_ready() {
+        let mut library = Library::default();
+        assert_eq!(
+            library.followed_artists_request(),
+            None,
+            "nothing has loaded yet"
+        );
+        assert_eq!(
+            library.saved_albums_request(),
+            None,
+            "nothing has loaded yet"
+        );
+
+        library.apply(&Update::SignedIn);
+        assert_eq!(
+            library.followed_artists_request(),
+            None,
+            "loading is not ready"
+        );
+        assert_eq!(library.saved_albums_request(), None, "loading is not ready");
+
+        library.apply(&Update::PlaylistFailed(Failure::Load));
+        assert_eq!(
+            library.followed_artists_request(),
+            None,
+            "a failed library never names a window"
+        );
+        assert_eq!(
+            library.saved_albums_request(),
+            None,
+            "a failed library never names a window"
+        );
+
+        // Ready playlists alone are not a request: no chip names these lists
+        // yet, so both stay idle.
+        let mut ready = Library::default();
+        ready.apply(&Update::Playlists(Vec::new()));
+        assert_eq!(ready.followed_artists_request(), None);
+        assert_eq!(ready.saved_albums_request(), None);
+        assert_eq!(ready.followed_artists, Load::Idle);
+        assert_eq!(ready.saved_albums, Load::Idle);
+    }
+
+    /// The chip half of the two requests, tested where it can be reached: no
+    /// chip naming artists or albums can be pressed until the controls act, so
+    /// the condition is a function of the two chosen kinds.
+    #[test]
+    fn only_a_chip_naming_the_list_asks_for_it() {
+        for root in crate::library_filter::ROW {
+            for sidebar in crate::sidebar_kind::ROW {
+                assert_eq!(
+                    artists_chosen(root, sidebar),
+                    root == RootKind::Artists || sidebar == SidebarKind::Artists,
+                    "artists at {root:?} / {sidebar:?}"
+                );
+                assert_eq!(
+                    albums_chosen(root, sidebar),
+                    root == RootKind::Albums || sidebar == SidebarKind::Albums,
+                    "albums at {root:?} / {sidebar:?}"
+                );
+            }
+        }
+
+        // Either surface names the list, so a root Artists chip beside a
+        // sidebar Albums chip still asks for both lists.
+        assert!(artists_chosen(RootKind::Artists, SidebarKind::Artists));
+        assert!(artists_chosen(RootKind::Artists, SidebarKind::Albums));
+        assert!(!artists_chosen(RootKind::Albums, SidebarKind::Albums));
+        assert!(!albums_chosen(RootKind::Podcasts, SidebarKind::Playlists));
+    }
+
+    /// The state half of the two requests. The chip half cannot be exercised
+    /// here, so this pins only that a list already loading, ready or failed is
+    /// never asked for again.
+    #[test]
+    fn a_list_that_already_has_an_answer_is_never_asked_again() {
+        let artist_states: [Load<Vec<FollowedArtist>>; 3] = [
+            Load::Loading,
+            Load::Ready(vec![followed_artist("spotify:artist:a")]),
+            Load::Failed(Failure::FollowedArtists),
+        ];
+        for state in artist_states {
+            let mut library = Library::default();
+            library.apply(&Update::Playlists(vec![playlist("a", "A")]));
+            library.followed_artists = state.clone();
+
+            assert_eq!(
+                library.followed_artists_request(),
+                None,
+                "{state:?} asked again"
+            );
+            assert_eq!(library.followed_artists, state);
+        }
+
+        let album_states: [Load<Vec<SavedAlbum>>; 3] = [
+            Load::Loading,
+            Load::Ready(vec![saved_album("spotify:album:a")]),
+            Load::Failed(Failure::SavedAlbums),
+        ];
+        for state in album_states {
+            let mut library = Library::default();
+            library.apply(&Update::Playlists(vec![playlist("a", "A")]));
+            library.saved_albums = state.clone();
+
+            assert_eq!(
+                library.saved_albums_request(),
+                None,
+                "{state:?} asked again"
+            );
+            assert_eq!(library.saved_albums, state);
+        }
+    }
+
+    #[test]
+    fn an_artist_list_reply_is_recorded_whatever_the_page() {
+        let artists = vec![followed_artist("spotify:artist:a")];
+        let mut library = Library::default();
+        library.apply(&Update::FollowedArtists(artists.clone()));
+        assert_eq!(library.followed_artists, Load::Ready(artists.clone()));
+
+        library.open(show("spotify:show:b"));
+        library.apply(&Update::FollowedArtists(artists.clone()));
+        assert_eq!(
+            library.followed_artists,
+            Load::Ready(artists),
+            "a show page does not gate the list"
+        );
+
+        library.apply(&Update::FollowedArtists(Vec::new()));
+        assert_eq!(library.followed_artists, Load::Ready(Vec::new()));
+    }
+
+    #[test]
+    fn a_saved_album_reply_is_recorded_whatever_the_page() {
+        let albums = vec![saved_album("spotify:album:a")];
+        let mut library = Library::default();
+        library.apply(&Update::SavedAlbums(albums.clone()));
+        assert_eq!(library.saved_albums, Load::Ready(albums.clone()));
+
+        library.open(artist("spotify:artist:b"));
+        library.apply(&Update::SavedAlbums(albums.clone()));
+        assert_eq!(
+            library.saved_albums,
+            Load::Ready(albums),
+            "an artist page does not gate the list"
+        );
+
+        library.apply(&Update::SavedAlbums(Vec::new()));
+        assert_eq!(library.saved_albums, Load::Ready(Vec::new()));
+    }
+
+    #[test]
+    fn an_artist_list_failure_is_recorded() {
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(vec![playlist("a", "A")]));
+        library.apply(&Update::FollowedArtistsFailed(Failure::FollowedArtists));
+
+        assert_eq!(
+            library.followed_artists,
+            Load::Failed(Failure::FollowedArtists)
+        );
+        assert_eq!(
+            library.playlists,
+            Load::Ready(vec![playlist("a", "A")]),
+            "the playlists beside it still draw"
+        );
+    }
+
+    #[test]
+    fn a_saved_album_failure_is_recorded() {
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(vec![playlist("a", "A")]));
+        library.apply(&Update::SavedAlbumsFailed(Failure::SavedAlbums));
+
+        assert_eq!(library.saved_albums, Load::Failed(Failure::SavedAlbums));
+        assert_eq!(
+            library.playlists,
+            Load::Ready(vec![playlist("a", "A")]),
+            "the playlists beside it still draw"
+        );
+    }
+
+    #[test]
+    fn reload_rearms_the_artist_and_album_lists() {
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(vec![playlist("a", "A")]));
+        library.apply(&Update::FollowedArtists(vec![followed_artist(
+            "spotify:artist:a",
+        )]));
+        library.apply(&Update::SavedAlbums(vec![saved_album("spotify:album:a")]));
+
+        assert_eq!(library.reload(), Command::ReloadLibrary);
+        assert_eq!(
+            library.followed_artists,
+            Load::Idle,
+            "a playlist retry re-arms it"
+        );
+        assert_eq!(
+            library.saved_albums,
+            Load::Idle,
+            "a playlist retry re-arms it"
+        );
+    }
+
+    #[test]
+    fn reload_followed_artists_clears_the_stale_state_and_returns_the_command() {
+        let mut failed = Library::default();
+        failed.apply(&Update::FollowedArtistsFailed(Failure::FollowedArtists));
+        assert_eq!(
+            failed.reload_followed_artists(),
+            Command::LoadFollowedArtists
+        );
+        assert_eq!(failed.followed_artists, Load::Loading);
+
+        let mut loading = Library {
+            followed_artists: Load::Loading,
+            ..Library::default()
+        };
+        assert_eq!(
+            loading.reload_followed_artists(),
+            Command::LoadFollowedArtists
+        );
+        assert_eq!(
+            loading.followed_artists,
+            Load::Loading,
+            "a stale load is dropped and asked again"
+        );
+
+        let mut ready = Library::default();
+        ready.apply(&Update::FollowedArtists(Vec::new()));
+        assert_eq!(
+            ready.reload_followed_artists(),
+            Command::LoadFollowedArtists
+        );
+        assert_eq!(ready.followed_artists, Load::Loading);
+    }
+
+    #[test]
+    fn reload_saved_albums_clears_the_stale_state_and_returns_the_command() {
+        let mut failed = Library::default();
+        failed.apply(&Update::SavedAlbumsFailed(Failure::SavedAlbums));
+        assert_eq!(failed.reload_saved_albums(), Command::LoadSavedAlbums);
+        assert_eq!(failed.saved_albums, Load::Loading);
+
+        let mut loading = Library {
+            saved_albums: Load::Loading,
+            ..Library::default()
+        };
+        assert_eq!(loading.reload_saved_albums(), Command::LoadSavedAlbums);
+        assert_eq!(
+            loading.saved_albums,
+            Load::Loading,
+            "a stale load is dropped and asked again"
+        );
+
+        let mut ready = Library::default();
+        ready.apply(&Update::SavedAlbums(Vec::new()));
+        assert_eq!(ready.reload_saved_albums(), Command::LoadSavedAlbums);
+        assert_eq!(ready.saved_albums, Load::Loading);
     }
 
     #[test]

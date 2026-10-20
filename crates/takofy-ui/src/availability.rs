@@ -150,11 +150,11 @@ pub fn availability(control: Control) -> Availability {
         Control::NavHome => Availability::Ready,
         Control::LibraryCreate => Availability::Waiting, // #3
         Control::FilterPlaylists => Availability::Ready, // #3
-        Control::FilterArtists => Availability::Waiting, // #3; no library data yet
-        Control::FilterAlbums => Availability::Waiting,  // #3; no library data yet
-        Control::FilterPodcasts => Availability::Ready,  // #3
-        Control::SearchField => Availability::Waiting,   // #16
-        Control::TrailHome => Availability::Waiting,     // #17
+        Control::FilterArtists => Availability::Ready,
+        Control::FilterAlbums => Availability::Ready,
+        Control::FilterPodcasts => Availability::Ready, // #3
+        Control::SearchField => Availability::Waiting,  // #16
+        Control::TrailHome => Availability::Waiting,    // #17
         Control::NowPlayingMore => Availability::Waiting, // #16
 
         // Transport and seek are their own issue.
@@ -200,12 +200,12 @@ pub fn availability(control: Control) -> Availability {
         Control::DiscographyFilter => Availability::Ready,
 
         // The library root's filter row: All, Playlists and Podcasts are live,
-        // Artists and Albums are the reference's chips with no data yet.
+        // The library root's filter row: every chip names a list it can draw.
         Control::LibraryFilterAll => Availability::Ready, // #3
         Control::LibraryFilterPlaylists => Availability::Ready, // #3
+        Control::LibraryFilterArtists => Availability::Ready,
+        Control::LibraryFilterAlbums => Availability::Ready,
         Control::LibraryFilterPodcasts => Availability::Ready, // #3
-        Control::LibraryFilterArtists => Availability::Waiting, // #3
-        Control::LibraryFilterAlbums => Availability::Waiting, // #3
         Control::ReleasePlay => Availability::Ready,
         Control::EpisodeToggle => Availability::Ready,
         Control::ReleaseLike => Availability::Waiting,
@@ -243,34 +243,18 @@ mod tests {
                     | Control::Authorize
                     | Control::LibraryFilterAll
                     | Control::LibraryFilterPlaylists
+                    | Control::LibraryFilterArtists
+                    | Control::LibraryFilterAlbums
                     | Control::LibraryFilterPodcasts
                     | Control::FilterPlaylists
+                    | Control::FilterArtists
+                    | Control::FilterAlbums
                     | Control::FilterPodcasts
             );
             assert_eq!(
                 availability(control) == Availability::Ready,
                 ready,
                 "{control:?}"
-            );
-        }
-
-        // The sidebar's Playlists and Podcasts chips are live; Artists and
-        // Albums have no library data yet, so those two wait.
-        for control in [Control::FilterArtists, Control::FilterAlbums] {
-            assert_eq!(
-                availability(control),
-                Availability::Waiting,
-                "the sidebar's {control:?} has no library data yet"
-            );
-        }
-
-        // The root's Artists and Albums are the reference's chips with no data
-        // yet, so they are Waiting just like the sidebar's filters.
-        for control in [Control::LibraryFilterArtists, Control::LibraryFilterAlbums] {
-            assert_eq!(
-                availability(control),
-                Availability::Waiting,
-                "the root's {control:?} has no view yet"
             );
         }
     }

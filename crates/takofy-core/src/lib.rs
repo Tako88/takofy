@@ -17,6 +17,7 @@ pub mod playback;
 pub mod rootlist;
 pub mod show;
 
+mod collected;
 mod collection;
 mod cover;
 mod remote;

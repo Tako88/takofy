@@ -89,6 +89,14 @@ impl eframe::App for TakofyApp {
         if let Some(command) = self.library.followed_request() {
             let _ = self.ui_end.commands.send(command);
         }
+        // The two other followed lists are want-driven the same way: each asks
+        // only once its own chip is the one the user is looking at.
+        if let Some(command) = self.library.followed_artists_request() {
+            let _ = self.ui_end.commands.send(command);
+        }
+        if let Some(command) = self.library.saved_albums_request() {
+            let _ = self.ui_end.commands.send(command);
+        }
         // After the drain and before the draw, so a cover that just arrived is
         // ready in this same frame's `ui()`.
         self.art.upload(ctx);
@@ -470,6 +478,69 @@ mod tests {
             library.followed_request(),
             None,
             "the load is in flight, so the next frame sends nothing"
+        );
+    }
+
+    /// The artists and albums lists are want-driven like the shows: one send
+    /// per chip press, and none before the chip is the chosen one.
+    #[test]
+    fn logic_requests_the_artists_and_albums_only_once_their_chip_is_chosen() {
+        let mut library = Library::default();
+        assert_eq!(library.followed_artists_request(), None);
+        assert_eq!(library.saved_albums_request(), None);
+
+        // Ready playlists alone ask for nothing: the root still draws All.
+        library.apply(&Update::Playlists(Vec::new()));
+        assert_eq!(library.followed_artists_request(), None);
+        assert_eq!(library.saved_albums_request(), None);
+
+        assert!(
+            library
+                .root_filter
+                .choose(takofy_ui::library_filter::RootKind::Artists)
+        );
+        assert_eq!(
+            library.followed_artists_request(),
+            Some(Command::LoadFollowedArtists)
+        );
+        assert_eq!(library.followed_artists, Load::Loading);
+        assert_eq!(
+            library.followed_artists_request(),
+            None,
+            "the load is in flight, so the next frame sends nothing"
+        );
+
+        assert!(
+            library
+                .root_filter
+                .choose(takofy_ui::library_filter::RootKind::Albums)
+        );
+        assert_eq!(
+            library.saved_albums_request(),
+            Some(Command::LoadSavedAlbums)
+        );
+        assert_eq!(library.saved_albums_request(), None);
+
+        // The sidebar's chips are the other surface that names the same lists.
+        let mut sidebar = Library::default();
+        sidebar.apply(&Update::Playlists(Vec::new()));
+        assert!(
+            sidebar
+                .sidebar_kind
+                .choose(takofy_ui::sidebar_kind::SidebarKind::Artists)
+        );
+        assert_eq!(
+            sidebar.followed_artists_request(),
+            Some(Command::LoadFollowedArtists)
+        );
+        assert!(
+            sidebar
+                .sidebar_kind
+                .choose(takofy_ui::sidebar_kind::SidebarKind::Albums)
+        );
+        assert_eq!(
+            sidebar.saved_albums_request(),
+            Some(Command::LoadSavedAlbums)
         );
     }
 
