@@ -2591,6 +2591,12 @@ svg {
     display: none;
   }
 
+  /* Clears both the mini player and the tab bar underneath it. */
+  .sidebar.is-open {
+    display: flex;
+    bottom: calc(7rem + var(--space-3));
+  }
+
   .playbar {
     grid-column: 1;
     grid-row: 2;
@@ -2659,8 +2665,8 @@ svg {
     color: var(--color-text);
   }
 
-  .topbar__nav,
-  .topbar__drawer-toggle,
+  /* The drawer toggle and the nav cluster stay — hiding them left the search
+     field as the only control. Only the breadcrumb makes way. */
   .trail {
     display: none;
   }
@@ -2698,6 +2704,7 @@ svg {
   }
 
   .topbar {
+    gap: var(--space-2);
     padding: 0 var(--space-4);
   }
 
