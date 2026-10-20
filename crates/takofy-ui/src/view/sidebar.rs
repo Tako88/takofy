@@ -7,13 +7,16 @@
 use std::time::Instant;
 
 use egui::{Layout, Pos2, Rect, RichText, Sense, Ui, UiBuilder, Vec2};
+use takofy_model::FollowedShow;
 
 use crate::availability::Control;
 use crate::cover::{Art, Cover};
+use crate::format::sidebar_kind_label;
 use crate::icon::{self, Icon};
 use crate::layout::{Sidebar, chips};
 use crate::library::{Library, Load};
-use crate::message::Command;
+use crate::message::{Command, Failure};
+use crate::sidebar_kind::{self, SidebarKind};
 use crate::signin::failure_message;
 use crate::theme::icon::Size;
 use crate::theme::{
@@ -173,17 +176,11 @@ fn library_block(
     );
     y = row.bottom() + space::S2;
 
-    // Playlists is the only kind the list holds, so it is drawn selected rather
-    // than as a chip that could be toggled to no effect. The rest wait.
-    let chips = [
-        (Control::FilterPlaylists, "Playlists", true),
-        (Control::FilterArtists, "Artists", false),
-        (Control::FilterAlbums, "Albums", false),
-        (Control::FilterPodcasts, "Podcasts", false),
-    ];
-    let sizes: Vec<Vec2> = chips
+    // The kind row, in the reference's order. The pressed chip is the chosen
+    // kind; a waiting chip never reports a click, so it stays unpressed.
+    let sizes: Vec<Vec2> = sidebar_kind::ROW
         .iter()
-        .map(|(_, label, _)| controls::chip_size(ui, tokens, label))
+        .map(|kind| controls::chip_size(ui, tokens, sidebar_kind_label(*kind)))
         .collect();
     // The sidebar's row is its buttons' pitch, not a chip's height: the chips
     // are shorter than the row they sit in.
@@ -195,15 +192,22 @@ fn library_block(
         space::S1,
     );
     let origin = Vec2::new(band.left() + space::S4, y);
-    for ((control, label, selected), rect) in chips.iter().zip(wrapped.rects) {
-        controls::chip_in(
+    let mut pressed: Option<SidebarKind> = None;
+    for (kind, rect) in sidebar_kind::ROW.iter().zip(wrapped.rects) {
+        let slot = controls::chip_in(
             ui,
             tokens,
-            *control,
+            kind.control(),
             rect.translate(origin),
-            label,
-            *selected,
+            sidebar_kind_label(*kind),
+            library.sidebar_kind.chosen() == *kind,
         );
+        if slot.response.clicked() {
+            pressed = Some(*kind);
+        }
+    }
+    if let Some(kind) = pressed {
+        library.sidebar_kind.choose(kind);
     }
     y += wrapped.height + space::S3;
 
@@ -214,7 +218,7 @@ fn library_block(
     rows(ui, list, library, art, now, tokens)
 }
 
-/// The playlist rows, or the state of the load that fetches them.
+/// The list the chosen kind shows, or the state of the load that fetches it.
 fn rows(
     ui: &mut Ui,
     rect: Rect,
@@ -227,54 +231,121 @@ fn rows(
         return None;
     }
 
-    let mut picked: Option<String> = None;
-    let mut retry = false;
+    match library.sidebar_kind.chosen() {
+        SidebarKind::Playlists => {
+            let mut picked: Option<String> = None;
+            let mut retry = false;
 
+            match &library.playlists {
+                Load::Idle => {}
+                Load::Loading => state(ui, rect, recipe::muted("Loading your playlists…", tokens)),
+                Load::Ready(playlists) if playlists.is_empty() => {
+                    state(ui, rect, recipe::muted("No playlists yet.", tokens));
+                }
+                Load::Ready(playlists) => {
+                    let current = library.selected().map(str::to_owned);
+                    let entries = playlists.clone();
+                    ui.scope_builder(
+                        UiBuilder::new()
+                            .id_salt("library-list")
+                            .max_rect(rect)
+                            .layout(Layout::top_down(egui::Align::Min)),
+                        |ui| {
+                            ui.spacing_mut().item_spacing.y = space::PX;
+                            egui::ScrollArea::vertical()
+                                .auto_shrink([false, false])
+                                .show_rows(ui, ROW_H, entries.len(), |ui, range| {
+                                    for index in range {
+                                        let Some(entry) = entries.get(index) else {
+                                            continue;
+                                        };
+                                        let (_, row) = ui
+                                            .allocate_space(Vec2::new(ui.available_width(), ROW_H));
+                                        let selected =
+                                            current.as_deref() == Some(entry.uri.as_str());
+                                        let cover = art.look(entry.cover.as_ref(), now);
+                                        if one(
+                                            ui,
+                                            row,
+                                            &entry.uri,
+                                            &entry.name,
+                                            cover,
+                                            selected,
+                                            tokens,
+                                        ) {
+                                            picked = Some(entry.uri.clone());
+                                        }
+                                    }
+                                });
+                        },
+                    );
+                }
+                Load::Failed(failure) => {
+                    state(ui, rect, recipe::muted(failure_message(*failure), tokens));
+                    retry = true;
+                }
+            }
+
+            if let Some(uri) = picked {
+                return Some(library.select(&uri));
+            }
+            if retry { Some(library.reload()) } else { None }
+        }
+        // Its chip is still waiting, so the list it would show is not drawn;
+        // the arm stands in for it.
+        SidebarKind::Podcasts => None,
+        // `choose` is the only writer of the choice, and it refuses waiting
+        // kinds, so these two kinds cannot be chosen.
+        SidebarKind::Artists => {
+            debug_assert!(false, "the Artists chip is waiting, so it cannot be chosen");
+            None
+        }
+        SidebarKind::Albums => {
+            debug_assert!(false, "the Albums chip is waiting, so it cannot be chosen");
+            None
+        }
+    }
+}
+
+/// What the Podcasts list draws: the followed shows, or the state of the
+/// loads that fetch them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShowsView<'a> {
+    /// The playlists or the shows are in flight, or have not been asked for.
+    Loading,
+    /// A fetch failed; the retry names which load to restart.
+    Failed(Failure, Retry),
+    /// The user follows no shows.
+    Empty,
+    /// The shows to draw, newest follow first.
+    List(&'a [FollowedShow]),
+}
+
+/// Which load a retry restarts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Retry {
+    /// The playlists; the followed list restarts with them.
+    Playlists,
+    /// The followed list alone.
+    Followed,
+}
+
+/// Reads what the Podcasts list draws from the two loads.
+///
+/// The playlists are checked first, because the followed request only fires
+/// once the playlists are Ready (`followed_request`), and a retry of the
+/// playlists resets the followed list to Idle.
+pub fn shows_view(library: &Library) -> ShowsView<'_> {
     match &library.playlists {
-        Load::Idle => {}
-        Load::Loading => state(ui, rect, recipe::muted("Loading your playlists…", tokens)),
-        Load::Ready(playlists) if playlists.is_empty() => {
-            state(ui, rect, recipe::muted("No playlists yet.", tokens));
-        }
-        Load::Ready(playlists) => {
-            let current = library.selected().map(str::to_owned);
-            let entries = playlists.clone();
-            ui.scope_builder(
-                UiBuilder::new()
-                    .id_salt("library-list")
-                    .max_rect(rect)
-                    .layout(Layout::top_down(egui::Align::Min)),
-                |ui| {
-                    ui.spacing_mut().item_spacing.y = space::PX;
-                    egui::ScrollArea::vertical()
-                        .auto_shrink([false, false])
-                        .show_rows(ui, ROW_H, entries.len(), |ui, range| {
-                            for index in range {
-                                let Some(entry) = entries.get(index) else {
-                                    continue;
-                                };
-                                let (_, row) =
-                                    ui.allocate_space(Vec2::new(ui.available_width(), ROW_H));
-                                let selected = current.as_deref() == Some(entry.uri.as_str());
-                                let cover = art.look(entry.cover.as_ref(), now);
-                                if one(ui, row, &entry.uri, &entry.name, cover, selected, tokens) {
-                                    picked = Some(entry.uri.clone());
-                                }
-                            }
-                        });
-                },
-            );
-        }
-        Load::Failed(failure) => {
-            state(ui, rect, recipe::muted(failure_message(*failure), tokens));
-            retry = true;
-        }
+        Load::Failed(failure) => ShowsView::Failed(*failure, Retry::Playlists),
+        Load::Idle | Load::Loading => ShowsView::Loading,
+        Load::Ready(_) => match &library.followed {
+            Load::Idle | Load::Loading => ShowsView::Loading,
+            Load::Failed(failure) => ShowsView::Failed(*failure, Retry::Followed),
+            Load::Ready(shows) if shows.is_empty() => ShowsView::Empty,
+            Load::Ready(shows) => ShowsView::List(shows),
+        },
     }
-
-    if let Some(uri) = picked {
-        return Some(library.select(&uri));
-    }
-    if retry { Some(library.reload()) } else { None }
 }
 
 /// One row: a placeholder tile, the name and the kind.
@@ -383,11 +454,12 @@ fn state(ui: &mut Ui, rect: Rect, text: RichText) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use egui::{Pos2, Vec2};
-    use takofy_model::PlaylistEntry;
+    use egui::{Event, Pos2, Vec2};
+    use takofy_model::{FollowedShow, PlaylistEntry};
 
-    use crate::message::Update;
+    use crate::message::{Failure, Update};
     use crate::theme::{fonts, style};
+    use crate::view::test_support::click_events;
 
     /// The chip rect and label rect the real sidebar paints, per label.
     ///
@@ -509,6 +581,208 @@ mod tests {
                     "band width {width}: {label} at {rect:?}, not ({left}, {top})"
                 );
             }
+        }
+    }
+
+    /// One show, the way the followed list carries it.
+    fn followed_show(uri: &str, name: &str) -> FollowedShow {
+        FollowedShow {
+            uri: uri.to_owned(),
+            name: name.to_owned(),
+            named: true,
+            publisher: None,
+            cover: None,
+        }
+    }
+
+    #[test]
+    fn a_failed_playlist_load_wins_over_a_ready_followed_list() {
+        let mut library = Library::default();
+        library.playlists = Load::Failed(Failure::Load);
+        library.followed = Load::Ready(vec![followed_show("spotify:show:a", "A")]);
+
+        assert_eq!(
+            shows_view(&library),
+            ShowsView::Failed(Failure::Load, Retry::Playlists)
+        );
+    }
+
+    #[test]
+    fn an_unstarted_or_inflight_playlist_load_is_loading() {
+        for playlists in [Load::Idle, Load::Loading] {
+            let load = format!("{playlists:?}");
+            let mut library = Library::default();
+            library.playlists = playlists;
+            assert_eq!(shows_view(&library), ShowsView::Loading, "{load}");
+        }
+    }
+
+    #[test]
+    fn a_reload_does_not_flash_the_empty_state() {
+        // The retry reset the followed list to Idle while the playlists load.
+        let mut library = Library::default();
+        library.playlists = Load::Loading;
+        library.followed = Load::Idle;
+        assert_eq!(shows_view(&library), ShowsView::Loading);
+
+        // One beat later the playlists have landed, but the list has not been
+        // asked for yet.
+        let mut library = Library::default();
+        library.playlists = Load::Ready(Vec::new());
+        library.followed = Load::Idle;
+        assert_eq!(shows_view(&library), ShowsView::Loading);
+    }
+
+    #[test]
+    fn an_inflight_followed_list_is_loading() {
+        let mut library = Library::default();
+        library.playlists = Load::Ready(Vec::new());
+        library.followed = Load::Loading;
+        assert_eq!(shows_view(&library), ShowsView::Loading);
+    }
+
+    #[test]
+    fn a_failed_followed_list_carries_its_own_retry() {
+        let mut library = Library::default();
+        library.playlists = Load::Ready(Vec::new());
+        library.followed = Load::Failed(Failure::Followed);
+
+        assert_eq!(
+            shows_view(&library),
+            ShowsView::Failed(Failure::Followed, Retry::Followed)
+        );
+    }
+
+    #[test]
+    fn a_ready_followed_list_is_empty_when_it_follows_nothing() {
+        let mut library = Library::default();
+        library.playlists = Load::Ready(Vec::new());
+        library.followed = Load::Ready(Vec::new());
+        assert_eq!(shows_view(&library), ShowsView::Empty);
+    }
+
+    #[test]
+    fn a_ready_followed_list_is_the_shows_to_draw() {
+        let shows = vec![
+            followed_show("spotify:show:a", "A"),
+            followed_show("spotify:show:b", "B"),
+        ];
+        let mut library = Library::default();
+        library.playlists = Load::Ready(Vec::new());
+        library.followed = Load::Ready(shows.clone());
+
+        assert_eq!(shows_view(&library), ShowsView::List(shows.as_slice()));
+    }
+
+    /// The context the sidebar draws into, the way the window builds it.
+    fn context() -> egui::Context {
+        let ctx = egui::Context::default();
+        ctx.set_fonts(fonts::definitions());
+        ctx.set_global_style(style(&Tokens::DARK));
+        ctx
+    }
+
+    /// One frame of the full sidebar over the characterised band: `events` go
+    /// into the pass, and the frame's output and command come back.
+    fn run(
+        ctx: &egui::Context,
+        events: Vec<Event>,
+        library: &mut Library,
+        art: &mut Art,
+    ) -> (egui::FullOutput, Option<Command>) {
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(254.0, 800.0))),
+            events,
+            ..Default::default()
+        };
+        let tokens = Tokens::DARK;
+        let mut command = None;
+        let mut output = ctx.run_ui(input, |ui| {
+            if let Some(next) = show(ui, Sidebar::Full, library, art, Instant::now(), &tokens) {
+                command = Some(next);
+            }
+        });
+        output.textures_delta.clear();
+        (output, command)
+    }
+
+    /// The three passes of one click at `pos`, one pass each; the last command
+    /// any of them returned.
+    fn click(
+        ctx: &egui::Context,
+        pos: Pos2,
+        library: &mut Library,
+        art: &mut Art,
+    ) -> Option<Command> {
+        let mut command = None;
+        for event in click_events(pos) {
+            let (_, next) = run(ctx, vec![event], library, art);
+            if next.is_some() {
+                command = next;
+            }
+        }
+        command
+    }
+
+    /// The rect the chip whose label was painted as `label` was drawn into:
+    /// the label text rect, expanded by the chip's padding.
+    fn chip_rect(output: &egui::FullOutput, label: &str) -> Rect {
+        let (pos, size) = output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Text(text) if text.galley.text() == label => {
+                    Some((text.pos, text.galley.size()))
+                }
+                _ => None,
+            })
+            .expect("the chip is drawn");
+        Rect::from_min_size(pos, size).expand2(Vec2::new(extent::CHIP_PAD_X, extent::CHIP_PAD_Y))
+    }
+
+    #[test]
+    fn clicking_the_playlists_chip_keeps_the_choice() {
+        let ctx = context();
+        let mut library = Library::default();
+        let mut art = Art::default();
+        let (output, _) = run(&ctx, Vec::new(), &mut library, &mut art);
+
+        let command = click(
+            &ctx,
+            chip_rect(&output, "PLAYLISTS").center(),
+            &mut library,
+            &mut art,
+        );
+
+        assert_eq!(
+            library.sidebar_kind.chosen(),
+            SidebarKind::Playlists,
+            "the pressed chip is still the chosen kind"
+        );
+        assert_eq!(command, None, "pressing the choice asks for nothing");
+    }
+
+    #[test]
+    fn clicking_a_waiting_chip_changes_nothing() {
+        for label in ["ARTISTS", "ALBUMS"] {
+            let ctx = context();
+            let mut library = Library::default();
+            let mut art = Art::default();
+            let (output, _) = run(&ctx, Vec::new(), &mut library, &mut art);
+
+            let command = click(
+                &ctx,
+                chip_rect(&output, label).center(),
+                &mut library,
+                &mut art,
+            );
+
+            assert_eq!(
+                library.sidebar_kind.chosen(),
+                SidebarKind::Playlists,
+                "{label} is still waiting, so it cannot be pressed"
+            );
+            assert_eq!(command, None, "{label}");
         }
     }
 }
