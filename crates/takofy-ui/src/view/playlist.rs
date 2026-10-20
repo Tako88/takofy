@@ -906,6 +906,7 @@ mod tests {
             cover: None,
             description: None,
             owner: None,
+            tracks: None,
         }]));
         library
     }
@@ -940,6 +941,7 @@ mod tests {
             cover: None,
             description: description.map(str::to_owned),
             owner: owner.map(str::to_owned),
+            tracks: None,
         }
     }
 
@@ -961,6 +963,7 @@ mod tests {
             cover: None,
             description: None,
             owner: None,
+            tracks: None,
         }
     }
 
@@ -971,6 +974,7 @@ mod tests {
             named: true,
             publisher: None,
             cover: None,
+            episodes: None,
         }
     }
 
@@ -986,6 +990,7 @@ mod tests {
             cover: Some(cover),
             description: None,
             owner: None,
+            tracks: None,
         }
     }
 
@@ -3519,6 +3524,7 @@ mod root_tests {
             cover: None,
             description: None,
             owner: None,
+            tracks: None,
         }
     }
 
@@ -3529,6 +3535,7 @@ mod root_tests {
             named: true,
             publisher: None,
             cover: None,
+            episodes: None,
         }
     }
 
@@ -3850,6 +3857,7 @@ mod root_tests {
                     CoverUrl::from_wire(&format!("https://i.scdn.co/image/{index:0<40}"))
                         .expect("a cover url"),
                 ),
+                episodes: None,
             })
             .collect();
         let mut library = library(vec![], shows);

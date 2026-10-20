@@ -733,6 +733,7 @@ mod tests {
             cover: None,
             description: None,
             owner: None,
+            tracks: None,
         }]));
         let mut art = Art::default();
         let input = egui::RawInput {
@@ -835,6 +836,7 @@ mod tests {
             named: true,
             publisher: None,
             cover: None,
+            episodes: None,
         }
     }
 
@@ -992,6 +994,7 @@ mod tests {
             cover: None,
             description: None,
             owner: None,
+            tracks: None,
         }]);
         library.followed = Load::Ready(vec![followed_show("spotify:show:a", "A")]);
         library.followed_artists = Load::Ready(vec![
@@ -1097,6 +1100,7 @@ mod tests {
             cover: None,
             description: None,
             owner: None,
+            tracks: None,
         }
     }
 

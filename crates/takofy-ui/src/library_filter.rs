@@ -136,6 +136,7 @@ mod tests {
             cover: None,
             description: None,
             owner: None,
+            tracks: None,
         }
     }
 
@@ -146,6 +147,7 @@ mod tests {
             named: true,
             publisher: None,
             cover: None,
+            episodes: None,
         }
     }
 

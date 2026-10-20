@@ -139,6 +139,7 @@ mod tests {
             cover: None,
             description: None,
             owner: None,
+            tracks: None,
         }
     }
 

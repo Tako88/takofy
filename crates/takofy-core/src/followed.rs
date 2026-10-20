@@ -145,6 +145,8 @@ pub struct ShowCard {
     pub name: String,
     pub publisher: Option<String>,
     pub cover: Option<CoverUrl>,
+    /// How many episodes the show lists.
+    pub episodes: usize,
 }
 
 /// The followed shows the grid draws, in the order given.
@@ -166,6 +168,7 @@ pub(crate) fn entries(order: &[String], cards: &HashMap<String, ShowCard>) -> Ve
                     .filter(|publisher| !publisher.is_empty())
                     .map(str::to_owned),
                 cover: card.and_then(|card| card.cover.clone()),
+                episodes: card.map(|card| card.episodes),
             }
         })
         .collect()
@@ -406,6 +409,7 @@ mod tests {
                 name: "Lateral with Tom Scott".to_owned(),
                 publisher: Some("   ".to_owned()),
                 cover: None,
+                episodes: 0,
             },
         );
         cards.insert(
@@ -414,6 +418,7 @@ mod tests {
                 name: "Published".to_owned(),
                 publisher: Some("Band".to_owned()),
                 cover: None,
+                episodes: 0,
             },
         );
         let cover = CoverUrl::from_file_id(&[1; 20]).expect("a file id");
@@ -423,6 +428,7 @@ mod tests {
                 name: "Art".to_owned(),
                 publisher: None,
                 cover: Some(cover.clone()),
+                episodes: 128,
             },
         );
 
@@ -436,5 +442,26 @@ mod tests {
             Some("Band".to_owned())
         );
         assert_eq!(entries(&[show(3)], &cards)[0].cover, Some(cover));
+    }
+
+    #[test]
+    fn a_card_carries_its_episode_count_and_an_unnamed_show_carries_none() {
+        let mut cards = HashMap::new();
+        cards.insert(
+            show(3),
+            ShowCard {
+                name: "Art".to_owned(),
+                publisher: None,
+                cover: None,
+                episodes: 128,
+            },
+        );
+
+        assert_eq!(entries(&[show(3)], &cards)[0].episodes, Some(128));
+        assert_eq!(
+            entries(&[show(9)], &cards)[0].episodes,
+            None,
+            "a show nobody named has no count to draw"
+        );
     }
 }

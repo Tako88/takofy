@@ -617,6 +617,7 @@ mod tests {
             cover: None,
             description: None,
             owner: None,
+            tracks: None,
         }]));
         window.library.select(PLAYLIST);
         window.library.apply(&Update::Tracks {
@@ -1146,6 +1147,7 @@ mod tests {
             cover: None,
             description: None,
             owner: None,
+            tracks: None,
         }]));
         window.library.select(PLAYLIST);
         window.library.to_playlists();
@@ -1195,6 +1197,7 @@ mod tests {
             cover: None,
             description: None,
             owner: None,
+            tracks: None,
         }]));
         library.select(PLAYLIST);
         library.apply(&Update::TracksFailed {

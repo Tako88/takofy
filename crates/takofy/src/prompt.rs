@@ -119,6 +119,7 @@ mod tests {
             cover: None,
             description: None,
             owner: None,
+            tracks: None,
         };
         assert_eq!(
             format_playlist_line(2, &entry),
