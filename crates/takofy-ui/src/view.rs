@@ -12,6 +12,7 @@ pub mod controls;
 mod episode_row;
 mod filter_row;
 mod hero;
+pub mod media;
 pub mod now_playing;
 pub mod playbar;
 pub mod playlist;

@@ -213,6 +213,9 @@ pub mod extent {
 
     /// A card's minimum width, 9 rem, which is what the grid's auto-fill counts.
     pub const CARD_MIN_W: f32 = 144.0;
+    /// The library grid's minimum tile width: the reference's `11rem`, which is
+    /// wider than the release grid's `9rem`.
+    pub const MEDIA_MIN_W: f32 = 176.0;
     /// A card's play tile, 2 rem.
     pub const CARD_PLAY: f32 = 32.0;
     /// A release block's art, 7 rem.
