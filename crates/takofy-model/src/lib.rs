@@ -111,6 +111,11 @@ pub struct PlaylistEntry {
     /// `None` is the wire giving nothing; an empty description is `None` rather
     /// than `Some("")`.
     pub description: Option<String>,
+    /// The playlist's declared track count, when the wire named one.
+    ///
+    /// This is the playlist's length, not the number of tracks a truncated
+    /// read returned.
+    pub tracks: Option<usize>,
     /// The playlist's owner as the wire names it, when it names one.
     ///
     /// This is the wire's username, not a display name: for most accounts it is
@@ -350,6 +355,8 @@ pub struct FollowedShow {
     /// `false` when `name` is the URI fallback.
     pub named: bool,
     pub publisher: Option<String>,
+    /// How many episodes the show lists, when its metadata answered.
+    pub episodes: Option<usize>,
     pub cover: Option<CoverUrl>,
 }
 

@@ -7,16 +7,16 @@
 
 use std::time::Instant;
 
-use egui::{Rect, Sense, Ui, vec2};
+use egui::{Pos2, Rect, Sense, Ui, vec2};
 use takofy_model::PlaylistEntry;
 
 use crate::cover::{Art, Cover};
 use crate::format::{
-    added_label, byline, format_position, library_note, plain_description, root_empty_label,
-    root_filter_label, root_loading_label, total_duration_ms,
+    added_label, byline, format_position, library_kind, library_note, media_size, media_type,
+    plain_description, root_empty_label, root_filter_label, root_loading_label, total_duration_ms,
 };
 use crate::layout::{Table, cards, table as table_layout};
-use crate::library::{BandCover, Library, Load, band_cover};
+use crate::library::{BandCover, Library, Load, MediaLayout, band_cover};
 use crate::library_filter::{self, Item, RootKind};
 use crate::message::{Command, Failure};
 use crate::player::Transport;
@@ -24,12 +24,13 @@ use crate::queue::Queue;
 use crate::route::Page;
 use crate::theme::{Tokens, extent, space};
 
-use super::card;
 use super::filter_row;
 use super::hero;
+use super::media;
 use super::text as recipe;
 use super::track_list::{head, list_rect};
 use super::track_row::{self, Click, Row, state_of};
+use super::view_toggle;
 
 /// The main pane: the selected playlist's tracks, or the state of their load.
 #[expect(
@@ -385,6 +386,7 @@ fn idle(
     tokens: &Tokens,
 ) -> Option<Command> {
     let mut choose: Option<RootKind> = None;
+    let mut relayout: Option<MediaLayout> = None;
     let mut select: Option<String> = None;
     let mut open: Option<Page> = None;
     let mut retry_playlists = false;
@@ -406,15 +408,19 @@ fn idle(
                 };
                 page_head(ui, &note, tokens);
 
-                let picked = filter_row::show_with(
+                let (picked, row) = filter_row::show_with(
                     ui,
                     tokens,
                     &library_filter::ROW,
                     library.root_filter.chosen(),
                     RootKind::control,
                     root_filter_label,
+                    filter_row::RowSlot::Trailing(view_toggle::reserved()),
                 );
                 choose = picked;
+                if let Some(layout) = view_toggle::show(ui, tokens, row, library.layout) {
+                    relayout = Some(layout);
+                }
 
                 match view {
                     IdleView::Loading => {
@@ -437,13 +443,27 @@ fn idle(
                         ui.label(recipe::muted(root_empty_label(kind), tokens));
                     }
                     IdleView::Grid { items, note } => {
-                        grid(ui, &items, art, now, tokens, &mut select, &mut open);
+                        grid(
+                            ui,
+                            &items,
+                            library.layout,
+                            &mut MediaDraw {
+                                art,
+                                now,
+                                tokens,
+                                select: &mut select,
+                                open: &mut open,
+                            },
+                        );
                         load_note(ui, note, tokens, &mut retry);
                     }
                 }
             });
         });
 
+    if let Some(layout) = relayout {
+        library.layout = layout;
+    }
     if let Some(kind) = choose {
         library.root_filter.choose(kind);
     }
@@ -518,25 +538,20 @@ fn page_head(ui: &mut Ui, note: &str, tokens: &Tokens) {
     ui.add_space(space::S5);
 }
 
-/// The grid of cards for the chosen chip.
+/// The saved things for the chosen chip, in the density the user chose.
 ///
-/// Every value is a token or a measure the painter owns: the minimum card
-/// width and the gap are tokens, and the height beyond the square art is what
-/// `card::extra_height` reports. The grid loads nothing on its own — a playlist
-/// card selects its playlist, a show card opens its page.
-fn grid(
-    ui: &mut Ui,
-    items: &[Item<'_>],
-    art: &mut Art,
-    now: Instant,
-    tokens: &Tokens,
-    select: &mut Option<String>,
-    open: &mut Option<Page>,
-) {
-    let solved = card_grid(ui);
+/// One scroll area either way, so switching density keeps the place the reader
+/// had reached. A tile selects its playlist or opens its page; a row does the
+/// same, and its more button takes its own clicks.
+fn grid(ui: &mut Ui, items: &[Item<'_>], layout: MediaLayout, draw: &mut MediaDraw<'_, '_>) {
+    if layout == MediaLayout::List {
+        return list(ui, items, draw);
+    }
+
+    let solved = media_grid(ui);
     let list = grid_rect(ui, &solved, items.len());
     // The whole grid is reserved at once, so the scrollbar is right, and only the
-    // cards the viewport can show are laid out and given interaction.
+    // tiles the viewport can show are laid out and given interaction.
     ui.allocate_rect(list, egui::Sense::hover());
     let visible = ui.clip_rect();
 
@@ -545,45 +560,161 @@ fn grid(
         if !visible.intersects(rect) {
             continue;
         }
-        let (uri, name, kind, cover) = match item {
-            Item::Playlist(entry) => (&entry.uri, &entry.name, "Playlist", entry.cover.as_ref()),
-            Item::Show(show) => (&show.uri, &show.name, "Podcast", show.cover.as_ref()),
-            Item::Artist(artist) => (
-                &artist.uri,
-                &artist.name,
-                "Artist",
-                artist.portrait.as_ref(),
-            ),
-            Item::Album(album) => (&album.uri, &album.name, "Album", album.cover.as_ref()),
-        };
-        let card = card::Card {
-            uri,
-            name,
-            kind,
-            cover: art.look(cover, now),
-        };
-        if card::show(ui, rect, &card, tokens) {
-            match item {
-                Item::Playlist(_) => *select = Some(uri.clone()),
-                Item::Show(_) => *open = Some(Page::Show(uri.clone())),
-                Item::Artist(_) => *open = Some(Page::Artist(uri.clone())),
-                Item::Album(_) => *open = Some(Page::Album(uri.clone())),
-            }
+        let media = draw.media_of(item);
+        if media::tile(ui, rect, &media.as_media(), draw.tokens) {
+            draw.activate(item, &media.uri);
         }
     }
 }
 
-/// The solved card grid for the current width and the tokens the reference
-/// gives a card.
-///
-/// The view and its tests both call this, so a card's place and a test's click
-/// cannot drift apart.
-fn card_grid(ui: &mut Ui) -> cards::Grid {
-    let area = Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), 0.0));
-    cards::grid(area, extent::CARD_MIN_W, space::S3, card::extra_height(ui))
+/// The same items as rows, under the columns' names.
+fn list(ui: &mut Ui, items: &[Item<'_>], draw: &mut MediaDraw<'_, '_>) {
+    let width = ui.available_width();
+    let height = space::S2 + media::head_height(ui) + space::S2;
+    let (head_rect, _) = ui.allocate_exact_size(vec2(width, height), egui::Sense::hover());
+    media::head(ui, head_rect, draw.tokens);
+
+    let top = ui.cursor().min.y;
+    let rows = Rect::from_min_size(
+        Pos2::new(ui.cursor().min.x, top),
+        vec2(width, items.len() as f32 * extent::ROW_H),
+    );
+    ui.allocate_rect(rows, egui::Sense::hover());
+    let visible = ui.clip_rect();
+    for (index, item) in items.iter().enumerate() {
+        let rect = Rect::from_min_size(
+            Pos2::new(rows.left(), rows.top() + index as f32 * extent::ROW_H),
+            vec2(width, extent::ROW_H),
+        );
+        if !visible.intersects(rect) {
+            continue;
+        }
+        let media = draw.media_of(item);
+        if media::row(ui, rect, &media.as_media(), draw.tokens) {
+            draw.activate(item, &media.uri);
+        }
+    }
 }
 
-/// The rect that holds every card: the width the grid solved and the rows'
+/// Where a click on one item goes, and the frame's drawing context.
+struct MediaDraw<'a, 'b> {
+    art: &'a mut Art,
+    now: Instant,
+    tokens: &'a Tokens,
+    select: &'b mut Option<String>,
+    open: &'b mut Option<Page>,
+}
+
+impl MediaDraw<'_, '_> {
+    /// What a click on one item does: a playlist selects, the rest open their
+    /// page.
+    fn activate(&mut self, item: &Item<'_>, uri: &str) {
+        match item {
+            Item::Playlist(_) => *self.select = Some(uri.to_owned()),
+            Item::Show(_) => *self.open = Some(Page::Show(uri.to_owned())),
+            Item::Artist(_) => *self.open = Some(Page::Artist(uri.to_owned())),
+            Item::Album(_) => *self.open = Some(Page::Album(uri.to_owned())),
+        }
+    }
+
+    /// One item's words and cover, owned so a borrow of the item is not needed.
+    fn media_of(&mut self, item: &Item<'_>) -> MediaWords {
+        let (uri, name, kind, sub, size, round, cover) = match item {
+            Item::Playlist(entry) => (
+                &entry.uri,
+                &entry.name,
+                media_type(RootKind::Playlists),
+                library_kind("Playlist", entry.owner.as_deref()),
+                media_size(RootKind::Playlists, entry.tracks),
+                false,
+                entry.cover.as_ref(),
+            ),
+            Item::Show(show) => (
+                &show.uri,
+                &show.name,
+                media_type(RootKind::Podcasts),
+                library_kind("Podcast", show.publisher.as_deref()),
+                media_size(RootKind::Podcasts, show.episodes),
+                false,
+                show.cover.as_ref(),
+            ),
+            Item::Artist(artist) => (
+                &artist.uri,
+                &artist.name,
+                "Artist",
+                "Artist".to_owned(),
+                media_size(
+                    RootKind::Artists,
+                    artist.releases.map(|count| count as usize),
+                ),
+                true,
+                artist.portrait.as_ref(),
+            ),
+            Item::Album(album) => (
+                &album.uri,
+                &album.name,
+                media_type(RootKind::Albums),
+                library_kind(
+                    "Album",
+                    (!album.artists.is_empty()).then_some(album.artists.as_str()),
+                ),
+                media_size(RootKind::Albums, album.tracks.map(|count| count as usize)),
+                false,
+                album.cover.as_ref(),
+            ),
+        };
+        MediaWords {
+            uri: uri.clone(),
+            name: name.clone(),
+            kind,
+            sub,
+            size,
+            round,
+            cover: self.art.look(cover, self.now),
+        }
+    }
+}
+
+/// One item's words and cover, owned so a borrow of the item is not needed.
+struct MediaWords {
+    uri: String,
+    name: String,
+    kind: &'static str,
+    sub: String,
+    size: String,
+    round: bool,
+    cover: Cover,
+}
+
+impl MediaWords {
+    fn as_media(&self) -> media::Media<'_> {
+        media::Media {
+            uri: &self.uri,
+            name: &self.name,
+            kind: self.kind,
+            sub: &self.sub,
+            size: &self.size,
+            round: self.round,
+            cover: self.cover,
+        }
+    }
+}
+
+/// The solved media grid for the current width.
+///
+/// The reference's library grid is `minmax(11rem, 1fr)`, which is wider than the
+/// grid the album page's releases use.
+pub(super) fn media_grid(ui: &mut Ui) -> cards::Grid {
+    let area = Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), 0.0));
+    cards::grid(
+        area,
+        extent::MEDIA_MIN_W,
+        space::S3,
+        media::extra_height(ui),
+    )
+}
+
+/// The rect that holds every tile: the width the grid solved and the rows'
 /// total height, gaps included.
 fn grid_rect(ui: &mut Ui, grid: &cards::Grid, count: usize) -> Rect {
     let height = if count == 0 {
@@ -906,6 +1037,7 @@ mod tests {
             cover: None,
             description: None,
             owner: None,
+            tracks: None,
         }]));
         library
     }
@@ -940,6 +1072,7 @@ mod tests {
             cover: None,
             description: description.map(str::to_owned),
             owner: owner.map(str::to_owned),
+            tracks: None,
         }
     }
 
@@ -961,6 +1094,7 @@ mod tests {
             cover: None,
             description: None,
             owner: None,
+            tracks: None,
         }
     }
 
@@ -971,6 +1105,7 @@ mod tests {
             named: true,
             publisher: None,
             cover: None,
+            episodes: None,
         }
     }
 
@@ -986,6 +1121,7 @@ mod tests {
             cover: Some(cover),
             description: None,
             owner: None,
+            tracks: None,
         }
     }
 
@@ -1044,8 +1180,9 @@ mod tests {
                         RootKind::All,
                         RootKind::control,
                         root_filter_label,
+                        filter_row::RowSlot::None,
                     );
-                    let solved = card_grid(ui);
+                    let solved = media_grid(ui);
                     found = Some(solved.card_rect(index));
                 });
             });
@@ -1064,14 +1201,6 @@ mod tests {
             card.left(),
             space::GUTTER
         );
-    }
-
-    /// The rect the idle grid draws the `index`-th card's play tile into at rest,
-    /// solved through the card's own placement rather than a copied coordinate.
-    /// The tile is drawn only once the card is revealed, so this is the rect a
-    /// click finds after hovering; the reveal only raises the tile from here.
-    fn card_play_rect_for(ctx: &Context, index: usize) -> Rect {
-        card::play_rect(card_rect_for(ctx, index))
     }
 
     /// A context with the app's fonts and style installed.
@@ -1271,98 +1400,6 @@ mod tests {
         clicks(PROBE, ctx, centre, 1, library, transport, queue)
     }
 
-    /// One click at `centre` after resting the pointer there for `hover_frames`
-    /// passes, and the command the view returned while the click happened.
-    ///
-    /// A card draws its play tile only once its reveal animation has run, and
-    /// that animation advances because each [`Context::run_ui`] carries
-    /// `input.time` forward by one `predicted_dt`. Pressing and releasing on the
-    /// same pass would click an unrevealed card, so the pointer is left on the
-    /// card until it is fully revealed first, which is what a real hover does.
-    fn click_after_hover(
-        screen: Vec2,
-        ctx: &Context,
-        centre: Pos2,
-        hover_frames: usize,
-        library: &mut Library,
-        transport: &mut Transport,
-        queue: &mut Queue,
-    ) -> Option<Command> {
-        let tokens = Tokens::DARK;
-        let mut command = None;
-        // Warm up so hit-testing has a previous pass to read, pointer away.
-        run(ctx, sized_input(screen, Vec::new()), |ui| {
-            let _ = tracks_view(
-                ui,
-                Table::Full,
-                library,
-                transport,
-                queue,
-                &mut Art::default(),
-                Instant::now(),
-                NOW_MS,
-                &tokens,
-            );
-        });
-        // Rest the pointer on the card until the reveal animation has finished.
-        for _ in 0..hover_frames {
-            run(
-                ctx,
-                sized_input(screen, vec![Event::PointerMoved(centre)]),
-                |ui| {
-                    let _ = tracks_view(
-                        ui,
-                        Table::Full,
-                        library,
-                        transport,
-                        queue,
-                        &mut Art::default(),
-                        Instant::now(),
-                        NOW_MS,
-                        &tokens,
-                    );
-                },
-            );
-        }
-        for event in [
-            crate::view::test_support::button(centre, true),
-            crate::view::test_support::button(centre, false),
-        ] {
-            let command = &mut command;
-            let library = &mut *library;
-            let transport = &mut *transport;
-            let queue = &mut *queue;
-            run(ctx, sized_input(screen, vec![event]), |ui| {
-                if let Some(next) = tracks_view(
-                    ui,
-                    Table::Full,
-                    library,
-                    transport,
-                    queue,
-                    &mut Art::default(),
-                    Instant::now(),
-                    NOW_MS,
-                    &tokens,
-                ) {
-                    *command = Some(next);
-                }
-            });
-        }
-        command
-    }
-
-    /// One double click on `centre`, and the command the view returned while it
-    /// happened.
-    fn double_click(
-        ctx: &Context,
-        centre: Pos2,
-        library: &mut Library,
-        transport: &mut Transport,
-        queue: &mut Queue,
-    ) -> Option<Command> {
-        clicks(PROBE, ctx, centre, 2, library, transport, queue)
-    }
-
     /// The x the header paints the upper-cased `label` at, read back from the
     /// frame's text shapes. The header paints through the painter, so this is
     /// where a heading actually landed rather than a re-solve of its columns.
@@ -1397,6 +1434,18 @@ mod tests {
                 _ => None,
             })
             .unwrap_or_else(|| panic!("the header painted {label:?}"))
+    }
+
+    /// One double click on `centre`, and the command the view returned while it
+    /// happened.
+    fn double_click(
+        ctx: &Context,
+        centre: Pos2,
+        library: &mut Library,
+        transport: &mut Transport,
+        queue: &mut Queue,
+    ) -> Option<Command> {
+        clicks(PROBE, ctx, centre, 2, library, transport, queue)
     }
 
     #[test]
@@ -2296,50 +2345,24 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
     }
 
     #[test]
-    fn a_click_on_a_cards_play_tile_does_not_load_the_playlist() {
-        let ctx = context();
-        let mut library = library_idle(vec![playlist("a", "A")]);
-        let mut transport = Transport::default();
-        let mut queue = Queue::default();
-
-        // The click is the centre of the tile the card itself places, after the
-        // pointer has rested on the card long enough for the reveal animation to
-        // have drawn it.
-        let tile = card_play_rect_for(&ctx, 0);
-        let command = click_after_hover(
-            PROBE,
-            &ctx,
-            tile.center(),
-            16,
-            &mut library,
-            &mut transport,
-            &mut queue,
-        );
-
-        assert_eq!(
-            command, None,
-            "a click on the waiting play tile must not fall through to the card"
-        );
-        assert_eq!(library.selected(), None, "the card must not be selected");
-        assert_eq!(library.tracks, Load::Idle, "the playlist must not load");
-    }
-
-    #[test]
-    fn the_card_height_the_grid_solves_contains_the_last_line_the_card_paints() {
+    fn the_tile_height_the_grid_solves_contains_the_last_line_the_tile_paints() {
         let ctx = context();
         let tokens = Tokens::DARK;
-        // A realistic card: the grid's own solve at the probe's width, so the
-        // rect's height is `card_w + card::extra_height`, the number the grid is
+        // A realistic tile: the grid's own solve at the probe's width, so the
+        // rect's height is `tile_w + media::extra_height`, the number the grid is
         // given.
         let rect = card_rect_for(&ctx, 0);
-        let card = card::Card {
+        let media = crate::view::media::Media {
             uri: "a",
             name: "Evening",
             kind: "Playlist",
+            sub: "Playlist · Vela Moreno",
+            size: "62 songs",
+            round: false,
             cover: Cover::Missing,
         };
         let mut output = ctx.run_ui(input(Vec::new()), |ui| {
-            let _ = card::show(ui, rect, &card, &tokens);
+            let _ = crate::view::media::tile(ui, rect, &media, &tokens);
         });
         output.textures_delta.clear();
 
@@ -3519,6 +3542,7 @@ mod root_tests {
             cover: None,
             description: None,
             owner: None,
+            tracks: None,
         }
     }
 
@@ -3529,6 +3553,7 @@ mod root_tests {
             named: true,
             publisher: None,
             cover: None,
+            episodes: None,
         }
     }
 
@@ -3591,8 +3616,9 @@ mod root_tests {
                         RootKind::All,
                         RootKind::control,
                         root_filter_label,
+                        filter_row::RowSlot::None,
                     );
-                    let solved = card_grid(ui);
+                    let solved = media_grid(ui);
                     found = Some(solved.card_rect(index));
                 });
             });
@@ -3766,6 +3792,116 @@ mod root_tests {
         );
     }
 
+    /// The two densities draw the same items and differ in what they add: the
+    /// list has the columns' head and the type and size cells, the grid has
+    /// neither.
+    #[test]
+    fn the_list_density_adds_the_head_and_the_two_cells() {
+        let ctx = context();
+        let mut library = library(vec![playlist("a", "Evening")], vec![]);
+        library.layout = MediaLayout::List;
+        let mut art = Art::default();
+
+        let listed = frame(&ctx, &mut library, &mut art);
+        let texts = drawn_texts(&listed);
+        for heading in ["TITLE", "TYPE", "SIZE"] {
+            assert!(
+                texts.contains(&heading),
+                "the list density draws the {heading} head: {texts:?}"
+            );
+        }
+        assert!(
+            texts.contains(&"PLAYLIST"),
+            "a row carries its type: {texts:?}"
+        );
+
+        library.layout = MediaLayout::Grid;
+        let gridded = frame(&ctx, &mut library, &mut art);
+        let texts = drawn_texts(&gridded);
+        assert!(!texts.contains(&"TITLE"), "the grid has no head: {texts:?}");
+        assert!(
+            texts.iter().any(|text| text.contains("Playlist")),
+            "the tile still says what the thing is: {texts:?}"
+        );
+    }
+
+    /// A press on the toggle moves the library's density, and the frame after it
+    /// draws the other one.
+    #[test]
+    fn pressing_the_list_toggle_draws_rows_next_frame() {
+        let ctx = context();
+        let mut library = library(vec![playlist("a", "Evening")], vec![]);
+        let mut art = Art::default();
+
+        let tokens = Tokens::DARK;
+        let before = frame(&ctx, &mut library, &mut art);
+        assert!(
+            !drawn_texts(&before).contains(&"TITLE"),
+            "the grid has no head to press"
+        );
+
+        let grid_cell = pressed_layout_cell(&before, &tokens);
+        let list_cell = Pos2::new(
+            grid_cell.right() + extent::BUTTON / 2.0,
+            grid_cell.center().y,
+        );
+        let _ = click(&ctx, list_cell, &mut library, &mut art);
+
+        assert_eq!(
+            library.layout,
+            MediaLayout::List,
+            "the press moved the density"
+        );
+        let after = frame(&ctx, &mut library, &mut art);
+        assert!(
+            drawn_texts(&after).contains(&"TITLE"),
+            "the next frame draws the list"
+        );
+    }
+
+    /// The pressed density cell, found by its own chrome: a button-sized square
+    /// bordered in the text colour, which nothing else in the root draws.
+    fn pressed_layout_cell(output: &egui::FullOutput, tokens: &Tokens) -> Rect {
+        output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(shape)
+                    if (shape.rect.width() - extent::BUTTON).abs() < 0.01
+                        && (shape.stroke.width - crate::theme::stroke::HAIRLINE).abs() < 0.01
+                        && shape.stroke.color == tokens.palette.text =>
+                {
+                    Some(shape.rect)
+                }
+                _ => None,
+            })
+            .expect("the chosen density is bordered in the text colour")
+    }
+
+    /// A press on a row does what the card did: the playlist is selected.
+    #[test]
+    fn a_click_on_a_row_selects_its_playlist() {
+        let ctx = context();
+        let mut library = library(vec![playlist("a", "Evening")], vec![]);
+        library.layout = MediaLayout::List;
+        let mut art = Art::default();
+
+        let before = frame(&ctx, &mut library, &mut art);
+        // The type cell exists only in the list density, so a click there proves
+        // the row drew and took the press.
+        let kind = text_rect(&before, "PLAYLIST").expect("the row paints its type");
+        let command = click(&ctx, kind.center(), &mut library, &mut art);
+
+        assert_eq!(
+            command,
+            Some(Command::LoadTracks {
+                playlist: "a".to_owned()
+            }),
+            "a row selects its playlist, as the card did"
+        );
+        assert_eq!(library.selected(), Some("a"));
+    }
+
     /// Pressing the Artists chip takes the choice, asks for the list once, and
     /// the next frame says it is loading rather than claiming the library is
     /// empty.
@@ -3850,6 +3986,7 @@ mod root_tests {
                     CoverUrl::from_wire(&format!("https://i.scdn.co/image/{index:0<40}"))
                         .expect("a cover url"),
                 ),
+                episodes: None,
             })
             .collect();
         let mut library = library(vec![], shows);

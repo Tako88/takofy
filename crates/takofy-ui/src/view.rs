@@ -12,6 +12,7 @@ pub mod controls;
 mod episode_row;
 mod filter_row;
 mod hero;
+pub mod media;
 pub mod now_playing;
 pub mod playbar;
 pub mod playlist;
@@ -29,6 +30,7 @@ pub mod text;
 pub mod topbar;
 mod track_list;
 mod track_row;
+pub mod view_toggle;
 
 use std::time::Instant;
 

@@ -9,7 +9,7 @@
 //! the height its rows took so the blocks below move down by exactly that much.
 
 use egui::emath::GuiRounding;
-use egui::{Sense, Ui, Vec2};
+use egui::{Rect, Sense, Ui, Vec2};
 
 use crate::availability::Control;
 use crate::discography::Chip;
@@ -31,7 +31,19 @@ pub fn show(ui: &mut Ui, tokens: &Tokens, row: &[Chip], active: Chip) -> Option<
         active,
         |_| Control::DiscographyFilter,
         filter_label,
+        RowSlot::None,
     )
+    .0
+}
+
+/// What sits at a row's trailing edge, and how much of the row it takes.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum RowSlot {
+    /// Nothing: the chips may use the whole width.
+    None,
+    /// A control group of `width` points, flush right, so the chips wrap before
+    /// they reach it.
+    Trailing(f32),
 }
 
 /// The same row over any chip set: the copy, the control and the label are the
@@ -46,7 +58,8 @@ pub fn show_with<T: Copy + PartialEq>(
     active: T,
     control_of: impl Fn(T) -> Control,
     label_of: impl Fn(T) -> &'static str,
-) -> Option<T> {
+    slot: RowSlot,
+) -> (Option<T>, Rect) {
     let sizes: Vec<Vec2> = row
         .iter()
         .map(|chip| controls::chip_size(ui, tokens, label_of(*chip)))
@@ -55,8 +68,19 @@ pub fn show_with<T: Copy + PartialEq>(
     // is the chips and nothing else.
     let row_h = sizes.iter().map(|size| size.y).fold(0.0, f32::max);
     let width = ui.available_width();
-    let wrapped = chips::wrap(&sizes, width, space::S1, row_h, space::S1);
-    let (area, _) = ui.allocate_exact_size(Vec2::new(width, wrapped.height), Sense::hover());
+    let reserved = match slot {
+        RowSlot::None => 0.0,
+        RowSlot::Trailing(width) => width,
+    };
+    let wrapped = chips::wrap(
+        &sizes,
+        (width - reserved).max(0.0),
+        space::S1,
+        row_h,
+        space::S1,
+    );
+    let height = wrapped.height.max(row_h);
+    let (area, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
 
     let mut picked = None;
     for (chip, rect) in row.iter().zip(wrapped.rects) {
@@ -79,7 +103,7 @@ pub fn show_with<T: Copy + PartialEq>(
     }
 
     ui.add_space(space::S4);
-    picked
+    (picked, area)
 }
 
 #[cfg(test)]

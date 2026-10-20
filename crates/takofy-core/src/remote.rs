@@ -108,6 +108,7 @@ pub(crate) async fn label_playlists(session: &Session, uris: Vec<String>) -> Vec
                 first_track,
                 picture,
                 description,
+                tracks,
                 owner,
             } = meta;
             let cover = playlist_cover(picture, first_track.as_deref(), &labels);
@@ -118,6 +119,7 @@ pub(crate) async fn label_playlists(session: &Session, uris: Vec<String>) -> Vec
                 named,
                 cover,
                 description,
+                tracks,
                 owner,
             }
         })
@@ -134,6 +136,8 @@ struct PlaylistMeta {
     picture: Option<CoverUrl>,
     /// The playlist's own description, collapsed to a line, when it has one.
     description: Option<String>,
+    /// The playlist's declared track count.
+    tracks: Option<usize>,
     /// The playlist's owner as the wire names it, when it names one.
     owner: Option<String>,
 }
@@ -145,6 +149,7 @@ impl PlaylistMeta {
             first_track: None,
             picture: None,
             description: None,
+            tracks: None,
             owner: None,
         }
     }
@@ -177,6 +182,14 @@ fn playlist_owner(uri: &SpotifyUri) -> Option<String> {
     }
 }
 
+/// The playlist's declared length, when the wire's number is a count.
+///
+/// The declared length is authoritative even when the read truncated the
+/// tracks; a negative number is a wire error rather than a length.
+fn playlist_length(length: i32) -> Option<usize> {
+    usize::try_from(length).ok()
+}
+
 /// Reads one playlist's name, description, owner, first track and picture in a
 /// single request.
 async fn playlist_meta(session: &Session, uri: &str) -> PlaylistMeta {
@@ -191,6 +204,7 @@ async fn playlist_meta(session: &Session, uri: &str) -> PlaylistMeta {
         first_track: first_track_uri(playlist.tracks()),
         picture: CoverUrl::from_file_id(&playlist.attributes.picture),
         description: non_blank(&playlist.attributes.description),
+        tracks: playlist_length(playlist.length),
         owner: playlist_owner(&playlist.id),
     }
 }
@@ -1032,6 +1046,7 @@ fn show_card(show: &Show) -> Option<ShowCard> {
         name,
         publisher: non_blank(&show.publisher),
         cover: pick_images_cover(&show.covers),
+        episodes: show.episodes.len(),
     })
 }
 
@@ -1076,8 +1091,8 @@ mod tests {
         Labels, PlaylistMeta, TrackLabel, context_cover, distinct_uris, duration_ms, episode_from,
         episode_labels, episode_of, expand_episodes, expand_labels, first_track_uri,
         label_from_episode, label_of, merge_labels, needs_labels, non_blank, parse_show_uri,
-        partition_by_kind, playlist_cover, playlist_label, playlist_owner, published_at, show_card,
-        track_label_from,
+        partition_by_kind, playlist_cover, playlist_label, playlist_length, playlist_owner,
+        published_at, show_card, track_label_from,
     };
 
     const TRACK_ID: &str = "4uLU6hMCjMI75M1A2tKUQC";
@@ -1765,6 +1780,14 @@ mod tests {
         let meta = PlaylistMeta::empty();
         assert_eq!(meta.description, None);
         assert_eq!(meta.owner, None);
+        assert_eq!(meta.tracks, None);
+    }
+
+    #[test]
+    fn a_declared_length_is_the_count_and_a_negative_one_is_not() {
+        assert_eq!(playlist_length(62), Some(62));
+        assert_eq!(playlist_length(0), Some(0), "an empty playlist counts zero");
+        assert_eq!(playlist_length(-1), None, "a wire error is not a length");
     }
 
     /// A 16-byte gid, the only length `SpotifyId::from_raw` accepts.

@@ -334,6 +334,58 @@ pub fn root_empty_label(kind: RootKind) -> &'static str {
     }
 }
 
+/// A library item's Type cell: the one word the reference puts there.
+pub fn media_type(kind: RootKind) -> &'static str {
+    match kind {
+        RootKind::All | RootKind::Playlists => "Playlist",
+        RootKind::Artists => "Artist",
+        RootKind::Albums => "Album",
+        RootKind::Podcasts => "Podcast",
+    }
+}
+
+/// A library item's Size cell, in the reference's own words.
+///
+/// The unit follows the kind: a playlist counts songs, an album tracks, a show
+/// episodes. An artist has no count here — the reference puts a track total in
+/// that cell and this client holds no such number for an artist — and a count
+/// the wire did not name is an empty cell rather than a zero.
+pub fn media_size(kind: RootKind, count: Option<usize>) -> String {
+    let Some(count) = count else {
+        return String::new();
+    };
+    match kind {
+        RootKind::All | RootKind::Playlists => songs(count),
+        RootKind::Albums => tracks(count),
+        RootKind::Podcasts => episodes(count),
+        RootKind::Artists => String::new(),
+    }
+}
+
+fn songs(count: usize) -> String {
+    if count == 1 {
+        "1 song".to_owned()
+    } else {
+        format!("{count} songs")
+    }
+}
+
+fn tracks(count: usize) -> String {
+    if count == 1 {
+        "1 track".to_owned()
+    } else {
+        format!("{count} tracks")
+    }
+}
+
+fn episodes(count: usize) -> String {
+    if count == 1 {
+        "1 ep".to_owned()
+    } else {
+        format!("{count} eps")
+    }
+}
+
 /// What the root says under its cards while a chip's list is being fetched.
 pub fn root_loading_label(kind: RootKind) -> &'static str {
     match kind {
@@ -854,6 +906,42 @@ mod tests {
         assert_eq!(
             root_empty_label(RootKind::Albums),
             "You haven't saved any albums yet."
+        );
+    }
+
+    #[test]
+    fn the_type_cell_is_one_word_per_kind() {
+        assert_eq!(media_type(RootKind::All), "Playlist");
+        assert_eq!(media_type(RootKind::Playlists), "Playlist");
+        assert_eq!(media_type(RootKind::Artists), "Artist");
+        assert_eq!(media_type(RootKind::Albums), "Album");
+        assert_eq!(media_type(RootKind::Podcasts), "Podcast");
+    }
+
+    #[test]
+    fn the_size_cell_counts_in_the_kind_own_unit() {
+        assert_eq!(media_size(RootKind::Playlists, Some(62)), "62 songs");
+        assert_eq!(media_size(RootKind::Albums, Some(11)), "11 tracks");
+        assert_eq!(media_size(RootKind::Podcasts, Some(128)), "128 eps");
+        assert_eq!(media_size(RootKind::Playlists, Some(1)), "1 song");
+        assert_eq!(media_size(RootKind::Albums, Some(1)), "1 track");
+        assert_eq!(media_size(RootKind::Podcasts, Some(1)), "1 ep");
+        assert_eq!(
+            media_size(RootKind::Playlists, Some(0)),
+            "0 songs",
+            "an empty playlist counts zero rather than showing nothing"
+        );
+    }
+
+    #[test]
+    fn the_size_cell_is_empty_when_the_count_is_missing_or_the_kind_has_none() {
+        assert_eq!(media_size(RootKind::Playlists, None), "");
+        assert_eq!(media_size(RootKind::Albums, None), "");
+        assert_eq!(media_size(RootKind::Podcasts, None), "");
+        assert_eq!(
+            media_size(RootKind::Artists, Some(12)),
+            "",
+            "a release count is not the track count the reference draws"
         );
     }
 

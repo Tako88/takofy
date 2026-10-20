@@ -594,6 +594,7 @@ mod tests {
             cover: None,
             description: None,
             owner: None,
+            tracks: None,
         }]);
         assert_eq!(queue.apply(&playlists, &mut transport), None);
         assert_eq!(end(&mut queue, &mut transport), Some(play("t1")));

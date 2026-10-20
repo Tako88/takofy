@@ -69,10 +69,12 @@ pub enum Icon {
     Screen,
     Logo,
     Clock,
+    Grid,
+    List,
 }
 
 impl Icon {
-    pub const ALL: [Self; 24] = [
+    pub const ALL: [Self; 26] = [
         Self::Play,
         Self::Pause,
         Self::Previous,
@@ -97,6 +99,8 @@ impl Icon {
         Self::Screen,
         Self::Logo,
         Self::Clock,
+        Self::Grid,
+        Self::List,
     ];
 
     /// The flattened geometry.
@@ -498,6 +502,22 @@ mod tests {
                     line.points.len()
                 );
             }
+        }
+    }
+
+    #[test]
+    fn the_density_icons_are_filled_squares_and_stroked_rows() {
+        let grid = Icon::Grid.glyph();
+        assert_eq!(grid.fills.len(), 4, "the grid is four filled tiles");
+        assert!(grid.lines.is_empty(), "the grid is drawn as fills alone");
+
+        let list = Icon::List.glyph();
+        assert!(list.fills.is_empty(), "the list is drawn as strokes alone");
+        assert_eq!(list.lines.len(), 6, "the list is three rows of two strokes");
+
+        for icon in [Icon::Grid, Icon::List] {
+            let shapes = shapes_of(&icon.glyph(), box16(), Size::BASE, color());
+            assert!(!shapes.is_empty(), "{icon:?} draws nothing");
         }
     }
 
