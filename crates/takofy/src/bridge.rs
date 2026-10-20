@@ -299,6 +299,13 @@ pub(crate) fn start<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                         break;
                     }
                 }
+                Event::Command(Some(Command::LoadRelated { artist, uris })) => {
+                    let step =
+                        load_related(&mut host, &mut stop_rx, &task_notifier, &artist, uris).await;
+                    if step.stopped() {
+                        break;
+                    }
+                }
                 Event::Command(Some(Command::LoadLyrics { track })) => {
                     let step = load_lyrics(&mut host, &mut stop_rx, &task_notifier, &track).await;
                     if step.stopped() {
@@ -606,6 +613,40 @@ async fn load_saved_albums<H: SessionHost>(
 /// The two updates are separate because they are separate facts: the page is
 /// drawn from the first, and the Follow label moves only on the second. A probe
 /// that did not answer sends nothing, so the label stays where it was.
+/// Names the artists one artist is heard with, and announces the cards they make.
+async fn load_related<H: SessionHost>(
+    host: &mut H,
+    stop: &mut StopReceiver<()>,
+    notifier: &Notifier,
+    artist: &str,
+    uris: Vec<String>,
+) -> Step {
+    match stop_or(stop, host.related(uris)).await {
+        None => Step::Stopped,
+        Some(Ok(cards)) => {
+            notifier.send(Update::Related {
+                artist: artist.to_owned(),
+                cards,
+            });
+            Step::Done
+        }
+        Some(Err(error)) => {
+            notifier.send(Update::RelatedFailed {
+                artist: artist.to_owned(),
+                failure: related_failure(&error),
+            });
+            Step::Done
+        }
+    }
+}
+
+/// The failure the window shows for a likeness read: its kind reaches the log,
+/// nothing else does.
+fn related_failure(error: &SessionError) -> Failure {
+    log::warn!("the likeness read failed: {}", error.kind());
+    Failure::Related
+}
+
 async fn load_artist<H: SessionHost>(
     host: &mut H,
     stop: &mut StopReceiver<()>,
@@ -1182,6 +1223,17 @@ mod tests {
         Fail,
     }
 
+    /// What a likeness read answers in a test.
+    #[derive(Clone, Default)]
+    enum RelatedScript {
+        /// The cards the artists are named with.
+        #[default]
+        Ready,
+        /// The read fails, as a disconnected session does.
+        #[allow(dead_code)]
+        Fail,
+    }
+
     impl Default for FollowedArtistsScript {
         fn default() -> Self {
             Self::Ready(Vec::new())
@@ -1260,6 +1312,7 @@ mod tests {
         show_script: Mutex<ShowScript>,
         followed_script: Mutex<FollowedScript>,
         followed_artists_script: Mutex<FollowedArtistsScript>,
+        related_script: Mutex<RelatedScript>,
         saved_albums_script: Mutex<SavedAlbumsScript>,
         artist_script: Mutex<ArtistScript>,
         lyrics_script: Mutex<LyricsScript>,
@@ -1475,6 +1528,25 @@ mod tests {
                 match script {
                     FollowedArtistsScript::Ready(artists) => Ok(artists),
                     FollowedArtistsScript::Fail => Err(SessionError::NotConnected),
+                }
+            }
+        }
+
+        fn related(
+            &self,
+            uris: Vec<String>,
+        ) -> impl Future<Output = Result<Vec<FollowedArtist>, SessionError>> + Send {
+            let connected = self.shared.connected.load(Ordering::SeqCst);
+            let script = self.shared.related_script.lock().expect("lock").clone();
+            async move {
+                if !connected {
+                    return Err(SessionError::NotConnected);
+                }
+                match script {
+                    RelatedScript::Ready => {
+                        Ok(uris.iter().map(|uri| followed_artist(uri)).collect())
+                    }
+                    RelatedScript::Fail => Err(SessionError::NotConnected),
                 }
             }
         }
