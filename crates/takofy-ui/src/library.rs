@@ -6,7 +6,9 @@
 
 use std::collections::HashMap;
 
-use takofy_model::{AlbumDetail, ArtistDetail, CoverUrl, PlaylistEntry, TrackEntry};
+use takofy_model::{
+    AlbumDetail, ArtistDetail, CoverUrl, FollowedShow, PlaylistEntry, ShowDetail, TrackEntry,
+};
 
 use crate::discography::Filter;
 use crate::follow::Follow;
@@ -78,9 +80,13 @@ pub struct ArtistPage<'a> {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Library {
     pub playlists: Load<Vec<PlaylistEntry>>,
+    /// The shows the user follows, as the library root draws them.
+    pub followed: Load<Vec<FollowedShow>>,
     pub tracks: Load<TracksFor>,
     /// The album the album page draws.
     pub album: Load<AlbumDetail>,
+    /// The show the show page draws.
+    pub show: Load<ShowDetail>,
     /// The artist the artist page draws.
     pub artist: Load<ArtistDetail>,
     /// The artist page's Follow state.
@@ -98,6 +104,8 @@ pub struct Library {
     wanted: Option<String>,
     /// The album `album` currently concerns; keeps a stale reply out.
     wanted_album: Option<String>,
+    /// The show `show` currently concerns; keeps a stale reply out.
+    wanted_show: Option<String>,
     /// The artist `artist` currently concerns; keeps a stale reply out.
     wanted_artist: Option<String>,
     /// Where the library is, and the pages Back and Forward return to.
@@ -220,6 +228,29 @@ impl Library {
                     self.artist = Load::Failed(*failure);
                 }
             }
+            // The show's reply is guarded exactly as the album's is.
+            Update::Show(detail) => {
+                if self.wanted_show.as_deref() == Some(detail.show.uri.as_str())
+                    && matches!(self.show, Load::Loading)
+                {
+                    self.show = Load::Ready(detail.clone());
+                }
+            }
+            Update::ShowFailed { show, failure } => {
+                if self.wanted_show.as_deref() == Some(show.as_str())
+                    && matches!(self.show, Load::Loading)
+                {
+                    self.show = Load::Failed(*failure);
+                }
+            }
+            // The followed list is a whole set, not keyed by URI: a reply is
+            // accepted whenever it arrives, whatever page is on screen.
+            Update::FollowedShows(shows) => {
+                self.followed = Load::Ready(shows.clone());
+            }
+            Update::FollowedShowsFailed(failure) => {
+                self.followed = Load::Failed(*failure);
+            }
             Update::ReleaseTracks { .. } | Update::ReleaseTracksFailed { .. } => {
                 self.releases.apply(update);
             }
@@ -277,6 +308,7 @@ impl Library {
         self.wanted = None;
         self.wanted_album = None;
         self.wanted_artist = None;
+        self.wanted_show = None;
         self.follow = Follow::default();
         if matches!(self.tracks, Load::Loading | Load::Failed(_)) {
             self.tracks = Load::Idle;
@@ -286,6 +318,9 @@ impl Library {
         }
         if matches!(self.artist, Load::Loading | Load::Failed(_)) {
             self.artist = Load::Idle;
+        }
+        if matches!(self.show, Load::Loading | Load::Failed(_)) {
+            self.show = Load::Idle;
         }
     }
 
@@ -345,6 +380,19 @@ impl Library {
         }
     }
 
+    /// Marks a show as wanted and returns the command that loads it.
+    ///
+    /// Like [`Self::load`] and [`Self::load_album`] it never touches the
+    /// history: Back and Forward move the page first and only reload what they
+    /// land on.
+    fn load_show(&mut self, show: &str) -> Command {
+        self.wanted_show = Some(show.to_owned());
+        self.show = Load::Loading;
+        Command::LoadShow {
+            show: show.to_owned(),
+        }
+    }
+
     /// Points the artist page at `artist` and returns the command that loads it.
     ///
     /// Like [`Self::load`] it never touches the history. It also opens the
@@ -364,11 +412,11 @@ impl Library {
     /// Returns the command the current page needs, if any.
     ///
     /// A page whose wanted load is in flight or ready is left alone; any other
-    /// page of a loadable kind is reloaded through `load` or `load_album`. A
-    /// failed load therefore reloads, which is what makes the Retry control and a
-    /// Back onto a failed page the same request. An album page never matches
-    /// another album's want, so Back onto one whose load was superseded asks
-    /// again rather than showing nothing.
+    /// page of a loadable kind is reloaded through its own loader. A failed load
+    /// therefore reloads, which is what makes the Retry control and a Back onto a
+    /// failed page the same request. A page never matches another one's want, so
+    /// Back onto one whose load was superseded asks again rather than showing
+    /// nothing.
     fn settle(&mut self) -> Option<Command> {
         match self.history.current() {
             Some(Page::Playlist(playlist)) => {
@@ -398,15 +446,55 @@ impl Library {
                 }
                 Some(self.load_artist(&artist))
             }
+            Some(Page::Show(show)) => {
+                let show = show.clone();
+                if self.wanted_show.as_deref() == Some(show.as_str())
+                    && matches!(self.show, Load::Loading | Load::Ready(_))
+                {
+                    return None;
+                }
+                Some(self.load_show(&show))
+            }
             _ => None,
         }
     }
 
     /// Marks the playlists loading again and returns the command that fetches
     /// them.
+    ///
+    /// The followed-shows list restarts with them: a playlist retry is the
+    /// root's Retry, so both halves of the page ask again. A reply already in
+    /// flight from before the retry still lands, and its list is valid — only a
+    /// little older than the retry's.
     pub fn reload(&mut self) -> Command {
         self.playlists = Load::Loading;
+        self.followed = Load::Idle;
         Command::ReloadLibrary
+    }
+
+    /// Marks the followed-shows list loading again and returns the command that
+    /// fetches it.
+    ///
+    /// This is the list's own Retry, so it asks directly rather than going
+    /// through the playlists.
+    pub fn reload_followed(&mut self) -> Command {
+        self.followed = Load::Loading;
+        Command::LoadFollowedShows
+    }
+
+    /// The command that starts the followed-shows load, if one is due.
+    ///
+    /// The list is want-driven rather than chained onto the rootlist, so the
+    /// worker's update stream is unchanged. It asks exactly when nothing has
+    /// been asked for yet and the playlists can name a signed-in window; a
+    /// window that never loads its playlists therefore never asks for shows.
+    pub fn followed_request(&mut self) -> Option<Command> {
+        if self.followed == Load::Idle && matches!(self.playlists, Load::Ready(_)) {
+            self.followed = Load::Loading;
+            Some(Command::LoadFollowedShows)
+        } else {
+            None
+        }
     }
 
     /// The album the album page draws, once it is loaded and named by that page.
@@ -434,6 +522,20 @@ impl Library {
         };
         match &self.artist {
             Load::Ready(detail) if detail.uri == *uri => Some(detail),
+            Load::Idle | Load::Loading | Load::Ready(_) | Load::Failed(_) => None,
+        }
+    }
+
+    /// The show the show page draws, once it is loaded and named by that page.
+    ///
+    /// The URI check is the album's: a ready detail from an earlier page must
+    /// not name a crumb, or fill a band, for a page loading something else.
+    pub fn current_show(&self) -> Option<&ShowDetail> {
+        let Page::Show(uri) = self.history.current()? else {
+            return None;
+        };
+        match &self.show {
+            Load::Ready(detail) if detail.show.uri == *uri => Some(detail),
             Load::Idle | Load::Loading | Load::Ready(_) | Load::Failed(_) => None,
         }
     }
@@ -486,7 +588,8 @@ impl Library {
 #[cfg(test)]
 mod tests {
     use takofy_model::{
-        AddedAt, AlbumDetail, ArtistDetail, CoverUrl, PlaylistEntry, ReleaseKind, TrackEntry,
+        AddedAt, AlbumDetail, ArtistDetail, CoverUrl, Episode, FollowedShow, PlaylistEntry,
+        ReleaseKind, Show, ShowDetail, TrackEntry,
     };
 
     use super::*;
@@ -577,6 +680,53 @@ mod tests {
 
     fn artist(uri: &str) -> Page {
         Page::Artist(uri.to_owned())
+    }
+
+    fn show(uri: &str) -> Page {
+        Page::Show(uri.to_owned())
+    }
+
+    fn show_command(uri: &str) -> Command {
+        Command::LoadShow {
+            show: uri.to_owned(),
+        }
+    }
+
+    fn episode(uri: &str) -> Episode {
+        Episode {
+            uri: uri.to_owned(),
+            title: uri.to_owned(),
+            show: "Lateral".to_owned(),
+            show_uri: Some("spotify:show:a".to_owned()),
+            description: None,
+            published: None,
+            duration_ms: None,
+            cover: None,
+            named: true,
+        }
+    }
+
+    fn show_detail(uri: &str) -> ShowDetail {
+        ShowDetail {
+            show: Show {
+                uri: uri.to_owned(),
+                name: "Show".to_owned(),
+                publisher: "Lateral".to_owned(),
+                description: String::new(),
+                cover: None,
+            },
+            episodes: vec![episode("spotify:episode:e")],
+        }
+    }
+
+    fn followed_show(uri: &str) -> FollowedShow {
+        FollowedShow {
+            uri: uri.to_owned(),
+            name: uri.to_owned(),
+            named: true,
+            publisher: None,
+            cover: None,
+        }
     }
 
     fn cover_url(tail: &str) -> CoverUrl {
@@ -935,6 +1085,385 @@ mod tests {
         assert_eq!(
             library.current_album(),
             Some(&album_detail("spotify:album:a"))
+        );
+    }
+
+    #[test]
+    fn open_a_show_starts_its_load_and_keeps_the_album() {
+        let mut library = Library::default();
+        library.open(album("spotify:album:a"));
+        library.apply(&Update::Album(album_detail("spotify:album:a")));
+
+        assert_eq!(
+            library.open(show("spotify:show:s")),
+            Some(show_command("spotify:show:s"))
+        );
+        assert_eq!(library.page(), Some(&show("spotify:show:s")));
+        assert_eq!(library.show, Load::Loading);
+        assert_eq!(
+            library.album,
+            Load::Ready(album_detail("spotify:album:a")),
+            "the album behind the show stays ready for Back"
+        );
+    }
+
+    #[test]
+    fn a_show_reply_lands_only_on_its_own_want() {
+        let mut library = Library::default();
+        library.open(show("spotify:show:a"));
+        library.apply(&Update::Show(show_detail("spotify:show:a")));
+
+        assert_eq!(library.show, Load::Ready(show_detail("spotify:show:a")));
+
+        library.apply(&Update::Show(show_detail("spotify:show:b")));
+        assert_eq!(
+            library.show,
+            Load::Ready(show_detail("spotify:show:a")),
+            "a reply nobody asked for is discarded"
+        );
+    }
+
+    #[test]
+    fn a_stale_show_reply_is_discarded() {
+        let mut library = Library::default();
+        library.open(show("spotify:show:a"));
+        library.open(show("spotify:show:b"));
+
+        library.apply(&Update::Show(show_detail("spotify:show:a")));
+
+        assert_eq!(library.show, Load::Loading, "A's reply is not B's");
+        library.apply(&Update::Show(show_detail("spotify:show:b")));
+        assert_eq!(library.show, Load::Ready(show_detail("spotify:show:b")));
+    }
+
+    #[test]
+    fn a_stale_show_failure_is_discarded() {
+        let mut library = Library::default();
+        library.open(show("spotify:show:a"));
+        library.open(show("spotify:show:b"));
+
+        library.apply(&Update::ShowFailed {
+            show: "spotify:show:a".to_owned(),
+            failure: Failure::Load,
+        });
+        assert_eq!(library.show, Load::Loading, "A's failure is not B's");
+
+        library.apply(&Update::ShowFailed {
+            show: "spotify:show:b".to_owned(),
+            failure: Failure::Load,
+        });
+        assert_eq!(library.show, Load::Failed(Failure::Load));
+    }
+
+    #[test]
+    fn the_first_show_reply_wins() {
+        let mut library = Library::default();
+        library.open(show("spotify:show:a"));
+        let first = ShowDetail {
+            show: Show {
+                name: "First".to_owned(),
+                ..show_detail("spotify:show:a").show
+            },
+            ..show_detail("spotify:show:a")
+        };
+        let second = ShowDetail {
+            show: Show {
+                name: "Second".to_owned(),
+                ..show_detail("spotify:show:a").show
+            },
+            ..show_detail("spotify:show:a")
+        };
+
+        library.apply(&Update::Show(first.clone()));
+        library.apply(&Update::Show(second));
+
+        assert_eq!(library.show, Load::Ready(first));
+    }
+
+    #[test]
+    fn back_onto_a_ready_show_needs_no_command() {
+        let mut library = Library::default();
+        library.open(show("spotify:show:a"));
+        library.apply(&Update::Show(show_detail("spotify:show:a")));
+        assert_eq!(
+            library.open(album("spotify:album:a")),
+            Some(Command::LoadAlbum {
+                album: "spotify:album:a".to_owned()
+            }),
+            "the album page starts its own load"
+        );
+
+        assert_eq!(library.back(), None, "a ready show is already settled");
+        assert_eq!(library.page(), Some(&show("spotify:show:a")));
+    }
+
+    #[test]
+    fn back_onto_a_failed_show_reloads_it() {
+        let mut library = Library::default();
+        library.open(show("spotify:show:a"));
+        library.apply(&Update::ShowFailed {
+            show: "spotify:show:a".to_owned(),
+            failure: Failure::Load,
+        });
+        assert_eq!(
+            library.open(artist("spotify:artist:a")),
+            Some(artist_command("spotify:artist:a"))
+        );
+
+        assert_eq!(
+            library.back(),
+            Some(show_command("spotify:show:a")),
+            "a failed show has nothing to draw, so Back asks again"
+        );
+        assert_eq!(library.show, Load::Loading);
+    }
+
+    #[test]
+    fn reopening_a_failed_show_retries_it() {
+        let mut library = Library::default();
+        library.open(show("spotify:show:a"));
+        library.apply(&Update::ShowFailed {
+            show: "spotify:show:a".to_owned(),
+            failure: Failure::Load,
+        });
+
+        assert_eq!(
+            library.open(show("spotify:show:a")),
+            Some(show_command("spotify:show:a")),
+            "the page's Retry is this call, so it must re-issue the load"
+        );
+        assert_eq!(library.show, Load::Loading);
+    }
+
+    #[test]
+    fn to_playlists_clears_the_show_want_and_drops_an_unsettled_load() {
+        let mut loading = Library::default();
+        loading.open(show("spotify:show:a"));
+        loading.to_playlists();
+        assert_eq!(loading.show, Load::Idle, "a load nobody wants is dropped");
+        assert_eq!(
+            loading.open(show("spotify:show:a")),
+            Some(show_command("spotify:show:a")),
+            "the want was cleared, so the show is asked for again"
+        );
+
+        let mut failed = Library::default();
+        failed.open(show("spotify:show:a"));
+        failed.apply(&Update::ShowFailed {
+            show: "spotify:show:a".to_owned(),
+            failure: Failure::Load,
+        });
+        failed.to_playlists();
+        assert_eq!(failed.show, Load::Idle);
+
+        let mut ready = Library::default();
+        ready.open(show("spotify:show:a"));
+        ready.apply(&Update::Show(show_detail("spotify:show:a")));
+        ready.to_playlists();
+        assert_eq!(
+            ready.show,
+            Load::Ready(show_detail("spotify:show:a")),
+            "a settled show is kept for the page Back returns to"
+        );
+        assert_eq!(
+            ready.open(show("spotify:show:a")),
+            Some(show_command("spotify:show:a")),
+            "the want is cleared even when the show stays ready"
+        );
+    }
+
+    #[test]
+    fn a_playlist_prune_leaves_the_show_alone() {
+        let mut library = Library::default();
+        library.select("a");
+        library.open(show("spotify:show:a"));
+        library.apply(&Update::Show(show_detail("spotify:show:a")));
+
+        // The list no longer holds the playlist, so its page is pruned.
+        library.apply(&Update::Playlists(vec![playlist("b", "B")]));
+
+        assert_eq!(library.page(), Some(&show("spotify:show:a")));
+        assert_eq!(
+            library.show,
+            Load::Ready(show_detail("spotify:show:a")),
+            "a playlist prune never touches the show"
+        );
+        assert_eq!(library.current_show(), Some(&show_detail("spotify:show:a")));
+    }
+
+    #[test]
+    fn current_show_is_none_while_loading_or_for_another_uri() {
+        let mut library = Library::default();
+        library.open(show("spotify:show:b"));
+        assert_eq!(library.current_show(), None, "loading names nothing");
+
+        library.show = Load::Ready(show_detail("spotify:show:a"));
+        assert_eq!(
+            library.current_show(),
+            None,
+            "A's detail must not name B's page"
+        );
+
+        let mut loaded = Library::default();
+        loaded.open(show("spotify:show:a"));
+        loaded.apply(&Update::Show(show_detail("spotify:show:a")));
+        assert_eq!(
+            loaded.current_show(),
+            Some(&show_detail("spotify:show:a")),
+            "a detail that names the page is drawn"
+        );
+    }
+
+    #[test]
+    fn followed_starts_idle() {
+        assert_eq!(Library::default().followed, Load::Idle);
+    }
+
+    #[test]
+    fn followed_request_waits_for_ready_playlists() {
+        let mut library = Library::default();
+        assert_eq!(library.followed_request(), None, "nothing has loaded yet");
+
+        library.apply(&Update::SignedIn);
+        assert_eq!(library.followed_request(), None, "loading is not ready");
+
+        library.apply(&Update::PlaylistFailed(Failure::Load));
+        assert_eq!(
+            library.followed_request(),
+            None,
+            "a failed library never names a window"
+        );
+        assert_eq!(library.followed, Load::Idle);
+
+        let mut ready = Library::default();
+        ready.apply(&Update::Playlists(Vec::new()));
+        assert_eq!(ready.followed_request(), Some(Command::LoadFollowedShows));
+        assert_eq!(ready.followed, Load::Loading);
+    }
+
+    #[test]
+    fn followed_request_fires_once() {
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(vec![playlist("a", "A")]));
+
+        assert_eq!(library.followed_request(), Some(Command::LoadFollowedShows));
+        assert_eq!(
+            library.followed_request(),
+            None,
+            "an in-flight list is not asked for twice"
+        );
+    }
+
+    #[test]
+    fn followed_request_is_none_while_loading_ready_or_failed() {
+        for state in [
+            Load::Loading,
+            Load::Ready(vec![followed_show("spotify:show:a")]),
+            Load::Failed(Failure::Followed),
+        ] {
+            let mut library = Library::default();
+            library.apply(&Update::Playlists(vec![playlist("a", "A")]));
+            library.followed = state.clone();
+
+            assert_eq!(library.followed_request(), None, "{state:?} asked again");
+            assert_eq!(library.followed, state);
+        }
+    }
+
+    #[test]
+    fn a_followed_reply_is_recorded_whatever_the_page() {
+        let shows = vec![followed_show("spotify:show:a")];
+        let mut library = Library::default();
+        library.apply(&Update::FollowedShows(shows.clone()));
+        assert_eq!(library.followed, Load::Ready(shows.clone()));
+
+        library.open(show("spotify:show:b"));
+        library.apply(&Update::FollowedShows(shows.clone()));
+        assert_eq!(
+            library.followed,
+            Load::Ready(shows),
+            "a show page does not gate the list"
+        );
+
+        library.apply(&Update::FollowedShows(Vec::new()));
+        assert_eq!(library.followed, Load::Ready(Vec::new()));
+    }
+
+    #[test]
+    fn a_followed_failure_is_recorded() {
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(vec![playlist("a", "A")]));
+        library.apply(&Update::FollowedShowsFailed(Failure::Followed));
+
+        assert_eq!(library.followed, Load::Failed(Failure::Followed));
+        assert_eq!(
+            library.playlists,
+            Load::Ready(vec![playlist("a", "A")]),
+            "the playlists beside it still draw"
+        );
+    }
+
+    #[test]
+    fn reload_resets_followed_so_it_refetches() {
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(vec![playlist("a", "A")]));
+        library.apply(&Update::FollowedShows(vec![followed_show(
+            "spotify:show:a",
+        )]));
+
+        assert_eq!(library.reload(), Command::ReloadLibrary);
+        assert_eq!(library.followed, Load::Idle, "a playlist retry re-arms it");
+        assert_eq!(
+            library.followed_request(),
+            None,
+            "the playlists are loading again, so the list waits"
+        );
+
+        library.apply(&Update::Playlists(vec![playlist("a", "A")]));
+        assert_eq!(library.followed_request(), Some(Command::LoadFollowedShows));
+    }
+
+    #[test]
+    fn reload_followed_marks_loading_and_returns_the_command() {
+        let mut library = Library::default();
+        library.apply(&Update::FollowedShowsFailed(Failure::Followed));
+
+        assert_eq!(library.reload_followed(), Command::LoadFollowedShows);
+        assert_eq!(library.followed, Load::Loading);
+
+        let mut ready = Library::default();
+        ready.apply(&Update::FollowedShows(Vec::new()));
+        assert_eq!(ready.reload_followed(), Command::LoadFollowedShows);
+        assert_eq!(ready.followed, Load::Loading);
+    }
+
+    #[test]
+    fn reload_while_followed_is_loading_accepts_either_reply() {
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(vec![playlist("a", "A")]));
+        assert_eq!(library.followed_request(), Some(Command::LoadFollowedShows));
+        assert_eq!(library.followed, Load::Loading);
+
+        // A playlist retry while the first load is still in flight re-arms the
+        // list, so a second load is issued and two replies are in the air.
+        library.reload();
+        assert_eq!(library.followed, Load::Idle);
+        library.apply(&Update::Playlists(vec![playlist("a", "A")]));
+        assert_eq!(
+            library.followed_request(),
+            Some(Command::LoadFollowedShows),
+            "the second load is issued while the first is still in flight"
+        );
+
+        let first = vec![followed_show("spotify:show:a")];
+        let second = vec![followed_show("spotify:show:b")];
+        library.apply(&Update::FollowedShows(first.clone()));
+        assert_eq!(library.followed, Load::Ready(first));
+        library.apply(&Update::FollowedShows(second.clone()));
+        assert_eq!(
+            library.followed,
+            Load::Ready(second),
+            "the later whole-set reply wins and neither corrupts the state"
         );
     }
 

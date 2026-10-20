@@ -49,6 +49,10 @@ impl SignIn {
                 | Update::AlbumFailed { .. }
                 | Update::Artist(_)
                 | Update::ArtistFailed { .. }
+                | Update::Show(_)
+                | Update::ShowFailed { .. }
+                | Update::FollowedShows(_)
+                | Update::FollowedShowsFailed(_)
                 | Update::ReleaseTracks { .. }
                 | Update::ReleaseTracksFailed { .. }
                 | Update::Followed { .. }
@@ -87,6 +91,9 @@ pub fn failure_message(failure: Failure) -> &'static str {
         Failure::NoAudioDevice => "No audio output device is available.",
         Failure::Load => "Could not load the library. Check your connection and try again.",
         Failure::Save => "Could not save that change. Try again.",
+        Failure::Followed => {
+            "Could not load the shows you follow. Check your connection and try again."
+        }
         Failure::Other => "Sign-in failed. Try again, or run with --headless for details.",
     }
 }
@@ -346,7 +353,7 @@ mod tests {
     }
 
     /// Every `Failure` value there is, so a test can sweep them all.
-    fn every_failure() -> [Failure; 7] {
+    fn every_failure() -> [Failure; 8] {
         [
             Failure::PortBusy,
             Failure::Keychain,
@@ -354,8 +361,22 @@ mod tests {
             Failure::NoAudioDevice,
             Failure::Load,
             Failure::Save,
+            Failure::Followed,
             Failure::Other,
         ]
+    }
+
+    #[test]
+    fn failure_message_for_followed_is_its_own() {
+        let message = failure_message(Failure::Followed);
+        assert!(
+            message.contains("shows") && message.contains("follow"),
+            "the copy must name the list that failed: {message}"
+        );
+        assert!(
+            !message.contains("library"),
+            "the playlists beside it still draw, so the library did not fail: {message}"
+        );
     }
 
     #[test]

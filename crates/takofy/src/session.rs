@@ -10,7 +10,9 @@ use librespot::core::SessionConfig;
 use takofy_core::credentials::AccessToken;
 use takofy_core::engine::{Engine, EngineError};
 use takofy_core::playback::{Playback, PlaybackError, PlaybackEvent};
-use takofy_model::{AlbumDetail, ArtistDetail, CoverUrl, PlaylistEntry, TrackEntry};
+use takofy_model::{
+    AlbumDetail, ArtistDetail, CoverUrl, FollowedShow, PlaylistEntry, ShowDetail, TrackEntry,
+};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::oneshot::Receiver;
 
@@ -87,6 +89,14 @@ pub(crate) trait SessionHost: Send + 'static {
     ) -> impl Future<Output = Result<TrackPage, SessionError>> + Send;
 
     fn album(&self, album: &str) -> impl Future<Output = Result<AlbumDetail, SessionError>> + Send;
+
+    fn show(&self, show: &str) -> impl Future<Output = Result<ShowDetail, SessionError>> + Send;
+
+    /// The shows the user follows, newest follow first, each as its card draws
+    /// it.
+    fn followed_shows(
+        &self,
+    ) -> impl Future<Output = Result<Vec<FollowedShow>, SessionError>> + Send;
 
     fn artist(&self, artist: &str)
     -> impl Future<Output = Result<ArtistPage, SessionError>> + Send;
@@ -189,6 +199,20 @@ impl SessionHost for LiveSession {
     async fn album(&self, album: &str) -> Result<AlbumDetail, SessionError> {
         match &self.engine {
             Some(engine) => engine.album(album).await.map_err(SessionError::Engine),
+            None => Err(SessionError::NotConnected),
+        }
+    }
+
+    async fn show(&self, show: &str) -> Result<ShowDetail, SessionError> {
+        match &self.engine {
+            Some(engine) => engine.show(show).await.map_err(SessionError::Engine),
+            None => Err(SessionError::NotConnected),
+        }
+    }
+
+    async fn followed_shows(&self) -> Result<Vec<FollowedShow>, SessionError> {
+        match &self.engine {
+            Some(engine) => engine.followed_shows().await.map_err(SessionError::Engine),
             None => Err(SessionError::NotConnected),
         }
     }
