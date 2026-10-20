@@ -23,7 +23,7 @@ use crate::sidebar_kind::{SidebarFilter, SidebarKind};
 ///
 /// The same items in either density, so the choice is one field and not two
 /// lists.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum MediaLayout {
     /// A grid of tiles: art over a name and a subline.
     #[default]

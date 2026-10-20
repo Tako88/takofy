@@ -550,6 +550,9 @@ mod tests {
     /// The topbar's round buttons, left to right: Home, back, forward. Found from
     /// the buttons' painted frames rather than from coordinates a test guessed.
     fn topbar_buttons(output: &egui::FullOutput) -> Vec<Rect> {
+        // Only the topbar's band: the library's density toggle draws the same
+        // 28-point squares further down the window.
+        let band = extent::TOPBAR_H;
         let mut rects = output
             .shapes
             .iter()
@@ -557,7 +560,8 @@ mod tests {
                 egui::Shape::Rect(shape)
                     if shape.stroke.width > 0.0
                         && (shape.rect.width() - extent::BUTTON).abs() < 0.01
-                        && (shape.rect.height() - extent::BUTTON).abs() < 0.01 =>
+                        && (shape.rect.height() - extent::BUTTON).abs() < 0.01
+                        && shape.rect.bottom() <= band =>
                 {
                     Some(shape.rect)
                 }

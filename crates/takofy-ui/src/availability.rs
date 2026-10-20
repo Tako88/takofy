@@ -68,6 +68,9 @@ pub enum Control {
     LibraryFilterPodcasts,
     /// The library row's overflow menu.
     LibraryMore,
+    /// The library page's two densities.
+    LayoutGrid,
+    LayoutList,
     /// A card's own play control in the library grid. The card selects its playlist;
     /// playing from the card needs the tracks loaded first, which no path does yet.
     CardPlay,
@@ -75,7 +78,7 @@ pub enum Control {
 }
 
 impl Control {
-    pub const ALL: [Self; 48] = [
+    pub const ALL: [Self; 50] = [
         Self::NavHome,
         Self::LibraryCreate,
         Self::FilterPlaylists,
@@ -118,6 +121,8 @@ impl Control {
         Self::LibraryFilterAlbums,
         Self::LibraryFilterPodcasts,
         Self::LibraryMore,
+        Self::LayoutGrid,
+        Self::LayoutList,
         Self::ReleasePlay,
         Self::EpisodeToggle,
         Self::ReleaseLike,
@@ -210,6 +215,7 @@ pub fn availability(control: Control) -> Availability {
         Control::LibraryFilterAlbums => Availability::Ready,
         Control::LibraryFilterPodcasts => Availability::Ready, // #3
         Control::LibraryMore => Availability::Waiting,         // #3
+        Control::LayoutGrid | Control::LayoutList => Availability::Ready,
         Control::ReleasePlay => Availability::Ready,
         Control::EpisodeToggle => Availability::Ready,
         Control::ReleaseLike => Availability::Waiting,
@@ -250,6 +256,8 @@ mod tests {
                     | Control::LibraryFilterArtists
                     | Control::LibraryFilterAlbums
                     | Control::LibraryFilterPodcasts
+                    | Control::LayoutGrid
+                    | Control::LayoutList
                     | Control::FilterPlaylists
                     | Control::FilterArtists
                     | Control::FilterAlbums

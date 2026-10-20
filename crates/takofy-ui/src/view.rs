@@ -30,6 +30,7 @@ pub mod text;
 pub mod topbar;
 mod track_list;
 mod track_row;
+pub mod view_toggle;
 
 use std::time::Instant;
 

@@ -30,6 +30,7 @@ use super::media;
 use super::text as recipe;
 use super::track_list::{head, list_rect};
 use super::track_row::{self, Click, Row, state_of};
+use super::view_toggle;
 
 /// The main pane: the selected playlist's tracks, or the state of their load.
 #[expect(
@@ -385,6 +386,7 @@ fn idle(
     tokens: &Tokens,
 ) -> Option<Command> {
     let mut choose: Option<RootKind> = None;
+    let mut relayout: Option<MediaLayout> = None;
     let mut select: Option<String> = None;
     let mut open: Option<Page> = None;
     let mut retry_playlists = false;
@@ -406,15 +408,19 @@ fn idle(
                 };
                 page_head(ui, &note, tokens);
 
-                let picked = filter_row::show_with(
+                let (picked, row) = filter_row::show_with(
                     ui,
                     tokens,
                     &library_filter::ROW,
                     library.root_filter.chosen(),
                     RootKind::control,
                     root_filter_label,
+                    filter_row::RowSlot::Trailing(view_toggle::reserved()),
                 );
                 choose = picked;
+                if let Some(layout) = view_toggle::show(ui, tokens, row, library.layout) {
+                    relayout = Some(layout);
+                }
 
                 match view {
                     IdleView::Loading => {
@@ -455,6 +461,9 @@ fn idle(
             });
         });
 
+    if let Some(layout) = relayout {
+        library.layout = layout;
+    }
     if let Some(kind) = choose {
         library.root_filter.choose(kind);
     }
@@ -1171,6 +1180,7 @@ mod tests {
                         RootKind::All,
                         RootKind::control,
                         root_filter_label,
+                        filter_row::RowSlot::None,
                     );
                     let solved = media_grid(ui);
                     found = Some(solved.card_rect(index));
@@ -3606,6 +3616,7 @@ mod root_tests {
                         RootKind::All,
                         RootKind::control,
                         root_filter_label,
+                        filter_row::RowSlot::None,
                     );
                     let solved = media_grid(ui);
                     found = Some(solved.card_rect(index));
@@ -3779,6 +3790,61 @@ mod root_tests {
             !texts.contains(&"List One"),
             "the playlists card must be gone: {texts:?}"
         );
+    }
+
+    /// The two densities draw the same items and differ in what they add: the
+    /// list has the columns' head and the type and size cells, the grid has
+    /// neither.
+    #[test]
+    fn the_list_density_adds_the_head_and_the_two_cells() {
+        let ctx = context();
+        let mut library = library(vec![playlist("a", "Evening")], vec![]);
+        library.layout = MediaLayout::List;
+        let mut art = Art::default();
+
+        let listed = frame(&ctx, &mut library, &mut art);
+        let texts = drawn_texts(&listed);
+        for heading in ["TITLE", "TYPE", "SIZE"] {
+            assert!(
+                texts.contains(&heading),
+                "the list density draws the {heading} head: {texts:?}"
+            );
+        }
+        assert!(
+            texts.contains(&"PLAYLIST"),
+            "a row carries its type: {texts:?}"
+        );
+
+        library.layout = MediaLayout::Grid;
+        let gridded = frame(&ctx, &mut library, &mut art);
+        let texts = drawn_texts(&gridded);
+        assert!(!texts.contains(&"TITLE"), "the grid has no head: {texts:?}");
+        assert!(
+            texts.iter().any(|text| text.contains("Playlist")),
+            "the tile still says what the thing is: {texts:?}"
+        );
+    }
+
+    /// A press on a row does what the card did: the playlist is selected.
+    #[test]
+    fn a_click_on_a_row_selects_its_playlist() {
+        let ctx = context();
+        let mut library = library(vec![playlist("a", "Evening")], vec![]);
+        library.layout = MediaLayout::List;
+        let mut art = Art::default();
+
+        let before = frame(&ctx, &mut library, &mut art);
+        let name = text_rect(&before, "Evening").expect("the row paints its name");
+        let command = click(&ctx, name.center(), &mut library, &mut art);
+
+        assert_eq!(
+            command,
+            Some(Command::LoadTracks {
+                playlist: "a".to_owned()
+            }),
+            "a row selects its playlist, as the card did"
+        );
+        assert_eq!(library.selected(), Some("a"));
     }
 
     /// Pressing the Artists chip takes the choice, asks for the list once, and
