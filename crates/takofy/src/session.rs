@@ -12,7 +12,7 @@ use takofy_core::engine::{Engine, EngineError};
 use takofy_core::playback::{Playback, PlaybackError, PlaybackEvent};
 use takofy_model::{
     AlbumDetail, ArtistDetail, CoverUrl, FollowedArtist, FollowedShow, PlaylistEntry, SavedAlbum,
-    ShowDetail, TrackEntry,
+    ShowDetail, TrackEntry, TrackLyrics,
 };
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::oneshot::Receiver;
@@ -40,6 +40,7 @@ impl SessionError {
             Self::Engine(EngineError::Album(_)) => "album",
             Self::Engine(EngineError::Artist(_)) => "artist",
             Self::Engine(EngineError::Show(_)) => "show",
+            Self::Engine(EngineError::Lyrics(_)) => "lyrics",
             Self::Engine(EngineError::Followed(_)) => "followed",
             Self::Playback(error) => match error {
                 PlaybackError::NoAudioBackend => "no audio backend",
@@ -110,6 +111,10 @@ pub(crate) trait SessionHost: Send + 'static {
 
     fn artist(&self, artist: &str)
     -> impl Future<Output = Result<ArtistPage, SessionError>> + Send;
+
+    /// One track's lyrics, empty when it has none.
+    fn lyrics(&self, track: &str)
+    -> impl Future<Output = Result<TrackLyrics, SessionError>> + Send;
 
     /// One release's track names, in the release's own order.
     fn release_tracks(
@@ -251,6 +256,13 @@ impl SessionHost for LiveSession {
                     engine.artist(artist).await.map_err(SessionError::Engine)?;
                 Ok(ArtistPage { artist, followed })
             }
+            None => Err(SessionError::NotConnected),
+        }
+    }
+
+    async fn lyrics(&self, track: &str) -> Result<TrackLyrics, SessionError> {
+        match &self.engine {
+            Some(engine) => engine.lyrics(track).await.map_err(SessionError::Engine),
             None => Err(SessionError::NotConnected),
         }
     }
