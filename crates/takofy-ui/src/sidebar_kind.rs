@@ -8,9 +8,9 @@ pub enum SidebarKind {
     /// Only playlists.
     #[default]
     Playlists,
-    /// The reference's chip. There are no artists yet, so it is inert.
+    /// Only the artists the user follows.
     Artists,
-    /// The reference's chip. There are no albums yet, so it is inert.
+    /// Only the albums the user saved.
     Albums,
     /// Only followed shows.
     Podcasts,
@@ -35,7 +35,8 @@ impl SidebarKind {
         }
     }
 
-    /// Whether the chip has data yet, so the row can draw it live or inert.
+    /// Whether the chip has a list behind it, so the row can draw it live or
+    /// inert.
     pub fn acts(self) -> bool {
         availability(self.control()) == Availability::Ready
     }
@@ -54,8 +55,10 @@ impl SidebarFilter {
         self.chosen
     }
 
-    /// Presses a chip. There is no toggle: pressing a waiting chip is a no-op
-    /// and returns `false`, so the row can draw it pressed without acting.
+    /// Presses a chip. There is no toggle: pressing the chosen chip again is
+    /// harmless because the choice is not a toggle. A chip with no list behind
+    /// it is a no-op that returns `false`, so the row can draw it pressed
+    /// without acting.
     pub fn choose(&mut self, kind: SidebarKind) -> bool {
         if !kind.acts() {
             return false;

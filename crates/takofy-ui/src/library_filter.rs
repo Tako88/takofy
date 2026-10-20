@@ -1,9 +1,9 @@
 //! The library root's filter row: which chips it shows, and what each shows.
 //!
 //! The row is the reference's five chips — All, Playlists, Artists, Albums and
-//! Podcasts — in a fixed order. All, Playlists and Podcasts have data and act;
-//! Artists and Albums are the reference's chips with no data yet, so they are
-//! drawn but inert.
+//! Podcasts — in a fixed order, and each names a list the root can draw. A chip
+//! whose list has no reader yet would be drawn but would not act; `acts` is that
+//! question, and every chip answers true today.
 //!
 //! The choice belongs to the root, not to the frame: it is kept across a page,
 //! so a Back to the root redraws the same chip.
@@ -20,9 +20,9 @@ pub enum RootKind {
     All,
     /// Only playlists.
     Playlists,
-    /// The reference's chip. There are no artists yet, so it is inert.
+    /// Only the artists the user follows.
     Artists,
-    /// The reference's chip. There are no albums yet, so it is inert.
+    /// Only the albums the user saved.
     Albums,
     /// Only followed shows.
     Podcasts,
@@ -52,7 +52,8 @@ impl RootKind {
         }
     }
 
-    /// Whether the chip has data yet, so the row can draw it live or inert.
+    /// Whether the chip has a list behind it, so the row can draw it live or
+    /// inert.
     pub fn acts(self) -> bool {
         matches!(availability(self.control()), Availability::Ready)
     }
@@ -71,8 +72,10 @@ impl RootFilter {
         self.chosen
     }
 
-    /// Presses a chip. There is no toggle: pressing a waiting chip is a no-op and
-    /// returns `false`, so the row can draw it pressed without acting.
+    /// Presses a chip. There is no toggle: pressing the chosen chip again is
+    /// harmless because the choice is not a toggle. A chip with no list behind
+    /// it is a no-op that returns `false`, so the row can draw it pressed
+    /// without acting.
     pub fn choose(&mut self, kind: RootKind) -> bool {
         if !kind.acts() {
             return false;

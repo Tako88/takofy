@@ -520,6 +520,28 @@ mod tests {
             Some(Command::LoadSavedAlbums)
         );
         assert_eq!(library.saved_albums_request(), None);
+
+        // The sidebar's chips are the other surface that names the same lists.
+        let mut sidebar = Library::default();
+        sidebar.apply(&Update::Playlists(Vec::new()));
+        assert!(
+            sidebar
+                .sidebar_kind
+                .choose(takofy_ui::sidebar_kind::SidebarKind::Artists)
+        );
+        assert_eq!(
+            sidebar.followed_artists_request(),
+            Some(Command::LoadFollowedArtists)
+        );
+        assert!(
+            sidebar
+                .sidebar_kind
+                .choose(takofy_ui::sidebar_kind::SidebarKind::Albums)
+        );
+        assert_eq!(
+            sidebar.saved_albums_request(),
+            Some(Command::LoadSavedAlbums)
+        );
     }
 
     #[test]

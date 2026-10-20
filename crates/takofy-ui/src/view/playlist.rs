@@ -275,12 +275,44 @@ pub enum IdleView<'a> {
 /// cards and gets one muted line and its own Retry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoadNote {
-    /// The list arrived, or the chosen chip draws neither.
+    /// The list arrived, or the chosen chip draws no followed list.
     None,
     /// The list is in flight; the cards will appear when it lands.
-    Loading(RootKind),
-    /// The list failed; the note carries the chip whose load to restart.
-    Failed(RootKind, Failure),
+    Loading(FollowedRead),
+    /// The list failed; the note names the read to restart.
+    Failed(FollowedRead, Failure),
+}
+
+/// The followed read a chip shows, and the only ones the root reads under its
+/// cards. The playlists chip reads no followed list, so it has no value here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FollowedRead {
+    /// The followed shows, under All and Podcasts.
+    Shows,
+    /// The followed artists.
+    Artists,
+    /// The saved albums.
+    Albums,
+}
+
+impl FollowedRead {
+    /// What the root says under its cards while this read is in flight.
+    fn loading(self) -> &'static str {
+        root_loading_label(match self {
+            Self::Shows => RootKind::Podcasts,
+            Self::Artists => RootKind::Artists,
+            Self::Albums => RootKind::Albums,
+        })
+    }
+
+    /// The command that asks for this read again.
+    fn reload(self, library: &mut Library) -> Command {
+        match self {
+            Self::Shows => library.reload_followed(),
+            Self::Artists => library.reload_followed_artists(),
+            Self::Albums => library.reload_saved_albums(),
+        }
+    }
 }
 
 /// Reads the root view from both loads and the chosen chip.
@@ -324,17 +356,17 @@ fn slice<T>(load: &Load<Vec<T>>) -> &[T] {
 fn note_for(library: &Library, chosen: RootKind) -> LoadNote {
     match chosen {
         RootKind::Playlists => LoadNote::None,
-        RootKind::All | RootKind::Podcasts => index_note(RootKind::Podcasts, &library.followed),
-        RootKind::Artists => index_note(RootKind::Artists, &library.followed_artists),
-        RootKind::Albums => index_note(RootKind::Albums, &library.saved_albums),
+        RootKind::All | RootKind::Podcasts => index_note(FollowedRead::Shows, &library.followed),
+        RootKind::Artists => index_note(FollowedRead::Artists, &library.followed_artists),
+        RootKind::Albums => index_note(FollowedRead::Albums, &library.saved_albums),
     }
 }
 
 /// What one followed read is doing, named by the chip it belongs to.
-fn index_note<T>(kind: RootKind, load: &Load<Vec<T>>) -> LoadNote {
+fn index_note<T>(read: FollowedRead, load: &Load<Vec<T>>) -> LoadNote {
     match load {
-        Load::Idle | Load::Loading => LoadNote::Loading(kind),
-        Load::Failed(failure) => LoadNote::Failed(kind, *failure),
+        Load::Idle | Load::Loading => LoadNote::Loading(read),
+        Load::Failed(failure) => LoadNote::Failed(read, *failure),
         Load::Ready(_) => LoadNote::None,
     }
 }
@@ -356,7 +388,7 @@ fn idle(
     let mut select: Option<String> = None;
     let mut open: Option<Page> = None;
     let mut retry_playlists = false;
-    let mut retry: Option<RootKind> = None;
+    let mut retry: Option<FollowedRead> = None;
 
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
@@ -418,13 +450,8 @@ fn idle(
     if retry_playlists {
         return Some(library.reload());
     }
-    if let Some(kind) = retry {
-        return Some(match kind {
-            RootKind::All | RootKind::Podcasts => library.reload_followed(),
-            RootKind::Artists => library.reload_followed_artists(),
-            RootKind::Albums => library.reload_saved_albums(),
-            RootKind::Playlists => library.reload(),
-        });
+    if let Some(read) = retry {
+        return Some(read.reload(library));
     }
     if let Some(uri) = select {
         return select_playlist(library, &uri);
@@ -572,20 +599,20 @@ fn grid_rect(ui: &mut Ui, grid: &cards::Grid, count: usize) -> Rect {
 ///
 /// The copy and the Retry are the same pair the playlists' failure draws, in the
 /// same order: the words first, then the control that asks again.
-fn load_note(ui: &mut Ui, note: LoadNote, tokens: &Tokens, retry: &mut Option<RootKind>) {
+fn load_note(ui: &mut Ui, note: LoadNote, tokens: &Tokens, retry: &mut Option<FollowedRead>) {
     match note {
-        LoadNote::Loading(kind) => {
+        LoadNote::Loading(read) => {
             ui.add_space(space::S3);
-            ui.label(recipe::muted(root_loading_label(kind), tokens));
+            ui.label(recipe::muted(read.loading(), tokens));
         }
-        LoadNote::Failed(kind, failure) => {
+        LoadNote::Failed(read, failure) => {
             ui.add_space(space::S3);
             ui.label(recipe::muted(
                 crate::signin::failure_message(failure),
                 tokens,
             ));
             if ui.button("Retry").clicked() {
-                *retry = Some(kind);
+                *retry = Some(read);
             }
         }
         LoadNote::None => {}
@@ -2126,7 +2153,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             panic!("the shows are still coming: {:?}", idle_view(&library));
         };
         assert!(items.is_empty());
-        assert_eq!(note, LoadNote::Loading(RootKind::Podcasts));
+        assert_eq!(note, LoadNote::Loading(FollowedRead::Shows));
 
         library.apply(&Update::FollowedShowsFailed(Failure::Followed));
         let IdleView::Grid { note, .. } = idle_view(&library) else {
@@ -2134,7 +2161,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         };
         assert_eq!(
             note,
-            LoadNote::Failed(RootKind::Podcasts, Failure::Followed)
+            LoadNote::Failed(FollowedRead::Shows, Failure::Followed)
         );
 
         let mut settled = library_idle(Vec::new());
@@ -2171,7 +2198,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             items.is_empty(),
             "the playlists chip is not the podcasts one"
         );
-        assert_eq!(note, LoadNote::Loading(RootKind::Podcasts));
+        assert_eq!(note, LoadNote::Loading(FollowedRead::Shows));
 
         library.apply(&Update::FollowedShowsFailed(Failure::Load));
         let IdleView::Grid { items, note } = idle_view(&library) else {
@@ -2181,7 +2208,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             );
         };
         assert!(items.is_empty());
-        assert_eq!(note, LoadNote::Failed(RootKind::Podcasts, Failure::Load));
+        assert_eq!(note, LoadNote::Failed(FollowedRead::Shows, Failure::Load));
 
         let mut empty = library_idle(vec![playlist("a", "A")]);
         empty.root_filter.choose(RootKind::Podcasts);
@@ -3572,6 +3599,114 @@ mod root_tests {
         });
         output.textures_delta.clear();
         found.expect("the root lays out")
+    }
+
+    fn followed_artist(uri: &str, name: &str) -> takofy_model::FollowedArtist {
+        takofy_model::FollowedArtist {
+            uri: uri.to_owned(),
+            name: name.to_owned(),
+            named: true,
+            portrait: None,
+            releases: None,
+        }
+    }
+
+    fn saved_album(uri: &str, name: &str) -> takofy_model::SavedAlbum {
+        takofy_model::SavedAlbum {
+            uri: uri.to_owned(),
+            name: name.to_owned(),
+            named: true,
+            artists: "Nils Aker".to_owned(),
+            year: None,
+            cover: None,
+            tracks: None,
+        }
+    }
+
+    #[test]
+    fn idle_view_artists_ready_loading_failed_and_empty() {
+        let mut root = library(vec![playlist("a", "A")], vec![]);
+        root.root_filter.choose(RootKind::Artists);
+
+        // Not asked for yet: loading, not the empty copy.
+        assert_eq!(
+            idle_view(&root),
+            IdleView::Grid {
+                items: Vec::new(),
+                note: LoadNote::Loading(FollowedRead::Artists),
+            }
+        );
+
+        root.apply(&Update::FollowedArtists(vec![
+            followed_artist("spotify:artist:1", "One"),
+            followed_artist("spotify:artist:2", "Two"),
+        ]));
+        let IdleView::Grid { items, note } = idle_view(&root) else {
+            panic!("a ready artists list is a grid");
+        };
+        assert_eq!(items.len(), 2, "both artists draw as cards");
+        assert!(matches!(items[0], Item::Artist(artist) if artist.uri.ends_with(":1")));
+        assert_eq!(note, LoadNote::None);
+
+        root.apply(&Update::FollowedArtistsFailed(Failure::FollowedArtists));
+        assert_eq!(
+            idle_view(&root),
+            IdleView::Grid {
+                items: Vec::new(),
+                note: LoadNote::Failed(FollowedRead::Artists, Failure::FollowedArtists),
+            }
+        );
+
+        let mut empty = library(vec![playlist("a", "A")], vec![]);
+        empty.root_filter.choose(RootKind::Artists);
+        empty.apply(&Update::FollowedArtists(Vec::new()));
+        assert_eq!(
+            idle_view(&empty),
+            IdleView::Empty(RootKind::Artists),
+            "nothing to show is the chip's own empty line"
+        );
+    }
+
+    #[test]
+    fn idle_view_albums_carry_their_own_load() {
+        let mut library = library(vec![playlist("a", "A")], vec![]);
+        library.root_filter.choose(RootKind::Albums);
+        library.apply(&Update::SavedAlbums(vec![saved_album(
+            "spotify:album:1",
+            "Slow Tide",
+        )]));
+
+        let IdleView::Grid { items, note } = idle_view(&library) else {
+            panic!("a ready albums list is a grid");
+        };
+        assert_eq!(items.len(), 1);
+        assert_eq!(note, LoadNote::None);
+
+        library.apply(&Update::SavedAlbumsFailed(Failure::SavedAlbums));
+        let IdleView::Grid { note, .. } = idle_view(&library) else {
+            panic!("a failed albums list keeps the grid");
+        };
+        assert_eq!(
+            note,
+            LoadNote::Failed(FollowedRead::Albums, Failure::SavedAlbums)
+        );
+    }
+
+    /// The note's Retry asks the read it names, not the shows.
+    #[test]
+    fn the_artists_note_retries_the_artists() {
+        let ctx = context();
+        let mut library = library(vec![playlist("a", "A")], vec![]);
+        library.root_filter.choose(RootKind::Artists);
+        library.apply(&Update::FollowedArtistsFailed(Failure::FollowedArtists));
+        let mut art = Art::default();
+
+        let before = frame(&ctx, &mut library, &mut art);
+        let retry = text_rect(&before, "Retry").expect("the note's retry");
+        let command = click(&ctx, retry.center(), &mut library, &mut art);
+
+        assert_eq!(command, Some(Command::LoadFollowedArtists));
+        assert_eq!(library.followed_artists, Load::Loading);
     }
 
     #[test]
