@@ -5,9 +5,8 @@
 //! never reaches for any of them itself, and applying the jump is the shell's
 //! job, once every region has drawn.
 //!
-//! The tabs are the reference's pair. Queue is live because the queue is state
-//! the window already holds; Lyrics is drawn present and dim, which is this
-//! window's treatment for chrome whose view does not exist yet.
+//! The tabs are the reference's pair and both are live: the queue is state the
+//! window holds, and the lyrics pane asks for what it draws.
 
 use std::time::Instant;
 
@@ -22,8 +21,11 @@ use crate::queue::Queue;
 use crate::theme::icon::Size;
 use crate::theme::{Tokens, extent, radius, space, text, tracking};
 
+use crate::lyrics::{LyricsPanel, Tab};
+
 use super::art;
 use super::controls;
+use super::lyrics_pane;
 use super::queue_pane;
 use super::text as recipe;
 
@@ -33,21 +35,39 @@ const TABS: [(&str, Control); 2] = [
     ("Lyrics", Control::NowPlayingLyricsTab),
 ];
 
-/// Draws the panel's contents inside its own rect and reports the absolute index
-/// of a clicked queue row.
+/// What a frame of the panel asks the window to do.
 ///
-/// The jump is the caller's to apply, after every region has drawn: a frame that
-/// already carries a command must not move the queue, or the queue would name a
-/// track the transport was never asked to play.
+/// Every one of these is the caller's to apply, after every region has drawn: a
+/// frame that already carries a command must not also move the queue, or the
+/// queue would name a track the transport was never asked to play.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Reply {
+    /// The absolute index of a clicked queue row.
+    pub row: Option<usize>,
+    /// The tab a press asked for.
+    pub tab: Option<Tab>,
+    /// Whether the lyrics pane's Retry was pressed.
+    pub retry: bool,
+}
+
+/// The frame's own facts, so the panel's signature stays readable.
+pub struct Frame<'a> {
+    pub art: &'a mut Art,
+    pub now: Instant,
+    pub cover: Cover,
+    pub tokens: &'a Tokens,
+}
+
+/// Draws the panel's contents inside its own rect.
 pub fn show(
     ui: &mut Ui,
     transport: &Transport,
     queue: &Queue,
-    art: &mut Art,
-    now: Instant,
-    cover: Cover,
-    tokens: &Tokens,
-) -> Option<usize> {
+    lyrics: &LyricsPanel,
+    position_ms: u32,
+    frame: &mut Frame<'_>,
+) -> Reply {
+    let tokens = frame.tokens;
     let band = ui.available_rect_before_wrap();
     let meta_h = meta_height(ui, transport);
     let tabs_h = tabs_height(ui, tokens);
@@ -59,13 +79,35 @@ pub fn show(
         stack.art,
         radius::SM,
         tokens.palette.border_strong,
-        cover,
+        frame.cover,
         tokens,
     );
     meta(ui, stack.meta, transport, tokens);
-    tabs(ui, stack.tabs, tokens);
+    let tab = tabs(ui, stack.tabs, tokens, lyrics.showing());
 
-    queue_pane::show(ui, stack.pane, queue, art, now, tokens)
+    let showing = tab.unwrap_or(lyrics.showing());
+    let retry = match showing {
+        Tab::Queue => {
+            return Reply {
+                row: queue_pane::show(ui, stack.pane, queue, frame.art, frame.now, tokens),
+                tab,
+                retry: false,
+            };
+        }
+        Tab::Lyrics => lyrics_pane::show(
+            ui,
+            stack.pane,
+            lyrics,
+            position_ms,
+            transport.now_playing.as_ref().map(|now| now.uri.as_str()),
+            tokens,
+        ),
+    };
+    Reply {
+        row: None,
+        tab,
+        retry,
+    }
 }
 
 /// The head: the panel's caption and its more button, which waits.
@@ -172,12 +214,12 @@ fn meta(ui: &Ui, rect: Rect, transport: &Transport, tokens: &Tokens) {
     }
 }
 
-/// The tab pair. Lyrics is waiting, so the shared slot makes it unfocusable and
-/// inert without the panel branching on it.
-fn tabs(ui: &mut Ui, rect: Rect, tokens: &Tokens) {
+/// The tab pair, reporting the tab a press asked for.
+fn tabs(ui: &mut Ui, rect: Rect, tokens: &Tokens, chosen: Tab) -> Option<Tab> {
     if rect.width() <= 0.0 {
-        return;
+        return None;
     }
+    let mut pressed = None;
     let mut left = rect.left();
     for (index, (label, control)) in TABS.into_iter().enumerate() {
         let size = controls::chip_size(ui, tokens, label);
@@ -185,9 +227,14 @@ fn tabs(ui: &mut Ui, rect: Rect, tokens: &Tokens) {
             Pos2::new(left, rect.top() + (rect.height() - size.y) / 2.0),
             size,
         );
-        controls::chip_in(ui, tokens, control, chip, label, index == 0);
+        let tab = if index == 0 { Tab::Queue } else { Tab::Lyrics };
+        let slot = controls::chip_in(ui, tokens, control, chip, label, chosen == tab);
+        if slot.response.clicked() {
+            pressed = Some(tab);
+        }
         left += size.x + space::PX;
     }
+    pressed
 }
 
 /// The height the three meta lines take, or the one line nothing playing takes.
@@ -298,6 +345,7 @@ mod tests {
         queue: Queue,
         art: Art,
         now: Instant,
+        lyrics: crate::lyrics::LyricsPanel,
     }
 
     impl Panel {
@@ -307,6 +355,7 @@ mod tests {
                 queue: Queue::default(),
                 art: Art::default(),
                 now: Instant::now(),
+                lyrics: crate::lyrics::LyricsPanel::default(),
             }
         }
 
@@ -328,17 +377,31 @@ mod tests {
             );
             self.art.begin_frame();
             let now = self.now;
-            let mut clicked = None;
+            let mut reply = Reply::default();
             let Self {
                 transport,
                 queue,
                 art,
+                lyrics,
                 ..
             } = self;
+            let position_ms = transport.position_ms;
             run(ctx, input(events), |ui| {
-                clicked = show(ui, transport, queue, art, now, cover, &tokens);
+                reply = show(
+                    ui,
+                    transport,
+                    queue,
+                    lyrics,
+                    position_ms,
+                    &mut Frame {
+                        art,
+                        now,
+                        cover,
+                        tokens: &tokens,
+                    },
+                );
             });
-            clicked
+            reply.row
         }
 
         /// Draws one frame and returns the text it painted.
@@ -350,10 +413,14 @@ mod tests {
                     ui,
                     &self.transport,
                     &self.queue,
-                    &mut self.art,
-                    self.now,
-                    cover,
-                    &tokens,
+                    &self.lyrics,
+                    self.transport.position_ms,
+                    &mut Frame {
+                        art: &mut self.art,
+                        now: self.now,
+                        cover,
+                        tokens: &tokens,
+                    },
                 );
             });
             output.textures_delta.clear();
@@ -372,10 +439,14 @@ mod tests {
                     ui,
                     &self.transport,
                     &self.queue,
-                    &mut self.art,
-                    self.now,
-                    cover,
-                    &tokens,
+                    &self.lyrics,
+                    self.transport.position_ms,
+                    &mut Frame {
+                        art: &mut self.art,
+                        now: self.now,
+                        cover,
+                        tokens: &tokens,
+                    },
                 );
             });
             output.textures_delta.clear();
@@ -429,7 +500,19 @@ mod tests {
 
         let queue = Queue::default();
         let mut output = ctx.run_ui(input(Vec::new()), |ui| {
-            let _ = show(ui, &transport, &queue, &mut art, now, cover, &tokens);
+            let _ = show(
+                ui,
+                &transport,
+                &queue,
+                &crate::lyrics::LyricsPanel::default(),
+                transport.position_ms,
+                &mut Frame {
+                    art: &mut art,
+                    now,
+                    cover,
+                    tokens: &tokens,
+                },
+            );
         });
         output.textures_delta.clear();
         let texts: Vec<String> = drawn_texts(&output)
@@ -614,22 +697,22 @@ mod tests {
     }
 
     #[test]
-    fn the_lyrics_tab_takes_no_click_and_no_focus() {
+    fn the_lyrics_tab_is_live() {
         let tokens = Tokens::DARK;
         let ctx = context();
         let mut panel = Panel::new(playing("t0", "a0")).with_queue(3, 0);
         let frame = panel.output(&ctx);
         let at = painted_at(&frame, "LYRICS").expect("the lyrics tab is drawn");
 
+        // The tab is live now, so a press reaches the panel; what a press means is
+        // the shell's business, and a `Reply` is not a queue row.
         assert_eq!(
             click(&mut panel, &ctx, at + Vec2::new(2.0, 2.0)),
             None,
-            "the waiting Lyrics tab must answer no click"
+            "a tab press is not a queue row"
         );
 
-        // A focused control wears the one focus ring, so a ring around the
-        // Lyrics label is the thing to look for. The Queue chip proves the
-        // traversal reaches the panel at all, or the Lyrics half proves nothing.
+        // The keyboard reaches a live tab and it wears the ring.
         let ring_around = |output: &egui::FullOutput, centre: Pos2| {
             output.shapes.iter().any(|clipped| match &clipped.shape {
                 Shape::Rect(rect) => {
@@ -646,8 +729,6 @@ mod tests {
             repeat: false,
             modifiers: egui::Modifiers::NONE,
         };
-        let queue_at =
-            painted_at(&frame, "QUEUE").expect("the queue tab is drawn") + Vec2::new(2.0, 2.0);
         let lyrics_at = at + Vec2::new(2.0, 2.0);
 
         let mut reached_the_panel = false;
@@ -658,19 +739,22 @@ mod tests {
                     ui,
                     &panel.transport,
                     &panel.queue,
-                    &mut panel.art,
-                    panel.now,
-                    cover,
-                    &tokens,
+                    &panel.lyrics,
+                    panel.transport.position_ms,
+                    &mut Frame {
+                        art: &mut panel.art,
+                        now: panel.now,
+                        cover,
+                        tokens: &tokens,
+                    },
                 );
             });
             output.textures_delta.clear();
-            assert!(!ring_around(&output, lyrics_at), "a waiting tab took focus");
-            reached_the_panel |= ring_around(&output, queue_at);
+            reached_the_panel |= ring_around(&output, lyrics_at);
         }
         assert!(
             reached_the_panel,
-            "the traversal never reached the panel, so the Lyrics half proves nothing"
+            "the keyboard reaches the live Lyrics tab"
         );
     }
 }
