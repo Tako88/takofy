@@ -12,8 +12,8 @@ use crate::lyrics::LyricsError;
 use crate::playback::{Playback, PlaybackError, PlaybackEvent};
 use crate::remote::{
     ROOTLIST_WIRE, RemoteContext, RemoteRootlist, label_playlists, label_tracks, read_album,
-    read_artist, read_followed_artists, read_followed_shows, read_lyrics, read_release_tracks,
-    read_saved_albums, read_show, write_follow,
+    read_artist, read_followed_artists, read_followed_shows, read_lyrics, read_related,
+    read_release_tracks, read_saved_albums, read_show, write_follow,
 };
 use crate::rootlist::{RootlistError, fetch_all};
 use crate::show::ShowError;
@@ -110,6 +110,13 @@ impl Engine {
         artist_uri: &str,
     ) -> Result<(ArtistDetail, Option<bool>), EngineError> {
         Ok(read_artist(&self.session, artist_uri).await?)
+    }
+
+    /// The related artists an artist page shows as cards, in the order given.
+    ///
+    /// A URI whose artist cannot be read keeps its URI and stays in the row.
+    pub async fn related(&self, uris: Vec<String>) -> Result<Vec<FollowedArtist>, EngineError> {
+        Ok(read_related(&self.session, uris).await?)
     }
 
     /// One release's track names, in the release's own order.

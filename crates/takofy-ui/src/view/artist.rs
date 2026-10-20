@@ -454,6 +454,7 @@ mod tests {
             portrait: None,
             top_tracks: top,
             releases,
+            related: Vec::new(),
         }
     }
 

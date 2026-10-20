@@ -775,6 +775,7 @@ mod tests {
             portrait: None,
             top_tracks: vec![track("top")],
             releases: vec![release("spotify:album:r1")],
+            related: Vec::new(),
         }
     }
 

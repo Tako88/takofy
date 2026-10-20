@@ -120,6 +120,7 @@ mod tests {
             portrait: None,
             top_tracks: Vec::new(),
             releases: Vec::new(),
+            related: Vec::new(),
         }
     }
 
