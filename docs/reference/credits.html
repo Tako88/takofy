@@ -9,40 +9,21 @@
 <body class="app" data-page="credits">
 
 <aside class="sidebar" aria-label="Your library">
-  <div class="sidebar__brand">
-    <svg class="sidebar__logo" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-logo"></use></svg>
-    <span class="sidebar__wordmark">Takofy</span>
+  <div class="chips" role="group" aria-label="Filter your library" data-chip-group data-chip-target="#library-list" data-count-target="[data-library-count]">
+    <button class="chip" type="button" data-chip="playlist" aria-pressed="false">Playlists</button>
+    <button class="chip" type="button" data-chip="artist" aria-pressed="false">Artists</button>
+    <button class="chip" type="button" data-chip="album" aria-pressed="false">Albums</button>
+    <button class="chip" type="button" data-chip="podcast" aria-pressed="false">Podcasts</button>
   </div>
 
-  <nav class="sidebar__nav" aria-label="Primary">
-    <a class="nav-item" href="index.html" data-nav="home">
-      <svg class="icon icon--lg" aria-hidden="true"><use href="#i-home"></use></svg>
-      <span class="nav-item__label">Home</span>
-    </a>
-    <a class="nav-item" href="search.html" data-nav="search">
-      <svg class="icon icon--lg" aria-hidden="true"><use href="#i-search"></use></svg>
-      <span class="nav-item__label">Search</span>
-    </a>
-  </nav>
-
-  <div class="library" data-chip-group data-chip-target="#library-list">
+  <div class="library">
     <div class="library__head">
-      <span>Your Library</span>
+      <span data-library-count></span>
       <span class="library__head-actions">
         <button class="icon-button" type="button" aria-label="Create playlist or folder">
           <svg class="icon icon--md" aria-hidden="true"><use href="#i-plus"></use></svg>
         </button>
-        <button class="icon-button" type="button" aria-label="Expand your library">
-          <svg class="icon icon--md" aria-hidden="true"><use href="#i-arrow-right"></use></svg>
-        </button>
       </span>
-    </div>
-
-    <div class="chips" role="group" aria-label="Filter your library">
-      <button class="chip" type="button" data-chip="playlist" aria-pressed="false">Playlists</button>
-      <button class="chip" type="button" data-chip="artist" aria-pressed="false">Artists</button>
-      <button class="chip" type="button" data-chip="album" aria-pressed="false">Albums</button>
-      <button class="chip" type="button" data-chip="podcast" aria-pressed="false">Podcasts</button>
     </div>
 
     <ul class="library__list" id="library-list" data-library-list></ul>
@@ -51,10 +32,13 @@
 
 <div class="app__main">
   <header class="topbar">
-    <button class="icon-button topbar__drawer-toggle" type="button" data-drawer-toggle aria-expanded="false" aria-label="Open your library">
-      <svg class="icon icon--lg" aria-hidden="true"><use href="#i-library"></use></svg>
+    <button class="icon-button topbar__drawer-toggle" type="button" data-drawer-toggle aria-expanded="false" aria-label="Open your library panel">
+      <svg class="icon icon--lg" aria-hidden="true"><use href="#i-panel"></use></svg>
     </button>
-    <div class="topbar__history">
+    <div class="topbar__nav">
+      <a class="round-button" href="index.html" data-nav="home" aria-label="Home">
+        <svg class="icon" aria-hidden="true"><use href="#i-home"></use></svg>
+      </a>
       <button class="round-button" type="button" data-back aria-label="Go back">
         <svg class="icon" aria-hidden="true"><use href="#i-arrow-left"></use></svg>
       </button>
@@ -184,7 +168,6 @@
 <nav class="tabbar" aria-label="Primary">
   <a href="index.html" data-nav="home"><svg class="icon icon--lg" aria-hidden="true"><use href="#i-home"></use></svg>Home</a>
   <a href="search.html" data-nav="search"><svg class="icon icon--lg" aria-hidden="true"><use href="#i-search"></use></svg>Search</a>
-  <a href="library.html" data-nav="library"><svg class="icon icon--lg" aria-hidden="true"><use href="#i-library"></use></svg>Library</a>
   <a href="podcasts.html" data-nav="podcasts"><svg class="icon icon--lg" aria-hidden="true"><use href="#i-mic"></use></svg>Podcasts</a>
 </nav>
 

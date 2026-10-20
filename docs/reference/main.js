@@ -24,6 +24,7 @@
     '<symbol id="i-home" viewBox="0 0 24 24"><path d="M12 2.9 2.6 10.4V20a1.4 1.4 0 0 0 1.4 1.4h4.6v-6.2h6.8v6.2H20a1.4 1.4 0 0 0 1.4-1.4v-9.6z" fill="currentColor" stroke="none"/></symbol>',
     '<symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.6" cy="10.6" r="6.6" fill="none" stroke="currentColor" stroke-width="2"/><path d="M15.6 15.6 20.6 20.6" fill="none" stroke="currentColor" stroke-width="2"/></symbol>',
     '<symbol id="i-library" viewBox="0 0 24 24"><path d="M4 4.6h2.7v14.8H4zM9.1 4.6h2.7v14.8H9.1zM14.7 5.4l2.6-.7 3.9 14.3-2.6.7z" fill="currentColor" stroke="none"/></symbol>',
+    '<symbol id="i-panel" viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="15" rx="2" fill="none" stroke="currentColor"/><path d="M9.5 4.5v15" fill="none" stroke="currentColor"/></symbol>',
     '<symbol id="i-mic" viewBox="0 0 24 24"><rect x="8.8" y="2.8" width="6.4" height="11.4" rx="3.2" fill="none" stroke="currentColor"/><path d="M5.4 11.4a6.6 6.6 0 0 0 13.2 0M12 18.2v3M8.6 21.2h6.8" fill="none" stroke="currentColor"/></symbol>',
     // arrows
     '<symbol id="i-arrow-left" viewBox="0 0 24 24"><path d="M20 12H4.6M11 5.4 4.4 12 11 18.6" fill="none" stroke="currentColor"/></symbol>',
@@ -69,20 +70,32 @@
   var LIBRARY = [
     { kind: "playlist", name: "Late Night Drive", sub: "Playlist · Vela Moreno", art: "img/covers/signal-decay.jpg", href: "playlist.html" },
     { kind: "playlist", name: "Discover Weekly", sub: "Playlist · Made for you", art: "img/covers/discover-weekly.jpg", href: "playlist.html" },
+    { kind: "playlist", name: "Release Radar", sub: "Playlist · Made for you", art: "img/covers/release-radar.jpg", href: "playlist.html" },
     { kind: "album", name: "Slow Tide", sub: "Album · Vela Moreno", art: "img/covers/slow-tide.jpg", href: "album.html" },
+    { kind: "playlist", name: "Windows Down", sub: "Playlist · Made for you", art: "img/covers/long-way-down.jpg", href: "playlist.html" },
     { kind: "artist", name: "Vela Moreno", sub: "Artist", art: "img/artists/vela-moreno.jpg", href: "artist.html" },
-    { kind: "podcast", name: "Field Notes", sub: "Podcast · Northern Ridge Radio", art: "img/covers/pod-field-notes.jpg", href: "podcasts.html" },
     { kind: "playlist", name: "Deep Focus", sub: "Playlist · Made for you", art: "img/covers/cold-storage.jpg", href: "playlist.html" },
+    { kind: "podcast", name: "Field Notes", sub: "Podcast · Northern Ridge Radio", art: "img/covers/pod-field-notes.jpg", href: "podcasts.html" },
+    { kind: "playlist", name: "Neon Rain", sub: "Playlist · Made for you", art: "img/covers/harbour-lights.jpg", href: "playlist.html" },
     { kind: "album", name: "Blue Hour", sub: "Album · Hana Sō", art: "img/covers/blue-hour.jpg", href: "album.html" },
+    { kind: "playlist", name: "Tape Hiss", sub: "Playlist · Made for you", art: "img/covers/paper-rooms.jpg", href: "playlist.html" },
     { kind: "artist", name: "Nils Aker", sub: "Artist", art: "img/artists/nils-aker.jpg", href: "artist.html" },
+    { kind: "playlist", name: "Night Bus", sub: "Playlist · Vela Moreno", art: "img/covers/nocturne-field.jpg", href: "playlist.html" },
     { kind: "podcast", name: "The Long Way Round", sub: "Podcast · Wanderline", art: "img/covers/pod-long-way-round.jpg", href: "podcasts.html" },
     { kind: "album", name: "Cold Storage", sub: "Album · Nils Aker", art: "img/covers/cold-storage.jpg", href: "album.html" },
+    { kind: "playlist", name: "First Light", sub: "Playlist · Made for you", art: "img/covers/northlight.jpg", href: "playlist.html" },
     { kind: "playlist", name: "Sunday Morning Coffee", sub: "Playlist · Made for you", art: "img/covers/fieldwork.jpg", href: "playlist.html" },
     { kind: "artist", name: "Coastal Divide", sub: "Artist", art: "img/artists/coastal-divide.jpg", href: "artist.html" },
+    { kind: "playlist", name: "Salt & Static", sub: "Playlist · Made for you", art: "img/covers/saltglass.jpg", href: "playlist.html" },
     { kind: "album", name: "Halcyon Street", sub: "Album · The Rookery", art: "img/covers/halcyon-street.jpg", href: "album.html" },
+    { kind: "playlist", name: "Frostbitten", sub: "Playlist · Made for you", art: "img/covers/wintering.jpg", href: "playlist.html" },
     { kind: "podcast", name: "Rooftop Sessions", sub: "Podcast · Halcyon Audio", art: "img/covers/pod-rooftop-sessions.jpg", href: "podcasts.html" },
+    { kind: "podcast", name: "Two Cars, One Road", sub: "Podcast · Grease & Chrome Media", art: "img/covers/pod-two-cars.jpg", href: "podcasts.html" },
+    { kind: "playlist", name: "Long Way Home", sub: "Playlist · Made for you", art: "img/covers/dune-song.jpg", href: "playlist.html" },
     { kind: "album", name: "Terminal", sub: "Album · The Rookery", art: "img/covers/terminal.jpg", href: "album.html" },
-    { kind: "artist", name: "Marta Ísleif", sub: "Artist", art: "img/artists/marta-isleif.jpg", href: "artist.html" }
+    { kind: "playlist", name: "Iron & Rain", sub: "Playlist · The Rookery", art: "img/covers/chrome-gospel.jpg", href: "playlist.html" },
+    { kind: "artist", name: "Marta Ísleif", sub: "Artist", art: "img/artists/marta-isleif.jpg", href: "artist.html" },
+    { kind: "playlist", name: "After Hours", sub: "Playlist · Made for you", art: "img/covers/undertow.jpg", href: "playlist.html" }
   ];
 
   var QUEUE = [
@@ -118,6 +131,12 @@
     var h = Math.floor(total / 3600);
     var m = Math.round((total % 3600) / 60);
     return h ? h + " hr " + m + " min" : m + " min";
+  }
+
+  /* One phrasing for the library's size readout, so the unfiltered and
+     filtered states can never drift apart. */
+  function countLabel(shown, total) {
+    return shown === total ? total + " saved" : shown + " of " + total;
   }
 
   function icon(id, cls) {
@@ -420,13 +439,16 @@
     list.innerHTML = LIBRARY.map(function (item) {
       var cls = item.kind === "artist" ? " library-item--artist" : item.kind === "podcast" ? " library-item--podcast" : "";
       return (
-        '<li><a class="library-item' + cls + '" href="' + item.href + '" data-kind="' + item.kind + '">' +
+        '<li data-kind="' + item.kind + '"><a class="library-item' + cls + '" href="' + item.href + '">' +
         '<img class="library-item__art" src="' + item.art + '" alt="" loading="lazy">' +
         '<span class="library-item__text">' +
         '<span class="library-item__name truncate">' + item.name + "</span>" +
         '<span class="library-item__kind truncate">' + item.sub + "</span></span></a></li>"
       );
     }).join("");
+
+    var countEl = $("[data-library-count]");
+    if (countEl) countEl.textContent = countLabel(LIBRARY.length, LIBRARY.length);
   }
 
   function renderQueue() {
@@ -470,14 +492,22 @@
     if (!target) return;
     var scope = document.querySelector(target);
     if (!scope) return;
+    var items = $$("[data-kind]", scope);
     var shown = 0;
-    $$("[data-kind]", scope).forEach(function (item) {
+    items.forEach(function (item) {
       var match = !kind || item.getAttribute("data-kind") === kind;
       item.hidden = !match;
       if (match) shown++;
     });
     var empty = document.querySelector(target + "-empty");
     if (empty) empty.hidden = shown > 0;
+
+    // Groups that own a size readout keep it honest as the filter changes.
+    var countSel = group.getAttribute("data-count-target");
+    if (countSel) {
+      var countEl = document.querySelector(countSel);
+      if (countEl) countEl.textContent = countLabel(shown, items.length);
+    }
   }
 
   /* ----------------------------------------------------------------------
@@ -579,6 +609,19 @@
     });
   }
 
+  /* The sidebar no longer offers Search, so the topbar field is the only route
+     to that view — submitting it goes there. */
+  function bindSearch() {
+    var form = $(".searchbar");
+    if (!form) return;
+    form.addEventListener("submit", function (event) {
+      event.preventDefault();
+      if (window.location.pathname.indexOf("search.html") === -1) {
+        window.location.href = "search.html";
+      }
+    });
+  }
+
   /* ----------------------------------------------------------------------
      Keyboard shortcuts — a client, so: space, arrows, /, m
      ---------------------------------------------------------------------- */
@@ -620,6 +663,7 @@
     bindViewToggle();
     bindTabs();
     bindDrawer();
+    bindSearch();
     bindKeys();
 
     // Rows that carry their own track data but are not <button>s (the queue)
