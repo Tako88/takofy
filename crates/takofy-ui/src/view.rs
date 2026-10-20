@@ -25,6 +25,7 @@ mod shell;
 mod show;
 pub mod sidebar;
 mod sign_in;
+mod skeleton;
 #[cfg(test)]
 pub(crate) mod test_support;
 pub mod text;

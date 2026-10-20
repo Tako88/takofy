@@ -271,9 +271,14 @@ svg {
   transition: border-color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out);
 }
 
-.button:hover {
+.button:hover:not(:disabled) {
   border-color: var(--color-text);
   background: var(--color-surface-hover);
+}
+
+.button:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 .button--ghost {
@@ -2458,7 +2463,418 @@ svg {
 }
 
 /* --------------------------------------------------------------------------
-   19. Responsive — a desktop app that still behaves in a narrow window
+   19. Loading states — placeholders cut to the geometry of what arrives
+   -------------------------------------------------------------------------- */
+
+/* One primitive for every placeholder: bone ink held at 9%, with a single band
+   of light crossing it. It never becomes a grey card and it never spins. */
+.sk {
+  position: relative;
+  display: block;
+  overflow: hidden;
+  border-radius: var(--radius-xs);
+  background: var(--color-skeleton);
+}
+
+.sk::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, var(--color-skeleton-sheen), transparent);
+  transform: translateX(-100%);
+  animation: sk-sweep 1700ms var(--ease-out) infinite;
+}
+
+@keyframes sk-sweep {
+  to {
+    transform: translateX(100%);
+  }
+}
+
+.sk--line {
+  width: var(--w, 60%);
+  height: 0.5rem;
+  background: var(--color-skeleton-rule);
+}
+
+.sk--line-sm {
+  width: var(--w, 44%);
+  height: 0.375rem;
+  background: var(--color-skeleton-rule);
+}
+
+/* Covers take the box they are given rather than a size of their own. */
+.sk--fill {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+}
+
+.sk--end {
+  justify-self: end;
+}
+
+.sk-stack {
+  display: grid;
+  gap: 0.4375rem;
+}
+
+/* Widths belong to a position in the list, not to an element: the markup stays
+   style-free and a longer catalogue title only ever changes one rule. */
+.load-demo__skeleton > :nth-child(3n) .sk--line {
+  --w: 78%;
+}
+
+.load-demo__skeleton > :nth-child(2n) .sk--line {
+  --w: 54%;
+}
+
+.load-demo__skeleton > :nth-child(3n) .sk--line-sm {
+  --w: 46%;
+}
+
+.load-demo__skeleton > :nth-child(2n) .sk--line-sm {
+  --w: 34%;
+}
+
+.load-demo__skeleton > :nth-child(2n) .sk::after {
+  animation-delay: 120ms;
+}
+
+.load-demo__skeleton > :nth-child(3n) .sk::after {
+  animation-delay: 240ms;
+}
+
+.load-demo__skeleton > :nth-child(4n) .sk::after {
+  animation-delay: 360ms;
+}
+
+/* The card body reserves the height of the two lines that will replace it, so
+   a resolved card is the same height as its placeholder. */
+.load-demo .sk-stack {
+  min-height: 2.0625rem;
+}
+
+/* Skeleton rows reuse the list density's metrics — the same 2.75rem row, the
+   same 1px seam, the same index and duration gutters — so a tracklist never
+   jumps when the titles land. */
+.sk-rows {
+  display: grid;
+  gap: 1px;
+}
+
+.sk-row {
+  display: grid;
+  grid-template-columns: 2.25rem minmax(0, 1fr) minmax(0, 0.6fr) 3.5rem;
+  gap: var(--space-4);
+  align-items: center;
+  min-height: var(--row-h);
+  padding: var(--space-1) var(--space-3);
+}
+
+.sk-row__index,
+.sk-row__album,
+.sk-row__dur {
+  --w: 100%;
+}
+
+.sk-row__index {
+  --w: 60%;
+  justify-self: end;
+}
+
+.sk-row__album {
+  --w: 68%;
+}
+
+.sk-row__title {
+  display: grid;
+  gap: 0.375rem;
+}
+
+.sk-row:nth-child(1) .sk--line {
+  --w: 52%;
+}
+
+.sk-row:nth-child(2) .sk--line {
+  --w: 41%;
+}
+
+.sk-row:nth-child(3) .sk--line {
+  --w: 63%;
+}
+
+.sk-row:nth-child(4) .sk--line {
+  --w: 34%;
+}
+
+.sk-row:nth-child(5) .sk--line {
+  --w: 47%;
+}
+
+.sk-row:nth-child(6) .sk--line {
+  --w: 58%;
+}
+
+/* A specimen stage, recessed to true black so the placeholders sit on the
+   darkest surface in the app and their edges stay legible. */
+.states__stage {
+  padding: var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-surface-sunken);
+}
+
+.states__bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 1.75rem;
+  padding-bottom: var(--space-3);
+  margin-bottom: var(--space-4);
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-text-subtle);
+}
+
+/* The one control on the page sits in the bar's mono tier, with the target
+   grown past the label so it can be hit without aiming. */
+.states__bar .button {
+  position: relative;
+  flex: none;
+  min-height: 1.75rem;
+  padding: 0 var(--space-2);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-medium);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+}
+
+.states__bar .button::after {
+  content: "";
+  position: absolute;
+  inset: -0.5rem;
+}
+
+.states__status {
+  margin-left: auto;
+  color: var(--color-text-muted);
+}
+
+.states__intro {
+  max-width: 66ch;
+  color: var(--color-text-muted);
+}
+
+.states__note {
+  max-width: 68ch;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.section > .states__note {
+  margin-top: var(--space-3);
+}
+
+.states__no {
+  margin-right: var(--space-2);
+  color: var(--color-text-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Two readings of the same moment, split by a hairline rather than boxed into
+   two more cards. */
+.states__pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-5);
+  align-items: start;
+}
+
+.states__pair > :last-child {
+  padding-left: var(--space-5);
+  border-left: 1px solid var(--color-border);
+}
+
+/* The pair keeps the specimen's ruled label row, spanning both columns. */
+.states__pair > .states__bar {
+  grid-column: 1 / -1;
+  margin-bottom: 0;
+}
+
+.load-demo__content {
+  animation: load-in var(--dur-slow) var(--ease-out);
+}
+
+/* The demo grid tightens earlier than the library's own so four covers fit a
+   tablet row and the states below stay within reach of the first one. */
+.load-demo .library-grid {
+  grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr));
+}
+
+@keyframes load-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Counted progress: a cell per fragment, no interpolation. */
+.meter {
+  display: grid;
+  gap: var(--space-3);
+  align-content: start;
+}
+
+.meter__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  color: var(--color-text-subtle);
+}
+
+.meter__count {
+  color: var(--color-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.meter__cells {
+  display: flex;
+  gap: 3px;
+  height: 1.5rem;
+}
+
+.meter__cells i {
+  flex: 1 1 0;
+  border-radius: var(--radius-xs);
+  background: var(--color-skeleton-rule);
+}
+
+.meter__cells i.is-on {
+  background: var(--color-text);
+}
+
+/* Unknown denominator: the trace stops claiming a total. */
+.meter__open {
+  position: relative;
+  height: 1.5rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xs);
+  overflow: hidden;
+}
+
+.meter__sweep {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 22%;
+  background: var(--color-skeleton-rule);
+  animation: meter-sweep 2000ms var(--ease-out) infinite;
+}
+
+@keyframes meter-sweep {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(455%);
+  }
+}
+
+/* Buffering: a segmented span of what the buffer holds, and a front edge that
+   breathes while fragments are still arriving. */
+.buffer {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.buffer__trace {
+  position: relative;
+  height: 1.5rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xs);
+  background-image: repeating-linear-gradient(
+    90deg,
+    var(--color-skeleton) 0 0.5rem,
+    transparent 0.5rem 0.8125rem
+  );
+  overflow: hidden;
+}
+
+/* The buffer is not yet playback: it is set in the muted tier, so the only
+   bone-white mark on the trace is the front that is still arriving. */
+.buffer__loaded {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 58.33%;
+  background: var(--color-text-muted);
+  -webkit-mask-image: repeating-linear-gradient(90deg, #000 0 0.5rem, transparent 0.5rem 0.8125rem);
+  mask-image: repeating-linear-gradient(90deg, #000 0 0.5rem, transparent 0.5rem 0.8125rem);
+}
+
+.buffer__front {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 58.33%;
+  width: 1px;
+  background: var(--color-text);
+  animation: buffer-breathe 2100ms ease-in-out infinite;
+}
+
+@keyframes buffer-breathe {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.buffer__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  color: var(--color-text-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+}
+
+.buffer__legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.buffer__swatch {
+  display: inline-block;
+  width: 0.4375rem;
+  height: 0.4375rem;
+  background: var(--color-text-muted);
+}
+
+.buffer__swatch--head {
+  width: 2px;
+  height: 0.625rem;
+  background: var(--color-text);
+}
+
+/* --------------------------------------------------------------------------
+   20. Responsive — a desktop app that still behaves in a narrow window
    -------------------------------------------------------------------------- */
 
 @media (max-width: 1360px) {
@@ -2823,6 +3239,57 @@ svg {
 
   .episode__meta {
     display: none;
+  }
+
+  /* The loading specimens drop the same columns a resolved list drops. */
+  .sk-row {
+    grid-template-columns: 2.25rem minmax(0, 1fr) 3.5rem;
+  }
+
+  .sk-row__album {
+    display: none;
+  }
+
+  .states-page .section__head {
+    display: block;
+  }
+
+  .states-page .states__meta {
+    margin-top: var(--space-1);
+  }
+
+  /* A control and a counted status do not fit on one line at this width, so
+     the status takes the second line whole rather than wrapping mid-phrase. */
+  .states__bar .button {
+    margin-left: auto;
+  }
+
+  .states__status {
+    order: 3;
+    flex-basis: 100%;
+    margin-left: 0;
+  }
+
+  .states__stage {
+    padding: var(--space-3);
+  }
+
+  /* Four placeholders say everything this specimen has to say on a phone;
+     skeleton and resolved grid drop the same index, so heights still match. */
+  .load-demo .library-grid > :nth-child(n + 5) {
+    display: none;
+  }
+
+  .states__pair {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-4);
+  }
+
+  .states__pair > :last-child {
+    padding-left: 0;
+    border-left: 0;
+    padding-top: var(--space-4);
+    border-top: 1px solid var(--color-border);
   }
 }
 

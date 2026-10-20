@@ -22,6 +22,7 @@ use crate::theme::{MonoWeight, Tokens, Weight, extent, fonts, radius, space, tex
 use super::art;
 use super::controls;
 use super::shell::{row_centre, row_centred};
+use super::skeleton;
 use super::text as recipe;
 
 /// The one control in each column that is not an icon button.
@@ -101,6 +102,18 @@ pub fn play_glyph(state: TransportState) -> Icon {
     } else {
         Icon::Play
     }
+}
+
+/// The share of the seek track the fill covers.
+///
+/// A loading track has no position to show: a fill would claim playback had
+/// begun, and the playhead would sit at a place the player has not reached. The
+/// bar draws a band that claims no total instead.
+fn seek_fraction(transport: &Transport, position_ms: u32) -> Option<f32> {
+    if transport.state == TransportState::Loading {
+        return None;
+    }
+    transport.fraction(position_ms)
 }
 
 /// The width one run of controls occupies, margins and gaps included. The view
@@ -281,10 +294,17 @@ fn centre_column(
         tokens,
         Control::Seek,
         track,
-        transport.fraction(position_ms),
+        seek_fraction(transport, position_ms),
         "Seek",
         transport.seekable(),
     );
+    if transport.state == TransportState::Loading {
+        let span = Rect::from_center_size(
+            track.center(),
+            Vec2::new(track.width(), extent::SLIDER_TRACK_H),
+        );
+        skeleton::band(ui, span, tokens);
+    }
 
     let remaining = match transport.duration_ms {
         Some(duration) => format_remaining(position_ms, duration),
@@ -490,6 +510,21 @@ mod tests {
 
     fn track_rect() -> Rect {
         Rect::from_min_size(Pos2::new(80.0, 0.0), Vec2::new(200.0, extent::SLIDER_H))
+    }
+
+    #[test]
+    fn a_loading_transport_fills_none_of_the_seek() {
+        let mut transport = seekable();
+        assert!(
+            seek_fraction(&transport, 0).is_some(),
+            "a playing track has a position to show"
+        );
+        transport.state = TransportState::Loading;
+        assert_eq!(
+            seek_fraction(&transport, 0),
+            None,
+            "a track still loading has no position, so the bar claims none"
+        );
     }
 
     /// Two ready neighbours and the seek, so focus has somewhere else to go if

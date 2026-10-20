@@ -15,6 +15,14 @@ html:root {
   --color-border-strong: rgba(242, 240, 234, 0.26);
   --color-scrim: rgba(0, 0, 0, 0.78);
 
+  /* ── Loading ──────────────────────────────────────────────── */
+  /* Placeholders are the type's own bone ink held at 9%, with a sheen one step
+     brighter. A skeleton has to sit inside the palette rather than read as a
+     grey box dropped on top of it, and it must never look like content. */
+  --color-skeleton: rgba(242, 240, 234, 0.09);
+  --color-skeleton-sheen: rgba(242, 240, 234, 0.17);
+  --color-skeleton-rule: rgba(242, 240, 234, 0.18);
+
   /* ── Text ─────────────────────────────────────────────────── */
   /* Three tiers, all of which clear WCAG AA on --color-surface. Hierarchy is
      carried by size, weight and the mono/roman split rather than by dimming

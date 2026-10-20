@@ -529,6 +529,48 @@
   }
 
   /* ----------------------------------------------------------------------
+     Loading demo — concept page only. Replays a staged load so the skeleton
+     geometry can be compared with the grid that replaces it.
+     ---------------------------------------------------------------------- */
+
+  function bindLoadDemo() {
+    var demo = $("[data-load-demo]");
+    if (!demo) return;
+    var out = $("[data-load-out]", demo);
+    var skeleton = $("[data-load-skeleton]", demo);
+    var content = $("[data-load-content]", demo);
+    var status = $("[data-load-status]");
+    var replay = $("[data-load-replay]");
+    var timer = 0;
+
+    function land() {
+      if (out) out.setAttribute("aria-busy", "false");
+      skeleton.hidden = true;
+      content.hidden = false;
+      if (status) status.textContent = "8 of 8 items loaded";
+      if (replay) {
+        replay.disabled = false;
+        replay.textContent = "Replay load";
+      }
+    }
+
+    function run() {
+      window.clearTimeout(timer);
+      if (out) out.setAttribute("aria-busy", "true");
+      skeleton.hidden = false;
+      content.hidden = true;
+      if (status) status.textContent = "0 of 8 items loaded";
+      if (replay) {
+        replay.disabled = true;
+        replay.textContent = "Loading…";
+      }
+      timer = window.setTimeout(land, 2400);
+    }
+
+    if (replay) replay.addEventListener("click", run);
+  }
+
+  /* ----------------------------------------------------------------------
      Panel tabs
      ---------------------------------------------------------------------- */
 
@@ -662,6 +704,7 @@
     bindChips(document);
     bindViewToggle();
     bindTabs();
+    bindLoadDemo();
     bindDrawer();
     bindSearch();
     bindKeys();

@@ -1,0 +1,517 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Loading states · Takofy</title>
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body class="app" data-page="states">
+
+<!-- ===================== Sidebar ===================== -->
+<aside class="sidebar" aria-label="Your library">
+  <div class="chips" role="group" aria-label="Filter your library" data-chip-group data-chip-target="#library-list" data-count-target="[data-library-count]">
+    <button class="chip" type="button" data-chip="playlist" aria-pressed="false">Playlists</button>
+    <button class="chip" type="button" data-chip="artist" aria-pressed="false">Artists</button>
+    <button class="chip" type="button" data-chip="album" aria-pressed="false">Albums</button>
+    <button class="chip" type="button" data-chip="podcast" aria-pressed="false">Podcasts</button>
+  </div>
+
+  <div class="library">
+    <div class="library__head">
+      <span data-library-count></span>
+      <span class="library__head-actions">
+        <button class="icon-button" type="button" aria-label="Create playlist or folder">
+          <svg class="icon icon--md" aria-hidden="true"><use href="#i-plus"></use></svg>
+        </button>
+      </span>
+    </div>
+
+    <ul class="library__list" id="library-list" data-library-list></ul>
+  </div>
+</aside>
+
+<!-- ===================== Main ===================== -->
+<div class="app__main">
+  <header class="topbar">
+    <button class="icon-button topbar__drawer-toggle" type="button" data-drawer-toggle aria-expanded="false" aria-label="Open your library panel">
+      <svg class="icon icon--lg" aria-hidden="true"><use href="#i-panel"></use></svg>
+    </button>
+    <div class="topbar__nav">
+      <a class="round-button" href="index.html" data-nav="home" aria-label="Home">
+        <svg class="icon" aria-hidden="true"><use href="#i-home"></use></svg>
+      </a>
+      <button class="round-button" type="button" data-back aria-label="Go back">
+        <svg class="icon" aria-hidden="true"><use href="#i-arrow-left"></use></svg>
+      </button>
+      <button class="round-button" type="button" data-forward aria-label="Go forward">
+        <svg class="icon" aria-hidden="true"><use href="#i-arrow-right"></use></svg>
+      </button>
+    </div>
+    <form class="searchbar" role="search" onsubmit="return false">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-search"></use></svg>
+      <input type="search" placeholder="What do you want to play?" aria-label="Search" />
+    </form>
+    <nav class="trail" aria-label="You are here">
+      <a href="index.html">Home</a>
+      <span class="trail__sep">/</span>
+      <span aria-current="page">Loading states</span>
+    </nav>
+  </header>
+
+  <main class="view states-page">
+    <div class="view__inner">
+      <div class="page-head">
+        <h1 class="page-head__title">Loading states</h1>
+        <p class="page-head__note">Concept · 4 states · no spinners</p>
+      </div>
+
+      <p class="states__intro">
+        Nothing in this client spins. When the catalogue is late, the interface keeps the shape of
+        what is coming, counts what it already holds, and reports it in the same mono voice it uses
+        for a bitrate. Four states are documented here; the first one is live.
+      </p>
+
+      <!-- ============ 01 · Library grid ============ -->
+      <section class="section" aria-labelledby="state-grid">
+        <div class="section__head">
+          <h2 class="section__title" id="state-grid"><span class="states__no">01</span>Library, waiting for covers</h2>
+          <p class="label states__meta">grid density · aria-busy</p>
+        </div>
+
+        <div class="states__stage load-demo" data-load-demo>
+          <div class="states__bar">
+            <span class="label">Skeleton</span>
+            <span class="label states__status" role="status" data-load-status>0 of 8 items loaded</span>
+            <button class="button" type="button" data-load-replay>Complete load</button>
+          </div>
+
+          <div class="load-demo__out" data-load-out aria-busy="true">
+            <ul class="library-grid load-demo__skeleton" data-load-skeleton aria-hidden="true">
+            <li class="media">
+              <div class="media__art"><span class="sk sk--fill"></span></div>
+              <div class="media__body sk-stack">
+                <span class="sk sk--line"></span>
+                <span class="sk sk--line-sm"></span>
+              </div>
+            </li>
+            <li class="media">
+              <div class="media__art"><span class="sk sk--fill"></span></div>
+              <div class="media__body sk-stack">
+                <span class="sk sk--line"></span>
+                <span class="sk sk--line-sm"></span>
+              </div>
+            </li>
+            <li class="media">
+              <div class="media__art"><span class="sk sk--fill"></span></div>
+              <div class="media__body sk-stack">
+                <span class="sk sk--line"></span>
+                <span class="sk sk--line-sm"></span>
+              </div>
+            </li>
+            <li class="media">
+              <div class="media__art"><span class="sk sk--fill"></span></div>
+              <div class="media__body sk-stack">
+                <span class="sk sk--line"></span>
+                <span class="sk sk--line-sm"></span>
+              </div>
+            </li>
+            <li class="media">
+              <div class="media__art"><span class="sk sk--fill"></span></div>
+              <div class="media__body sk-stack">
+                <span class="sk sk--line"></span>
+                <span class="sk sk--line-sm"></span>
+              </div>
+            </li>
+            <li class="media">
+              <div class="media__art"><span class="sk sk--fill"></span></div>
+              <div class="media__body sk-stack">
+                <span class="sk sk--line"></span>
+                <span class="sk sk--line-sm"></span>
+              </div>
+            </li>
+            <li class="media">
+              <div class="media__art"><span class="sk sk--fill"></span></div>
+              <div class="media__body sk-stack">
+                <span class="sk sk--line"></span>
+                <span class="sk sk--line-sm"></span>
+              </div>
+            </li>
+            <li class="media">
+              <div class="media__art"><span class="sk sk--fill"></span></div>
+              <div class="media__body sk-stack">
+                <span class="sk sk--line"></span>
+                <span class="sk sk--line-sm"></span>
+              </div>
+            </li>
+          </ul>
+
+          <ul class="library-grid load-demo__content" data-load-content hidden>
+            <li class="media" data-kind="album">
+              <div class="media__art"><img src="img/covers/slow-tide.jpg" alt="" /></div>
+              <div class="media__body">
+                <a class="media__title truncate" href="album.html">Slow Tide</a>
+                <p class="media__sub truncate">Album · Vela Moreno</p>
+              </div>
+            </li>
+            <li class="media" data-kind="playlist">
+              <div class="media__art"><img src="img/covers/signal-decay.jpg" alt="" /></div>
+              <div class="media__body">
+                <a class="media__title truncate" href="playlist.html">Late Night Drive</a>
+                <p class="media__sub truncate">Playlist · Vela Moreno</p>
+              </div>
+            </li>
+            <li class="media" data-kind="artist">
+              <div class="media__art"><img src="img/artists/vela-moreno.jpg" alt="" /></div>
+              <div class="media__body">
+                <a class="media__title truncate" href="artist.html">Vela Moreno</a>
+                <p class="media__sub truncate">Artist</p>
+              </div>
+            </li>
+            <li class="media" data-kind="podcast">
+              <div class="media__art"><img src="img/covers/pod-field-notes.jpg" alt="" /></div>
+              <div class="media__body">
+                <a class="media__title truncate" href="podcasts.html">Field Notes</a>
+                <p class="media__sub truncate">Podcast · Northern Ridge Radio</p>
+              </div>
+            </li>
+            <li class="media" data-kind="album">
+              <div class="media__art"><img src="img/covers/blue-hour.jpg" alt="" /></div>
+              <div class="media__body">
+                <a class="media__title truncate" href="album.html">Blue Hour</a>
+                <p class="media__sub truncate">Album · Hana Sō</p>
+              </div>
+            </li>
+            <li class="media" data-kind="artist">
+              <div class="media__art"><img src="img/artists/nils-aker.jpg" alt="" /></div>
+              <div class="media__body">
+                <a class="media__title truncate" href="artist.html">Nils Aker</a>
+                <p class="media__sub truncate">Artist</p>
+              </div>
+            </li>
+            <li class="media" data-kind="playlist">
+              <div class="media__art"><img src="img/covers/cold-storage.jpg" alt="" /></div>
+              <div class="media__body">
+                <a class="media__title truncate" href="playlist.html">Deep Focus</a>
+                <p class="media__sub truncate">Playlist · Made for you</p>
+              </div>
+            </li>
+            <li class="media" data-kind="podcast">
+              <div class="media__art"><img src="img/covers/pod-long-way-round.jpg" alt="" /></div>
+              <div class="media__body">
+                <a class="media__title truncate" href="podcasts.html">The Long Way Round</a>
+                <p class="media__sub truncate">Podcast · Wanderline</p>
+              </div>
+            </li>
+          </ul>
+          </div>
+        </div>
+
+        <p class="states__note">
+          Cover placeholders are cut to the card's own 1:1 art box, so the row of titles does not
+          move when the images arrive. The grid carries <b>aria-busy</b> while it resolves and the
+          placeholders themselves are hidden from the accessibility tree — the only thing announced
+          is the counted status in the bar.
+        </p>
+      </section>
+
+      <!-- ============ 02 · Tracklist rows ============ -->
+      <section class="section" aria-labelledby="state-rows">
+        <div class="section__head">
+          <h2 class="section__title" id="state-rows"><span class="states__no">02</span>Tracklist, rows still in flight</h2>
+          <p class="label states__meta">2.75 rem rows · no reflow</p>
+        </div>
+
+        <div class="states__stage">
+          <div class="states__bar">
+            <span class="label">Skeleton</span>
+            <span class="label states__status">0 of 6 rows loaded</span>
+          </div>
+
+          <div class="sk-rows" aria-hidden="true">
+            <div class="sk-row">
+              <span class="sk sk--line-sm sk-row__index"></span>
+              <div class="sk-row__title">
+                <span class="sk sk--line"></span>
+                <span class="sk sk--line-sm"></span>
+              </div>
+              <span class="sk sk--line-sm sk-row__album"></span>
+              <span class="sk sk--line-sm sk-row__dur"></span>
+            </div>
+            <div class="sk-row">
+              <span class="sk sk--line-sm sk-row__index"></span>
+              <div class="sk-row__title">
+                <span class="sk sk--line"></span>
+                <span class="sk sk--line-sm"></span>
+              </div>
+              <span class="sk sk--line-sm sk-row__album"></span>
+              <span class="sk sk--line-sm sk-row__dur"></span>
+            </div>
+            <div class="sk-row">
+              <span class="sk sk--line-sm sk-row__index"></span>
+              <div class="sk-row__title">
+                <span class="sk sk--line"></span>
+                <span class="sk sk--line-sm"></span>
+              </div>
+              <span class="sk sk--line-sm sk-row__album"></span>
+              <span class="sk sk--line-sm sk-row__dur"></span>
+            </div>
+            <div class="sk-row">
+              <span class="sk sk--line-sm sk-row__index"></span>
+              <div class="sk-row__title">
+                <span class="sk sk--line"></span>
+                <span class="sk sk--line-sm"></span>
+              </div>
+              <span class="sk sk--line-sm sk-row__album"></span>
+              <span class="sk sk--line-sm sk-row__dur"></span>
+            </div>
+            <div class="sk-row">
+              <span class="sk sk--line-sm sk-row__index"></span>
+              <div class="sk-row__title">
+                <span class="sk sk--line"></span>
+                <span class="sk sk--line-sm"></span>
+              </div>
+              <span class="sk sk--line-sm sk-row__album"></span>
+              <span class="sk sk--line-sm sk-row__dur"></span>
+            </div>
+            <div class="sk-row">
+              <span class="sk sk--line-sm sk-row__index"></span>
+              <div class="sk-row__title">
+                <span class="sk sk--line"></span>
+                <span class="sk sk--line-sm"></span>
+              </div>
+              <span class="sk sk--line-sm sk-row__album"></span>
+              <span class="sk sk--line-sm sk-row__dur"></span>
+            </div>
+          </div>
+        </div>
+
+        <p class="states__note">
+          The placeholder rows keep the list density's own metrics — the same row height, the same
+          1px seam, the same index and duration gutters — so the tracklist does not jump when titles
+          land. On a phone the album column is dropped here exactly as it is dropped in a resolved
+          tracklist.
+        </p>
+      </section>
+
+      <!-- ============ 03 · Buffering transport ============ -->
+      <section class="section" aria-labelledby="state-buffer">
+        <div class="section__head">
+          <h2 class="section__title" id="state-buffer"><span class="states__no">03</span>Transport, buffering</h2>
+          <p class="label states__meta">green stays off</p>
+        </div>
+
+        <div class="states__stage">
+          <div class="states__bar">
+            <span class="label">Slow Tide · 320 kbps</span>
+            <span class="num states__status" data-buffer-readout role="status">0:07 loaded · 0:12 to resume</span>
+          </div>
+
+          <div class="buffer">
+            <div class="buffer__trace" role="progressbar" aria-label="Buffering Slow Tide" aria-valuemin="0" aria-valuemax="12" aria-valuenow="7">
+              <span class="buffer__loaded"></span>
+              <span class="buffer__front"></span>
+            </div>
+            <p class="buffer__legend">
+              <span><i class="buffer__swatch"></i>7 s buffered</span>
+              <span><i class="buffer__swatch buffer__swatch--head"></i>playhead 0:00, stationary</span>
+            </p>
+          </div>
+        </div>
+
+        <p class="states__note">
+          Playback cannot begin piecemeal, so the transport refuses to pretend: the playhead sits at
+          0:00 and the accent stays off until a full fragment lands. The front edge of the buffered
+          span keeps a slow breath — that is the difference between a stream still arriving and one
+          that has stalled.
+        </p>
+      </section>
+
+      <!-- ============ 04 · Counted vs open progress ============ -->
+      <section class="section" aria-labelledby="state-count">
+        <div class="section__head">
+          <h2 class="section__title" id="state-count"><span class="states__no">04</span>Progress, counted or open</h2>
+          <p class="label states__meta">16 fragments · tabular figures</p>
+        </div>
+
+        <div class="states__stage states__pair">
+          <div class="states__bar">
+            <span class="label">Same wait, two denominators</span>
+          </div>
+
+          <div class="meter">
+            <div class="meter__head">
+              <span class="label">Manifest known</span>
+              <span class="num meter__count">6/16</span>
+            </div>
+            <div class="meter__cells" role="progressbar" aria-label="Manifest known" aria-valuemin="0" aria-valuemax="16" aria-valuenow="6" aria-valuetext="6 of 16 fragments">
+              <i class="is-on"></i><i class="is-on"></i><i class="is-on"></i><i class="is-on"></i><i class="is-on"></i><i class="is-on"></i>
+              <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+            </div>
+            <p class="states__note">
+              Six of sixteen fragments are held. A counted bar is a claim you can check: the number
+              is the same one the status line speaks, and it is set in tabular figures so the meter
+              never twitches as the digits change.
+            </p>
+          </div>
+
+          <div class="meter">
+            <div class="meter__head">
+              <span class="label">Manifest unknown</span>
+              <span class="num meter__count">—</span>
+            </div>
+            <div class="meter__open" role="progressbar" aria-label="Manifest unknown" aria-valuetext="Total unknown">
+              <span class="meter__sweep"></span>
+            </div>
+            <p class="states__note">
+              Before the catalogue answers there is no denominator, so the trace stops claiming one:
+              a single dim band crosses the track and carries no number. Inventing a percentage here
+              would be a lie the user can catch.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <footer class="tracklist__foot">
+        <p>
+          Loading system for the Takofy concept — see also <a href="credits.html">art credits</a>.
+          Placeholders reuse the resolved components' metrics (row heights, seams, square art), and
+          motion is limited to one sheen, one breathing edge and one sweeping band.
+        </p>
+      </footer>
+    </div>
+  </main>
+</div>
+
+<!-- ===================== Now playing panel ===================== -->
+<aside class="now-playing" aria-label="Now playing">
+  <div class="now-playing__head">
+    <h2>Now playing</h2>
+    <button class="icon-button" type="button" aria-label="More options for the current track">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-more"></use></svg>
+    </button>
+  </div>
+
+  <div class="now-playing__art">
+    <img data-now-art src="img/covers/slow-tide.jpg" alt="Slow Tide cover" />
+  </div>
+
+  <div class="now-playing__meta">
+    <div>
+      <a class="now-playing__title truncate" href="album.html" data-now-title>Slow Tide</a>
+      <a class="now-playing__artist truncate" href="artist.html" data-now-artist>Vela Moreno</a>
+    </div>
+    <button class="icon-button icon-button--lg" type="button" data-like data-like-group="now" aria-pressed="false" aria-label="Save to your library">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-heart"></use></svg>
+    </button>
+  </div>
+
+  <p class="now-playing__spec">
+    <span><b>320</b> kbps</span><span>Ogg Vorbis</span><span>44.1 kHz</span><span>Stereo</span>
+  </p>
+
+  <div class="panel-tabs" role="tablist" aria-label="Now playing views">
+    <button class="panel-tab" type="button" role="tab" aria-selected="true" aria-controls="pane-queue" data-panel-tab>Queue</button>
+    <button class="panel-tab" type="button" role="tab" aria-selected="false" aria-controls="pane-lyrics" data-panel-tab>Lyrics</button>
+  </div>
+
+  <div class="panel-pane is-active" id="pane-queue" role="tabpanel" data-panel-pane>
+    <p class="queue-head">Next in queue</p>
+    <ul class="queue" data-queue-list data-playing-scope></ul>
+  </div>
+
+  <div class="panel-pane" id="pane-lyrics" role="tabpanel" data-panel-pane>
+    <div class="lyrics">
+      <p>Harbour wall, salt in the air</p>
+      <p>Nothing moves here but the light</p>
+      <p class="is-current">I keep the tide in a jar by the door</p>
+      <p>Count the bells, count them twice</p>
+      <p>Every green room has a window</p>
+      <p>Every window has your name</p>
+      <p>Slow tide, take your time</p>
+      <p>I am in no hurry tonight</p>
+    </div>
+  </div>
+</aside>
+
+<!-- ===================== Mobile tab bar ===================== -->
+<nav class="tabbar" aria-label="Primary">
+  <a href="index.html" data-nav="home"><svg class="icon icon--lg" aria-hidden="true"><use href="#i-home"></use></svg>Home</a>
+  <a href="search.html" data-nav="search"><svg class="icon icon--lg" aria-hidden="true"><use href="#i-search"></use></svg>Search</a>
+  <a href="podcasts.html" data-nav="podcasts"><svg class="icon icon--lg" aria-hidden="true"><use href="#i-mic"></use></svg>Podcasts</a>
+</nav>
+
+<!-- ===================== Playbar ===================== -->
+<footer class="playbar">
+  <div class="playbar__now">
+    <img class="playbar__art" data-now-art src="img/covers/slow-tide.jpg" alt="Slow Tide cover" />
+    <div class="playbar__text">
+      <a class="playbar__title truncate" href="album.html" data-now-title>Slow Tide</a>
+      <a class="playbar__artist truncate" href="artist.html" data-now-artist>Vela Moreno</a>
+    </div>
+    <button class="icon-button" type="button" data-like data-like-group="now" aria-pressed="false" aria-label="Save to your library">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-heart"></use></svg>
+    </button>
+    <button class="icon-button" type="button" aria-label="Open miniplayer">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-screen"></use></svg>
+    </button>
+  </div>
+
+  <div class="playbar__center">
+    <div class="playbar__buttons">
+      <button class="icon-button" type="button" data-toggle aria-pressed="false" aria-label="Shuffle">
+        <svg class="icon icon--md" aria-hidden="true"><use href="#i-shuffle"></use></svg>
+      </button>
+      <button class="icon-button" type="button" data-prev aria-label="Previous track">
+        <svg class="icon icon--md" aria-hidden="true"><use href="#i-prev"></use></svg>
+      </button>
+      <button class="play-button playbar__play" type="button" data-transport aria-label="Play or pause">
+        <svg class="icon icon--md" aria-hidden="true"><use href="#i-pause" data-transport-icon></use></svg>
+      </button>
+      <button class="icon-button" type="button" data-next aria-label="Next track">
+        <svg class="icon icon--md" aria-hidden="true"><use href="#i-next"></use></svg>
+      </button>
+      <button class="icon-button" type="button" data-toggle aria-pressed="false" aria-label="Repeat">
+        <svg class="icon icon--md" aria-hidden="true"><use href="#i-repeat"></use></svg>
+      </button>
+    </div>
+
+    <div class="playbar__progress">
+      <span class="playbar__time" data-elapsed>1:14</span>
+      <div class="slider" data-seek role="slider" tabindex="0" aria-label="Seek" aria-valuemin="0" aria-valuenow="74" aria-valuemax="222">
+        <div class="slider__track"></div>
+        <div class="slider__fill" data-seek-fill></div>
+        <div class="slider__thumb"></div>
+      </div>
+      <span class="playbar__time playbar__time--end" data-remaining>-2:28</span>
+    </div>
+  </div>
+
+  <div class="playbar__extras">
+    <button class="icon-button" type="button" aria-label="Queue">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-queue"></use></svg>
+    </button>
+    <button class="icon-button" type="button" aria-label="Connect to a device">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-devices"></use></svg>
+    </button>
+    <button class="icon-button" type="button" aria-label="Mute">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-volume" data-volume-icon></use></svg>
+    </button>
+    <div class="slider playbar__volume" data-volume role="slider" tabindex="0" aria-label="Volume" aria-valuemin="0" aria-valuenow="72" aria-valuemax="100">
+      <div class="slider__track"></div>
+      <div class="slider__fill"></div>
+      <div class="slider__thumb"></div>
+    </div>
+    <button class="icon-button" type="button" aria-label="Full screen">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-expand"></use></svg>
+    </button>
+  </div>
+
+  <div class="playbar__minibar" aria-hidden="true">
+    <div class="progress-bar__fill" data-mini-fill></div>
+  </div>
+</footer>
+
+<script src="main.js"></script>
+</body>
+</html>

@@ -761,6 +761,24 @@ impl Library {
             Load::Idle | Load::Loading | Load::Failed(_) => None,
         }
     }
+
+    /// How many episodes the show on this page lists, once the followed list
+    /// that carries the count is ready.
+    ///
+    /// The count arrives with the listing rather than with the show's own detail,
+    /// so a show page can hold its rows open while the detail is still in flight.
+    pub fn selected_show_episodes(&self) -> Option<usize> {
+        let Page::Show(uri) = self.history.current()? else {
+            return None;
+        };
+        match &self.followed {
+            Load::Ready(shows) => shows
+                .iter()
+                .find(|show| show.uri == *uri)
+                .and_then(|show| show.episodes),
+            Load::Idle | Load::Loading | Load::Failed(_) => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -772,6 +790,34 @@ mod tests {
 
     use super::*;
     use crate::discography::Chip;
+    #[test]
+    fn a_show_page_holds_open_the_episode_count_its_listing_names() {
+        let mut library = Library {
+            followed: Load::Ready(vec![FollowedShow {
+                uri: "spotify:show:a".to_owned(),
+                name: "Field Notes".to_owned(),
+                named: true,
+                publisher: None,
+                episodes: Some(12),
+                cover: None,
+            }]),
+            ..Library::default()
+        };
+        library.open(Page::Show("spotify:show:a".to_owned()));
+        assert_eq!(library.selected_show_episodes(), Some(12));
+
+        library.open(Page::Show("spotify:show:b".to_owned()));
+        assert_eq!(
+            library.selected_show_episodes(),
+            None,
+            "another show's count is not this page's"
+        );
+
+        library.followed = Load::Loading;
+        library.open(Page::Show("spotify:show:a".to_owned()));
+        assert_eq!(library.selected_show_episodes(), None);
+    }
+
     use crate::library_filter::RootKind;
     use crate::lyrics::Tab;
     use crate::message::TransportUpdate;

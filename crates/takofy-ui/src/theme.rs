@@ -142,6 +142,10 @@ pub mod extent {
     pub const PLAYBAR_H: f32 = 64.0;
     pub const TOPBAR_H: f32 = 56.0;
     pub const ROW_H: f32 = 44.0;
+    /// The two bars a placeholder is made of: the reference's 0.5rem and
+    /// 0.375rem hairlines of held ink.
+    pub const SKELETON_LINE: f32 = 8.0;
+    pub const SKELETON_LINE_SM: f32 = 6.0;
     pub const BUTTON: f32 = 28.0;
     pub const BUTTON_LG: f32 = 34.0;
     pub const SLIDER_H: f32 = 14.0;
@@ -381,6 +385,10 @@ pub mod motion {
     pub const BASE: f32 = 0.180;
     pub const SLOW: f32 = 0.300;
     pub const EASE_OUT: [f32; 4] = [0.3, 0.0, 0.0, 1.0];
+    /// One pass of the light across a placeholder, and the offset that keeps a
+    /// row of them from sweeping as a single sheet.
+    pub const SHEEN: f32 = 1.700;
+    pub const STAGGER: f32 = 0.120;
 }
 
 pub mod stroke {
@@ -417,6 +425,14 @@ pub struct Palette {
     pub border_strong: Color32,
     /// What sits between the window and a modal.
     pub scrim: Color32,
+    /// A placeholder's fill: the type's own bone held at 9%, so a skeleton sits
+    /// inside the palette rather than reading as a grey box dropped on top of it.
+    pub skeleton: Color32,
+    /// The light that crosses a placeholder.
+    pub skeleton_sheen: Color32,
+    /// A placeholder's text bar: one step brighter than its fill, because a line
+    /// of type is what it stands in for.
+    pub skeleton_rule: Color32,
     /// Primary text.
     pub text: Color32,
     /// Secondary text: artist, album, duration, placeholder.
@@ -464,6 +480,9 @@ impl Palette {
         border: Color32::from_rgba_unmultiplied_const(0xf2, 0xf0, 0xea, 28),
         border_strong: Color32::from_rgba_unmultiplied_const(0xf2, 0xf0, 0xea, 66),
         scrim: Color32::from_rgba_unmultiplied_const(0x00, 0x00, 0x00, 199),
+        skeleton: Color32::from_rgba_unmultiplied_const(0xf2, 0xf0, 0xea, 23),
+        skeleton_sheen: Color32::from_rgba_unmultiplied_const(0xf2, 0xf0, 0xea, 43),
+        skeleton_rule: Color32::from_rgba_unmultiplied_const(0xf2, 0xf0, 0xea, 46),
         text: Color32::from_rgb(0xf2, 0xf0, 0xea),
         text_muted: Color32::from_rgb(0xb0, 0xac, 0xa4),
         text_subtle: Color32::from_rgb(0x83, 0x80, 0x7a),

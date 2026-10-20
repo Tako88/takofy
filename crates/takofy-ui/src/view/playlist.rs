@@ -27,6 +27,7 @@ use crate::theme::{Tokens, extent, space};
 use super::filter_row;
 use super::hero;
 use super::media;
+use super::skeleton;
 use super::text as recipe;
 use super::track_list::{head, list_rect};
 use super::track_row::{self, Click, Row, state_of};
@@ -126,7 +127,12 @@ pub fn tracks_view(
             match &library.tracks {
                 Load::Idle => {}
                 Load::Loading => {
-                    ui.spinner();
+                    // The listing already names how many tracks there are, so the
+                    // page holds that many rows open rather than a screenful.
+                    let count = skeleton::row_count(
+                        library.selected_entry().and_then(|entry| entry.tracks),
+                    );
+                    skeleton::rows(ui, count, table.columns().for_playlist(true), tokens);
                 }
                 Load::Failed(failure) => {
                     ui.label(recipe::muted(
@@ -424,9 +430,11 @@ fn idle(
 
                 match view {
                     IdleView::Loading => {
-                        // The sidebar's loading copy, so both library surfaces say
-                        // the same thing while the list is fetched.
-                        ui.label(recipe::muted("Loading your playlists…", tokens));
+                        let solved = media_grid(ui);
+                        let count = skeleton::SCREENFUL;
+                        let list = grid_rect(ui, &solved, count);
+                        ui.allocate_rect(list, egui::Sense::hover());
+                        skeleton::tiles(ui, &solved, count, tokens);
                     }
                     IdleView::Failed(failure) => {
                         ui.label(recipe::muted(

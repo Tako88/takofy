@@ -29,6 +29,7 @@ use crate::theme::Tokens;
 use super::episode_row;
 use super::hero;
 use super::section;
+use super::skeleton;
 use super::text as recipe;
 use super::track_list::list_rect_with;
 use super::track_row::{Click, state_of};
@@ -66,7 +67,8 @@ pub fn show_view(
             match &library.show {
                 Load::Idle => {}
                 Load::Loading => {
-                    ui.spinner();
+                    let count = skeleton::row_count(library.selected_show_episodes());
+                    skeleton::episode_rows(ui, count, tokens);
                 }
                 Load::Failed(failure) => {
                     ui.label(recipe::muted(

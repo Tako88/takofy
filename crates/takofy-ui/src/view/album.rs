@@ -26,6 +26,7 @@ use crate::theme::{Tokens, extent};
 use crate::view::text as recipe;
 
 use super::hero;
+use super::skeleton;
 use super::track_list::{head, list_rect};
 use super::track_row::{self, Click, Row, TitleCell, state_of};
 
@@ -68,7 +69,7 @@ pub fn album_view(
             match &library.album {
                 Load::Idle => {}
                 Load::Loading => {
-                    ui.spinner();
+                    skeleton::rows(ui, skeleton::SCREENFUL, table.columns().for_album(), tokens);
                 }
                 Load::Failed(failure) => {
                     ui.label(recipe::muted(
@@ -84,7 +85,12 @@ pub fn album_view(
                     // the page keeps its loading state rather than painting that
                     // album's band and rows.
                     let Some(album) = library.current_album() else {
-                        ui.spinner();
+                        skeleton::rows(
+                            ui,
+                            skeleton::SCREENFUL,
+                            table.columns().for_album(),
+                            tokens,
+                        );
                         return;
                     };
                     // The one cover lookup on this page: the rows carry none, so the
@@ -971,11 +977,11 @@ mod tests {
             "the page paints no words for another album: {texts:?}"
         );
         assert!(
-            output
-                .shapes
-                .iter()
-                .any(|clipped| matches!(clipped.shape, egui::epaint::Shape::Path(_))),
-            "the loading state's spinner arc is painted"
+            output.shapes.iter().any(|clipped| matches!(
+                &clipped.shape,
+                egui::epaint::Shape::Rect(rect) if rect.fill == Tokens::DARK.palette.skeleton_rule
+            )),
+            "the page holds its rows open instead of naming another album"
         );
     }
 }

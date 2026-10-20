@@ -37,6 +37,7 @@ use super::filter_row;
 use super::media;
 use super::release_block::{self, Block};
 use super::section;
+use super::skeleton;
 use super::track_list::{head, list_rect};
 use super::track_row::{self, Click, Row, TitleCell, state_of};
 
@@ -77,7 +78,7 @@ pub fn artist_view(
             match page.load {
                 Load::Idle => {}
                 Load::Loading => {
-                    ui.spinner();
+                    skeleton::rows(ui, skeleton::SCREENFUL, table.columns().for_album(), tokens);
                 }
                 Load::Failed(failure) => {
                     ui.label(recipe::muted(
@@ -93,7 +94,12 @@ pub fn artist_view(
                     // artist's: the page keeps its loading state rather than
                     // painting that artist's hero and discography.
                     let Some(artist) = page.current else {
-                        ui.spinner();
+                        skeleton::rows(
+                            ui,
+                            skeleton::SCREENFUL,
+                            table.columns().for_album(),
+                            tokens,
+                        );
                         return;
                     };
 
@@ -1388,11 +1394,11 @@ mod tests {
             "the page paints no words for another artist: {texts:?}"
         );
         assert!(
-            output
-                .shapes
-                .iter()
-                .any(|clipped| matches!(clipped.shape, egui::epaint::Shape::Path(_))),
-            "the loading state's spinner arc is painted"
+            output.shapes.iter().any(|clipped| matches!(
+                &clipped.shape,
+                egui::epaint::Shape::Rect(rect) if rect.fill == Tokens::DARK.palette.skeleton_rule
+            )),
+            "the page holds its rows open instead of naming another artist"
         );
     }
 
