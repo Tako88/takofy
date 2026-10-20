@@ -559,7 +559,7 @@ mod tests {
         // The narrowest content area the shell hands the tracklist at WINDOW_MIN,
         // then every width up to a full playlist. A playlist keeps the artist by
         // dropping the album; below 760 it also drops the date and the like.
-        let narrowest = WINDOW_MIN[0] - extent::SIDEBAR_RAIL_W;
+        let narrowest = WINDOW_MIN[0];
         for present in [
             Present {
                 album: false,
@@ -599,7 +599,7 @@ mod tests {
         // WINDOW_MIN, with every column present, then widths below it.
         for width in [
             WINDOW_MIN[0] - extent::SIDEBAR_W,
-            WINDOW_MIN[0] - extent::SIDEBAR_RAIL_W,
+            WINDOW_MIN[0],
             200.0,
             100.0,
             24.0,

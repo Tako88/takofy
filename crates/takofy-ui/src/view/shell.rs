@@ -39,35 +39,11 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
             "sidebar",
             grid.sidebar,
             grid.sidebar.shrink(inset),
-            |ui| {
-                sidebar::show(
-                    ui,
-                    Sidebar::Full,
-                    screen.library,
-                    screen.art,
-                    screen.now,
-                    tokens,
-                )
-            },
+            |ui| sidebar::show(ui, screen.library, screen.art, screen.now, tokens),
         ),
-        // Below 900 the rail keeps the monogram and the nav icons and drops the
-        // wordmark, the labels and the library, which is what the reference does.
-        Sidebar::Rail => region(
-            ui,
-            "sidebar-rail",
-            grid.sidebar,
-            grid.sidebar.shrink(inset),
-            |ui| {
-                sidebar::show(
-                    ui,
-                    Sidebar::Rail,
-                    screen.library,
-                    screen.art,
-                    screen.now,
-                    tokens,
-                )
-            },
-        ),
+        // Below 900 the sidebar is not a column: the layout gives it no width
+        // and the drawer toggle puts the same sidebar over the main pane.
+        Sidebar::Rail => None,
     };
 
     // The topbar reports a nav as a request, because the crumbs borrow the
@@ -212,14 +188,7 @@ fn drawer_overlay(ui: &mut Ui, grid: Grid, screen: &mut Screen<'_>, tokens: &Tok
                 .layout(Layout::top_down(Align::Min)),
         );
         child.set_clip_rect(grid.drawer);
-        sidebar::show(
-            &mut child,
-            Sidebar::Full,
-            screen.library,
-            screen.art,
-            screen.now,
-            tokens,
-        );
+        sidebar::show(&mut child, screen.library, screen.art, screen.now, tokens);
     });
 
     inner.response.clicked_elsewhere()

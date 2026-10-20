@@ -1,8 +1,7 @@
-//! The sidebar: the brand, the navigation and the library.
+//! The sidebar: the library's four filters, its size and its list.
 //!
-//! The rail and the full sidebar are one function, because they share everything
-//! but the label and the padding, and which one is on screen comes from the
-//! region model rather than from a mode of its own.
+//! Below 900 points this is not a column at all: the layout gives it no width
+//! and the drawer holds it, which is why there is one form here and no rail.
 
 use std::time::Instant;
 
@@ -11,9 +10,9 @@ use takofy_model::FollowedShow;
 
 use crate::availability::Control;
 use crate::cover::{Art, Cover};
-use crate::format::sidebar_kind_label;
-use crate::icon::{self, Icon};
-use crate::layout::{Sidebar, chips};
+use crate::format::{library_count, library_kind, sidebar_kind_label};
+use crate::icon::Icon;
+use crate::layout::chips;
 use crate::library::{Library, Load};
 use crate::message::{Command, Failure};
 use crate::route::Page;
@@ -32,169 +31,45 @@ use super::text as recipe;
 /// A library row: the art tile plus the padding above and below it.
 pub(super) const ROW_H: f32 = extent::LIBRARY_ART + 2.0 * space::S2;
 
+/// How many chips a row of the filter grid holds.
+const CHIP_COLUMNS: usize = 2;
+
 /// Draws the sidebar, returning a command if one of its controls asked for one.
 pub fn show(
     ui: &mut Ui,
-    form: Sidebar,
     library: &mut Library,
     art: &mut Art,
     now: Instant,
     tokens: &Tokens,
 ) -> Option<Command> {
     let band = ui.available_rect_before_wrap();
-    let y = brand(ui, form, tokens, band, band.top());
-    let y = nav(ui, form, tokens, band, y);
+    let y = filters(ui, library, tokens, band);
+    let y = head(ui, library, tokens, band, y);
 
-    match form {
-        Sidebar::Rail => None,
-        Sidebar::Full => library_block(ui, library, art, now, tokens, band, y),
-    }
+    let list = Rect::from_min_size(
+        Pos2::new(band.left() + space::S2, y),
+        Vec2::new(band.width() - 2.0 * space::S2, band.bottom() - y),
+    );
+    rows(ui, list, library, art, now, tokens)
 }
 
-/// The monogram, and beside it the wordmark the rail has no room for.
-fn brand(ui: &mut Ui, form: Sidebar, tokens: &Tokens, band: Rect, top: f32) -> f32 {
-    let side = Size::LG.side;
-    let row = Rect::from_min_size(
-        Pos2::new(band.left(), top + space::S4),
-        Vec2::new(band.width(), side),
-    );
-    let logo = match form {
-        Sidebar::Rail => Rect::from_center_size(row.center(), Vec2::splat(side)),
-        Sidebar::Full => Rect::from_min_size(
-            Pos2::new(row.left() + space::S4, row.top()),
-            Vec2::splat(side),
-        ),
-    };
-    icon::paint(
-        ui.painter(),
-        Icon::Logo,
-        logo,
-        Size::LG,
-        tokens.palette.text,
-    );
-
-    if form == Sidebar::Full {
-        let mark = Rect::from_min_size(
-            Pos2::new(logo.right() + space::S3, row.top()),
-            Vec2::new(row.right() - logo.right() - space::S4, side),
-        );
-        ui.put(mark, egui::Label::new(recipe::wordmark("Takofy", tokens)));
-    }
-
-    row.bottom() + space::S3
-}
-
-/// Home and Search. Neither view exists yet, so both are drawn waiting.
-fn nav(ui: &mut Ui, form: Sidebar, tokens: &Tokens, band: Rect, top: f32) -> f32 {
-    let height = Size::LG.side + 2.0 * space::S2;
-    let inset = match form {
-        Sidebar::Rail => 0.0,
-        Sidebar::Full => space::S1,
-    };
-    let mut y = top;
-
-    for (control, glyph, label) in [
-        (Control::NavHome, Icon::Home, "Home"),
-        (Control::NavSearch, Icon::Search, "Search"),
-    ] {
-        let rect = Rect::from_min_size(
-            Pos2::new(band.left() + inset, y),
-            Vec2::new(band.width() - 2.0 * inset, height),
-        );
-        controls::nav_item(ui, tokens, control, rect, form, glyph, label);
-        y = rect.bottom() + space::PX;
-    }
-
-    y
-}
-
-/// The library: the rule, the caption, the filter chips and the list.
-fn library_block(
-    ui: &mut Ui,
-    library: &mut Library,
-    art: &mut Art,
-    now: Instant,
-    tokens: &Tokens,
-    band: Rect,
-    top: f32,
-) -> Option<Command> {
-    let inset = space::S1;
-    let rule_rect = Rect::from_min_size(
-        Pos2::new(band.left() + inset, top + space::S4),
-        Vec2::new(band.width() - 2.0 * inset, stroke::HAIRLINE),
-    );
-    rule(ui, rule_rect, tokens.palette.border);
-    let mut y = rule_rect.bottom() + space::S3;
-
-    // The caption, with the reference's two buttons to the right. Creating a
-    // playlist and expanding the library both wait for folders.
-    let row = Rect::from_min_size(
-        Pos2::new(band.left() + space::S4, y),
-        Vec2::new(band.width() - 2.0 * space::S4, extent::BUTTON),
-    );
-    let caption = recipe::spaced(
-        ui,
-        "YOUR LIBRARY",
-        egui::FontId::new(text::XXS, fonts::mono(MonoWeight::Medium)),
-        tokens.palette.text_subtle,
-        recipe::tracking_pts(text::XXS, tracking::CAPS),
-    );
-    ui.painter().galley(
-        Pos2::new(row.left(), row.center().y - caption.size().y / 2.0),
-        caption,
-        tokens.palette.text_subtle,
-    );
-    let expand = Rect::from_min_size(
-        Pos2::new(
-            row.right() - extent::BUTTON,
-            row.center().y - extent::BUTTON / 2.0,
-        ),
-        Vec2::splat(extent::BUTTON),
-    );
-    controls::icon_button(
-        ui,
-        tokens,
-        Control::LibraryExpand,
-        expand,
-        Icon::ArrowRight,
-        Size::MD,
-        "Expand your library",
-        true,
-    );
-    let create = Rect::from_min_size(
-        Pos2::new(expand.left() - extent::BUTTON - space::S1, expand.top()),
-        Vec2::splat(extent::BUTTON),
-    );
-    controls::icon_button(
-        ui,
-        tokens,
-        Control::LibraryCreate,
-        create,
-        Icon::Plus,
-        Size::MD,
-        "Create playlist or folder",
-        true,
-    );
-    y = row.bottom() + space::S2;
-
-    // The kind row, in the reference's order. The pressed chip is the chosen
-    // kind; a waiting chip never reports a click, so it stays unpressed.
-    let sizes: Vec<Vec2> = sidebar_kind::ROW
-        .iter()
-        .map(|kind| controls::chip_size(ui, tokens, sidebar_kind_label(*kind)))
-        .collect();
-    // The sidebar's row is its buttons' pitch, not a chip's height: the chips
-    // are shorter than the row they sit in.
-    let wrapped = chips::wrap(
-        &sizes,
-        band.width() - 2.0 * space::S4,
-        space::S1,
+/// The four filters, in a fixed 2x2 block at the top of the sidebar.
+///
+/// Pressing the pressed chip does nothing: the reference's exclusive group keeps
+/// one chip lit, because a library with no filter and a library filtered to
+/// nothing are not the same view.
+fn filters(ui: &mut Ui, library: &mut Library, tokens: &Tokens, band: Rect) -> f32 {
+    let width = band.width() - 2.0 * space::S4;
+    let placed = chips::grid(
+        sidebar_kind::ROW.len(),
+        width,
+        CHIP_COLUMNS,
         extent::BUTTON,
         space::S1,
     );
-    let origin = Vec2::new(band.left() + space::S4, y);
+    let origin = Vec2::new(band.left() + space::S4, band.top() + space::S4);
     let mut pressed: Option<SidebarKind> = None;
-    for (kind, rect) in sidebar_kind::ROW.iter().zip(wrapped.rects) {
+    for (kind, rect) in sidebar_kind::ROW.iter().zip(placed.rects) {
         let slot = controls::chip_in(
             ui,
             tokens,
@@ -210,13 +85,78 @@ fn library_block(
     if let Some(kind) = pressed {
         library.sidebar_kind.choose(kind);
     }
-    y += wrapped.height + space::S3;
 
-    let list = Rect::from_min_size(
-        Pos2::new(band.left() + space::S2, y),
-        Vec2::new(band.width() - 2.0 * space::S2, band.bottom() - y),
+    origin.y + placed.height + space::S3
+}
+
+/// The rule, the library's size and the button that will one day create one.
+fn head(ui: &mut Ui, library: &Library, tokens: &Tokens, band: Rect, top: f32) -> f32 {
+    rule(
+        ui,
+        Rect::from_min_size(
+            Pos2::new(band.left() + space::S1, top),
+            Vec2::new(band.width() - 2.0 * space::S1, stroke::HAIRLINE),
+        ),
+        tokens.palette.border,
     );
-    rows(ui, list, library, art, now, tokens)
+
+    let row = Rect::from_min_size(
+        Pos2::new(band.left() + space::S4, top + space::S2),
+        Vec2::new(band.width() - 2.0 * space::S4, extent::BUTTON),
+    );
+    let (shown, total) = counts(library);
+    let label = recipe::spaced(
+        ui,
+        &library_count(shown, total),
+        egui::FontId::new(text::XXS, fonts::mono(MonoWeight::Medium)),
+        tokens.palette.text_subtle,
+        recipe::tracking_pts(text::XXS, tracking::CAPS),
+    );
+    ui.painter().galley(
+        Pos2::new(row.left(), row.center().y - label.size().y / 2.0),
+        label,
+        tokens.palette.text_subtle,
+    );
+
+    // Creating a playlist waits for folders, so this is the reference's button
+    // in its waiting form, and it is the only one left in the head.
+    let create = Rect::from_min_size(
+        Pos2::new(
+            row.right() - extent::BUTTON,
+            row.center().y - extent::BUTTON / 2.0,
+        ),
+        Vec2::splat(extent::BUTTON),
+    );
+    controls::icon_button(
+        ui,
+        tokens,
+        Control::LibraryCreate,
+        create,
+        Icon::Plus,
+        Size::MD,
+        "Create playlist or folder",
+        true,
+    );
+
+    row.bottom() + space::S2
+}
+
+/// How many things the sidebar lists, and how many the chosen filter shows.
+fn counts(library: &Library) -> (usize, usize) {
+    let playlists = match &library.playlists {
+        Load::Ready(playlists) => playlists.len(),
+        Load::Idle | Load::Loading | Load::Failed(_) => 0,
+    };
+    let shows = match &library.followed {
+        Load::Ready(shows) => shows.len(),
+        Load::Idle | Load::Loading | Load::Failed(_) => 0,
+    };
+    let shown = match library.sidebar_kind.chosen() {
+        SidebarKind::Playlists => playlists,
+        SidebarKind::Podcasts => shows,
+        SidebarKind::Artists | SidebarKind::Albums => 0,
+    };
+    (shown, playlists + shows)
 }
 
 /// The list the chosen kind shows, or the state of the load that fetches it.
@@ -264,10 +204,11 @@ fn rows(
                                             .allocate_space(Vec2::new(ui.available_width(), ROW_H));
                                         let selected =
                                             current.as_deref() == Some(entry.uri.as_str());
+                                        let kind = library_kind("Playlist", entry.owner.as_deref());
                                         let row = LibraryRow {
                                             id: playlist_row_id(ui, &entry.uri),
                                             name: &entry.name,
-                                            kind: "Playlist",
+                                            kind: &kind,
                                             cover: art.look(entry.cover.as_ref(), now),
                                             selected,
                                         };
@@ -448,10 +389,11 @@ fn show_rows(
                                 let (_, place) =
                                     ui.allocate_space(Vec2::new(ui.available_width(), ROW_H));
                                 let selected = current.as_deref() == Some(show.uri.as_str());
+                                let kind = library_kind("Podcast", show.publisher.as_deref());
                                 let row = LibraryRow {
                                     id: show_row_id(ui, &show.uri),
                                     name: &show.name,
-                                    kind: "Podcast",
+                                    kind: &kind,
                                     cover: art.look(show.cover.as_ref(), now),
                                     selected,
                                 };
@@ -594,14 +536,7 @@ mod tests {
             ..Default::default()
         };
         let mut output = ctx.run_ui(input, |ui| {
-            let _ = show(
-                ui,
-                Sidebar::Full,
-                &mut library,
-                &mut art,
-                Instant::now(),
-                &tokens,
-            );
+            let _ = show(ui, &mut library, &mut art, Instant::now(), &tokens);
         });
         output.textures_delta.clear();
 
@@ -637,59 +572,54 @@ mod tests {
         chips
     }
 
-    /// The rects the real sidebar paints, per label and band width. The same
-    /// positions are pinned in [`chips::wrap`]'s own tests; this is the half
-    /// that catches a bad call site: the width, the origin or the row pitch
-    /// handed to `wrap` wrong.
+    /// The four filters' labels, and where their chips are centred.
+    ///
+    /// The rect is rebuilt from the painted glyps, so it is the label's own box
+    /// rather than the cell: a chip's label is centred in its cell, which is
+    /// what this pins.
     #[test]
     fn the_drawn_chips_keep_their_characterised_positions() {
-        for (width, expected) in [
-            (
-                254.0,
-                vec![
-                    ("Playlists", 16.0, 193.0),
-                    ("Artists", 93.213, 193.0),
-                    ("Albums", 157.206, 193.0),
-                    ("Podcasts", 16.0, 225.0),
-                ],
-            ),
-            (
-                200.0,
-                vec![
-                    ("Playlists", 16.0, 193.0),
-                    ("Artists", 93.213, 193.0),
-                    ("Albums", 16.0, 225.0),
-                    ("Podcasts", 73.4, 225.0),
-                ],
-            ),
-            (
-                140.0,
-                vec![
-                    ("Playlists", 16.0, 193.0),
-                    ("Artists", 16.0, 225.0),
-                    ("Albums", 16.0, 257.0),
-                    ("Podcasts", 16.0, 289.0),
-                ],
-            ),
-            (
-                100.0,
-                vec![
-                    ("Playlists", 16.0, 193.0),
-                    ("Artists", 16.0, 225.0),
-                    ("Albums", 16.0, 257.0),
-                    ("Podcasts", 16.0, 289.0),
-                ],
-            ),
-        ] {
+        // The sidebar is a fixed 256 points, in the column and in the drawer, so
+        // these are the two widths the grid is ever solved at: the panel less its
+        // hairline, and the panel itself.
+        for width in [254.0, 256.0] {
             let chips = painted_chips(width);
-            assert_eq!(chips.len(), expected.len(), "band width {width}");
-            for ((label, rect), (expected, left, top)) in chips.iter().zip(&expected) {
-                assert_eq!(label, expected, "band width {width}");
+            assert_eq!(chips.len(), sidebar_kind::ROW.len(), "band width {width}");
+
+            let cell = (width - 2.0 * space::S4 - space::S1) / 2.0;
+            for (index, (label, rect)) in chips.iter().enumerate() {
+                assert_eq!(label, &sidebar_kind_label(sidebar_kind::ROW[index]));
+                let column = index % CHIP_COLUMNS;
+                let row = index / CHIP_COLUMNS;
+                let centre_x = space::S4 + column as f32 * (cell + space::S1) + cell / 2.0;
+                let centre_y =
+                    space::S4 + row as f32 * (extent::BUTTON + space::S1) + extent::BUTTON / 2.0;
                 assert!(
-                    (rect.left() - left).abs() < 0.01 && (rect.top() - top).abs() < 0.01,
-                    "band width {width}: {label} at {rect:?}, not ({left}, {top})"
+                    (rect.center().x - centre_x).abs() < 0.01
+                        && (rect.center().y - centre_y).abs() < 0.01,
+                    "band width {width}: {label} centred at {:?}, not ({centre_x}, {centre_y})",
+                    rect.center()
                 );
             }
+        }
+    }
+
+    #[test]
+    fn the_four_filters_sit_in_two_equal_columns() {
+        let chips = painted_chips(254.0);
+        assert_eq!(chips.len(), 4);
+        let cell = (254.0 - 2.0 * space::S4 - space::S1) / 2.0;
+        // Two chips share a row, and the columns are the same width, so the
+        // block reads as a grid rather than as four buttons that happened to fit.
+        assert!((chips[0].1.center().y - chips[1].1.center().y).abs() < 0.01);
+        assert!((chips[2].1.center().y - chips[3].1.center().y).abs() < 0.01);
+        assert!(chips[2].1.center().y > chips[0].1.center().y);
+        for pair in [(0, 1), (2, 3)] {
+            let gap = chips[pair.1].1.center().x - chips[pair.0].1.center().x;
+            assert!(
+                (gap - (cell + space::S1)).abs() < 0.01,
+                "columns are one cell apart"
+            );
         }
     }
 
@@ -807,7 +737,7 @@ mod tests {
         let tokens = Tokens::DARK;
         let mut command = None;
         let mut output = ctx.run_ui(input, |ui| {
-            if let Some(next) = show(ui, Sidebar::Full, library, art, Instant::now(), &tokens) {
+            if let Some(next) = show(ui, library, art, Instant::now(), &tokens) {
                 command = Some(next);
             }
         });

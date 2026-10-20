@@ -279,6 +279,27 @@ pub fn library_note(count: usize) -> String {
     format!("{count} saved")
 }
 
+/// The sidebar's size readout: the whole library, or what a filter leaves.
+pub fn library_count(shown: usize, total: usize) -> String {
+    if shown == total {
+        format!("{total} saved")
+    } else {
+        format!("{shown} of {total}")
+    }
+}
+
+/// A library row's second line: what the thing is, and whose it is.
+///
+/// The reference writes `Playlist · Vela Moreno` for a playlist and the
+/// publisher alone for a show; a row with nothing to add carries the kind word
+/// by itself rather than a dangling separator.
+pub fn library_kind(kind: &str, detail: Option<&str>) -> String {
+    match detail.map(str::trim).filter(|detail| !detail.is_empty()) {
+        Some(detail) => format!("{kind} · {detail}"),
+        None => kind.to_owned(),
+    }
+}
+
 /// The root's filter row labels each chip as the reference writes it.
 pub fn root_filter_label(kind: RootKind) -> &'static str {
     match kind {
@@ -763,6 +784,24 @@ mod tests {
             vec!["Lateral".to_owned()],
             "a future age is omitted"
         );
+    }
+
+    #[test]
+    fn library_counts() {
+        assert_eq!(library_count(0, 0), "0 saved");
+        assert_eq!(library_count(28, 28), "28 saved");
+        assert_eq!(library_count(3, 28), "3 of 28");
+    }
+
+    #[test]
+    fn library_kinds() {
+        assert_eq!(
+            library_kind("Playlist", Some("Vela Moreno")),
+            "Playlist · Vela Moreno"
+        );
+        assert_eq!(library_kind("Podcast", None), "Podcast");
+        assert_eq!(library_kind("Playlist", Some("   ")), "Playlist");
+        assert_eq!(library_kind("Album", Some(" Hana Sō ")), "Album · Hana Sō");
     }
 
     #[test]

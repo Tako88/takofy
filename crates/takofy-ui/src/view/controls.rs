@@ -14,13 +14,12 @@ use std::sync::Arc;
 use egui::emath::GuiRounding;
 use egui::text::LayoutJob;
 use egui::{
-    Align2, Color32, FontId, Galley, Rect, Response, Role, Sense, Stroke, StrokeKind, TextFormat,
-    Ui, Vec2, WidgetInfo, pos2,
+    Color32, FontId, Galley, Rect, Response, Role, Sense, Stroke, StrokeKind, TextFormat, Ui, Vec2,
+    WidgetInfo, pos2,
 };
 
 use crate::availability::{Availability, Control, availability};
 use crate::icon::{self, Icon};
-use crate::layout::Sidebar;
 use crate::theme::ease;
 use crate::theme::icon::Size;
 use crate::theme::{
@@ -295,51 +294,6 @@ pub fn round_button(
     slot
 }
 
-/// A navigation entry: icon and label in the sidebar, icon alone in the rail.
-///
-/// The two forms differ only in the label and the padding, which is why they are
-/// one control taking the region model rather than two controls.
-pub fn nav_item(
-    ui: &mut Ui,
-    tokens: &Tokens,
-    control: Control,
-    rect: Rect,
-    form: Sidebar,
-    icon: Icon,
-    label: &str,
-) -> Slot {
-    let slot = slot(ui, control, Role::Button, rect, label, tokens, true);
-    if let Some(fill) = wash(ui, tokens, slot.hover) {
-        ui.painter().rect_filled(rect, radius::SM, fill);
-    }
-
-    let color = foreground(tokens, slot.live, slot.hover);
-    let glyph = match form {
-        Sidebar::Rail => centred(ui, rect, Size::LG.side),
-        Sidebar::Full => {
-            let left = rect.left() + space::S3;
-            Rect::from_min_size(
-                pos2(left, rect.center().y - Size::LG.side / 2.0),
-                Vec2::splat(Size::LG.side),
-            )
-            .round_to_pixels(ui.pixels_per_point())
-        }
-    };
-    icon::paint(ui.painter(), icon, glyph, Size::LG, color);
-
-    if form == Sidebar::Full {
-        ui.painter().text(
-            pos2(glyph.right() + space::S3, rect.center().y),
-            Align2::LEFT_CENTER,
-            label,
-            FontId::new(text::BASE, fonts::sans(Weight::Medium)),
-            color,
-        );
-    }
-
-    slot
-}
-
 /// A square segmented tab. The selected one is filled and bordered in `text`;
 /// the rest keep a hairline.
 pub fn chip(ui: &mut Ui, tokens: &Tokens, control: Control, label: &str, selected: bool) -> Slot {
@@ -510,11 +464,14 @@ pub fn chip_in_keyed(
         Stroke::new(stroke::HAIRLINE, border),
         StrokeKind::Inside,
     );
-    ui.painter().galley(
-        rect.min + Vec2::new(extent::CHIP_PAD_X, extent::CHIP_PAD_Y),
-        galley,
-        color,
+    // The label is centred in the chip: the filter rows size each chip to its
+    // label, so this only shows where the caller hands a wider cell, like the
+    // sidebar's grid.
+    let at = pos2(
+        rect.left() + ((rect.width() - galley.size().x) / 2.0).max(extent::CHIP_PAD_X),
+        rect.center().y - galley.size().y / 2.0,
     );
+    ui.painter().galley(at, galley, color);
     let _ = ui
         .ctx()
         .accesskit_node_builder(slot.response.id, |node| node.set_selected(selected));
@@ -614,10 +571,10 @@ mod tests {
         run(&ctx, input(Vec::new()), |ui| {
             let slot = slot(
                 ui,
-                Control::NavHome,
+                Control::LibraryCreate,
                 Role::Button,
                 cell(0.0),
-                "Home",
+                "Create playlist or folder",
                 &Tokens::DARK,
                 true,
             );
@@ -693,10 +650,10 @@ mod tests {
         run(&ctx, input(Vec::new()), |ui| {
             let slot = slot(
                 ui,
-                Control::NavHome,
+                Control::LibraryCreate,
                 Role::Button,
                 cell(0.0),
-                "Home",
+                "Create playlist or folder",
                 &Tokens::DARK,
                 true,
             );
@@ -707,7 +664,7 @@ mod tests {
         });
         let (disabled, label) = node.expect("the slot has an AccessKit node");
         assert!(disabled, "a waiting control must be announced disabled");
-        assert_eq!(label.as_deref(), Some("Home"));
+        assert_eq!(label.as_deref(), Some("Create playlist or folder"));
     }
 
     /// Which chip filters the list is a selection, so it has to reach the
@@ -761,7 +718,7 @@ mod tests {
         let ctx = Context::default();
         let controls = [
             (Control::DrawerToggle, "Toggle"),
-            (Control::NavHome, "Home"),
+            (Control::LibraryCreate, "Create playlist or folder"),
             (Control::TrailPlaylists, "Playlists"),
         ];
         let tab = Event::Key {
@@ -796,7 +753,7 @@ mod tests {
         }
 
         assert!(
-            !focused.contains(&Control::NavHome),
+            !focused.contains(&Control::LibraryCreate),
             "a waiting control took focus: {focused:?}"
         );
         assert!(focused.contains(&Control::DrawerToggle));
@@ -816,10 +773,10 @@ mod tests {
                 run(ctx, input(vec![event]), |ui| {
                     let waiting_slot = slot(
                         ui,
-                        Control::NavHome,
+                        Control::LibraryCreate,
                         Role::Button,
                         waiting,
-                        "Home",
+                        "Create playlist or folder",
                         &Tokens::DARK,
                         true,
                     );

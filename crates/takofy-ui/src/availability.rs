@@ -8,9 +8,7 @@
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Control {
     NavHome,
-    NavSearch,
     LibraryCreate,
-    LibraryExpand,
     FilterPlaylists,
     FilterArtists,
     FilterAlbums,
@@ -75,11 +73,9 @@ pub enum Control {
 }
 
 impl Control {
-    pub const ALL: [Self; 49] = [
+    pub const ALL: [Self; 47] = [
         Self::NavHome,
-        Self::NavSearch,
         Self::LibraryCreate,
-        Self::LibraryExpand,
         Self::FilterPlaylists,
         Self::FilterArtists,
         Self::FilterAlbums,
@@ -151,16 +147,14 @@ pub fn availability(control: Control) -> Availability {
         Control::HistoryBack => Availability::Ready,  // #16
         Control::HistoryForward => Availability::Ready, // #16
 
-        Control::NavHome => Availability::Waiting,   // #17
-        Control::NavSearch => Availability::Waiting, // #17
+        Control::NavHome => Availability::Ready,
         Control::LibraryCreate => Availability::Waiting, // #3
-        Control::LibraryExpand => Availability::Waiting, // #3
         Control::FilterPlaylists => Availability::Ready, // #3
         Control::FilterArtists => Availability::Waiting, // #3; no library data yet
-        Control::FilterAlbums => Availability::Waiting, // #3; no library data yet
-        Control::FilterPodcasts => Availability::Ready, // #3
-        Control::SearchField => Availability::Waiting, // #16
-        Control::TrailHome => Availability::Waiting, // #17
+        Control::FilterAlbums => Availability::Waiting,  // #3; no library data yet
+        Control::FilterPodcasts => Availability::Ready,  // #3
+        Control::SearchField => Availability::Waiting,   // #16
+        Control::TrailHome => Availability::Waiting,     // #17
         Control::NowPlayingMore => Availability::Waiting, // #16
 
         // Transport and seek are their own issue.
@@ -232,6 +226,7 @@ mod tests {
             let ready = matches!(
                 control,
                 Control::DrawerToggle
+                    | Control::NavHome
                     | Control::TrailPlaylists
                     | Control::HistoryBack
                     | Control::HistoryForward
@@ -287,6 +282,6 @@ mod tests {
             assert!(!seen.contains(&control), "{control:?} is listed twice");
             seen.push(control);
         }
-        assert_eq!(seen.len(), 49);
+        assert_eq!(seen.len(), Control::ALL.len());
     }
 }

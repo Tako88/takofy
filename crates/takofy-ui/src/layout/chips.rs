@@ -56,6 +56,34 @@ pub fn wrap(sizes: &[Vec2], width: f32, gap_x: f32, row_h: f32, gap_y: f32) -> W
     Wrapped { rects, height }
 }
 
+/// Lays `count` cells in a fixed `columns`-wide grid across `width`.
+///
+/// Every cell is the same width — a grid, not a wrap — because the sidebar's
+/// four filters are the primary navigation and a ragged row of them reads as an
+/// afterthought. The last row is filled left to right like the others.
+pub fn grid(count: usize, width: f32, columns: usize, row_h: f32, gap: f32) -> Wrapped {
+    let columns = columns.max(1);
+    let cell = ((width - gap * (columns as f32 - 1.0)) / columns as f32).max(0.0);
+    let rects = (0..count)
+        .map(|index| {
+            let column = index % columns;
+            let row = index / columns;
+            Rect::from_min_size(
+                pos2(column as f32 * (cell + gap), row as f32 * (row_h + gap)),
+                Vec2::new(cell, row_h),
+            )
+        })
+        .collect::<Vec<_>>();
+    let rows = count.div_ceil(columns);
+    let height = if rows == 0 {
+        0.0
+    } else {
+        rows as f32 * row_h + (rows as f32 - 1.0) * gap
+    };
+
+    Wrapped { rects, height }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

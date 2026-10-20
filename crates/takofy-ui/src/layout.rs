@@ -251,7 +251,8 @@ pub fn shell_for(regions: &Regions) -> Shell {
     Shell {
         sidebar: match regions.sidebar {
             Sidebar::Full => extent::SIDEBAR_W,
-            Sidebar::Rail => extent::SIDEBAR_RAIL_W,
+            // The sidebar is the drawer below 900, so the column takes nothing.
+            Sidebar::Rail => 0.0,
         },
         now_playing: match regions.now_playing {
             NowPlaying::Hidden => None,
@@ -291,7 +292,11 @@ pub fn grid_for(content: Rect, shell: &Shell) -> Grid {
     let panel_bottom = playbar.top() - shell.gap;
 
     let sidebar = Rect::from_min_max(inner.min, pos2(inner.left() + shell.sidebar, panel_bottom));
-    let main_left = sidebar.right() + shell.gap;
+    let main_left = if shell.sidebar > 0.0 {
+        sidebar.right() + shell.gap
+    } else {
+        inner.left()
+    };
 
     let (main_right, now_playing) = match shell.now_playing {
         Some(width) => {
@@ -575,8 +580,8 @@ mod tests {
         assert_eq!(narrow.sidebar, extent::SIDEBAR_W);
         assert_eq!(narrow.now_playing, Some(extent::NOWPLAYING_NARROW_W));
 
-        let rail = shell_for(&regions_for(800.0));
-        assert_eq!(rail.sidebar, extent::SIDEBAR_RAIL_W);
+        let drawer = shell_for(&regions_for(800.0));
+        assert_eq!(drawer.sidebar, 0.0, "below 900 the sidebar is the drawer");
     }
 
     #[test]
@@ -624,9 +629,12 @@ mod tests {
             grid.now_playing.unwrap().left()
         );
 
-        let (rail, _, shell) = solve(800.0, 720.0);
-        assert_eq!(rail.sidebar.right() + shell.gap, rail.topbar.left());
-        assert!(rail.now_playing.is_none());
+        // Below 900 there is no sidebar column, so the main pane starts at the
+        // inner edge and no gap is left for a column that is not there.
+        let (narrow, _, _) = solve(800.0, 720.0);
+        assert_eq!(narrow.sidebar.width(), 0.0);
+        assert_eq!(narrow.topbar.left(), narrow.sidebar.left());
+        assert!(narrow.now_playing.is_none());
     }
 
     #[test]
@@ -670,13 +678,16 @@ mod tests {
     }
 
     #[test]
-    fn the_rail_is_narrower_than_the_full_sidebar() {
+    fn the_narrow_shell_gives_the_sidebar_to_the_drawer() {
         let (full, _, _) = solve(1440.0, 900.0);
-        let (rail, regions, shell) = solve(800.0, 900.0);
-        assert_eq!(rail.sidebar.width(), extent::SIDEBAR_RAIL_W);
-        assert!(rail.sidebar.width() < full.sidebar.width());
+        let (narrow, regions, shell) = solve(800.0, 900.0);
+        assert_eq!(narrow.sidebar.width(), 0.0);
+        assert!(narrow.sidebar.width() < full.sidebar.width());
         assert_eq!(regions.sidebar, Sidebar::Rail);
-        assert_eq!(rail.sidebar.width(), shell.sidebar);
+        assert_eq!(narrow.sidebar.width(), shell.sidebar);
+        // The main pane starts where the sidebar would have, because there is
+        // nothing there to make room for.
+        assert_eq!(narrow.topbar.left(), narrow.sidebar.left());
     }
 
     #[test]
@@ -690,13 +701,9 @@ mod tests {
     #[test]
     fn no_rect_is_negative_or_degenerate_at_the_minimum_window() {
         let (grid, _, _) = solve(WINDOW_MIN[0], WINDOW_MIN[1]);
-        let mut rects = vec![
-            grid.sidebar,
-            grid.topbar,
-            grid.view,
-            grid.playbar,
-            grid.drawer,
-        ];
+        // The sidebar is the drawer at this width, so it has no width of its
+        // own to check: the drawer is where it is drawn.
+        let mut rects = vec![grid.topbar, grid.view, grid.playbar, grid.drawer];
         if let Some(now_playing) = grid.now_playing {
             rects.push(now_playing);
         }

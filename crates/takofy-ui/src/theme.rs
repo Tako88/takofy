@@ -141,7 +141,6 @@ pub mod extent {
     pub const NOWPLAYING_NARROW_W: f32 = 272.0;
     pub const PLAYBAR_H: f32 = 64.0;
     pub const TOPBAR_H: f32 = 56.0;
-    pub const SIDEBAR_RAIL_W: f32 = 64.0;
     pub const ROW_H: f32 = 44.0;
     pub const BUTTON: f32 = 28.0;
     pub const BUTTON_LG: f32 = 34.0;
