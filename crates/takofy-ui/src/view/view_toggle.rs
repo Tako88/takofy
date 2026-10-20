@@ -3,7 +3,7 @@
 //! The reference puts it at the trailing edge of the chip row: two squares, a
 //! hairline between them, the chosen one taking the text colour for its border.
 
-use egui::{Pos2, Rect, Sense, Ui, Vec2};
+use egui::{Pos2, Rect, Ui, Vec2};
 
 use crate::availability::Control;
 use crate::icon::Icon;
@@ -67,16 +67,24 @@ pub fn show(ui: &mut Ui, tokens: &Tokens, row: Rect, chosen: MediaLayout) -> Opt
                 tokens.palette.text,
             );
         }
-        if slot.response.clicked() {
+        if slot.response.clicked() && !selected {
             picked = Some(layout);
         }
     }
-    // The group's own frame: the reference draws one border around the pair.
-    let _ = ui.interact(
+    // The pair reads as one control: a frame around both cells and a hairline
+    // where they meet, which is the width `width` reserves.
+    ui.painter().rect_stroke(
         group,
-        ui.scope_id().with("library-layout-group"),
-        Sense::hover(),
+        radius::SM,
+        egui::Stroke::new(stroke::HAIRLINE, tokens.palette.border),
+        egui::StrokeKind::Inside,
     );
+    let divider = Rect::from_min_size(
+        Pos2::new(group.center().x - stroke::HAIRLINE / 2.0, group.top() + 2.0),
+        Vec2::new(stroke::HAIRLINE, group.height() - 4.0),
+    );
+    ui.painter()
+        .rect_filled(divider, 0.0, tokens.palette.border);
     picked
 }
 
@@ -180,6 +188,30 @@ mod tests {
                 pass.textures_delta.clear();
             }
             assert_eq!(command, Some(expected), "chosen {chosen:?}");
+
+            // Pressing the density already chosen asks for nothing: the group is
+            // a choice, not a toggle.
+            let same_x = match chosen {
+                MediaLayout::Grid => cells.left() + extent::BUTTON / 2.0,
+                MediaLayout::List => cells.right() - extent::BUTTON / 2.0,
+            };
+            let mut again = None;
+            for event in crate::view::test_support::click_events(Pos2::new(same_x, 14.0)) {
+                let mut pass = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(700.0, 100.0))),
+                        events: vec![event],
+                        ..Default::default()
+                    },
+                    |ui| {
+                        if let Some(next) = show(ui, &tokens, row, chosen) {
+                            again = Some(next);
+                        }
+                    },
+                );
+                pass.textures_delta.clear();
+            }
+            assert_eq!(again, None, "the chosen cell asks for nothing");
         }
     }
 }

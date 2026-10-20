@@ -12,7 +12,7 @@ use takofy_model::PlaylistEntry;
 
 use crate::cover::{Art, Cover};
 use crate::format::{
-    added_label, byline, format_position, library_kind, library_note, media_size,
+    added_label, byline, format_position, library_kind, library_note, media_size, media_type,
     plain_description, root_empty_label, root_filter_label, root_loading_label, total_duration_ms,
 };
 use crate::layout::{Table, cards, table as table_layout};
@@ -623,7 +623,7 @@ impl MediaDraw<'_, '_> {
             Item::Playlist(entry) => (
                 &entry.uri,
                 &entry.name,
-                "Playlist",
+                media_type(RootKind::Playlists),
                 library_kind("Playlist", entry.owner.as_deref()),
                 media_size(RootKind::Playlists, entry.tracks),
                 false,
@@ -632,7 +632,7 @@ impl MediaDraw<'_, '_> {
             Item::Show(show) => (
                 &show.uri,
                 &show.name,
-                "Podcast",
+                media_type(RootKind::Podcasts),
                 library_kind("Podcast", show.publisher.as_deref()),
                 media_size(RootKind::Podcasts, show.episodes),
                 false,
@@ -653,7 +653,7 @@ impl MediaDraw<'_, '_> {
             Item::Album(album) => (
                 &album.uri,
                 &album.name,
-                "Album",
+                media_type(RootKind::Albums),
                 library_kind(
                     "Album",
                     (!album.artists.is_empty()).then_some(album.artists.as_str()),
@@ -3825,6 +3825,59 @@ mod root_tests {
         );
     }
 
+    /// A press on the toggle moves the library's density, and the frame after it
+    /// draws the other one.
+    #[test]
+    fn pressing_the_list_toggle_draws_rows_next_frame() {
+        let ctx = context();
+        let mut library = library(vec![playlist("a", "Evening")], vec![]);
+        let mut art = Art::default();
+
+        let tokens = Tokens::DARK;
+        let before = frame(&ctx, &mut library, &mut art);
+        assert!(
+            !drawn_texts(&before).contains(&"TITLE"),
+            "the grid has no head to press"
+        );
+
+        let grid_cell = pressed_layout_cell(&before, &tokens);
+        let list_cell = Pos2::new(
+            grid_cell.right() + extent::BUTTON / 2.0,
+            grid_cell.center().y,
+        );
+        let _ = click(&ctx, list_cell, &mut library, &mut art);
+
+        assert_eq!(
+            library.layout,
+            MediaLayout::List,
+            "the press moved the density"
+        );
+        let after = frame(&ctx, &mut library, &mut art);
+        assert!(
+            drawn_texts(&after).contains(&"TITLE"),
+            "the next frame draws the list"
+        );
+    }
+
+    /// The pressed density cell, found by its own chrome: a button-sized square
+    /// bordered in the text colour, which nothing else in the root draws.
+    fn pressed_layout_cell(output: &egui::FullOutput, tokens: &Tokens) -> Rect {
+        output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(shape)
+                    if (shape.rect.width() - extent::BUTTON).abs() < 0.01
+                        && (shape.stroke.width - crate::theme::stroke::HAIRLINE).abs() < 0.01
+                        && shape.stroke.color == tokens.palette.text =>
+                {
+                    Some(shape.rect)
+                }
+                _ => None,
+            })
+            .expect("the chosen density is bordered in the text colour")
+    }
+
     /// A press on a row does what the card did: the playlist is selected.
     #[test]
     fn a_click_on_a_row_selects_its_playlist() {
@@ -3834,8 +3887,10 @@ mod root_tests {
         let mut art = Art::default();
 
         let before = frame(&ctx, &mut library, &mut art);
-        let name = text_rect(&before, "Evening").expect("the row paints its name");
-        let command = click(&ctx, name.center(), &mut library, &mut art);
+        // The type cell exists only in the list density, so a click there proves
+        // the row drew and took the press.
+        let kind = text_rect(&before, "PLAYLIST").expect("the row paints its type");
+        let command = click(&ctx, kind.center(), &mut library, &mut art);
 
         assert_eq!(
             command,

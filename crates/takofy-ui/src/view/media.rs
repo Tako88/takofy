@@ -71,9 +71,10 @@ pub fn columns(rect: Rect) -> Columns {
         Pos2::new(size.left() - space::S4 - TYPE_W, rect.top()),
         Vec2::new(TYPE_W, rect.height()),
     );
+    let body_left = art.right() + space::S4;
     let body = Rect::from_min_max(
-        Pos2::new(art.right() + space::S4, rect.top()),
-        Pos2::new(kind.left() - space::S4, rect.bottom()),
+        Pos2::new(body_left, rect.top()),
+        Pos2::new((kind.left() - space::S4).max(body_left), rect.bottom()),
     );
     Columns {
         art,
