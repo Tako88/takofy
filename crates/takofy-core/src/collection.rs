@@ -16,10 +16,6 @@ pub(crate) const VENDOR: &str = "application/vnd.collection-v2.spotify.proto";
 const SET: &str = "artist";
 
 /// The set the followed shows are collected into.
-#[allow(
-    dead_code,
-    reason = "the collection paging read in `remote` pages this set"
-)]
 pub(crate) const SHOW_SET: &str = "show";
 
 /// One write request: the username, the set, and one item.
@@ -64,10 +60,6 @@ pub(crate) fn contains_body(username: &str, uris: &[&str]) -> Vec<u8> {
 
 /// One paging request: the username, the set, the token to continue from, and
 /// how many items to ask for at most.
-#[allow(
-    dead_code,
-    reason = "the collection paging read in `remote` pages with it"
-)]
 pub(crate) fn paging_body(username: &str, set: &str, token: Option<&str>, limit: u32) -> Vec<u8> {
     let mut body = Vec::new();
     put_str(1, username, &mut body);
@@ -81,10 +73,6 @@ pub(crate) fn paging_body(username: &str, set: &str, token: Option<&str>, limit:
 
 /// One item of a paging answer: a URI, the instant it was added, and whether the
 /// user has since removed it.
-#[allow(
-    dead_code,
-    reason = "the collection paging read in `remote` pages with it"
-)]
 #[derive(Debug)]
 pub(crate) struct Item {
     pub(crate) uri: String,
@@ -93,10 +81,6 @@ pub(crate) struct Item {
 }
 
 /// One page of a paging answer: its items, and the token that asks for the next.
-#[allow(
-    dead_code,
-    reason = "the collection paging read in `remote` pages with it"
-)]
 #[derive(Debug)]
 pub(crate) struct Page {
     pub(crate) items: Vec<Item>,
@@ -117,10 +101,6 @@ pub(crate) struct Page {
 /// The first next-token field is the one read. A page that repeated the field
 /// does not rename the page after it, so a second token is ignored rather than
 /// letting a stray later value redirect the read.
-#[allow(
-    dead_code,
-    reason = "the collection paging read in `remote` pages with it"
-)]
 pub(crate) fn parse_page(bytes: &[u8]) -> Option<Page> {
     let mut items = Vec::new();
     let mut next = None;

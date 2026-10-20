@@ -24,10 +24,6 @@ use crate::collection::Item;
 pub(crate) const MAX_PAGES: usize = 20;
 
 /// How many items one paging request asks the collection for.
-#[allow(
-    dead_code,
-    reason = "the followed-shows read in `remote` asks for this many items a page"
-)]
 pub(crate) const PAGE_LIMIT: u32 = 500;
 
 /// Why a followed-shows read failed.
@@ -94,10 +90,6 @@ impl Pager {
 /// Removed items and anything that is not a show are dropped, the first
 /// occurrence of a URI is the one kept, and items without a date come last. The
 /// sort is stable, so items sharing a date keep the wire's order.
-#[allow(
-    dead_code,
-    reason = "the followed-shows read in `remote` orders with it"
-)]
 pub(crate) fn show_order(items: Vec<Item>) -> Vec<String> {
     let mut seen = HashSet::new();
     let mut kept: Vec<(Option<i64>, String)> = items
@@ -123,10 +115,6 @@ pub struct ShowCard {
 ///
 /// A show whose card is missing falls back to its URI and reads as unnamed, so
 /// its card still opens the show. A blank publisher is no publisher.
-#[allow(
-    dead_code,
-    reason = "the followed-shows read in `remote` joins cards with it"
-)]
 pub(crate) fn entries(order: &[String], cards: &HashMap<String, ShowCard>) -> Vec<FollowedShow> {
     order
         .iter()

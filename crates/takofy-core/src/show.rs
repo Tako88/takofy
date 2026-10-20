@@ -27,7 +27,6 @@ pub enum ShowError {
 ///
 /// Only `SpotifyUri::Episode` positions are episodes, and one whose URI cannot be
 /// written is left out rather than guessed at.
-#[allow(dead_code, reason = "the show read in `remote` asks for its episodes")]
 pub(crate) fn episode_uris(show: &Show) -> Vec<String> {
     show.episodes
         .iter()
@@ -40,10 +39,6 @@ pub(crate) fn episode_uris(show: &Show) -> Vec<String> {
 ///
 /// The name falls back to the URI exactly as a playlist's does, and a blank
 /// publisher reads as no publisher rather than a line of spaces.
-#[allow(
-    dead_code,
-    reason = "the show read in `remote` builds the detail with it"
-)]
 pub(crate) fn detail(uri: &str, show: &Show, episodes: Vec<Episode>) -> ShowDetail {
     let name = if show.name.is_empty() {
         uri.to_owned()

@@ -36,6 +36,8 @@ impl SessionError {
             Self::Engine(EngineError::Context(_)) => "context",
             Self::Engine(EngineError::Album(_)) => "album",
             Self::Engine(EngineError::Artist(_)) => "artist",
+            Self::Engine(EngineError::Show(_)) => "show",
+            Self::Engine(EngineError::Followed(_)) => "followed",
             Self::Playback(error) => match error {
                 PlaybackError::NoAudioBackend => "no audio backend",
                 PlaybackError::NoAudioDevice => "no audio device",

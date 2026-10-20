@@ -19,7 +19,8 @@ use librespot::protocol::metadata::{
 };
 use protobuf::Message as _;
 use takofy_model::{
-    AlbumDetail, ArtistDetail, CoverUrl, Episode, PlaylistEntry, PublishedAt, TrackEntry,
+    AlbumDetail, ArtistDetail, CoverUrl, Episode, FollowedShow, PlaylistEntry, PublishedAt,
+    ShowDetail, TrackEntry,
 };
 
 use crate::album::{AlbumError, detail, positions};
@@ -32,8 +33,9 @@ use crate::context::{
     ContextError, Page, PageSource, PageTrack, Resolved, page_from_proto, parse_page_json,
 };
 use crate::cover::{pick_cover, pick_images_cover};
-use crate::followed::ShowCard;
+use crate::followed::{self, FollowedError, ShowCard};
 use crate::rootlist::{RootlistError, RootlistPage, RootlistSource, RootlistWire, parse_rootlist};
+use crate::show::{ShowError, detail as show_detail, episode_uris};
 
 /// The wire the live rootlist is read as; flip to `Json` if the binary parse fails.
 pub(crate) const ROOTLIST_WIRE: RootlistWire = RootlistWire::Binary;
@@ -302,6 +304,32 @@ pub(crate) async fn read_release_tracks(session: &Session, uris: &[String]) -> V
     label_tracks(session, positions).await
 }
 
+/// Reads one show: its metadata, then the labels for its episodes.
+///
+/// The show is fetched by its own route rather than by walking a context: its
+/// order is the show's own. A URI that does not name a show never reaches the
+/// network, and a request that fails hands the caller the source's message so the
+/// page can show the failure with a retry.
+pub(crate) async fn read_show(session: &Session, uri: &str) -> Result<ShowDetail, ShowError> {
+    let id = parse_show_uri(uri)?;
+    let show = Show::get(session, &id)
+        .await
+        .map_err(|error| ShowError::Source(error.to_string()))?;
+    let episodes = fetch_episodes(session, episode_uris(&show)).await;
+    Ok(show_detail(uri, &show, episodes))
+}
+
+/// The show URI `uri` names, or [`ShowError::NotAShow`].
+///
+/// Read before any request, so a playlist or album URI costs no round trip.
+fn parse_show_uri(uri: &str) -> Result<SpotifyUri, ShowError> {
+    let id = SpotifyUri::from_uri(uri).map_err(|_| ShowError::NotAShow)?;
+    if !matches!(id, SpotifyUri::Show { .. }) {
+        return Err(ShowError::NotAShow);
+    }
+    Ok(id)
+}
+
 /// Whether the artist is in the user's followed set, or `None` when the probe
 /// did not answer.
 async fn read_follow(session: &Session, uri: &str) -> Option<bool> {
@@ -355,6 +383,94 @@ pub(crate) async fn write_follow(
         .await
         .map(|_| ())
         .map_err(|error| ArtistError::Source(error.to_string()))
+}
+
+/// The shows the user follows, newest follow first, each as its card draws it.
+///
+/// The set is paged through the collection endpoint until an answer carries no
+/// next token. A page that cannot be read fails the whole read rather than
+/// drawing a short list as if it were complete. An empty set asks for no
+/// metadata at all.
+///
+/// The cards are read one show at a time, `buffered(8)`, as the playlist listing
+/// does. A show whose metadata does not answer, or answers without a name, keeps
+/// its URI and stays in the list: one unreadable show must not hide the others.
+pub(crate) async fn read_followed_shows(
+    session: &Session,
+) -> Result<Vec<FollowedShow>, FollowedError> {
+    let headers = collection_headers().ok_or_else(|| {
+        FollowedError::Source("the collection media type is not a valid header".to_owned())
+    })?;
+    let username = session.username();
+    let mut pager = followed::Pager::new();
+    let mut token: Option<String> = None;
+    let mut items = Vec::new();
+    loop {
+        let body = collection::paging_body(
+            &username,
+            collection::SHOW_SET,
+            token.as_deref(),
+            followed::PAGE_LIMIT,
+        );
+        let bytes = session
+            .spclient()
+            .request(
+                &Method::POST,
+                "/collection/v2/paging",
+                Some(headers.clone()),
+                Some(&body),
+            )
+            .await
+            .map_err(|error| FollowedError::Source(error.to_string()))?;
+        let page = collection::parse_page(&bytes).ok_or_else(|| {
+            FollowedError::Source("the collection answer was not readable".to_owned())
+        })?;
+        items.extend(page.items);
+        match pager.accept(page.next)? {
+            Some(next) => token = Some(next),
+            None => break,
+        }
+    }
+
+    let order = followed::show_order(items);
+    if !needs_labels(&order) {
+        return Ok(Vec::new());
+    }
+
+    let cards: HashMap<String, ShowCard> = futures_util::stream::iter(order.iter().cloned())
+        .map(|uri| async move {
+            let card = show_meta(session, &uri).await;
+            (uri, card)
+        })
+        .buffered(8)
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .filter_map(|(uri, card)| card.map(|card| (uri, card)))
+        .collect();
+    let shows = followed::entries(&order, &cards);
+    let unnamed = shows.iter().filter(|show| !show.named).count();
+    if unnamed > 0 {
+        log::warn!(
+            "{unnamed} of {} followed shows could not be named",
+            shows.len()
+        );
+    }
+    Ok(shows)
+}
+
+/// Whether the followed order is worth a metadata request at all: an empty set
+/// asks for nothing.
+fn needs_labels(order: &[String]) -> bool {
+    !order.is_empty()
+}
+
+/// One followed show's card, or `None` when the show cannot be read or has no
+/// name. The caller then falls back to the URI.
+async fn show_meta(session: &Session, uri: &str) -> Option<ShowCard> {
+    let id = SpotifyUri::from_uri(uri).ok()?;
+    let show = Show::get(session, &id).await.ok()?;
+    show_card(&show)
 }
 
 /// The two headers both collection endpoints want: the vendor media type on
@@ -567,10 +683,6 @@ fn merge_labels(tracks: Labels, episodes: Labels) -> Labels {
 ///
 /// An unanswered URI falls back to itself and reads as unnamed, exactly as a
 /// track does, so a show page still draws every episode the wire listed.
-#[allow(
-    dead_code,
-    reason = "the show read in `remote` asks for its episodes with it"
-)]
 async fn fetch_episodes(session: &Session, uris: Vec<String>) -> Vec<Episode> {
     let distinct = distinct_uris(&uris);
     let found = fetch_chunked(session, &distinct, ExtensionKind::EPISODE_V4, episode_from).await;
@@ -836,10 +948,6 @@ fn published_at(publish_time: Option<&DateMessage>) -> Option<PublishedAt> {
 ///
 /// The card does not draw the description, so it is not read. A nameless show is
 /// no card, which lets the caller fall back to the URI.
-#[allow(
-    dead_code,
-    reason = "the followed-shows read in `remote` names its cards with it"
-)]
 fn show_card(show: &Show) -> Option<ShowCard> {
     let name = Some(show.name.clone()).filter(|name| !name.is_empty())?;
     Some(ShowCard {
@@ -884,12 +992,14 @@ mod tests {
     use takofy_model::{AddedAt, CoverUrl, Episode, PublishedAt};
 
     use crate::context::PageTrack;
+    use crate::show::ShowError;
 
     use super::{
         Labels, PlaylistMeta, TrackLabel, context_cover, distinct_uris, duration_ms, episode_from,
         episode_labels, episode_of, expand_episodes, expand_labels, first_track_uri,
-        label_from_episode, label_of, merge_labels, non_blank, partition_by_kind, playlist_cover,
-        playlist_label, playlist_owner, published_at, show_card, track_label_from,
+        label_from_episode, label_of, merge_labels, needs_labels, non_blank, parse_show_uri,
+        partition_by_kind, playlist_cover, playlist_label, playlist_owner, published_at, show_card,
+        track_label_from,
     };
 
     const TRACK_ID: &str = "4uLU6hMCjMI75M1A2tKUQC";
@@ -2027,5 +2137,42 @@ mod tests {
             merged.get("a").map(|label| label.title.as_str()),
             Some("One")
         );
+    }
+
+    #[test]
+    fn parse_show_uri_accepts_a_show_and_refuses_an_album_and_garbage() {
+        let uri = show_uri(1);
+        let id = parse_show_uri(&uri).expect("a show uri");
+        assert_eq!(
+            id,
+            SpotifyUri::Show {
+                id: SpotifyId::from_raw(&gid(1)).expect("a 16-byte id"),
+            }
+        );
+        assert!(
+            matches!(
+                parse_show_uri(&format!("spotify:album:{TRACK_ID}")),
+                Err(ShowError::NotAShow)
+            ),
+            "an album uri names no show"
+        );
+        assert!(
+            matches!(parse_show_uri("spotify:album:x"), Err(ShowError::NotAShow)),
+            "spotify:album:x is not a show"
+        );
+        assert!(
+            matches!(parse_show_uri("garbage"), Err(ShowError::NotAShow)),
+            "garbage is not a show"
+        );
+    }
+
+    #[test]
+    fn needs_labels_is_false_for_an_empty_order() {
+        assert!(!needs_labels(&[]));
+    }
+
+    #[test]
+    fn needs_labels_is_true_for_any_show() {
+        assert!(needs_labels(&owned(&[&show_uri(1)])));
     }
 }
