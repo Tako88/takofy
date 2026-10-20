@@ -475,64 +475,11 @@ svg {
   overflow: hidden;
 }
 
-.sidebar__brand {
-  display: flex;
-  align-items: center;
-  gap: 0.625rem;
-  padding: var(--space-4) var(--space-4) var(--space-3);
-}
-
-/* Sized so the monogram's cap height matches the wordmark beside it. */
-.sidebar__logo {
-  width: 1.125rem;
-  height: 1.125rem;
-  flex: none;
-  color: var(--color-text);
-}
-
-.sidebar__wordmark {
-  font-size: var(--text-md);
-  font-weight: 700;
-  letter-spacing: var(--tracking-tight);
-}
-
-.sidebar__nav {
-  display: grid;
-  gap: 1px;
-  padding: 0 var(--space-1);
-}
-
-.nav-item {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-sm);
-  color: var(--color-text-muted);
-  font-size: var(--text-base);
-  font-weight: 500;
-  transition: color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out);
-}
-
-.nav-item:hover {
-  color: var(--color-text);
-  background: var(--color-surface-hover);
-}
-
-/* The active marker is a hairline rule in bone, not an accent fill: green is
-   spoken for. */
-.nav-item[aria-current="page"] {
-  color: var(--color-text);
-  background: var(--color-surface-raised);
-  box-shadow: inset 2px 0 0 var(--color-text);
-}
-
 .library {
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
   min-height: 0;
-  margin-top: var(--space-4);
   border-top: 1px solid var(--color-border);
 }
 
@@ -541,7 +488,7 @@ svg {
   align-items: center;
   justify-content: space-between;
   gap: var(--space-2);
-  padding: var(--space-3) var(--space-4) var(--space-2);
+  padding: var(--space-2) var(--space-4);
   color: var(--color-text-subtle);
   font-family: var(--font-mono);
   font-size: var(--text-2xs);
@@ -555,11 +502,13 @@ svg {
   gap: var(--space-1);
 }
 
+/* The filters are the sidebar's primary navigation now, so they sit in a fixed
+   2x2 block rather than wrapping raggedly. */
 .chips {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
   gap: var(--space-1);
-  padding: 0 var(--space-4) var(--space-3);
+  padding: var(--space-4) var(--space-4) var(--space-3);
 }
 
 /* Square segmented tabs with hairline edges. */
@@ -573,6 +522,7 @@ svg {
   font-weight: 500;
   letter-spacing: var(--tracking-wide);
   text-transform: uppercase;
+  text-align: center;
   transition: color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out),
     background var(--dur-fast) var(--ease-out);
 }
@@ -662,7 +612,7 @@ svg {
   background: var(--color-surface);
 }
 
-.topbar__history {
+.topbar__nav {
   display: flex;
   gap: var(--space-1);
 }
@@ -686,6 +636,12 @@ svg {
 .round-button:disabled {
   color: var(--color-text-subtle);
   cursor: default;
+}
+
+/* The Home control doubles as a position marker. */
+.round-button[aria-current="page"] {
+  border-color: var(--color-border-strong);
+  color: var(--color-text);
 }
 
 /* Where you are, expressed as a stack you can pop back through — the client
@@ -2548,66 +2504,32 @@ svg {
 
 @media (max-width: 900px) {
   .app {
-    grid-template-columns: var(--sidebar-rail-w) minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr);
   }
 
-  .topbar__drawer-toggle {
-    display: grid;
+  .app__main {
+    grid-column: 1;
   }
 
+  /* The rail existed to hold Home and Search. With those gone it has nothing
+     left to hold, so the sidebar collapses and the drawer is the way in. */
   .sidebar {
-    align-items: center;
-  }
-
-  .sidebar__brand {
-    padding: var(--space-3) 0;
-  }
-
-  .sidebar__wordmark,
-  .nav-item__label,
-  .library {
     display: none;
   }
 
-  .sidebar__nav {
-    gap: var(--space-1);
-    padding: 0;
-    justify-items: center;
-  }
-
-  .nav-item {
-    justify-content: center;
-    padding: var(--space-2);
-  }
-
-  /* Drawer: the sidebar contents, summoned by the rail's library button. */
   .sidebar.is-open {
+    display: flex;
     position: fixed;
     top: var(--space-2);
     left: var(--space-2);
     bottom: calc(var(--playbar-h) + var(--space-3));
     z-index: 30;
     width: var(--sidebar-w);
-    align-items: stretch;
     box-shadow: var(--shadow-lg);
   }
 
-  .sidebar.is-open .sidebar__wordmark,
-  .sidebar.is-open .nav-item__label {
-    display: inline;
-  }
-
-  .sidebar.is-open .library {
-    display: flex;
-  }
-
-  .sidebar.is-open .nav-item {
-    justify-content: flex-start;
-  }
-
-  .sidebar.is-open .sidebar__nav {
-    padding: 0 var(--space-2);
-    justify-items: stretch;
+  .topbar__drawer-toggle {
+    display: grid;
   }
 
   .hero__art,
@@ -2737,7 +2659,7 @@ svg {
     color: var(--color-text);
   }
 
-  .topbar__history,
+  .topbar__nav,
   .topbar__drawer-toggle,
   .trail {
     display: none;
