@@ -2274,6 +2274,36 @@ mod tests {
     }
 
     #[test]
+    fn the_sidebar_kind_survives_a_trip_to_a_show_page_and_back() {
+        let mut library = Library::default();
+        assert!(library.sidebar_kind.choose(SidebarKind::Podcasts));
+
+        library.open(show("spotify:show:a"));
+        assert_eq!(library.sidebar_kind.chosen(), SidebarKind::Podcasts);
+
+        library.back();
+        assert_eq!(library.sidebar_kind.chosen(), SidebarKind::Podcasts);
+
+        library.to_playlists();
+        assert_eq!(library.sidebar_kind.chosen(), SidebarKind::Podcasts);
+    }
+
+    #[test]
+    fn the_playlist_highlight_clears_on_a_show_page_and_returns() {
+        let mut library = Library::default();
+        library.select("spotify:playlist:a");
+        library.open(show("spotify:show:a"));
+        assert_eq!(
+            library.selected(),
+            None,
+            "the main panel is not showing a playlist"
+        );
+
+        library.back();
+        assert_eq!(library.selected(), Some("spotify:playlist:a"));
+    }
+
+    #[test]
     fn the_chosen_chip_survives_a_trip_to_a_show_page_and_back() {
         let mut library = Library::default();
         library.root_filter.choose(RootKind::Podcasts);

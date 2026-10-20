@@ -158,7 +158,7 @@ pub fn availability(control: Control) -> Availability {
         Control::FilterPlaylists => Availability::Ready, // #3
         Control::FilterArtists => Availability::Waiting, // #3; no library data yet
         Control::FilterAlbums => Availability::Waiting, // #3; no library data yet
-        Control::FilterPodcasts => Availability::Waiting, // #3; no library data yet
+        Control::FilterPodcasts => Availability::Ready, // #3
         Control::SearchField => Availability::Waiting, // #16
         Control::TrailHome => Availability::Waiting, // #17
         Control::NowPlayingMore => Availability::Waiting, // #16
@@ -250,6 +250,7 @@ mod tests {
                     | Control::LibraryFilterPlaylists
                     | Control::LibraryFilterPodcasts
                     | Control::FilterPlaylists
+                    | Control::FilterPodcasts
             );
             assert_eq!(
                 availability(control) == Availability::Ready,
@@ -258,13 +259,9 @@ mod tests {
             );
         }
 
-        // The sidebar's Playlists chip is live; the other three have no
-        // library data yet, so the row as a whole is not ready.
-        for control in [
-            Control::FilterArtists,
-            Control::FilterAlbums,
-            Control::FilterPodcasts,
-        ] {
+        // The sidebar's Playlists and Podcasts chips are live; Artists and
+        // Albums have no library data yet, so those two wait.
+        for control in [Control::FilterArtists, Control::FilterAlbums] {
             assert_eq!(
                 availability(control),
                 Availability::Waiting,

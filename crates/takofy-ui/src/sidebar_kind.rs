@@ -107,6 +107,32 @@ mod tests {
     }
 
     #[test]
+    fn only_the_chips_with_data_act() {
+        assert!(SidebarKind::Playlists.acts());
+        assert!(SidebarKind::Podcasts.acts());
+        assert!(!SidebarKind::Artists.acts());
+        assert!(!SidebarKind::Albums.acts());
+    }
+
+    #[test]
+    fn choosing_a_live_chip_sticks() {
+        let mut filter = SidebarFilter::default();
+        assert!(filter.choose(SidebarKind::Podcasts));
+        assert_eq!(filter.chosen(), SidebarKind::Podcasts);
+    }
+
+    #[test]
+    fn a_waiting_chip_cannot_take_the_choice_back() {
+        let mut filter = SidebarFilter::default();
+        assert!(filter.choose(SidebarKind::Podcasts));
+
+        for kind in [SidebarKind::Artists, SidebarKind::Albums] {
+            assert!(!filter.choose(kind), "{kind:?}");
+            assert_eq!(filter.chosen(), SidebarKind::Podcasts, "{kind:?}");
+        }
+    }
+
+    #[test]
     fn choosing_a_waiting_chip_changes_nothing() {
         for kind in [SidebarKind::Artists, SidebarKind::Albums] {
             let mut filter = SidebarFilter::default();

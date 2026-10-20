@@ -16,6 +16,7 @@ use crate::icon::{self, Icon};
 use crate::layout::{Sidebar, chips};
 use crate::library::{Library, Load};
 use crate::message::{Command, Failure};
+use crate::route::Page;
 use crate::sidebar_kind::{self, SidebarKind};
 use crate::signin::failure_message;
 use crate::theme::icon::Size;
@@ -291,9 +292,7 @@ fn rows(
             }
             if retry { Some(library.reload()) } else { None }
         }
-        // Its chip is still waiting, so the list it would show is not drawn;
-        // the arm stands in for it.
-        SidebarKind::Podcasts => None,
+        SidebarKind::Podcasts => show_rows(ui, rect, library, tokens),
         // `choose` is the only writer of the choice, and it refuses waiting
         // kinds, so these two kinds cannot be chosen.
         SidebarKind::Artists => {
@@ -348,28 +347,23 @@ pub fn shows_view(library: &Library) -> ShowsView<'_> {
     }
 }
 
-/// One row: a placeholder tile, the name and the kind.
-///
-/// The tile stands in until covers are fetched. A selected row borrows the
-/// reference's language for the current navigation item — a raised fill and a
-/// bone rule at the left edge — because the reference defines no selected row.
-fn one(
+/// The row's click target and the chrome both kinds of row share: a selected
+/// row borrows the reference's language for the current navigation item — a
+/// raised fill and a bone rule at the left edge — because the reference defines
+/// no selected row.
+fn row_chrome(
     ui: &mut Ui,
     rect: Rect,
-    uri: &str,
-    name: &str,
-    cover: Cover,
+    id: egui::Id,
+    label: &str,
     selected: bool,
     tokens: &Tokens,
-) -> bool {
-    // The uri, not the name: two playlists may share a name, and two widgets may
-    // not share an id.
-    let response = ui.interact(
-        rect,
-        ui.scope_id().with(("library-row", uri)),
-        Sense::click(),
-    );
-    response.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, selected, name));
+) -> egui::Response {
+    let response = ui.interact(rect, id, Sense::click());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, label));
+    let _ = ui
+        .ctx()
+        .accesskit_node_builder(response.id, |node| node.set_selected(selected));
 
     if selected {
         ui.painter()
@@ -383,6 +377,135 @@ fn one(
         ui.painter()
             .rect_filled(rect, radius::SM, tokens.palette.surface_hover);
     }
+
+    if response.has_focus() {
+        controls::focus_ring(ui, rect, tokens);
+    }
+
+    response
+}
+
+/// The id of a playlist row. The uri, not the name: two playlists may share a
+/// name, and two widgets may not share an id.
+fn playlist_row_id(ui: &Ui, uri: &str) -> egui::Id {
+    ui.scope_id().with(("library-row", uri))
+}
+
+/// The id of a show row, kept apart from a playlist row's even when the uri is
+/// the same string.
+fn show_row_id(ui: &Ui, uri: &str) -> egui::Id {
+    ui.scope_id().with(("library-show", uri))
+}
+
+/// The show the page is looking at, so the Podcasts list can highlight it.
+///
+/// `Library::selected` is about playlists and is `None` on a show page.
+fn page_show(library: &Library) -> Option<&str> {
+    match library.page() {
+        Some(Page::Show(uri)) => Some(uri),
+        _ => None,
+    }
+}
+
+/// One show row: the title alone, at the same left edge as a playlist's name.
+fn title_row(
+    ui: &mut Ui,
+    rect: Rect,
+    uri: &str,
+    name: &str,
+    selected: bool,
+    tokens: &Tokens,
+) -> bool {
+    let response = row_chrome(ui, rect, show_row_id(ui, uri), name, selected, tokens);
+
+    let name_x = rect.left() + space::S2 + extent::LIBRARY_ART + space::S3;
+    let name_width = (rect.right() - name_x - space::S2).max(0.0);
+    let name_line = recipe::line(
+        ui,
+        name,
+        egui::FontId::new(text::SM, fonts::sans(Weight::Medium)),
+        tokens.palette.text,
+        0.0,
+        name_width,
+    );
+    ui.painter().galley(
+        Pos2::new(name_x, rect.center().y - name_line.size().y / 2.0),
+        name_line,
+        tokens.palette.text,
+    );
+
+    response.clicked()
+}
+
+/// The Podcasts list: the followed shows, or the state of the loads behind them.
+fn show_rows(ui: &mut Ui, rect: Rect, library: &mut Library, tokens: &Tokens) -> Option<Command> {
+    if rect.height() < ROW_H {
+        return None;
+    }
+
+    let mut pressed: Option<String> = None;
+    let mut retry: Option<Retry> = None;
+
+    match shows_view(library) {
+        ShowsView::Loading => state(ui, rect, recipe::muted("Loading your shows…", tokens)),
+        ShowsView::Empty => state(ui, rect, recipe::muted("No shows followed yet.", tokens)),
+        ShowsView::Failed(failure, which) => {
+            state(ui, rect, recipe::muted(failure_message(failure), tokens));
+            retry = Some(which);
+        }
+        ShowsView::List(shows) => {
+            let current = page_show(library).map(str::to_owned);
+            let entries = shows.to_vec();
+            ui.scope_builder(
+                UiBuilder::new()
+                    .id_salt("library-shows")
+                    .max_rect(rect)
+                    .layout(Layout::top_down(egui::Align::Min)),
+                |ui| {
+                    ui.spacing_mut().item_spacing.y = space::PX;
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show_rows(ui, ROW_H, entries.len(), |ui, range| {
+                            for index in range {
+                                let Some(show) = entries.get(index) else {
+                                    continue;
+                                };
+                                let (_, row) =
+                                    ui.allocate_space(Vec2::new(ui.available_width(), ROW_H));
+                                let selected = current.as_deref() == Some(show.uri.as_str());
+                                if title_row(ui, row, &show.uri, &show.name, selected, tokens) {
+                                    pressed = Some(show.uri.clone());
+                                }
+                            }
+                        });
+                },
+            );
+        }
+    }
+
+    if let Some(uri) = pressed {
+        return library.open(Page::Show(uri));
+    }
+    match retry {
+        Some(Retry::Playlists) => Some(library.reload()),
+        Some(Retry::Followed) => Some(library.reload_followed()),
+        None => None,
+    }
+}
+
+/// One playlist row: a placeholder tile, the name and the kind.
+///
+/// The tile stands in until covers are fetched.
+fn one(
+    ui: &mut Ui,
+    rect: Rect,
+    uri: &str,
+    name: &str,
+    cover: Cover,
+    selected: bool,
+    tokens: &Tokens,
+) -> bool {
+    let response = row_chrome(ui, rect, playlist_row_id(ui, uri), name, selected, tokens);
 
     let tile = Rect::from_min_size(
         Pos2::new(
@@ -429,10 +552,6 @@ fn one(
         kind_line,
         tokens.palette.text_subtle,
     );
-
-    if response.has_focus() {
-        controls::focus_ring(ui, rect, tokens);
-    }
 
     response.clicked()
 }
@@ -738,6 +857,282 @@ mod tests {
             })
             .expect("the chip is drawn");
         Rect::from_min_size(pos, size).expand2(Vec2::new(extent::CHIP_PAD_X, extent::CHIP_PAD_Y))
+    }
+
+    /// The playlist list's one row, ready to draw.
+    fn playlist(uri: &str, name: &str) -> PlaylistEntry {
+        PlaylistEntry {
+            uri: uri.to_owned(),
+            name: name.to_owned(),
+            named: true,
+            cover: None,
+            description: None,
+            owner: None,
+        }
+    }
+
+    /// Where a label was painted, and how big it was.
+    fn painted_text(output: &egui::FullOutput, label: &str) -> (Pos2, Vec2) {
+        output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Text(text) if text.galley.text() == label => {
+                    Some((text.pos, text.galley.size()))
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{label:?} is drawn"))
+    }
+
+    #[test]
+    fn a_playlist_row_click_loads_its_tracks() {
+        let ctx = context();
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(vec![playlist(
+            "spotify:playlist:a",
+            "A list",
+        )]));
+        let mut art = Art::default();
+        let (output, _) = run(&ctx, Vec::new(), &mut library, &mut art);
+
+        let (name, name_size) = painted_text(&output, "A list");
+        let (_, kind_size) = painted_text(&output, "Playlist");
+        let command = click(
+            &ctx,
+            Pos2::new(name.x + 10.0, name.y + (name_size.y + kind_size.y) / 2.0),
+            &mut library,
+            &mut art,
+        );
+
+        assert_eq!(
+            command,
+            Some(Command::LoadTracks {
+                playlist: "spotify:playlist:a".to_owned()
+            })
+        );
+        assert_eq!(library.selected(), Some("spotify:playlist:a"));
+    }
+
+    #[test]
+    fn a_playlist_name_starts_past_the_art_slot() {
+        let ctx = context();
+        let tokens = Tokens::DARK;
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(254.0, 800.0))),
+                ..Default::default()
+            },
+            |ui| {
+                let rect = Rect::from_min_size(Pos2::new(20.0, 0.0), Vec2::new(200.0, ROW_H));
+                one(
+                    ui,
+                    rect,
+                    "spotify:playlist:a",
+                    "A list",
+                    Cover::Missing,
+                    false,
+                    &tokens,
+                );
+            },
+        );
+        output.textures_delta.clear();
+
+        let (name, _) = painted_text(&output, "A list");
+        let (kind, _) = painted_text(&output, "Playlist");
+        let expected = 20.0 + space::S2 + extent::LIBRARY_ART + space::S3;
+        assert!((name.x - expected).abs() < 0.01, "name at {}", name.x);
+        assert!((kind.x - expected).abs() < 0.01, "kind at {}", kind.x);
+    }
+
+    #[test]
+    fn a_playlist_row_announces_its_selection() {
+        let ctx = context();
+        ctx.enable_accesskit();
+        let tokens = Tokens::DARK;
+        let uri = "spotify:playlist:a";
+        let mut announced = None;
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(254.0, 800.0))),
+                ..Default::default()
+            },
+            |ui| {
+                let id = ui.scope_id().with(("library-row", uri));
+                let rect = Rect::from_min_size(Pos2::new(0.0, 0.0), Vec2::new(200.0, ROW_H));
+                one(ui, rect, uri, "A list", Cover::Missing, true, &tokens);
+                announced = ui
+                    .ctx()
+                    .accesskit_node_builder(id, |node| node.is_selected())
+                    .expect("the row has an AccessKit node");
+            },
+        );
+        output.textures_delta.clear();
+
+        assert_eq!(announced, Some(true), "a selected row says so");
+    }
+
+    /// A library with both lists ready, the way the window hands them over.
+    fn library_with(playlists: Vec<PlaylistEntry>, shows: Vec<FollowedShow>) -> Library {
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(playlists));
+        library.apply(&Update::FollowedShows(shows));
+        library
+    }
+
+    /// Whether a line of text was painted at all.
+    fn painted(output: &egui::FullOutput, label: &str) -> bool {
+        output.shapes.iter().any(|clipped| {
+            matches!(&clipped.shape,
+                egui::epaint::Shape::Text(text) if text.galley.text() == label)
+        })
+    }
+
+    #[test]
+    fn the_podcasts_chip_lists_the_shows_and_a_row_opens_the_show() {
+        let ctx = context();
+        let mut library = library_with(
+            vec![playlist("spotify:playlist:a", "A list")],
+            vec![followed_show("spotify:show:s", "A show")],
+        );
+        let mut art = Art::default();
+        let (output, _) = run(&ctx, Vec::new(), &mut library, &mut art);
+
+        // This click is the harness's proof that its rects hit the drawn chip:
+        // a switch is observable, unlike re-pressing the choice already made.
+        let command = click(
+            &ctx,
+            chip_rect(&output, "PODCASTS").center(),
+            &mut library,
+            &mut art,
+        );
+        assert_eq!(library.sidebar_kind.chosen(), SidebarKind::Podcasts);
+        assert_eq!(command, None, "choosing a kind loads nothing by itself");
+
+        let (output, _) = run(&ctx, Vec::new(), &mut library, &mut art);
+        let (name, size) = painted_text(&output, "A show");
+        assert!(!painted(&output, "A list"), "one kind is drawn at a time");
+
+        let command = click(
+            &ctx,
+            Pos2::new(name.x + 10.0, name.y + size.y / 2.0),
+            &mut library,
+            &mut art,
+        );
+        assert_eq!(
+            command,
+            Some(Command::LoadShow {
+                show: "spotify:show:s".to_owned()
+            })
+        );
+        assert_eq!(
+            library.page(),
+            Some(&Page::Show("spotify:show:s".to_owned()))
+        );
+    }
+
+    #[test]
+    fn a_show_name_lines_up_with_a_playlist_name() {
+        let ctx = context();
+        let shows = vec![followed_show("spotify:show:s", "A show")];
+        let playlists = vec![playlist("spotify:playlist:a", "A list")];
+        let mut art = Art::default();
+
+        let mut library = library_with(playlists.clone(), shows.clone());
+        let (output, _) = run(&ctx, Vec::new(), &mut library, &mut art);
+        let (name, _) = painted_text(&output, "A list");
+        let playlist_x = name.x;
+
+        let mut library = library_with(playlists, shows);
+        assert!(library.sidebar_kind.choose(SidebarKind::Podcasts));
+        let (output, _) = run(&ctx, Vec::new(), &mut library, &mut art);
+        let (name, _) = painted_text(&output, "A show");
+
+        assert!(
+            (name.x - playlist_x).abs() < 0.01,
+            "{} vs {playlist_x}",
+            name.x
+        );
+        assert!(
+            (playlist_x - (space::S2 + space::S2 + extent::LIBRARY_ART + space::S3)).abs() < 0.01,
+            "a name starts past the art slot: {playlist_x}"
+        );
+    }
+
+    #[test]
+    fn the_open_show_is_drawn_selected() {
+        let ctx = context();
+        let mut library = library_with(
+            Vec::new(),
+            vec![
+                followed_show("spotify:show:a", "A show"),
+                followed_show("spotify:show:b", "B show"),
+            ],
+        );
+        assert!(library.sidebar_kind.choose(SidebarKind::Podcasts));
+        library.open(Page::Show("spotify:show:b".to_owned()));
+        let mut art = Art::default();
+
+        let (output, _) = run(&ctx, Vec::new(), &mut library, &mut art);
+        let (name, size) = painted_text(&output, "B show");
+        let row = Rect::from_min_size(
+            Pos2::new(space::S2, name.y + size.y / 2.0 - ROW_H / 2.0),
+            Vec2::new(254.0 - 2.0 * space::S2, ROW_H),
+        );
+        let selected = output.shapes.iter().any(|clipped| {
+            matches!(&clipped.shape, egui::epaint::Shape::Rect(rect)
+                if rect.rect == row && rect.fill == Tokens::DARK.palette.surface_raised)
+        });
+        assert!(selected, "the open show's row carries the selected fill");
+    }
+
+    #[test]
+    fn a_failed_playlist_load_retries_from_the_podcasts_list() {
+        let ctx = context();
+        let mut library = Library::default();
+        assert!(library.sidebar_kind.choose(SidebarKind::Podcasts));
+        library.playlists = Load::Failed(Failure::Load);
+        let mut art = Art::default();
+
+        let (_, command) = run(&ctx, Vec::new(), &mut library, &mut art);
+        assert_eq!(command, Some(Command::ReloadLibrary));
+
+        let (_, command) = run(&ctx, Vec::new(), &mut library, &mut art);
+        assert_eq!(command, None, "the retry starts the load, so it asks once");
+    }
+
+    #[test]
+    fn a_failed_followed_load_retries_itself() {
+        let ctx = context();
+        let mut library = Library::default();
+        assert!(library.sidebar_kind.choose(SidebarKind::Podcasts));
+        library.playlists = Load::Ready(Vec::new());
+        library.followed = Load::Failed(Failure::Followed);
+        let mut art = Art::default();
+
+        let (_, command) = run(&ctx, Vec::new(), &mut library, &mut art);
+        assert_eq!(command, Some(Command::LoadFollowedShows));
+
+        let (_, command) = run(&ctx, Vec::new(), &mut library, &mut art);
+        assert_eq!(command, None, "the retry starts the load, so it asks once");
+    }
+
+    #[test]
+    fn a_show_and_a_playlist_row_never_share_an_id() {
+        let ctx = context();
+        let mut checked = false;
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(254.0, 800.0))),
+                ..Default::default()
+            },
+            |ui| {
+                assert_ne!(show_row_id(ui, "x"), playlist_row_id(ui, "x"));
+                checked = true;
+            },
+        );
+        output.textures_delta.clear();
+        assert!(checked);
     }
 
     #[test]
