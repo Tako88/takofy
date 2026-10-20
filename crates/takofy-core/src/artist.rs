@@ -40,6 +40,12 @@ pub enum ArtistError {
 /// is cut here: the reference's Popular list is a preview, not the discography.
 pub(crate) const TOP_TRACKS: usize = 10;
 
+/// How many related artists one page shows.
+///
+/// Each URI costs a full artist read, and the row is a preview rather than a
+/// directory, so a payload that names more is cut here.
+pub(crate) const RELATED_MAX: usize = 12;
+
 /// How many release URIs one `ALBUM_V4` request asks for.
 ///
 /// An artist payload can name a few hundred releases, and one request over all
@@ -67,6 +73,24 @@ pub(crate) fn release_uris(artist: &Artist) -> Vec<String> {
         .chain(artist.compilations_current())
         .filter_map(|uri| uri.to_uri().ok())
         .filter(|uri| seen.insert(uri.clone()))
+        .collect()
+}
+
+/// Every related artist URI the payload names, in the order the page shows them.
+///
+/// Deduped by first sight, the artist's own URI dropped, and stopped at
+/// [`RELATED_MAX`]. An entry that does not name an artist, or whose id does not
+/// resolve to a URI, is dropped: a card that cannot open an artist is not one.
+pub(crate) fn related_uris(artist: &Artist) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    artist
+        .related
+        .iter()
+        .filter(|related| related.id != artist.id)
+        .filter(|related| matches!(related.id, SpotifyUri::Artist { .. }))
+        .filter_map(|related| related.id.to_uri().ok())
+        .filter(|uri| seen.insert(uri.clone()))
+        .take(RELATED_MAX)
         .collect()
 }
 
@@ -113,6 +137,7 @@ pub(crate) fn detail(
         portrait: portrait_of(artist),
         top_tracks,
         releases,
+        related: related_uris(artist),
     }
 }
 
@@ -251,8 +276,8 @@ mod tests {
     use takofy_model::{CoverUrl, ReleaseKind};
 
     use super::{
-        RELEASE_CHUNK, TOP_TRACKS, detail, portrait_of, release_chunks, release_of, release_uris,
-        releases_from, releases_of, top_track_positions,
+        RELATED_MAX, RELEASE_CHUNK, TOP_TRACKS, detail, portrait_of, related_uris, release_chunks,
+        release_of, release_uris, releases_from, releases_of, top_track_positions,
     };
 
     /// A 16-byte gid. `SpotifyId::from_raw` rejects anything else.
@@ -276,6 +301,22 @@ mod tests {
         }
         .to_uri()
         .expect("a uri")
+    }
+
+    /// The URI an artist gid byte resolves to.
+    fn artist_uri(byte: u8) -> String {
+        SpotifyUri::Artist {
+            id: SpotifyId::from_raw(&gid(byte)).expect("a 16-byte id"),
+        }
+        .to_uri()
+        .expect("a uri")
+    }
+
+    /// One related-artist entry carrying nothing but a gid.
+    fn related_message(byte: u8) -> ArtistMessage {
+        let mut message = ArtistMessage::default();
+        message.set_gid(gid(byte));
+        message
     }
 
     /// One album message carrying nothing but a gid, as a release list has it.
@@ -349,6 +390,66 @@ mod tests {
     #[test]
     fn release_uris_of_an_artist_with_no_releases_is_empty() {
         assert!(release_uris(&artist(empty_artist_message())).is_empty());
+    }
+
+    #[test]
+    fn related_uris_deduplicate_by_first_sight() {
+        let mut message = empty_artist_message();
+        message.related.push(related_message(2));
+        message.related.push(related_message(3));
+        message.related.push(related_message(2));
+
+        assert_eq!(
+            related_uris(&artist(message)),
+            vec![artist_uri(2), artist_uri(3)],
+            "the first sighting wins"
+        );
+    }
+
+    #[test]
+    fn related_uris_drop_the_artist_itself() {
+        let mut message = empty_artist_message();
+        message.related.push(related_message(1));
+        message.related.push(related_message(2));
+
+        assert_eq!(
+            related_uris(&artist(message)),
+            vec![artist_uri(2)],
+            "an artist is not its own relative"
+        );
+    }
+
+    #[test]
+    fn related_uris_drop_an_entry_that_does_not_name_an_artist() {
+        let mut message = empty_artist_message();
+        message.related.push(related_message(2));
+        let mut artist = artist(message);
+        artist.related.0[0].id = SpotifyUri::Album {
+            id: SpotifyId::from_raw(&gid(2)).expect("a 16-byte id"),
+        };
+
+        assert!(
+            related_uris(&artist).is_empty(),
+            "a card that cannot open an artist is not one"
+        );
+    }
+
+    #[test]
+    fn related_uris_stop_at_the_cap() {
+        let mut message = empty_artist_message();
+        for byte in 2..=21 {
+            message.related.push(related_message(byte));
+        }
+
+        let uris = related_uris(&artist(message));
+        assert_eq!(uris.len(), RELATED_MAX);
+        assert_eq!(uris.first(), Some(&artist_uri(2)));
+        assert_eq!(uris.last(), Some(&artist_uri(13)));
+    }
+
+    #[test]
+    fn related_uris_of_an_artist_with_no_relatives_are_empty() {
+        assert!(related_uris(&artist(empty_artist_message())).is_empty());
     }
 
     #[test]
@@ -690,5 +791,20 @@ mod tests {
         assert_eq!(detail.name, "spotify:artist:x");
         assert_eq!(detail.uri, "spotify:artist:x");
         assert!(detail.releases.is_empty());
+        assert!(detail.related.is_empty());
+    }
+
+    #[test]
+    fn detail_carries_the_payloads_related_uris() {
+        let mut message = empty_artist_message();
+        message.related.push(related_message(2));
+        message.related.push(related_message(1));
+
+        let detail = detail("spotify:artist:x", &artist(message), Vec::new(), Vec::new());
+        assert_eq!(
+            detail.related,
+            vec![artist_uri(2)],
+            "the artist itself is not a relative"
+        );
     }
 }

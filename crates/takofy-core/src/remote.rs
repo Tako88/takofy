@@ -25,7 +25,7 @@ use takofy_model::{
 
 use crate::album::{AlbumError, detail, positions};
 use crate::artist::{
-    ArtistError, detail as artist_detail, release_chunks, release_uris, releases_of,
+    ArtistError, detail as artist_detail, related_uris, release_chunks, release_uris, releases_of,
     top_track_positions,
 };
 use crate::collected::{self, ArtistCard};
@@ -301,6 +301,10 @@ pub(crate) async fn read_artist(
     let country = session.country();
     let top_tracks = label_tracks(session, top_track_positions(&artist, &country)).await;
     let followed = read_follow(session, uri).await;
+    let related = related_uris(&artist);
+    if related.is_empty() {
+        log::warn!("the artist payload named {} related artists", related.len());
+    }
     Ok((artist_detail(uri, &artist, top_tracks, releases), followed))
 }
 
@@ -550,6 +554,42 @@ pub(crate) async fn read_followed_artists(
         );
     }
     Ok(artists)
+}
+
+/// The related artists an artist page shows as cards, in the payload's order.
+///
+/// An empty list asks for no metadata at all. The cards are read one artist at a
+/// time, `buffered(8)`, as the followed-artists list does. An artist whose
+/// metadata does not answer, or answers without a name, keeps its URI and stays
+/// in the row: one unreadable relative must not shrink it.
+pub(crate) async fn read_related(
+    session: &Session,
+    uris: Vec<String>,
+) -> Result<Vec<FollowedArtist>, ArtistError> {
+    if !needs_labels(&uris) {
+        return Ok(Vec::new());
+    }
+
+    let cards: HashMap<String, ArtistCard> = futures_util::stream::iter(uris.iter().cloned())
+        .map(|uri| async move {
+            let card = artist_meta(session, &uri).await;
+            (uri, card)
+        })
+        .buffered(8)
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .filter_map(|(uri, card)| card.map(|card| (uri, card)))
+        .collect();
+    let related = collected::artist_entries(&uris, &cards);
+    let unnamed = related.iter().filter(|artist| !artist.named).count();
+    if unnamed > 0 {
+        log::warn!(
+            "{unnamed} of {} related artists could not be named",
+            related.len()
+        );
+    }
+    Ok(related)
 }
 
 /// The albums the user saves, newest save first, each as its card draws it.

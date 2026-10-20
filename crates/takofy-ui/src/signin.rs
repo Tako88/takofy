@@ -57,6 +57,8 @@ impl SignIn {
                 | Update::FollowedArtistsFailed(_)
                 | Update::SavedAlbums(_)
                 | Update::SavedAlbumsFailed(_)
+                | Update::Related { .. }
+                | Update::RelatedFailed { .. }
                 | Update::ReleaseTracks { .. }
                 | Update::ReleaseTracksFailed { .. }
                 | Update::Followed { .. }
@@ -107,6 +109,9 @@ pub fn failure_message(failure: Failure) -> &'static str {
             "Could not load your saved albums. Check the connection and try again."
         }
         Failure::Lyrics => "Could not load the lyrics. Check your connection and try again.",
+        Failure::Related => {
+            "Could not load the artists this one is heard with. Check the connection and try again."
+        }
         Failure::Other => "Sign-in failed. Try again, or run with --headless for details.",
     }
 }

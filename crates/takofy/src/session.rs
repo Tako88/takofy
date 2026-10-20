@@ -116,6 +116,12 @@ pub(crate) trait SessionHost: Send + 'static {
     fn lyrics(&self, track: &str)
     -> impl Future<Output = Result<TrackLyrics, SessionError>> + Send;
 
+    /// The artists an artist is heard with, named.
+    fn related(
+        &self,
+        uris: Vec<String>,
+    ) -> impl Future<Output = Result<Vec<FollowedArtist>, SessionError>> + Send;
+
     /// One release's track names, in the release's own order.
     fn release_tracks(
         &self,
@@ -263,6 +269,13 @@ impl SessionHost for LiveSession {
     async fn lyrics(&self, track: &str) -> Result<TrackLyrics, SessionError> {
         match &self.engine {
             Some(engine) => engine.lyrics(track).await.map_err(SessionError::Engine),
+            None => Err(SessionError::NotConnected),
+        }
+    }
+
+    async fn related(&self, uris: Vec<String>) -> Result<Vec<FollowedArtist>, SessionError> {
+        match &self.engine {
+            Some(engine) => engine.related(uris).await.map_err(SessionError::Engine),
             None => Err(SessionError::NotConnected),
         }
     }

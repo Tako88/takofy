@@ -91,6 +91,8 @@ pub struct ArtistPage<'a> {
     pub filter: &'a mut Filter,
     /// The per-release label store the discography fills in.
     pub releases: &'a mut Releases,
+    /// The artists this one is heard with, once they are named.
+    pub related: &'a Load<Vec<FollowedArtist>>,
 }
 
 /// The sidebar's playlists and the tracks the current page has loaded.
@@ -105,6 +107,10 @@ pub struct Library {
     pub followed_artists: Load<Vec<FollowedArtist>>,
     /// The albums the user saved, as the library root draws them.
     pub saved_albums: Load<Vec<SavedAlbum>>,
+    /// The artists the open artist page is heard with, once they are named.
+    pub related: Load<Vec<FollowedArtist>>,
+    /// The artist the likeness list belongs to, so a stale reply is told apart.
+    wanted_related: Option<String>,
     /// The panel under the library: its tab and the playing track's lyrics.
     pub lyrics: LyricsPanel,
     pub tracks: Load<TracksFor>,
@@ -308,6 +314,22 @@ impl Library {
             Update::SavedAlbumsFailed(failure) => {
                 self.saved_albums = Load::Failed(*failure);
             }
+            // The likeness cards are keyed by the artist they belong to: the
+            // page's own detail can be replaced while they are in flight.
+            Update::Related { artist, cards } => {
+                if self.wanted_related.as_deref() == Some(artist.as_str())
+                    && matches!(self.related, Load::Loading)
+                {
+                    self.related = Load::Ready(cards.clone());
+                }
+            }
+            Update::RelatedFailed { artist, failure } => {
+                if self.wanted_related.as_deref() == Some(artist.as_str())
+                    && matches!(self.related, Load::Loading)
+                {
+                    self.related = Load::Failed(*failure);
+                }
+            }
             Update::ReleaseTracks { .. } | Update::ReleaseTracksFailed { .. } => {
                 self.releases.apply(update);
             }
@@ -462,6 +484,11 @@ impl Library {
     /// confirmed for another one cannot be drawn over this page and another
     /// artist's filter choice is not carried into this one.
     fn load_artist(&mut self, artist: &str) -> Command {
+        if self.wanted_artist.as_deref() != Some(artist) {
+            // Another artist's likeness list is no use here.
+            self.related = Load::Idle;
+            self.wanted_related = None;
+        }
         self.wanted_artist = Some(artist.to_owned());
         self.artist = Load::Loading;
         self.follow.open(artist);
@@ -534,6 +561,38 @@ impl Library {
         self.followed_artists = Load::Idle;
         self.saved_albums = Load::Idle;
         Command::ReloadLibrary
+    }
+
+    /// The command that starts the likeness load, if one is due.
+    ///
+    /// The cards are the page's second read: they are asked for only once the
+    /// artist's own detail has landed and named somebody, so the hero and the
+    /// discography never wait on a dozen `Artist::get` calls. A page that names
+    /// nobody asks for nothing.
+    pub fn related_request(&mut self) -> Option<Command> {
+        let Load::Ready(detail) = &self.artist else {
+            return None;
+        };
+        let artist = detail.uri.clone();
+        let uris = detail.related.clone();
+        if uris.is_empty() {
+            return None;
+        }
+        if matches!(self.related, Load::Loading)
+            || (matches!(self.related, Load::Ready(_) | Load::Failed(_))
+                && self.wanted_related.as_deref() == Some(artist.as_str()))
+        {
+            return None;
+        }
+        self.wanted_related = Some(artist.clone());
+        self.related = Load::Loading;
+        Some(Command::LoadRelated { artist, uris })
+    }
+
+    /// Marks the likeness list loading again, for the page's own Retry.
+    pub fn reload_related(&mut self) -> Option<Command> {
+        self.related = Load::Idle;
+        self.related_request()
     }
 
     /// Marks the followed-shows list loading again and returns the command that
@@ -668,6 +727,7 @@ impl Library {
             follow,
             filter,
             releases,
+            related,
             history,
             ..
         } = self;
@@ -684,6 +744,7 @@ impl Library {
             follow,
             filter,
             releases,
+            related,
         }
     }
 
@@ -775,6 +836,7 @@ mod tests {
             portrait: None,
             top_tracks: vec![track("top")],
             releases: vec![release("spotify:album:r1")],
+            related: Vec::new(),
         }
     }
 
@@ -849,6 +911,13 @@ mod tests {
             publisher: None,
             cover: None,
             episodes: None,
+        }
+    }
+
+    fn related_artist(uri: &str, related: Vec<String>) -> ArtistDetail {
+        ArtistDetail {
+            related,
+            ..artist_detail(uri)
         }
     }
 
@@ -1659,6 +1728,84 @@ mod tests {
             Load::Ready(second),
             "the later whole-set reply wins and neither corrupts the state"
         );
+    }
+
+    /// The likeness cards are the artist page's second read: nothing is asked
+    /// until the artist's own detail names somebody, and then it is asked once.
+    #[test]
+    fn the_related_request_waits_for_the_artist_and_fires_once() {
+        let mut library = Library::default();
+        assert_eq!(library.related_request(), None, "no artist page is open");
+
+        // Ready with nobody to draw: no request, and no section.
+        library.artist = Load::Ready(related_artist("spotify:artist:1", Vec::new()));
+        assert_eq!(library.related_request(), None, "nobody was named");
+
+        library.artist = Load::Ready(related_artist(
+            "spotify:artist:1",
+            vec!["spotify:artist:2".to_owned(), "spotify:artist:3".to_owned()],
+        ));
+        assert_eq!(
+            library.related_request(),
+            Some(Command::LoadRelated {
+                artist: "spotify:artist:1".to_owned(),
+                uris: vec!["spotify:artist:2".to_owned(), "spotify:artist:3".to_owned()],
+            })
+        );
+        assert_eq!(library.related, Load::Loading);
+        assert_eq!(library.related_request(), None, "the load is in flight");
+    }
+
+    #[test]
+    fn a_related_reply_is_taken_only_for_the_artist_that_asked() {
+        let mut library = Library {
+            artist: Load::Ready(related_artist(
+                "spotify:artist:1",
+                vec!["spotify:artist:2".to_owned()],
+            )),
+            ..Library::default()
+        };
+        let _ = library.related_request();
+
+        library.apply(&Update::Related {
+            artist: "spotify:artist:9".to_owned(),
+            cards: vec![followed_artist("spotify:artist:9")],
+        });
+        assert_eq!(library.related, Load::Loading, "another artist's cards");
+
+        library.apply(&Update::Related {
+            artist: "spotify:artist:1".to_owned(),
+            cards: vec![followed_artist("spotify:artist:2")],
+        });
+        assert!(matches!(library.related, Load::Ready(_)));
+    }
+
+    #[test]
+    fn another_artist_page_starts_a_fresh_likeness_list() {
+        let mut library = Library {
+            artist: Load::Ready(related_artist(
+                "spotify:artist:1",
+                vec!["spotify:artist:2".to_owned()],
+            )),
+            ..Library::default()
+        };
+        let _ = library.related_request();
+        library.apply(&Update::Related {
+            artist: "spotify:artist:1".to_owned(),
+            cards: vec![followed_artist("spotify:artist:2")],
+        });
+
+        // Opening another artist drops the first one's row.
+        let _ = library.open(Page::Artist("spotify:artist:5".to_owned()));
+        assert_eq!(library.related, Load::Idle);
+        library.artist = Load::Ready(related_artist(
+            "spotify:artist:5",
+            vec!["spotify:artist:6".to_owned()],
+        ));
+        assert!(matches!(
+            library.related_request(),
+            Some(Command::LoadRelated { .. })
+        ));
     }
 
     #[test]

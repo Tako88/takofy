@@ -34,6 +34,8 @@ pub enum Command {
     LoadFollowedShows,
     /// Load the artists the user follows, as the library root draws them.
     LoadFollowedArtists,
+    /// The artists an artist is heard with, by the artist they belong to.
+    LoadRelated { artist: String, uris: Vec<String> },
     /// Load the albums the user saved, as the library root draws them.
     LoadSavedAlbums,
     /// Start playing a track.
@@ -71,6 +73,8 @@ pub enum Failure {
     Followed,
     /// The artists the user follows could not be loaded.
     FollowedArtists,
+    /// The artists an artist is heard with.
+    Related,
     /// The albums the user saved could not be loaded.
     SavedAlbums,
     /// A track's lyrics could not be loaded.
@@ -139,6 +143,13 @@ pub enum Update {
     FollowedShowsFailed(Failure),
     /// The artists the user follows, as the library root draws them.
     FollowedArtists(Vec<FollowedArtist>),
+    /// The likeness cards for one artist, in the payload's own order.
+    Related {
+        artist: String,
+        cards: Vec<FollowedArtist>,
+    },
+    /// The likeness cards could not be loaded.
+    RelatedFailed { artist: String, failure: Failure },
     /// The followed artists could not be loaded.
     FollowedArtistsFailed(Failure),
     /// The albums the user saved, as the library root draws them.

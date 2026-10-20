@@ -17,23 +17,24 @@
 
 use std::time::Instant;
 
-use egui::{Rect, Sense, Ui, Vec2};
-use takofy_model::Release;
+use egui::{Rect, Sense, Ui, Vec2, vec2};
+use takofy_model::{FollowedArtist, Release};
 
 use crate::cover::{Art, Cover};
 use crate::format::{discography_meta, format_position};
-use crate::layout::{Table, table as table_layout};
+use crate::layout::{Table, cards, table as table_layout};
 use crate::library::{Library, Load};
 use crate::message::Command;
 use crate::player::Transport;
 use crate::queue::Queue;
 use crate::releases::Labels;
 use crate::route::Page;
-use crate::theme::{Tokens, extent};
+use crate::theme::{Tokens, extent, space};
 use crate::view::text as recipe;
 
 use super::artist_hero::{self, ArtistHero};
 use super::filter_row;
+use super::media;
 use super::release_block::{self, Block};
 use super::section;
 use super::track_list::{head, list_rect};
@@ -63,6 +64,9 @@ pub fn artist_view(
 
     let mut command = None;
     let mut retry = false;
+    // A card press names an artist; opening it needs the library, which the page
+    // has borrowed for the whole draw, so it waits for the scroll area to close.
+    let mut open: Option<String> = None;
 
     // The scroll offset is this artist's, not the album's or the playlist's that
     // share the pane.
@@ -135,60 +139,65 @@ pub fn artist_view(
                         );
                         if artist.releases.is_empty() {
                             ui.label(recipe::muted("No releases.", tokens));
-                            return;
-                        }
+                        } else {
+                            // The row the artist's own kinds allow, and the chip it
+                            // is filtered by. The effective chip, never the raw
+                            // choice: a choice whose kind this artist does not have
+                            // would otherwise hide every block.
+                            let row = crate::discography::chips(&artist.releases);
+                            let active = page.filter.effective(&row);
+                            if row.len() > 1
+                                && let Some(picked) = filter_row::show(ui, tokens, &row, active)
+                            {
+                                page.filter.choose(picked);
+                            }
 
-                        // The row the artist's own kinds allow, and the chip it
-                        // is filtered by. The effective chip, never the raw
-                        // choice: a choice whose kind this artist does not have
-                        // would otherwise hide every block.
-                        let row = crate::discography::chips(&artist.releases);
-                        let active = page.filter.effective(&row);
-                        if row.len() > 1
-                            && let Some(picked) = filter_row::show(ui, tokens, &row, active)
-                        {
-                            page.filter.choose(picked);
-                        }
-
-                        for release in artist
-                            .releases
-                            .iter()
-                            .filter(|release| active.matches(release.kind))
-                        {
-                            let on_screen = ui.clip_rect().intersects(block_rect(ui, release));
-                            if !on_screen {
+                            for release in artist
+                                .releases
+                                .iter()
+                                .filter(|release| active.matches(release.kind))
+                            {
+                                let on_screen = ui.clip_rect().intersects(block_rect(ui, release));
+                                if !on_screen {
+                                    let block = Block {
+                                        release,
+                                        labels: Labels::Idle,
+                                        cover: Cover::Missing,
+                                        on_screen: false,
+                                        playable: false,
+                                    };
+                                    let _ =
+                                        release_block::show(ui, table, &block, transport, tokens);
+                                    continue;
+                                }
+                                let labels = page.releases.look(&release.uri);
+                                let cover = art.look(release.cover.as_ref(), now);
                                 let block = Block {
                                     release,
-                                    labels: Labels::Idle,
-                                    cover: Cover::Missing,
-                                    on_screen: false,
-                                    playable: false,
+                                    labels,
+                                    cover,
+                                    on_screen: true,
+                                    playable: matches!(labels, Labels::Ready(_)),
                                 };
-                                let _ = release_block::show(ui, table, &block, transport, tokens);
-                                continue;
+                                let clicked =
+                                    release_block::show(ui, table, &block, transport, tokens);
+                                let ready = match labels {
+                                    Labels::Ready(tracks) => Some(tracks),
+                                    Labels::Idle | Labels::Loading | Labels::Failed(_) => None,
+                                };
+                                if clicked.played
+                                    && let Some(tracks) = ready
+                                {
+                                    command = queue.start(tracks, 0, transport);
+                                }
+                                if let (Some(index), Some(tracks)) = (clicked.row, ready) {
+                                    command = queue.start(tracks, index, transport);
+                                }
                             }
-                            let labels = page.releases.look(&release.uri);
-                            let cover = art.look(release.cover.as_ref(), now);
-                            let block = Block {
-                                release,
-                                labels,
-                                cover,
-                                on_screen: true,
-                                playable: matches!(labels, Labels::Ready(_)),
-                            };
-                            let clicked = release_block::show(ui, table, &block, transport, tokens);
-                            let ready = match labels {
-                                Labels::Ready(tracks) => Some(tracks),
-                                Labels::Idle | Labels::Loading | Labels::Failed(_) => None,
-                            };
-                            if clicked.played
-                                && let Some(tracks) = ready
-                            {
-                                command = queue.start(tracks, 0, transport);
-                            }
-                            if let (Some(index), Some(tracks)) = (clicked.row, ready) {
-                                command = queue.start(tracks, index, transport);
-                            }
+                        }
+
+                        if let Some(artist) = fans(ui, page.related, art, now, tokens) {
+                            open = Some(artist);
                         }
                     });
                 }
@@ -198,7 +207,64 @@ pub fn artist_view(
     if retry {
         return library.open(Page::Artist(uri));
     }
+    if let Some(artist) = open {
+        command = library.open(Page::Artist(artist));
+    }
     command
+}
+
+/// The likeness row: the artists this one is heard with, as round cards.
+///
+/// The row is the page's second read, so it is absent until the cards land and
+/// absent for good when the artist names nobody. A press opens that artist.
+fn fans(
+    ui: &mut Ui,
+    related: &Load<Vec<FollowedArtist>>,
+    art: &mut Art,
+    now: Instant,
+    tokens: &Tokens,
+) -> Option<String> {
+    let cards = match related {
+        Load::Ready(cards) if !cards.is_empty() => cards,
+        Load::Idle | Load::Loading | Load::Ready(_) | Load::Failed(_) => return None,
+    };
+
+    ui.add_space(space::S6);
+    section::head(ui, "Fans also like", &cards.len().to_string(), tokens);
+
+    let solved = cards::grid(
+        Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), 0.0)),
+        extent::MEDIA_MIN_W,
+        space::S3,
+        media::extra_height(ui),
+    );
+    let rows = solved.rows(cards.len());
+    let height =
+        rows as f32 * solved.card_rect(0).height() + (rows.saturating_sub(1)) as f32 * space::S3;
+    let list = Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), height));
+    ui.allocate_rect(list, egui::Sense::hover());
+    let visible = ui.clip_rect();
+
+    let mut pressed = None;
+    for (index, card) in cards.iter().enumerate() {
+        let rect = solved.card_rect(index);
+        if !visible.intersects(rect) {
+            continue;
+        }
+        let media = media::Media {
+            uri: &card.uri,
+            name: &card.name,
+            kind: "Artist",
+            sub: "Artist",
+            size: "",
+            round: true,
+            cover: art.look(card.portrait.as_ref(), now),
+        };
+        if media::tile(ui, rect, &media, tokens) {
+            pressed = Some(card.uri.clone());
+        }
+    }
+    pressed
 }
 
 /// The Popular section: the artist's top tracks as the album's own table rows.
@@ -447,6 +513,8 @@ mod tests {
         CoverUrl::from_wire(&format!("https://i.scdn.co/image/{tail}")).expect("a cover url")
     }
 
+    const PAGE: Vec2 = Vec2::new(900.0, 1500.0);
+
     fn detail(top: Vec<TrackEntry>, releases: Vec<Release>) -> ArtistDetail {
         ArtistDetail {
             uri: ARTIST.to_owned(),
@@ -454,7 +522,122 @@ mod tests {
             portrait: None,
             top_tracks: top,
             releases,
+            related: Vec::new(),
         }
+    }
+
+    /// The likeness row draws under the discography, and a press opens that
+    /// artist's page.
+    #[test]
+    fn the_likeness_row_draws_its_cards_and_a_press_opens_the_artist() {
+        let ctx = context();
+        let mut detail = detail(
+            vec![track("spotify:track:t", "Top", "Vela", 200_000)],
+            vec![release(
+                "spotify:album:a",
+                "Album One",
+                &["spotify:track:t"],
+            )],
+        );
+        detail.related = vec!["spotify:artist:other".to_owned()];
+        let mut library = library_with(detail);
+        // The cards are the page's second read, so the request comes first.
+        let _ = library.related_request();
+        library.apply(&Update::Related {
+            artist: ARTIST.to_owned(),
+            cards: vec![FollowedArtist {
+                uri: "spotify:artist:other".to_owned(),
+                name: "Other Artist".to_owned(),
+                named: true,
+                portrait: None,
+                releases: None,
+            }],
+        });
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let (_, output) = frame(
+            &ctx,
+            PAGE,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let texts: Vec<&str> = drawn_texts(&output);
+        assert!(texts.contains(&"Fans also like"), "{texts:?}");
+        assert!(texts.contains(&"Other Artist"), "{texts:?}");
+
+        let card = text_rect(&output, "Other Artist").expect("the card's name");
+        let (command, _) = frame(
+            &ctx,
+            PAGE,
+            crate::view::test_support::click_events(card.center()).to_vec(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        assert_eq!(
+            command,
+            Some(Command::LoadArtist {
+                artist: "spotify:artist:other".to_owned()
+            }),
+            "a card opens that artist"
+        );
+    }
+
+    /// An artist the wire names nobody for draws no section at all, and one with
+    /// no releases still draws the row after its empty copy.
+    #[test]
+    fn the_likeness_row_is_absent_without_cards_and_survives_an_empty_discography() {
+        let ctx = context();
+        let mut bare = detail(vec![], vec![]);
+        bare.related = vec!["spotify:artist:other".to_owned()];
+        let mut library = library_with(bare);
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let (_, output) = frame(
+            &ctx,
+            PAGE,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        assert!(!drawn_texts(&output).contains(&"Fans also like"));
+
+        let _ = library.related_request();
+        library.apply(&Update::Related {
+            artist: ARTIST.to_owned(),
+            cards: vec![FollowedArtist {
+                uri: "spotify:artist:other".to_owned(),
+                name: "Other Artist".to_owned(),
+                named: true,
+                portrait: None,
+                releases: None,
+            }],
+        });
+        let (_, output) = frame(
+            &ctx,
+            PAGE,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let texts = drawn_texts(&output);
+        assert!(texts.contains(&"No releases."), "{texts:?}");
+        assert!(
+            texts.contains(&"Fans also like"),
+            "the row survives an empty discography: {texts:?}"
+        );
     }
 
     fn library_with(detail: ArtistDetail) -> Library {

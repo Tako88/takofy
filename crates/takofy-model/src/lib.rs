@@ -323,6 +323,8 @@ pub struct ArtistDetail {
     /// Every release the artist payload named: albums, then singles, then
     /// compilations, deduped, in the wire's own order.
     pub releases: Vec<Release>,
+    /// The payload's likeness list, URIs only, capped by the read.
+    pub related: Vec<String>,
 }
 
 /// A show, as its page and the followed-shows list draw it.

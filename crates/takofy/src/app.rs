@@ -97,6 +97,11 @@ impl eframe::App for TakofyApp {
         if let Some(command) = self.library.saved_albums_request() {
             let _ = self.ui_end.commands.send(command);
         }
+        // The artist page's likeness row is its second read: it is asked for
+        // once the artist's own detail has landed and named somebody.
+        if let Some(command) = self.library.related_request() {
+            let _ = self.ui_end.commands.send(command);
+        }
         // After the drain and before the draw, so a cover that just arrived is
         // ready in this same frame's `ui()`.
         self.art.upload(ctx);
