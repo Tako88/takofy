@@ -19,8 +19,8 @@ use librespot::protocol::metadata::{
 };
 use protobuf::Message as _;
 use takofy_model::{
-    AlbumDetail, ArtistDetail, CoverUrl, Episode, FollowedShow, PlaylistEntry, PublishedAt,
-    ShowDetail, TrackEntry,
+    AlbumDetail, ArtistDetail, CoverUrl, Episode, FollowedArtist, FollowedShow, PlaylistEntry,
+    PublishedAt, SavedAlbum, ShowDetail, TrackEntry,
 };
 
 use crate::album::{AlbumError, detail, positions};
@@ -28,7 +28,8 @@ use crate::artist::{
     ArtistError, detail as artist_detail, release_chunks, release_uris, releases_of,
     top_track_positions,
 };
-use crate::collection;
+use crate::collected::{self, ArtistCard};
+use crate::collection::{self, Item};
 use crate::context::{
     ContextError, Page, PageSource, PageTrack, Resolved, page_from_proto, parse_page_json,
 };
@@ -385,33 +386,24 @@ pub(crate) async fn write_follow(
         .map_err(|error| ArtistError::Source(error.to_string()))
 }
 
-/// The shows the user follows, newest follow first, each as its card draws it.
+/// One collection set, paged through the collection endpoint until an answer
+/// carries no next token.
 ///
-/// The set is paged through the collection endpoint until an answer carries no
-/// next token. A page that cannot be read fails the whole read rather than
-/// drawing a short list as if it were complete. An empty set asks for no
-/// metadata at all.
-///
-/// The cards are read one show at a time, `buffered(8)`, as the playlist listing
-/// does. A show whose metadata does not answer, or answers without a name, keeps
-/// its URI and stays in the list: one unreadable show must not hide the others.
-pub(crate) async fn read_followed_shows(
+/// A page that cannot be read fails the whole read rather than drawing a short
+/// list as if it were complete. The most answers the read accepts is the pager's.
+async fn read_set(
     session: &Session,
-) -> Result<Vec<FollowedShow>, FollowedError> {
+    set: &str,
+    mut pager: followed::Pager,
+) -> Result<Vec<Item>, FollowedError> {
     let headers = collection_headers().ok_or_else(|| {
         FollowedError::Source("the collection media type is not a valid header".to_owned())
     })?;
     let username = session.username();
-    let mut pager = followed::Pager::new();
     let mut token: Option<String> = None;
     let mut items = Vec::new();
     loop {
-        let body = collection::paging_body(
-            &username,
-            collection::SHOW_SET,
-            token.as_deref(),
-            followed::PAGE_LIMIT,
-        );
+        let body = collection::paging_body(&username, set, token.as_deref(), followed::PAGE_LIMIT);
         let bytes = session
             .spclient()
             .request(
@@ -431,6 +423,20 @@ pub(crate) async fn read_followed_shows(
             None => break,
         }
     }
+    Ok(items)
+}
+
+/// The shows the user follows, newest follow first, each as its card draws it.
+///
+/// An empty set asks for no metadata at all.
+///
+/// The cards are read one show at a time, `buffered(8)`, as the playlist listing
+/// does. A show whose metadata does not answer, or answers without a name, keeps
+/// its URI and stays in the list: one unreadable show must not hide the others.
+pub(crate) async fn read_followed_shows(
+    session: &Session,
+) -> Result<Vec<FollowedShow>, FollowedError> {
+    let items = read_set(session, collection::SHOW_SET, followed::Pager::new()).await?;
 
     let order = followed::show_order(items);
     if !needs_labels(&order) {
@@ -471,6 +477,78 @@ async fn show_meta(session: &Session, uri: &str) -> Option<ShowCard> {
     let id = SpotifyUri::from_uri(uri).ok()?;
     let show = Show::get(session, &id).await.ok()?;
     show_card(&show)
+}
+
+/// One followed artist's card, or `None` when the artist cannot be read or has
+/// no name. The caller then falls back to the URI.
+async fn artist_meta(session: &Session, uri: &str) -> Option<ArtistCard> {
+    let id = SpotifyUri::from_uri(uri).ok()?;
+    let artist = Artist::get(session, &id).await.ok()?;
+    collected::artist_card(&artist)
+}
+
+/// The artists the user follows, newest follow first, each as its card draws it.
+///
+/// An empty set asks for no metadata at all. An artist whose metadata does not
+/// answer, or answers without a name, keeps its URI and stays in the list: one
+/// unreadable artist must not hide the others.
+pub(crate) async fn read_followed_artists(
+    session: &Session,
+) -> Result<Vec<FollowedArtist>, FollowedError> {
+    let items = read_set(session, collection::ARTIST_SET, followed::Pager::new()).await?;
+    let order = collected::artist_order(items);
+    if !needs_labels(&order) {
+        return Ok(Vec::new());
+    }
+
+    let cards: HashMap<String, ArtistCard> = futures_util::stream::iter(order.iter().cloned())
+        .map(|uri| async move {
+            let card = artist_meta(session, &uri).await;
+            (uri, card)
+        })
+        .buffered(8)
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .filter_map(|(uri, card)| card.map(|card| (uri, card)))
+        .collect();
+    let artists = collected::artist_entries(&order, &cards);
+    let unnamed = artists.iter().filter(|artist| !artist.named).count();
+    if unnamed > 0 {
+        log::warn!(
+            "{unnamed} of {} followed artists could not be named",
+            artists.len()
+        );
+    }
+    Ok(artists)
+}
+
+/// The albums the user saves, newest save first, each as its card draws it.
+///
+/// An empty set asks for no metadata at all. A chunk whose request fails costs
+/// only its albums, which stay in the list unnamed.
+pub(crate) async fn read_saved_albums(session: &Session) -> Result<Vec<SavedAlbum>, FollowedError> {
+    let items = read_set(
+        session,
+        collection::COLLECTION_SET,
+        followed::Pager::with_cap(followed::COLLECTION_MAX_PAGES),
+    )
+    .await?;
+    let order = collected::album_order(items);
+    if !needs_labels(&order) {
+        return Ok(Vec::new());
+    }
+
+    let mut answers = Vec::new();
+    for chunk in release_chunks(&order) {
+        answers.push(batched_request(session, chunk, ExtensionKind::ALBUM_V4).await);
+    }
+    let albums = collected::saved_album_entries(&order, answers);
+    let named = albums.iter().filter(|album| album.named).count();
+    if named < albums.len() {
+        log::warn!("{named} of {} saved albums came back named", albums.len());
+    }
+    Ok(albums)
 }
 
 /// The two headers both collection endpoints want: the vendor media type on

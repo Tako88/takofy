@@ -63,6 +63,12 @@ pub struct Pager {
     max: usize,
 }
 
+impl Default for Pager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Pager {
     pub fn new() -> Self {
         Self::with_cap(MAX_PAGES)

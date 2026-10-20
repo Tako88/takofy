@@ -96,8 +96,8 @@ pub(crate) fn saved_album_entries(
     answers: Vec<Option<BatchedExtensionResponse>>,
 ) -> Vec<SavedAlbum> {
     let mut out = Vec::new();
-    for (chunk, answer) in release_chunks(order)
-        .zip(answers.into_iter().chain(std::iter::repeat_with(|| None)))
+    for (chunk, answer) in
+        release_chunks(order).zip(answers.into_iter().chain(std::iter::repeat_with(|| None)))
     {
         let answered = answer.as_ref().map(answered_albums);
         for uri in chunk {
@@ -107,10 +107,7 @@ pub(crate) fn saved_album_entries(
                     out.push(SavedAlbum {
                         uri: uri.clone(),
                         name: release.name,
-                        named: album
-                            .name
-                            .as_deref()
-                            .is_some_and(|name| !name.is_empty()),
+                        named: album.name.as_deref().is_some_and(|name| !name.is_empty()),
                         artists: join_artist_names(album),
                         year: release.year,
                         cover: release.cover,
@@ -196,7 +193,9 @@ mod tests {
     }
 
     fn episode_uri(byte: u8) -> String {
-        SpotifyUri::Episode { id: id(byte) }.to_uri().expect("a uri")
+        SpotifyUri::Episode { id: id(byte) }
+            .to_uri()
+            .expect("a uri")
     }
 
     fn item(uri: &str, added_at: Option<i64>, removed: bool) -> Item {
@@ -305,8 +304,10 @@ mod tests {
         let mut portrait = Image::default();
         portrait.set_width(300);
         portrait.set_file_id(vec![9; 20]);
-        message.portrait_group =
-            MessageField::some(ImageGroup { image: vec![portrait], ..Default::default() });
+        message.portrait_group = MessageField::some(ImageGroup {
+            image: vec![portrait],
+            ..Default::default()
+        });
 
         let card = artist_card(&artist(message)).expect("a card");
         assert_eq!(
@@ -422,7 +423,7 @@ mod tests {
 
     #[test]
     fn more_than_fifty_uris_span_two_chunks_and_a_failed_chunk_costs_only_its_albums() {
-        let order: Vec<String> = (1..=51u8).map(|byte| album_uri(byte)).collect();
+        let order: Vec<String> = (1..=51u8).map(album_uri).collect();
         let answer = response(&[(&album_uri(1), wire_album("First", &[], &[]))]);
         let entries = saved_album_entries(&order, vec![Some(answer), None]);
 
@@ -430,7 +431,10 @@ mod tests {
         assert_eq!(entries[0].name, "First");
         assert!(entries[0].named);
         for entry in &entries[1..] {
-            assert_eq!(entry.name, entry.uri, "an unanswered album stays in the list, unnamed");
+            assert_eq!(
+                entry.name, entry.uri,
+                "an unanswered album stays in the list, unnamed"
+            );
             assert!(!entry.named);
             assert_eq!(entry.tracks, None);
         }
@@ -438,12 +442,16 @@ mod tests {
 
     #[test]
     fn a_short_answers_vector_pads_the_remaining_chunks_as_unanswered() {
-        let order: Vec<String> = (1..=51u8).map(|byte| album_uri(byte)).collect();
+        let order: Vec<String> = (1..=51u8).map(album_uri).collect();
         let answer = response(&[(&album_uri(1), wire_album("First", &[], &[]))]);
         // One answer for two chunks: the missing one must not cost its chunk.
         let entries = saved_album_entries(&order, vec![Some(answer)]);
 
-        assert_eq!(entries.len(), 51, "a short answers vector must not drop its tail");
+        assert_eq!(
+            entries.len(),
+            51,
+            "a short answers vector must not drop its tail"
+        );
         assert_eq!(entries[0].name, "First");
         assert!(entries[0].named);
         for entry in &entries[1..] {
@@ -462,16 +470,15 @@ mod tests {
         let mut image = Image::default();
         image.set_width(300);
         image.set_file_id((1..=20).collect::<Vec<u8>>());
-        album.cover_group =
-            MessageField::some(ImageGroup { image: vec![image], ..Default::default() });
+        album.cover_group = MessageField::some(ImageGroup {
+            image: vec![image],
+            ..Default::default()
+        });
 
         let order = vec![album_uri(50)];
-        let entry = saved_album_entries(
-            &order,
-            vec![Some(response(&[(&album_uri(50), album)]))],
-        )
-        .pop()
-        .expect("an entry");
+        let entry = saved_album_entries(&order, vec![Some(response(&[(&album_uri(50), album)]))])
+            .pop()
+            .expect("an entry");
 
         assert_eq!(entry.name, "Slow Tide");
         assert!(entry.named);
@@ -497,8 +504,13 @@ mod tests {
     #[test]
     fn a_blank_artist_name_is_skipped_in_the_join() {
         let order = vec![album_uri(10)];
-        let answer = response(&[(&album_uri(10), wire_album("Record", &["  ", "Vela", "Kite"], &[]))]);
-        let entry = saved_album_entries(&order, vec![Some(answer)]).pop().expect("an entry");
+        let answer = response(&[(
+            &album_uri(10),
+            wire_album("Record", &["  ", "Vela", "Kite"], &[]),
+        )]);
+        let entry = saved_album_entries(&order, vec![Some(answer)])
+            .pop()
+            .expect("an entry");
         assert_eq!(entry.artists, "Vela, Kite", "blanks do not join");
     }
 
@@ -506,7 +518,9 @@ mod tests {
     fn a_blank_wire_name_reads_unnamed_with_the_uri() {
         let order = vec![album_uri(10)];
         let answer = response(&[(&album_uri(10), wire_album("", &[], &[]))]);
-        let entry = saved_album_entries(&order, vec![Some(answer)]).pop().expect("an entry");
+        let entry = saved_album_entries(&order, vec![Some(answer)])
+            .pop()
+            .expect("an entry");
         assert_eq!(entry.name, album_uri(10));
         assert!(!entry.named);
         assert_eq!(entry.artists, "");

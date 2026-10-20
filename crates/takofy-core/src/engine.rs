@@ -11,12 +11,14 @@ use crate::followed::FollowedError;
 use crate::playback::{Playback, PlaybackError, PlaybackEvent};
 use crate::remote::{
     ROOTLIST_WIRE, RemoteContext, RemoteRootlist, label_playlists, label_tracks, read_album,
-    read_artist, read_followed_shows, read_release_tracks, read_show, write_follow,
+    read_artist, read_followed_artists, read_followed_shows, read_release_tracks,
+    read_saved_albums, read_show, write_follow,
 };
 use crate::rootlist::{RootlistError, fetch_all};
 use crate::show::ShowError;
 use takofy_model::{
-    AlbumDetail, ArtistDetail, CoverUrl, FollowedShow, PlaylistEntry, ShowDetail, TrackEntry,
+    AlbumDetail, ArtistDetail, CoverUrl, FollowedArtist, FollowedShow, PlaylistEntry, SavedAlbum,
+    ShowDetail, TrackEntry,
 };
 
 /// Why an [`Engine`] operation failed.
@@ -129,6 +131,16 @@ impl Engine {
     /// The shows the user follows, newest follow first, each as its card draws it.
     pub async fn followed_shows(&self) -> Result<Vec<FollowedShow>, EngineError> {
         Ok(read_followed_shows(&self.session).await?)
+    }
+
+    /// The artists the user follows, newest follow first, each as its card draws it.
+    pub async fn followed_artists(&self) -> Result<Vec<FollowedArtist>, EngineError> {
+        Ok(read_followed_artists(&self.session).await?)
+    }
+
+    /// The albums the user saves, newest save first, each as its card draws it.
+    pub async fn saved_albums(&self) -> Result<Vec<SavedAlbum>, EngineError> {
+        Ok(read_saved_albums(&self.session).await?)
     }
 }
 
