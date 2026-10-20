@@ -155,10 +155,10 @@ pub fn availability(control: Control) -> Availability {
         Control::NavSearch => Availability::Waiting, // #17
         Control::LibraryCreate => Availability::Waiting, // #3
         Control::LibraryExpand => Availability::Waiting, // #3
-        Control::FilterPlaylists => Availability::Waiting, // #3
-        Control::FilterArtists => Availability::Waiting, // #3
-        Control::FilterAlbums => Availability::Waiting, // #3
-        Control::FilterPodcasts => Availability::Waiting, // #3
+        Control::FilterPlaylists => Availability::Ready, // #3
+        Control::FilterArtists => Availability::Waiting, // #3; no library data yet
+        Control::FilterAlbums => Availability::Waiting, // #3; no library data yet
+        Control::FilterPodcasts => Availability::Ready, // #3
         Control::SearchField => Availability::Waiting, // #16
         Control::TrailHome => Availability::Waiting, // #17
         Control::NowPlayingMore => Availability::Waiting, // #16
@@ -249,6 +249,8 @@ mod tests {
                     | Control::LibraryFilterAll
                     | Control::LibraryFilterPlaylists
                     | Control::LibraryFilterPodcasts
+                    | Control::FilterPlaylists
+                    | Control::FilterPodcasts
             );
             assert_eq!(
                 availability(control) == Availability::Ready,
@@ -257,18 +259,13 @@ mod tests {
             );
         }
 
-        // The discography's filter row is live; the library's filter row is not,
-        // and one landing must not make the other look ready.
-        for control in [
-            Control::FilterPlaylists,
-            Control::FilterArtists,
-            Control::FilterAlbums,
-            Control::FilterPodcasts,
-        ] {
+        // The sidebar's Playlists and Podcasts chips are live; Artists and
+        // Albums have no library data yet, so those two wait.
+        for control in [Control::FilterArtists, Control::FilterAlbums] {
             assert_eq!(
                 availability(control),
                 Availability::Waiting,
-                "the library's filter row still has no view: {control:?}"
+                "the sidebar's {control:?} has no library data yet"
             );
         }
 

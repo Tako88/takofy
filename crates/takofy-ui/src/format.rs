@@ -6,6 +6,7 @@ use takofy_model::{AddedAt, PublishedAt, ReleaseKind, TrackEntry};
 
 use crate::discography::Chip;
 use crate::library_filter::RootKind;
+use crate::sidebar_kind::SidebarKind;
 
 /// One day in milliseconds.
 const DAY_MS: u64 = 86_400_000;
@@ -286,6 +287,16 @@ pub fn root_filter_label(kind: RootKind) -> &'static str {
         RootKind::Artists => "Artists",
         RootKind::Albums => "Albums",
         RootKind::Podcasts => "Podcasts",
+    }
+}
+
+/// The sidebar's kind row labels each chip as the reference writes it.
+pub fn sidebar_kind_label(kind: SidebarKind) -> &'static str {
+    match kind {
+        SidebarKind::Playlists => "Playlists",
+        SidebarKind::Artists => "Artists",
+        SidebarKind::Albums => "Albums",
+        SidebarKind::Podcasts => "Podcasts",
     }
 }
 
@@ -768,6 +779,14 @@ mod tests {
         assert_eq!(root_filter_label(RootKind::Artists), "Artists");
         assert_eq!(root_filter_label(RootKind::Albums), "Albums");
         assert_eq!(root_filter_label(RootKind::Podcasts), "Podcasts");
+    }
+
+    #[test]
+    fn sidebar_kind_labels_match_the_reference() {
+        assert_eq!(sidebar_kind_label(SidebarKind::Playlists), "Playlists");
+        assert_eq!(sidebar_kind_label(SidebarKind::Artists), "Artists");
+        assert_eq!(sidebar_kind_label(SidebarKind::Albums), "Albums");
+        assert_eq!(sidebar_kind_label(SidebarKind::Podcasts), "Podcasts");
     }
 
     #[test]
