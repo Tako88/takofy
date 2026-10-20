@@ -61,6 +61,8 @@ impl SignIn {
                 | Update::ReleaseTracksFailed { .. }
                 | Update::Followed { .. }
                 | Update::FollowFailed { .. }
+                | Update::Lyrics { .. }
+                | Update::LyricsFailed { .. }
                 | Update::Cover { .. }
                 | Update::CoverFailed { .. }
                 | Update::Transport(_),
@@ -104,6 +106,7 @@ pub fn failure_message(failure: Failure) -> &'static str {
         Failure::SavedAlbums => {
             "Could not load your saved albums. Check the connection and try again."
         }
+        Failure::Lyrics => "Could not load the lyrics. Check your connection and try again.",
         Failure::Other => "Sign-in failed. Try again, or run with --headless for details.",
     }
 }
@@ -363,7 +366,7 @@ mod tests {
     }
 
     /// Every `Failure` value there is, so a test can sweep them all.
-    fn every_failure() -> [Failure; 10] {
+    fn every_failure() -> [Failure; 11] {
         [
             Failure::PortBusy,
             Failure::Keychain,
@@ -374,6 +377,7 @@ mod tests {
             Failure::Followed,
             Failure::FollowedArtists,
             Failure::SavedAlbums,
+            Failure::Lyrics,
             Failure::Other,
         ]
     }
