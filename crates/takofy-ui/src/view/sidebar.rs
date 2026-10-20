@@ -260,20 +260,18 @@ fn rows(
                                         let Some(entry) = entries.get(index) else {
                                             continue;
                                         };
-                                        let (_, row) = ui
+                                        let (_, place) = ui
                                             .allocate_space(Vec2::new(ui.available_width(), ROW_H));
                                         let selected =
                                             current.as_deref() == Some(entry.uri.as_str());
-                                        let cover = art.look(entry.cover.as_ref(), now);
-                                        if one(
-                                            ui,
-                                            row,
-                                            &entry.uri,
-                                            &entry.name,
-                                            cover,
+                                        let row = LibraryRow {
+                                            id: playlist_row_id(ui, &entry.uri),
+                                            name: &entry.name,
+                                            kind: "Playlist",
+                                            cover: art.look(entry.cover.as_ref(), now),
                                             selected,
-                                            tokens,
-                                        ) {
+                                        };
+                                        if one(ui, place, row, tokens) {
                                             picked = Some(entry.uri.clone());
                                         }
                                     }
@@ -292,7 +290,7 @@ fn rows(
             }
             if retry { Some(library.reload()) } else { None }
         }
-        SidebarKind::Podcasts => show_rows(ui, rect, library, tokens),
+        SidebarKind::Podcasts => show_rows(ui, rect, library, art, now, tokens),
         // `choose` is the only writer of the choice, and it refuses waiting
         // kinds, so these two kinds cannot be chosen.
         SidebarKind::Artists => {
@@ -407,38 +405,15 @@ fn page_show(library: &Library) -> Option<&str> {
     }
 }
 
-/// One show row: the title alone, at the same left edge as a playlist's name.
-fn title_row(
+/// The Podcasts list: the followed shows, or the state of the loads behind them.
+fn show_rows(
     ui: &mut Ui,
     rect: Rect,
-    uri: &str,
-    name: &str,
-    selected: bool,
+    library: &mut Library,
+    art: &mut Art,
+    now: Instant,
     tokens: &Tokens,
-) -> bool {
-    let response = row_chrome(ui, rect, show_row_id(ui, uri), name, selected, tokens);
-
-    let name_x = rect.left() + space::S2 + extent::LIBRARY_ART + space::S3;
-    let name_width = (rect.right() - name_x - space::S2).max(0.0);
-    let name_line = recipe::line(
-        ui,
-        name,
-        egui::FontId::new(text::SM, fonts::sans(Weight::Medium)),
-        tokens.palette.text,
-        0.0,
-        name_width,
-    );
-    ui.painter().galley(
-        Pos2::new(name_x, rect.center().y - name_line.size().y / 2.0),
-        name_line,
-        tokens.palette.text,
-    );
-
-    response.clicked()
-}
-
-/// The Podcasts list: the followed shows, or the state of the loads behind them.
-fn show_rows(ui: &mut Ui, rect: Rect, library: &mut Library, tokens: &Tokens) -> Option<Command> {
+) -> Option<Command> {
     if rect.height() < ROW_H {
         return None;
     }
@@ -470,10 +445,17 @@ fn show_rows(ui: &mut Ui, rect: Rect, library: &mut Library, tokens: &Tokens) ->
                                 let Some(show) = entries.get(index) else {
                                     continue;
                                 };
-                                let (_, row) =
+                                let (_, place) =
                                     ui.allocate_space(Vec2::new(ui.available_width(), ROW_H));
                                 let selected = current.as_deref() == Some(show.uri.as_str());
-                                if title_row(ui, row, &show.uri, &show.name, selected, tokens) {
+                                let row = LibraryRow {
+                                    id: show_row_id(ui, &show.uri),
+                                    name: &show.name,
+                                    kind: "Podcast",
+                                    cover: art.look(show.cover.as_ref(), now),
+                                    selected,
+                                };
+                                if one(ui, place, row, tokens) {
                                     pressed = Some(show.uri.clone());
                                 }
                             }
@@ -493,19 +475,27 @@ fn show_rows(ui: &mut Ui, rect: Rect, library: &mut Library, tokens: &Tokens) ->
     }
 }
 
-/// One playlist row: a placeholder tile, the name and the kind.
-///
-/// The tile stands in until covers are fetched.
-fn one(
-    ui: &mut Ui,
-    rect: Rect,
-    uri: &str,
-    name: &str,
+/// What one library row draws, whatever its kind.
+struct LibraryRow<'a> {
+    id: egui::Id,
+    name: &'a str,
+    kind: &'a str,
     cover: Cover,
     selected: bool,
-    tokens: &Tokens,
-) -> bool {
-    let response = row_chrome(ui, rect, playlist_row_id(ui, uri), name, selected, tokens);
+}
+
+/// One library row: a placeholder tile, the name and the kind.
+///
+/// The tile stands in until covers are fetched.
+fn one(ui: &mut Ui, rect: Rect, row: LibraryRow<'_>, tokens: &Tokens) -> bool {
+    let LibraryRow {
+        id,
+        name,
+        kind,
+        cover,
+        selected,
+    } = row;
+    let response = row_chrome(ui, rect, id, name, selected, tokens);
 
     let tile = Rect::from_min_size(
         Pos2::new(
@@ -535,7 +525,7 @@ fn one(
     );
     let kind_line = recipe::line(
         ui,
-        "Playlist",
+        kind,
         egui::FontId::new(text::XXS, fonts::mono(MonoWeight::Regular)),
         tokens.palette.text_subtle,
         recipe::tracking_pts(text::XXS, tracking::SLIGHT),
@@ -925,15 +915,14 @@ mod tests {
             },
             |ui| {
                 let rect = Rect::from_min_size(Pos2::new(20.0, 0.0), Vec2::new(200.0, ROW_H));
-                one(
-                    ui,
-                    rect,
-                    "spotify:playlist:a",
-                    "A list",
-                    Cover::Missing,
-                    false,
-                    &tokens,
-                );
+                let row = LibraryRow {
+                    id: playlist_row_id(ui, "spotify:playlist:a"),
+                    name: "A list",
+                    kind: "Playlist",
+                    cover: Cover::Missing,
+                    selected: false,
+                };
+                one(ui, rect, row, &tokens);
             },
         );
         output.textures_delta.clear();
@@ -958,9 +947,16 @@ mod tests {
                 ..Default::default()
             },
             |ui| {
-                let id = ui.scope_id().with(("library-row", uri));
+                let id = playlist_row_id(ui, uri);
                 let rect = Rect::from_min_size(Pos2::new(0.0, 0.0), Vec2::new(200.0, ROW_H));
-                one(ui, rect, uri, "A list", Cover::Missing, true, &tokens);
+                let row = LibraryRow {
+                    id,
+                    name: "A list",
+                    kind: "Playlist",
+                    cover: Cover::Missing,
+                    selected: true,
+                };
+                one(ui, rect, row, &tokens);
                 announced = ui
                     .ctx()
                     .accesskit_node_builder(id, |node| node.is_selected())
@@ -1060,6 +1056,41 @@ mod tests {
     }
 
     #[test]
+    fn a_show_row_asks_for_its_cover() {
+        use takofy_model::CoverUrl;
+
+        let ctx = context();
+        let mut show = followed_show("spotify:show:s", "A show");
+        let url = "https://i.scdn.co/image/0123456789abcdef0123456789abcdef01234567";
+        let cover = CoverUrl::from_wire(url).expect("the CDN url is admitted");
+        show.cover = Some(cover.clone());
+        let mut library = library_with(Vec::new(), vec![show]);
+        assert!(library.sidebar_kind.choose(SidebarKind::Podcasts));
+        let mut art = Art::default();
+        let now = Instant::now();
+
+        let _ = run(&ctx, Vec::new(), &mut library, &mut art);
+        let requested = art.requests(now);
+        assert!(
+            requested
+                .iter()
+                .any(|command| matches!(command, Command::Fetch { url: asked } if *asked == cover)),
+            "the row looks its cover up through the art store"
+        );
+    }
+
+    #[test]
+    fn a_show_row_names_its_kind() {
+        let ctx = context();
+        let mut library = library_with(Vec::new(), vec![followed_show("spotify:show:s", "A show")]);
+        assert!(library.sidebar_kind.choose(SidebarKind::Podcasts));
+        let mut art = Art::default();
+
+        let (output, _) = run(&ctx, Vec::new(), &mut library, &mut art);
+        assert!(painted(&output, "Podcast"), "the row says what it is");
+    }
+
+    #[test]
     fn the_open_show_is_drawn_selected() {
         let ctx = context();
         let mut library = library_with(
@@ -1075,8 +1106,9 @@ mod tests {
 
         let (output, _) = run(&ctx, Vec::new(), &mut library, &mut art);
         let (name, size) = painted_text(&output, "B show");
+        let (_, kind) = painted_text(&output, "Podcast");
         let row = Rect::from_min_size(
-            Pos2::new(space::S2, name.y + size.y / 2.0 - ROW_H / 2.0),
+            Pos2::new(space::S2, name.y + (size.y + kind.y) / 2.0 - ROW_H / 2.0),
             Vec2::new(254.0 - 2.0 * space::S2, ROW_H),
         );
         let selected = output.shapes.iter().any(|clipped| {
