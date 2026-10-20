@@ -35,8 +35,8 @@ pub enum Nav {
     Back,
     /// Forward to the page Back left behind.
     Forward,
-    /// Back to the playlists grid.
-    Playlists,
+    /// Back to the library root, which is Home.
+    Home,
 }
 
 /// Draws the topbar inside `rect`.
@@ -64,18 +64,27 @@ pub fn show(
             Size::LG,
             "Open your library",
             true,
+            false,
         )
         .response
     });
 
+    // Home sits in the cluster now that the sidebar's navigation is gone, and it
+    // doubles as the position marker when the library root is on screen.
+    let home = library.page().is_none();
     row_centred(ui, "history", places.history, |ui| {
-        for (control, glyph, label, requested, live) in [
+        // The cluster spaces itself, so egui must not add its own gap on top of
+        // each advance or the third button is pushed past the row's clip.
+        ui.spacing_mut().item_spacing.x = 0.0;
+        let cluster: [(Control, Icon, &str, Nav, bool, bool); 3] = [
+            (Control::NavHome, Icon::Home, "Home", Nav::Home, true, home),
             (
                 Control::HistoryBack,
                 Icon::ArrowLeft,
                 "Go back",
                 Nav::Back,
                 can_back,
+                false,
             ),
             (
                 Control::HistoryForward,
@@ -83,25 +92,45 @@ pub fn show(
                 "Go forward",
                 Nav::Forward,
                 can_forward,
+                false,
             ),
-        ] {
+        ];
+        for (index, (control, glyph, label, requested, live, current)) in
+            cluster.into_iter().enumerate()
+        {
             let rect = Rect::from_min_size(ui.cursor().min, Vec2::splat(extent::BUTTON));
-            let slot =
-                controls::round_button(ui, tokens, control, rect, glyph, Size::BASE, label, live);
+            let slot = controls::round_button(
+                ui,
+                tokens,
+                control,
+                rect,
+                glyph,
+                Size::BASE,
+                label,
+                live,
+                current,
+            );
             if slot.response.clicked() {
                 nav = Some(requested);
             }
+            // The cluster is exactly its buttons and the gaps between them, so
+            // the last one gets no trailing gap to overflow the row by.
+            let advance = if index + 1 == cluster.len() {
+                extent::BUTTON
+            } else {
+                extent::BUTTON + space::S1
+            };
             ui.advance_cursor_after_rect(Rect::from_min_size(
                 rect.min,
-                Vec2::new(extent::BUTTON + space::S1, extent::BUTTON),
+                Vec2::new(advance, extent::BUTTON),
             ));
         }
     });
 
-    search(ui, places.search, tokens);
+    search(ui, places.search, library.page().is_none(), tokens);
 
     if trail(ui, &crumbs, places.trail, tokens) {
-        nav = Some(Nav::Playlists);
+        nav = Some(Nav::Home);
     }
 
     rule(
@@ -121,7 +150,7 @@ pub fn show(
 fn measure(ui: &Ui, crumbs: &[crate::trail::Crumb<'_>], tokens: &Tokens) -> f32 {
     let joined = crumbs
         .iter()
-        .map(|crumb| crumb.label)
+        .map(|crumb| crumb.label.to_uppercase())
         .collect::<Vec<_>>()
         .join(" / ");
     let galley = recipe::spaced(
@@ -165,7 +194,8 @@ fn trail(ui: &mut Ui, crumbs: &[crate::trail::Crumb<'_>], rect: Rect, tokens: &T
         } else {
             tokens.palette.text_muted
         };
-        let galley = recipe::spaced(ui, crumb.label, font.clone(), base, spacing);
+        let label = crumb.label.to_uppercase();
+        let galley = recipe::spaced(ui, &label, font.clone(), base, spacing);
         let width = galley.size().x.min((rect.right() - x).max(0.0));
         let place = Rect::from_min_size(
             Pos2::new(x, rect.center().y - galley.size().y / 2.0),
@@ -173,16 +203,15 @@ fn trail(ui: &mut Ui, crumbs: &[crate::trail::Crumb<'_>], rect: Rect, tokens: &T
         );
 
         if crumb.current {
+            // An accent rule a gap left of the crumb: a marker, not a
+            // separator, which is what a bone bar in this position reads as.
             ui.painter().rect_filled(
                 Rect::from_min_size(
-                    Pos2::new(
-                        place.left() - space::S2,
-                        rect.center().y - Size::MD.side / 2.0,
-                    ),
-                    Vec2::new(stroke::RULE, Size::MD.side),
+                    Pos2::new(place.left() - space::S2, place.top()),
+                    Vec2::new(stroke::RULE, galley.size().y),
                 ),
-                radius::SM,
-                tokens.palette.text,
+                radius::NONE,
+                tokens.palette.accent,
             );
             ui.painter().galley(place.min, galley, base);
         } else if crumb.link {
@@ -204,7 +233,7 @@ fn trail(ui: &mut Ui, crumbs: &[crate::trail::Crumb<'_>], rect: Rect, tokens: &T
             let galley = if color == base {
                 galley
             } else {
-                recipe::spaced(ui, crumb.label, font.clone(), color, spacing)
+                recipe::spaced(ui, &label, font.clone(), color, spacing)
             };
             ui.painter().galley(place.min, galley, color);
             clicked |= slot.response.clicked();
@@ -220,10 +249,13 @@ fn trail(ui: &mut Ui, crumbs: &[crate::trail::Crumb<'_>], rect: Rect, tokens: &T
 
 /// The search field. It waits, so it never takes focus and never becomes a text
 /// editor that would fight the drawer for Escape.
-fn search(ui: &mut Ui, rect: Rect, tokens: &Tokens) {
+fn search(ui: &mut Ui, rect: Rect, root: bool, tokens: &Tokens) {
     if rect.width() <= 0.0 {
         return;
     }
+    // The column is the topbar's full height; the field inside it is the
+    // reference's 2rem, centred, so it does not read as a filled band.
+    let rect = Rect::from_center_size(rect.center(), Vec2::new(rect.width(), extent::SEARCH_H));
 
     ui.painter().rect(
         rect,
@@ -250,7 +282,11 @@ fn search(ui: &mut Ui, rect: Rect, tokens: &Tokens) {
 
     let placeholder = recipe::spaced(
         ui,
-        "Search",
+        if root {
+            "What do you want to play?"
+        } else {
+            "Search"
+        },
         FontId::new(text::SM, fonts::sans(crate::theme::Weight::Regular)),
         tokens.palette.text_subtle,
         0.0,

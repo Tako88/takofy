@@ -410,7 +410,7 @@ fn topbar_free(rect: Rect, sidebar: Sidebar) -> f32 {
     rect.width()
         - 2.0 * TopbarCols::PADDING
         - toggle
-        - (2.0 * extent::BUTTON + space::S1)
+        - (3.0 * extent::BUTTON + 2.0 * space::S1)
         - TopbarCols::GAP * (items - 1.0)
 }
 
@@ -424,7 +424,7 @@ pub fn topbar_for(rect: Rect, sidebar: Sidebar, trail_natural: f32) -> TopbarCol
         Sidebar::Full => None,
         Sidebar::Rail => Some(extent::BUTTON),
     };
-    let history = 2.0 * extent::BUTTON + space::S1;
+    let history = 3.0 * extent::BUTTON + 2.0 * space::S1;
     let free = topbar_free(rect, sidebar).max(0.0);
     let natural = if trail_natural.is_finite() && trail_natural > 0.0 {
         trail_natural

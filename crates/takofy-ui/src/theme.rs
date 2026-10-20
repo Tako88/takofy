@@ -39,6 +39,8 @@ pub mod space {
 pub mod radius {
     use egui::CornerRadius;
 
+    /// Square corners: the one place a rule is drawn as a bar, not a chip.
+    pub const NONE: CornerRadius = CornerRadius::same(0);
     pub const XS: CornerRadius = CornerRadius::same(1);
     pub const SM: CornerRadius = CornerRadius::same(2);
     pub const MD: CornerRadius = CornerRadius::same(3);

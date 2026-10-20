@@ -247,7 +247,7 @@ fn apply_nav(
         Some(topbar::Nav::Forward) => library.forward(),
         // The root is local state and never needs a fetch, so it adds no command
         // of its own.
-        Some(topbar::Nav::Playlists) => {
+        Some(topbar::Nav::Home) => {
             library.to_playlists();
             None
         }
@@ -572,9 +572,9 @@ mod tests {
         }
     }
 
-    /// The history pair, left to right, found from the buttons' painted frames
-    /// rather than from coordinates a test guessed.
-    fn history_buttons(output: &egui::FullOutput) -> Vec<Rect> {
+    /// The topbar's round buttons, left to right: Home, back, forward. Found from
+    /// the buttons' painted frames rather than from coordinates a test guessed.
+    fn topbar_buttons(output: &egui::FullOutput) -> Vec<Rect> {
         let mut rects = output
             .shapes
             .iter()
@@ -652,11 +652,11 @@ mod tests {
         window.library.open(Page::Album(ALBUM.to_owned()));
 
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let buttons = history_buttons(&frame);
-        assert_eq!(buttons.len(), 2, "the topbar paints the history pair");
+        let buttons = topbar_buttons(&frame);
+        assert_eq!(buttons.len(), 3, "the topbar paints Home, back and forward");
 
         assert_eq!(
-            window.click(&mut transport, &mut queue, buttons[0].center()),
+            window.click(&mut transport, &mut queue, buttons[1].center()),
             None,
             "back into a ready playlist needs no load"
         );
@@ -666,9 +666,9 @@ mod tests {
         );
 
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let buttons = history_buttons(&frame);
+        let buttons = topbar_buttons(&frame);
         assert_eq!(
-            window.click(&mut transport, &mut queue, buttons[1].center()),
+            window.click(&mut transport, &mut queue, buttons[2].center()),
             None
         );
         assert_eq!(window.library.page(), Some(&Page::Album(ALBUM.to_owned())));
@@ -681,8 +681,8 @@ mod tests {
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
 
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let buttons = history_buttons(&frame);
-        assert_eq!(buttons.len(), 2, "the topbar paints the history pair");
+        let buttons = topbar_buttons(&frame);
+        assert_eq!(buttons.len(), 3, "the topbar paints Home, back and forward");
 
         for button in buttons {
             assert_eq!(
@@ -982,7 +982,7 @@ mod tests {
         history_of_three(&mut window);
 
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let back = history_buttons(&frame)[0];
+        let back = topbar_buttons(&frame)[1];
         assert!(window.library.can_back(), "history exists, so Back is live");
 
         // The hover frame, so frame 3's hit test sees the button there.
@@ -1055,7 +1055,7 @@ mod tests {
         ready_playlist(&mut window);
 
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let crumb = text_in(&frame, "Playlists", topbar_rect(&window))
+        let crumb = text_in(&frame, "PLAYLISTS", topbar_rect(&window))
             .expect("the trail's Playlists crumb is painted");
         assert_eq!(
             window.click(&mut transport, &mut queue, crumb.center()),
@@ -1064,7 +1064,7 @@ mod tests {
         assert_eq!(window.library.page(), None, "the crumb returns to the root");
 
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let back = history_buttons(&frame)[0];
+        let back = topbar_buttons(&frame)[1];
         assert_eq!(
             window.click(&mut transport, &mut queue, back.center()),
             Some(Command::LoadTracks {
@@ -1097,7 +1097,7 @@ mod tests {
         assert_eq!(window.library.page(), None);
 
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let back = history_buttons(&frame)[0];
+        let back = topbar_buttons(&frame)[1];
         assert_eq!(
             window.click(&mut transport, &mut queue, back.center()),
             Some(Command::LoadTracks {

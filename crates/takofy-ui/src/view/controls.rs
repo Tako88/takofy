@@ -265,10 +265,13 @@ pub fn round_button(
     size: Size,
     label: &str,
     live: bool,
+    current: bool,
 ) -> Slot {
     let slot = slot(ui, control, Role::Button, rect, label, tokens, live);
     let live = slot.live;
-    let border = if live && slot.hover > 0.0 {
+    // A current button is the reference's `aria-current`: a stronger hairline
+    // and a full-strength glyph, so the cluster says where you are.
+    let border = if current || (live && slot.hover > 0.0) {
         tokens.palette.border_strong
     } else {
         tokens.palette.border

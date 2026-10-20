@@ -214,6 +214,7 @@ fn centre_column(
         Size::MD,
         "Play",
         queue.can_toggle(),
+        false,
     );
     if play_slot.response.clicked() {
         clicked = Some(Control::PlayPause);
