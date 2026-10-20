@@ -1348,6 +1348,35 @@ mod tests {
         );
     }
 
+    /// The Lyrics tab asks for the playing track's lyrics once, and the shell is
+    /// what sends it.
+    #[test]
+    fn opening_the_lyrics_tab_asks_for_the_lyrics_once() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let at = painted_at(&frame, "LYRICS").expect("the lyrics tab is painted");
+        let command = window.click(&mut transport, &mut queue, at + Vec2::new(2.0, 2.0));
+
+        assert_eq!(
+            command,
+            Some(Command::LoadLyrics {
+                track: "spotify:track:x".to_owned()
+            }),
+            "opening the tab asks for the track the transport names"
+        );
+
+        // The next frame does not ask again: the load is in flight.
+        let (_, _) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert_eq!(
+            window.frame(&mut transport, &mut queue, Vec::new()).0,
+            None,
+            "one request per track"
+        );
+    }
+
     #[test]
     fn a_click_on_a_queue_row_plays_that_entry() {
         // The panel reports the row and the shell is what moves the queue and
