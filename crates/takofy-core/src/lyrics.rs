@@ -57,9 +57,11 @@ pub(crate) fn track_lyrics(lyrics: &Lyrics) -> TrackLyrics {
 
 /// The lyrics request's answer, with "this track has none" as an empty success.
 ///
-/// The endpoint answers a track without lyrics with a JSON body `{"error": ...}`
-/// or a 404, which librespot maps to `NotFound`; either way the track is known
-/// to have none, so the pane says so instead of offering a retry.
+/// A track without lyrics answers 404, which librespot maps to `NotFound`; the
+/// pane then says so instead of offering a retry. A payload this parser cannot
+/// read at all is a different thing — it becomes an error, because a lyric that
+/// exists but failed to parse is worth a Retry and one that does not exist is
+/// not.
 pub(crate) fn settled(result: Result<Lyrics, Error>) -> Result<TrackLyrics, LyricsError> {
     match result {
         Ok(lyrics) => Ok(track_lyrics(&lyrics)),

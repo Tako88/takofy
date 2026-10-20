@@ -84,7 +84,10 @@ fn lines(
         track: track.map(str::to_owned),
         line: current,
     };
-    let mut target: Option<Rect> = None;
+    // Read before the area runs: the scroll has to happen inside it, while the
+    // current line's rect exists.
+    let key = ScrollTarget::key(ui);
+    let last = ui.data(|data| data.get_temp::<ScrollTarget>(key));
 
     ui.scope_builder(
         UiBuilder::new()
@@ -94,6 +97,9 @@ fn lines(
         |ui| {
             ui.set_clip_rect(pane);
             ScrollArea::vertical()
+                // A track's lines start at the top: without its own state the
+                // next track would open at the last one's offset.
+                .id_salt(track.unwrap_or("no-track"))
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = space::S2;
@@ -118,24 +124,24 @@ fn lines(
                             Sense::hover(),
                         );
                         ui.painter().galley(rect.min, galley, colour);
-                        if lit && target.is_none() {
-                            target = Some(rect);
+                        // One scroll per (track, line): a frame that re-scrolled
+                        // would fight a reader who has moved away while the same
+                        // line is still being sung.
+                        if lit && scroll_decided(last.as_ref(), &wanted) {
+                            ui.scroll_to_rect(rect, Some(Align::Center));
+                            ui.data_mut(|data| data.insert_temp(key, wanted.clone()));
                         }
                     }
                 });
         },
     );
+}
 
-    // One scroll per (track, line): a frame that re-scrolled would fight a reader
-    // who has scrolled away while the same line is still being sung.
-    let key = ScrollTarget::key(ui);
-    let last = ui.data(|data| data.get_temp::<ScrollTarget>(key));
-    if last.as_ref() != Some(&wanted)
-        && let Some(target) = target
-    {
-        ui.scroll_to_rect(target, Some(Align::Center));
-        ui.data_mut(|data| data.insert_temp(key, wanted));
-    }
+/// Whether this frame is the one that brings `wanted` into view.
+///
+/// One scroll per (track, line), not one per frame.
+fn scroll_decided(last: Option<&ScrollTarget>, wanted: &ScrollTarget) -> bool {
+    last != Some(wanted)
 }
 
 /// What the pane remembers between frames: the line it last brought into view.
@@ -291,13 +297,49 @@ mod tests {
         assert_eq!(lit, vec!["the second line"], "{drawn:?}");
     }
 
+    /// The scroll happens once per (track, line), which is what keeps it from
+    /// fighting a reader who has moved away while the same line is sung.
     #[test]
-    fn an_unsynced_lyric_lights_nothing() {
+    fn the_scroll_is_decided_once_per_line() {
+        let line = |track: &str, index: usize| ScrollTarget {
+            track: Some(track.to_owned()),
+            line: Some(index),
+        };
+        assert!(
+            scroll_decided(None, &line("a", 3)),
+            "the first frame scrolls"
+        );
+        assert!(
+            !scroll_decided(Some(&line("a", 3)), &line("a", 3)),
+            "the same line holds"
+        );
+        assert!(
+            scroll_decided(Some(&line("a", 3)), &line("a", 4)),
+            "the next line"
+        );
+        assert!(
+            scroll_decided(Some(&line("a", 3)), &line("b", 3)),
+            "a new track starts at its own line"
+        );
+        assert!(
+            scroll_decided(Some(&line("a", 3)), &line("a", 3)).eq(&false),
+            "no second scroll for the same pair"
+        );
+    }
+
+    #[test]
+    fn an_unsynced_lyric_lights_every_line() {
         let tokens = Tokens::DARK;
         let mut unsynced = lyrics();
         unsynced.synced = false;
         let panel = answered("spotify:track:a", unsynced);
         let drawn = painted(&run(&panel, 5_500));
+        let words: Vec<&String> = drawn.iter().map(|(text, _)| text).collect();
+        assert!(
+            words.contains(&&"the first line".to_owned())
+                && words.contains(&&"the second line".to_owned()),
+            "every line is drawn: {words:?}"
+        );
         let muted = drawn
             .iter()
             .filter(|(_, colour)| *colour == tokens.palette.text_subtle)
