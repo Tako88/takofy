@@ -153,6 +153,16 @@ pub fn queue_artist() -> FontId {
     FontId::new(text::XXS, fonts::sans(Weight::Regular))
 }
 
+/// An episode row's title, at the reference's `--text-md` in 600.
+pub fn episode_title() -> FontId {
+    FontId::new(text::MD, fonts::sans(Weight::Semibold))
+}
+
+/// The description under an episode's title: body text, one step under the name.
+pub fn episode_text() -> FontId {
+    FontId::new(text::SM, fonts::sans(Weight::Regular))
+}
+
 /// A caps label laid out for the painter: the mono tier the reference tracks
 /// apart. The panel's head and the queue's caption are the same recipe.
 pub fn caption(ui: &egui::Ui, label: &str, tokens: &Tokens) -> std::sync::Arc<egui::Galley> {

@@ -61,7 +61,13 @@ pub fn trail(library: &Library) -> Vec<Crumb<'_>> {
                 .current_artist()
                 .map_or(page.kind(), |artist| artist.name.as_str()),
         ),
-        Page::Show(_) => Some(page.kind()),
+        // The show's name only once it is loaded, and only for this page: a
+        // ready detail left over from the last show must not name this one.
+        Page::Show(_) => Some(
+            library
+                .current_show()
+                .map_or(page.kind(), |detail| detail.show.name.as_str()),
+        ),
     };
     if let Some(label) = label {
         crumbs.push(Crumb {
@@ -76,12 +82,25 @@ pub fn trail(library: &Library) -> Vec<Crumb<'_>> {
 
 #[cfg(test)]
 mod tests {
-    use takofy_model::{AlbumDetail, ArtistDetail, PlaylistEntry};
+    use takofy_model::{AlbumDetail, ArtistDetail, PlaylistEntry, Show, ShowDetail};
 
     use super::*;
     use crate::library::Load;
     use crate::message::{Failure, Update};
     use crate::route::Page;
+
+    fn show_detail(uri: &str, name: &str) -> ShowDetail {
+        ShowDetail {
+            show: Show {
+                uri: uri.to_owned(),
+                name: name.to_owned(),
+                publisher: "Lateral".to_owned(),
+                description: String::new(),
+                cover: None,
+            },
+            episodes: Vec::new(),
+        }
+    }
 
     fn album_detail(uri: &str, name: &str) -> AlbumDetail {
         AlbumDetail {
@@ -320,6 +339,35 @@ mod tests {
             current_label(&library),
             Some("Artist"),
             "A's name must not name B's crumb"
+        );
+    }
+
+    #[test]
+    fn a_loaded_show_names_the_crumb() {
+        let mut library = Library::default();
+        library.open(Page::Show("spotify:show:a".to_owned()));
+        library.apply(&Update::Show(show_detail(
+            "spotify:show:a",
+            "Lateral with Tom Scott",
+        )));
+
+        assert_eq!(
+            current_label(&library),
+            Some("Lateral with Tom Scott"),
+            "a loaded show names its crumb"
+        );
+    }
+
+    #[test]
+    fn another_shows_detail_does_not_name_the_crumb() {
+        let mut library = Library::default();
+        library.open(Page::Show("spotify:show:b".to_owned()));
+        library.show = Load::Ready(show_detail("spotify:show:a", "Lateral"));
+
+        assert_eq!(
+            current_label(&library),
+            Some("Show"),
+            "A's detail must not name B's crumb"
         );
     }
 

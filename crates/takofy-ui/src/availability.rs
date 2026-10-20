@@ -54,6 +54,8 @@ pub enum Control {
     DiscographyFilter,
     /// A release block's play tile. The block's rows are already loaded state.
     ReleasePlay,
+    /// An episode row's play toggle. The show page's episodes are loaded state.
+    EpisodeToggle,
     /// A release block's like and more. Saving needs the Web API and the menu is
     /// a later phase.
     ReleaseLike,
@@ -65,7 +67,7 @@ pub enum Control {
 }
 
 impl Control {
-    pub const ALL: [Self; 43] = [
+    pub const ALL: [Self; 44] = [
         Self::NavHome,
         Self::NavSearch,
         Self::LibraryCreate,
@@ -105,6 +107,7 @@ impl Control {
         Self::Follow,
         Self::DiscographyFilter,
         Self::ReleasePlay,
+        Self::EpisodeToggle,
         Self::ReleaseLike,
         Self::ReleaseMore,
         Self::CardPlay,
@@ -189,6 +192,7 @@ pub fn availability(control: Control) -> Availability {
         Control::Follow => Availability::Ready,
         Control::DiscographyFilter => Availability::Ready,
         Control::ReleasePlay => Availability::Ready,
+        Control::EpisodeToggle => Availability::Ready,
         Control::ReleaseLike => Availability::Waiting,
         Control::ReleaseMore => Availability::Waiting,
 
@@ -218,6 +222,7 @@ mod tests {
                     | Control::Follow
                     | Control::DiscographyFilter
                     | Control::ReleasePlay
+                    | Control::EpisodeToggle
                     | Control::NowPlayingQueueTab
                     | Control::Authorize
             );
@@ -251,6 +256,6 @@ mod tests {
             assert!(!seen.contains(&control), "{control:?} is listed twice");
             seen.push(control);
         }
-        assert_eq!(seen.len(), 43);
+        assert_eq!(seen.len(), 44);
     }
 }

@@ -58,8 +58,9 @@ pub fn tracks_view(
                 ui, table, library, transport, queue, art, now, tokens,
             );
         }
-        // A page with no body yet draws none, rather than pretending to be one.
-        MainPage::Other => return None,
+        MainPage::Show => {
+            return super::show::show_view(ui, library, transport, queue, art, now, now_ms, tokens);
+        }
         MainPage::Playlist => {}
     }
 
@@ -223,8 +224,8 @@ enum MainPage {
     Album,
     /// An artist's hero, Popular list and Discography.
     Artist,
-    /// A show page, which has no body yet.
-    Other,
+    /// A show's band and its episodes.
+    Show,
 }
 
 /// Reads the pane's dispatch from the current page.
@@ -234,7 +235,7 @@ fn main_page(library: &Library) -> MainPage {
         Some(Page::Playlist(_)) => MainPage::Playlist,
         Some(Page::Album(_)) => MainPage::Album,
         Some(Page::Artist(_)) => MainPage::Artist,
-        Some(Page::Show(_)) => MainPage::Other,
+        Some(Page::Show(_)) => MainPage::Show,
     }
 }
 
@@ -3059,6 +3060,29 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             eyebrow >= band_top,
             "the eyebrow's top {eyebrow} is above the band's top {band_top}: the \
              tallest content does not fit the band's height"
+        );
+    }
+}
+
+#[cfg(test)]
+mod dispatch_tests {
+    use super::*;
+
+    #[test]
+    fn main_page_maps_show_to_the_show_view() {
+        let mut library = Library::default();
+        assert_eq!(main_page(&library), MainPage::Root);
+        let _ = library.open(Page::Playlist("spotify:playlist:a".to_owned()));
+        assert_eq!(main_page(&library), MainPage::Playlist);
+        let _ = library.open(Page::Album("spotify:album:a".to_owned()));
+        assert_eq!(main_page(&library), MainPage::Album);
+        let _ = library.open(Page::Artist("spotify:artist:a".to_owned()));
+        assert_eq!(main_page(&library), MainPage::Artist);
+        let _ = library.open(Page::Show("spotify:show:a".to_owned()));
+        assert_eq!(
+            main_page(&library),
+            MainPage::Show,
+            "a show page has its own body now"
         );
     }
 }

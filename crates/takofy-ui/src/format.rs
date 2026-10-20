@@ -2,7 +2,7 @@
 //! playbar's clock, the hero's byline, the playlist band's description, and the
 //! age a playlist row gives its date.
 
-use takofy_model::{AddedAt, ReleaseKind, TrackEntry};
+use takofy_model::{AddedAt, PublishedAt, ReleaseKind, TrackEntry};
 
 use crate::discography::Chip;
 
@@ -202,12 +202,14 @@ pub fn hero_meta(songs: usize, total_ms: u32) -> Vec<String> {
 /// The reference's relative wording for a date, or `None` for a date after
 /// `now_ms`.
 ///
-/// A day is a fixed 24-hour span rather than a calendar day: the function has
-/// only an instant and a clock, and a local calendar would need a timezone.
-/// Months are `days / 30`. The 28–59 band is its own arm so the run after three
-/// weeks reads as one month instead of falling through to `0 months ago`.
-pub fn added_label(added: AddedAt, now_ms: u64) -> Option<String> {
-    let days = now_ms.checked_sub(added.as_millis())? / DAY_MS;
+/// `then_ms` is the date in epoch milliseconds and `now_ms` is the app's clock,
+/// which reads once per frame and does not tick while idle. A day is a fixed 24
+/// hour span rather than a calendar day, so the function has only an instant and
+/// a clock, and a local calendar would need a timezone. Months are `days / 30`.
+/// The 28–59 band is its own arm so the run after three weeks reads as one month
+/// instead of falling through to `0 months ago`.
+pub fn age_label(then_ms: u64, now_ms: u64) -> Option<String> {
+    let days = now_ms.checked_sub(then_ms)? / DAY_MS;
     Some(match days {
         0 => "Today".to_owned(),
         1 => "1 day ago".to_owned(),
@@ -217,6 +219,62 @@ pub fn added_label(added: AddedAt, now_ms: u64) -> Option<String> {
         28..=59 => "1 month ago".to_owned(),
         _ => format!("{} months ago", days / 30),
     })
+}
+
+/// The age a playlist row gives its date, through [`age_label`].
+///
+/// The row test for the shared rule is the existing `added_label` test, which
+/// now reads the same branch as the episode row.
+pub fn added_label(added: AddedAt, now_ms: u64) -> Option<String> {
+    age_label(added.as_millis(), now_ms)
+}
+
+/// An episode count as the show page's head writes it: `1 episode`, `N episodes`.
+pub fn episode_count_label(count: usize) -> String {
+    count_noun(count, "episode")
+}
+
+/// The show page's band byline: the episode count, then the publisher.
+///
+/// The name is not repeated: the band's title is already the name. The publisher
+/// is dropped when it is blank and when it is the show's own name, which the
+/// probe's shows do, so the byline never prints the same string twice.
+pub fn show_meta(name: &str, publisher: &str, episodes: usize) -> Vec<String> {
+    let mut parts = vec![episode_count_label(episodes)];
+    let name = name.trim();
+    let publisher = publisher.trim();
+    if !publisher.is_empty() && publisher != name {
+        parts.push(publisher.to_owned());
+    }
+    parts
+}
+
+/// The show page's episode row meta: the show, then when it was published.
+///
+/// `Show · 3 days ago`. The show part is dropped when blank and the age part
+/// when unknown or in the future, so a row with neither draws nothing and the
+/// painter draws no trailing dot.
+pub fn episode_meta(show: &str, published: Option<PublishedAt>, now_ms: u64) -> Vec<String> {
+    let mut parts = Vec::new();
+    let show = show.trim();
+    if !show.is_empty() {
+        parts.push(show.to_owned());
+    }
+    if let Some(published) = published
+        && let Some(age) = age_label(published.as_millis(), now_ms)
+    {
+        parts.push(age);
+    }
+    parts
+}
+
+/// The root's head note: how many cards the chosen chip shows.
+///
+/// Only the shows the user follows carry an added date, and a rootlist playlist
+/// carries none, so the note counts cards rather than dating any of them: `3
+/// saved`.
+pub fn library_note(count: usize) -> String {
+    format!("{count} saved")
 }
 
 /// The band's byline parts: the owner, then the count and the total.
@@ -600,5 +658,82 @@ mod tests {
             plain_description("  a single line  ").as_deref(),
             Some("a single line")
         );
+    }
+
+    /// A fixed clock: 2023-11-14T22:13:20Z.
+    const NOW_MS: u64 = 1_700_000_000_000;
+    const DAY: u64 = 86_400_000;
+
+    #[test]
+    fn age_label_today_days_and_future() {
+        // The existing added_label tests read this function through added_label;
+        // these pin the seam directly.
+        assert_eq!(age_label(NOW_MS, NOW_MS).as_deref(), Some("Today"));
+        assert_eq!(
+            age_label(NOW_MS - DAY, NOW_MS).as_deref(),
+            Some("1 day ago")
+        );
+        assert_eq!(
+            age_label(NOW_MS - 2 * DAY, NOW_MS).as_deref(),
+            Some("2 days ago")
+        );
+        assert_eq!(
+            age_label(NOW_MS + 1, NOW_MS),
+            None,
+            "a date after now draws nothing"
+        );
+    }
+
+    #[test]
+    fn episode_count_label_singular_only_for_one() {
+        assert_eq!(episode_count_label(1), "1 episode");
+        assert_eq!(episode_count_label(0), "0 episodes");
+        assert_eq!(episode_count_label(211), "211 episodes");
+    }
+
+    #[test]
+    fn show_meta_drops_a_blank_publisher() {
+        assert_eq!(
+            show_meta("Lateral with Tom Scott", "", 211),
+            vec!["211 episodes".to_owned()],
+            "the band's title already carries the name"
+        );
+    }
+
+    #[test]
+    fn show_meta_drops_a_publisher_equal_to_the_name() {
+        assert_eq!(
+            show_meta("Lateral", "Lateral", 5),
+            vec!["5 episodes".to_owned()],
+            "a publisher that is the show's own name prints once, in the title"
+        );
+    }
+
+    fn published(millis: u64) -> Option<PublishedAt> {
+        PublishedAt::from_millis(millis as i64)
+    }
+
+    #[test]
+    fn episode_meta_omits_missing_parts() {
+        assert_eq!(
+            episode_meta("Lateral", published(NOW_MS - 3 * DAY), NOW_MS),
+            vec!["Lateral".to_owned(), "3 days ago".to_owned()]
+        );
+        assert!(
+            episode_meta("", None, NOW_MS).is_empty(),
+            "neither part draws"
+        );
+        assert_eq!(
+            episode_meta("Lateral", published(NOW_MS + DAY), NOW_MS),
+            vec!["Lateral".to_owned()],
+            "a future age is omitted"
+        );
+    }
+
+    #[test]
+    fn library_note_counts() {
+        assert_eq!(library_note(0), "0 saved");
+        assert_eq!(library_note(1), "1 saved");
+        assert_eq!(library_note(8), "8 saved");
     }
 }
