@@ -4,8 +4,8 @@
 //! token or an auth error, so the compiler keeps secrets out of a view.
 
 use takofy_model::{
-    AlbumDetail, ArtistDetail, CoverImage, CoverUrl, FollowedShow, PlaylistEntry, ShowDetail,
-    TrackEntry,
+    AlbumDetail, ArtistDetail, CoverImage, CoverUrl, FollowedArtist, FollowedShow, PlaylistEntry,
+    SavedAlbum, ShowDetail, TrackEntry,
 };
 
 /// A request from the window to the worker.
@@ -30,6 +30,10 @@ pub enum Command {
     SetFollow { artist: String, followed: bool },
     /// Load the shows the user follows, as the library root draws them.
     LoadFollowedShows,
+    /// Load the artists the user follows, as the library root draws them.
+    LoadFollowedArtists,
+    /// Load the albums the user saved, as the library root draws them.
+    LoadSavedAlbums,
     /// Start playing a track.
     Play { uri: String },
     /// Pause playback.
@@ -63,6 +67,10 @@ pub enum Failure {
     Save,
     /// The shows the user follows could not be loaded.
     Followed,
+    /// The artists the user follows could not be loaded.
+    FollowedArtists,
+    /// The albums the user saved could not be loaded.
+    SavedAlbums,
     /// Anything else; reproduce with `--headless` for the message.
     Other,
 }
@@ -125,6 +133,14 @@ pub enum Update {
     FollowedShows(Vec<FollowedShow>),
     /// The followed shows could not be loaded.
     FollowedShowsFailed(Failure),
+    /// The artists the user follows, as the library root draws them.
+    FollowedArtists(Vec<FollowedArtist>),
+    /// The followed artists could not be loaded.
+    FollowedArtistsFailed(Failure),
+    /// The albums the user saved, as the library root draws them.
+    SavedAlbums(Vec<SavedAlbum>),
+    /// The saved albums could not be loaded.
+    SavedAlbumsFailed(Failure),
     /// One release's labelled tracks, in the release's own order.
     ReleaseTracks {
         release: String,

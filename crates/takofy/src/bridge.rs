@@ -311,6 +311,9 @@ pub(crate) fn start<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                         break;
                     }
                 }
+                // Nothing issues these yet, and there is no fetch to run, so
+                // the command is accepted and dropped.
+                Event::Command(Some(Command::LoadFollowedArtists | Command::LoadSavedAlbums)) => {}
                 Event::Command(Some(Command::LoadReleaseTracks { release, tracks })) => {
                     let step = load_release_tracks(
                         &mut host,
