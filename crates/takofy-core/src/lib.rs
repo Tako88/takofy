@@ -10,10 +10,12 @@ pub mod artist;
 pub mod context;
 pub mod credentials;
 pub mod engine;
+pub mod followed;
 pub mod login;
 pub mod oauth;
 pub mod playback;
 pub mod rootlist;
+pub mod show;
 
 mod collection;
 mod cover;
