@@ -8,7 +8,7 @@
 //! The choice belongs to the root, not to the frame: it is kept across a page,
 //! so a Back to the root redraws the same chip.
 
-use takofy_model::{FollowedShow, PlaylistEntry};
+use takofy_model::{FollowedArtist, FollowedShow, PlaylistEntry, SavedAlbum};
 
 use crate::availability::{Availability, Control, availability};
 
@@ -89,17 +89,24 @@ pub enum Item<'a> {
     Playlist(&'a PlaylistEntry),
     /// A followed show, drawn as its own card.
     Show(&'a FollowedShow),
+    /// A followed artist, drawn as its own card.
+    Artist(&'a FollowedArtist),
+    /// A saved album, drawn as its own card.
+    Album(&'a SavedAlbum),
 }
 
-/// The cards for the chosen chip: playlists first, then shows.
+/// The cards for the chosen chip.
 ///
-/// All shows both, Playlists narrows to playlists, Podcasts narrows to shows,
-/// and Artists and Albums show nothing yet — an empty list, not an error, so a
-/// waiting chip's cards are simply none.
+/// All shows the playlists then the followed shows, which is what the library
+/// has always drawn first; the two newer kinds narrow to their own lists rather
+/// than joining it. An empty list is not an error, so a chip with nothing
+/// behind it draws the empty copy.
 pub fn items<'a>(
     chosen: RootKind,
     playlists: &'a [PlaylistEntry],
     followed: &'a [FollowedShow],
+    artists: &'a [FollowedArtist],
+    albums: &'a [SavedAlbum],
 ) -> Vec<Item<'a>> {
     match chosen {
         RootKind::All => playlists
@@ -108,8 +115,9 @@ pub fn items<'a>(
             .chain(followed.iter().map(Item::Show))
             .collect(),
         RootKind::Playlists => playlists.iter().map(Item::Playlist).collect(),
+        RootKind::Artists => artists.iter().map(Item::Artist).collect(),
+        RootKind::Albums => albums.iter().map(Item::Album).collect(),
         RootKind::Podcasts => followed.iter().map(Item::Show).collect(),
-        RootKind::Artists | RootKind::Albums => Vec::new(),
     }
 }
 
@@ -153,25 +161,45 @@ mod tests {
     }
 
     #[test]
-    fn only_all_playlists_and_podcasts_act() {
+    fn every_chip_names_a_list_the_root_can_draw() {
         for kind in ROW {
-            let acts = matches!(
-                kind,
-                RootKind::All | RootKind::Playlists | RootKind::Podcasts
+            assert_eq!(
+                kind.acts(),
+                availability(kind.control()) == Availability::Ready,
+                "{kind:?}"
             );
-            assert_eq!(kind.acts(), acts, "{kind:?}");
+            assert!(kind.acts(), "{kind:?} has a list behind it");
         }
     }
 
     #[test]
-    fn choosing_a_waiting_chip_changes_nothing() {
-        for kind in [RootKind::Artists, RootKind::Albums] {
+    fn any_chip_takes_the_choice() {
+        for kind in ROW {
             let mut filter = RootFilter::default();
-            assert!(
-                !filter.choose(kind),
-                "a waiting chip reports that it did not act"
-            );
-            assert_eq!(filter.chosen(), RootKind::All, "and leaves the choice");
+            assert!(filter.choose(kind), "{kind:?}");
+            assert_eq!(filter.chosen(), kind, "{kind:?}");
+        }
+    }
+
+    fn artist(uri: &str) -> FollowedArtist {
+        FollowedArtist {
+            uri: uri.to_owned(),
+            name: uri.to_owned(),
+            named: true,
+            portrait: None,
+            releases: None,
+        }
+    }
+
+    fn album(uri: &str) -> SavedAlbum {
+        SavedAlbum {
+            uri: uri.to_owned(),
+            name: uri.to_owned(),
+            named: true,
+            artists: String::new(),
+            year: None,
+            cover: None,
+            tracks: None,
         }
     }
 
@@ -179,16 +207,21 @@ mod tests {
     fn all_shows_playlists_then_shows() {
         let playlists = vec![playlist("p")];
         let shows = vec![show("s")];
-        let items = items(RootKind::All, &playlists, &shows);
+        let artists = vec![artist("a")];
+        let albums = vec![album("b")];
+        let items = items(RootKind::All, &playlists, &shows, &artists, &albums);
         assert_eq!(items[0], Item::Playlist(&playlist("p")));
         assert_eq!(items[1], Item::Show(&show("s")));
+        assert_eq!(items.len(), 2, "the two newer kinds stay out of All");
     }
 
     #[test]
     fn playlists_narrows_to_playlists() {
         let playlists = vec![playlist("p")];
         let shows = vec![show("s")];
-        let items = items(RootKind::Playlists, &playlists, &shows);
+        let artists = vec![artist("a")];
+        let albums = vec![album("b")];
+        let items = items(RootKind::Playlists, &playlists, &shows, &artists, &albums);
         assert_eq!(items, vec![Item::Playlist(&playlist("p"))]);
     }
 
@@ -196,7 +229,26 @@ mod tests {
     fn podcasts_narrows_to_shows() {
         let playlists = vec![playlist("p")];
         let shows = vec![show("s")];
-        let items = items(RootKind::Podcasts, &playlists, &shows);
+        let artists = vec![artist("a")];
+        let albums = vec![album("b")];
+        let items = items(RootKind::Podcasts, &playlists, &shows, &artists, &albums);
         assert_eq!(items, vec![Item::Show(&show("s"))]);
+    }
+
+    #[test]
+    fn artists_and_albums_narrow_to_their_own_cards() {
+        let playlists = vec![playlist("p")];
+        let shows = vec![show("s")];
+        let artists = vec![artist("a"), artist("a2")];
+        let albums = vec![album("b")];
+
+        let picked = items(RootKind::Artists, &playlists, &shows, &artists, &albums);
+        assert_eq!(
+            picked,
+            vec![Item::Artist(&artist("a")), Item::Artist(&artist("a2"))]
+        );
+
+        let picked = items(RootKind::Albums, &playlists, &shows, &artists, &albums);
+        assert_eq!(picked, vec![Item::Album(&album("b"))]);
     }
 }

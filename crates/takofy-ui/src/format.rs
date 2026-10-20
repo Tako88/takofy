@@ -329,7 +329,18 @@ pub fn root_empty_label(kind: RootKind) -> &'static str {
     match kind {
         RootKind::All | RootKind::Playlists => "No playlists yet.",
         RootKind::Podcasts => "You don't follow any shows yet.",
-        RootKind::Artists | RootKind::Albums => "Nothing here yet.",
+        RootKind::Artists => "You don't follow any artists yet.",
+        RootKind::Albums => "You haven't saved any albums yet.",
+    }
+}
+
+/// What the root says under its cards while a chip's list is being fetched.
+pub fn root_loading_label(kind: RootKind) -> &'static str {
+    match kind {
+        RootKind::All | RootKind::Playlists => "Loading your playlists…",
+        RootKind::Podcasts => "Loading your shows…",
+        RootKind::Artists => "Loading your artists…",
+        RootKind::Albums => "Loading your albums…",
     }
 }
 
@@ -836,7 +847,28 @@ mod tests {
             root_empty_label(RootKind::Podcasts),
             "You don't follow any shows yet."
         );
-        assert!(!root_empty_label(RootKind::Artists).is_empty());
-        assert!(!root_empty_label(RootKind::Albums).is_empty());
+        assert_eq!(
+            root_empty_label(RootKind::Artists),
+            "You don't follow any artists yet."
+        );
+        assert_eq!(
+            root_empty_label(RootKind::Albums),
+            "You haven't saved any albums yet."
+        );
+    }
+
+    #[test]
+    fn every_chip_says_what_it_is_loading() {
+        for kind in crate::library_filter::ROW {
+            assert!(
+                root_loading_label(kind).starts_with("Loading your "),
+                "{kind:?}"
+            );
+        }
+        assert_eq!(
+            root_loading_label(RootKind::Artists),
+            "Loading your artists…"
+        );
+        assert_eq!(root_loading_label(RootKind::Albums), "Loading your albums…");
     }
 }

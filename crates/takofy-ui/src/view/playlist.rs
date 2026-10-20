@@ -13,7 +13,7 @@ use takofy_model::PlaylistEntry;
 use crate::cover::{Art, Cover};
 use crate::format::{
     added_label, byline, format_position, library_note, plain_description, root_empty_label,
-    root_filter_label, total_duration_ms,
+    root_filter_label, root_loading_label, total_duration_ms,
 };
 use crate::layout::{Table, cards, table as table_layout};
 use crate::library::{BandCover, Library, Load, band_cover};
@@ -261,26 +261,26 @@ pub enum IdleView<'a> {
     Failed(Failure),
     /// The chosen chip has nothing to show.
     Empty(RootKind),
-    /// These cards, and the state of the followed list under them.
+    /// These cards, and the state of the list read under them.
     Grid {
         items: Vec<Item<'a>>,
-        followed: FollowedNote,
+        note: LoadNote,
     },
 }
 
-/// What the root says about the followed list under its cards.
+/// What the root says about the list under its cards.
 ///
 /// The list is a second read with its own failure: a failed playlist fetch is
-/// the page's failure, while a failed show fetch only costs the show cards and
-/// gets one muted line and its own Retry.
+/// the page's failure, while a failed followed read only costs that kind's
+/// cards and gets one muted line and its own Retry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FollowedNote {
-    /// The list arrived, or the chosen chip does not draw shows.
+pub enum LoadNote {
+    /// The list arrived, or the chosen chip draws neither.
     None,
     /// The list is in flight; the cards will appear when it lands.
-    Loading,
-    /// The list failed; the note carries the failure for its copy.
-    Failed(Failure),
+    Loading(RootKind),
+    /// The list failed; the note carries the chip whose load to restart.
+    Failed(RootKind, Failure),
 }
 
 /// Reads the root view from both loads and the chosen chip.
@@ -295,25 +295,47 @@ pub fn idle_view(library: &Library) -> IdleView<'_> {
         Load::Failed(failure) => IdleView::Failed(*failure),
         Load::Ready(playlists) => {
             let chosen = library.root_filter.chosen();
-            let shows = match &library.followed {
-                Load::Ready(shows) => shows.as_slice(),
-                Load::Idle | Load::Loading | Load::Failed(_) => &[],
-            };
-            let items = library_filter::items(chosen, playlists, shows);
-            let followed = match chosen {
-                RootKind::All | RootKind::Podcasts => match &library.followed {
-                    Load::Loading => FollowedNote::Loading,
-                    Load::Failed(failure) => FollowedNote::Failed(*failure),
-                    Load::Idle | Load::Ready(_) => FollowedNote::None,
-                },
-                RootKind::Playlists | RootKind::Artists | RootKind::Albums => FollowedNote::None,
-            };
-            if items.is_empty() && followed == FollowedNote::None {
+            let shows = slice(&library.followed);
+            let artists = slice(&library.followed_artists);
+            let albums = slice(&library.saved_albums);
+            let items = library_filter::items(chosen, playlists, shows, artists, albums);
+            let note = note_for(library, chosen);
+            if items.is_empty() && note == LoadNote::None {
                 IdleView::Empty(chosen)
             } else {
-                IdleView::Grid { items, followed }
+                IdleView::Grid { items, note }
             }
         }
+    }
+}
+
+/// The items of a list that has arrived, or none while it has not.
+fn slice<T>(load: &Load<Vec<T>>) -> &[T] {
+    match load {
+        Load::Ready(items) => items.as_slice(),
+        Load::Idle | Load::Loading | Load::Failed(_) => &[],
+    }
+}
+
+/// The note under the root's cards for the chosen chip.
+///
+/// A chip that draws a followed list says what its own read is doing; All and
+/// Podcasts say it for the shows, which is the list they have always drawn.
+fn note_for(library: &Library, chosen: RootKind) -> LoadNote {
+    match chosen {
+        RootKind::Playlists => LoadNote::None,
+        RootKind::All | RootKind::Podcasts => index_note(RootKind::Podcasts, &library.followed),
+        RootKind::Artists => index_note(RootKind::Artists, &library.followed_artists),
+        RootKind::Albums => index_note(RootKind::Albums, &library.saved_albums),
+    }
+}
+
+/// What one followed read is doing, named by the chip it belongs to.
+fn index_note<T>(kind: RootKind, load: &Load<Vec<T>>) -> LoadNote {
+    match load {
+        Load::Idle | Load::Loading => LoadNote::Loading(kind),
+        Load::Failed(failure) => LoadNote::Failed(kind, *failure),
+        Load::Ready(_) => LoadNote::None,
     }
 }
 
@@ -332,9 +354,9 @@ fn idle(
 ) -> Option<Command> {
     let mut choose: Option<RootKind> = None;
     let mut select: Option<String> = None;
-    let mut open: Option<String> = None;
+    let mut open: Option<Page> = None;
     let mut retry_playlists = false;
-    let mut retry_followed = false;
+    let mut retry: Option<RootKind> = None;
 
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
@@ -382,9 +404,9 @@ fn idle(
                     IdleView::Empty(kind) => {
                         ui.label(recipe::muted(root_empty_label(kind), tokens));
                     }
-                    IdleView::Grid { items, followed } => {
+                    IdleView::Grid { items, note } => {
                         grid(ui, &items, art, now, tokens, &mut select, &mut open);
-                        followed_note(ui, followed, tokens, &mut retry_followed);
+                        load_note(ui, note, tokens, &mut retry);
                     }
                 }
             });
@@ -396,14 +418,19 @@ fn idle(
     if retry_playlists {
         return Some(library.reload());
     }
-    if retry_followed {
-        return Some(library.reload_followed());
+    if let Some(kind) = retry {
+        return Some(match kind {
+            RootKind::All | RootKind::Podcasts => library.reload_followed(),
+            RootKind::Artists => library.reload_followed_artists(),
+            RootKind::Albums => library.reload_saved_albums(),
+            RootKind::Playlists => library.reload(),
+        });
     }
     if let Some(uri) = select {
         return select_playlist(library, &uri);
     }
-    if let Some(uri) = open {
-        return library.open(Page::Show(uri));
+    if let Some(page) = open {
+        return library.open(page);
     }
     None
 }
@@ -477,7 +504,7 @@ fn grid(
     now: Instant,
     tokens: &Tokens,
     select: &mut Option<String>,
-    open: &mut Option<String>,
+    open: &mut Option<Page>,
 ) {
     let solved = card_grid(ui);
     let list = grid_rect(ui, &solved, items.len());
@@ -494,6 +521,13 @@ fn grid(
         let (uri, name, kind, cover) = match item {
             Item::Playlist(entry) => (&entry.uri, &entry.name, "Playlist", entry.cover.as_ref()),
             Item::Show(show) => (&show.uri, &show.name, "Podcast", show.cover.as_ref()),
+            Item::Artist(artist) => (
+                &artist.uri,
+                &artist.name,
+                "Artist",
+                artist.portrait.as_ref(),
+            ),
+            Item::Album(album) => (&album.uri, &album.name, "Album", album.cover.as_ref()),
         };
         let card = card::Card {
             uri,
@@ -504,7 +538,9 @@ fn grid(
         if card::show(ui, rect, &card, tokens) {
             match item {
                 Item::Playlist(_) => *select = Some(uri.clone()),
-                Item::Show(_) => *open = Some(uri.clone()),
+                Item::Show(_) => *open = Some(Page::Show(uri.clone())),
+                Item::Artist(_) => *open = Some(Page::Artist(uri.clone())),
+                Item::Album(_) => *open = Some(Page::Album(uri.clone())),
             }
         }
     }
@@ -536,23 +572,23 @@ fn grid_rect(ui: &mut Ui, grid: &cards::Grid, count: usize) -> Rect {
 ///
 /// The copy and the Retry are the same pair the playlists' failure draws, in the
 /// same order: the words first, then the control that asks again.
-fn followed_note(ui: &mut Ui, note: FollowedNote, tokens: &Tokens, retry: &mut bool) {
+fn load_note(ui: &mut Ui, note: LoadNote, tokens: &Tokens, retry: &mut Option<RootKind>) {
     match note {
-        FollowedNote::Loading => {
+        LoadNote::Loading(kind) => {
             ui.add_space(space::S3);
-            ui.label(recipe::muted("Loading your shows…", tokens));
+            ui.label(recipe::muted(root_loading_label(kind), tokens));
         }
-        FollowedNote::Failed(failure) => {
+        LoadNote::Failed(kind, failure) => {
             ui.add_space(space::S3);
             ui.label(recipe::muted(
                 crate::signin::failure_message(failure),
                 tokens,
             ));
             if ui.button("Retry").clicked() {
-                *retry = true;
+                *retry = Some(kind);
             }
         }
-        FollowedNote::None => {}
+        LoadNote::None => {}
     }
 }
 
@@ -2073,30 +2109,33 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
     fn idle_view_all_shows_playlists_and_shows() {
         let mut library = library_idle(vec![playlist("a", "A")]);
         library.apply(&Update::FollowedShows(vec![show("s", "S")]));
-        let IdleView::Grid { items, followed } = idle_view(&library) else {
+        let IdleView::Grid { items, note } = idle_view(&library) else {
             panic!("a ready root is a grid: {:?}", idle_view(&library));
         };
         assert_eq!(items.len(), 2, "playlists first, then shows");
         assert!(matches!(items[0], Item::Playlist(entry) if entry.uri == "a"));
         assert!(matches!(&items[1], Item::Show(entry) if entry.uri == "s"));
-        assert_eq!(followed, FollowedNote::None);
+        assert_eq!(note, LoadNote::None);
     }
 
     #[test]
     fn idle_view_all_with_no_playlists_waits_on_the_followed_list() {
         let mut library = library_idle(Vec::new());
         let _ = library.followed_request();
-        let IdleView::Grid { items, followed } = idle_view(&library) else {
+        let IdleView::Grid { items, note } = idle_view(&library) else {
             panic!("the shows are still coming: {:?}", idle_view(&library));
         };
         assert!(items.is_empty());
-        assert_eq!(followed, FollowedNote::Loading);
+        assert_eq!(note, LoadNote::Loading(RootKind::Podcasts));
 
         library.apply(&Update::FollowedShowsFailed(Failure::Followed));
-        let IdleView::Grid { followed, .. } = idle_view(&library) else {
+        let IdleView::Grid { note, .. } = idle_view(&library) else {
             panic!("a failed list is its own note: {:?}", idle_view(&library));
         };
-        assert_eq!(followed, FollowedNote::Failed(Failure::Followed));
+        assert_eq!(
+            note,
+            LoadNote::Failed(RootKind::Podcasts, Failure::Followed)
+        );
 
         let mut settled = library_idle(Vec::new());
         settled.apply(&Update::FollowedShows(Vec::new()));
@@ -2109,11 +2148,11 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         library.root_filter.choose(RootKind::Playlists);
         // The followed list is in flight; the playlists chip does not wait on it.
         let _ = library.followed_request();
-        let IdleView::Grid { items, followed } = idle_view(&library) else {
+        let IdleView::Grid { items, note } = idle_view(&library) else {
             panic!("the playlists chip is a grid: {:?}", idle_view(&library));
         };
         assert_eq!(items.len(), 1);
-        assert_eq!(followed, FollowedNote::None);
+        assert_eq!(note, LoadNote::None);
     }
 
     #[test]
@@ -2122,7 +2161,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         library.root_filter.choose(RootKind::Podcasts);
 
         let _ = library.followed_request();
-        let IdleView::Grid { items, followed } = idle_view(&library) else {
+        let IdleView::Grid { items, note } = idle_view(&library) else {
             panic!(
                 "a loading followed list is a grid: {:?}",
                 idle_view(&library)
@@ -2132,17 +2171,17 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             items.is_empty(),
             "the playlists chip is not the podcasts one"
         );
-        assert_eq!(followed, FollowedNote::Loading);
+        assert_eq!(note, LoadNote::Loading(RootKind::Podcasts));
 
         library.apply(&Update::FollowedShowsFailed(Failure::Load));
-        let IdleView::Grid { items, followed } = idle_view(&library) else {
+        let IdleView::Grid { items, note } = idle_view(&library) else {
             panic!(
                 "a failed followed list is a grid: {:?}",
                 idle_view(&library)
             );
         };
         assert!(items.is_empty());
-        assert_eq!(followed, FollowedNote::Failed(Failure::Load));
+        assert_eq!(note, LoadNote::Failed(RootKind::Podcasts, Failure::Load));
 
         let mut empty = library_idle(vec![playlist("a", "A")]);
         empty.root_filter.choose(RootKind::Podcasts);
@@ -3592,8 +3631,11 @@ mod root_tests {
         );
     }
 
+    /// Pressing the Artists chip takes the choice, asks for the list once, and
+    /// the next frame says it is loading rather than claiming the library is
+    /// empty.
     #[test]
-    fn a_waiting_chip_click_changes_nothing() {
+    fn the_artists_chip_asks_for_the_list_and_says_it_is_loading() {
         let ctx = context();
         let mut library = library(vec![playlist("a", "A")], vec![]);
         let mut art = Art::default();
@@ -3602,10 +3644,22 @@ mod root_tests {
         let chip = chip_rect(&before, "Artists");
         let _ = click(&ctx, chip.center(), &mut library, &mut art);
 
+        assert_eq!(library.root_filter.chosen(), RootKind::Artists);
         assert_eq!(
-            library.root_filter.chosen(),
-            RootKind::All,
-            "a chip with no data must stay inert"
+            library.followed_artists_request(),
+            Some(Command::LoadFollowedArtists)
+        );
+        assert_eq!(library.followed_artists_request(), None, "asked once");
+
+        let after = frame(&ctx, &mut library, &mut art);
+        let texts = drawn_texts(&after);
+        assert!(
+            texts.contains(&"Loading your artists…"),
+            "the root says what it is doing: {texts:?}"
+        );
+        assert!(
+            !texts.contains(&"You don't follow any artists yet."),
+            "and does not claim the list is empty: {texts:?}"
         );
     }
 

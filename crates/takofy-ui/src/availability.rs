@@ -200,12 +200,12 @@ pub fn availability(control: Control) -> Availability {
         Control::DiscographyFilter => Availability::Ready,
 
         // The library root's filter row: All, Playlists and Podcasts are live,
-        // Artists and Albums are the reference's chips with no data yet.
+        // The library root's filter row: every chip names a list it can draw.
         Control::LibraryFilterAll => Availability::Ready, // #3
         Control::LibraryFilterPlaylists => Availability::Ready, // #3
+        Control::LibraryFilterArtists => Availability::Ready,
+        Control::LibraryFilterAlbums => Availability::Ready,
         Control::LibraryFilterPodcasts => Availability::Ready, // #3
-        Control::LibraryFilterArtists => Availability::Waiting, // no library view yet
-        Control::LibraryFilterAlbums => Availability::Waiting, // no library view yet
         Control::ReleasePlay => Availability::Ready,
         Control::EpisodeToggle => Availability::Ready,
         Control::ReleaseLike => Availability::Waiting,
@@ -243,6 +243,8 @@ mod tests {
                     | Control::Authorize
                     | Control::LibraryFilterAll
                     | Control::LibraryFilterPlaylists
+                    | Control::LibraryFilterArtists
+                    | Control::LibraryFilterAlbums
                     | Control::LibraryFilterPodcasts
                     | Control::FilterPlaylists
                     | Control::FilterArtists
@@ -253,15 +255,6 @@ mod tests {
                 availability(control) == Availability::Ready,
                 ready,
                 "{control:?}"
-            );
-        }
-
-        // The root's Artists and Albums have no view yet, so they are Waiting.
-        for control in [Control::LibraryFilterArtists, Control::LibraryFilterAlbums] {
-            assert_eq!(
-                availability(control),
-                Availability::Waiting,
-                "the root's {control:?} has no view yet"
             );
         }
     }
