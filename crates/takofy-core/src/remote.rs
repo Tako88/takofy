@@ -303,7 +303,14 @@ pub(crate) async fn read_artist(
     let followed = read_follow(session, uri).await;
     let related = related_uris(&artist);
     if related.is_empty() {
-        log::warn!("the artist payload named {} related artists", related.len());
+        // Both counts, because "none" and "all of them unusable" mean different
+        // things: the first says the wire no longer fills the field, the second
+        // that this reader drops what it sends.
+        log::warn!(
+            "the artist payload sent {} related entries, {} of them usable",
+            artist.related.len(),
+            related.len()
+        );
     }
     Ok((artist_detail(uri, &artist, top_tracks, releases), followed))
 }
