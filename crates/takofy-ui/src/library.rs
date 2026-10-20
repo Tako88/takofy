@@ -91,6 +91,8 @@ pub struct ArtistPage<'a> {
     pub filter: &'a mut Filter,
     /// The per-release label store the discography fills in.
     pub releases: &'a mut Releases,
+    /// The artists this one is heard with, once they are named.
+    pub related: &'a Load<Vec<FollowedArtist>>,
 }
 
 /// The sidebar's playlists and the tracks the current page has loaded.
@@ -725,6 +727,7 @@ impl Library {
             follow,
             filter,
             releases,
+            related,
             history,
             ..
         } = self;
@@ -741,6 +744,7 @@ impl Library {
             follow,
             filter,
             releases,
+            related,
         }
     }
 
