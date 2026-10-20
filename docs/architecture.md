@@ -75,6 +75,11 @@ reading it, and it crosses the same seam as everything else: the page sends a
 write and reports only what the server confirmed, so the label moves on the
 answer and never on the press.
 
+Labels branch on URI kind: a track and an episode resolve through their own
+batch, and an episode is a label like a track with its show as its credit. The
+shows a user follows come from the collection's `show` set, paged like any other
+collection set and then named one show at a time.
+
 ## Who owns what
 
 - The binary owns the tokio runtime, and the `Engine` in headless mode. In the
