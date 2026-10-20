@@ -6,14 +6,17 @@
 //! silently changed write at worst.
 //!
 //! Only what the app needs is encoded: one artist per follow write, the presence
-//! probe the hero reads its label from, and the paged read of the followed
-//! shows.
+//! probe the hero reads its label from, the paged read of the followed shows,
+//! and the paged read of the collection set.
 
 /// The media type both collection endpoints want on `Content-Type` and `Accept`.
 pub(crate) const VENDOR: &str = "application/vnd.collection-v2.spotify.proto";
 
 /// The set an artist is followed into.
-const SET: &str = "artist";
+pub(crate) const ARTIST_SET: &str = "artist";
+
+/// The set that holds liked songs and saved albums together.
+pub(crate) const COLLECTION_SET: &str = "collection";
 
 /// The set the followed shows are collected into.
 pub(crate) const SHOW_SET: &str = "show";
@@ -40,7 +43,7 @@ pub(crate) fn write_body(
 
     let mut body = Vec::new();
     put_str(1, username, &mut body);
-    put_str(2, SET, &mut body);
+    put_str(2, ARTIST_SET, &mut body);
     put_message(3, &item, &mut body);
     body
 }
@@ -49,7 +52,7 @@ pub(crate) fn write_body(
 pub(crate) fn contains_body(username: &str, uris: &[&str]) -> Vec<u8> {
     let mut body = Vec::new();
     put_str(1, username, &mut body);
-    put_str(2, SET, &mut body);
+    put_str(2, ARTIST_SET, &mut body);
     for uri in uris {
         let mut item = Vec::new();
         put_str(1, uri, &mut item);
@@ -401,6 +404,19 @@ mod tests {
             vec![
                 0x0a, 0x05, 0x61, 0x6c, 0x69, 0x63, 0x65, // field 1: the username
                 0x12, 0x04, 0x73, 0x68, 0x6f, 0x77, // field 2: "show"
+                0x20, 0xf4, 0x03, // field 4: the limit, 500
+            ]
+        );
+    }
+
+    #[test]
+    fn a_collection_paging_request_names_the_collection_set() {
+        assert_eq!(
+            paging_body(USER, COLLECTION_SET, None, 500),
+            vec![
+                0x0a, 0x05, 0x61, 0x6c, 0x69, 0x63, 0x65, // field 1: the username
+                0x12, 0x0a, 0x63, 0x6f, 0x6c, 0x6c, 0x65, 0x63, 0x74, 0x69, 0x6f, 0x6e, // field 2:
+                // "collection"
                 0x20, 0xf4, 0x03, // field 4: the limit, 500
             ]
         );

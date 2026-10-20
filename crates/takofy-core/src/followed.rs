@@ -26,6 +26,13 @@ pub(crate) const MAX_PAGES: usize = 20;
 /// How many items one paging request asks the collection for.
 pub(crate) const PAGE_LIMIT: u32 = 500;
 
+/// The most answers one collection-set read accepts.
+///
+/// The collection set holds liked songs, so it is far larger than a follow
+/// set; the probe measured 3 pages at 500 for 1461 items. 200 pages is
+/// 100,000 items, and failing loudly past that is the intent.
+pub(crate) const COLLECTION_MAX_PAGES: usize = 200;
+
 /// Why a followed-shows read failed.
 #[derive(Debug, thiserror::Error)]
 pub enum FollowedError {
@@ -49,15 +56,25 @@ pub enum FollowedError {
 /// is also an error rather than a loop. That repeat check only compares against
 /// the immediately previous token, so a token that comes back after a different
 /// one is not caught here; the page cap is what bounds that read.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Pager {
     pages: usize,
     last: Option<String>,
+    max: usize,
 }
 
 impl Pager {
     pub fn new() -> Self {
-        Self::default()
+        Self::with_cap(MAX_PAGES)
+    }
+
+    /// A pager whose read may take up to `pages` answers.
+    pub fn with_cap(pages: usize) -> Self {
+        Self {
+            pages: 0,
+            last: None,
+            max: pages,
+        }
     }
 
     /// The next token to ask with, or `None` when the read has ended.
@@ -69,8 +86,9 @@ impl Pager {
             // The set has ended. A last answer is never one page too many.
             None => Ok(None),
             // This answer asks for another page, and the cap allows no more of them.
-            Some(_) if self.pages >= MAX_PAGES => Err(FollowedError::Source(format!(
-                "the collection has more than {MAX_PAGES} pages"
+            Some(_) if self.pages >= self.max => Err(FollowedError::Source(format!(
+                "the collection has more than {} pages",
+                self.max
             ))),
             Some(next) => {
                 if self.last.as_deref() == Some(next.as_str()) {
@@ -91,11 +109,23 @@ impl Pager {
 /// occurrence of a URI is the one kept, and items without a date come last. The
 /// sort is stable, so items sharing a date keep the wire's order.
 pub(crate) fn show_order(items: Vec<Item>) -> Vec<String> {
+    newest_first(items, |uri| matches!(uri, SpotifyUri::Show { .. }))
+}
+
+/// The items' URIs, newest first.
+///
+/// Removed items and anything the `keep` predicate does not name are dropped,
+/// the first occurrence of a URI is the one kept, and items without a date come
+/// last. The sort is stable, so items sharing a date keep the wire's order.
+pub(crate) fn newest_first(items: Vec<Item>, keep: fn(&SpotifyUri) -> bool) -> Vec<String> {
     let mut seen = HashSet::new();
     let mut kept: Vec<(Option<i64>, String)> = items
         .into_iter()
         .filter(|item| !item.removed)
-        .filter(|item| matches!(SpotifyUri::from_uri(&item.uri), Ok(SpotifyUri::Show { .. })))
+        .filter(|item| match SpotifyUri::from_uri(&item.uri) {
+            Ok(uri) => keep(&uri),
+            Err(_) => false,
+        })
         .filter(|item| seen.insert(item.uri.clone()))
         .map(|item| (item.added_at, item.uri))
         .collect();
@@ -142,7 +172,7 @@ mod tests {
     use librespot::core::{SpotifyId, SpotifyUri};
     use takofy_model::CoverUrl;
 
-    use super::{FollowedError, MAX_PAGES, Pager, ShowCard, entries, show_order};
+    use super::{FollowedError, MAX_PAGES, Pager, ShowCard, entries, newest_first, show_order};
     use crate::collection::Item;
 
     fn item(uri: &str, added_at: Option<i64>, removed: bool) -> Item {
@@ -226,6 +256,23 @@ mod tests {
     }
 
     #[test]
+    fn newest_first_keeps_what_the_predicate_keeps_and_the_first_of_a_duplicate_pair() {
+        assert_eq!(
+            newest_first(
+                vec![
+                    item(&show(1), Some(100), false),
+                    item(&album(2), Some(500), false),
+                    item(&show(1), Some(2_000), false),
+                    item(&show(3), None, false),
+                ],
+                |uri| matches!(uri, SpotifyUri::Show { .. }),
+            ),
+            vec![show(1), show(3)],
+            "an album is not a show, and the first show's date sorts, so the newer duplicate does not win"
+        );
+    }
+
+    #[test]
     fn the_pager_follows_distinct_tokens_and_stops_on_none() {
         let mut pager = Pager::new();
         assert_eq!(
@@ -294,6 +341,26 @@ mod tests {
             .expect_err("a twentieth token would need a twenty-first request");
         assert!(
             matches!(&error, FollowedError::Source(message) if message == "the collection has more than 20 pages"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_capped_pager_errors_on_the_first_token_past_its_cap() {
+        let mut pager = Pager::with_cap(3);
+        assert_eq!(
+            pager.accept(Some("t1".to_owned())).expect("a token"),
+            Some("t1".to_owned())
+        );
+        assert_eq!(
+            pager.accept(Some("t2".to_owned())).expect("a token"),
+            Some("t2".to_owned())
+        );
+        let error = pager
+            .accept(Some("t3".to_owned()))
+            .expect_err("a third token would need a fourth request");
+        assert!(
+            matches!(&error, FollowedError::Source(message) if message == "the collection has more than 3 pages"),
             "{error}"
         );
     }
