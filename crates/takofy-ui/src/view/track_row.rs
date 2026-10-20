@@ -481,7 +481,7 @@ fn name_over_artist(
     );
     Some(Link {
         hovered: response.hovered(),
-        page: response.clicked().then(|| Page::Artist(uri.to_owned())),
+        page: response.clicked().then(|| Page::credit(uri)),
     })
 }
 
@@ -512,7 +512,7 @@ fn artist(
     let response = link_cell(ui, rect, "track-artist", row.artist, "artist", key, tokens);
     Some(Link {
         hovered: response.hovered(),
-        page: response.clicked().then(|| Page::Artist(uri.to_owned())),
+        page: response.clicked().then(|| Page::credit(uri)),
     })
 }
 
@@ -731,6 +731,17 @@ fn centred(ui: &Ui, rect: Rect, side: f32) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cover::Cover;
+    use crate::route::Page;
+    use crate::theme::Tokens;
+    use crate::view::test_support::click_events;
+
+    fn input() -> egui::RawInput {
+        egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(900.0, 800.0))),
+            ..Default::default()
+        }
+    }
 
     #[test]
     fn the_equaliser_bars_breathe_inside_their_range() {
@@ -862,5 +873,100 @@ mod tests {
                 crate::theme::extent::ROW_H
             )
         )));
+    }
+
+    /// A wide album-block row: the name over its artist subline, no art box.
+    fn episode_row() -> Row<'static> {
+        Row {
+            uri: "spotify:episode:a",
+            number: 1,
+            title: "The Episode",
+            title_cell: TitleCell::NameOverArtist,
+            artist: "Lateral with Tom Scott",
+            // The episode names its show as its credit, so this subline opens
+            // the show rather than an artist.
+            artist_uri: Some("spotify:show:s"),
+            album: None,
+            album_uri: None,
+            added: None,
+            duration: None,
+            state: State::Resting,
+            cover: Cover::Missing,
+        }
+    }
+
+    fn context() -> egui::Context {
+        let tokens = Tokens::DARK;
+        let ctx = egui::Context::default();
+        ctx.set_fonts(crate::theme::fonts::definitions());
+        ctx.set_global_style(crate::theme::style(&tokens));
+        ctx
+    }
+
+    /// The rect a painted line occupies, read back from a frame.
+    fn text_rect(output: &egui::FullOutput, label: &str) -> Option<Rect> {
+        output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Text(text) if text.galley.text() == label => {
+                    Some(Rect::from_min_size(text.pos, text.galley.size()))
+                }
+                _ => None,
+            })
+    }
+
+    /// The click one frame reports for a pointer at `pos`, feeding one event per
+    /// pass as egui wants.
+    fn click(ctx: &egui::Context, pos: Pos2) -> Option<Click> {
+        let tokens = Tokens::DARK;
+        let columns = crate::layout::table::columns(900.0, crate::layout::Table::Full.columns());
+        let rect = crate::layout::table::row_rect(
+            Rect::from_min_size(Pos2::ZERO, vec2(900.0, crate::theme::extent::ROW_H)),
+            0,
+            crate::theme::extent::ROW_H,
+        );
+        let mut last = None;
+        for event in click_events(pos) {
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(900.0, 800.0))),
+                events: vec![event],
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                last = show(ui, rect, columns, &episode_row(), &tokens);
+            });
+            output.textures_delta.clear();
+        }
+        last
+    }
+
+    #[test]
+    fn a_credit_click_on_an_episode_row_opens_the_show() {
+        let ctx = context();
+        // The artist subline is the bottom line of the two stacked lines, so the
+        // click lands on the painted artist words rather than the name above, or
+        // on the index column to the left of the title. The words' own rect is
+        // where the link's hit area sits.
+        let mut first = ctx.run_ui(input(), |ui| {
+            let _ = show(
+                ui,
+                crate::layout::table::row_rect(
+                    Rect::from_min_size(Pos2::ZERO, vec2(900.0, crate::theme::extent::ROW_H)),
+                    0,
+                    crate::theme::extent::ROW_H,
+                ),
+                crate::layout::table::columns(900.0, crate::layout::Table::Full.columns()),
+                &episode_row(),
+                &Tokens::DARK,
+            );
+        });
+        first.textures_delta.clear();
+        let artist = text_rect(&first, "Lateral with Tom Scott").expect("the artist subline");
+        assert_eq!(
+            click(&ctx, artist.center()),
+            Some(Click::Open(Page::credit("spotify:show:s"))),
+            "a click on the episode's credit opens the show page"
+        );
     }
 }

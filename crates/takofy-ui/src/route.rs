@@ -17,6 +17,20 @@ pub enum Page {
 }
 
 impl Page {
+    /// The page a row's credit link opens, from the row's resolved credit URI.
+    ///
+    /// An episode names its show as its first artist, so a show URI opens the
+    /// show page; every other resolved credit is an artist, the only other
+    /// credit a row carries. It is not asked for an album URI: a row's credit is
+    /// an artist or a show, never an album.
+    pub fn credit(uri: &str) -> Page {
+        if uri.starts_with("spotify:show:") {
+            Page::Show(uri.to_owned())
+        } else {
+            Page::Artist(uri.to_owned())
+        }
+    }
+
     /// The URI the page was opened with.
     pub fn uri(&self) -> &str {
         match self {
@@ -155,6 +169,30 @@ mod tests {
 
     fn show(uri: &str) -> Option<Page> {
         Some(Page::Show(uri.to_owned()))
+    }
+
+    #[test]
+    fn a_show_uri_credits_a_show_page() {
+        assert_eq!(
+            Page::credit("spotify:show:abc"),
+            Page::Show("spotify:show:abc".to_owned())
+        );
+    }
+
+    #[test]
+    fn an_artist_uri_credits_an_artist_page() {
+        assert_eq!(
+            Page::credit("spotify:artist:abc"),
+            Page::Artist("spotify:artist:abc".to_owned())
+        );
+    }
+
+    #[test]
+    fn anything_else_credits_an_artist_page() {
+        assert_eq!(
+            Page::credit("spotify:album:abc"),
+            Page::Artist("spotify:album:abc".to_owned())
+        );
     }
 
     #[test]

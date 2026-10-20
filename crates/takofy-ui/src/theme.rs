@@ -163,6 +163,17 @@ pub mod extent {
     /// The Now Playing art's floor, 4 rem. The art gives way to the pane's own
     /// minimum at the shortest window the panel is drawn at, and stops here.
     pub const NOWPLAYING_ART_MIN: f32 = 64.0;
+    /// An episode row's pitch: its padding, the title, a two-row description and
+    /// the meta line. Taller than a track row because the description is part of
+    /// the row, and fixed so the list can be virtualised from its index alone.
+    pub const EPISODE_ROW_H: f32 = 120.0;
+    /// An episode row's play toggle, 2.5 rem: the square the row opens with,
+    /// which stands where a track row puts its art.
+    pub const EPISODE_TOGGLE: f32 = 40.0;
+    /// The measure an episode description is clamped to, in characters. The
+    /// reference caps it at `70ch` so a wide window does not stretch a paragraph
+    /// from edge to edge.
+    pub const EPISODE_TEXT_CH: f32 = 70.0;
     /// The search field's height, 2 rem.
     pub const SEARCH_H: f32 = 32.0;
     /// The search field's flex basis, 14 rem.
@@ -785,6 +796,8 @@ mod tests {
             assert!(extent::TRACK_ACTIONS_W == 1.75 * REM);
             assert!(extent::LIBRARY_ART == 2.25 * REM);
             assert!(extent::QUEUE_ART == 2.5 * REM);
+            assert!(extent::EPISODE_TOGGLE == 2.5 * REM);
+            assert!(extent::EPISODE_ROW_H > extent::EPISODE_TOGGLE);
             assert!(extent::NOWPLAYING_ART_MIN == 4.0 * REM);
             assert!(extent::NOWPLAYING_ART_MIN < extent::NOWPLAYING_ART_MAX);
             assert!(extent::CARD_MIN_W == 9.0 * REM);

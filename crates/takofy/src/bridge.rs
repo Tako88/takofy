@@ -299,6 +299,18 @@ pub(crate) fn start<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                         break;
                     }
                 }
+                Event::Command(Some(Command::LoadShow { show })) => {
+                    let step = load_show(&mut host, &mut stop_rx, &task_notifier, &show).await;
+                    if step.stopped() {
+                        break;
+                    }
+                }
+                Event::Command(Some(Command::LoadFollowedShows)) => {
+                    let step = load_followed_shows(&mut host, &mut stop_rx, &task_notifier).await;
+                    if step.stopped() {
+                        break;
+                    }
+                }
                 Event::Command(Some(Command::LoadReleaseTracks { release, tracks })) => {
                     let step = load_release_tracks(
                         &mut host,
@@ -483,6 +495,49 @@ async fn load_album<H: SessionHost>(
     }
 }
 
+/// Loads one show with its episodes and announces it.
+async fn load_show<H: SessionHost>(
+    host: &mut H,
+    stop: &mut StopReceiver<()>,
+    notifier: &Notifier,
+    show: &str,
+) -> Step {
+    match stop_or(stop, host.show(show)).await {
+        None => Step::Stopped,
+        Some(result) => {
+            announce(notifier, result, Update::Show, |failure| {
+                Update::ShowFailed {
+                    show: show.to_owned(),
+                    failure,
+                }
+            });
+            Step::Done
+        }
+    }
+}
+
+/// Loads the shows the user follows and announces the whole list.
+///
+/// It has its own failure, because the playlists beside it draw fine and
+/// "Could not load the library" would be false there.
+async fn load_followed_shows<H: SessionHost>(
+    host: &mut H,
+    stop: &mut StopReceiver<()>,
+    notifier: &Notifier,
+) -> Step {
+    match stop_or(stop, host.followed_shows()).await {
+        None => Step::Stopped,
+        Some(Ok(shows)) => {
+            notifier.send(Update::FollowedShows(shows));
+            Step::Done
+        }
+        Some(Err(error)) => {
+            notifier.send(Update::FollowedShowsFailed(followed_failure(&error)));
+            Step::Done
+        }
+    }
+}
+
 /// Loads one artist and announces the page, then the followed state when the
 /// probe answered.
 ///
@@ -645,6 +700,14 @@ pub(crate) fn library_failure(error: &SessionError) -> Failure {
     Failure::Load
 }
 
+/// The followed-shows list has its own failure: the playlists beside it draw
+/// fine, so the library did not fail. The reason is for the log, never the
+/// window.
+pub(crate) fn followed_failure(error: &SessionError) -> Failure {
+    log::warn!("session failure: {}", error.kind());
+    Failure::Followed
+}
+
 /// Logs the failure variant, then hands the update to the window. The variant
 /// is a fixed name; the underlying error can embed a response body and is
 /// never formatted.
@@ -724,14 +787,15 @@ pub(crate) fn authorize_update(result: Result<AccessToken, AuthError>) -> Update
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-    use std::sync::mpsc::{Receiver, Sender, channel};
+    use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     use takofy_core::credentials::{AccessToken, CredentialStore, RefreshToken, StoreError};
     use takofy_core::login::{SourceError, SourceErrorKind, TokenSet, TokenSource};
     use takofy_model::{
-        AlbumDetail, ArtistDetail, CoverImage, CoverUrl, PlaylistEntry, TrackEntry,
+        AlbumDetail, ArtistDetail, CoverImage, CoverUrl, Episode, FollowedShow, PlaylistEntry,
+        Show, ShowDetail, TrackEntry,
     };
     use takofy_ui::signin::failure_message;
     use tokio::runtime::Runtime;
@@ -966,6 +1030,36 @@ mod tests {
         }
     }
 
+    /// A scripted show answer; the default is a bare one at [`SHOW`].
+    ///
+    /// `Pending` never answers, so a stop can be tested while the load is still
+    /// in flight (the same shape [`TracksScript`] uses).
+    #[derive(Clone)]
+    enum ShowScript {
+        Ready(ShowDetail),
+        Fail,
+        Pending,
+    }
+
+    impl Default for ShowScript {
+        fn default() -> Self {
+            Self::Ready(show_detail(SHOW))
+        }
+    }
+
+    /// A scripted followed-shows answer; the default is an empty list.
+    #[derive(Clone)]
+    enum FollowedScript {
+        Ready(Vec<FollowedShow>),
+        Fail,
+    }
+
+    impl Default for FollowedScript {
+        fn default() -> Self {
+            Self::Ready(Vec::new())
+        }
+    }
+
     /// A scripted artist answer; the default is a bare one at [`ARTIST`].
     #[derive(Clone)]
     enum ArtistScript {
@@ -1005,6 +1099,8 @@ mod tests {
         rootlist_script: Mutex<RootlistScript>,
         tracks_script: Mutex<TracksScript>,
         album_script: Mutex<AlbumScript>,
+        show_script: Mutex<ShowScript>,
+        followed_script: Mutex<FollowedScript>,
         artist_script: Mutex<ArtistScript>,
         release_script: Mutex<ReleaseScript>,
         follow_script: Mutex<FollowScript>,
@@ -1013,10 +1109,14 @@ mod tests {
         rootlists: AtomicUsize,
         tracks: AtomicUsize,
         albums: AtomicUsize,
+        shows: AtomicUsize,
+        followed_lists: AtomicUsize,
         artists: AtomicUsize,
         releases: AtomicUsize,
         follow_writes: AtomicUsize,
         artist_started: Mutex<Option<Sender<()>>>,
+        show_started: Mutex<Option<Sender<()>>>,
+
         last_follow: Mutex<Option<(String, bool)>>,
         plays: AtomicUsize,
         pauses: AtomicUsize,
@@ -1151,6 +1251,45 @@ mod tests {
             }
         }
 
+        fn show(
+            &self,
+            _show: &str,
+        ) -> impl Future<Output = Result<ShowDetail, SessionError>> + Send {
+            self.shared.shows.fetch_add(1, Ordering::SeqCst);
+            if let Some(tx) = self.shared.show_started.lock().expect("lock").take() {
+                let _ = tx.send(());
+            }
+            let connected = self.shared.connected.load(Ordering::SeqCst);
+            let script = self.shared.show_script.lock().expect("lock").clone();
+            async move {
+                if !connected {
+                    return Err(SessionError::NotConnected);
+                }
+                match script {
+                    ShowScript::Ready(detail) => Ok(detail),
+                    ShowScript::Fail => Err(SessionError::NotConnected),
+                    ShowScript::Pending => std::future::pending().await,
+                }
+            }
+        }
+
+        fn followed_shows(
+            &self,
+        ) -> impl Future<Output = Result<Vec<FollowedShow>, SessionError>> + Send {
+            self.shared.followed_lists.fetch_add(1, Ordering::SeqCst);
+            let connected = self.shared.connected.load(Ordering::SeqCst);
+            let script = self.shared.followed_script.lock().expect("lock").clone();
+            async move {
+                if !connected {
+                    return Err(SessionError::NotConnected);
+                }
+                match script {
+                    FollowedScript::Ready(shows) => Ok(shows),
+                    FollowedScript::Fail => Err(SessionError::NotConnected),
+                }
+            }
+        }
+
         fn artist(
             &self,
             _artist: &str,
@@ -1260,6 +1399,9 @@ mod tests {
     /// The album the shell tests open; one name, so a URI and its detail agree.
     const ALBUM: &str = "spotify:album:a";
 
+    /// The show the shell tests open.
+    const SHOW: &str = "spotify:show:a";
+
     /// The artist the shell tests open.
     const ARTIST: &str = "spotify:artist:a";
 
@@ -1284,6 +1426,42 @@ mod tests {
             year: Some(1997),
             cover: None,
             tracks: Vec::new(),
+        }
+    }
+
+    /// One show page's data, with one episode, so a test names only what it
+    /// reads.
+    fn show_detail(uri: &str) -> ShowDetail {
+        ShowDetail {
+            show: Show {
+                uri: uri.to_owned(),
+                name: "Lateral".to_owned(),
+                publisher: "Lateral".to_owned(),
+                description: String::new(),
+                cover: None,
+            },
+            episodes: vec![Episode {
+                uri: "spotify:episode:e".to_owned(),
+                title: "An episode".to_owned(),
+                show: "Lateral".to_owned(),
+                show_uri: Some(uri.to_owned()),
+                description: None,
+                published: None,
+                duration_ms: None,
+                cover: None,
+                named: true,
+            }],
+        }
+    }
+
+    /// One followed-show card, named after its URI so a test can tell two apart.
+    fn followed_show(uri: &str) -> FollowedShow {
+        FollowedShow {
+            uri: uri.to_owned(),
+            name: uri.to_owned(),
+            named: true,
+            publisher: None,
+            cover: None,
         }
     }
 
@@ -2182,6 +2360,249 @@ mod tests {
             }
         );
         assert_eq!(shared.albums.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_load_show_before_connect_announces_a_failure() {
+        let store = Arc::new(MemoryStore::default());
+        let source = Arc::new(FixedSource::default());
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::default());
+        let shared = Arc::clone(&host.shared);
+
+        let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            assert_eq!(
+                ui_end.updates.recv().expect("resume update"),
+                Update::NeedsAuthorization
+            );
+            ui_end
+                .commands
+                .send(Command::LoadShow {
+                    show: SHOW.to_owned(),
+                })
+                .expect("load");
+            ui_end.updates.recv().expect("failure")
+        });
+
+        assert_eq!(
+            update,
+            Update::ShowFailed {
+                show: SHOW.to_owned(),
+                failure: Failure::Load,
+            }
+        );
+        assert_eq!(shared.shows.load(Ordering::SeqCst), 1);
+        assert_eq!(shared.shutdowns.load(Ordering::SeqCst), 1);
+    }
+
+    /// Drives one scripted show through the live `load_show` path and returns
+    /// the update the window receives, so every hop from the host's answer to the
+    /// window's vocabulary is real.
+    fn run_show(detail: ShowDetail) -> Update {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+        *shared.show_script.lock().expect("lock") = ShowScript::Ready(detail);
+
+        run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::LoadShow {
+                    show: SHOW.to_owned(),
+                })
+                .expect("load");
+            ui_end.updates.recv().expect("show")
+        })
+    }
+
+    #[test]
+    fn a_scripted_show_reaches_the_window() {
+        let detail = show_detail(SHOW);
+        assert_eq!(run_show(detail.clone()), Update::Show(detail));
+    }
+
+    #[test]
+    fn a_failed_show_load_is_announced() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+        *shared.show_script.lock().expect("lock") = ShowScript::Fail;
+
+        let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::LoadShow {
+                    show: SHOW.to_owned(),
+                })
+                .expect("load");
+            ui_end.updates.recv().expect("failure")
+        });
+
+        assert_eq!(
+            update,
+            Update::ShowFailed {
+                show: SHOW.to_owned(),
+                failure: Failure::Load,
+            }
+        );
+        assert_eq!(shared.shows.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_stop_during_a_show_load_shuts_down() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+        *shared.show_script.lock().expect("lock") = ShowScript::Pending;
+        let (started_tx, started_rx) = channel();
+        *shared.show_started.lock().expect("lock") = Some(started_tx);
+
+        let runtime = runtime();
+        let (ui_end, _slot, worker) = start(runtime.handle(), host, store, source);
+
+        let window = move || {
+            loop {
+                if matches!(ui_end.updates.recv().expect("update"), Update::Playlists(_)) {
+                    break;
+                }
+            }
+            ui_end
+                .commands
+                .send(Command::LoadShow {
+                    show: SHOW.to_owned(),
+                })
+                .expect("load");
+            started_rx.recv().expect("show started");
+        };
+        let teardown = move || async move {
+            // A hung stop must fail the test, not hang the suite.
+            tokio::time::timeout(Duration::from_secs(1), worker.finish())
+                .await
+                .expect("finish must resolve when the stop interrupts the show load");
+            assert_eq!(
+                shared.shutdowns.load(Ordering::SeqCst),
+                1,
+                "the shutdown must run when the stop interrupts the show load"
+            );
+        };
+
+        run_ordered(runtime, window, teardown);
+    }
+
+    #[test]
+    fn a_followed_load_before_connect_announces_followed_failure() {
+        let store = Arc::new(MemoryStore::default());
+        let source = Arc::new(FixedSource::default());
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::default());
+        let shared = Arc::clone(&host.shared);
+
+        let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            assert_eq!(
+                ui_end.updates.recv().expect("resume update"),
+                Update::NeedsAuthorization
+            );
+            ui_end
+                .commands
+                .send(Command::LoadFollowedShows)
+                .expect("load");
+            ui_end.updates.recv().expect("failure")
+        });
+
+        assert_eq!(
+            update,
+            Update::FollowedShowsFailed(Failure::Followed),
+            "a followed failure is not the library's"
+        );
+        assert_eq!(shared.followed_lists.load(Ordering::SeqCst), 1);
+        assert_eq!(shared.shutdowns.load(Ordering::SeqCst), 1);
+    }
+
+    /// Drives one scripted followed list through the live `load_followed_shows`
+    /// path and returns the update the window receives.
+    fn run_followed(shows: Vec<FollowedShow>) -> Update {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+        *shared.followed_script.lock().expect("lock") = FollowedScript::Ready(shows);
+
+        run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::LoadFollowedShows)
+                .expect("load");
+            ui_end.updates.recv().expect("followed")
+        })
+    }
+
+    #[test]
+    fn a_scripted_followed_list_reaches_the_window() {
+        let shows = vec![
+            followed_show("spotify:show:a"),
+            followed_show("spotify:show:b"),
+        ];
+        assert_eq!(run_followed(shows.clone()), Update::FollowedShows(shows));
+    }
+
+    #[test]
+    fn a_failed_followed_load_is_announced_as_followed() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+        *shared.followed_script.lock().expect("lock") = FollowedScript::Fail;
+
+        let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::LoadFollowedShows)
+                .expect("load");
+            ui_end.updates.recv().expect("failure")
+        });
+
+        assert_eq!(update, Update::FollowedShowsFailed(Failure::Followed));
+        assert_eq!(shared.followed_lists.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_signed_in_window_gets_no_followed_update_unprompted() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+
+        run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            assert_eq!(
+                ui_end.updates.recv_timeout(Duration::from_millis(250)),
+                Err(RecvTimeoutError::Timeout),
+                "the worker must not load the followed list on its own"
+            );
+        });
+        assert_eq!(
+            shared.followed_lists.load(Ordering::SeqCst),
+            0,
+            "the list is want-driven, never chained onto the rootlist"
+        );
     }
 
     #[test]

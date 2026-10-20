@@ -19,14 +19,37 @@ use crate::theme::{Tokens, space};
 
 use super::controls;
 
-/// Draws the row and returns the chip a press chose, if any.
+/// Draws the discography's row and returns the chip a press chose, if any.
 ///
 /// `active` is the chip drawn as pressed, which is the effective choice rather
 /// than the raw one: a choice with no chip is drawn as `All`.
 pub fn show(ui: &mut Ui, tokens: &Tokens, row: &[Chip], active: Chip) -> Option<Chip> {
+    show_with(
+        ui,
+        tokens,
+        row,
+        active,
+        |_| Control::DiscographyFilter,
+        filter_label,
+    )
+}
+
+/// The same row over any chip set: the copy, the control and the label are the
+/// caller's, so the root's filter row is this one path and not a second row.
+///
+/// `label_of` returns a borrowed label; the caller owns the text and decides
+/// whether it is upper-cased by the chip.
+pub fn show_with<T: Copy + PartialEq>(
+    ui: &mut Ui,
+    tokens: &Tokens,
+    row: &[T],
+    active: T,
+    control_of: impl Fn(T) -> Control,
+    label_of: impl Fn(T) -> &'static str,
+) -> Option<T> {
     let sizes: Vec<Vec2> = row
         .iter()
-        .map(|chip| controls::chip_size(ui, tokens, filter_label(*chip)))
+        .map(|chip| controls::chip_size(ui, tokens, label_of(*chip)))
         .collect();
     // A row is as tall as its tallest chip: unlike the sidebar, the page's row
     // is the chips and nothing else.
@@ -40,11 +63,11 @@ pub fn show(ui: &mut Ui, tokens: &Tokens, row: &[Chip], active: Chip) -> Option<
         // Snapped to the pixel grid: a hairline on a half pixel is soft, and an
         // unrounded widget rect is what egui's debug overlay flags.
         let rect = rect.translate(area.min.to_vec2()).round_ui();
-        let label = filter_label(*chip);
+        let label = label_of(*chip);
         let slot = controls::chip_in_keyed(
             ui,
             tokens,
-            Control::DiscographyFilter,
+            control_of(*chip),
             label,
             rect,
             label,

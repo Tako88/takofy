@@ -7,13 +7,17 @@ use crate::album::AlbumError;
 use crate::artist::ArtistError;
 use crate::context::{ContextError, Walker};
 use crate::credentials::AccessToken;
+use crate::followed::FollowedError;
 use crate::playback::{Playback, PlaybackError, PlaybackEvent};
 use crate::remote::{
     ROOTLIST_WIRE, RemoteContext, RemoteRootlist, label_playlists, label_tracks, read_album,
-    read_artist, read_release_tracks, write_follow,
+    read_artist, read_followed_shows, read_release_tracks, read_show, write_follow,
 };
 use crate::rootlist::{RootlistError, fetch_all};
-use takofy_model::{AlbumDetail, ArtistDetail, CoverUrl, PlaylistEntry, TrackEntry};
+use crate::show::ShowError;
+use takofy_model::{
+    AlbumDetail, ArtistDetail, CoverUrl, FollowedShow, PlaylistEntry, ShowDetail, TrackEntry,
+};
 
 /// Why an [`Engine`] operation failed.
 #[derive(Debug, thiserror::Error)]
@@ -28,6 +32,10 @@ pub enum EngineError {
     Album(#[from] AlbumError),
     #[error(transparent)]
     Artist(#[from] ArtistError),
+    #[error(transparent)]
+    Show(#[from] ShowError),
+    #[error(transparent)]
+    Followed(#[from] FollowedError),
 }
 
 /// A connected Spotify session.
@@ -109,6 +117,18 @@ impl Engine {
     /// Writes the artist into the user's followed set, or out of it.
     pub async fn set_follow(&self, artist_uri: &str, follow: bool) -> Result<(), EngineError> {
         Ok(write_follow(&self.session, artist_uri, follow).await?)
+    }
+
+    /// One show: its metadata and every episode, labelled in the show's order.
+    ///
+    /// A URI that does not name a show fails before any request is made.
+    pub async fn show(&self, show_uri: &str) -> Result<ShowDetail, EngineError> {
+        Ok(read_show(&self.session, show_uri).await?)
+    }
+
+    /// The shows the user follows, newest follow first, each as its card draws it.
+    pub async fn followed_shows(&self) -> Result<Vec<FollowedShow>, EngineError> {
+        Ok(read_followed_shows(&self.session).await?)
     }
 }
 

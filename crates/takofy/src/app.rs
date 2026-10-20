@@ -83,6 +83,12 @@ impl eframe::App for TakofyApp {
         for command in commands {
             let _ = self.ui_end.commands.send(command);
         }
+        // The followed list is want-driven: it is asked for after the drain, so
+        // a playlists reply that just landed is what arms it. The worker never
+        // chains it onto the rootlist.
+        if let Some(command) = self.library.followed_request() {
+            let _ = self.ui_end.commands.send(command);
+        }
         // After the drain and before the draw, so a cover that just arrived is
         // ready in this same frame's `ui()`.
         self.art.upload(ctx);
@@ -447,6 +453,23 @@ mod tests {
             vec![Command::Play {
                 uri: "b".to_owned()
             }]
+        );
+    }
+
+    #[test]
+    fn logic_requests_the_followed_list_once_playlists_are_ready() {
+        // `logic()` only forwards this return value into the command queue, so
+        // the contract is `Library::followed_request` itself.
+        let mut library = Library::default();
+        assert_eq!(library.followed_request(), None, "nothing has loaded yet");
+
+        library.apply(&Update::Playlists(Vec::new()));
+        assert_eq!(library.followed_request(), Some(Command::LoadFollowedShows));
+        assert_eq!(library.followed, Load::Loading);
+        assert_eq!(
+            library.followed_request(),
+            None,
+            "the load is in flight, so the next frame sends nothing"
         );
     }
 

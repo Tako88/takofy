@@ -11,6 +11,7 @@ pub mod format;
 pub mod icon;
 pub mod layout;
 pub mod library;
+pub mod library_filter;
 pub mod message;
 pub mod player;
 pub mod queue;

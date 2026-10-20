@@ -9,6 +9,7 @@ use crate::theme::{extent, space};
 
 pub mod cards;
 pub mod chips;
+pub mod episode;
 pub mod hero;
 pub mod panel;
 pub mod queue;

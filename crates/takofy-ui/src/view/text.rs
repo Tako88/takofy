@@ -153,6 +153,16 @@ pub fn queue_artist() -> FontId {
     FontId::new(text::XXS, fonts::sans(Weight::Regular))
 }
 
+/// An episode row's title, at the reference's `--text-md` in 600.
+pub fn episode_title() -> FontId {
+    FontId::new(text::MD, fonts::sans(Weight::Semibold))
+}
+
+/// The description under an episode's title: body text, one step under the name.
+pub fn episode_text() -> FontId {
+    FontId::new(text::SM, fonts::sans(Weight::Regular))
+}
+
 /// A caps label laid out for the painter: the mono tier the reference tracks
 /// apart. The panel's head and the queue's caption are the same recipe.
 pub fn caption(ui: &egui::Ui, label: &str, tokens: &Tokens) -> std::sync::Arc<egui::Galley> {
@@ -176,6 +186,30 @@ pub fn track_secondary() -> FontId {
 /// quantity rather than as prose.
 pub fn track_mono(size: f32) -> FontId {
     FontId::new(size, fonts::mono(MonoWeight::Regular))
+}
+
+/// A page head's title: the reference's `--text-2xl` at 800, tracked tight.
+///
+/// Only the library root draws one today; the hero's title is its own recipe
+/// because its size follows the window.
+pub fn page_title() -> FontId {
+    FontId::new(text::XXL, fonts::sans(Weight::Black))
+}
+
+/// The page head's note, laid out for the painter: a small mono line tracked
+/// wide and upper-cased, the reference's `.page-head__note`.
+pub fn page_note_galley(
+    ui: &egui::Ui,
+    label: &str,
+    tokens: &Tokens,
+) -> std::sync::Arc<egui::Galley> {
+    spaced(
+        ui,
+        &label.to_uppercase(),
+        FontId::new(text::XXS, fonts::mono(MonoWeight::Medium)),
+        tokens.palette.text_subtle,
+        tracking_pts(text::XXS, tracking::WIDE),
+    )
 }
 
 /// The sign-in card's heading: the largest type in the window after the hero's,

@@ -649,6 +649,35 @@ mod tests {
     }
 
     #[test]
+    fn start_over_an_episode_entry_names_it_in_now_playing() {
+        let episode = takofy_model::Episode {
+            uri: "spotify:episode:abc".to_owned(),
+            title: "210: A dry labyrinth".to_owned(),
+            show: "Lateral with Tom Scott".to_owned(),
+            show_uri: Some("spotify:show:lateral".to_owned()),
+            description: None,
+            published: None,
+            duration_ms: Some(2_773_461),
+            cover: None,
+            named: true,
+        };
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+
+        let command = queue.start(&[episode.entry()], 0, &mut transport);
+
+        assert_eq!(
+            command,
+            Some(crate::message::Command::Play {
+                uri: "spotify:episode:abc".to_owned()
+            })
+        );
+        let now = transport.now_playing.expect("the episode is playing");
+        assert_eq!(now.title, "210: A dry labyrinth");
+        assert_eq!(now.artists, "Lateral with Tom Scott");
+    }
+
+    #[test]
     fn goto_passes_the_entrys_cover_into_now_playing() {
         let cover =
             takofy_model::CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover url");

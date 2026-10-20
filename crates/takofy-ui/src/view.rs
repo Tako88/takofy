@@ -9,6 +9,7 @@ mod artist;
 mod artist_hero;
 pub mod card;
 pub mod controls;
+mod episode_row;
 mod filter_row;
 mod hero;
 pub mod now_playing;
@@ -19,6 +20,7 @@ mod queue_row;
 mod release_block;
 mod section;
 mod shell;
+mod show;
 pub mod sidebar;
 mod sign_in;
 #[cfg(test)]

@@ -54,10 +54,20 @@ pub enum Control {
     DiscographyFilter,
     /// A release block's play tile. The block's rows are already loaded state.
     ReleasePlay,
+    /// An episode row's play toggle. The show page's episodes are loaded state.
+    EpisodeToggle,
     /// A release block's like and more. Saving needs the Web API and the menu is
     /// a later phase.
     ReleaseLike,
     ReleaseMore,
+    /// The library root's filter row, one control per chip. All, Playlists and
+    /// Podcasts exist; Artists and Albums are the reference's chips with no data
+    /// yet, drawn dim and inert like the sidebar's waiting filters.
+    LibraryFilterAll,
+    LibraryFilterPlaylists,
+    LibraryFilterArtists,
+    LibraryFilterAlbums,
+    LibraryFilterPodcasts,
     /// A card's own play control in the library grid. The card selects its playlist;
     /// playing from the card needs the tracks loaded first, which no path does yet.
     CardPlay,
@@ -65,7 +75,7 @@ pub enum Control {
 }
 
 impl Control {
-    pub const ALL: [Self; 43] = [
+    pub const ALL: [Self; 49] = [
         Self::NavHome,
         Self::NavSearch,
         Self::LibraryCreate,
@@ -104,7 +114,13 @@ impl Control {
         Self::HeroPlay,
         Self::Follow,
         Self::DiscographyFilter,
+        Self::LibraryFilterAll,
+        Self::LibraryFilterPlaylists,
+        Self::LibraryFilterArtists,
+        Self::LibraryFilterAlbums,
+        Self::LibraryFilterPodcasts,
         Self::ReleasePlay,
+        Self::EpisodeToggle,
         Self::ReleaseLike,
         Self::ReleaseMore,
         Self::CardPlay,
@@ -188,7 +204,16 @@ pub fn availability(control: Control) -> Availability {
         // with nothing behind it yet.
         Control::Follow => Availability::Ready,
         Control::DiscographyFilter => Availability::Ready,
+
+        // The library root's filter row: All, Playlists and Podcasts are live,
+        // Artists and Albums are the reference's chips with no data yet.
+        Control::LibraryFilterAll => Availability::Ready, // #3
+        Control::LibraryFilterPlaylists => Availability::Ready, // #3
+        Control::LibraryFilterPodcasts => Availability::Ready, // #3
+        Control::LibraryFilterArtists => Availability::Waiting, // #3
+        Control::LibraryFilterAlbums => Availability::Waiting, // #3
         Control::ReleasePlay => Availability::Ready,
+        Control::EpisodeToggle => Availability::Ready,
         Control::ReleaseLike => Availability::Waiting,
         Control::ReleaseMore => Availability::Waiting,
 
@@ -218,8 +243,12 @@ mod tests {
                     | Control::Follow
                     | Control::DiscographyFilter
                     | Control::ReleasePlay
+                    | Control::EpisodeToggle
                     | Control::NowPlayingQueueTab
                     | Control::Authorize
+                    | Control::LibraryFilterAll
+                    | Control::LibraryFilterPlaylists
+                    | Control::LibraryFilterPodcasts
             );
             assert_eq!(
                 availability(control) == Availability::Ready,
@@ -242,6 +271,16 @@ mod tests {
                 "the library's filter row still has no view: {control:?}"
             );
         }
+
+        // The root's Artists and Albums are the reference's chips with no data
+        // yet, so they are Waiting just like the sidebar's filters.
+        for control in [Control::LibraryFilterArtists, Control::LibraryFilterAlbums] {
+            assert_eq!(
+                availability(control),
+                Availability::Waiting,
+                "the root's {control:?} has no view yet"
+            );
+        }
     }
 
     #[test]
@@ -251,6 +290,6 @@ mod tests {
             assert!(!seen.contains(&control), "{control:?} is listed twice");
             seen.push(control);
         }
-        assert_eq!(seen.len(), 43);
+        assert_eq!(seen.len(), 49);
     }
 }

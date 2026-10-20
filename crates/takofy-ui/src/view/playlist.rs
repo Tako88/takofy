@@ -11,9 +11,13 @@ use egui::{Rect, Sense, Ui, vec2};
 use takofy_model::PlaylistEntry;
 
 use crate::cover::{Art, Cover};
-use crate::format::{added_label, byline, format_position, plain_description, total_duration_ms};
+use crate::format::{
+    added_label, byline, format_position, library_note, plain_description, root_empty_label,
+    root_filter_label, total_duration_ms,
+};
 use crate::layout::{Table, cards, table as table_layout};
 use crate::library::{BandCover, Library, Load, band_cover};
+use crate::library_filter::{self, Item, RootKind};
 use crate::message::{Command, Failure};
 use crate::player::Transport;
 use crate::queue::Queue;
@@ -21,6 +25,7 @@ use crate::route::Page;
 use crate::theme::{Tokens, extent, space};
 
 use super::card;
+use super::filter_row;
 use super::hero;
 use super::text as recipe;
 use super::track_list::{head, list_rect};
@@ -58,8 +63,9 @@ pub fn tracks_view(
                 ui, table, library, transport, queue, art, now, tokens,
             );
         }
-        // A page with no body yet draws none, rather than pretending to be one.
-        MainPage::Other => return None,
+        MainPage::Show => {
+            return super::show::show_view(ui, library, transport, queue, art, now, now_ms, tokens);
+        }
         MainPage::Playlist => {}
     }
 
@@ -223,8 +229,8 @@ enum MainPage {
     Album,
     /// An artist's hero, Popular list and Discography.
     Artist,
-    /// A show page, which has no body yet.
-    Other,
+    /// A show's band and its episodes.
+    Show,
 }
 
 /// Reads the pane's dispatch from the current page.
@@ -234,49 +240,89 @@ fn main_page(library: &Library) -> MainPage {
         Some(Page::Playlist(_)) => MainPage::Playlist,
         Some(Page::Album(_)) => MainPage::Album,
         Some(Page::Artist(_)) => MainPage::Artist,
-        Some(Page::Show(_)) => MainPage::Other,
+        Some(Page::Show(_)) => MainPage::Show,
     }
 }
 
-/// What the root's main view shows: the grid of playlists, or the state of the
-/// load that fetches them.
+/// What the root's main view shows: the cards for the chosen chip, or the state
+/// of the load that fetches them.
 ///
-/// The main view draws the grid whenever the page is the root, whatever the
+/// The main view draws the cards whenever the page is the root, whatever the
 /// tracks hold: after a trip to the root a ready playlist is kept for the page
 /// Back returns to, and nothing draws it. It is dropped or reloaded when a
-/// playlist page is next entered. The grid reads only the playlists' load, so
-/// it never competes with a tracklist for a selection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// playlist page is next entered. The root reads both loads, because its cards
+/// are playlists and shows, and it never competes with a tracklist for a
+/// selection.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IdleView<'a> {
     /// The playlists are in flight, or have not been asked for yet.
     Loading,
-    /// The fetch failed; the failure is what the retry needs.
+    /// The playlist fetch failed; the failure is what the retry needs.
     Failed(Failure),
-    /// The fetch succeeded and the library holds no playlists.
-    Empty,
-    /// The fetch succeeded and the library holds these playlists.
-    Grid(&'a [PlaylistEntry]),
+    /// The chosen chip has nothing to show.
+    Empty(RootKind),
+    /// These cards, and the state of the followed list under them.
+    Grid {
+        items: Vec<Item<'a>>,
+        followed: FollowedNote,
+    },
 }
 
-/// Reads the idle view from the playlists' load.
+/// What the root says about the followed list under its cards.
+///
+/// The list is a second read with its own failure: a failed playlist fetch is
+/// the page's failure, while a failed show fetch only costs the show cards and
+/// gets one muted line and its own Retry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FollowedNote {
+    /// The list arrived, or the chosen chip does not draw shows.
+    None,
+    /// The list is in flight; the cards will appear when it lands.
+    Loading,
+    /// The list failed; the note carries the failure for its copy.
+    Failed(Failure),
+}
+
+/// Reads the root view from both loads and the chosen chip.
 ///
 /// The two unstaged states are one `Loading`: a list nobody has asked for yet
 /// and a list being fetched both have nothing to draw, and the reference gives
-/// both the same treatment.
+/// both the same treatment. A failed playlist load wins over every chip: with no
+/// session there is nothing to narrow.
 pub fn idle_view(library: &Library) -> IdleView<'_> {
     match &library.playlists {
         Load::Idle | Load::Loading => IdleView::Loading,
         Load::Failed(failure) => IdleView::Failed(*failure),
-        Load::Ready(playlists) if playlists.is_empty() => IdleView::Empty,
-        Load::Ready(playlists) => IdleView::Grid(playlists),
+        Load::Ready(playlists) => {
+            let chosen = library.root_filter.chosen();
+            let shows = match &library.followed {
+                Load::Ready(shows) => shows.as_slice(),
+                Load::Idle | Load::Loading | Load::Failed(_) => &[],
+            };
+            let items = library_filter::items(chosen, playlists, shows);
+            let followed = match chosen {
+                RootKind::All | RootKind::Podcasts => match &library.followed {
+                    Load::Loading => FollowedNote::Loading,
+                    Load::Failed(failure) => FollowedNote::Failed(*failure),
+                    Load::Idle | Load::Ready(_) => FollowedNote::None,
+                },
+                RootKind::Playlists | RootKind::Artists | RootKind::Albums => FollowedNote::None,
+            };
+            if items.is_empty() && followed == FollowedNote::None {
+                IdleView::Empty(chosen)
+            } else {
+                IdleView::Grid { items, followed }
+            }
+        }
     }
 }
 
 /// Draws the idle main view and returns the command its controls asked for.
 ///
-/// This is the whole idle-grid wiring in one place: the root page calls it and
-/// nothing else does. The copy and the retry are the sidebar's, reusing
-/// `library.reload()` so the two library surfaces recover the same way.
+/// This is the whole root wiring in one place: the page head, the chip row and
+/// the cards scroll as one column, the way the reference's view does. A pressed
+/// chip is applied after the scroll area, because the matches inside borrow the
+/// cards it has to change.
 fn idle(
     ui: &mut Ui,
     library: &mut Library,
@@ -284,83 +330,184 @@ fn idle(
     now: Instant,
     tokens: &Tokens,
 ) -> Option<Command> {
-    match idle_view(library) {
-        IdleView::Loading => {
-            // The sidebar's loading copy, so both library surfaces say the same
-            // thing while the list is fetched.
-            ui.label(recipe::muted("Loading your playlists…", tokens));
-            None
-        }
-        IdleView::Empty => {
-            ui.label(recipe::muted("No playlists yet.", tokens));
-            None
-        }
-        IdleView::Failed(failure) => {
-            ui.label(recipe::muted(
-                crate::signin::failure_message(failure),
-                tokens,
-            ));
-            // The sidebar retries a failed playlist load with `reload`; the
-            // grid offers the same recovery behind a control.
-            if ui.button("Retry").clicked() {
-                return Some(library.reload());
-            }
-            None
-        }
-        IdleView::Grid(entries) => {
-            // The borrow ends with this copy, so the click below can select
-            // through the library. The sidebar copies its list for the same
-            // reason.
-            let entries = entries.to_vec();
-            grid(ui, &entries, library, art, now, tokens)
-        }
-    }
-}
+    let mut choose: Option<RootKind> = None;
+    let mut select: Option<String> = None;
+    let mut open: Option<String> = None;
+    let mut retry_playlists = false;
+    let mut retry_followed = false;
 
-/// The grid of playlist cards that fills the idle main view.
-///
-/// Every value is a token or a measure the painter owns: the minimum card
-/// width and the gap are tokens, and the height beyond the square art is what
-/// `card::extra_height` reports. The grid loads nothing on its own — the one
-/// click asks for tracks, through `library.select`.
-fn grid(
-    ui: &mut Ui,
-    entries: &[PlaylistEntry],
-    library: &mut Library,
-    art: &mut Art,
-    now: Instant,
-    tokens: &Tokens,
-) -> Option<Command> {
-    let mut picked: Option<String> = None;
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            let solved = card_grid(ui);
-            let list = grid_rect(ui, &solved, entries.len());
-            // The whole grid is reserved at once, so the scrollbar is right, and
-            // only the cards the viewport can show are laid out and given
-            // interaction.
-            ui.allocate_rect(list, Sense::hover());
-            let visible = ui.clip_rect();
-
-            for (index, entry) in entries.iter().enumerate() {
-                let rect = solved.card_rect(index);
-                if !visible.intersects(rect) {
-                    continue;
-                }
-                let card = card::Card {
-                    uri: &entry.uri,
-                    name: &entry.name,
-                    kind: "Playlist",
-                    cover: art.look(entry.cover.as_ref(), now),
+            super::inner(ui, |ui| {
+                let view = idle_view(library);
+                let count = match &view {
+                    IdleView::Grid { items, .. } => items.len(),
+                    IdleView::Loading | IdleView::Failed(_) | IdleView::Empty(_) => 0,
                 };
-                if card::show(ui, rect, &card, tokens) {
-                    picked = Some(entry.uri.clone());
+                let note = if count > 0 {
+                    library_note(count)
+                } else {
+                    String::new()
+                };
+                page_head(ui, &note, tokens);
+
+                let picked = filter_row::show_with(
+                    ui,
+                    tokens,
+                    &library_filter::ROW,
+                    library.root_filter.chosen(),
+                    RootKind::control,
+                    root_filter_label,
+                );
+                choose = picked;
+
+                match view {
+                    IdleView::Loading => {
+                        // The sidebar's loading copy, so both library surfaces say
+                        // the same thing while the list is fetched.
+                        ui.label(recipe::muted("Loading your playlists…", tokens));
+                    }
+                    IdleView::Failed(failure) => {
+                        ui.label(recipe::muted(
+                            crate::signin::failure_message(failure),
+                            tokens,
+                        ));
+                        // The sidebar retries a failed playlist load with
+                        // `reload`; the root offers the same recovery here.
+                        if ui.button("Retry").clicked() {
+                            retry_playlists = true;
+                        }
+                    }
+                    IdleView::Empty(kind) => {
+                        ui.label(recipe::muted(root_empty_label(kind), tokens));
+                    }
+                    IdleView::Grid { items, followed } => {
+                        grid(ui, &items, art, now, tokens, &mut select, &mut open);
+                        followed_note(ui, followed, tokens, &mut retry_followed);
+                    }
                 }
-            }
+            });
         });
 
-    picked.and_then(|uri| select_playlist(library, &uri))
+    if let Some(kind) = choose {
+        library.root_filter.choose(kind);
+    }
+    if retry_playlists {
+        return Some(library.reload());
+    }
+    if retry_followed {
+        return Some(library.reload_followed());
+    }
+    if let Some(uri) = select {
+        return select_playlist(library, &uri);
+    }
+    if let Some(uri) = open {
+        return library.open(Page::Show(uri));
+    }
+    None
+}
+
+/// The page head: the title, the note at the far end and the rule under both.
+///
+/// The reference sets the title at `--text-2xl` in 800 and the note as a small
+/// tracked mono line sitting on the title's baseline, then closes the head with
+/// a hairline and one `S5` of air before the chips.
+fn page_head(ui: &mut Ui, note: &str, tokens: &Tokens) {
+    let width = ui.available_width();
+    let font = recipe::page_title();
+    let title_h = ui.ctx().fonts_mut(|fonts| fonts.row_height(&font));
+    let height = space::S3 + title_h + space::S4;
+    let (rect, _) = ui.allocate_exact_size(vec2(width, height), egui::Sense::hover());
+
+    let top = rect.top() + space::S3;
+    let title = recipe::line(
+        ui,
+        "Your Library",
+        font,
+        tokens.palette.text,
+        recipe::tracking_pts(crate::theme::text::XXL, crate::theme::tracking::TIGHT),
+        width,
+    );
+    ui.painter().galley(
+        egui::Pos2::new(rect.left(), top),
+        title,
+        tokens.palette.text,
+    );
+
+    if !note.is_empty() {
+        let line = recipe::spaced(
+            ui,
+            &note.to_uppercase(),
+            egui::FontId::new(
+                crate::theme::text::XXS,
+                crate::theme::fonts::mono(crate::theme::MonoWeight::Medium),
+            ),
+            tokens.palette.text_subtle,
+            recipe::tracking_pts(crate::theme::text::XXS, crate::theme::tracking::WIDE),
+        );
+        ui.painter().galley(
+            egui::Pos2::new(rect.right() - line.size().x, top + title_h - line.size().y),
+            line,
+            tokens.palette.text_subtle,
+        );
+    }
+
+    ui.painter().rect_filled(
+        Rect::from_min_size(
+            egui::Pos2::new(rect.left(), rect.bottom() - crate::theme::stroke::HAIRLINE),
+            vec2(rect.width(), crate::theme::stroke::HAIRLINE),
+        ),
+        0.0,
+        tokens.palette.border,
+    );
+    ui.add_space(space::S5);
+}
+
+/// The grid of cards for the chosen chip.
+///
+/// Every value is a token or a measure the painter owns: the minimum card
+/// width and the gap are tokens, and the height beyond the square art is what
+/// `card::extra_height` reports. The grid loads nothing on its own — a playlist
+/// card selects its playlist, a show card opens its page.
+fn grid(
+    ui: &mut Ui,
+    items: &[Item<'_>],
+    art: &mut Art,
+    now: Instant,
+    tokens: &Tokens,
+    select: &mut Option<String>,
+    open: &mut Option<String>,
+) {
+    let solved = card_grid(ui);
+    let list = grid_rect(ui, &solved, items.len());
+    // The whole grid is reserved at once, so the scrollbar is right, and only the
+    // cards the viewport can show are laid out and given interaction.
+    ui.allocate_rect(list, egui::Sense::hover());
+    let visible = ui.clip_rect();
+
+    for (index, item) in items.iter().enumerate() {
+        let rect = solved.card_rect(index);
+        if !visible.intersects(rect) {
+            continue;
+        }
+        let (uri, name, kind, cover) = match item {
+            Item::Playlist(entry) => (&entry.uri, &entry.name, "Playlist", entry.cover.as_ref()),
+            Item::Show(show) => (&show.uri, &show.name, "Podcast", show.cover.as_ref()),
+        };
+        let card = card::Card {
+            uri,
+            name,
+            kind,
+            cover: art.look(cover, now),
+        };
+        if card::show(ui, rect, &card, tokens) {
+            match item {
+                Item::Playlist(_) => *select = Some(uri.clone()),
+                Item::Show(_) => *open = Some(uri.clone()),
+            }
+        }
+    }
 }
 
 /// The solved card grid for the current width and the tokens the reference
@@ -383,6 +530,30 @@ fn grid_rect(ui: &mut Ui, grid: &cards::Grid, count: usize) -> Rect {
         rows as f32 * grid.card_rect(0).height() + (rows - 1) as f32 * space::S3
     };
     Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), height))
+}
+
+/// The note under the cards while the followed list is loading or failed.
+///
+/// The copy and the Retry are the same pair the playlists' failure draws, in the
+/// same order: the words first, then the control that asks again.
+fn followed_note(ui: &mut Ui, note: FollowedNote, tokens: &Tokens, retry: &mut bool) {
+    match note {
+        FollowedNote::Loading => {
+            ui.add_space(space::S3);
+            ui.label(recipe::muted("Loading your shows…", tokens));
+        }
+        FollowedNote::Failed(failure) => {
+            ui.add_space(space::S3);
+            ui.label(recipe::muted(
+                crate::signin::failure_message(failure),
+                tokens,
+            ));
+            if ui.button("Retry").clicked() {
+                *retry = true;
+            }
+        }
+        FollowedNote::None => {}
+    }
 }
 
 /// Starts a playlist's load from an idle-grid card click.
@@ -730,6 +901,16 @@ mod tests {
         }
     }
 
+    fn show(uri: &str, name: &str) -> takofy_model::FollowedShow {
+        takofy_model::FollowedShow {
+            uri: uri.to_owned(),
+            name: name.to_owned(),
+            named: true,
+            publisher: None,
+            cover: None,
+        }
+    }
+
     fn cover_url(tail: &str) -> CoverUrl {
         CoverUrl::from_wire(&format!("https://i.scdn.co/image/{tail}")).expect("a cover url")
     }
@@ -786,11 +967,21 @@ mod tests {
     /// way the view solves it: the leading space, then the grid at the current
     /// width. Nothing here is a coordinate copied out of the view.
     fn card_rect_for(ctx: &Context, index: usize) -> Rect {
+        let tokens = Tokens::DARK;
         let mut found = None;
         run(ctx, input(Vec::new()), |ui| {
             ui.add_space(space::S3);
             egui::ScrollArea::vertical().show(ui, |ui| {
                 crate::view::inner(ui, |ui| {
+                    page_head(ui, &library_note(2), &tokens);
+                    let _ = filter_row::show_with(
+                        ui,
+                        &tokens,
+                        &library_filter::ROW,
+                        RootKind::All,
+                        RootKind::control,
+                        root_filter_label,
+                    );
                     let solved = card_grid(ui);
                     found = Some(solved.card_rect(index));
                 });
@@ -1862,20 +2053,105 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         let mut loading = Library::default();
         loading.apply(&Update::SignedIn);
         assert_eq!(idle_view(&loading), IdleView::Loading);
+    }
 
-        let mut failed = Library::default();
-        failed.apply(&Update::PlaylistFailed(Failure::Load));
-        assert_eq!(idle_view(&failed), IdleView::Failed(Failure::Load));
+    #[test]
+    fn idle_view_failed_playlists_win_for_every_chip() {
+        for kind in library_filter::ROW {
+            let mut library = library_idle(Vec::new());
+            library.root_filter.choose(kind);
+            library.apply(&Update::PlaylistFailed(Failure::Load));
+            assert_eq!(
+                idle_view(&library),
+                IdleView::Failed(Failure::Load),
+                "{kind:?} must still report the page's failure"
+            );
+        }
+    }
 
-        assert_eq!(idle_view(&library_idle(Vec::new())), IdleView::Empty);
-
-        let ready = library_idle(vec![playlist("a", "A"), playlist("b", "B")]);
-        let IdleView::Grid(entries) = idle_view(&ready) else {
-            panic!("ready playlists are a grid: {:?}", idle_view(&ready));
+    #[test]
+    fn idle_view_all_shows_playlists_and_shows() {
+        let mut library = library_idle(vec![playlist("a", "A")]);
+        library.apply(&Update::FollowedShows(vec![show("s", "S")]));
+        let IdleView::Grid { items, followed } = idle_view(&library) else {
+            panic!("a ready root is a grid: {:?}", idle_view(&library));
         };
-        assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].uri, "a");
-        assert_eq!(entries[1].uri, "b");
+        assert_eq!(items.len(), 2, "playlists first, then shows");
+        assert!(matches!(items[0], Item::Playlist(entry) if entry.uri == "a"));
+        assert!(matches!(&items[1], Item::Show(entry) if entry.uri == "s"));
+        assert_eq!(followed, FollowedNote::None);
+    }
+
+    #[test]
+    fn idle_view_all_with_no_playlists_waits_on_the_followed_list() {
+        let mut library = library_idle(Vec::new());
+        let _ = library.followed_request();
+        let IdleView::Grid { items, followed } = idle_view(&library) else {
+            panic!("the shows are still coming: {:?}", idle_view(&library));
+        };
+        assert!(items.is_empty());
+        assert_eq!(followed, FollowedNote::Loading);
+
+        library.apply(&Update::FollowedShowsFailed(Failure::Followed));
+        let IdleView::Grid { followed, .. } = idle_view(&library) else {
+            panic!("a failed list is its own note: {:?}", idle_view(&library));
+        };
+        assert_eq!(followed, FollowedNote::Failed(Failure::Followed));
+
+        let mut settled = library_idle(Vec::new());
+        settled.apply(&Update::FollowedShows(Vec::new()));
+        assert_eq!(idle_view(&settled), IdleView::Empty(RootKind::All));
+    }
+
+    #[test]
+    fn idle_view_playlists_hides_shows_and_their_loading() {
+        let mut library = library_idle(vec![playlist("a", "A")]);
+        library.root_filter.choose(RootKind::Playlists);
+        // The followed list is in flight; the playlists chip does not wait on it.
+        let _ = library.followed_request();
+        let IdleView::Grid { items, followed } = idle_view(&library) else {
+            panic!("the playlists chip is a grid: {:?}", idle_view(&library));
+        };
+        assert_eq!(items.len(), 1);
+        assert_eq!(followed, FollowedNote::None);
+    }
+
+    #[test]
+    fn idle_view_podcasts_loading_failed_and_empty() {
+        let mut library = library_idle(vec![playlist("a", "A")]);
+        library.root_filter.choose(RootKind::Podcasts);
+
+        let _ = library.followed_request();
+        let IdleView::Grid { items, followed } = idle_view(&library) else {
+            panic!(
+                "a loading followed list is a grid: {:?}",
+                idle_view(&library)
+            );
+        };
+        assert!(
+            items.is_empty(),
+            "the playlists chip is not the podcasts one"
+        );
+        assert_eq!(followed, FollowedNote::Loading);
+
+        library.apply(&Update::FollowedShowsFailed(Failure::Load));
+        let IdleView::Grid { items, followed } = idle_view(&library) else {
+            panic!(
+                "a failed followed list is a grid: {:?}",
+                idle_view(&library)
+            );
+        };
+        assert!(items.is_empty());
+        assert_eq!(followed, FollowedNote::Failed(Failure::Load));
+
+        let mut empty = library_idle(vec![playlist("a", "A")]);
+        empty.root_filter.choose(RootKind::Podcasts);
+        empty.apply(&Update::FollowedShows(Vec::new()));
+        assert_eq!(
+            idle_view(&empty),
+            IdleView::Empty(RootKind::Podcasts),
+            "nothing to show is the chip's own empty line"
+        );
     }
 
     #[test]
@@ -2040,14 +2316,14 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         });
         library.to_playlists();
 
-        let IdleView::Grid(entries) = idle_view(&library) else {
+        let IdleView::Grid { items, .. } = idle_view(&library) else {
             panic!(
                 "to_playlists must return to the grid: {:?}",
                 idle_view(&library)
             );
         };
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].uri, "a");
+        assert_eq!(items.len(), 1);
+        assert!(matches!(&items[0], Item::Playlist(entry) if entry.uri == "a"));
         assert!(
             matches!(library.tracks, Load::Ready(_)),
             "the grid draws while the tracks stay ready"
@@ -3059,6 +3335,384 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             eyebrow >= band_top,
             "the eyebrow's top {eyebrow} is above the band's top {band_top}: the \
              tallest content does not fit the band's height"
+        );
+    }
+}
+
+#[cfg(test)]
+mod dispatch_tests {
+    use super::*;
+
+    #[test]
+    fn main_page_maps_show_to_the_show_view() {
+        let mut library = Library::default();
+        assert_eq!(main_page(&library), MainPage::Root);
+        let _ = library.open(Page::Playlist("spotify:playlist:a".to_owned()));
+        assert_eq!(main_page(&library), MainPage::Playlist);
+        let _ = library.open(Page::Album("spotify:album:a".to_owned()));
+        assert_eq!(main_page(&library), MainPage::Album);
+        let _ = library.open(Page::Artist("spotify:artist:a".to_owned()));
+        assert_eq!(main_page(&library), MainPage::Artist);
+        let _ = library.open(Page::Show("spotify:show:a".to_owned()));
+        assert_eq!(
+            main_page(&library),
+            MainPage::Show,
+            "a show page has its own body now"
+        );
+    }
+}
+
+#[cfg(test)]
+mod root_tests {
+    use std::time::Instant;
+
+    use egui::{Context, Event, Pos2, RawInput, Rect, Vec2};
+    use takofy_model::{CoverUrl, Episode, FollowedShow, PlaylistEntry};
+
+    use super::*;
+    use crate::message::{Failure, Update};
+    use crate::theme::{extent, fonts, style};
+    use crate::view::test_support::click_events;
+
+    const PROBE: Vec2 = Vec2::new(900.0, 800.0);
+    const NOW_MS: u64 = 1_761_134_400_000;
+
+    fn context() -> Context {
+        let ctx = Context::default();
+        ctx.set_fonts(fonts::definitions());
+        ctx.set_global_style(style(&Tokens::DARK));
+        ctx
+    }
+
+    fn input(events: Vec<Event>) -> RawInput {
+        RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, PROBE)),
+            events,
+            ..Default::default()
+        }
+    }
+
+    fn run(
+        ctx: &Context,
+        events: Vec<Event>,
+        library: &mut Library,
+        art: &mut Art,
+    ) -> egui::FullOutput {
+        let tokens = Tokens::DARK;
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut output = ctx.run_ui(input(events), |ui| {
+            let _ = tracks_view(
+                ui,
+                Table::Full,
+                library,
+                &mut transport,
+                &mut queue,
+                art,
+                Instant::now(),
+                NOW_MS,
+                &tokens,
+            );
+        });
+        output.textures_delta.clear();
+        output
+    }
+
+    fn frame(ctx: &Context, library: &mut Library, art: &mut Art) -> egui::FullOutput {
+        run(ctx, Vec::new(), library, art)
+    }
+
+    fn drawn_texts(output: &egui::FullOutput) -> Vec<&str> {
+        output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Text(text) => Some(text.galley.text()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn text_rect(output: &egui::FullOutput, label: &str) -> Option<Rect> {
+        output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Text(text) if text.galley.text() == label => {
+                    Some(Rect::from_min_size(text.pos, text.galley.size()))
+                }
+                _ => None,
+            })
+    }
+
+    fn playlist(uri: &str, name: &str) -> PlaylistEntry {
+        PlaylistEntry {
+            uri: uri.to_owned(),
+            name: name.to_owned(),
+            named: true,
+            cover: None,
+            description: None,
+            owner: None,
+        }
+    }
+
+    fn show(uri: &str, name: &str) -> FollowedShow {
+        FollowedShow {
+            uri: uri.to_owned(),
+            name: name.to_owned(),
+            named: true,
+            publisher: None,
+            cover: None,
+        }
+    }
+
+    fn library(playlists: Vec<PlaylistEntry>, shows: Vec<FollowedShow>) -> Library {
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(playlists));
+        library.apply(&Update::FollowedShows(shows));
+        library
+    }
+
+    fn click(ctx: &Context, pos: Pos2, library: &mut Library, art: &mut Art) -> Option<Command> {
+        let tokens = Tokens::DARK;
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut command = None;
+        for event in click_events(pos) {
+            let command = &mut command;
+            let library = &mut *library;
+            let output = ctx.run_ui(input(vec![event]), |ui| {
+                if let Some(next) = tracks_view(
+                    ui,
+                    Table::Full,
+                    library,
+                    &mut transport,
+                    &mut queue,
+                    art,
+                    Instant::now(),
+                    NOW_MS,
+                    &tokens,
+                ) {
+                    *command = Some(next);
+                }
+            });
+            let mut output = output;
+            output.textures_delta.clear();
+        }
+        command
+    }
+
+    /// The rect a chip's label was painted into, plus its own padding.
+    fn chip_rect(output: &egui::FullOutput, label: &str) -> Rect {
+        let text = text_rect(output, &label.to_uppercase()).expect("the chip is drawn");
+        text.expand2(Vec2::new(extent::CHIP_PAD_X, extent::CHIP_PAD_Y))
+    }
+
+    /// The rect the `index`-th card is drawn into, solved the way the view
+    /// solves it: the head, the chip row, then the grid at the probe's width.
+    fn card_rect_for(ctx: &Context, index: usize, count: usize) -> Rect {
+        let tokens = Tokens::DARK;
+        let mut found = None;
+        let mut output = ctx.run_ui(input(Vec::new()), |ui| {
+            ui.add_space(space::S3);
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                crate::view::inner(ui, |ui| {
+                    page_head(ui, &library_note(count), &tokens);
+                    let _ = filter_row::show_with(
+                        ui,
+                        &tokens,
+                        &library_filter::ROW,
+                        RootKind::All,
+                        RootKind::control,
+                        root_filter_label,
+                    );
+                    let solved = card_grid(ui);
+                    found = Some(solved.card_rect(index));
+                });
+            });
+        });
+        output.textures_delta.clear();
+        found.expect("the root lays out")
+    }
+
+    #[test]
+    fn a_show_card_click_opens_the_show_and_returns_load_show() {
+        let ctx = context();
+        let mut library = library(vec![playlist("a", "A")], vec![show("s", "Show One")]);
+        let mut art = Art::default();
+        let _ = frame(&ctx, &mut library, &mut art);
+
+        let card = card_rect_for(&ctx, 1, 2);
+        let command = click(&ctx, card.center(), &mut library, &mut art);
+
+        assert_eq!(
+            command,
+            Some(Command::LoadShow {
+                show: "s".to_owned()
+            }),
+            "a show card opens its page"
+        );
+        assert_eq!(library.page(), Some(&Page::Show("s".to_owned())));
+    }
+
+    #[test]
+    fn a_playlist_card_click_still_selects() {
+        let ctx = context();
+        let mut library = library(vec![playlist("a", "A")], vec![show("s", "Show One")]);
+        let mut art = Art::default();
+        let _ = frame(&ctx, &mut library, &mut art);
+
+        let card = card_rect_for(&ctx, 0, 2);
+        let command = click(&ctx, card.center(), &mut library, &mut art);
+
+        assert_eq!(
+            command,
+            Some(Command::LoadTracks {
+                playlist: "a".to_owned()
+            })
+        );
+    }
+
+    #[test]
+    fn choosing_podcasts_draws_only_show_cards() {
+        let ctx = context();
+        let mut library = library(vec![playlist("a", "List One")], vec![show("s", "Show One")]);
+        let mut art = Art::default();
+
+        let before = frame(&ctx, &mut library, &mut art);
+        let chip = chip_rect(&before, "Podcasts");
+        let _ = click(&ctx, chip.center(), &mut library, &mut art);
+
+        let after = frame(&ctx, &mut library, &mut art);
+        let texts = drawn_texts(&after);
+        assert!(texts.contains(&"Show One"), "{texts:?}");
+        assert!(
+            !texts.contains(&"List One"),
+            "the playlists card must be gone: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn a_waiting_chip_click_changes_nothing() {
+        let ctx = context();
+        let mut library = library(vec![playlist("a", "A")], vec![]);
+        let mut art = Art::default();
+
+        let before = frame(&ctx, &mut library, &mut art);
+        let chip = chip_rect(&before, "Artists");
+        let _ = click(&ctx, chip.center(), &mut library, &mut art);
+
+        assert_eq!(
+            library.root_filter.chosen(),
+            RootKind::All,
+            "a chip with no data must stay inert"
+        );
+    }
+
+    #[test]
+    fn the_followed_retry_returns_load_followed_shows() {
+        let ctx = context();
+        let mut library = library(vec![playlist("a", "A")], vec![]);
+        library.apply(&Update::FollowedShowsFailed(Failure::Load));
+        let mut art = Art::default();
+
+        let before = frame(&ctx, &mut library, &mut art);
+        let retry = text_rect(&before, "Retry").expect("the followed note's retry");
+        let command = click(&ctx, retry.center(), &mut library, &mut art);
+
+        assert_eq!(command, Some(Command::LoadFollowedShows));
+    }
+
+    #[test]
+    fn the_page_head_note_counts_the_cards_shown() {
+        let ctx = context();
+        let mut library = library(
+            vec![playlist("a", "A"), playlist("b", "B")],
+            vec![show("s", "Show One")],
+        );
+        let mut art = Art::default();
+
+        let output = frame(&ctx, &mut library, &mut art);
+        let texts = drawn_texts(&output);
+        assert!(
+            texts.contains(&"3 SAVED"),
+            "the note counts every card: {texts:?}"
+        );
+
+        library.root_filter.choose(RootKind::Podcasts);
+        let output = frame(&ctx, &mut library, &mut art);
+        let texts = drawn_texts(&output);
+        assert!(
+            texts.contains(&"1 SAVED"),
+            "a narrowed chip counts only its own cards: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn only_visible_cards_ask_for_covers() {
+        let ctx = context();
+        let shows: Vec<FollowedShow> = (0..40)
+            .map(|index| FollowedShow {
+                uri: format!("spotify:show:{index}"),
+                name: format!("Show {index}"),
+                named: true,
+                publisher: None,
+                cover: Some(
+                    CoverUrl::from_wire(&format!("https://i.scdn.co/image/{index:0<40}"))
+                        .expect("a cover url"),
+                ),
+            })
+            .collect();
+        let mut library = library(vec![], shows);
+        let mut art = Art::default();
+        let now = Instant::now();
+
+        art.begin_frame();
+        let _ = frame(&ctx, &mut library, &mut art);
+        let requests = art.requests(now);
+        assert!(!requests.is_empty(), "the visible cards must be fetched");
+        assert!(
+            requests.len() < 20,
+            "only the cards the viewport shows are asked for: {}",
+            requests.len()
+        );
+    }
+
+    #[test]
+    fn a_playlist_row_for_an_episode_draws_its_title_not_its_uri() {
+        let ctx = context();
+        let episode = Episode {
+            uri: "spotify:episode:abc".to_owned(),
+            title: "210: A dry labyrinth".to_owned(),
+            show: "Lateral with Tom Scott".to_owned(),
+            show_uri: Some("spotify:show:lateral".to_owned()),
+            description: None,
+            published: None,
+            duration_ms: Some(2_773_461),
+            cover: None,
+            named: true,
+        };
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(vec![playlist("a", "A")]));
+        library.select("a");
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: vec![episode.entry()],
+            cover: None,
+        });
+        let mut art = Art::default();
+
+        let output = frame(&ctx, &mut library, &mut art);
+        let texts = drawn_texts(&output);
+        assert!(
+            texts.contains(&"210: A dry labyrinth"),
+            "the row names the episode: {texts:?}"
+        );
+        assert!(
+            !texts
+                .iter()
+                .any(|text| text.starts_with("spotify:episode:")),
+            "the raw URI must not be drawn: {texts:?}"
         );
     }
 }
