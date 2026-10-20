@@ -107,11 +107,10 @@ mod tests {
     }
 
     #[test]
-    fn only_the_chips_with_data_act() {
-        assert!(SidebarKind::Playlists.acts());
-        assert!(SidebarKind::Podcasts.acts());
-        assert!(!SidebarKind::Artists.acts());
-        assert!(!SidebarKind::Albums.acts());
+    fn every_chip_has_data_behind_it() {
+        for kind in ROW {
+            assert!(kind.acts(), "{kind:?}");
+        }
     }
 
     #[test]
@@ -122,29 +121,13 @@ mod tests {
     }
 
     #[test]
-    fn a_waiting_chip_cannot_take_the_choice_back() {
+    fn a_pressed_chip_can_be_replaced_by_any_other() {
         let mut filter = SidebarFilter::default();
         assert!(filter.choose(SidebarKind::Podcasts));
 
         for kind in [SidebarKind::Artists, SidebarKind::Albums] {
-            assert!(!filter.choose(kind), "{kind:?}");
-            assert_eq!(filter.chosen(), SidebarKind::Podcasts, "{kind:?}");
-        }
-    }
-
-    #[test]
-    fn choosing_a_waiting_chip_changes_nothing() {
-        for kind in [SidebarKind::Artists, SidebarKind::Albums] {
-            let mut filter = SidebarFilter::default();
-            assert!(
-                !filter.choose(kind),
-                "a waiting chip reports that it did not act"
-            );
-            assert_eq!(
-                filter.chosen(),
-                SidebarKind::Playlists,
-                "and leaves the choice"
-            );
+            assert!(filter.choose(kind), "{kind:?}");
+            assert_eq!(filter.chosen(), kind, "{kind:?}");
         }
     }
 }

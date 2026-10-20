@@ -6,7 +6,7 @@
 use std::time::Instant;
 
 use egui::{Layout, Pos2, Rect, RichText, Sense, Ui, UiBuilder, Vec2};
-use takofy_model::FollowedShow;
+use takofy_model::{CoverUrl, FollowedArtist, FollowedShow, PlaylistEntry, SavedAlbum};
 
 use crate::availability::Control;
 use crate::cover::{Art, Cover};
@@ -151,12 +151,340 @@ fn counts(library: &Library) -> (usize, usize) {
         Load::Ready(shows) => shows.len(),
         Load::Idle | Load::Loading | Load::Failed(_) => 0,
     };
+    let artists = match &library.followed_artists {
+        Load::Ready(artists) => artists.len(),
+        Load::Idle | Load::Loading | Load::Failed(_) => 0,
+    };
+    let albums = match &library.saved_albums {
+        Load::Ready(albums) => albums.len(),
+        Load::Idle | Load::Loading | Load::Failed(_) => 0,
+    };
     let shown = match library.sidebar_kind.chosen() {
         SidebarKind::Playlists => playlists,
         SidebarKind::Podcasts => shows,
-        SidebarKind::Artists | SidebarKind::Albums => 0,
+        SidebarKind::Artists => artists,
+        SidebarKind::Albums => albums,
     };
-    (shown, playlists + shows)
+    (shown, playlists + shows + artists + albums)
+}
+
+/// What a list draws: the items, or the state of the loads behind them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListView<'a, T> {
+    /// The playlists or the list itself are in flight, or nothing has been
+    /// asked for yet.
+    Loading,
+    /// A fetch failed; the retry names which load to restart.
+    Failed(Failure, Retry),
+    /// The user's library holds nothing of this kind.
+    Empty,
+    /// The items to draw, in the set's own order.
+    List(&'a [T]),
+}
+
+/// Which load a retry restarts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Retry {
+    /// The playlists; every followed list restarts with them.
+    Playlists,
+    /// The followed shows alone.
+    Followed,
+    /// The followed artists alone.
+    FollowedArtists,
+    /// The saved albums alone.
+    SavedAlbums,
+}
+
+impl Retry {
+    /// The command that restarts this load.
+    fn go(self, library: &mut Library) -> Option<Command> {
+        Some(match self {
+            Self::Playlists => library.reload(),
+            Self::Followed => library.reload_followed(),
+            Self::FollowedArtists => library.reload_followed_artists(),
+            Self::SavedAlbums => library.reload_saved_albums(),
+        })
+    }
+}
+
+/// Reads what a list draws from the playlists load and its own.
+///
+/// The playlists are checked first, because every followed request fires only
+/// once the playlists are Ready (`followed_request` and its siblings), and a
+/// retry of the playlists resets the followed lists to Idle.
+fn list_view<'a, T>(
+    playlists: &'a Load<Vec<PlaylistEntry>>,
+    list: &'a Load<Vec<T>>,
+    retry: Retry,
+) -> ListView<'a, T> {
+    match playlists {
+        Load::Failed(failure) => ListView::Failed(*failure, Retry::Playlists),
+        Load::Idle | Load::Loading => ListView::Loading,
+        Load::Ready(_) => match list {
+            Load::Idle | Load::Loading => ListView::Loading,
+            Load::Failed(failure) => ListView::Failed(*failure, retry),
+            Load::Ready(items) if items.is_empty() => ListView::Empty,
+            Load::Ready(items) => ListView::List(items),
+        },
+    }
+}
+
+/// What the Playlists list draws.
+fn playlists_view(library: &Library) -> ListView<'_, PlaylistEntry> {
+    list_view(&library.playlists, &library.playlists, Retry::Playlists)
+}
+
+/// What the Podcasts list draws.
+pub fn shows_view(library: &Library) -> ListView<'_, FollowedShow> {
+    list_view(&library.playlists, &library.followed, Retry::Followed)
+}
+
+/// What the Artists list draws.
+pub fn artists_view(library: &Library) -> ListView<'_, FollowedArtist> {
+    list_view(
+        &library.playlists,
+        &library.followed_artists,
+        Retry::FollowedArtists,
+    )
+}
+
+/// What the Albums list draws.
+pub fn albums_view(library: &Library) -> ListView<'_, SavedAlbum> {
+    list_view(
+        &library.playlists,
+        &library.saved_albums,
+        Retry::SavedAlbums,
+    )
+}
+
+/// One row's identity: the scope its scroll area owns and the kind its widget
+/// id carries, so two lists never share an id even when a uri is the same.
+#[derive(Debug, Clone, Copy)]
+struct Ids {
+    scope: &'static str,
+    kind: &'static str,
+}
+
+impl Ids {
+    fn id(self, ui: &Ui, uri: &str) -> egui::Id {
+        ui.scope_id().with((self.kind, uri))
+    }
+}
+
+/// The list's own words while it loads, or when there is nothing in it.
+#[derive(Debug, Clone, Copy)]
+struct Words {
+    loading: &'static str,
+    empty: &'static str,
+}
+
+/// What a press opens.
+#[derive(Debug, Clone, Copy)]
+enum Open {
+    /// A playlist, which the transport has to select first.
+    Playlist,
+    /// A show, an artist or an album, each a route of its own.
+    Page(fn(String) -> Page),
+}
+
+impl Open {
+    fn go(self, library: &mut Library, uri: &str) -> Option<Command> {
+        match self {
+            Self::Playlist => Some(library.select(uri)),
+            Self::Page(page) => library.open(page(uri.to_owned())),
+        }
+    }
+}
+
+/// The frame's drawing context, gathered so a list's own arguments stay few.
+struct Draw<'a> {
+    art: &'a mut Art,
+    now: Instant,
+    tokens: &'a Tokens,
+}
+
+/// What a press in a list asks the window to do.
+enum Action {
+    Open(String),
+    Retry(Retry),
+}
+
+/// Draws one list of items, whatever they are.
+///
+/// The four kinds differ in three things only: what the row says under its name,
+/// which page a press opens and what the list calls itself while it loads. Those
+/// come in as arguments; the row, the scroll area and the states are shared.
+fn list_rows<T: ListItem + Clone>(
+    ui: &mut Ui,
+    rect: Rect,
+    view: ListView<'_, T>,
+    current: Option<&str>,
+    ids: Ids,
+    words: Words,
+    draw: &mut Draw<'_>,
+) -> Option<Action> {
+    match view {
+        ListView::Loading => {
+            state(ui, rect, recipe::muted(words.loading, draw.tokens));
+            None
+        }
+        ListView::Empty => {
+            state(ui, rect, recipe::muted(words.empty, draw.tokens));
+            None
+        }
+        ListView::Failed(failure, retry) => {
+            state(
+                ui,
+                rect,
+                recipe::muted(failure_message(failure), draw.tokens),
+            );
+            Some(Action::Retry(retry))
+        }
+        ListView::List(items) => {
+            let mut pressed: Option<String> = None;
+            let entries = items.to_vec();
+            ui.scope_builder(
+                UiBuilder::new()
+                    .id_salt(ids.scope)
+                    .max_rect(rect)
+                    .layout(Layout::top_down(egui::Align::Min)),
+                |ui| {
+                    ui.spacing_mut().item_spacing.y = space::PX;
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show_rows(ui, ROW_H, entries.len(), |ui, range| {
+                            for index in range {
+                                let Some(item) = entries.get(index) else {
+                                    continue;
+                                };
+                                let (_, place) =
+                                    ui.allocate_space(Vec2::new(ui.available_width(), ROW_H));
+                                let kind = item.kind();
+                                let row = LibraryRow {
+                                    id: ids.id(ui, item.uri()),
+                                    name: item.name(),
+                                    kind: &kind,
+                                    cover: draw.art.look(item.cover(), draw.now),
+                                    selected: current == Some(item.uri()),
+                                };
+                                if one(ui, place, row, draw.tokens) {
+                                    pressed = Some(item.uri().to_owned());
+                                }
+                            }
+                        });
+                },
+            );
+            pressed.map(Action::Open)
+        }
+    }
+}
+
+/// The three things a list needs from what it lists.
+trait ListItem {
+    fn uri(&self) -> &str;
+    fn name(&self) -> &str;
+    /// What the row says under the name: the kind and who made it, or the kind
+    /// alone when the wire named nobody.
+    fn kind(&self) -> String;
+    fn cover(&self) -> Option<&CoverUrl>;
+}
+
+impl ListItem for PlaylistEntry {
+    fn uri(&self) -> &str {
+        &self.uri
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn kind(&self) -> String {
+        library_kind("Playlist", self.owner.as_deref())
+    }
+
+    fn cover(&self) -> Option<&CoverUrl> {
+        self.cover.as_ref()
+    }
+}
+
+impl ListItem for FollowedShow {
+    fn uri(&self) -> &str {
+        &self.uri
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn kind(&self) -> String {
+        library_kind("Podcast", self.publisher.as_deref())
+    }
+
+    fn cover(&self) -> Option<&CoverUrl> {
+        self.cover.as_ref()
+    }
+}
+
+impl ListItem for FollowedArtist {
+    fn uri(&self) -> &str {
+        &self.uri
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// An artist's line is its kind alone: the reference puts a listener count
+    /// there, and this client's wire does not carry one.
+    fn kind(&self) -> String {
+        "Artist".to_owned()
+    }
+
+    fn cover(&self) -> Option<&CoverUrl> {
+        self.portrait.as_ref()
+    }
+}
+
+impl ListItem for SavedAlbum {
+    fn uri(&self) -> &str {
+        &self.uri
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn kind(&self) -> String {
+        library_kind(
+            "Album",
+            (!self.artists.is_empty()).then_some(self.artists.as_str()),
+        )
+    }
+
+    fn cover(&self) -> Option<&CoverUrl> {
+        self.cover.as_ref()
+    }
+}
+
+/// A page kind, for asking which uri the open page names.
+#[derive(Debug, Clone, Copy)]
+enum PageKind {
+    Show,
+    Artist,
+    Album,
+}
+
+/// The uri of the open page, when it is a page of `kind`.
+///
+/// The rows use it to draw themselves selected: `Library::selected` is about
+/// playlists and is `None` on any of these pages.
+fn page_uris(library: &Library, kind: PageKind) -> Option<&str> {
+    match (library.page(), kind) {
+        (Some(Page::Show(uri)), PageKind::Show) => Some(uri),
+        (Some(Page::Artist(uri)), PageKind::Artist) => Some(uri),
+        (Some(Page::Album(uri)), PageKind::Album) => Some(uri),
+        _ => None,
+    }
 }
 
 /// The list the chosen kind shows, or the state of the load that fetches it.
@@ -172,121 +500,90 @@ fn rows(
         return None;
     }
 
-    match library.sidebar_kind.chosen() {
-        SidebarKind::Playlists => {
-            let mut picked: Option<String> = None;
-            let mut retry = false;
+    let mut draw = Draw { art, now, tokens };
+    let (action, open) = match library.sidebar_kind.chosen() {
+        SidebarKind::Playlists => (
+            list_rows(
+                ui,
+                rect,
+                playlists_view(library),
+                library.selected(),
+                Ids {
+                    scope: "library-list",
+                    kind: "library-row",
+                },
+                Words {
+                    loading: "Loading your playlists…",
+                    empty: "No playlists yet.",
+                },
+                &mut draw,
+            ),
+            Open::Playlist,
+        ),
+        SidebarKind::Podcasts => (
+            list_rows(
+                ui,
+                rect,
+                shows_view(library),
+                page_uris(library, PageKind::Show),
+                Ids {
+                    scope: "library-shows",
+                    kind: "library-show",
+                },
+                Words {
+                    loading: "Loading your shows…",
+                    empty: "No shows followed yet.",
+                },
+                &mut draw,
+            ),
+            Open::Page(Page::Show),
+        ),
+        SidebarKind::Artists => (
+            list_rows(
+                ui,
+                rect,
+                artists_view(library),
+                page_uris(library, PageKind::Artist),
+                Ids {
+                    scope: "library-artists",
+                    kind: "library-artist",
+                },
+                Words {
+                    loading: "Loading your artists…",
+                    empty: "No artists followed yet.",
+                },
+                &mut draw,
+            ),
+            Open::Page(Page::Artist),
+        ),
+        SidebarKind::Albums => (
+            list_rows(
+                ui,
+                rect,
+                albums_view(library),
+                page_uris(library, PageKind::Album),
+                Ids {
+                    scope: "library-albums",
+                    kind: "library-album",
+                },
+                Words {
+                    loading: "Loading your albums…",
+                    empty: "No albums saved yet.",
+                },
+                &mut draw,
+            ),
+            Open::Page(Page::Album),
+        ),
+    };
 
-            match &library.playlists {
-                Load::Idle => {}
-                Load::Loading => state(ui, rect, recipe::muted("Loading your playlists…", tokens)),
-                Load::Ready(playlists) if playlists.is_empty() => {
-                    state(ui, rect, recipe::muted("No playlists yet.", tokens));
-                }
-                Load::Ready(playlists) => {
-                    let current = library.selected().map(str::to_owned);
-                    let entries = playlists.clone();
-                    ui.scope_builder(
-                        UiBuilder::new()
-                            .id_salt("library-list")
-                            .max_rect(rect)
-                            .layout(Layout::top_down(egui::Align::Min)),
-                        |ui| {
-                            ui.spacing_mut().item_spacing.y = space::PX;
-                            egui::ScrollArea::vertical()
-                                .auto_shrink([false, false])
-                                .show_rows(ui, ROW_H, entries.len(), |ui, range| {
-                                    for index in range {
-                                        let Some(entry) = entries.get(index) else {
-                                            continue;
-                                        };
-                                        let (_, place) = ui
-                                            .allocate_space(Vec2::new(ui.available_width(), ROW_H));
-                                        let selected =
-                                            current.as_deref() == Some(entry.uri.as_str());
-                                        let kind = library_kind("Playlist", entry.owner.as_deref());
-                                        let row = LibraryRow {
-                                            id: playlist_row_id(ui, &entry.uri),
-                                            name: &entry.name,
-                                            kind: &kind,
-                                            cover: art.look(entry.cover.as_ref(), now),
-                                            selected,
-                                        };
-                                        if one(ui, place, row, tokens) {
-                                            picked = Some(entry.uri.clone());
-                                        }
-                                    }
-                                });
-                        },
-                    );
-                }
-                Load::Failed(failure) => {
-                    state(ui, rect, recipe::muted(failure_message(*failure), tokens));
-                    retry = true;
-                }
-            }
-
-            if let Some(uri) = picked {
-                return Some(library.select(&uri));
-            }
-            if retry { Some(library.reload()) } else { None }
-        }
-        SidebarKind::Podcasts => show_rows(ui, rect, library, art, now, tokens),
-        // `choose` is the only writer of the choice, and it refuses waiting
-        // kinds, so these two kinds cannot be chosen.
-        SidebarKind::Artists => {
-            debug_assert!(false, "the Artists chip is waiting, so it cannot be chosen");
-            None
-        }
-        SidebarKind::Albums => {
-            debug_assert!(false, "the Albums chip is waiting, so it cannot be chosen");
-            None
-        }
+    match action {
+        Some(Action::Open(uri)) => open.go(library, &uri),
+        Some(Action::Retry(retry)) => retry.go(library),
+        None => None,
     }
 }
 
-/// What the Podcasts list draws: the followed shows, or the state of the
-/// loads that fetch them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ShowsView<'a> {
-    /// The playlists or the shows are in flight, or have not been asked for.
-    Loading,
-    /// A fetch failed; the retry names which load to restart.
-    Failed(Failure, Retry),
-    /// The user follows no shows.
-    Empty,
-    /// The shows to draw, newest follow first.
-    List(&'a [FollowedShow]),
-}
-
-/// Which load a retry restarts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Retry {
-    /// The playlists; the followed list restarts with them.
-    Playlists,
-    /// The followed list alone.
-    Followed,
-}
-
-/// Reads what the Podcasts list draws from the two loads.
-///
-/// The playlists are checked first, because the followed request only fires
-/// once the playlists are Ready (`followed_request`), and a retry of the
-/// playlists resets the followed list to Idle.
-pub fn shows_view(library: &Library) -> ShowsView<'_> {
-    match &library.playlists {
-        Load::Failed(failure) => ShowsView::Failed(*failure, Retry::Playlists),
-        Load::Idle | Load::Loading => ShowsView::Loading,
-        Load::Ready(_) => match &library.followed {
-            Load::Idle | Load::Loading => ShowsView::Loading,
-            Load::Failed(failure) => ShowsView::Failed(*failure, Retry::Followed),
-            Load::Ready(shows) if shows.is_empty() => ShowsView::Empty,
-            Load::Ready(shows) => ShowsView::List(shows),
-        },
-    }
-}
-
-/// The row's click target and the chrome both kinds of row share: a selected
+/// The row's click target and the chrome all four kinds of row share: a selected
 /// row borrows the reference's language for the current navigation item — a
 /// raised fill and a bone rule at the left edge — because the reference defines
 /// no selected row.
@@ -322,99 +619,6 @@ fn row_chrome(
     }
 
     response
-}
-
-/// The id of a playlist row. The uri, not the name: two playlists may share a
-/// name, and two widgets may not share an id.
-fn playlist_row_id(ui: &Ui, uri: &str) -> egui::Id {
-    ui.scope_id().with(("library-row", uri))
-}
-
-/// The id of a show row, kept apart from a playlist row's even when the uri is
-/// the same string.
-fn show_row_id(ui: &Ui, uri: &str) -> egui::Id {
-    ui.scope_id().with(("library-show", uri))
-}
-
-/// The show the page is looking at, so the Podcasts list can highlight it.
-///
-/// `Library::selected` is about playlists and is `None` on a show page.
-fn page_show(library: &Library) -> Option<&str> {
-    match library.page() {
-        Some(Page::Show(uri)) => Some(uri),
-        _ => None,
-    }
-}
-
-/// The Podcasts list: the followed shows, or the state of the loads behind them.
-fn show_rows(
-    ui: &mut Ui,
-    rect: Rect,
-    library: &mut Library,
-    art: &mut Art,
-    now: Instant,
-    tokens: &Tokens,
-) -> Option<Command> {
-    if rect.height() < ROW_H {
-        return None;
-    }
-
-    let mut pressed: Option<String> = None;
-    let mut retry: Option<Retry> = None;
-
-    match shows_view(library) {
-        ShowsView::Loading => state(ui, rect, recipe::muted("Loading your shows…", tokens)),
-        ShowsView::Empty => state(ui, rect, recipe::muted("No shows followed yet.", tokens)),
-        ShowsView::Failed(failure, which) => {
-            state(ui, rect, recipe::muted(failure_message(failure), tokens));
-            retry = Some(which);
-        }
-        ShowsView::List(shows) => {
-            let current = page_show(library).map(str::to_owned);
-            let entries = shows.to_vec();
-            ui.scope_builder(
-                UiBuilder::new()
-                    .id_salt("library-shows")
-                    .max_rect(rect)
-                    .layout(Layout::top_down(egui::Align::Min)),
-                |ui| {
-                    ui.spacing_mut().item_spacing.y = space::PX;
-                    egui::ScrollArea::vertical()
-                        .auto_shrink([false, false])
-                        .show_rows(ui, ROW_H, entries.len(), |ui, range| {
-                            for index in range {
-                                let Some(show) = entries.get(index) else {
-                                    continue;
-                                };
-                                let (_, place) =
-                                    ui.allocate_space(Vec2::new(ui.available_width(), ROW_H));
-                                let selected = current.as_deref() == Some(show.uri.as_str());
-                                let kind = library_kind("Podcast", show.publisher.as_deref());
-                                let row = LibraryRow {
-                                    id: show_row_id(ui, &show.uri),
-                                    name: &show.name,
-                                    kind: &kind,
-                                    cover: art.look(show.cover.as_ref(), now),
-                                    selected,
-                                };
-                                if one(ui, place, row, tokens) {
-                                    pressed = Some(show.uri.clone());
-                                }
-                            }
-                        });
-                },
-            );
-        }
-    }
-
-    if let Some(uri) = pressed {
-        return library.open(Page::Show(uri));
-    }
-    match retry {
-        Some(Retry::Playlists) => Some(library.reload()),
-        Some(Retry::Followed) => Some(library.reload_followed()),
-        None => None,
-    }
 }
 
 /// What one library row draws, whatever its kind.
@@ -642,7 +846,7 @@ mod tests {
 
         assert_eq!(
             shows_view(&library),
-            ShowsView::Failed(Failure::Load, Retry::Playlists)
+            ListView::Failed(Failure::Load, Retry::Playlists)
         );
     }
 
@@ -652,7 +856,7 @@ mod tests {
             let load = format!("{playlists:?}");
             let mut library = Library::default();
             library.playlists = playlists;
-            assert_eq!(shows_view(&library), ShowsView::Loading, "{load}");
+            assert_eq!(shows_view(&library), ListView::Loading, "{load}");
         }
     }
 
@@ -662,14 +866,14 @@ mod tests {
         let mut library = Library::default();
         library.playlists = Load::Loading;
         library.followed = Load::Idle;
-        assert_eq!(shows_view(&library), ShowsView::Loading);
+        assert_eq!(shows_view(&library), ListView::Loading);
 
         // One beat later the playlists have landed, but the list has not been
         // asked for yet.
         let mut library = Library::default();
         library.playlists = Load::Ready(Vec::new());
         library.followed = Load::Idle;
-        assert_eq!(shows_view(&library), ShowsView::Loading);
+        assert_eq!(shows_view(&library), ListView::Loading);
     }
 
     #[test]
@@ -677,7 +881,7 @@ mod tests {
         let mut library = Library::default();
         library.playlists = Load::Ready(Vec::new());
         library.followed = Load::Loading;
-        assert_eq!(shows_view(&library), ShowsView::Loading);
+        assert_eq!(shows_view(&library), ListView::Loading);
     }
 
     #[test]
@@ -688,7 +892,7 @@ mod tests {
 
         assert_eq!(
             shows_view(&library),
-            ShowsView::Failed(Failure::Followed, Retry::Followed)
+            ListView::Failed(Failure::Followed, Retry::Followed)
         );
     }
 
@@ -697,7 +901,7 @@ mod tests {
         let mut library = Library::default();
         library.playlists = Load::Ready(Vec::new());
         library.followed = Load::Ready(Vec::new());
-        assert_eq!(shows_view(&library), ShowsView::Empty);
+        assert_eq!(shows_view(&library), ListView::Empty);
     }
 
     #[test]
@@ -710,7 +914,112 @@ mod tests {
         library.playlists = Load::Ready(Vec::new());
         library.followed = Load::Ready(shows.clone());
 
-        assert_eq!(shows_view(&library), ShowsView::List(shows.as_slice()));
+        assert_eq!(shows_view(&library), ListView::List(shows.as_slice()));
+    }
+
+    const PLAYLIST_IDS: Ids = Ids {
+        scope: "library-list",
+        kind: "library-row",
+    };
+    const SHOW_IDS: Ids = Ids {
+        scope: "library-shows",
+        kind: "library-show",
+    };
+
+    fn followed_artist(uri: &str, name: &str) -> FollowedArtist {
+        FollowedArtist {
+            uri: uri.to_owned(),
+            name: name.to_owned(),
+            named: true,
+            portrait: None,
+            releases: None,
+        }
+    }
+
+    fn saved_album(uri: &str, name: &str, artists: &str) -> SavedAlbum {
+        SavedAlbum {
+            uri: uri.to_owned(),
+            name: name.to_owned(),
+            named: true,
+            artists: artists.to_owned(),
+            year: None,
+            cover: None,
+            tracks: None,
+        }
+    }
+
+    #[test]
+    fn a_failed_artists_or_albums_load_carries_its_own_retry() {
+        let mut artists = Library::default();
+        artists.playlists = Load::Ready(Vec::new());
+        artists.followed_artists = Load::Failed(Failure::FollowedArtists);
+        assert_eq!(
+            artists_view(&artists),
+            ListView::Failed(Failure::FollowedArtists, Retry::FollowedArtists)
+        );
+
+        let mut albums = Library::default();
+        albums.playlists = Load::Ready(Vec::new());
+        albums.saved_albums = Load::Failed(Failure::SavedAlbums);
+        assert_eq!(
+            albums_view(&albums),
+            ListView::Failed(Failure::SavedAlbums, Retry::SavedAlbums)
+        );
+    }
+
+    #[test]
+    fn an_unasked_artists_or_albums_list_is_loading_not_empty() {
+        // Idle is "nobody has asked yet", which reads as loading: the empty
+        // copy would claim the library holds nothing.
+        let mut library = Library::default();
+        library.playlists = Load::Ready(Vec::new());
+        assert_eq!(artists_view(&library), ListView::Loading);
+        assert_eq!(albums_view(&library), ListView::Loading);
+
+        library.followed_artists = Load::Ready(Vec::new());
+        library.saved_albums = Load::Ready(Vec::new());
+        assert_eq!(artists_view(&library), ListView::Empty);
+        assert_eq!(albums_view(&library), ListView::Empty);
+    }
+
+    #[test]
+    fn the_size_counts_the_two_new_lists() {
+        let mut library = Library::default();
+        library.playlists = Load::Ready(vec![PlaylistEntry {
+            uri: "spotify:playlist:a".to_owned(),
+            name: "A".to_owned(),
+            named: true,
+            cover: None,
+            description: None,
+            owner: None,
+        }]);
+        library.followed = Load::Ready(vec![followed_show("spotify:show:a", "A")]);
+        library.followed_artists = Load::Ready(vec![
+            followed_artist("spotify:artist:a", "A"),
+            followed_artist("spotify:artist:b", "B"),
+        ]);
+        library.saved_albums = Load::Ready(vec![saved_album("spotify:album:a", "A", "X")]);
+
+        assert_eq!(counts(&library), (1, 5), "one shown of five saved");
+
+        library.sidebar_kind.choose(SidebarKind::Artists);
+        assert_eq!(counts(&library), (2, 5));
+        library.sidebar_kind.choose(SidebarKind::Albums);
+        assert_eq!(counts(&library), (1, 5));
+    }
+
+    #[test]
+    fn an_artist_row_says_its_kind_and_an_album_row_names_its_artist() {
+        assert_eq!(followed_artist("spotify:artist:a", "A").kind(), "Artist");
+        assert_eq!(
+            saved_album("spotify:album:a", "A", "Vela Moreno").kind(),
+            "Album · Vela Moreno"
+        );
+        assert_eq!(
+            saved_album("spotify:album:a", "A", "").kind(),
+            "Album",
+            "an album the wire named no artist for says only its kind"
+        );
     }
 
     /// The context the sidebar draws into, the way the window builds it.
@@ -846,7 +1155,7 @@ mod tests {
             |ui| {
                 let rect = Rect::from_min_size(Pos2::new(20.0, 0.0), Vec2::new(200.0, ROW_H));
                 let row = LibraryRow {
-                    id: playlist_row_id(ui, "spotify:playlist:a"),
+                    id: PLAYLIST_IDS.id(ui, "spotify:playlist:a"),
                     name: "A list",
                     kind: "Playlist",
                     cover: Cover::Missing,
@@ -877,7 +1186,7 @@ mod tests {
                 ..Default::default()
             },
             |ui| {
-                let id = playlist_row_id(ui, uri);
+                let id = PLAYLIST_IDS.id(ui, uri);
                 let rect = Rect::from_min_size(Pos2::new(0.0, 0.0), Vec2::new(200.0, ROW_H));
                 let row = LibraryRow {
                     id,
@@ -1089,7 +1398,7 @@ mod tests {
                 ..Default::default()
             },
             |ui| {
-                assert_ne!(show_row_id(ui, "x"), playlist_row_id(ui, "x"));
+                assert_ne!(SHOW_IDS.id(ui, "x"), PLAYLIST_IDS.id(ui, "x"));
                 checked = true;
             },
         );
@@ -1119,27 +1428,43 @@ mod tests {
         assert_eq!(command, None, "pressing the choice asks for nothing");
     }
 
+    /// Pressing the Artists chip takes the choice and, one frame later, asks for
+    /// the list. The second press asks for nothing: the load is already in
+    /// flight.
     #[test]
-    fn clicking_a_waiting_chip_changes_nothing() {
-        for label in ["ARTISTS", "ALBUMS"] {
-            let ctx = context();
-            let mut library = Library::default();
-            let mut art = Art::default();
-            let (output, _) = run(&ctx, Vec::new(), &mut library, &mut art);
+    fn pressing_the_artists_chip_asks_for_the_list_once() {
+        let ctx = context();
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(Vec::new()));
+        let mut art = Art::default();
+        let (output, _) = run(&ctx, Vec::new(), &mut library, &mut art);
 
-            let command = click(
-                &ctx,
-                chip_rect(&output, label).center(),
-                &mut library,
-                &mut art,
-            );
+        let chip = chip_rect(&output, "ARTISTS").center();
+        let _ = click(&ctx, chip, &mut library, &mut art);
+        assert_eq!(library.sidebar_kind.chosen(), SidebarKind::Artists);
 
-            assert_eq!(
-                library.sidebar_kind.chosen(),
-                SidebarKind::Playlists,
-                "{label} is still waiting, so it cannot be pressed"
-            );
-            assert_eq!(command, None, "{label}");
-        }
+        let first = library.followed_artists_request();
+        assert_eq!(first, Some(Command::LoadFollowedArtists));
+        assert_eq!(library.followed_artists_request(), None, "asked once");
+
+        // The frame also draws the list's own loading copy while it waits.
+        let (after, _) = run(&ctx, Vec::new(), &mut library, &mut art);
+        let texts = drawn_text(&after);
+        assert!(
+            texts.contains(&"Loading your artists…".to_owned()),
+            "{texts:?}"
+        );
+    }
+
+    /// A line painted as `text`, if the frame painted it.
+    fn drawn_text(output: &egui::FullOutput) -> Vec<String> {
+        output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Text(text) => Some(text.galley.text().to_owned()),
+                _ => None,
+            })
+            .collect()
     }
 }
