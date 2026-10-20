@@ -76,9 +76,24 @@ write and reports only what the server confirmed, so the label moves on the
 answer and never on the press.
 
 Labels branch on URI kind: a track and an episode resolve through their own
-batch, and an episode is a label like a track with its show as its credit. The
-shows a user follows come from the collection's `show` set, paged like any other
-collection set and then named one show at a time.
+batch, and an episode is a label like a track with its show as its credit.
+
+The library is four kinds over three collection sets. Followed shows, followed
+artists and saved albums each come from their own set — saved albums share the
+`collection` set with liked songs, so the read keeps the album URIs and drops
+the rest — and every item is then named by its own metadata call, eight at a
+time. An artist is one `Artist::get`; an album is one batched `ALBUM_V4`
+request per fifty, because that endpoint answers a whole discography in one
+reply and a short answer costs only its own chunk.
+
+The two newest reads are want-driven rather than chained onto the first: the
+artist and album lists are asked for when their chip is chosen, and the artists
+an artist is heard with when that artist's own page has landed and named
+somebody. A page therefore draws its hero and its discography without waiting on
+a dozen likeness reads, and an artist the wire names nobody for asks for nothing.
+Lyrics follow the same rule from the other side: the pane asks for the playing
+track's lines when the tab is first opened, so playback never spends a request
+nobody asked to see.
 
 ## Who owns what
 
@@ -138,6 +153,12 @@ ends at draw time, because the sprite asks for round joins and epaint mitres.
 The table is generated, and the generator is a local script rather than repo
 content, so `assets/icons/README.md` documents the conversion and a test
 re-checks every glyph against `docs/reference/main.js`.
+
+A page's contents are drawn in either of two densities the library page shares:
+the same item as a card, or as a row under a type and size column. The density
+is one field on the library, so it survives a page and a Back, and both
+densities draw the same `Item` — the filter, the loads and the click handling
+exist once.
 
 What it costs: egui has no stylesheet. The token layer in
 `crates/takofy-ui/src/theme.rs` is therefore the only place a colour, spacing
