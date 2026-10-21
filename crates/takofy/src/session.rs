@@ -8,11 +8,11 @@ use std::future::Future;
 
 use librespot::core::SessionConfig;
 use takofy_core::credentials::AccessToken;
-use takofy_core::engine::{Engine, EngineError};
+use takofy_core::engine::{Engine, EngineError, RootlistRead};
 use takofy_core::playback::{Playback, PlaybackError, PlaybackEvent};
 use takofy_model::{
-    AlbumDetail, ArtistDetail, CoverUrl, FollowedArtist, FollowedShow, PlaylistAccess,
-    PlaylistEntry, Revision, SavedAlbum, ShowDetail, TrackEntry, TrackLyrics,
+    AlbumDetail, ArtistDetail, CoverUrl, FollowedArtist, FollowedShow, PlaylistAccess, Revision,
+    SavedAlbum, ShowDetail, TrackEntry, TrackLyrics,
 };
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::oneshot::Receiver;
@@ -85,7 +85,25 @@ pub(crate) trait SessionHost: Send + 'static {
         token: &AccessToken,
     ) -> impl Future<Output = Result<(), SessionError>> + Send;
 
-    fn rootlist(&self) -> impl Future<Output = Result<Vec<PlaylistEntry>, SessionError>> + Send;
+    fn rootlist(&self) -> impl Future<Output = Result<RootlistRead, SessionError>> + Send;
+
+    /// Writes one move to the sidebar's playlists, answering the revision to
+    /// hold next.
+    fn move_playlist(
+        &self,
+        revision: &Revision,
+        from: usize,
+        to: usize,
+    ) -> impl Future<Output = Result<Revision, SessionError>> + Send;
+
+    /// Appends one track to a playlist, answering the revision to hold next.
+    fn add_track(
+        &self,
+        playlist: &str,
+        revision: &Revision,
+        from_index: usize,
+        track: &str,
+    ) -> impl Future<Output = Result<Revision, SessionError>> + Send;
 
     fn tracks(
         &mut self,
@@ -211,9 +229,40 @@ impl SessionHost for LiveSession {
         Ok(())
     }
 
-    async fn rootlist(&self) -> Result<Vec<PlaylistEntry>, SessionError> {
+    async fn rootlist(&self) -> Result<RootlistRead, SessionError> {
         match &self.engine {
             Some(engine) => engine.rootlist().await.map_err(SessionError::Engine),
+            None => Err(SessionError::NotConnected),
+        }
+    }
+
+    async fn move_playlist(
+        &self,
+        revision: &Revision,
+        from: usize,
+        to: usize,
+    ) -> Result<Revision, SessionError> {
+        match &self.engine {
+            Some(engine) => engine
+                .move_playlist(revision, from, to)
+                .await
+                .map_err(SessionError::Engine),
+            None => Err(SessionError::NotConnected),
+        }
+    }
+
+    async fn add_track(
+        &self,
+        playlist: &str,
+        revision: &Revision,
+        from_index: usize,
+        track: &str,
+    ) -> Result<Revision, SessionError> {
+        match &self.engine {
+            Some(engine) => engine
+                .add_track(playlist, revision, from_index, track)
+                .await
+                .map_err(SessionError::Engine),
             None => Err(SessionError::NotConnected),
         }
     }
