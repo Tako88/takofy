@@ -32,8 +32,9 @@ pub struct Row<'a> {
 /// Draws one row into `rect` and reports a click on it.
 ///
 /// Keyboard activation is egui's own: a `Sense::click` widget reports a click for
-/// Enter and Space through `FAKE_PRIMARY_CLICKED`, so the row has no key branch of
-/// its own to leave untested.
+/// Enter through `FAKE_PRIMARY_CLICKED`, so the row has no key branch of its own
+/// to leave untested. A space never gets this far — the shell takes it for the
+/// transport before anything draws — so a focused row cannot start a track.
 pub fn show(ui: &mut Ui, rect: Rect, row: &Row<'_>, tokens: &Tokens) -> bool {
     let response = ui.interact(
         rect,
@@ -47,6 +48,11 @@ pub fn show(ui: &mut Ui, rect: Rect, row: &Row<'_>, tokens: &Tokens) -> bool {
             format!("{} by {}", row.title, row.artist),
         )
     });
+    if response.clicked() {
+        // The keyboard follows the pointer: Tab continues from the row that was
+        // picked.
+        response.request_focus();
+    }
     if response.has_focus() {
         // A row reachable by Tab has to come into view when it is reached, and
         // only a drawn row can hold focus.

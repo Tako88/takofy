@@ -2820,9 +2820,10 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
     }
 
     #[test]
-    fn enter_and_space_play_with_the_pointer_on_a_link_cell() {
+    fn the_enter_key_plays_with_the_pointer_on_a_link_cell() {
         // The pointer's hover gates only the pointer's double click. A keyboard
-        // activation of the focused row is never taken by a link.
+        // activation of the focused row is never taken by a link. Enter is the
+        // row's key: a space belongs to the transport, so it reaches no row.
         for pressed in [egui::Key::Enter, egui::Key::Space] {
             let ctx = context();
             let tokens = Tokens::DARK;
@@ -2872,12 +2873,12 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
                 });
             }
 
+            let expected = (pressed == egui::Key::Enter).then(|| Command::Play {
+                uri: "a".to_owned(),
+            });
             assert_eq!(
-                command,
-                Some(Command::Play {
-                    uri: "a".to_owned()
-                }),
-                "{pressed:?} on the focused row must play with the pointer on a link"
+                command, expected,
+                "{pressed:?} on the focused row, with the pointer on a link"
             );
             assert_eq!(
                 library.page(),

@@ -601,6 +601,12 @@ fn row_chrome(
         .ctx()
         .accesskit_node_builder(response.id, |node| node.set_selected(selected));
 
+    if response.clicked() {
+        // The keyboard follows the pointer: Tab continues from the row that was
+        // picked.
+        response.request_focus();
+    }
+
     if selected {
         ui.painter()
             .rect_filled(rect, radius::SM, tokens.palette.surface_raised);

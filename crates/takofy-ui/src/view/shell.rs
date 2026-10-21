@@ -19,6 +19,9 @@ use super::{now_playing, playbar, playlist, sidebar, topbar};
 /// The signed-in shell: three columns over a playbar, each panel a hairline box
 /// on the window background.
 pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Command> {
+    // Before any region draws: see `take_space`.
+    let space = take_space(ui);
+
     let content = ui.ctx().content_rect();
     let regions = layout::regions_for(content.width());
     let shell = layout::shell_for(&regions);
@@ -193,10 +196,10 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
     }
     *screen.drawer = next;
 
-    // Space is the transport's, read last because that is when focus is known:
-    // whatever holds it has already taken this space. It comes after the drawer
+    // The space toggles the track the transport already names, and nothing else:
+    // a row starts a track on Enter or a double click. It comes after the drawer
     // step so that pausing does not also close a drawer nobody picked from.
-    if command.is_none() && transport_space(ui) {
+    if command.is_none() && space && screen.transport.now_playing.is_some() {
         command = screen.queue.toggle(screen.transport);
     }
 
@@ -281,29 +284,54 @@ fn nav_from_input(ui: &Ui) -> Option<topbar::Nav> {
     })
 }
 
-/// Whether a space this frame is the transport's to take.
+/// Takes the frame's space for the transport, if there is one to take.
 ///
-/// A control that holds focus takes its own space — a row plays, a button
-/// presses — so the transport claims only a space pressed with nothing focused,
-/// no modifier riding along and no auto-repeat behind it.
-fn transport_space(ui: &Ui) -> bool {
-    if ui.ctx().egui_wants_keyboard_input() || ui.memory(|memory| memory.focused().is_some()) {
+/// It is taken before anything draws, because egui turns a space into a click for
+/// whatever holds focus: a focused row would start its own track in the same
+/// frame the transport paused. The press and the auto-repeats behind it are all
+/// taken away for that reason, and only a first press toggles anything.
+///
+/// Returns whether this frame held that first press. A space with a modifier, or
+/// one pressed while a field is typing, is left alone.
+fn take_space(ui: &Ui) -> bool {
+    if ui.ctx().text_edit_focused() {
         return false;
     }
+
+    let mut owned = false;
+    let mut first = false;
     ui.input(|input| {
-        input.events.iter().any(|event| {
-            matches!(
-                event,
-                egui::Event::Key {
-                    key: egui::Key::Space,
-                    pressed: true,
-                    repeat: false,
-                    modifiers,
-                    ..
-                } if modifiers.is_none()
-            )
-        })
-    })
+        for event in &input.events {
+            if let Some(repeat) = transport_space(event) {
+                owned = true;
+                first |= !repeat;
+            }
+        }
+    });
+    if !owned {
+        return false;
+    }
+
+    ui.input_mut(|input| {
+        input
+            .events
+            .retain(|event| transport_space(event).is_none())
+    });
+    first
+}
+
+/// `Some(repeat)` when this event is a space the transport owns.
+fn transport_space(event: &egui::Event) -> Option<bool> {
+    match event {
+        egui::Event::Key {
+            key: egui::Key::Space,
+            pressed: true,
+            repeat,
+            modifiers,
+            ..
+        } if modifiers.is_none() => Some(*repeat),
+        _ => None,
+    }
 }
 
 /// The topbar and the view share one panel, so they share one frame.
@@ -1420,10 +1448,10 @@ mod tests {
     }
 
     #[test]
-    fn a_clicked_row_does_not_take_the_space_with_it() {
-        // Clicking a row is how a track gets played, and the space that follows
-        // has to reach the transport: a row that kept focus after a click would
-        // swallow it.
+    fn a_clicked_row_keeps_the_keyboard_and_lends_the_space_to_the_transport() {
+        // A click leaves the keyboard where the pointer went, so Tab carries on
+        // from the row that was picked. The space is still the transport's: the
+        // row's own keys are Enter and a double click.
         let mut transport = playing(cover("abc"));
         let tracks = vec![
             track(0, Some(cover("abc"))),
@@ -1437,6 +1465,10 @@ mod tests {
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
         let at = painted_at(&frame, "t2").expect("row t2 is painted");
         let _ = window.click(&mut transport, &mut queue, at + Vec2::new(6.0, 6.0));
+        assert!(
+            window.ctx.memory(|memory| memory.focused().is_some()),
+            "the clicked row holds the keyboard"
+        );
 
         transport.state = TransportState::Playing;
         let (command, _) = tap(
@@ -1450,6 +1482,67 @@ mod tests {
             Some(Command::Pause),
             "the space is the transport's after a click on a row"
         );
+    }
+
+    #[test]
+    fn a_held_space_never_reaches_a_focused_row() {
+        // A row that holds focus would take egui's space click on every repeat of
+        // a held key, so the shell takes the repeats away too: one pause, and
+        // then nothing at all — not to the transport, and not as a row activation.
+        let mut transport = Transport::default();
+        let mut queue = two_tracks(&mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        // A library with something to reach: a sidebar row that Tab can focus and
+        // that a space would open, so a leaked repeat would show up as a command.
+        ready_playlist(&mut window);
+        window.library.to_playlists();
+        transport.state = TransportState::Playing;
+
+        let _ = window.frame(&mut transport, &mut queue, vec![key(egui::Key::Tab, true)]);
+        assert!(
+            window.ctx.memory(|memory| memory.focused().is_some()),
+            "Tab has to land somewhere for this to mean anything"
+        );
+
+        let (first, _) = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![key(egui::Key::Space, true)],
+        );
+        assert_eq!(first, Some(Command::Pause));
+        let page = window.library.page().cloned();
+
+        for _ in 0..3 {
+            let (held, _) = window.frame(
+                &mut transport,
+                &mut queue,
+                vec![key_repeat(egui::Key::Space)],
+            );
+            assert_eq!(held, None, "a repeat is nobody's press");
+        }
+        assert_eq!(
+            window.library.page().cloned(),
+            page,
+            "a held space must not open what it holds focus on"
+        );
+    }
+
+    #[test]
+    fn a_space_with_no_loaded_track_asks_for_nothing() {
+        // The queue can hold entries without one of them being the transport's,
+        // and the space must not pick one: it only ever toggles what is loaded.
+        let mut transport = Transport::default();
+        let mut queue = two_tracks(&mut transport);
+        transport.now_playing = None;
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+
+        let (command, _) = tap(
+            &mut window,
+            &mut transport,
+            &mut queue,
+            key(egui::Key::Space, true),
+        );
+        assert_eq!(command, None, "there is nothing loaded to pause or start");
     }
 
     #[test]
@@ -1468,13 +1561,15 @@ mod tests {
     }
 
     #[test]
-    fn a_control_that_holds_focus_keeps_its_own_space() {
+    fn a_focused_row_leaves_the_space_to_the_transport() {
+        // egui turns a space into a click for whatever holds focus, so the shell
+        // has to take it away before anything draws: otherwise Tab onto a row and
+        // a space would start that row's track while the transport paused.
         let mut transport = Transport::default();
         let mut queue = two_tracks(&mut transport);
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
         transport.state = TransportState::Playing;
 
-        // Tab reaches the first control in the shell, which then owns the space.
         let _ = window.frame(&mut transport, &mut queue, vec![key(egui::Key::Tab, true)]);
         assert!(
             window.ctx.memory(|memory| memory.focused().is_some()),
@@ -1487,9 +1582,10 @@ mod tests {
             &mut queue,
             key(egui::Key::Space, true),
         );
-        assert!(
-            !matches!(command, Some(Command::Pause | Command::Resume)),
-            "the focused control takes the space, not the transport: {command:?}"
+        assert_eq!(
+            command,
+            Some(Command::Pause),
+            "the space is the transport's even on a focused row"
         );
     }
 

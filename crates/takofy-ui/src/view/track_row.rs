@@ -151,6 +151,12 @@ pub fn show(
             format!("{} by {}", row.title, row.artist),
         )
     });
+    if response.clicked() {
+        // A click leaves the keyboard where the pointer went, so Escape-less Tab
+        // order continues from the row that was picked. The space never reaches
+        // here: the shell takes it for the transport before anything draws.
+        response.request_focus();
+    }
     if response.has_focus() {
         // A row reachable by Tab has to come into view when it is reached. Only a
         // drawn row can hold focus, so this is about a row that is clipped rather
@@ -212,10 +218,7 @@ pub fn show(
     // would start playback as a side effect. Neither can act yet, so neither
     // takes the click; they only keep it.
     let on_control = on_like || on_more;
-    let keyboard = response.has_focus()
-        && ui.input(|input| {
-            input.key_pressed(egui::Key::Enter) || input.key_pressed(egui::Key::Space)
-        });
+    let keyboard = response.has_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
     if keyboard && !on_control {
         return Some(Click::Play);
     }

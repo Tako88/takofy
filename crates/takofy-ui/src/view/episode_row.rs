@@ -52,6 +52,12 @@ pub fn show(ui: &mut Ui, rect: Rect, row: &Row<'_>, tokens: &Tokens) -> Option<C
         Sense::click(),
     );
     response.widget_info(|| WidgetInfo::labeled(egui::Role::Button, true, spoken(row)));
+    if response.clicked() {
+        // The keyboard follows the pointer: Tab continues from the row that was
+        // picked. The space never reaches here; the shell takes it for the
+        // transport before anything draws.
+        response.request_focus();
+    }
     if response.has_focus() {
         // A row reached by Tab has to come into view, and only a drawn row can
         // hold focus.
@@ -112,10 +118,7 @@ pub fn show(ui: &mut Ui, rect: Rect, row: &Row<'_>, tokens: &Tokens) -> Option<C
 
     // Keyboard activation is answered before the pointer's, so a click landing in
     // the same frame can never swallow it.
-    let keyboard = response.has_focus()
-        && ui.input(|input| {
-            input.key_pressed(egui::Key::Enter) || input.key_pressed(egui::Key::Space)
-        });
+    let keyboard = response.has_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
     if keyboard || played {
         return Some(Click::Play);
     }
@@ -351,6 +354,8 @@ mod tests {
         assert!(played, "the toggle must ask to play");
     }
 
+    /// Enter is the row's key. A space belongs to the transport and reaches no
+    /// row, which is what keeps a focused row from starting a track.
     #[test]
     fn keyboard_activation_returns_play() {
         for pressed in [egui::Key::Enter, egui::Key::Space] {
@@ -367,7 +372,11 @@ mod tests {
             run(&ctx, input(vec![key(pressed)]), |ui| {
                 played = show(ui, PROBE, &row, &tokens) == Some(Click::Play);
             });
-            assert!(played, "{pressed:?} on the focused row must play");
+            assert_eq!(
+                played,
+                pressed == egui::Key::Enter,
+                "{pressed:?} on the focused row"
+            );
         }
     }
 

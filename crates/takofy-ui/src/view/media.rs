@@ -103,6 +103,11 @@ pub fn tile(ui: &mut Ui, rect: Rect, media: &Media<'_>, tokens: &Tokens) -> bool
         Sense::click(),
     );
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, spoken(media)));
+    if response.clicked() {
+        // The keyboard follows the pointer: Tab continues from the tile that was
+        // picked.
+        response.request_focus();
+    }
     if response.hovered() || response.has_focus() {
         ui.painter()
             .rect_filled(rect, radius::MD, tokens.palette.surface_raised);
@@ -221,6 +226,11 @@ pub fn row(ui: &mut Ui, rect: Rect, media: &Media<'_>, tokens: &Tokens) -> bool 
         Sense::click(),
     );
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, spoken(media)));
+    if response.clicked() {
+        // The keyboard follows the pointer: Tab continues from the row that was
+        // picked.
+        response.request_focus();
+    }
     if response.hovered() {
         ui.painter()
             .rect_filled(rect, radius::SM, tokens.palette.surface_hover);
