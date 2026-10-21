@@ -131,11 +131,18 @@ always move together: a confirmed append replaces the entry's revision and adds
 one to its count, so the next append names a revision whose length it holds.
 
 The library allows one write at a time across the page move and the sidebar's
-two, and adopts no read while either is in flight, because a read taken after
-the write reached the server can carry the new revision with the old order or
-the old count. A queue insert is outside that gate: it is local and names no
-revision, so no pending write can invalidate it. What the gate cannot fix is a
-reply that was lost after the server applied the write: the held revision is
+two. While a sidebar write is in flight the sidebar's own read is dropped — the
+part of it that carries an order, because a read taken after the write reached
+the server can carry the new revision with the old order or the old count, and
+the confirmation cannot tell which side of the write it came from. A dropped
+read takes its access with it, since a revision only means something beside the
+order it was read with. An access that lands while an add is pending is taken
+all the same, because an add writes one playlist and not the rootlist; a
+reorder's access waits for the reply that replaces its revision. A page's read
+is not dropped: one that lands while that page's own move is pending keeps the
+order the drag made. A queue insert is outside that gate: it is local and names
+no revision, so no pending write can invalidate it. What the gate cannot fix is
+a reply that was lost after the server applied the write: the held revision is
 then old, the next write fails, and the library has to be reloaded. That is
 preferred to retrying a write that is not idempotent.
 
