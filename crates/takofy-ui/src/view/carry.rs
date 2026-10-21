@@ -36,6 +36,8 @@ pub enum Source {
     Queue,
     /// A page list, which inserts its rows into the queue.
     List(Id),
+    /// A sidebar row, which reorders the playlists.
+    Playlist,
 }
 
 /// What a carried block's ghost draws.
@@ -59,6 +61,21 @@ pub struct Carry {
     /// The size the ghost is drawn at.
     pub size: Vec2,
     pub ghost: Ghost,
+    /// The playlist a sidebar row carries, which has no entries to travel.
+    pub playlist: Option<String>,
+}
+
+impl Carry {
+    /// The one track this carry would add, when it is exactly one track.
+    ///
+    /// A block of two rows, an episode and a local file are all refused, so the
+    /// caller never has to look at the entries to know what it holds.
+    pub fn track(&self) -> Option<&TrackEntry> {
+        if self.source == Source::Playlist || self.rows.len() != 1 || self.entries.len() != 1 {
+            return None;
+        }
+        self.entries.first().filter(|entry| entry.is_track())
+    }
 }
 
 // The payload egui accepts is `Any + Send + Sync`; this makes a `Carry` that
@@ -67,6 +84,15 @@ const _: fn() = || {
     fn ok<T: Send + Sync + 'static>() {}
     ok::<Carry>();
 };
+
+/// The Playlists column's rows, offered as a target while something is carried.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ColumnOffer {
+    /// The rows' box, which a reorder and an add are both resolved against.
+    pub zone: Zone,
+    /// The height a row is drawn at, which is the fill's height.
+    pub drawn: f32,
+}
 
 /// The rows an editable page offers as a drop target this frame.
 #[derive(Clone, Debug, PartialEq)]
@@ -87,6 +113,11 @@ fn picks() -> Id {
 /// The id the frame's offer lives under.
 fn offer_id() -> Id {
     Id::unique("reorder-offer")
+}
+
+/// The id the column's offer lives under.
+fn column_offer_id() -> Id {
+    Id::unique("column-offer")
 }
 
 /// Puts `carry` in the frame's payload: what the shell resolves, paints and
@@ -111,6 +142,20 @@ pub fn take_offer(ctx: &Context) -> Option<Offer> {
     ctx.data_mut(|data| {
         let offer = data.get_temp::<Offer>(offer_id());
         data.remove::<Offer>(offer_id());
+        offer
+    })
+}
+
+/// Offers the Playlists column's rows to the shell, read once like a page's.
+pub fn offer_column(ctx: &Context, offer: ColumnOffer) {
+    ctx.data_mut(|data| data.insert_temp(column_offer_id(), offer));
+}
+
+/// The column a frame drew as a target, read once so it cannot outlive it.
+pub fn take_column_offer(ctx: &Context) -> Option<ColumnOffer> {
+    ctx.data_mut(|data| {
+        let offer = data.get_temp::<ColumnOffer>(column_offer_id());
+        data.remove::<ColumnOffer>(column_offer_id());
         offer
     })
 }
@@ -148,6 +193,7 @@ pub fn from_queue(queue: &mut Queue, lift: Lift) -> Option<Carry> {
         entries,
         size: lift.size,
         ghost: Ghost::Queue(lift.ghost),
+        playlist: None,
     })
 }
 
@@ -212,6 +258,7 @@ impl List {
             entries: vec![entry],
             size,
             ghost,
+            playlist: None,
         });
     }
 
@@ -296,6 +343,7 @@ mod tests {
             entries: Vec::new(),
             size: vec2(100.0, 44.0),
             ghost: ghost(),
+            playlist: None,
         }
     }
 
@@ -343,6 +391,89 @@ mod tests {
             None,
             "a page that offers nothing offers nothing"
         );
+    }
+
+    #[test]
+    fn a_column_offer_is_read_once() {
+        let ctx = context();
+        offer_column(
+            &ctx,
+            ColumnOffer {
+                zone: zone(),
+                drawn: extent::ROW_H,
+            },
+        );
+
+        assert_eq!(
+            take_column_offer(&ctx),
+            Some(ColumnOffer {
+                zone: zone(),
+                drawn: extent::ROW_H,
+            })
+        );
+        assert_eq!(take_column_offer(&ctx), None, "an offer is read once");
+    }
+
+    #[test]
+    fn a_frame_that_offers_no_column_leaves_none_behind() {
+        let ctx = context();
+        offer_column(
+            &ctx,
+            ColumnOffer {
+                zone: zone(),
+                drawn: extent::ROW_H,
+            },
+        );
+        let _ = take_column_offer(&ctx);
+
+        assert_eq!(
+            take_column_offer(&ctx),
+            None,
+            "a frame that offers nothing offers nothing"
+        );
+    }
+
+    #[test]
+    fn only_one_track_is_a_track_to_add() {
+        let one = entry("x");
+        let named = TrackEntry {
+            uri: "spotify:track:4uLU6hMCjMI75M1A2tKUQC".to_owned(),
+            ..one.clone()
+        };
+
+        let two_rows = Carry {
+            entries: vec![named.clone()],
+            rows: vec![1, 2],
+            ..carry(Source::Queue, Vec::new())
+        };
+        assert_eq!(two_rows.track(), None, "a block of two rows");
+
+        let no_entries = carry(Source::Queue, vec![3]);
+        assert_eq!(no_entries.track(), None, "no entries travel");
+
+        let playlist = Carry {
+            rows: vec![1],
+            playlist: Some("spotify:playlist:a".to_owned()),
+            ..carry(Source::Playlist, Vec::new())
+        };
+        assert_eq!(playlist.track(), None, "a playlist is no track");
+
+        let episode = Carry {
+            rows: vec![1],
+            entries: vec![TrackEntry {
+                uri: "spotify:episode:1".to_owned(),
+                ..named.clone()
+            }],
+            ..carry(Source::Queue, Vec::new())
+        };
+        assert_eq!(episode.track(), None, "an episode is no track");
+
+        let track = Carry {
+            rows: vec![1],
+            entries: vec![named.clone()],
+            ..carry(Source::Queue, Vec::new())
+        };
+        assert_eq!(track.track(), Some(&named));
     }
 
     #[test]

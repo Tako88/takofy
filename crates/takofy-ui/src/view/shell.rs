@@ -539,6 +539,9 @@ fn land(queue: &mut Queue, carry: &Carry, target: Target) {
         (Target::Reorder(_), _) => None,
         // The sidebar's two meanings are writes of their own, never a queue move.
         (Target::Rootlist(_) | Target::Add(_), _) => None,
+        // A playlist carry has no queue zone and no queue button, so it can only
+        // ever mean the sidebar.
+        (Target::At(_) | Target::End, Source::Playlist) => None,
         // An add asks for no row: the pane that would show it is not on screen.
         (Target::End, Source::List(_)) => {
             let _ = queue.append(carry.entries.clone());

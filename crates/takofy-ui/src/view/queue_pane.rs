@@ -372,6 +372,7 @@ mod tests {
                     None,
                     Cover::Missing,
                 )),
+                playlist: None,
             },
         );
     }
