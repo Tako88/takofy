@@ -122,6 +122,25 @@ pub struct PlaylistEntry {
     /// an opaque id, so the band's line may read `Made by 31l6…`. It is drawn as
     /// given, never hidden or heuristically filtered.
     pub owner: Option<String>,
+    /// The revision the entry was read at and whether its items may be edited.
+    ///
+    /// `None` when the read named no revision: an entry with no access names no
+    /// version of its own list, so nothing may be written through it.
+    pub access: Option<PlaylistAccess>,
+}
+
+impl PlaylistEntry {
+    /// The revision and length an add would be based on, when one may be made.
+    ///
+    /// It needs an editable list read at a known revision and a known count: the
+    /// count is the index an append names, so an unknown one appends nowhere.
+    pub fn add_basis(&self) -> Option<(&Revision, usize)> {
+        let access = self.access.as_ref()?;
+        if !access.editable {
+            return None;
+        }
+        Some((&access.revision, self.tracks?))
+    }
 }
 
 /// When a track joined the playlist it is drawn in, in epoch milliseconds.
@@ -209,6 +228,16 @@ pub struct TrackEntry {
     pub named: bool,
     /// The track's own album cover, when the metadata carried one.
     pub cover: Option<CoverUrl>,
+}
+
+impl TrackEntry {
+    /// Whether this entry is a track a playlist can hold.
+    ///
+    /// An episode and a local file are rows too, but neither may be added to a
+    /// playlist, so the URI kind decides rather than the row's shape.
+    pub fn is_track(&self) -> bool {
+        self.uri.starts_with("spotify:track:")
+    }
 }
 
 /// An episode as a page or a list row draws it.
@@ -452,8 +481,79 @@ pub struct PlaylistAccess {
 #[cfg(test)]
 mod tests {
     use super::{
-        AddedAt, CoverImage, CoverUrl, Episode, PlaylistAccess, PublishedAt, Revision, TrackLyrics,
+        AddedAt, CoverImage, CoverUrl, Episode, PlaylistAccess, PlaylistEntry, PublishedAt,
+        Revision, TrackEntry, TrackLyrics,
     };
+
+    fn revision(byte: u8) -> Revision {
+        Revision::from_wire(&[byte]).expect("a revision")
+    }
+
+    fn playlist(tracks: Option<usize>, access: Option<PlaylistAccess>) -> PlaylistEntry {
+        PlaylistEntry {
+            uri: "spotify:playlist:a".to_owned(),
+            name: "A".to_owned(),
+            named: true,
+            cover: None,
+            description: None,
+            tracks,
+            owner: None,
+            access,
+        }
+    }
+
+    fn access(editable: bool) -> Option<PlaylistAccess> {
+        Some(PlaylistAccess {
+            revision: revision(1),
+            editable,
+        })
+    }
+
+    fn track(uri: &str) -> TrackEntry {
+        TrackEntry {
+            uri: uri.to_owned(),
+            title: "A Title".to_owned(),
+            artists: String::new(),
+            album: None,
+            album_uri: None,
+            artist_uris: Vec::new(),
+            added_at: None,
+            duration_ms: None,
+            named: true,
+            cover: None,
+        }
+    }
+
+    #[test]
+    fn add_basis_needs_an_editable_revision_and_a_count() {
+        assert_eq!(playlist(Some(4), None).add_basis(), None, "no access");
+        assert_eq!(
+            playlist(Some(4), access(false)).add_basis(),
+            None,
+            "not editable"
+        );
+        assert_eq!(playlist(None, access(true)).add_basis(), None, "no count");
+        assert_eq!(playlist(None, None).add_basis(), None, "neither");
+
+        assert_eq!(
+            playlist(Some(4), access(true)).add_basis(),
+            Some((&revision(1), 4))
+        );
+
+        // A count of zero is a real count: an append to an empty list names it.
+        assert_eq!(
+            playlist(Some(0), access(true)).add_basis(),
+            Some((&revision(1), 0))
+        );
+    }
+
+    #[test]
+    fn an_episode_or_local_uri_is_not_a_track() {
+        for uri in ["spotify:episode:1", "spotify:local:a:b:c:1", "", "list:p0"] {
+            assert!(!track(uri).is_track(), "must refuse {uri:?}");
+        }
+        assert!(track("spotify:track:4uLU6hMCjMI75M1A2tKUQC").is_track());
+    }
 
     #[test]
     fn an_empty_revision_is_none() {

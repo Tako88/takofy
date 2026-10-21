@@ -124,6 +124,7 @@ pub(crate) async fn label_playlists(session: &Session, uris: Vec<String>) -> Vec
                 description,
                 tracks,
                 owner,
+                access: None,
             }
         })
         .collect()

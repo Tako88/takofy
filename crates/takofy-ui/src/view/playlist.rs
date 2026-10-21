@@ -1139,6 +1139,7 @@ mod tests {
             description: None,
             owner: None,
             tracks: None,
+            access: None,
         }]));
         library
     }
@@ -1174,6 +1175,7 @@ mod tests {
             description: description.map(str::to_owned),
             owner: owner.map(str::to_owned),
             tracks: None,
+            access: None,
         }
     }
 
@@ -1196,6 +1198,7 @@ mod tests {
             description: None,
             owner: None,
             tracks: None,
+            access: None,
         }
     }
 
@@ -1223,6 +1226,7 @@ mod tests {
             description: None,
             owner: None,
             tracks: None,
+            access: None,
         }
     }
 
@@ -4012,6 +4016,7 @@ mod root_tests {
             description: None,
             owner: None,
             tracks: None,
+            access: None,
         }
     }
 

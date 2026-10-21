@@ -990,6 +990,7 @@ mod tests {
             description: None,
             owner: None,
             tracks: None,
+            access: None,
         }]));
         library.apply(&Update::Tracks {
             playlist: PLAYLIST.to_owned(),

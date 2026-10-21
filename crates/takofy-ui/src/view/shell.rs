@@ -1163,6 +1163,7 @@ mod tests {
             description: None,
             owner: None,
             tracks: None,
+            access: None,
         }]));
         window.library.select(PLAYLIST);
         window.library.apply(&Update::Tracks {
@@ -1694,6 +1695,7 @@ mod tests {
             description: None,
             owner: None,
             tracks: None,
+            access: None,
         }]));
         window.library.select(PLAYLIST);
         window.library.to_playlists();
@@ -1744,6 +1746,7 @@ mod tests {
             description: None,
             owner: None,
             tracks: None,
+            access: None,
         }]));
         library.select(PLAYLIST);
         library.apply(&Update::TracksFailed {
@@ -3802,6 +3805,7 @@ mod tests {
             description: None,
             owner: None,
             tracks: None,
+            access: None,
         }]));
         window.library.select(PLAYLIST);
         window.library.apply(&Update::Tracks {

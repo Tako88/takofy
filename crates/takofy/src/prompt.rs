@@ -120,6 +120,7 @@ mod tests {
             description: None,
             owner: None,
             tracks: None,
+            access: None,
         };
         assert_eq!(
             format_playlist_line(2, &entry),

@@ -2016,6 +2016,7 @@ mod tests {
             description: None,
             owner: None,
             tracks: None,
+            access: None,
         }
     }
 
