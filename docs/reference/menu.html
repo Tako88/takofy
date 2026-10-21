@@ -1,0 +1,716 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Context menu · Takofy</title>
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body class="app" data-page="menu">
+
+<!-- ===================== Sidebar ===================== -->
+<aside class="sidebar" aria-label="Your library">
+  <div class="chips" role="group" aria-label="Filter your library" data-chip-group data-chip-target="#library-list" data-count-target="[data-library-count]">
+    <button class="chip" type="button" data-chip="playlist" aria-pressed="false">Playlists</button>
+    <button class="chip" type="button" data-chip="artist" aria-pressed="false">Artists</button>
+    <button class="chip" type="button" data-chip="album" aria-pressed="false">Albums</button>
+    <button class="chip" type="button" data-chip="podcast" aria-pressed="false">Podcasts</button>
+  </div>
+
+  <div class="library">
+    <div class="library__head">
+      <form class="filter-field" role="search" onsubmit="return false">
+        <svg class="icon icon--sm" aria-hidden="true"><use href="#i-search"></use></svg>
+        <input type="search" data-library-filter aria-label="Filter your library" placeholder="28 saved" autocomplete="off" />
+        <button class="filter-field__clear" type="button" data-library-filter-clear aria-label="Clear filter" hidden>
+          <svg class="icon icon--sm" aria-hidden="true"><use href="#i-close"></use></svg>
+        </button>
+      </form>
+      <span class="visually-hidden" role="status" aria-live="polite" data-library-count></span>
+      <span class="library__head-actions">
+        <button class="icon-button" type="button" aria-label="Create playlist or folder">
+          <svg class="icon icon--md" aria-hidden="true"><use href="#i-plus"></use></svg>
+        </button>
+      </span>
+    </div>
+
+    <ul class="library__list" id="library-list" data-library-list></ul>
+  </div>
+</aside>
+
+<!-- ===================== Main ===================== -->
+<div class="app__main">
+  <header class="topbar">
+    <button class="icon-button topbar__drawer-toggle" type="button" data-drawer-toggle aria-expanded="false" aria-label="Open your library panel">
+      <svg class="icon icon--lg" aria-hidden="true"><use href="#i-panel"></use></svg>
+    </button>
+    <div class="topbar__nav">
+      <a class="round-button" href="index.html" data-nav="home" aria-label="Home">
+        <svg class="icon" aria-hidden="true"><use href="#i-home"></use></svg>
+      </a>
+      <button class="round-button" type="button" data-back aria-label="Go back">
+        <svg class="icon" aria-hidden="true"><use href="#i-arrow-left"></use></svg>
+      </button>
+      <button class="round-button" type="button" data-forward aria-label="Go forward">
+        <svg class="icon" aria-hidden="true"><use href="#i-arrow-right"></use></svg>
+      </button>
+    </div>
+    <form class="searchbar" role="search" onsubmit="return false">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-search"></use></svg>
+      <input type="search" placeholder="Search" aria-label="Search" />
+    </form>
+    <nav class="trail" aria-label="You are here">
+      <a href="index.html">Home</a>
+      <span class="trail__sep">/</span>
+      <span aria-current="page">Context menu</span>
+    </nav>
+  </header>
+
+  <main class="view states-page">
+    <div class="view__inner">
+      <div class="page-head">
+        <h1 class="page-head__title">Context menu</h1>
+        <p class="page-head__note">Concept · 8 frames · pointer and keyboard</p>
+      </div>
+
+      <p class="states__intro">
+        One menu, three doors: the row's <b>⋯</b>, a right-click anywhere on the row, and the
+        keyboard's context-menu key or <b>Shift+F10</b>. All three open the same object — and it is the
+        same object as the search field's results, because a menu should not be a second dialect: one
+        hairline box, one raised surface, two tiers, never three.
+      </p>
+
+      <!-- ============ The ruling ============ -->
+      <section class="section section--first" aria-labelledby="ruling">
+        <div class="section__head">
+          <h2 class="section__title" id="ruling">The ruling</h2>
+          <p class="label states__meta">no new colour · nothing disabled</p>
+        </div>
+
+        <div class="states__pair">
+          <div>
+            <p class="label spec-cap">destructive — ink, not hue</p>
+            <p class="states__note">
+              Commands rest one tier below the app's full ink. The destructive command is the only one
+              written in full bone, sits behind a 1pt hairline, and is always the last row. No red: the
+              palette has one signal hue and it means “sound is coming out”, so a second one would
+              cost more than the danger it announces.
+            </p>
+          </div>
+          <div>
+            <p class="label spec-cap">omitted, never greyed</p>
+            <p class="states__note">
+              A menu lists what you can do <em>here</em>, not what exists elsewhere. On a playlist you
+              do not own, the destructive row is simply absent — the band goes with it and nothing else
+              moves, because the band is always last. Disabled stays a state for whole controls, not
+              something a row can be.
+            </p>
+          </div>
+        </div>
+
+        <p class="states__note">
+          The other three rulings are drawn below: “Add to playlist” is a submenu with its own filter
+          (23 lists cannot be one line, and a second panel would leave two surfaces arguing about
+          focus); counts live in the label, never in a header band; and a key hint is only shown for a
+          key that is really bound — today that is <b>Del</b> and nothing else.
+        </p>
+      </section>
+
+      <!-- ============ M1 ============ -->
+      <section class="section" aria-labelledby="m1">
+        <div class="section__head">
+          <h2 class="section__title" id="m1"><span class="states__no">M1</span>The menu on a track row</h2>
+          <p class="label states__meta">8 verbs · nothing lit</p>
+        </div>
+
+        <div class="states__stage">
+          <div class="states__bar">
+            <span class="label">Opened from the row's ⋯</span>
+            <span class="label states__status">pointer</span>
+          </div>
+
+          <div class="tracks tracks--slim">
+            <ol class="tracklist">
+              <li class="track-row">
+                <span class="track-row__index"><span class="track-row__number">2</span></span>
+                <span class="track-row__title"><img class="track-row__art" src="img/covers/slow-tide.jpg" alt="" loading="lazy" /><span class="track-row__text"><span class="track-row__name truncate">Harbour Wall</span></span></span>
+                <span class="track-row__like" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-heart-filled"></use></svg></span>
+                <span class="track-row__duration">4:05</span>
+                <span class="track-row__actions"><button class="icon-button is-open" type="button" aria-label="More options for Harbour Wall" aria-haspopup="menu" aria-expanded="true"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button></span>
+              </li>
+            </ol>
+          </div>
+
+          <div class="menu-demo menu-demo--edge">
+            <ul class="menu" role="menu" aria-label="Harbour Wall">
+              <li class="menu__action" role="menuitem">Add to queue</li>
+              <li class="menu__action" role="menuitem">Remove from your library</li>
+              <li class="menu__action" role="menuitem">Go to album</li>
+              <li class="menu__action" role="menuitem">Go to artist</li>
+              <li class="menu__action" role="menuitem">Copy link</li>
+              <li class="menu__action" role="menuitem" aria-haspopup="menu" aria-expanded="false">
+                <span class="menu__label">Add to playlist</span>
+                <span class="menu__chevron"><svg class="icon" aria-hidden="true"><use href="#i-chevron-right"></use></svg></span>
+              </li>
+              <li class="menu__action" role="menuitem">New playlist…</li>
+              <li class="menu__action is-destructive" role="menuitem">
+                <span class="menu__label">Remove from this playlist</span>
+                <span class="menu__key">Del</span>
+              </li>
+            </ul>
+          </div>
+        </div>
+
+        <p class="states__note">
+          Seven verbs and one command. The row stays as it was — the menu is the state, not the row —
+          and the ⋯ button is the only thing that says it is open. A menu opened by the pointer lights
+          nothing until the pointer reaches a row: there is no “current item” you did not choose.
+        </p>
+      </section>
+
+      <!-- ============ M2 ============ -->
+      <section class="section" aria-labelledby="m2">
+        <div class="section__head">
+          <h2 class="section__title" id="m2"><span class="states__no">M2</span>Not your playlist</h2>
+          <p class="label states__meta">the band goes · nothing moves</p>
+        </div>
+
+        <div class="states__stage">
+          <div class="states__pair">
+            <div>
+              <p class="label spec-cap">yours · 8 rows, band last</p>
+              <ul class="menu" role="menu" aria-label="Yours">
+                <li class="menu__action" role="menuitem">Add to queue</li>
+                <li class="menu__action" role="menuitem">Remove from your library</li>
+                <li class="menu__action" role="menuitem">Go to album</li>
+                <li class="menu__action" role="menuitem">Go to artist</li>
+                <li class="menu__action" role="menuitem">Copy link</li>
+                <li class="menu__action" role="menuitem" aria-haspopup="menu" aria-expanded="false">
+                  <span class="menu__label">Add to playlist</span>
+                  <span class="menu__chevron"><svg class="icon" aria-hidden="true"><use href="#i-chevron-right"></use></svg></span>
+                </li>
+                <li class="menu__action" role="menuitem">New playlist…</li>
+                <li class="menu__action is-destructive" role="menuitem">
+                  <span class="menu__label">Remove from this playlist</span>
+                  <span class="menu__key">Del</span>
+                </li>
+              </ul>
+            </div>
+            <div>
+              <p class="label spec-cap">someone else's · 7 rows, no band</p>
+              <ul class="menu" role="menu" aria-label="Someone else's">
+                <li class="menu__action" role="menuitem">Add to queue</li>
+                <li class="menu__action" role="menuitem">Remove from your library</li>
+                <li class="menu__action" role="menuitem">Go to album</li>
+                <li class="menu__action" role="menuitem">Go to artist</li>
+                <li class="menu__action" role="menuitem">Copy link</li>
+                <li class="menu__action" role="menuitem" aria-haspopup="menu" aria-expanded="false">
+                  <span class="menu__label">Add to playlist</span>
+                  <span class="menu__chevron"><svg class="icon" aria-hidden="true"><use href="#i-chevron-right"></use></svg></span>
+                </li>
+                <li class="menu__action" role="menuitem">New playlist…</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+
+        <p class="states__note">
+          Same row, same door, one verb fewer. Everything above the band keeps its position and its
+          order, so the muscle memory survives the difference — which is the argument against greying a
+          row out in a look the app does not otherwise have.
+        </p>
+      </section>
+
+      <!-- ============ M3 ============ -->
+      <section class="section" aria-labelledby="m3">
+        <div class="section__head">
+          <h2 class="section__title" id="m3"><span class="states__no">M3</span>The command, lit two ways</h2>
+          <p class="label states__meta">pointer wash · keyboard rule</p>
+        </div>
+
+        <div class="states__stage">
+          <div class="states__pair">
+            <div>
+              <p class="label spec-cap">pointer · a wash and a tick</p>
+              <ul class="menu" role="menu" aria-label="Pointer on the command">
+                <li class="menu__action" role="menuitem">New playlist…</li>
+                <li class="menu__action is-destructive is-hover" role="menuitem">
+                  <span class="menu__label">Remove from this playlist</span>
+                  <span class="menu__key">Del</span>
+                </li>
+              </ul>
+            </div>
+            <div>
+              <p class="label spec-cap">keyboard · the 2pt rule and the key</p>
+              <ul class="menu" role="menu" aria-label="Keyboard on the command">
+                <li class="menu__action" role="menuitem">New playlist…</li>
+                <li class="menu__action is-destructive is-active" role="menuitem">
+                  <span class="menu__label">Remove from this playlist</span>
+                  <span class="menu__key">Del</span>
+                </li>
+              </ul>
+            </div>
+          </div>
+        </div>
+
+        <p class="states__note">
+          The two tiers are the search menu's, unchanged: the pointer gets a 4% wash and a 1rem tick at
+          the margin, the keyboard gets the surface and the 2pt bone rule. On a lit row the key hint
+          steps up one tier with the label — the hierarchy inside the row is the same hierarchy as
+          everywhere else in the app.
+        </p>
+      </section>
+
+      <!-- ============ M4 ============ -->
+      <section class="section" aria-labelledby="m4">
+        <div class="section__head">
+          <h2 class="section__title" id="m4"><span class="states__no">M4</span>Add to playlist</h2>
+          <p class="label states__meta">a submenu with its own filter</p>
+        </div>
+
+        <div class="states__stage">
+          <div class="states__bar">
+            <span class="label">23 lists · the field is pinned, the list scrolls</span>
+            <span class="label states__status">submenu</span>
+          </div>
+
+          <div class="menu-demo menu-demo--room">
+            <ul class="menu" role="menu" aria-label="Add to playlist, opened">
+              <li class="menu__action" role="menuitem">Go to artist</li>
+              <li class="menu__action" role="menuitem">Copy link</li>
+              <li class="menu__action is-active" role="menuitem" aria-haspopup="menu" aria-expanded="true">
+                <span class="menu__label">Add to playlist</span>
+                <span class="menu__chevron"><svg class="icon" aria-hidden="true"><use href="#i-chevron-right"></use></svg></span>
+                <div class="menu__submenu menu">
+                  <form class="filter-field" role="search" onsubmit="return false">
+                    <svg class="icon icon--sm" aria-hidden="true"><use href="#i-search"></use></svg>
+                    <input type="search" aria-label="Filter your playlists" placeholder="Filter" autocomplete="off" />
+                  </form>
+                  <ul class="menu__body" role="menu" aria-label="Your playlists">
+                    <li class="menu__action" role="menuitem">Late Night Drive</li>
+                    <li class="menu__action" role="menuitem">Deep Focus</li>
+                    <li class="menu__action" role="menuitem">Tape Hiss</li>
+                    <li class="menu__action is-hover" role="menuitem">Night Bus</li>
+                    <li class="menu__action" role="menuitem">Harbour Static</li>
+                    <li class="menu__action" role="menuitem">Slow Motion</li>
+                    <li class="menu__action" role="menuitem">Windows Down</li>
+                  </ul>
+                </div>
+              </li>
+              <li class="menu__action" role="menuitem">New playlist…</li>
+            </ul>
+          </div>
+        </div>
+
+        <p class="states__note">
+          The submenu is the same box, hung off its row by one hairline gap, capped at eight rows with
+          its own scroll. The field at its top is the field the sidebar already taught, at its smallest
+          size — pinned, so the list scrolls under it. “New playlist…” stays a row of the
+          <em>parent</em>: the one action that is always possible must not be buried by 23 lists. Escape
+          closes the submenu only, and puts the keyboard back on “Add to playlist”.
+        </p>
+      </section>
+
+      <!-- ============ M5 ============ -->
+      <section class="section" aria-labelledby="m5">
+        <div class="section__head">
+          <h2 class="section__title" id="m5"><span class="states__no">M5</span>Right-click inside a pick</h2>
+          <p class="label states__meta">the label carries the count</p>
+        </div>
+
+        <div class="states__stage">
+          <div class="states__bar">
+            <span class="label">Three rows selected · right-click on any of them</span>
+            <span class="label states__status">pointer</span>
+          </div>
+
+          <div class="tracks tracks--slim">
+            <ol class="tracklist">
+              <li class="track-row is-selected">
+                <span class="track-row__index"><span class="track-row__number">2</span></span>
+                <span class="track-row__title"><img class="track-row__art" src="img/covers/slow-tide.jpg" alt="" loading="lazy" /><span class="track-row__text"><span class="track-row__name truncate">Harbour Wall</span></span></span>
+                <span class="track-row__like" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-heart-filled"></use></svg></span>
+                <span class="track-row__duration">4:05</span>
+                <span class="track-row__actions" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-more"></use></svg></span>
+              </li>
+              <li class="track-row is-selected">
+                <span class="track-row__index"><span class="track-row__number">3</span></span>
+                <span class="track-row__title"><img class="track-row__art" src="img/covers/halcyon-street.jpg" alt="" loading="lazy" /><span class="track-row__text"><span class="track-row__name truncate">Halcyon Street</span></span></span>
+                <span class="track-row__like" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-heart"></use></svg></span>
+                <span class="track-row__duration">3:16</span>
+                <span class="track-row__actions" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-more"></use></svg></span>
+              </li>
+              <li class="track-row is-selected">
+                <span class="track-row__index"><span class="track-row__number">4</span></span>
+                <span class="track-row__title"><img class="track-row__art" src="img/covers/low-country.jpg" alt="" loading="lazy" /><span class="track-row__text"><span class="track-row__name truncate">Low Country</span></span></span>
+                <span class="track-row__like" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-heart"></use></svg></span>
+                <span class="track-row__duration">4:31</span>
+                <span class="track-row__actions" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-more"></use></svg></span>
+              </li>
+            </ol>
+          </div>
+
+          <div class="menu-demo menu-demo--edge">
+            <ul class="menu" role="menu" aria-label="3 tracks">
+              <li class="menu__action" role="menuitem">Add 3 tracks to queue</li>
+              <li class="menu__action" role="menuitem">Save 3 tracks to your library</li>
+              <li class="menu__action" role="menuitem">Go to artist</li>
+              <li class="menu__action" role="menuitem">Copy 3 links</li>
+              <li class="menu__action" role="menuitem" aria-haspopup="menu" aria-expanded="false">
+                <span class="menu__label">Add 3 tracks to playlist</span>
+                <span class="menu__chevron"><svg class="icon" aria-hidden="true"><use href="#i-chevron-right"></use></svg></span>
+              </li>
+              <li class="menu__action" role="menuitem">New playlist…</li>
+              <li class="menu__action is-destructive" role="menuitem">
+                <span class="menu__label">Remove 3 tracks from this playlist</span>
+                <span class="menu__key">Del</span>
+              </li>
+            </ul>
+          </div>
+        </div>
+
+        <p class="states__note">
+          Right-clicking inside a pick acts on the <em>whole pick</em> and does not collapse it — the
+          count in each label is the courtesy. Right-clicking outside a pick selects the row under the
+          pointer <em>first</em>, then opens the menu on it: never both, and never a menu about one row
+          while another row looks picked. No header band states the count twice; the labels already do.
+        </p>
+      </section>
+
+      <!-- ============ M6 ============ -->
+      <section class="section" aria-labelledby="m6">
+        <div class="section__head">
+          <h2 class="section__title" id="m6"><span class="states__no">M6</span>At the window's edge</h2>
+          <p class="label states__meta">the submenu flips, the menu clamps</p>
+        </div>
+
+        <div class="states__stage">
+          <div class="states__bar">
+            <span class="label">The ⋯ is at the right margin of a 1200pt window</span>
+            <span class="label states__status">edge</span>
+          </div>
+
+          <div class="menu-demo menu-demo--edge menu-demo--room">
+            <ul class="menu" role="menu" aria-label="At the right edge">
+              <li class="menu__action" role="menuitem">Go to artist</li>
+              <li class="menu__action" role="menuitem">Copy link</li>
+              <li class="menu__action is-active" role="menuitem" aria-haspopup="menu" aria-expanded="true">
+                <span class="menu__label">Add to playlist</span>
+                <span class="menu__chevron"><svg class="icon" aria-hidden="true"><use href="#i-chevron-right"></use></svg></span>
+                <div class="menu__submenu menu__submenu--flip menu">
+                  <form class="filter-field" role="search" onsubmit="return false">
+                    <svg class="icon icon--sm" aria-hidden="true"><use href="#i-search"></use></svg>
+                    <input type="search" aria-label="Filter your playlists" placeholder="Filter" autocomplete="off" />
+                  </form>
+                  <ul class="menu__body" role="menu" aria-label="Your playlists, flipped">
+                    <li class="menu__action" role="menuitem">Late Night Drive</li>
+                    <li class="menu__action" role="menuitem">Deep Focus</li>
+                    <li class="menu__action is-hover" role="menuitem">Tape Hiss</li>
+                    <li class="menu__action" role="menuitem">Night Bus</li>
+                    <li class="menu__action" role="menuitem">Harbour Static</li>
+                  </ul>
+                </div>
+              </li>
+              <li class="menu__action" role="menuitem">New playlist…</li>
+              <li class="menu__action is-destructive" role="menuitem">
+                <span class="menu__label">Remove from this playlist</span>
+                <span class="menu__key">Del</span>
+              </li>
+            </ul>
+          </div>
+        </div>
+
+        <p class="states__note">
+          The menu right-aligns to its button and stays inside the window; the submenu — which cannot
+          fit to its right — flips to the left, into the page. Nothing is ever allowed to hang off the
+          edge and be clipped: a menu that loses its last row is worse than a menu that opens the other
+          way.
+        </p>
+      </section>
+
+      <!-- ============ M7 ============ -->
+      <section class="section" aria-labelledby="m7">
+        <div class="section__head">
+          <h2 class="section__title" id="m7"><span class="states__no">M7</span>Inside the sidebar</h2>
+          <p class="label states__meta">12rem wide · labels truncate</p>
+        </div>
+
+        <div class="states__stage">
+          <div class="states__bar">
+            <span class="label">Opened on Deep Focus, beside a 16rem rail</span>
+            <span class="label states__status">bounded</span>
+          </div>
+
+          <div class="drag-pair drag-pair--rail-note">
+            <div class="drag-rail">
+              <p class="drag-rail__head">Your library</p>
+              <ul class="library__list">
+                <li>
+                  <span class="library-item">
+                    <img class="library-item__art" src="img/covers/signal-decay.jpg" alt="" loading="lazy" />
+                    <span class="library-item__text"><span class="library-item__name truncate">Late Night Drive</span><span class="library-item__kind truncate">Playlist · Vela Moreno</span></span>
+                  </span>
+                </li>
+                <li>
+                  <span class="library-item">
+                    <img class="library-item__art" src="img/covers/low-country.jpg" alt="" loading="lazy" />
+                    <span class="library-item__text"><span class="library-item__name truncate">Deep Focus</span><span class="library-item__kind truncate">Playlist · made for you</span></span>
+                  </span>
+                </li>
+                <li>
+                  <span class="library-item">
+                    <img class="library-item__art" src="img/covers/wintering.jpg" alt="" loading="lazy" />
+                    <span class="library-item__text"><span class="library-item__name truncate">Tape Hiss</span><span class="library-item__kind truncate">Playlist · made for you</span></span>
+                  </span>
+                </li>
+              </ul>
+            </div>
+
+            <div class="menu-demo">
+              <ul class="menu menu--narrow" role="menu" aria-label="Deep Focus">
+                <li class="menu__action" role="menuitem">Play</li>
+                <li class="menu__action" role="menuitem"><span class="menu__label">Add all 12 tracks to the end of the queue</span></li>
+                <li class="menu__action" role="menuitem">Rename</li>
+                <li class="menu__action" role="menuitem">Copy link</li>
+                <li class="menu__action is-destructive" role="menuitem">
+                  <span class="menu__label">Delete playlist</span>
+                  <span class="menu__key">Del</span>
+                </li>
+              </ul>
+            </div>
+          </div>
+        </div>
+
+        <p class="states__note">
+          Twelve rem, hard stop. A verb that does not fit is truncated with an ellipsis, never wrapped
+          onto a second line — a menu row is one line by definition. The destructive band survives the
+          narrowing, because it is structure, not decoration. And the row itself wears nothing: as in
+          M1, the menu is the state.
+        </p>
+      </section>
+
+      <!-- ============ M8 ============ -->
+      <section class="section" aria-labelledby="m8">
+        <div class="section__head">
+          <h2 class="section__title" id="m8"><span class="states__no">M8</span>Closed, and back on the button</h2>
+          <p class="label states__meta">escape returns the keyboard</p>
+        </div>
+
+        <div class="states__stage">
+          <div class="states__bar">
+            <span class="label">Escape pressed · menu gone · focus on the ⋯</span>
+            <span class="label states__status">keyboard</span>
+          </div>
+
+          <div class="tracks tracks--slim">
+            <ol class="tracklist">
+              <li class="track-row">
+                <span class="track-row__index"><span class="track-row__number">2</span></span>
+                <span class="track-row__title"><img class="track-row__art" src="img/covers/slow-tide.jpg" alt="" loading="lazy" /><span class="track-row__text"><span class="track-row__name truncate">Harbour Wall</span></span></span>
+                <span class="track-row__like" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-heart-filled"></use></svg></span>
+                <span class="track-row__duration">4:05</span>
+                <span class="track-row__actions"><button class="icon-button is-focus-ring" type="button" aria-label="More options for Harbour Wall" aria-haspopup="menu" aria-expanded="false"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button></span>
+              </li>
+            </ol>
+          </div>
+        </div>
+
+        <p class="states__note">
+          Closing puts the keyboard back where it came from — the button that opened the menu, wearing
+          the app's own focus ring. Not the row, not the body: if focus fell to the page you would have
+          to find your way back to the thing you were doing. Tab, a click outside and choosing an item
+          all close it the same way.
+        </p>
+      </section>
+
+      <!-- ============ Behaviour ============ -->
+      <section class="section" aria-labelledby="behaviour">
+        <div class="section__head">
+          <h2 class="section__title" id="behaviour">Behaviour</h2>
+          <p class="label states__meta">the part a picture cannot say</p>
+        </div>
+
+        <dl class="spec-list">
+          <dt>what opens it</dt>
+          <dd>The row's ⋯, a right-click on the row, the context-menu key or Shift+F10. One menu, one position, three doors — including for the ⋯ in Now Playing and the queue.</dd>
+
+          <dt>what closes it</dt>
+          <dd>Escape (focus returns to the button that opened it), a click outside, Tab, or choosing an item. Escape inside a submenu closes only the submenu and returns the keyboard to its parent row.</dd>
+
+          <dt>right-click, inside a pick</dt>
+          <dd>Acts on the whole pick. The pick is not collapsed, the labels carry the count, and no header states it twice.</dd>
+
+          <dt>right-click, outside a pick</dt>
+          <dd>Selects the row under the pointer first, then opens on it. Never a menu about one row while a different row looks picked.</dd>
+
+          <dt>pointer vs keyboard</dt>
+          <dd>Pointer: nothing is lit until the pointer reaches a row. Keyboard: the first row is lit on open. Only one tier is ever lit at a time — the search menu's rule, unchanged.</dd>
+
+          <dt>a submenu's field</dt>
+          <dd>While the filter has the keyboard, no row is lit; the arrows move into the list and the field takes them back when the list ends. Escape closes the submenu.</dd>
+
+          <dt>what is disabled</dt>
+          <dd>Nothing. A verb that cannot apply is absent, not greyed — disabled stays a state for whole controls (a waiting band, a waiting release), never for one row of a menu.</dd>
+
+          <dt>counts</dt>
+          <dd>In the label when the pick is more than one: “Add 3 tracks to queue”, “Remove 3 tracks from this playlist”. No header band.</dd>
+
+          <dt>copy link</dt>
+          <dd>One URL per line, which is why a pick says “Copy 3 links” — the count rule applies to it as much as to the destructive command. It sits with the other identity verbs (Go to album, Go to artist), not at the bottom next to the band, and it carries no key hint: nothing is bound to it, and a hint for an unbound key is a lie.</dd>
+
+          <dt>key hints</dt>
+          <dd>Only for keys that are really bound, right-aligned in mono at the smallest step: <b>Del</b> on the destructive command today. No F2 until renaming exists.</dd>
+        </dl>
+      </section>
+
+      <!-- ============ Tokens ============ -->
+      <section class="section" aria-labelledby="tokens">
+        <div class="section__head">
+          <h2 class="section__title" id="tokens">What gets built</h2>
+          <p class="label states__meta">no new token</p>
+        </div>
+
+        <dl class="spec-list">
+          <dt>— (nothing added)</dt>
+          <dd>This slice asks the token layer for nothing. The destructive command reuses <b>--color-text</b> and the hairline it already has; the band reuses --color-border; the two lit tiers reuse the search menu's. That is the point of the ruling: it costs the palette nothing.</dd>
+
+          <dt>the road not taken</dt>
+          <dd><b>--color-danger</b> plus a hover step, in a warm oxide that cannot be mistaken for the moss accent. Rejected because the app has exactly one signal hue and it means “sound is coming out”; a second would spend the discipline the drag slice just established, and the command is undoable in the product anyway.</dd>
+
+          <dt>shared with search</dt>
+          <dd>The menu box and both lit tiers moved from <b>.search-menu</b> into <b>.menu</b>, so the field's results and the row's commands are one component. The search sheet keeps its row grammar; only the state classes moved.</dd>
+        </dl>
+
+        <p class="states__note">
+          One structural consequence worth writing down: the menu is now a shared object, so a change to
+          its box, its shadow or its lit tiers lands on the search field's results at the same moment it
+          lands here. That is intentional — they were always the same surface.
+        </p>
+      </section>
+
+      <footer class="tracklist__foot">
+        <p>
+          Concept · a state board, not a screen. Menus are static specimens, so no row here responds to
+          the pointer. See also <a href="drag.html">drag and drop</a>,
+          <a href="search-reference.html">the search reference sheet</a> and
+          <a href="loading.html">loading states</a>.
+        </p>
+      </footer>
+    </div>
+  </main>
+</div>
+
+<!-- ===================== Now playing panel ===================== -->
+<aside class="now-playing" aria-label="Now playing">
+  <div class="now-playing__head">
+    <h2>Now playing</h2>
+    <button class="icon-button" type="button" aria-label="More options for the current track">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-more"></use></svg>
+    </button>
+  </div>
+
+  <div class="now-playing__art">
+    <img data-now-art src="img/covers/slow-tide.jpg" alt="Slow Tide cover" />
+  </div>
+
+  <div class="now-playing__meta">
+    <div>
+      <a class="now-playing__title truncate" href="album.html" data-now-title>Slow Tide</a>
+      <a class="now-playing__artist truncate" href="artist.html" data-now-artist>Vela Moreno</a>
+    </div>
+    <button class="icon-button icon-button--lg" type="button" data-like data-like-group="now" aria-pressed="false" aria-label="Save to your library">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-heart"></use></svg>
+    </button>
+  </div>
+
+  <p class="now-playing__spec">
+    <span><b>320</b> kbps</span><span>Ogg Vorbis</span><span>44.1 kHz</span><span>Stereo</span>
+  </p>
+
+  <div class="panel-pane is-active" id="pane-queue" role="tabpanel">
+    <p class="queue-head">Next in queue</p>
+    <ul class="queue" data-queue-list data-playing-scope></ul>
+  </div>
+</aside>
+
+<!-- ===================== Mobile tab bar ===================== -->
+<nav class="tabbar" aria-label="Primary">
+  <a href="index.html" data-nav="home"><svg class="icon icon--lg" aria-hidden="true"><use href="#i-home"></use></svg>Home</a>
+  <a href="search.html" data-nav="search"><svg class="icon icon--lg" aria-hidden="true"><use href="#i-search"></use></svg>Search</a>
+  <a href="podcasts.html" data-nav="podcasts"><svg class="icon icon--lg" aria-hidden="true"><use href="#i-mic"></use></svg>Podcasts</a>
+</nav>
+
+<!-- ===================== Playbar ===================== -->
+<footer class="playbar">
+  <div class="playbar__now">
+    <img class="playbar__art" data-now-art src="img/covers/slow-tide.jpg" alt="Slow Tide cover" />
+    <div class="playbar__text">
+      <a class="playbar__title truncate" href="album.html" data-now-title>Slow Tide</a>
+      <a class="playbar__artist truncate" href="artist.html" data-now-artist>Vela Moreno</a>
+    </div>
+    <button class="icon-button" type="button" data-like data-like-group="now" aria-pressed="false" aria-label="Save to your library">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-heart"></use></svg>
+    </button>
+    <button class="icon-button" type="button" aria-label="Open miniplayer">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-screen"></use></svg>
+    </button>
+  </div>
+
+  <div class="playbar__center">
+    <div class="playbar__buttons">
+      <button class="icon-button" type="button" data-toggle aria-pressed="false" aria-label="Shuffle">
+        <svg class="icon icon--md" aria-hidden="true"><use href="#i-shuffle"></use></svg>
+      </button>
+      <button class="icon-button" type="button" data-prev aria-label="Previous track">
+        <svg class="icon icon--md" aria-hidden="true"><use href="#i-prev"></use></svg>
+      </button>
+      <button class="play-button playbar__play" type="button" data-transport aria-label="Play or pause">
+        <svg class="icon icon--md" aria-hidden="true"><use href="#i-pause" data-transport-icon></use></svg>
+      </button>
+      <button class="icon-button" type="button" data-next aria-label="Next track">
+        <svg class="icon icon--md" aria-hidden="true"><use href="#i-next"></use></svg>
+      </button>
+      <button class="icon-button" type="button" data-toggle aria-pressed="false" aria-label="Repeat">
+        <svg class="icon icon--md" aria-hidden="true"><use href="#i-repeat"></use></svg>
+      </button>
+    </div>
+
+    <div class="playbar__progress">
+      <span class="playbar__time" data-elapsed>1:14</span>
+      <div class="slider" data-seek role="slider" tabindex="0" aria-label="Seek" aria-valuemin="0" aria-valuenow="74" aria-valuemax="222">
+        <div class="slider__track"></div>
+        <div class="slider__fill" data-seek-fill></div>
+        <div class="slider__thumb"></div>
+      </div>
+      <span class="playbar__time playbar__time--end" data-remaining>-2:28</span>
+    </div>
+  </div>
+
+  <div class="playbar__extras">
+    <button class="icon-button" type="button" aria-label="Queue">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-queue"></use></svg>
+    </button>
+    <button class="icon-button" type="button" aria-label="Connect to a device">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-devices"></use></svg>
+    </button>
+    <button class="icon-button" type="button" aria-label="Mute">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-volume" data-volume-icon></use></svg>
+    </button>
+    <div class="slider playbar__volume" data-volume role="slider" tabindex="0" aria-label="Volume" aria-valuemin="0" aria-valuenow="72" aria-valuemax="100">
+      <div class="slider__track"></div>
+      <div class="slider__fill"></div>
+      <div class="slider__thumb"></div>
+    </div>
+    <button class="icon-button" type="button" aria-label="Full screen">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-expand"></use></svg>
+    </button>
+  </div>
+
+  <div class="playbar__minibar" aria-hidden="true">
+    <div class="progress-bar__fill" data-mini-fill></div>
+  </div>
+</footer>
+
+<script src="main.js"></script>
+</body>
+</html>

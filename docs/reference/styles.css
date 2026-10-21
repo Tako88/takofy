@@ -82,7 +82,9 @@ svg {
   display: block;
 }
 
-:focus-visible {
+:focus-visible,
+/* The board's way of holding the ring still for a picture; same one rule. */
+.is-focus-ring {
   outline: 1px solid var(--color-accent);
   outline-offset: 2px;
 }
@@ -3108,19 +3110,25 @@ svg {
   height: 0.75rem;
 }
 
-/* The menu is anchored to the field's own box: same width, 6px below it, one
-   hairline border, and the app's largest shadow. It is a lens, not a mode. */
+/* One box for every menu in the app. A field's results and a row's commands are
+   the same object: a raised panel with one hairline edge, the largest shadow, and
+   rows that answer to exactly one tier at a time. */
+.menu {
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius);
+  background: var(--color-surface-raised);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+}
+
+/* The search menu is anchored to the field's own box: same width, 6px below it.
+   It is a lens, not a mode. */
 .search-menu {
   position: absolute;
   z-index: 40;
   top: calc(100% + 6px);
   left: 0;
   right: 0;
-  border: 1px solid var(--color-border-strong);
-  border-radius: var(--radius);
-  background: var(--color-surface-raised);
-  box-shadow: var(--shadow-lg);
-  overflow: hidden;
 }
 
 /* Reference sheets: the menu sits in the flow, so a spec page does not have to
@@ -3222,12 +3230,21 @@ svg {
 }
 
 /* Two tiers, never three. The pointer is a wash and a 1rem tick at the margin;
-   the keyboard owns the 2px rule and the action glyph. */
-.search-menu__row.is-hover {
+   the keyboard owns the 2px rule and the action glyph. These are properties of
+   being a row in a menu, so every menu in the app answers the same way — whether
+   the rows sit straight in the box or in a submenu's scrolling body. */
+.menu > li,
+.menu__body > li {
+  position: relative;
+}
+
+.menu > li.is-hover,
+.menu__body > li.is-hover {
   background: rgba(242, 240, 234, 0.04);
 }
 
-.search-menu__row.is-hover::before {
+.menu > li.is-hover::before,
+.menu__body > li.is-hover::before {
   content: "";
   position: absolute;
   left: 0;
@@ -3239,15 +3256,20 @@ svg {
 }
 
 /* On a lit row the subtle tier loses its contrast, so the second line steps up
-   one tier with it. */
-.search-menu__row.is-active .search-menu__sub,
-.search-menu__row.is-active .search-menu__type,
-.search-menu__row.is-hover .search-menu__sub,
-.search-menu__row.is-hover .search-menu__type {
+   one tier with it — in every menu. */
+.menu > li.is-active .search-menu__sub,
+.menu > li.is-active .search-menu__type,
+.menu > li.is-active .menu__key,
+.menu > li.is-hover .search-menu__sub,
+.menu > li.is-hover .search-menu__type,
+.menu > li.is-hover .menu__key,
+.menu__body > li.is-active .menu__key,
+.menu__body > li.is-hover .menu__key {
   color: var(--color-text-muted);
 }
 
-.search-menu__row.is-active {
+.menu > li.is-active,
+.menu__body > li.is-active {
   background: var(--color-surface-hover);
   box-shadow: inset 2px 0 0 var(--color-text);
 }
@@ -3315,6 +3337,157 @@ svg {
   padding: var(--space-1) var(--space-3);
   color: var(--color-text-subtle);
   font-size: var(--text-xs);
+}
+
+/* --------------------------------------------------------------------------
+   Command rows — the same menu, one line per verb
+   -------------------------------------------------------------------------- */
+
+/* Commands rest one tier below the app's full ink. That is what lets the
+   destructive command be the only one written in full bone without the app
+   needing a colour it does not have: no red, no second signal hue. */
+.menu__action {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  min-height: 2.75rem;
+  padding: var(--space-1) var(--space-3);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.menu > li.is-hover.menu__action,
+.menu > li.is-active.menu__action {
+  color: var(--color-text);
+}
+
+.menu__label {
+  min-width: 0;
+  /* A menu row is one line by definition: a verb that does not fit is truncated,
+     never wrapped onto a second line. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The verb is the whole signal: full ink, a hairline above, and always the last
+   row in the menu. Not hovered, not focusable-loud — just stated plainly. */
+.menu__action.is-destructive {
+  border-top: 1px solid var(--color-border);
+  color: var(--color-text);
+}
+
+/* A key hint only exists for a key that is really bound. */
+.menu__key {
+  flex: none;
+  color: var(--color-text-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-medium);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+}
+
+.menu__chevron {
+  flex: none;
+  display: grid;
+  place-items: center;
+  color: var(--color-text-subtle);
+}
+
+.menu__chevron .icon {
+  width: 0.875rem;
+  height: 0.875rem;
+}
+
+/* A submenu hangs off its row: the same box, one hairline gap, its own scroll. It
+   flips to the left when the parent already sits at the window's edge. */
+.menu__submenu {
+  position: absolute;
+  z-index: 41;
+  top: -1px;
+  left: calc(100% + var(--space-1));
+  display: flex;
+  flex-direction: column;
+  width: 14rem;
+  max-height: 16rem;
+}
+
+/* A menu that carries a submenu cannot clip it. */
+.menu:has(.menu__submenu) {
+  overflow: visible;
+}
+
+/* The rows of a menu that also has something pinned above them: the body is what
+   scrolls, so the field never scrolls away. */
+.menu__body {
+  min-width: 0;
+  overflow-y: auto;
+}
+
+.menu__submenu--flip {
+  left: auto;
+  right: calc(100% + var(--space-1));
+}
+
+/* The field at the top of a submenu: the same field the sidebar taught, at its
+   smallest size, pinned so the list below it scrolls under. */
+.menu__submenu .filter-field {
+  flex: none;
+  height: 2rem;
+  margin: 0;
+  padding: 0 var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+}
+
+/* A command menu sizes to its longest verb, within a cap. Count-bearing labels
+   (“Remove 3 tracks from this playlist”) must not be truncated to make room for a
+   width chosen in advance. A menu of results is the other case: it takes the
+   field's width, because it hangs off it. */
+.menu:has(> .menu__action) {
+  width: max-content;
+  min-width: 12rem;
+  max-width: 20rem;
+}
+
+/* Where a menu is bounded by its column instead of by its longest verb. */
+.menu.menu--narrow {
+  max-width: 12rem;
+}
+
+/* The button that opened the menu says so while the menu is up. */
+.icon-button.is-open {
+  color: var(--color-text);
+  background: var(--color-surface-hover);
+}
+
+/* Board: menus in the flow, so a reference sheet does not have to reserve height
+   for an overlay that is not going to move. Width comes from the menu itself. */
+.menu-demo {
+  position: relative;
+}
+
+.menu-demo > .menu {
+  position: static;
+}
+
+/* The anchored specimen keeps the six-pixel gap the real menu has, so the
+   pointer→menu relationship is drawn rather than described. */
+.menu-demo .menu--anchored {
+  margin-top: 6px;
+}
+
+.menu-demo--edge {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+
+/* A frame that has to leave room for a submenu hanging below its row. */
+.menu-demo--room {
+  padding-bottom: 9rem;
 }
 
 /* Results are one mixed list. The album column is meaningless across kinds, so
@@ -3577,6 +3750,7 @@ svg {
   border-top: 1px solid var(--color-border);
 }
 
+.spec-cap,
 .drag-cap {
   margin-bottom: var(--space-2);
   color: var(--color-text-subtle);
@@ -3654,8 +3828,10 @@ svg {
   text-transform: uppercase;
 }
 
-/* The token table at the foot of the page: value and the one-line reason for it,
-   in the mono voice the file itself is written in. */
+/* The token table at the foot of a reference sheet: name, value and the one-line
+   reason for it, in the mono voice the token file itself is written in. Shared by
+   every sheet, hence two names while drag.html keeps its own. */
+.spec-list,
 .drag-tokens {
   display: grid;
   grid-template-columns: 13rem minmax(0, 1fr);
@@ -3670,11 +3846,13 @@ svg {
   margin-top: var(--space-5);
 }
 
+.spec-list > *,
 .drag-tokens > * {
   padding: var(--space-2) 0;
   border-bottom: 1px solid var(--color-border);
 }
 
+.spec-list dt,
 .drag-tokens dt {
   color: var(--color-text);
   font-family: var(--font-mono);
@@ -3682,6 +3860,7 @@ svg {
   padding-right: var(--space-4);
 }
 
+.spec-list dd,
 .drag-tokens dd {
   margin: 0;
   color: var(--color-text-muted);
@@ -4178,9 +4357,31 @@ svg {
     flex: 1 1 auto;
   }
 
+  /* A submenu hangs off its row on a desktop. In a phone-width frame there is no
+     room beside the parent, so the specimen stacks it underneath — a board
+     fallback for reading, not a claim about the app, which is pointer and
+     keyboard only. */
+  .menu > li:has(.menu__submenu) {
+    flex-wrap: wrap;
+  }
+
+  .menu__submenu {
+    position: static;
+    width: 100%;
+    max-height: 12rem;
+    margin-top: var(--space-1);
+  }
+
+  /* With the submenu back in the flow it no longer needs the runway. */
+  .menu-demo--room {
+    padding-bottom: 0;
+  }
+
+  .spec-list,
   .drag-tokens {
     grid-template-columns: minmax(0, 1fr);
   }
+  .spec-list dt,
   .drag-tokens dt {
     padding-bottom: 0;
     border-bottom: 0;
