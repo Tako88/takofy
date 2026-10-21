@@ -2,12 +2,14 @@
 //!
 //! Spotify's collection sets are written and paged with hand-encoded protobuf,
 //! because librespot compiles no message for the collection endpoints. So each
-//! byte is decided here and pinned by a test: a mistake is a 4xx at best, and a
+//! body is decided here and pinned by a test: a mistake is a 4xx at best, and a
 //! silently changed write at worst.
 //!
 //! Only what the app needs is encoded: one artist per follow write, the presence
 //! probe the hero reads its label from, the paged read of the followed shows,
 //! and the paged read of the collection set.
+
+use crate::wire::{put_message, put_str, put_varint_field};
 
 /// The media type both collection endpoints want on `Content-Type` and `Accept`.
 pub(crate) const VENDOR: &str = "application/vnd.collection-v2.spotify.proto";
@@ -230,31 +232,6 @@ pub(crate) fn parse_contains(bytes: &[u8]) -> Vec<bool> {
     out
 }
 
-fn put_varint(mut value: u64, out: &mut Vec<u8>) {
-    while value >= 0x80 {
-        out.push((value as u8) | 0x80);
-        value >>= 7;
-    }
-    out.push(value as u8);
-}
-
-fn put_varint_field(tag: u32, value: u64, out: &mut Vec<u8>) {
-    put_varint(u64::from(tag) << 3, out);
-    put_varint(value, out);
-}
-
-fn put_str(tag: u32, value: &str, out: &mut Vec<u8>) {
-    put_varint((u64::from(tag) << 3) | 2, out);
-    put_varint(value.len() as u64, out);
-    out.extend_from_slice(value.as_bytes());
-}
-
-fn put_message(tag: u32, body: &[u8], out: &mut Vec<u8>) {
-    put_varint((u64::from(tag) << 3) | 2, out);
-    put_varint(body.len() as u64, out);
-    out.extend_from_slice(body);
-}
-
 fn read_varint(buf: &[u8], at: &mut usize) -> Option<u64> {
     let mut value = 0u64;
     let mut shift = 0;
@@ -283,6 +260,7 @@ fn read_bytes<'a>(buf: &'a [u8], at: &mut usize) -> Option<&'a [u8]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::wire::put_varint;
 
     const USER: &str = "alice";
     const ONE: &str = "spotify:artist:x";

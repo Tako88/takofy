@@ -1147,6 +1147,7 @@ mod tests {
     use takofy_model::{AddedAt, CoverUrl, Episode, PublishedAt};
 
     use crate::context::PageTrack;
+    use crate::playlist_edit::owned as owned_by;
     use crate::show::ShowError;
 
     use super::{
@@ -1835,6 +1836,43 @@ mod tests {
         assert_eq!(playlist_owner(&playlist_uri(Some("  "))), None);
         assert_eq!(playlist_owner(&playlist_uri(None)), None);
         assert_eq!(playlist_owner(&first_track()), None);
+    }
+
+    #[test]
+    fn a_playlist_uri_owner_is_compared_as_playlist_owner_spells_it() {
+        assert!(owned_by(
+            playlist_owner(&playlist_uri(Some("alice"))).as_deref(),
+            "alice"
+        ));
+        assert!(!owned_by(
+            playlist_owner(&playlist_uri(Some("Alice"))).as_deref(),
+            "alice"
+        ));
+        assert!(!owned_by(
+            playlist_owner(&playlist_uri(Some(""))).as_deref(),
+            ""
+        ));
+        assert!(!owned_by(
+            playlist_owner(&playlist_uri(None)).as_deref(),
+            "alice"
+        ));
+        assert!(!owned_by(
+            playlist_owner(&first_track()).as_deref(),
+            "alice"
+        ));
+    }
+
+    #[test]
+    fn a_collapsed_owner_name_is_not_owned() {
+        // `owned` compares byte-exact against the collapsed owner `playlist_owner` yields.
+        assert!(!owned_by(
+            playlist_owner(&playlist_uri(Some("a  b"))).as_deref(),
+            "a  b"
+        ));
+        assert!(owned_by(
+            playlist_owner(&playlist_uri(Some("a  b"))).as_deref(),
+            "a b"
+        ));
     }
 
     #[test]
