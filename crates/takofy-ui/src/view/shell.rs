@@ -16,6 +16,7 @@ use crate::layout::{self, Grid, NowPlaying, Playbar, Sidebar};
 use crate::library::Library;
 use crate::message::Command;
 use crate::queue::{Queue, Step};
+use crate::reorder;
 use crate::route::Page;
 use crate::search::Act;
 use crate::theme::{Tokens, radius, stroke};
@@ -437,12 +438,8 @@ fn alt_step(ui: &Ui, screen: &mut Screen<'_>, focused: Option<usize>) {
 fn reorder_target(carry: &Carry, offer: Option<&Offer>, pointer: Option<Pos2>) -> Option<Target> {
     let offer = offer.filter(|offer| carry.source == Source::List(offer.list))?;
     let at = landing::resolve(pointer, Some(&offer.zone))?;
-    // A single row's own gap and the next would not step, so it lands nowhere.
-    if let [row] = carry.rows[..]
-        && (at.boundary == row || at.boundary == row + 1)
-    {
-        return None;
-    }
+    // The marker is drawn where a move would land, so a blocked drop draws none.
+    reorder::gather(offer.zone.count, &carry.rows, at.boundary)?;
     Some(Target::Reorder(at))
 }
 
@@ -505,10 +502,10 @@ fn add(screen: &mut Screen<'_>, carry: &Carry, slot: landing::Slot, free: bool) 
     screen.library.add_track(slot.row, carry.track()?)
 }
 
-/// Moves the dropped row in its own list and picks where it landed.
+/// Moves the dropped rows in their own list and picks where they landed.
 ///
-/// A page that is no longer free to write, or a carry that is not exactly one
-/// row, lands nothing: the move is the page's to accept.
+/// A page that is no longer free to write lands nothing: the move is the page's
+/// to accept, and a block it refuses is refused whole.
 fn reorder(
     ctx: &egui::Context,
     screen: &mut Screen<'_>,
@@ -522,14 +519,11 @@ fn reorder(
         return None;
     }
     let offer = offer?;
-    let [row] = carry.rows[..] else {
-        return None;
-    };
-    let entry = carry.entries.first()?;
-    let (command, landed) = screen
-        .library
-        .move_track(&offer.playlist, row, at.boundary, entry)?;
-    carry::select_only(ctx, offer.list, landed);
+    let (command, landed) =
+        screen
+            .library
+            .move_tracks(&offer.playlist, &carry.rows, at.boundary, &carry.entries)?;
+    carry::select_rows(ctx, offer.list, landed);
     Some(command)
 }
 
@@ -4371,6 +4365,85 @@ mod tests {
             None,
             "the gesture sends one write, not one a frame"
         );
+    }
+
+    fn carried_rows(list: egui::Id, rows: Vec<usize>) -> Carry {
+        use crate::cover::Cover;
+        use crate::view::queue_row;
+
+        Carry {
+            source: Source::List(list),
+            rows,
+            entries: Vec::new(),
+            size: Vec2::new(10.0, 20.0),
+            ghost: carry::Ghost::Queue(
+                queue_row::Row {
+                    index: 0,
+                    title: "A Title",
+                    artist: "A Band",
+                    duration: None,
+                    cover: Cover::Missing,
+                    look: crate::view::rows::Look::default(),
+                    refocus: false,
+                }
+                .lifted(),
+            ),
+            playlist: None,
+        }
+    }
+
+    #[test]
+    fn a_block_target_is_drawn_exactly_where_a_move_would_land() {
+        let len = 6;
+        let list = egui::Id::unique("list");
+        let rows = Rect::from_min_size(
+            egui::Pos2::ZERO,
+            Vec2::new(300.0, len as f32 * extent::ROW_H),
+        );
+        let zone = crate::landing::Zone {
+            hit: rows,
+            list: rows,
+            row_h: extent::ROW_H,
+            first: 0,
+            count: len,
+        };
+        let offer = Offer {
+            list,
+            playlist: PLAYLIST.to_owned(),
+            zone,
+        };
+        let pointer = |boundary: usize| Some(egui::pos2(150.0, boundary as f32 * extent::ROW_H));
+
+        for picks in [vec![1], vec![1, 2, 3], vec![1, 3]] {
+            let carry = carried_rows(list, picks.clone());
+            for boundary in 0..=len {
+                let drawn = reorder_target(&carry, Some(&offer), pointer(boundary)).is_some();
+                let moves = reorder::gather(len, &picks, boundary).is_some();
+                assert_eq!(drawn, moves, "{picks:?} at {boundary}");
+            }
+        }
+
+        // A single row's own two gaps, and a contiguous block's inner gaps.
+        let single = carried_rows(list, vec![1]);
+        assert_eq!(reorder_target(&single, Some(&offer), pointer(1)), None);
+        assert_eq!(reorder_target(&single, Some(&offer), pointer(2)), None);
+        let block = carried_rows(list, vec![1, 2, 3]);
+        for boundary in 1..=4 {
+            assert_eq!(
+                reorder_target(&block, Some(&offer), pointer(boundary)),
+                None,
+                "the block already sits at {boundary}"
+            );
+        }
+
+        // A gapped block draws a marker at every boundary but its own pick.
+        let gapped = carried_rows(list, vec![1, 3]);
+        for boundary in 0..=len {
+            assert!(
+                reorder_target(&gapped, Some(&offer), pointer(boundary)).is_some(),
+                "a gapped block moves at every boundary: {boundary}"
+            );
+        }
     }
 
     #[test]

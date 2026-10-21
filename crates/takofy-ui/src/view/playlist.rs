@@ -1847,7 +1847,7 @@ mod tests {
         let mut library = library_with(tracks.clone());
         assert!(
             library
-                .move_track("spotify:playlist:a", 0, 2, &tracks[0])
+                .move_tracks("spotify:playlist:a", &[0], 2, &[tracks[0].clone()])
                 .is_some(),
             "the page takes the move first"
         );

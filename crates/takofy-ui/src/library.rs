@@ -5,9 +5,10 @@
 //! user asks for one.
 
 use std::collections::HashMap;
+use std::ops::Range;
 
 use takofy_model::{
-    AlbumDetail, ArtistDetail, CoverUrl, FollowedArtist, FollowedShow, Move, PlaylistAccess,
+    AlbumDetail, ArtistDetail, CoverUrl, FollowedArtist, FollowedShow, PlaylistAccess,
     PlaylistEntry, SavedAlbum, ShowDetail, TrackEntry,
 };
 
@@ -780,21 +781,22 @@ impl Library {
         Some(command)
     }
 
-    /// Moves a dragged row to the gap the pointer is over, and asks for one write.
+    /// Moves the dragged rows to the gap the pointer is over, and asks for one
+    /// write.
     ///
     /// It refuses unless that playlist is the page on screen, the page is
-    /// editable, it still holds `carried` at `from`, and no write is in flight:
-    /// one gesture is one write. The new order is on screen at once and kept
-    /// until the reply lands; the returned index is where the row went. A write
-    /// that fails puts the rows back and the page says so — trying again means
-    /// dragging again, not a second write for the same gesture.
-    pub fn move_track(
+    /// editable, every row is still the one the drag carried, and no write is in
+    /// flight: one gesture is one write. The new order is on screen at once and
+    /// kept until the reply lands; the returned range is where the block went. A
+    /// write that fails puts the rows back and the page says so — trying again
+    /// means dragging again, not a second write for the same gesture.
+    pub fn move_tracks(
         &mut self,
         playlist: &str,
-        from: usize,
+        rows: &[usize],
         boundary: usize,
-        carried: &TrackEntry,
-    ) -> Option<(Command, usize)> {
+        carried: &[TrackEntry],
+    ) -> Option<(Command, Range<usize>)> {
         let Load::Ready(tracks) = &self.tracks else {
             return None;
         };
@@ -806,21 +808,24 @@ impl Library {
             return None;
         }
         let access = tracks.access.clone().filter(|access| access.editable)?;
-        if tracks.tracks.get(from) != Some(carried) {
+        let ascending = !rows.is_empty() && rows.windows(2).all(|pair| pair[0] < pair[1]);
+        let held = rows.len() == carried.len()
+            && rows
+                .iter()
+                .zip(carried)
+                .all(|(row, entry)| tracks.tracks.get(*row) == Some(entry));
+        if !ascending || !held {
             return None;
         }
-        let step = reorder::step(tracks.tracks.len(), from, boundary)?;
-        let before = tracks.tracks.clone();
-        let mut after = before.clone();
-        reorder::apply(&mut after, step);
+        let found = reorder::block(&tracks.tracks, rows, boundary)?;
         self.pending = Some(reorder::Pending {
             playlist: playlist.to_owned(),
-            before,
-            after: after.clone(),
+            before: tracks.tracks.clone(),
+            after: found.order.clone(),
         });
         self.tracks = Load::Ready(TracksFor {
             playlist: playlist.to_owned(),
-            tracks: after,
+            tracks: found.order,
             access: Some(access.clone()),
             notice: None,
         });
@@ -828,13 +833,9 @@ impl Library {
             Command::MoveTrack {
                 playlist: playlist.to_owned(),
                 revision: access.revision,
-                moves: vec![Move {
-                    from: step.from,
-                    length: 1,
-                    to: step.to,
-                }],
+                moves: found.moves,
             },
-            step.landed,
+            found.landed..found.landed + rows.len(),
         ))
     }
 
@@ -1214,7 +1215,7 @@ impl Library {
 #[cfg(test)]
 mod tests {
     use takofy_model::{
-        AddedAt, AlbumDetail, ArtistDetail, CoverUrl, Episode, FollowedShow, PlaylistAccess,
+        AddedAt, AlbumDetail, ArtistDetail, CoverUrl, Episode, FollowedShow, Move, PlaylistAccess,
         PlaylistEntry, ReleaseKind, Revision, Show, ShowDetail, TrackEntry, TrackLyrics,
     };
 
@@ -3434,7 +3435,7 @@ mod tests {
             with_access(playlist("p1", "p1"), 0x07, true, None),
         ]);
         library.apply(&Update::RootlistAccess(rootlist_access(0x07, true)));
-        assert!(library.move_track("a", 0, 2, &track("t0")).is_some());
+        assert!(move_one(&mut library, "a", 0, 2, &track("t0")).is_some());
 
         assert_eq!(library.move_playlist(0, 2, "p0"), None);
     }
@@ -3449,7 +3450,7 @@ mod tests {
         library.apply(&Update::RootlistAccess(rootlist_access(0x07, true)));
         assert!(library.move_playlist(0, 2, "p0").is_some());
 
-        assert_eq!(library.move_track("a", 0, 2, &track("t0")), None);
+        assert_eq!(move_one(&mut library, "a", 0, 2, &track("t0")), None);
         assert!(!library.movable());
     }
 
@@ -3834,7 +3835,7 @@ mod tests {
             with_access(playlist("p1", "p1"), 0x07, true, Some(1)),
         ]);
         library.apply(&Update::RootlistAccess(rootlist_access(0x07, true)));
-        assert!(library.move_track("a", 0, 2, &track("t0")).is_some());
+        assert!(move_one(&mut library, "a", 0, 2, &track("t0")).is_some());
 
         assert_eq!(library.add_track(1, &track("spotify:track:x")), None);
 
@@ -3980,7 +3981,7 @@ mod tests {
             Some(2),
         )]));
         library.apply(&Update::RootlistAccess(rootlist_access(0x07, true)));
-        assert!(library.move_track("a", 0, 2, &track("t0")).is_some());
+        assert!(move_one(&mut library, "a", 0, 2, &track("t0")).is_some());
 
         library.apply(&Update::TrackMoved {
             playlist: "a".to_owned(),
@@ -4000,6 +4001,19 @@ mod tests {
         );
     }
 
+    /// A one-row drag, with the write's landed range reduced to its start.
+    fn move_one(
+        library: &mut Library,
+        playlist: &str,
+        from: usize,
+        boundary: usize,
+        carried: &TrackEntry,
+    ) -> Option<(Command, usize)> {
+        library
+            .move_tracks(playlist, &[from], boundary, std::slice::from_ref(carried))
+            .map(|(command, landed)| (command, landed.start))
+    }
+
     fn moved(uris: &[&str]) -> Vec<TrackEntry> {
         uris.iter().map(|uri| track(uri)).collect()
     }
@@ -4017,7 +4031,7 @@ mod tests {
     fn a_move_applies_at_once_and_asks_for_one_write_on_the_held_revision() {
         let mut library = page_with("a", &["t0", "t1", "t2"], access(0x01, true));
 
-        let found = library.move_track("a", 0, 2, &track("t0"));
+        let found = move_one(&mut library, "a", 0, 2, &track("t0"));
 
         assert_eq!(
             found,
@@ -4054,7 +4068,7 @@ mod tests {
         let mut library = page_with("a", &["t0", "t1", "t2"], access(0x01, true));
         let page = library.page().cloned();
 
-        let found = library.move_track("a", 2, 0, &track("t2"));
+        let found = move_one(&mut library, "a", 2, 0, &track("t2"));
 
         assert_eq!(found.map(|(_, landed)| landed), Some(0));
         assert_eq!(library.page(), page.as_ref());
@@ -4066,7 +4080,7 @@ mod tests {
         let mut library = page_with("a", &["t0", "t1"], access(0x01, false));
 
         assert!(!library.movable());
-        assert_eq!(library.move_track("a", 0, 2, &track("t0")), None);
+        assert_eq!(move_one(&mut library, "a", 0, 2, &track("t0")), None);
         assert_eq!(library.pending, None);
         assert_eq!(
             library.tracks,
@@ -4079,17 +4093,17 @@ mod tests {
         let mut library = page_with("a", &["t0", "t1"], None);
 
         assert!(!library.movable());
-        assert_eq!(library.move_track("a", 0, 2, &track("t0")), None);
+        assert_eq!(move_one(&mut library, "a", 0, 2, &track("t0")), None);
         assert_eq!(library.pending, None);
     }
 
     #[test]
     fn a_second_move_waits_for_the_first() {
         let mut library = page_with("a", &["t0", "t1", "t2"], access(0x01, true));
-        assert!(library.move_track("a", 0, 2, &track("t0")).is_some());
+        assert!(move_one(&mut library, "a", 0, 2, &track("t0")).is_some());
 
         assert_eq!(
-            library.move_track("a", 0, 2, &track("t1")),
+            move_one(&mut library, "a", 0, 2, &track("t1")),
             None,
             "one gesture is one write, so a second waits for the reply"
         );
@@ -4100,9 +4114,9 @@ mod tests {
     fn a_move_whose_row_changed_under_the_drag_is_refused() {
         let mut library = page_with("a", &["t0", "t1"], access(0x01, true));
 
-        assert_eq!(library.move_track("a", 0, 2, &track("gone")), None);
+        assert_eq!(move_one(&mut library, "a", 0, 2, &track("gone")), None);
         assert_eq!(
-            library.move_track("a", 9, 2, &track("t0")),
+            move_one(&mut library, "a", 9, 2, &track("t0")),
             None,
             "a row the list does not hold"
         );
@@ -4110,14 +4124,177 @@ mod tests {
     }
 
     #[test]
+    fn a_block_move_applies_at_once_and_asks_for_one_write() {
+        let mut library = page_with("a", &["t0", "t1", "t2", "t3"], access(0x01, true));
+
+        let found = library.move_tracks("a", &[0, 2], 4, &moved(&["t0", "t2"]));
+
+        assert_eq!(
+            found,
+            Some((
+                Command::MoveTrack {
+                    playlist: "a".to_owned(),
+                    revision: revision(0x01),
+                    moves: vec![
+                        Move {
+                            from: 0,
+                            length: 1,
+                            to: 4,
+                        },
+                        Move {
+                            from: 1,
+                            length: 1,
+                            to: 4,
+                        },
+                    ],
+                },
+                2..4,
+            )),
+            "one command carries the whole chain"
+        );
+        assert_eq!(
+            library.tracks,
+            ready("a", &["t1", "t3", "t0", "t2"], access(0x01, true)),
+            "the gathered block is on screen before the write is answered"
+        );
+        assert_eq!(
+            library.pending,
+            Some(reorder::Pending {
+                playlist: "a".to_owned(),
+                before: moved(&["t0", "t1", "t2", "t3"]),
+                after: moved(&["t1", "t3", "t0", "t2"]),
+            })
+        );
+    }
+
+    #[test]
+    fn a_block_whose_rows_changed_under_the_drag_is_refused() {
+        let mut library = page_with("a", &["t0", "t1", "t2", "t3"], access(0x01, true));
+
+        assert_eq!(
+            library.move_tracks("a", &[0, 2], 4, &moved(&["t0", "gone"])),
+            None,
+            "a row is no longer the one the drag carried"
+        );
+        assert_eq!(
+            library.move_tracks("a", &[0, 9], 4, &moved(&["t0", "gone"])),
+            None,
+            "a row the list does not hold"
+        );
+        assert_eq!(
+            library.move_tracks("a", &[0, 2], 4, &moved(&["t0"])),
+            None,
+            "the entries no longer answer for the rows"
+        );
+        assert_eq!(library.pending, None);
+    }
+
+    #[test]
+    fn a_block_that_is_not_ascending_is_refused() {
+        let mut library = page_with("a", &["t0", "t1", "t2", "t3"], access(0x01, true));
+
+        assert_eq!(
+            library.move_tracks("a", &[2, 0], 4, &moved(&["t2", "t0"])),
+            None
+        );
+        assert_eq!(
+            library.move_tracks("a", &[0, 0], 4, &moved(&["t0", "t0"])),
+            None,
+            "one row is picked once"
+        );
+        assert_eq!(
+            library.move_tracks("a", &[], 4, &[]),
+            None,
+            "nothing carried is nothing to move"
+        );
+        assert_eq!(library.pending, None);
+    }
+
+    #[test]
+    fn a_read_only_page_refuses_a_block() {
+        let mut library = page_with("a", &["t0", "t1", "t2"], access(0x01, false));
+
+        assert_eq!(
+            library.move_tracks("a", &[0, 2], 3, &moved(&["t0", "t2"])),
+            None
+        );
+        assert_eq!(library.pending, None);
+        assert_eq!(
+            library.tracks,
+            ready("a", &["t0", "t1", "t2"], access(0x01, false))
+        );
+    }
+
+    #[test]
+    fn a_block_that_would_not_move_writes_nothing() {
+        let mut library = page_with("a", &["t0", "t1", "t2"], access(0x01, true));
+
+        for boundary in 0..=2 {
+            assert_eq!(
+                library.move_tracks("a", &[0, 1], boundary, &moved(&["t0", "t1"])),
+                None,
+                "a contiguous block dropped on or inside itself at {boundary}"
+            );
+        }
+        assert_eq!(library.pending, None);
+        assert_eq!(
+            library.tracks,
+            ready("a", &["t0", "t1", "t2"], access(0x01, true))
+        );
+    }
+
+    #[test]
+    fn a_second_block_waits_for_the_first() {
+        let mut library = page_with("a", &["t0", "t1", "t2", "t3"], access(0x01, true));
+        assert!(
+            library
+                .move_tracks("a", &[0, 2], 4, &moved(&["t0", "t2"]))
+                .is_some()
+        );
+
+        assert_eq!(
+            library.move_tracks("a", &[0, 1], 4, &moved(&["t1", "t3"])),
+            None,
+            "one gesture is one write, so a second block waits for the reply"
+        );
+        assert!(!library.movable());
+    }
+
+    #[test]
+    fn a_failed_block_restores_the_order_and_says_so() {
+        let mut library = page_with("a", &["t0", "t1", "t2", "t3"], access(0x01, true));
+        assert!(
+            library
+                .move_tracks("a", &[0, 2], 4, &moved(&["t0", "t2"]))
+                .is_some()
+        );
+
+        library.apply(&Update::MoveFailed {
+            playlist: "a".to_owned(),
+            failure: Failure::Save,
+        });
+
+        assert_eq!(library.pending, None);
+        assert_eq!(
+            library.tracks,
+            Load::Ready(TracksFor {
+                playlist: "a".to_owned(),
+                tracks: moved(&["t0", "t1", "t2", "t3"]),
+                access: access(0x01, true),
+                notice: Some(Failure::Save),
+            })
+        );
+    }
+
+    #[test]
     fn a_move_for_a_playlist_not_on_screen_is_refused() {
         let mut library = page_with("a", &["t0", "t1"], access(0x01, true));
 
-        assert_eq!(library.move_track("b", 0, 2, &track("t0")), None);
+        assert_eq!(move_one(&mut library, "b", 0, 2, &track("t0")), None);
 
         library.to_playlists();
         assert_eq!(
-            library.move_track("a", 0, 2, &track("t0")),
+            move_one(&mut library, "a", 0, 2, &track("t0")),
             None,
             "the ready rows are kept for Back, not for a drop"
         );
@@ -4128,8 +4305,8 @@ mod tests {
     fn a_drop_beside_itself_sends_nothing() {
         let mut library = page_with("a", &["t0", "t1", "t2"], access(0x01, true));
 
-        assert_eq!(library.move_track("a", 1, 1, &track("t1")), None);
-        assert_eq!(library.move_track("a", 1, 2, &track("t1")), None);
+        assert_eq!(move_one(&mut library, "a", 1, 1, &track("t1")), None);
+        assert_eq!(move_one(&mut library, "a", 1, 2, &track("t1")), None);
         assert_eq!(library.pending, None);
         assert_eq!(
             library.tracks,
@@ -4140,7 +4317,7 @@ mod tests {
     #[test]
     fn the_reply_revision_replaces_the_held_one_and_ends_the_write() {
         let mut library = page_with("a", &["t0", "t1"], access(0x01, true));
-        assert!(library.move_track("a", 0, 2, &track("t0")).is_some());
+        assert!(move_one(&mut library, "a", 0, 2, &track("t0")).is_some());
 
         library.apply(&Update::TrackMoved {
             playlist: "a".to_owned(),
@@ -4157,13 +4334,13 @@ mod tests {
     #[test]
     fn the_next_move_is_based_on_the_reply_revision() {
         let mut library = page_with("a", &["t0", "t1", "t2"], access(0x01, true));
-        assert!(library.move_track("a", 0, 2, &track("t0")).is_some());
+        assert!(move_one(&mut library, "a", 0, 2, &track("t0")).is_some());
         library.apply(&Update::TrackMoved {
             playlist: "a".to_owned(),
             revision: revision(0x02),
         });
 
-        let found = library.move_track("a", 2, 0, &track("t2"));
+        let found = move_one(&mut library, "a", 2, 0, &track("t2"));
 
         assert_eq!(
             found.map(|(command, _)| command),
@@ -4182,7 +4359,7 @@ mod tests {
     #[test]
     fn a_read_while_a_write_is_pending_is_not_adopted_even_with_an_equal_revision() {
         let mut library = page_with("a", &["t0", "t1"], access(0x01, true));
-        assert!(library.move_track("a", 0, 2, &track("t0")).is_some());
+        assert!(move_one(&mut library, "a", 0, 2, &track("t0")).is_some());
 
         library.apply(&Update::Tracks {
             playlist: "a".to_owned(),
@@ -4202,7 +4379,7 @@ mod tests {
     #[test]
     fn a_read_while_a_write_is_pending_keeps_the_held_revision() {
         let mut library = page_with("a", &["t0", "t1"], access(0x01, true));
-        assert!(library.move_track("a", 0, 2, &track("t0")).is_some());
+        assert!(move_one(&mut library, "a", 0, 2, &track("t0")).is_some());
 
         library.apply(&Update::Tracks {
             playlist: "a".to_owned(),
@@ -4221,7 +4398,7 @@ mod tests {
     #[test]
     fn a_read_onto_a_loading_page_while_a_write_is_pending_draws_the_moved_order() {
         let mut library = page_with("a", &["t0", "t1"], access(0x01, true));
-        assert!(library.move_track("a", 0, 2, &track("t0")).is_some());
+        assert!(move_one(&mut library, "a", 0, 2, &track("t0")).is_some());
         library.select("a");
         assert_eq!(library.tracks, Load::Loading);
 
@@ -4259,7 +4436,7 @@ mod tests {
     #[test]
     fn a_read_after_the_reply_is_adopted() {
         let mut library = page_with("a", &["t0", "t1"], access(0x01, true));
-        assert!(library.move_track("a", 0, 2, &track("t0")).is_some());
+        assert!(move_one(&mut library, "a", 0, 2, &track("t0")).is_some());
         library.apply(&Update::TrackMoved {
             playlist: "a".to_owned(),
             revision: revision(0x02),
@@ -4282,7 +4459,7 @@ mod tests {
     #[test]
     fn a_failed_write_reverts_to_the_order_before_it_and_says_save() {
         let mut library = page_with("a", &["t0", "t1"], access(0x01, true));
-        assert!(library.move_track("a", 0, 2, &track("t0")).is_some());
+        assert!(move_one(&mut library, "a", 0, 2, &track("t0")).is_some());
 
         library.apply(&Update::MoveFailed {
             playlist: "a".to_owned(),
@@ -4304,7 +4481,7 @@ mod tests {
     #[test]
     fn a_failed_write_for_a_page_no_longer_shown_only_ends_the_write() {
         let mut library = page_with("a", &["t0", "t1"], access(0x01, true));
-        assert!(library.move_track("a", 0, 2, &track("t0")).is_some());
+        assert!(move_one(&mut library, "a", 0, 2, &track("t0")).is_some());
         library.to_playlists();
 
         library.apply(&Update::MoveFailed {
@@ -4328,7 +4505,7 @@ mod tests {
     #[test]
     fn an_adopted_read_clears_the_notice() {
         let mut library = page_with("a", &["t0", "t1"], access(0x01, true));
-        assert!(library.move_track("a", 0, 2, &track("t0")).is_some());
+        assert!(move_one(&mut library, "a", 0, 2, &track("t0")).is_some());
         library.apply(&Update::MoveFailed {
             playlist: "a".to_owned(),
             failure: Failure::Save,
@@ -4350,13 +4527,13 @@ mod tests {
     #[test]
     fn a_new_gesture_clears_the_notice_at_once() {
         let mut library = page_with("a", &["t0", "t1"], access(0x01, true));
-        assert!(library.move_track("a", 0, 2, &track("t0")).is_some());
+        assert!(move_one(&mut library, "a", 0, 2, &track("t0")).is_some());
         library.apply(&Update::MoveFailed {
             playlist: "a".to_owned(),
             failure: Failure::Save,
         });
 
-        assert!(library.move_track("a", 0, 2, &track("t0")).is_some());
+        assert!(move_one(&mut library, "a", 0, 2, &track("t0")).is_some());
 
         assert_eq!(
             library.tracks,
@@ -4368,12 +4545,12 @@ mod tests {
     #[test]
     fn a_successful_write_after_a_failed_one_clears_the_notice() {
         let mut library = page_with("a", &["t0", "t1"], access(0x01, true));
-        assert!(library.move_track("a", 0, 2, &track("t0")).is_some());
+        assert!(move_one(&mut library, "a", 0, 2, &track("t0")).is_some());
         library.apply(&Update::MoveFailed {
             playlist: "a".to_owned(),
             failure: Failure::Save,
         });
-        assert!(library.move_track("a", 0, 2, &track("t0")).is_some());
+        assert!(move_one(&mut library, "a", 0, 2, &track("t0")).is_some());
 
         library.apply(&Update::TrackMoved {
             playlist: "a".to_owned(),
@@ -4390,7 +4567,7 @@ mod tests {
     #[test]
     fn a_reply_for_another_playlist_does_not_touch_the_page() {
         let mut library = page_with("a", &["t0", "t1"], access(0x01, true));
-        assert!(library.move_track("a", 0, 2, &track("t0")).is_some());
+        assert!(move_one(&mut library, "a", 0, 2, &track("t0")).is_some());
 
         library.apply(&Update::TrackMoved {
             playlist: "b".to_owned(),
@@ -4414,7 +4591,7 @@ mod tests {
     #[test]
     fn a_reply_while_the_page_is_loading_only_ends_the_write() {
         let mut library = page_with("a", &["t0", "t1"], access(0x01, true));
-        assert!(library.move_track("a", 0, 2, &track("t0")).is_some());
+        assert!(move_one(&mut library, "a", 0, 2, &track("t0")).is_some());
         library.select("a");
 
         library.apply(&Update::TrackMoved {
@@ -4429,7 +4606,7 @@ mod tests {
     #[test]
     fn a_reply_while_the_page_is_off_screen_only_ends_the_write() {
         let mut library = page_with("a", &["t0", "t1"], access(0x01, true));
-        assert!(library.move_track("a", 0, 2, &track("t0")).is_some());
+        assert!(move_one(&mut library, "a", 0, 2, &track("t0")).is_some());
         library.to_playlists();
 
         library.apply(&Update::TrackMoved {
@@ -4448,7 +4625,7 @@ mod tests {
     #[test]
     fn a_failed_write_while_the_page_is_loading_only_ends_the_write() {
         let mut library = page_with("a", &["t0", "t1"], access(0x01, true));
-        assert!(library.move_track("a", 0, 2, &track("t0")).is_some());
+        assert!(move_one(&mut library, "a", 0, 2, &track("t0")).is_some());
         library.select("a");
 
         library.apply(&Update::MoveFailed {
@@ -4463,7 +4640,7 @@ mod tests {
     #[test]
     fn a_tracks_failure_while_a_write_is_pending_keeps_the_write() {
         let mut library = page_with("a", &["t0", "t1"], access(0x01, true));
-        assert!(library.move_track("a", 0, 2, &track("t0")).is_some());
+        assert!(move_one(&mut library, "a", 0, 2, &track("t0")).is_some());
 
         library.apply(&Update::TracksFailed {
             playlist: "a".to_owned(),
@@ -4486,7 +4663,7 @@ mod tests {
         let mut library = page_with("a", &["t0", "t1"], access(0x01, true));
         assert!(library.movable());
 
-        assert!(library.move_track("a", 0, 2, &track("t0")).is_some());
+        assert!(move_one(&mut library, "a", 0, 2, &track("t0")).is_some());
         assert!(!library.movable(), "a write is in flight");
     }
 

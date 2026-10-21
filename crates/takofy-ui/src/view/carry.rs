@@ -14,6 +14,7 @@
 //! None of this draws or moves anything: the shell is the only side that resolves
 //! the payload and the offer, paints its ghost, applies the drop and clears it.
 
+use std::ops::Range;
 use std::sync::Arc;
 
 use egui::{Context, DragAndDrop, Id, Vec2};
@@ -160,13 +161,13 @@ pub fn take_column_offer(ctx: &Context) -> Option<ColumnOffer> {
     })
 }
 
-/// Replaces `list`'s selection with `row` alone, so the next frame draws the
-/// row that landed as the picked one.
-pub fn select_only(ctx: &Context, list: Id, row: usize) {
+/// Replaces `list`'s selection with `rows`, so the next frame draws what landed
+/// as the picked rows.
+pub fn select_rows(ctx: &Context, list: Id, rows: Range<usize>) {
     ctx.data_mut(|data| {
         data.get_temp_mut_or_default::<Picks>(picks())
             .get_mut(list)
-            .set([row]);
+            .set(rows);
     });
 }
 
@@ -477,7 +478,7 @@ mod tests {
     }
 
     #[test]
-    fn select_only_replaces_a_lists_selection() {
+    fn select_rows_replaces_a_lists_selection() {
         let ctx = context();
         let first = Id::unique("first");
         let second = Id::unique("second");
@@ -489,7 +490,7 @@ mod tests {
         other.press(2, Press::Replace);
         other.finish(&ctx);
 
-        select_only(&ctx, first, 3);
+        select_rows(&ctx, first, 3..4);
 
         let list = List::open(&ctx, first, 6);
         assert!(list.look(3).selected, "the row that landed is the pick");
