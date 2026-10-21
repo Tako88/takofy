@@ -42,6 +42,11 @@ pub struct Block<'a> {
     /// Whether the release's own play can act: its rows must be labelled before
     /// there is anything to start.
     pub playable: bool,
+    /// The page the block is drawn on, so a row's menu knows which page it is
+    /// about.
+    pub here: Option<&'a crate::route::Page>,
+    /// Whether a write is holding the library still, which shuts the menu's gate.
+    pub writing: bool,
 }
 
 /// The height a block occupies: its hairline, the head, the gap under it, one
@@ -234,6 +239,7 @@ fn body(
                 Id::unique(("release-tracks", &release.uri)),
                 tracks.len(),
             );
+            let gate = selection.gate(block.writing);
             for (index, entry) in tracks.iter().enumerate() {
                 let rect = table_layout::row_rect(list, index, extent::ROW_H);
                 if !visible.intersects(rect) {
@@ -257,17 +263,21 @@ fn body(
                     // The block's head already holds the release's one picture.
                     cover: Cover::Missing,
                     look: selection.look(index),
-                    // This block's rows open no menu yet.
-                    menu: false,
+                    menu: gate.allows(),
                 };
                 match track_row::show(ui, rect, columns, &row, tokens) {
                     Some(Click::Play) => clicked.row = Some(index),
                     Some(Click::Select(press)) => selection.press(index, press),
+                    Some(Click::Menu(door)) => {
+                        selection.menu(ui.ctx(), door, index, gate, block.here, |row| {
+                            tracks.get(row).cloned()
+                        })
+                    }
                     Some(Click::Lift) => {
                         let ghost = Ghost::Table(row.lifted(columns));
                         selection.lift(index, rect.size(), ghost, |row| tracks.get(row).cloned());
                     }
-                    Some(Click::Menu(_)) | Some(Click::Open(_)) | None => {}
+                    Some(Click::Open(_)) | None => {}
                 }
             }
             selection.finish(ui.ctx());
@@ -322,6 +332,8 @@ mod tests {
             cover: Cover::Missing,
             on_screen: false,
             playable: false,
+            here: None,
+            writing: false,
         };
 
         let mut measured = None;
@@ -379,6 +391,8 @@ mod tests {
             cover: Cover::Missing,
             on_screen: true,
             playable: true,
+            here: None,
+            writing: false,
         };
         let input = RawInput {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 800.0))),
@@ -404,6 +418,56 @@ mod tests {
                 }
                 _ => None,
             })
+    }
+
+    #[test]
+    fn a_right_click_posts_the_blocks_menu() {
+        let ctx = context();
+        let release = release(2);
+        let tracks = vec![
+            labelled("spotify:track:1", "First"),
+            labelled("spotify:track:2", "Second"),
+        ];
+        let here = crate::route::Page::Artist("spotify:artist:a".to_owned());
+        let tokens = Tokens::DARK;
+        let transport = Transport::default();
+        let (_, output) = painted(&ctx, &release, &tracks, Vec::new());
+        let at = text_rect(&output, "Second")
+            .expect("the second row is painted")
+            .center();
+
+        let mut posted = None;
+        for event in crate::view::test_support::secondary_click_events(at) {
+            let block = Block {
+                release: &release,
+                labels: Labels::Ready(&tracks),
+                cover: Cover::Missing,
+                on_screen: true,
+                playable: true,
+                here: Some(&here),
+                writing: false,
+            };
+            let mut drawn = ctx.run_ui(
+                RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 800.0))),
+                    events: vec![event],
+                    ..Default::default()
+                },
+                |ui| {
+                    let _ = show(ui, Table::Full, &block, &transport, &tokens);
+                },
+            );
+            drawn.textures_delta.clear();
+            posted = crate::view::context_menu::take_request(&ctx);
+        }
+
+        let request = posted.expect("a right-click on a block row posted a request");
+        assert_eq!(request.targets.len(), 1);
+        assert_eq!(request.targets[0].uri, "spotify:track:2");
+        assert_eq!(
+            request.page,
+            Some(crate::route::Page::Artist("spotify:artist:a".to_owned()))
+        );
     }
 
     #[test]

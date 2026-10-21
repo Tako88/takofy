@@ -64,6 +64,10 @@ pub fn artist_view(
         return None;
     };
     let uri = uri.clone();
+    // The page the release blocks' menus are about, and whether a write is
+    // holding the library still.
+    let here = Page::Artist(uri.clone());
+    let writing = library.write_in_flight();
 
     let mut command = None;
     let mut retry = false;
@@ -133,6 +137,7 @@ pub fn artist_view(
                             queue,
                             tokens,
                             &mut command,
+                            writing,
                         );
 
                         let tracks: usize = artist
@@ -174,6 +179,8 @@ pub fn artist_view(
                                         cover: Cover::Missing,
                                         on_screen: false,
                                         playable: false,
+                                        here: Some(&here),
+                                        writing,
                                     };
                                     let _ =
                                         release_block::show(ui, table, &block, transport, tokens);
@@ -187,6 +194,8 @@ pub fn artist_view(
                                     cover,
                                     on_screen: true,
                                     playable: matches!(labels, Labels::Ready(_)),
+                                    here: Some(&here),
+                                    writing,
                                 };
                                 let clicked =
                                     release_block::show(ui, table, &block, transport, tokens);
@@ -283,7 +292,7 @@ fn fans(
 /// whole top list from there.
 #[expect(
     clippy::too_many_arguments,
-    reason = "the section needs its table, width, state and frame's stores"
+    reason = "the section needs its table, width, state, the frame's stores and the write gate"
 )]
 fn popular(
     ui: &mut Ui,
@@ -294,7 +303,11 @@ fn popular(
     queue: &mut Queue,
     tokens: &Tokens,
     command: &mut Option<Command>,
+    writing: bool,
 ) {
+    // The section's rows are on this artist's page, so a menu opened on one of
+    // them knows which page it is about.
+    let here = Page::Artist(artist.uri.clone());
     section::head(ui, "Popular", "", tokens);
     if artist.top_tracks.is_empty() {
         ui.label(recipe::muted("No popular tracks.", tokens));
@@ -312,6 +325,7 @@ fn popular(
         Id::unique(("artist-popular", artist.uri.as_str())),
         count,
     );
+    let gate = selection.gate(writing);
 
     for (index, entry) in artist.top_tracks.iter().enumerate() {
         let rect = table_layout::row_rect(list, index, extent::ROW_H);
@@ -334,21 +348,25 @@ fn popular(
             state: state_of(&entry.uri, transport),
             cover: Cover::Missing,
             look: selection.look(index),
-            // This page's rows open no menu yet.
-            menu: false,
+            menu: gate.allows(),
         };
         match track_row::show(ui, rect, columns, &row, tokens) {
             Some(Click::Play) => {
                 *command = queue.start(&artist.top_tracks, index, transport);
             }
             Some(Click::Select(press)) => selection.press(index, press),
+            Some(Click::Menu(door)) => {
+                selection.menu(ui.ctx(), door, index, gate, Some(&here), |row| {
+                    artist.top_tracks.get(row).cloned()
+                })
+            }
             Some(Click::Lift) => {
                 let ghost = Ghost::Table(row.lifted(columns));
                 selection.lift(index, rect.size(), ghost, |row| {
                     artist.top_tracks.get(row).cloned()
                 });
             }
-            Some(Click::Menu(_)) | Some(Click::Open(_)) | None => {}
+            Some(Click::Open(_)) | None => {}
         }
     }
     selection.finish(ui.ctx());
@@ -549,6 +567,57 @@ mod tests {
             releases,
             related: Vec::new(),
         }
+    }
+
+    #[test]
+    fn a_right_click_posts_the_popular_menu() {
+        let ctx = context();
+        let mut library = library_with(detail(
+            vec![
+                track("spotify:track:t0", "One", "Vela", 200_000),
+                track("spotify:track:t1", "Two", "Vela", 210_000),
+            ],
+            Vec::new(),
+        ));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+        let (_, output) = frame(
+            &ctx,
+            PAGE,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let at = text_rect(&output, "Two")
+            .expect("the second popular row is painted")
+            .center();
+
+        for event in crate::view::test_support::secondary_click_events(at) {
+            let _ = frame(
+                &ctx,
+                PAGE,
+                vec![event],
+                &mut library,
+                &mut transport,
+                &mut queue,
+                &mut art,
+            );
+        }
+        let request = crate::view::context_menu::take_request(&ctx)
+            .expect("a right-click on a popular row posted a request");
+        assert_eq!(request.targets.len(), 1);
+        assert_eq!(request.targets[0].uri, "spotify:track:t1");
+        assert_eq!(request.page, Some(Page::Artist(ARTIST.to_owned())));
+        assert!(
+            !request
+                .items
+                .iter()
+                .any(|item| item.verb == crate::menu::Verb::GoToArtist),
+            "the artist this page already is is not one of its verbs"
+        );
     }
 
     /// The likeness row draws under the discography, and a press opens that
@@ -1343,6 +1412,8 @@ mod tests {
                         cover: Cover::Missing,
                         on_screen: true,
                         playable: true,
+                        here: None,
+                        writing: false,
                     };
                     let out =
                         super::release_block::show(ui, Table::Full, &block, &transport, &tokens);
