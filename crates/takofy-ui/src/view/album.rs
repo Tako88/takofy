@@ -180,12 +180,12 @@ pub fn album_view(
                                 }
                                 Some(Click::Open(page)) => open = Some(page),
                                 Some(Click::Select(press)) => selection.press(index, press),
-                                Some(Click::Lift) => selection.lift(
-                                    index,
-                                    entry.clone(),
-                                    rect.size(),
-                                    Ghost::Table(row.lifted(columns)),
-                                ),
+                                Some(Click::Lift) => {
+                                    let ghost = Ghost::Table(row.lifted(columns));
+                                    selection.lift(index, rect.size(), ghost, |row| {
+                                        album.tracks.get(row).cloned()
+                                    });
+                                }
                                 None => {}
                             }
                         }

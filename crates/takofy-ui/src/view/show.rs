@@ -161,12 +161,12 @@ pub fn show_view(
                                     command = queue.start(&entries(detail), index, transport);
                                 }
                                 Some(Click::Select(press)) => selection.press(index, press),
-                                Some(Click::Lift) => selection.lift(
-                                    index,
-                                    episode.entry(),
-                                    rect.size(),
-                                    Ghost::Queue(row.lifted()),
-                                ),
+                                Some(Click::Lift) => {
+                                    let ghost = Ghost::Queue(row.lifted());
+                                    selection.lift(index, rect.size(), ghost, |row| {
+                                        detail.episodes.get(row).map(Episode::entry)
+                                    });
+                                }
                                 Some(Click::Open(_)) | None => {}
                             }
                         }

@@ -166,12 +166,12 @@ pub fn search_view(
                                 }
                                 Some(Click::Open(page)) => open = Some(page),
                                 Some(Click::Select(press)) => selection.press(index, press),
-                                Some(Click::Lift) => selection.lift(
-                                    index,
-                                    entry.clone(),
-                                    rect.size(),
-                                    Ghost::Table(row.lifted(columns)),
-                                ),
+                                Some(Click::Lift) => {
+                                    let ghost = Ghost::Table(row.lifted(columns));
+                                    selection.lift(index, rect.size(), ghost, |row| {
+                                        tracks.get(row).cloned()
+                                    });
+                                }
                                 None => {}
                             }
                         }

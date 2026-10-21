@@ -4393,6 +4393,41 @@ mod tests {
     }
 
     #[test]
+    fn a_block_dropped_in_the_queue_lands_as_a_block_in_row_order() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        let carry = Carry {
+            entries: vec![track(8, None), track(9, None)],
+            ..carried_rows(egui::Id::unique("list"), vec![0, 2])
+        };
+
+        land(
+            &mut queue,
+            &carry,
+            Target::At(Landing {
+                boundary: 2,
+                marker: Rect::ZERO,
+            }),
+        );
+
+        assert_eq!(entries(&queue), ["t0", "t1", "t8", "t9", "t2", "t3"]);
+    }
+
+    #[test]
+    fn a_block_appended_by_the_button_joins_the_end_whole() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        let carry = Carry {
+            entries: vec![track(8, None), track(9, None)],
+            ..carried_rows(egui::Id::unique("list"), vec![0, 2])
+        };
+
+        land(&mut queue, &carry, Target::End);
+
+        assert_eq!(entries(&queue), ["t0", "t1", "t2", "t3", "t8", "t9"]);
+    }
+
+    #[test]
     fn a_block_target_is_drawn_exactly_where_a_move_would_land() {
         let len = 6;
         let list = egui::Id::unique("list");

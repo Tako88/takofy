@@ -340,12 +340,12 @@ fn popular(
                 *command = queue.start(&artist.top_tracks, index, transport);
             }
             Some(Click::Select(press)) => selection.press(index, press),
-            Some(Click::Lift) => selection.lift(
-                index,
-                entry.clone(),
-                rect.size(),
-                Ghost::Table(row.lifted(columns)),
-            ),
+            Some(Click::Lift) => {
+                let ghost = Ghost::Table(row.lifted(columns));
+                selection.lift(index, rect.size(), ghost, |row| {
+                    artist.top_tracks.get(row).cloned()
+                });
+            }
             Some(Click::Open(_)) | None => {}
         }
     }

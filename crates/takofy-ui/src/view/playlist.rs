@@ -217,12 +217,12 @@ pub fn tracks_view(
                             Some(Click::Select(press)) => selection.press(index, press),
                             // A write in flight holds the page still; a page it
                             // may not write still lifts.
-                            Some(Click::Lift) if liftable => selection.lift(
-                                index,
-                                entry.clone(),
-                                rect.size(),
-                                Ghost::Table(row.lifted(columns)),
-                            ),
+                            Some(Click::Lift) if liftable => {
+                                let ghost = Ghost::Table(row.lifted(columns));
+                                selection.lift(index, rect.size(), ghost, |row| {
+                                    tracks.tracks.get(row).cloned()
+                                });
+                            }
                             Some(Click::Lift) => {}
                             None => {}
                         }
