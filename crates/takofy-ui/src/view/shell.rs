@@ -193,6 +193,13 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
     }
     *screen.drawer = next;
 
+    // Space is the transport's, read last because that is when focus is known:
+    // whatever holds it has already taken this space. It comes after the drawer
+    // step so that pausing does not also close a drawer nobody picked from.
+    if command.is_none() && transport_space(ui) {
+        command = screen.queue.toggle(screen.transport);
+    }
+
     command
 }
 
@@ -271,6 +278,31 @@ fn nav_from_input(ui: &Ui) -> Option<topbar::Nav> {
         } else {
             None
         }
+    })
+}
+
+/// Whether a space this frame is the transport's to take.
+///
+/// A control that holds focus takes its own space — a row plays, a button
+/// presses — so the transport claims only a space pressed with nothing focused,
+/// no modifier riding along and no auto-repeat behind it.
+fn transport_space(ui: &Ui) -> bool {
+    if ui.ctx().egui_wants_keyboard_input() || ui.memory(|memory| memory.focused().is_some()) {
+        return false;
+    }
+    ui.input(|input| {
+        input.events.iter().any(|event| {
+            matches!(
+                event,
+                egui::Event::Key {
+                    key: egui::Key::Space,
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                    ..
+                } if modifiers.is_none()
+            )
+        })
     })
 }
 
@@ -364,7 +396,7 @@ mod tests {
     use crate::cover::Art;
     use crate::library::{Library, Load};
     use crate::message::Update;
-    use crate::player::{NowPlaying, Transport};
+    use crate::player::{NowPlaying, Transport, TransportState};
     use crate::queue::Queue;
     use crate::route::Page;
     use crate::signin::SignIn;
@@ -1304,6 +1336,161 @@ mod tests {
         let mut window = Window::new(screen);
         let _ = window.frame(transport, queue, Vec::new());
         window.requests()
+    }
+
+    /// Queues two tracks, so the transport has something to pause.
+    fn two_tracks(transport: &mut Transport) -> Queue {
+        let tracks = vec![track(0, None), track(1, None)];
+        let mut queue = Queue::default();
+        queue.start(&tracks, 0, transport);
+        queue
+    }
+
+    /// One press and its release, so the next press reads as a new one: egui
+    /// marks a press with no release behind it as auto-repeat.
+    fn tap(
+        window: &mut Window,
+        transport: &mut Transport,
+        queue: &mut Queue,
+        event: egui::Event,
+    ) -> (Option<Command>, egui::FullOutput) {
+        let frame = window.frame(transport, queue, vec![event]);
+        let _ = window.frame(transport, queue, vec![key(egui::Key::Space, false)]);
+        frame
+    }
+
+    #[test]
+    fn space_pauses_and_resumes_the_transport() {
+        let mut transport = Transport::default();
+        let mut queue = two_tracks(&mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+
+        for (state, expected) in [
+            (TransportState::Playing, Command::Pause),
+            (TransportState::Paused, Command::Resume),
+            (TransportState::Loading, Command::Pause),
+        ] {
+            transport.state = state;
+            let (command, _) = tap(
+                &mut window,
+                &mut transport,
+                &mut queue,
+                key(egui::Key::Space, true),
+            );
+            assert_eq!(command, Some(expected), "a space on {state:?}");
+        }
+    }
+
+    #[test]
+    fn space_with_nothing_queued_asks_for_nothing() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+
+        let (command, _) = tap(
+            &mut window,
+            &mut transport,
+            &mut queue,
+            key(egui::Key::Space, true),
+        );
+        assert_eq!(command, None, "there is no track to start");
+    }
+
+    #[test]
+    fn a_held_space_does_not_thrash_the_transport() {
+        let mut transport = Transport::default();
+        let mut queue = two_tracks(&mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        transport.state = TransportState::Playing;
+
+        let (first, _) = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![key(egui::Key::Space, true)],
+        );
+        assert_eq!(first, Some(Command::Pause));
+
+        // The same key pressed again with no release: what a held key looks like.
+        let (held, _) = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![key(egui::Key::Space, true)],
+        );
+        assert_eq!(held, None, "a held space must not thrash the transport");
+    }
+
+    #[test]
+    fn a_clicked_row_does_not_take_the_space_with_it() {
+        // Clicking a row is how a track gets played, and the space that follows
+        // has to reach the transport: a row that kept focus after a click would
+        // swallow it.
+        let mut transport = playing(cover("abc"));
+        let tracks = vec![
+            track(0, Some(cover("abc"))),
+            track(1, Some(cover("row1"))),
+            track(2, Some(cover("row2"))),
+        ];
+        let mut queue = Queue::default();
+        queue.start(&tracks, 0, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let at = painted_at(&frame, "t2").expect("row t2 is painted");
+        let _ = window.click(&mut transport, &mut queue, at + Vec2::new(6.0, 6.0));
+
+        transport.state = TransportState::Playing;
+        let (command, _) = tap(
+            &mut window,
+            &mut transport,
+            &mut queue,
+            key(egui::Key::Space, true),
+        );
+        assert_eq!(
+            command,
+            Some(Command::Pause),
+            "the space is the transport's after a click on a row"
+        );
+    }
+
+    #[test]
+    fn a_modified_space_is_somebody_elses_shortcut() {
+        let mut transport = Transport::default();
+        let mut queue = two_tracks(&mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        transport.state = TransportState::Playing;
+
+        let mut event = key(egui::Key::Space, true);
+        if let egui::Event::Key { modifiers, .. } = &mut event {
+            *modifiers = egui::Modifiers::COMMAND;
+        }
+        let (command, _) = tap(&mut window, &mut transport, &mut queue, event);
+        assert_eq!(command, None, "a modifier is a shortcut of somebody else's");
+    }
+
+    #[test]
+    fn a_control_that_holds_focus_keeps_its_own_space() {
+        let mut transport = Transport::default();
+        let mut queue = two_tracks(&mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        transport.state = TransportState::Playing;
+
+        // Tab reaches the first control in the shell, which then owns the space.
+        let _ = window.frame(&mut transport, &mut queue, vec![key(egui::Key::Tab, true)]);
+        assert!(
+            window.ctx.memory(|memory| memory.focused().is_some()),
+            "Tab has to land somewhere for this to mean anything"
+        );
+
+        let (command, _) = tap(
+            &mut window,
+            &mut transport,
+            &mut queue,
+            key(egui::Key::Space, true),
+        );
+        assert!(
+            !matches!(command, Some(Command::Pause | Command::Resume)),
+            "the focused control takes the space, not the transport: {command:?}"
+        );
     }
 
     #[test]
