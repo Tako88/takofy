@@ -3982,6 +3982,22 @@ mod tests {
     }
 
     #[test]
+    fn the_edge_steps_encode_the_indices_the_server_expects() {
+        let base = revision(1);
+        let write = |len: usize, from: usize, boundary: usize| {
+            let found = takofy_ui::reorder::step(len, from, boundary).expect("a move");
+            takofy_core::playlist_edit::move_body(&base, found.from, found.to)
+        };
+
+        assert!(
+            write(5, 0, 5).ends_with(&[0x08, 0x00, 0x10, 0x01, 0x18, 0x04]),
+            "the bottom of the list is the last index, not one past it"
+        );
+        assert!(write(5, 3, 0).ends_with(&[0x08, 0x03, 0x10, 0x01, 0x18, 0x00]));
+        assert!(write(5, 2, 5).ends_with(&[0x08, 0x02, 0x10, 0x01, 0x18, 0x04]));
+    }
+
+    #[test]
     fn a_failed_move_is_a_save_failure() {
         let store = Arc::new(MemoryStore::seeded("stored"));
         let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
