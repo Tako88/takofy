@@ -71,7 +71,7 @@ pub struct Gather {
 /// Where `rows` land when dropped at `boundary` in a list of `len` rows.
 ///
 /// The boundary is the gap the pointer is over. A contiguous pick dropped on or
-/// besides itself, a pick of the whole list, and any index the list does not
+/// beside itself, a pick of the whole list, and any index the list does not
 /// hold are all no move.
 pub fn gather(len: usize, rows: &[usize], boundary: usize) -> Option<Gather> {
     let mut rows = rows.to_vec();
@@ -101,6 +101,10 @@ pub fn apply_move<T>(list: &mut Vec<T>, mv: Move) {
         return;
     };
     if mv.length == 0 || end > list.len() || mv.to > list.len() {
+        return;
+    }
+    // A gap inside the run names a place the lift itself removes.
+    if mv.to > mv.from && mv.to < end {
         return;
     }
     let at = if mv.to > mv.from {
@@ -163,8 +167,8 @@ pub fn block<T: Clone>(order: &[T], rows: &[usize], boundary: usize) -> Option<B
                 moves.push(mv);
                 apply_move(&mut working, mv);
             }
-            // A row from above the gap lands below it, which leaves the gap where
-            // it is; a row from below it lands on the gap, which grows by one.
+            // A row from above the gap lands just before it, which leaves the gap
+            // where it is; a row from below it lands on the gap, which grows by one.
             if *row >= boundary {
                 gap += 1;
             }
@@ -309,6 +313,11 @@ mod tests {
                 from: 1,
                 length: 3,
                 to: 2,
+            },
+            Move {
+                from: 1,
+                length: 3,
+                to: 3,
             },
         ];
         for mv in cases {
