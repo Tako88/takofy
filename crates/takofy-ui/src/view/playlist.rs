@@ -86,6 +86,7 @@ pub fn tracks_view(
     // Read before the rows, which borrow the tracks these ask about.
     let movable = library.movable();
     let liftable = library.liftable();
+    let writing = library.write_in_flight();
     let mut command = None;
     let mut retry = false;
     // A link click is applied after the scroll area, because the matches below
@@ -186,6 +187,9 @@ pub fn tracks_view(
                         Id::unique(("playlist-tracks", tracks.playlist.as_str())),
                         count,
                     );
+                    // The menu's gate is the list's: a carried block or a write in
+                    // flight holds the rows still, so no menu opens over them.
+                    let gate = selection.gate(writing);
 
                     for (index, entry) in tracks.tracks.iter().enumerate() {
                         let rect = table_layout::row_rect(list, index, extent::ROW_H);
@@ -208,6 +212,7 @@ pub fn tracks_view(
                             state: state_of(&entry.uri, transport),
                             cover: art.look(entry.cover.as_ref(), now),
                             look: selection.look(index),
+                            menu: gate.allows(),
                         };
                         match track_row::show(ui, rect, columns, &row, tokens) {
                             Some(Click::Play) => {
@@ -215,6 +220,11 @@ pub fn tracks_view(
                             }
                             Some(Click::Open(page)) => open = Some(page),
                             Some(Click::Select(press)) => selection.press(index, press),
+                            Some(Click::Menu(door)) => {
+                                selection.menu(ui.ctx(), door, index, gate, library.page(), |row| {
+                                    tracks.tracks.get(row).cloned()
+                                })
+                            }
                             // A write in flight holds the page still; a page it
                             // may not write still lifts.
                             Some(Click::Lift) if liftable => {
@@ -1825,6 +1835,63 @@ mod tests {
     }
 
     #[test]
+    fn a_right_click_posts_the_menu_its_row_asked_for() {
+        let ctx = context();
+        let tracks = vec![track("a", "t0"), linkable("b")];
+        let mut library = library_with(tracks.clone());
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let centre = row_rect_for(&ctx, 2, 1).center();
+
+        for event in crate::view::test_support::secondary_click_events(centre) {
+            let _ = pass(&ctx, event, &mut library, &mut transport, &mut queue);
+        }
+        let request = crate::view::context_menu::take_request(&ctx)
+            .expect("a right-click on a row posted a request");
+        assert_eq!(request.targets.len(), 1);
+        assert_eq!(request.targets[0].uri, "b", "the row under the pointer");
+        assert_eq!(
+            request.page,
+            Some(crate::route::Page::Playlist(
+                "spotify:playlist:a".to_owned()
+            )),
+            "the page it was opened on, so a page change can close it"
+        );
+        assert!(
+            request
+                .items
+                .iter()
+                .any(|item| item.verb == crate::menu::Verb::GoToAlbum),
+            "the row's own album is one of its verbs"
+        );
+    }
+
+    #[test]
+    fn a_page_with_a_write_in_flight_posts_no_menu() {
+        let ctx = context();
+        let tracks = vec![track("a", "t0"), track("b", "t1")];
+        let mut library = library_with(tracks.clone());
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        assert!(
+            library
+                .move_tracks("spotify:playlist:a", &[0], 2, &[tracks[0].clone()])
+                .is_some(),
+            "the page takes the move first"
+        );
+        let centre = row_rect_for(&ctx, 2, 1).center();
+
+        for event in crate::view::test_support::secondary_click_events(centre) {
+            let _ = pass(&ctx, event, &mut library, &mut transport, &mut queue);
+        }
+        assert_eq!(
+            crate::view::context_menu::take_request(&ctx),
+            None,
+            "a write in flight holds the rows still, so no menu opens over them"
+        );
+    }
+
+    #[test]
     fn a_page_without_access_offers_nothing() {
         let ctx = context();
         let mut library = library_selected(
@@ -1980,6 +2047,7 @@ mod tests {
             state: State::Resting,
             cover: Cover::Missing,
             look: Look::default(),
+            menu: false,
         };
 
         run(&ctx, input(Vec::new()), |ui| {
@@ -2028,6 +2096,7 @@ mod tests {
             state: State::Resting,
             cover: Cover::Missing,
             look: Look::default(),
+            menu: false,
         };
 
         let mut output = ctx.run_ui(input(Vec::new()), |ui| {
@@ -2431,6 +2500,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             state: State::Resting,
             cover: Cover::Missing,
             look: Look::default(),
+            menu: false,
         };
 
         let mut output = ctx.run_ui(input(Vec::new()), |ui| {

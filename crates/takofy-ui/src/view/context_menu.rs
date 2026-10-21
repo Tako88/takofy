@@ -56,18 +56,53 @@ pub fn take_request(ctx: &egui::Context) -> Option<Request> {
     })
 }
 
+/// Posts the request the shell opens the menu on this frame.
+///
+/// It is one frame's value, taken by the shell after the page has drawn, so a
+/// page that does not draw posts nothing.
+pub fn post(ctx: &egui::Context, request: Request) {
+    ctx.data_mut(|data| data.insert_temp(request_id(), request));
+}
+
+/// The widget the open menu was opened from, if one is open.
+///
+/// A row draws before the menu does, so this is how the `⋯` that opened it
+/// learns that its menu is up.
+pub fn open_opener(ctx: &egui::Context) -> Option<Id> {
+    ctx.data(|data| data.get_temp::<Id>(open_opener_id()))
+}
+
 /// The id a posted request lives under.
 fn request_id() -> Id {
     Id::unique("context-menu-request")
+}
+
+/// The id the open menu's opener lives under.
+fn open_opener_id() -> Id {
+    Id::unique("context-menu-opener")
+}
+
+/// Records — or forgets — the widget whose menu is up.
+pub(super) fn note_open(ctx: &egui::Context, opener: Option<Id>) {
+    ctx.data_mut(|data| match opener {
+        Some(opener) => {
+            data.insert_temp(open_opener_id(), opener);
+        }
+        None => data.remove::<Id>(open_opener_id()),
+    });
 }
 
 /// Draws the open menu, and reports what closed it.
 pub fn show(ui: &mut Ui, frame: Frame<'_>) -> Option<Closed> {
     let Frame { menu, free, tokens } = frame;
     if !menu.is_open() {
+        // The button that says the menu is open learns it from here, so a closed
+        // menu has to forget it.
+        note_open(ui.ctx(), None);
         return None;
     }
     let anchor = menu.anchor()?;
+    note_open(ui.ctx(), menu.opener());
 
     // The frame the menu opens is its own: the Enter that opened it must not
     // also fire the row it lights, and the click that opened it must not

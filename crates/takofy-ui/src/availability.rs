@@ -183,10 +183,11 @@ pub fn availability(control: Control) -> Availability {
         Control::Fullscreen => Availability::Waiting,
 
         // A row's like and more are not the playbar's like or the Now Playing
-        // more: they act on another track and must carry their own ids. Both
-        // are drawn but have no command yet (Q5(a)).
+        // more: they act on another track and must carry their own ids. The
+        // more opens the row's menu; the like still needs a write to the Web
+        // API, which this build never makes.
         Control::TrackLike => Availability::Waiting,
-        Control::TrackMore => Availability::Waiting,
+        Control::TrackMore => Availability::Ready,
 
         // The panel's tabs: the queue is state the window already holds, and
         // lyrics are a fetch and a parse it does not make. #15
@@ -249,6 +250,7 @@ mod tests {
                     | Control::DiscographyFilter
                     | Control::ReleasePlay
                     | Control::EpisodeToggle
+                    | Control::TrackMore
                     | Control::NowPlayingQueueTab
                     | Control::NowPlayingLyricsTab
                     | Control::Authorize

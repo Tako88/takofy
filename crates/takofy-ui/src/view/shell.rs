@@ -338,21 +338,19 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
         };
         let _ = screen.menu.open(request, gate);
     }
-    if screen.menu.is_open() {
-        let frame = context_menu::Frame {
-            menu: &mut *screen.menu,
-            // A choice is applied only when no region took the frame's command:
-            // `library.open` mutates before it returns, so applying one whose
-            // command would then be dropped leaves state changed for a command
-            // nobody sends.
-            free: command.is_none(),
-            tokens,
-        };
-        if let Some(closed) = context_menu::show(ui, frame)
-            && let Some(verb) = closed.chose
-        {
-            command = apply_verb(ui, screen, verb);
-        }
+    let frame = context_menu::Frame {
+        menu: &mut *screen.menu,
+        // A choice is applied only when no region took the frame's command:
+        // `library.open` mutates before it returns, so applying one whose
+        // command would then be dropped leaves state changed for a command
+        // nobody sends.
+        free: command.is_none(),
+        tokens,
+    };
+    if let Some(closed) = context_menu::show(ui, frame)
+        && let Some(verb) = closed.chose
+    {
+        command = apply_verb(ui, screen, verb);
     }
 
     // Settled before the drawer, so the Escape that cancels a drag does not also

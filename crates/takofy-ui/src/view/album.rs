@@ -171,6 +171,8 @@ pub fn album_view(
                                 // The band already holds the record's one picture.
                                 cover: Cover::Missing,
                                 look: selection.look(index),
+                                // This page's rows open no menu yet.
+                                menu: false,
                             };
                             // A row plays; its artist subline, when the album named
                             // a resolvable artist, opens that artist's page.
@@ -180,6 +182,7 @@ pub fn album_view(
                                 }
                                 Some(Click::Open(page)) => open = Some(page),
                                 Some(Click::Select(press)) => selection.press(index, press),
+                                Some(Click::Menu(_)) => {}
                                 Some(Click::Lift) => {
                                     let ghost = Ghost::Table(row.lifted(columns));
                                     selection.lift(index, rect.size(), ghost, |row| {

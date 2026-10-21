@@ -257,6 +257,8 @@ fn body(
                     // The block's head already holds the release's one picture.
                     cover: Cover::Missing,
                     look: selection.look(index),
+                    // This block's rows open no menu yet.
+                    menu: false,
                 };
                 match track_row::show(ui, rect, columns, &row, tokens) {
                     Some(Click::Play) => clicked.row = Some(index),
@@ -265,7 +267,7 @@ fn body(
                         let ghost = Ghost::Table(row.lifted(columns));
                         selection.lift(index, rect.size(), ghost, |row| tracks.get(row).cloned());
                     }
-                    Some(Click::Open(_)) | None => {}
+                    Some(Click::Menu(_)) | Some(Click::Open(_)) | None => {}
                 }
             }
             selection.finish(ui.ctx());

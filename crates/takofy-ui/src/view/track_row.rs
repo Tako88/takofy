@@ -9,12 +9,19 @@
 //! means to the list's selection belongs to the list, so the row only reports it,
 //! and a carried row is drawn from its own [`Lifted`] snapshot.
 //!
-//! The row is one focus stop. The like and the more are waiting controls, so they
-//! never join the tab order, and a list of sixty tracks is sixty stops rather than
-//! a hundred and eighty. The album and artist cells are links that take a single
-//! click anywhere on the cell, but their interaction is deliberately not
-//! focusable, so they add no stop of their own: the cost is that a keyboard can
-//! reach neither link yet, while Enter and Space on the row still play.
+//! The row is two focus stops: its body, and the `⋯` that opens its menu. The like
+//! is still waiting, so it never joins the tab order, and a list of sixty tracks
+//! is a hundred and twenty stops rather than a hundred and eighty. The album and
+//! artist cells are links that take a single click anywhere on the cell, but their
+//! interaction is deliberately not focusable, so they add no stop of their own:
+//! the cost is that a keyboard can reach neither link yet, while Enter and Space
+//! on the row still play.
+//!
+//! The row's menu has three doors — the `⋯`, a right-click anywhere on the row,
+//! and the context-menu key or Shift+F10 while the row or its `⋯` holds the
+//! keyboard — and all three report one `Click::Menu`, anchored to the row's own
+//! `⋯`. The row never opens a menu itself: the page's list turns the click into a
+//! request and the shell opens it.
 //!
 //! A liked state is not drawn here because nothing can produce one yet: the track
 //! model carries no such flag. The like's column is reserved and its control is
@@ -28,6 +35,7 @@ use crate::availability::Control;
 use crate::cover::Cover;
 use crate::icon::{self, Icon};
 use crate::layout::table::{Columns, number_box, title_parts};
+use crate::menu::{Anchor, Device, Door};
 use crate::player::{Transport, TransportState};
 use crate::route::Page;
 use crate::selection::Press;
@@ -35,7 +43,7 @@ use crate::theme::icon::Size;
 use crate::theme::{Tokens, ease, eq, motion, radius, space, stroke, text, tracking};
 
 use super::rows::{self, Ghosting, Look};
-use super::{art, controls, text as recipe};
+use super::{art, context_menu, controls, text as recipe};
 
 /// A row's relationship to the transport.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -124,6 +132,9 @@ pub struct Row<'a> {
     pub cover: Cover,
     /// Where the row stands in its list: picked, carried, or neither.
     pub look: Look,
+    /// Whether this row's menu may open. The page decides, because the gate is
+    /// about the list and the moment, not about the row.
+    pub menu: bool,
 }
 
 impl Row<'_> {
@@ -319,7 +330,9 @@ impl Lifted {
 }
 
 /// What a click on a row asked for.
-#[derive(Clone, PartialEq, Eq, Debug)]
+///
+/// No `Eq`: a door carries its anchor, and an anchor is a rect of floats.
+#[derive(Clone, PartialEq, Debug)]
 pub enum Click {
     /// Start the track.
     Play,
@@ -329,6 +342,8 @@ pub enum Click {
     Select(Press),
     /// The pointer began dragging the row out of the list.
     Lift,
+    /// Open this row's menu, from whichever door asked for it.
+    Menu(Door),
 }
 
 /// What a link cell's interaction reports to the row.
@@ -420,7 +435,8 @@ pub fn show(
         tokens,
         row.look.selected,
     );
-    let on_more = more(ui, columns.actions, key, row, tokens);
+    let more = more(ui, columns.actions, key, row, response.id, tokens);
+    let on_more = more.hovered;
 
     // A control inside the row takes the click it is given rather than passing it
     // on: neither can act yet, so neither reports anything, but a click on one is
@@ -439,6 +455,18 @@ pub fn show(
     }
 
     ui.set_opacity(before);
+
+    // The three doors, before anything the row itself does: a menu opens on the
+    // row the user pointed at, and never also selects or plays it.
+    if row.menu
+        && !row.look.carrying
+        && let Some(door) = more
+            .door
+            .or_else(|| key_door(ui, response, &more, columns.actions))
+            .or_else(|| pointer_door(ui, rect, response.id, columns.actions))
+    {
+        return Some(Click::Menu(door));
+    }
 
     // The row's own keyboard activation is answered before the link cells are
     // read, so a link click landing in the same frame can never swallow it.
@@ -886,14 +914,45 @@ fn duration(ui: &Ui, rect: Rect, label: Option<&str>, tokens: &Tokens, selected:
     }
 }
 
-/// The more button, which a later phase opens a menu from.
+/// What the row's more button reports.
+struct More {
+    /// Whether the pointer is on it, so a click here is not a click on the row.
+    hovered: bool,
+    /// The door a press on it opened.
+    door: Option<Door>,
+    /// Its own widget id, which is the opener when the keyboard opened the menu.
+    id: egui::Id,
+    /// Whether it holds the keyboard.
+    focused: bool,
+}
+
+/// The more button, which opens the row's menu.
 ///
-/// Returns whether the pointer is on it, as [`like`] does.
-fn more(ui: &mut Ui, rect: Rect, key: (&str, usize), row: &Row<'_>, tokens: &Tokens) -> bool {
+/// It is live only when the page says the menu may open, and it says its menu is
+/// up while it is: the sheet draws the open `⋯` in full ink on the hover's fill.
+fn more(
+    ui: &mut Ui,
+    rect: Rect,
+    key: (&str, usize),
+    row: &Row<'_>,
+    body: egui::Id,
+    tokens: &Tokens,
+) -> More {
+    let live = row.menu && !row.look.carrying;
     if !drawable(rect) {
-        return false;
+        return More {
+            hovered: false,
+            door: None,
+            id: body,
+            focused: false,
+        };
     }
-    let response = controls::icon_button_keyed(
+    let id = controls::slot_id(ui, Control::TrackMore, key);
+    // A right-click or the keyboard opens the menu from the row's body, so the
+    // button says it is open for either opener.
+    let open =
+        context_menu::open_opener(ui.ctx()).is_some_and(|opener| opener == id || opener == body);
+    let slot = controls::icon_button_open(
         ui,
         tokens,
         Control::TrackMore,
@@ -902,9 +961,76 @@ fn more(ui: &mut Ui, rect: Rect, key: (&str, usize), row: &Row<'_>, tokens: &Tok
         Icon::More,
         Size::SM,
         &format!("More options for {}", row.title),
-        false,
+        live,
+        open,
     );
-    under_pointer(&response)
+    let _ = ui.ctx().accesskit_node_builder(slot.response.id, |node| {
+        node.set_expanded(open);
+        node.set_has_popup(egui::accesskit::HasPopup::Menu);
+    });
+    // egui does not focus a widget on a click; the row's body asks for it by hand
+    // and the more does the same, so Enter and the focus ring land where the
+    // pointer last was.
+    if slot.response.clicked() {
+        slot.response.request_focus();
+    }
+
+    // A press on a focused `⋯` is also Enter or Space, which egui reports as a
+    // click without a pointer, so the device decides what the sheet's tiers mean.
+    let device = if ui.input(|input| input.pointer.button_clicked(egui::PointerButton::Primary)) {
+        Device::Pointer
+    } else {
+        Device::Keyboard
+    };
+    let door = slot.response.clicked().then_some(Door {
+        anchor: Anchor::Button(rect),
+        opener: id,
+        device,
+    });
+    More {
+        hovered: under_pointer(&slot),
+        door,
+        id,
+        focused: slot.response.has_focus(),
+    }
+}
+
+/// The keyboard's door: the context-menu key or Shift+F10, on the focused row or
+/// its focused `⋯`.
+fn key_door(ui: &Ui, row: &egui::Response, more: &More, anchor: Rect) -> Option<Door> {
+    let (row_focused, more_focused) = (row.has_focus(), more.focused);
+    if !row_focused && !more_focused {
+        return None;
+    }
+    let pressed = ui.input_mut(|input| {
+        // Shift is required for F10, so a plain F10 is not this door.
+        input.consume_key(egui::Modifiers::SHIFT, egui::Key::F10)
+            || input.consume_key(egui::Modifiers::NONE, egui::Key::Menu)
+    });
+    pressed.then_some(Door {
+        anchor: Anchor::Button(anchor),
+        opener: if more_focused { more.id } else { row.id },
+        device: Device::Keyboard,
+    })
+}
+
+/// The pointer's door: a right-click on the row.
+///
+/// The pointer is read rather than the row's own `secondary_clicked()`, because
+/// the link cells are interacted after the row and win the hit test: a
+/// right-click over the album or the artist is still the row's. The rect test is
+/// the layer and clip test, so a right-click under another layer, or outside the
+/// scroll's clip, opens nothing.
+fn pointer_door(ui: &Ui, rect: Rect, opener: egui::Id, anchor: Rect) -> Option<Door> {
+    let secondary = ui.input(|input| input.pointer.secondary_clicked());
+    let over = ui
+        .ctx()
+        .rect_contains_pointer(ui.layer_id(), rect.intersect(ui.clip_rect()));
+    (secondary && over).then_some(Door {
+        anchor: Anchor::Button(anchor),
+        opener,
+        device: Device::Pointer,
+    })
 }
 
 /// Whether the pointer is on a control inside the row.
@@ -988,7 +1114,7 @@ mod tests {
     use crate::cover::Cover;
     use crate::route::Page;
     use crate::theme::Tokens;
-    use crate::view::test_support::{button, click_events};
+    use crate::view::test_support::{button, click_events, secondary_click_events};
 
     fn input_with(events: Vec<Event>) -> egui::RawInput {
         egui::RawInput {
@@ -1031,6 +1157,7 @@ mod tests {
             state: State::Resting,
             cover: Cover::Missing,
             look: Look::default(),
+            menu: false,
         }
     }
 
@@ -1268,6 +1395,7 @@ mod tests {
             state: State::Resting,
             cover: Cover::Missing,
             look: Look::default(),
+            menu: false,
         }
     }
 
@@ -1451,22 +1579,318 @@ mod tests {
     }
 
     #[test]
-    fn a_click_on_the_like_or_more_does_not_select_or_play() {
-        let columns = columns().at(body_rect().min);
-        for point in [columns.like.center(), columns.actions.center()] {
-            let ctx = context();
-            let row = row_of(1);
-            // A double click, because the second click is the one that would
-            // otherwise play the row underneath the control.
-            let mut events = click_events(point).to_vec();
-            events.extend(click_events(point));
-            let answers = run(&ctx, &row, &events, Modifiers::NONE);
+    fn a_click_on_the_like_does_not_select_or_play() {
+        let ctx = context();
+        let row = row_of(1);
+        let point = columns().at(body_rect().min).like.center();
+        // A double click, because the second click is the one that would
+        // otherwise play the row underneath the control.
+        let mut events = click_events(point).to_vec();
+        events.extend(click_events(point));
+        let answers = run(&ctx, &row, &events, Modifiers::NONE);
 
+        assert!(
+            answers.iter().flatten().next().is_none(),
+            "a click on the like reported {answers:?}"
+        );
+    }
+
+    /// A playlist row whose menu may open.
+    fn menu_row() -> Row<'static> {
+        Row {
+            menu: true,
+            ..row_of(1)
+        }
+    }
+
+    /// The one door a run reported, if it reported any.
+    fn door(answers: &[Option<Click>]) -> Option<Door> {
+        answers.iter().flatten().find_map(|click| match click {
+            Click::Menu(door) => Some(*door),
+            _ => None,
+        })
+    }
+
+    /// The actions column of the row, which every door anchors to.
+    fn actions() -> Rect {
+        columns().at(body_rect().min).actions
+    }
+
+    #[test]
+    fn the_more_button_opens_a_button_door() {
+        let ctx = context();
+        let row = menu_row();
+        let answers = run(
+            &ctx,
+            &row,
+            &click_events(actions().center()),
+            Modifiers::NONE,
+        );
+
+        let door = door(&answers).expect("the more opened a menu");
+        assert_eq!(door.anchor, Anchor::Button(actions()));
+        assert_eq!(door.device, Device::Pointer);
+        assert!(
+            !answers
+                .iter()
+                .flatten()
+                .any(|click| matches!(click, Click::Select(_) | Click::Play)),
+            "the press on the more also picked or played the row: {answers:?}"
+        );
+    }
+
+    #[test]
+    fn a_right_click_on_the_body_a_link_cell_and_the_index_opens_the_button_door() {
+        let columns = columns().at(body_rect().min);
+        let points = [
+            body_point(),
+            columns.artist.center(),
+            columns.album.center(),
+            number_box(columns.index).center(),
+        ];
+        for point in points {
+            let ctx = context();
+            let row = menu_row();
+            let answers = run(&ctx, &row, &secondary_click_events(point), Modifiers::NONE);
+
+            let door = door(&answers).unwrap_or_else(|| panic!("no menu at {point:?}"));
+            assert_eq!(door.anchor, Anchor::Button(actions()), "at {point:?}");
+            assert_eq!(door.device, Device::Pointer, "at {point:?}");
             assert!(
-                answers.iter().flatten().next().is_none(),
-                "a click on a control at {point:?} reported {answers:?}"
+                !answers
+                    .iter()
+                    .flatten()
+                    .any(|click| matches!(click, Click::Select(_) | Click::Open(_) | Click::Play)),
+                "a right-click at {point:?} did more than open the menu: {answers:?}"
             );
         }
+    }
+
+    #[test]
+    fn shift_f10_and_the_menu_key_open_on_a_focused_row_but_plain_f10_does_not() {
+        let ctx = context();
+        let row = menu_row();
+        // The click is what gives the row the keyboard.
+        let first = run(&ctx, &row, &click_events(body_point()), Modifiers::NONE);
+        assert!(
+            first
+                .iter()
+                .flatten()
+                .any(|click| matches!(click, Click::Select(_))),
+            "the row never took the keyboard: {first:?}"
+        );
+
+        let press = |key, modifiers| Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        };
+
+        let plain = run(
+            &ctx,
+            &row,
+            &[press(Key::F10, Modifiers::NONE)],
+            Modifiers::NONE,
+        );
+        assert_eq!(door(&plain), None, "plain F10 opened the menu");
+
+        let shift = run(
+            &ctx,
+            &row,
+            &[press(Key::F10, Modifiers::SHIFT)],
+            Modifiers::SHIFT,
+        );
+        let shift = door(&shift).expect("Shift+F10 opened no menu");
+        assert_eq!(shift.device, Device::Keyboard);
+        assert_eq!(shift.anchor, Anchor::Button(actions()));
+
+        let menu_key = run(
+            &ctx,
+            &row,
+            &[press(Key::Menu, Modifiers::NONE)],
+            Modifiers::NONE,
+        );
+        assert_eq!(
+            door(&menu_key).map(|door| door.device),
+            Some(Device::Keyboard),
+            "the context-menu key opened no menu"
+        );
+    }
+
+    #[test]
+    fn enter_on_a_focused_more_opens_with_the_keyboard_device() {
+        let ctx = context();
+        let row = menu_row();
+        let at = actions().center();
+        let first = run(&ctx, &row, &click_events(at), Modifiers::NONE);
+        assert_eq!(
+            door(&first).map(|door| door.device),
+            Some(Device::Pointer),
+            "the click did not open the menu"
+        );
+
+        let enter = |pressed| Event::Key {
+            key: Key::Enter,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        };
+        let answers = run(&ctx, &row, &[enter(true), enter(false)], Modifiers::NONE);
+        assert_eq!(
+            door(&answers).map(|door| door.device),
+            Some(Device::Keyboard),
+            "Enter on the focused more did not open the menu: {answers:?}"
+        );
+    }
+
+    #[test]
+    fn a_waiting_more_and_a_carried_row_open_nothing() {
+        let ctx = context();
+        // The page's gate is shut: the more is a waiting control.
+        let waiting = row_of(1);
+        for events in [
+            click_events(actions().center()).to_vec(),
+            secondary_click_events(actions().center()).to_vec(),
+            secondary_click_events(body_point()).to_vec(),
+        ] {
+            let answers = run(&ctx, &waiting, &events, Modifiers::NONE);
+            assert_eq!(door(&answers), None, "a waiting row opened a menu");
+        }
+
+        // A carried row is being dragged, so nothing it says is a door.
+        let carried = Row {
+            look: Look {
+                carrying: true,
+                ..Look::default()
+            },
+            ..menu_row()
+        };
+        let answers = run(
+            &ctx,
+            &carried,
+            &secondary_click_events(body_point()),
+            Modifiers::NONE,
+        );
+        assert_eq!(door(&answers), None, "a carried row opened a menu");
+    }
+
+    #[test]
+    fn a_right_click_under_another_layer_is_ignored() {
+        let ctx = context();
+        let row = menu_row();
+        let point = body_point();
+        let cover = Rect::from_min_size(point - vec2(40.0, 20.0), vec2(200.0, 40.0));
+
+        let answer = |events: Vec<Event>| {
+            let mut answer = None;
+            let mut output = ctx.run_ui(input_with(events), |ui| {
+                egui::Area::new(egui::Id::unique("cover"))
+                    .order(egui::Order::Middle)
+                    .fixed_pos(cover.min)
+                    .show(ui.ctx(), |ui| {
+                        ui.expand_to_include_rect(cover);
+                        ui.painter()
+                            .rect_filled(cover, 0.0, Tokens::DARK.palette.surface);
+                    });
+                answer = show(ui, body_rect(), columns(), &row, &Tokens::DARK);
+            });
+            output.textures_delta.clear();
+            answer
+        };
+
+        // Two frames, so the cover's own rect is known to the layer test.
+        let _ = answer(Vec::new());
+        let _ = answer(Vec::new());
+        let answers: Vec<Option<Click>> = secondary_click_events(point)
+            .into_iter()
+            .map(|event| answer(vec![event]))
+            .collect();
+        assert_eq!(
+            door(&answers),
+            None,
+            "a right-click under another layer opened the row's menu"
+        );
+    }
+
+    #[test]
+    fn the_open_more_button_is_lit_and_announces_expanded() {
+        let ctx = context();
+        // The node builders only exist with AccessKit on.
+        ctx.enable_accesskit();
+        let row = menu_row();
+        let key = (row.uri, row.number);
+        let mut more_id = None;
+        let mut output = ctx.run_ui(
+            input_with(vec![Event::PointerMoved(Pos2::new(899.0, 799.0))]),
+            |ui| {
+                more_id = Some(controls::slot_id(ui, Control::TrackMore, key));
+                let _ = show(ui, body_rect(), columns(), &row, &Tokens::DARK);
+            },
+        );
+        output.textures_delta.clear();
+        let id = more_id.expect("a frame ran");
+        assert!(
+            !glyph_colors(&output, actions()).contains(&Tokens::DARK.palette.text),
+            "a resting more was drawn open"
+        );
+
+        // The menu stores its opener; the row draws before the menu, so it reads
+        // the frame before. The node is read in the frame that built it.
+        context_menu::note_open(&ctx, Some(id));
+        let mut nodes = None;
+        let mut output = ctx.run_ui(input_with(Vec::new()), |ui| {
+            let _ = show(ui, body_rect(), columns(), &row, &Tokens::DARK);
+            nodes = ui
+                .ctx()
+                .accesskit_node_builder(id, |node| (node.is_expanded(), node.has_popup()));
+        });
+        output.textures_delta.clear();
+        assert!(
+            glyph_colors(&output, actions()).contains(&Tokens::DARK.palette.text),
+            "the open more is not in full ink: {:?}",
+            glyph_colors(&output, actions())
+        );
+
+        let (expanded, popup) = nodes.expect("the more has an AccessKit node");
+        assert_eq!(expanded, Some(true), "the open more does not say so");
+        assert_eq!(popup, Some(egui::accesskit::HasPopup::Menu));
+    }
+
+    #[test]
+    fn the_more_button_is_a_tab_stop_only_when_live() {
+        for (menu, focusable) in [(true, true), (false, false)] {
+            let ctx = context();
+            let row = Row { menu, ..row_of(1) };
+            let key = (row.uri, row.number);
+            let mut sense = None;
+            let mut output = ctx.run_ui(input_with(Vec::new()), |ui| {
+                let _ = show(ui, body_rect(), columns(), &row, &Tokens::DARK);
+                sense = ui
+                    .ctx()
+                    .read_response(controls::slot_id(ui, Control::TrackMore, key))
+                    .map(|response| response.sense);
+            });
+            output.textures_delta.clear();
+            let sense = sense.expect("the more is drawn");
+            assert_eq!(sense.is_focusable(), focusable, "menu: {menu}");
+            assert_eq!(sense.senses_click(), focusable, "menu: {menu}");
+        }
+    }
+
+    /// The colours of the glyphs painted inside `rect`.
+    fn glyph_colors(output: &egui::FullOutput, rect: Rect) -> Vec<Color32> {
+        output
+            .shapes
+            .iter()
+            .filter(|clipped| clipped.shape.visual_bounding_rect().intersects(rect))
+            .filter_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Path(path) => Some(path.fill),
+                _ => None,
+            })
+            .collect()
     }
 
     #[test]

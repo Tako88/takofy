@@ -334,6 +334,8 @@ fn popular(
             state: state_of(&entry.uri, transport),
             cover: Cover::Missing,
             look: selection.look(index),
+            // This page's rows open no menu yet.
+            menu: false,
         };
         match track_row::show(ui, rect, columns, &row, tokens) {
             Some(Click::Play) => {
@@ -346,7 +348,7 @@ fn popular(
                     artist.top_tracks.get(row).cloned()
                 });
             }
-            Some(Click::Open(_)) | None => {}
+            Some(Click::Menu(_)) | Some(Click::Open(_)) | None => {}
         }
     }
     selection.finish(ui.ctx());

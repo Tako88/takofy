@@ -55,6 +55,15 @@ pub fn slot(
     slot_keyed(ui, control, (), role, rect, label, tokens, live)
 }
 
+/// The id a keyed control's slot is registered under.
+///
+/// A caller that has to read a control's state before it draws — the row's `⋯`
+/// asks whether its menu is the one open — needs the id first, and this is the
+/// one place the formula lives.
+pub fn slot_id(ui: &Ui, control: Control, key: impl Hash + std::fmt::Debug) -> egui::Id {
+    ui.scope_id().with((control, key))
+}
+
 /// Wires one control's rect to its interaction and accessibility, keyed.
 ///
 /// A control that appears once can use `slot`. One that appears once per row —
@@ -84,7 +93,7 @@ pub fn slot_keyed(
     // loaded. A control that cannot act right now is offered exactly as a waiting
     // one is: unfocusable, announced disabled, and drawn with the same tone.
     let ready = availability(control) == Availability::Ready && live;
-    let id = ui.scope_id().with((control, key));
+    let id = slot_id(ui, control, key);
     let sense = if ready {
         // Draggable as well as clickable: the seek bar is scrubbed, and a press and
         // release without movement is still a click.
@@ -234,7 +243,7 @@ pub fn icon_button_keyed(
     live: bool,
 ) -> Slot {
     let slot = slot_keyed(ui, control, key, Role::Button, rect, label, tokens, live);
-    paint_icon_button(ui, tokens, rect, icon, size, &slot, live, false);
+    paint_icon_button(ui, tokens, rect, icon, size, &slot, Lit::Rest);
     slot
 }
 
@@ -254,15 +263,50 @@ pub fn icon_button_claimed(
     label: &str,
 ) -> Slot {
     let slot = slot(ui, control, Role::Button, rect, label, tokens, false);
-    paint_icon_button(ui, tokens, rect, icon, size, &slot, slot.live, true);
+    paint_icon_button(ui, tokens, rect, icon, size, &slot, Lit::Claimed);
     slot
 }
 
-/// An icon button's body: the wash, or the claim's fill, and the glyph over it.
+/// An icon button that says the menu it opened is still up: full ink on the
+/// hover's fill, which is the only thing on the row that marks the menu's state.
+///
+/// A row's `⋯` is one per row, so it carries a key like every other repeated
+/// control.
 #[expect(
     clippy::too_many_arguments,
-    reason = "a drawn button needs its slot, its glyph and its look"
+    reason = "the same facts as a button, plus whether its menu is open"
 )]
+pub fn icon_button_open(
+    ui: &mut Ui,
+    tokens: &Tokens,
+    control: Control,
+    key: impl Hash + std::fmt::Debug,
+    rect: Rect,
+    icon: Icon,
+    size: Size,
+    label: &str,
+    live: bool,
+    open: bool,
+) -> Slot {
+    let slot = slot_keyed(ui, control, key, Role::Button, rect, label, tokens, live);
+    let lit = if open { Lit::Open } else { Lit::Rest };
+    paint_icon_button(ui, tokens, rect, icon, size, &slot, lit);
+    slot
+}
+
+/// How an icon button is lit, if at all.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Lit {
+    /// Nothing is claimed and no menu is open: the hover wash alone.
+    Rest,
+    /// A carried block hangs over it.
+    Claimed,
+    /// The menu this button opened is still up.
+    Open,
+}
+
+/// An icon button's body: the wash, or the claim's or the open state's fill, and
+/// the glyph over it.
 fn paint_icon_button(
     ui: &mut Ui,
     tokens: &Tokens,
@@ -270,18 +314,25 @@ fn paint_icon_button(
     icon: Icon,
     size: Size,
     slot: &Slot,
-    live: bool,
-    claimed: bool,
+    lit: Lit,
 ) {
-    let color = if claimed {
-        ui.painter()
-            .rect_filled(rect, radius::SM, tokens.palette.row_selected);
-        tokens.palette.text
-    } else {
-        if let Some(fill) = wash(ui, tokens, slot.hover) {
-            ui.painter().rect_filled(rect, radius::SM, fill);
+    let color = match lit {
+        Lit::Claimed => {
+            ui.painter()
+                .rect_filled(rect, radius::SM, tokens.palette.row_selected);
+            tokens.palette.text
         }
-        foreground(tokens, live, slot.hover)
+        Lit::Open => {
+            ui.painter()
+                .rect_filled(rect, radius::SM, tokens.palette.surface_hover);
+            tokens.palette.text
+        }
+        Lit::Rest => {
+            if let Some(fill) = wash(ui, tokens, slot.hover) {
+                ui.painter().rect_filled(rect, radius::SM, fill);
+            }
+            foreground(tokens, slot.live, slot.hover)
+        }
     };
     icon::paint(
         ui.painter(),

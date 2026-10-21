@@ -157,6 +157,8 @@ pub fn search_view(
                                 state: state_of(&entry.uri, transport),
                                 cover: art.look(entry.cover.as_ref(), now),
                                 look: selection.look(index),
+                                // These rows open no menu yet.
+                                menu: false,
                             };
                             // R16: a row plays the whole answer, entered here, so
                             // next and previous walk the results.
@@ -166,6 +168,7 @@ pub fn search_view(
                                 }
                                 Some(Click::Open(page)) => open = Some(page),
                                 Some(Click::Select(press)) => selection.press(index, press),
+                                Some(Click::Menu(_)) => {}
                                 Some(Click::Lift) => {
                                     let ghost = Ghost::Table(row.lifted(columns));
                                     selection.lift(index, rect.size(), ghost, |row| {
