@@ -361,9 +361,7 @@ pub(crate) async fn write_move(
     revision: &Revision,
     moves: &[Move],
 ) -> Result<Revision, playlist_edit::PlaylistError> {
-    if moves.is_empty() {
-        return Err(playlist_edit::PlaylistError::NoMoves);
-    }
+    playlist_edit::require_moves(moves)?;
     let endpoint = playlist_edit::changes_endpoint(uri)?;
     write_changes(session, endpoint, playlist_edit::move_body(revision, moves)).await
 }

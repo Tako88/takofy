@@ -30,6 +30,15 @@ pub enum PlaylistError {
     NoMoves,
 }
 
+/// Whether `moves` names anything to write.
+pub fn require_moves(moves: &[Move]) -> Result<(), PlaylistError> {
+    if moves.is_empty() {
+        Err(PlaylistError::NoMoves)
+    } else {
+        Ok(())
+    }
+}
+
 /// `Op.kind` for an add in the playlist schema.
 const ADD: u32 = 2;
 /// `Op.kind` for a remove in the playlist schema.
@@ -187,7 +196,7 @@ mod tests {
 
     use super::{
         PlaylistError, access, add_body, changes_endpoint, listing_access, move_body, owned,
-        remove_body, reply_revision, require_track, rootlist_changes_endpoint,
+        remove_body, reply_revision, require_moves, require_track, rootlist_changes_endpoint,
     };
     use takofy_model::{Move, PlaylistAccess, Revision};
 
@@ -218,6 +227,12 @@ mod tests {
             length: 1,
             to,
         }]
+    }
+
+    #[test]
+    fn an_empty_move_list_is_no_write() {
+        assert_eq!(require_moves(&[]), Err(PlaylistError::NoMoves));
+        assert_eq!(require_moves(&one(0, 1)), Ok(()));
     }
 
     #[test]
