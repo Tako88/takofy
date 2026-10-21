@@ -1,10 +1,14 @@
 //! The search drop-down: the first five matches, the floor row, and the line
 //! that says there is nothing to show.
 //!
+//! The box is the app's one menu box ([`super::menu_box`]), so it is the same
+//! raised card, hairline and shadow as a track row's context menu. This view
+//! keeps only its own row grammar: the cover, the title over `artist · album`,
+//! the action glyph and the floor row.
+//!
 //! The menu is a foreground `Area` anchored to the field's own box (R7): the
-//! same width, `extent::MENU_GAP` below it, `radius::MD`, one `border_strong`
-//! hairline and the app's largest shadow. It is not clipped by the topbar and it
-//! draws over the view, the way the drawer's `Area` does.
+//! same width and `extent::MENU_GAP` below it. It is not clipped by the topbar
+//! and it draws over the view, the way the drawer's `Area` does.
 //!
 //! Two tiers, never three (R9). The keyboard owns the 2px rule, the
 //! `row_selected` wash and the action glyph; the pointer owns a `row_hover` wash
@@ -23,18 +27,20 @@
 
 use std::time::Instant;
 
-use egui::{Color32, CornerRadius, FontId, Order, Rect, Sense, Stroke, Ui, pos2, vec2};
+use egui::{FontId, Order, Rect, Sense, Ui, pos2, vec2};
 use takofy_model::TrackEntry;
 
 use crate::cover::Art;
 use crate::icon::{self, Icon};
 use crate::layout::search_menu as geometry;
+use crate::menu::{Device, Tier};
 use crate::player::Transport;
-use crate::search::{Act, Device, MenuView, Search};
+use crate::search::{Act, MenuView, Search};
 use crate::theme::icon::Size;
 use crate::theme::{MonoWeight, Tokens, Weight, fonts, radius, space, stroke, text, tracking};
 
 use super::art;
+use super::menu_box::{self, Card, clicked_on, paint_highlight, paint_marker, row_corners};
 use super::text as recipe;
 use super::track_row::{self, State, state_of};
 
@@ -93,22 +99,15 @@ pub fn show(
         .fade_in(false);
 
     area.show(ui.ctx(), |ui| {
-        // The shadow is painted before the clip, because a clipped shadow is no
-        // shadow. The card is painted inside the area, so the sizing pass draws
-        // nothing at all rather than an empty card over the view.
-        ui.painter()
-            .add(tokens.palette.shadow_lg.as_shape(menu, radius::MD));
-        ui.set_clip_rect(menu);
-
-        // One widget under the rows and the line: a click anywhere on the card
-        // is the card's, never the track row or the hero button underneath, and
-        // an empty or failed menu still swallows it. The rows interact after
-        // this, so they win on their own rects.
-        ui.interact(menu, base.with("surface"), Sense::CLICK);
-        ui.painter()
-            .rect_filled(menu, radius::MD, tokens.palette.surface_raised);
-
-        match view {
+        let card = Card {
+            rect: menu,
+            id: base.with("surface"),
+            // The rows are the only Tab stops a menu of results needs, and it has
+            // none: the keyboard path is arrows only (R18).
+            sense: Sense::CLICK,
+            tokens,
+        };
+        menu_box::card(ui, card, |ui| match view {
             MenuView::Rows {
                 tracks,
                 total,
@@ -151,16 +150,7 @@ pub fn show(
                 );
             }
             MenuView::Nothing => {}
-        }
-
-        // After the rows, so a row's wash never paints over the menu's own
-        // hairline.
-        ui.painter().rect_stroke(
-            menu,
-            radius::MD,
-            Stroke::new(stroke::HAIRLINE, tokens.palette.border_strong),
-            egui::StrokeKind::Inside,
-        );
+        });
     });
 
     // The pointer moved over the menu, so the pointer owns the highlight (R9).
@@ -213,7 +203,14 @@ fn result_row(
     let current = !matches!(state, State::Resting);
     let corners = row_corners(index == 0, last);
 
-    paint_highlight(ui, tokens, row, corners, marked, hovered);
+    let tier = if marked {
+        Tier::Keyboard
+    } else if hovered {
+        Tier::Pointer
+    } else {
+        Tier::None
+    };
+    paint_highlight(ui, tokens, row, corners, tier);
 
     // Identity beats focus: the playing row keeps the accent rule even while it
     // is marked (R11).
@@ -290,8 +287,15 @@ fn floor_row(
     let marked = search.mark() == Some(index);
     let hovered = hit.hovered() && !marked && search.device() == Device::Pointer;
     let corners = row_corners(false, true);
+    let tier = if marked {
+        Tier::Keyboard
+    } else if hovered {
+        Tier::Pointer
+    } else {
+        Tier::None
+    };
 
-    paint_highlight(ui, tokens, row, corners, marked, hovered);
+    paint_highlight(ui, tokens, row, corners, tier);
     // The floor is an action, not a result: one hairline separates it from the
     // rows above. It sits over the wash, where the reference's border does.
     ui.painter().rect_filled(
@@ -341,19 +345,6 @@ fn floor_row(
     clicked_on(ui, &hit, row).then_some(Act::OpenResults)
 }
 
-/// Whether a click both pressed and released on this row.
-///
-/// egui reports a click against the widget the press landed on, even when the
-/// release is over another one. The plan's row grammar is the browser's: a press
-/// on one row and a release on another is no click at all, so the release's own
-/// position decides.
-fn clicked_on(ui: &Ui, hit: &egui::Response, row: Rect) -> bool {
-    hit.clicked()
-        && ui
-            .input(|input| input.pointer.interact_pos())
-            .is_some_and(|pos| row.contains(pos))
-}
-
 /// The single muted line for no matches or a failed read (R13).
 fn line(ui: &mut Ui, tokens: &Tokens, menu: Rect, message: &str, base: egui::Id) {
     let row = geometry::row_rect(menu, 0);
@@ -379,37 +370,6 @@ fn line(ui: &mut Ui, tokens: &Tokens, menu: Rect, message: &str, base: egui::Id)
         galley,
         color,
     );
-}
-
-/// The wash one row takes, and the pointer's tick when the pointer owns it.
-fn paint_highlight(
-    ui: &Ui,
-    tokens: &Tokens,
-    row: Rect,
-    corners: CornerRadius,
-    marked: bool,
-    hovered: bool,
-) {
-    if marked {
-        ui.painter()
-            .rect_filled(row, corners, tokens.palette.row_selected);
-    } else if hovered {
-        ui.painter()
-            .rect_filled(row, corners, tokens.palette.row_hover);
-        let tick = Rect::from_center_size(
-            pos2(row.left() + stroke::RULE / 2.0, row.center().y),
-            vec2(stroke::RULE, space::S4),
-        );
-        ui.painter()
-            .rect_filled(tick, radius::NONE, tokens.palette.text_muted);
-    }
-}
-
-/// The 2px rule at the row's margin, rounded with the menu so the first and the
-/// last row's marker are not cut by its corners.
-fn paint_marker(ui: &Ui, row: Rect, corners: CornerRadius, color: Color32) {
-    let marker = Rect::from_min_size(row.min, vec2(stroke::RULE, row.height()));
-    ui.painter().rect_filled(marker, corners, color);
 }
 
 /// The title over `artist · album`, both truncated to the text column (R8).
@@ -461,17 +421,6 @@ fn subtitle(entry: &TrackEntry) -> String {
         (false, None) => entry.artists.clone(),
         (true, Some(album)) => album.to_owned(),
         (true, None) => String::new(),
-    }
-}
-
-/// The corners a row's wash and marker may use, so the menu's `radius::MD`
-/// corners are not painted over by a square row.
-fn row_corners(first: bool, last: bool) -> CornerRadius {
-    CornerRadius {
-        nw: if first { radius::MD.nw } else { 0 },
-        ne: if first { radius::MD.ne } else { 0 },
-        sw: if last { radius::MD.sw } else { 0 },
-        se: if last { radius::MD.se } else { 0 },
     }
 }
 
@@ -599,60 +548,6 @@ mod tests {
             output.textures_delta.clear();
         }
         result.expect("two passes")
-    }
-
-    /// The fills one menu row's highlight paints.
-    fn highlight_fills(marked: bool, hovered: bool) -> Vec<egui::Color32> {
-        let ctx = context();
-        let tokens = Tokens::DARK;
-        let card = Rect::from_min_size(Pos2::ZERO, vec2(320.0, 400.0));
-        let row = geometry::row_rect(card, 0);
-        let mut output = ctx.run_ui(
-            RawInput {
-                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0))),
-                ..Default::default()
-            },
-            |ui| paint_highlight(ui, &tokens, row, radius::MD, marked, hovered),
-        );
-        output.textures_delta.clear();
-        output
-            .shapes
-            .iter()
-            .filter_map(|clipped| match &clipped.shape {
-                egui::epaint::Shape::Rect(shape) => Some(shape.fill),
-                _ => None,
-            })
-            .collect()
-    }
-
-    #[test]
-    fn a_marked_menu_row_takes_the_selection_fill_and_a_hovered_one_the_row_hover() {
-        let tokens = Tokens::DARK;
-        assert_eq!(
-            highlight_fills(true, true),
-            vec![tokens.palette.row_selected],
-            "a marked row under the pointer painted more than the selection"
-        );
-        assert_eq!(
-            highlight_fills(true, false),
-            vec![tokens.palette.row_selected],
-            "a marked row painted something else"
-        );
-
-        let hovered = highlight_fills(false, true);
-        assert_eq!(
-            hovered.first(),
-            Some(&tokens.palette.row_hover),
-            "a hovered row washed with something other than the row hover"
-        );
-        assert!(
-            hovered.contains(&tokens.palette.text_muted),
-            "the pointer's tick went with the wash: {hovered:?}"
-        );
-        assert!(
-            highlight_fills(false, false).is_empty(),
-            "a row with neither the mark nor the pointer painted"
-        );
     }
 
     /// Finding 1: every state of the menu is one click-swallowing surface, so a

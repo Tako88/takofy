@@ -16,6 +16,7 @@ mod ghost;
 mod hero;
 pub mod lyrics_pane;
 pub mod media;
+mod menu_box;
 pub mod now_playing;
 pub mod playbar;
 pub mod playlist;
