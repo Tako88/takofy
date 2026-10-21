@@ -1,0 +1,728 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Search reference · Takofy</title>
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body class="app" data-page="search-reference">
+
+<!-- ===================== Sidebar ===================== -->
+<aside class="sidebar" aria-label="Your library">
+  <div class="chips" role="group" aria-label="Filter your library" data-chip-group data-chip-target="#library-list" data-count-target="[data-library-count]">
+    <button class="chip" type="button" data-chip="playlist" aria-pressed="false">Playlists</button>
+    <button class="chip" type="button" data-chip="artist" aria-pressed="false">Artists</button>
+    <button class="chip" type="button" data-chip="album" aria-pressed="false">Albums</button>
+    <button class="chip" type="button" data-chip="podcast" aria-pressed="false">Podcasts</button>
+  </div>
+
+  <div class="library">
+    <div class="library__head">
+      <span data-library-count></span>
+      <span class="library__head-actions">
+        <button class="icon-button" type="button" aria-label="Create playlist or folder">
+          <svg class="icon icon--md" aria-hidden="true"><use href="#i-plus"></use></svg>
+        </button>
+      </span>
+    </div>
+
+    <ul class="library__list" id="library-list" data-library-list></ul>
+  </div>
+</aside>
+
+<!-- ===================== Main ===================== -->
+<div class="app__main">
+  <header class="topbar">
+    <button class="icon-button topbar__drawer-toggle" type="button" data-drawer-toggle aria-expanded="false" aria-label="Open your library panel">
+      <svg class="icon icon--lg" aria-hidden="true"><use href="#i-panel"></use></svg>
+    </button>
+    <div class="topbar__nav">
+      <a class="round-button" href="index.html" data-nav="home" aria-label="Home">
+        <svg class="icon" aria-hidden="true"><use href="#i-home"></use></svg>
+      </a>
+      <button class="round-button" type="button" data-back aria-label="Go back">
+        <svg class="icon" aria-hidden="true"><use href="#i-arrow-left"></use></svg>
+      </button>
+      <button class="round-button" type="button" data-forward aria-label="Go forward">
+        <svg class="icon" aria-hidden="true"><use href="#i-arrow-right"></use></svg>
+      </button>
+    </div>
+    <form class="searchbar" role="search" onsubmit="return false">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-search"></use></svg>
+      <input type="search" placeholder="Artists, albums or podcasts" aria-label="Search" />
+    </form>
+    <nav class="trail" aria-label="You are here">
+      <a href="index.html">Home</a>
+      <span class="trail__sep">/</span>
+      <span aria-current="page">Search reference</span>
+    </nav>
+  </header>
+
+  <main class="view search-page">
+    <div class="view__inner">
+      <div class="page-head">
+        <h1 class="page-head__title">Search reference</h1>
+        <p class="page-head__note">8 decisions · static specimens</p>
+      </div>
+
+      <p class="states__intro">
+        The search input, decided. The fields on this page are real controls; the menus are static
+        specimens of the states they produce — there is no index behind this page, so typing here
+        will not query anything.
+      </p>
+
+      <!-- ============ 01 · Field states ============ -->
+      <section class="section" aria-labelledby="ref-field">
+        <div class="section__head">
+          <h2 class="section__title" id="ref-field"><span class="states__no">01</span>Field, in three states</h2>
+          <p class="label states__meta">border only · 3 states</p>
+        </div>
+
+        <div class="states__stage">
+          <div class="field-spec">
+            <p class="label">Empty</p>
+            <form class="searchbar" role="search" onsubmit="return false">
+              <svg class="icon icon--md" aria-hidden="true"><use href="#i-search"></use></svg>
+              <input type="search" placeholder="Artists, albums or podcasts" aria-label="Search, empty" />
+            </form>
+            <p class="states__note">
+              The placeholder names what the index actually holds. It is not a question the client
+              cannot answer, and it is not the word “Search” echoed back at you from inside a search
+              field.
+            </p>
+          </div>
+
+          <div class="field-spec">
+            <p class="label">Focused, typing</p>
+            <form class="searchbar is-focus is-filled" role="search" onsubmit="return false">
+              <svg class="icon icon--md" aria-hidden="true"><use href="#i-search"></use></svg>
+              <input type="search" value="harbou" aria-label="Search, focused and typing" />
+              <button class="searchbar__clear" type="button" aria-label="Clear search">
+                <svg class="icon" aria-hidden="true"><use href="#i-close"></use></svg>
+              </button>
+            </form>
+            <p class="states__note">
+              The border goes bone and nothing else moves: no glow, no icon swap, no width change.
+              The input is real, so the caret is real. Results start at the first character; focus
+              alone opens nothing.
+            </p>
+          </div>
+
+          <div class="field-spec">
+            <p class="label">With text</p>
+            <form class="searchbar is-filled" role="search" onsubmit="return false">
+              <svg class="icon icon--md" aria-hidden="true"><use href="#i-search"></use></svg>
+              <input type="search" value="harbour" aria-label="Search, filled" />
+              <button class="searchbar__clear" type="button" aria-label="Clear search">
+                <svg class="icon" aria-hidden="true"><use href="#i-close"></use></svg>
+              </button>
+            </form>
+            <p class="states__note">
+              The clear control sits inside the field's own box, at its right edge, 4px from the
+              border. Clearing therefore never changes the field's width — and never moves the menu
+              that hangs off it. Escape does the same thing without the pointer.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ 02 · The menu ============ -->
+      <section class="section" aria-labelledby="ref-menu">
+        <div class="section__head">
+          <h2 class="section__title" id="ref-menu"><span class="states__no">02</span>The menu</h2>
+          <p class="label states__meta">field width · 6px gap</p>
+        </div>
+
+        <div class="states__stage search-stage">
+          <div class="search-stage__bar">
+            <div class="search-demo">
+              <form class="searchbar is-focus is-filled" role="search" onsubmit="return false">
+                <svg class="icon icon--md" aria-hidden="true"><use href="#i-search"></use></svg>
+                <input type="search" value="harbour" aria-label="Search, with menu open" aria-expanded="true" aria-controls="menu-anatomy" role="combobox" aria-autocomplete="list" />
+                <button class="searchbar__clear" type="button" aria-label="Clear search">
+                  <svg class="icon" aria-hidden="true"><use href="#i-close"></use></svg>
+                </button>
+              </form>
+
+              <ul class="search-menu" id="menu-anatomy" role="listbox" aria-label="Results for harbour">
+                <li class="search-menu__row is-active" role="option" aria-selected="true" data-kind="album">
+                  <img class="search-menu__art" src="img/covers/harbour-lights.jpg" alt="" />
+                  <span class="search-menu__text">
+                    <span class="search-menu__title truncate">Harbour Lights</span>
+                    <span class="search-menu__sub truncate">Vela Moreno</span>
+                  </span>
+                  <span class="search-menu__type">Album</span>
+                  <span class="search-menu__go"><svg class="icon" aria-hidden="true"><use href="#i-chevron-right"></use></svg></span>
+                </li>
+                <li class="search-menu__row" role="option" aria-selected="false" data-kind="track">
+                  <img class="search-menu__art" src="img/covers/slow-tide.jpg" alt="" />
+                  <span class="search-menu__text">
+                    <span class="search-menu__title truncate">Harbour Wall</span>
+                    <span class="search-menu__sub truncate">Vela Moreno · Slow Tide</span>
+                  </span>
+                  <span class="search-menu__type">Track</span>
+                  <span class="search-menu__go"><svg class="icon" aria-hidden="true"><use href="#i-chevron-right"></use></svg></span>
+                </li>
+                <li class="search-menu__row" role="option" aria-selected="false" data-kind="artist">
+                  <img class="search-menu__art" src="img/artists/coastal-divide.jpg" alt="" />
+                  <span class="search-menu__text">
+                    <span class="search-menu__title truncate">Harbour</span>
+                    <span class="search-menu__sub truncate">91,204 monthly listeners</span>
+                  </span>
+                  <span class="search-menu__type">Artist</span>
+                  <span class="search-menu__go"><svg class="icon" aria-hidden="true"><use href="#i-chevron-right"></use></svg></span>
+                </li>
+                <li class="search-menu__row" role="option" aria-selected="false" data-kind="playlist">
+                  <img class="search-menu__art" src="img/covers/saltglass.jpg" alt="" />
+                  <span class="search-menu__text">
+                    <span class="search-menu__title truncate">Harbour Static</span>
+                    <span class="search-menu__sub truncate">Made for you</span>
+                  </span>
+                  <span class="search-menu__type">Playlist</span>
+                  <span class="search-menu__go"><svg class="icon" aria-hidden="true"><use href="#i-chevron-right"></use></svg></span>
+                </li>
+                <li class="search-menu__row" role="option" aria-selected="false" data-kind="podcast">
+                  <img class="search-menu__art" src="img/covers/pod-long-way-round.jpg" alt="" />
+                  <span class="search-menu__text">
+                    <span class="search-menu__title truncate">Harbour Road</span>
+                    <span class="search-menu__sub truncate">Wanderline</span>
+                  </span>
+                  <span class="search-menu__type">Podcast</span>
+                  <span class="search-menu__go"><svg class="icon" aria-hidden="true"><use href="#i-chevron-right"></use></svg></span>
+                </li>
+                <li class="search-menu__row search-menu__all" role="option" aria-selected="false">
+                  <span class="truncate">See all 12 results for <b>“harbour”</b></span>
+                  <svg class="icon" aria-hidden="true"><use href="#i-chevron-right"></use></svg>
+                </li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="search-stage__page" aria-hidden="true">
+            <div class="search-stage__cards">
+              <div class="search-stage__card"><img src="img/covers/nocturne-field.jpg" alt="" /><span>Nocturne Field</span></div>
+              <div class="search-stage__card"><img src="img/covers/harbour-lights.jpg" alt="" /><span>Harbour Lights</span></div>
+              <div class="search-stage__card"><img src="img/covers/low-country.jpg" alt="" /><span>Low Country</span></div>
+              <div class="search-stage__card"><img src="img/covers/wintering.jpg" alt="" /><span>Wintering</span></div>
+            </div>
+          </div>
+        </div>
+
+        <p class="states__note">
+          Same width as the field, 6px below it, 3px radius, one hairline border plus the app's
+          largest shadow. Rows are 44px: a 36px cover, the title over its owner, and a mono kind tag
+          at the right edge. <b>No duration column</b> — a duration cannot compare a four-minute
+          track with a 128-episode show, and the kind is the thing that tells you what Enter will
+          do. The highlighted row trades its kind tag for the action glyph: a chevron for anything
+          that opens, play/pause for a track. At rail width the tag is the first thing to go — see
+          section 08.
+        </p>
+      </section>
+
+      <!-- ============ 03 · Row states ============ -->
+      <section class="section" aria-labelledby="ref-rows">
+        <div class="section__head">
+          <h2 class="section__title" id="ref-rows"><span class="states__no">03</span>Highlight, hover, and the row you are hearing</h2>
+          <p class="label states__meta">last device wins</p>
+        </div>
+
+        <div class="states__stage">
+          <div class="row-spec">
+            <p class="label">Active — Enter opens this</p>
+            <div class="search-sheet">
+              <ul class="search-menu" role="listbox" aria-label="Active row example">
+                <li class="search-menu__row is-active" role="option" aria-selected="true" data-kind="album">
+                  <img class="search-menu__art" src="img/covers/harbour-lights.jpg" alt="" />
+                  <span class="search-menu__text">
+                    <span class="search-menu__title truncate">Harbour Lights</span>
+                    <span class="search-menu__sub truncate">Vela Moreno</span>
+                  </span>
+                  <span class="search-menu__type">Album</span>
+                  <span class="search-menu__go"><svg class="icon" aria-hidden="true"><use href="#i-chevron-right"></use></svg></span>
+                </li>
+              </ul>
+            </div>
+            <p class="states__note">
+              The keyboard's row: a 2px bone rule at the margin, a lit background, and the action
+              glyph at the right edge.
+            </p>
+          </div>
+
+          <div class="row-spec">
+            <p class="label">Pointer, while the keyboard holds another row</p>
+            <div class="search-sheet">
+              <ul class="search-menu" role="listbox" aria-label="Pointer row example">
+                <li class="search-menu__row is-hover" role="option" aria-selected="false" data-kind="track">
+                  <img class="search-menu__art" src="img/covers/slow-tide.jpg" alt="" />
+                  <span class="search-menu__text">
+                    <span class="search-menu__title truncate">Harbour Wall</span>
+                    <span class="search-menu__sub truncate">Vela Moreno · Slow Tide</span>
+                  </span>
+                  <span class="search-menu__type">Track</span>
+                  <span class="search-menu__go"><svg class="icon" aria-hidden="true"><use href="#i-chevron-right"></use></svg></span>
+                </li>
+              </ul>
+            </div>
+            <p class="states__note">
+              A 4% wash and a 1rem tick at the margin — nothing more. It never borrows the rule or
+              the glyph, so there is exactly one place that says “this is what Enter will fire”.
+            </p>
+          </div>
+
+          <div class="row-spec">
+            <p class="label">This is the track you are hearing</p>
+            <div class="search-sheet">
+              <ul class="search-menu" role="listbox" aria-label="Playing row example">
+                <li class="search-menu__row is-playing" role="option" aria-selected="false" data-kind="track">
+                  <img class="search-menu__art" src="img/covers/slow-tide.jpg" alt="" />
+                  <span class="search-menu__text">
+                    <span class="search-menu__title truncate">Slow Tide</span>
+                    <span class="search-menu__sub truncate">Vela Moreno · Slow Tide</span>
+                  </span>
+                  <span class="search-menu__type">Track</span>
+                  <span class="search-menu__eq" aria-hidden="true"><span class="eq"><i></i><i></i><i></i></span></span>
+                </li>
+              </ul>
+            </div>
+            <p class="states__note">
+              The accent rule at the margin, and the equaliser in place of the kind tag. If the
+              arrows land on this row as well, the accent stays — identity beats focus — and the
+              glyph becomes pause.
+            </p>
+          </div>
+        </div>
+
+        <p class="states__note">
+          Which one wins when they disagree: <b>the last device to move</b>. Move the pointer and it
+          takes the rule; press an arrow and the rule returns to the keyboard, leaving the row under
+          the cursor as a wash and a tick. Enter always fires the ruled row. A click fires whatever
+          it lands on, which is precisely why the pointer's row must never look selected.
+        </p>
+      </section>
+
+      <!-- ============ 04 · The floor ============ -->
+      <section class="section" aria-labelledby="ref-floor">
+        <div class="section__head">
+          <h2 class="section__title" id="ref-floor"><span class="states__no">04</span>The floor of the list</h2>
+          <p class="label states__meta">5 rows + 1 action</p>
+        </div>
+
+        <div class="states__stage">
+          <div class="search-sheet">
+            <ul class="search-menu" role="listbox" aria-label="Last rows of the menu">
+              <li class="search-menu__row" role="option" aria-selected="false" data-kind="podcast">
+                <img class="search-menu__art" src="img/covers/pod-long-way-round.jpg" alt="" />
+                <span class="search-menu__text">
+                  <span class="search-menu__title truncate">Harbour Road</span>
+                  <span class="search-menu__sub truncate">Wanderline</span>
+                </span>
+                <span class="search-menu__type">Podcast</span>
+                <span class="search-menu__go"><svg class="icon" aria-hidden="true"><use href="#i-chevron-right"></use></svg></span>
+              </li>
+              <li class="search-menu__row search-menu__all is-active" role="option" aria-selected="true">
+                <span class="truncate">See all 12 results for <b>“harbour”</b></span>
+                <svg class="icon" aria-hidden="true"><use href="#i-chevron-right"></use></svg>
+              </li>
+            </ul>
+          </div>
+        </div>
+
+        <p class="states__note">
+          Five results, then a sixth row that is an action: <b>See all 12 results for “harbour”</b>.
+          Without that row the results page would be reachable only by pressing Enter on the right
+          result — a keyboard-only route. It is a full 44px row in the menu's mono voice, it takes
+          the same highlight, and it is the only row without a cover. When the total is five or
+          fewer there is nothing left over, so the action row is not rendered.
+        </p>
+      </section>
+
+      <!-- ============ 05 · Layering ============ -->
+      <section class="section" aria-labelledby="ref-layer">
+        <div class="section__head">
+          <h2 class="section__title" id="ref-layer"><span class="states__no">05</span>Over the page</h2>
+          <p class="label states__meta">no scrim · z 40</p>
+        </div>
+
+        <div class="states__stage">
+          <div class="stack-table">
+            <div class="stack-row"><span class="label">Menu</span><span class="num">z 40 · escapes the top bar</span></div>
+            <div class="stack-row"><span class="label">Top bar</span><span class="num">static · no clip</span></div>
+            <div class="stack-row"><span class="label">View content</span><span class="num">scrolls under, undimmed</span></div>
+            <div class="stack-row"><span class="label">App panel</span><span class="num">overflow hidden · radius 4</span></div>
+          </div>
+        </div>
+
+        <p class="states__note">
+          The menu is a lens, not a mode: no scrim, no blur, no dimming of the page beneath — the
+          covers in section 02 stay at their normal brightness while five results float over them.
+          It is not clipped by the top bar, which is static and has no overflow of its own; it
+          crosses that hairline and is stopped only by the app panel's rounded frame. On a phone
+          that panel is the viewport, so the viewport edge is where the list ends.
+        </p>
+      </section>
+
+      <!-- ============ 06 · Results page ============ -->
+      <section class="section" aria-labelledby="ref-results">
+        <div class="section__head">
+          <h2 class="section__title" id="ref-results"><span class="states__no">06</span>The results page</h2>
+          <p class="label states__meta">mixed list · kind column</p>
+        </div>
+
+        <div class="states__stage">
+          <div class="page-head">
+            <p class="page-head__title">Results for “harbour”</p>
+            <p class="page-head__note">12 results</p>
+          </div>
+
+          <div class="tracks tracks--results">
+            <div class="tracklist__head">
+              <span class="tracklist__head-number">#</span>
+              <span>Title</span>
+              <span class="tracklist__head-meta">Kind</span>
+              <span></span>
+              <span></span>
+            </div>
+
+            <ol class="tracklist" data-playing-scope>
+              <li class="track-row" data-kind="album">
+                <span class="track-row__index">
+                  <span class="track-row__number">1</span>
+                  <button class="track-row__toggle" type="button" aria-label="Play Harbour Lights"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg></button>
+                  <span class="track-row__eq" aria-hidden="true"><span class="eq"><i></i><i></i><i></i></span></span>
+                </span>
+                <span class="track-row__title">
+                  <img class="track-row__art" src="img/covers/harbour-lights.jpg" alt="" loading="lazy" />
+                  <span class="track-row__text">
+                    <span class="track-row__name truncate">Harbour Lights</span>
+                    <span class="track-row__artist truncate">Vela Moreno</span>
+                  </span>
+                </span>
+                <span class="track-row__meta">Album</span>
+                <span><button class="icon-button track-row__like" type="button" data-like data-like-group="row" aria-pressed="false" aria-label="Save Harbour Lights"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-heart"></use></svg></button></span>
+                <span class="track-row__actions"><button class="icon-button" type="button" aria-label="More options for Harbour Lights"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button></span>
+              </li>
+
+              <li class="track-row" data-kind="track">
+                <span class="track-row__index">
+                  <span class="track-row__number">2</span>
+                  <button class="track-row__toggle" type="button" aria-label="Play Harbour Wall"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg></button>
+                  <span class="track-row__eq" aria-hidden="true"><span class="eq"><i></i><i></i><i></i></span></span>
+                </span>
+                <span class="track-row__title">
+                  <img class="track-row__art" src="img/covers/slow-tide.jpg" alt="" loading="lazy" />
+                  <span class="track-row__text">
+                    <span class="track-row__name truncate">Harbour Wall</span>
+                    <span class="track-row__artist truncate">Vela Moreno · Slow Tide</span>
+                  </span>
+                </span>
+                <span class="track-row__meta">Track</span>
+                <span><button class="icon-button track-row__like" type="button" data-like data-like-group="row" aria-pressed="true" aria-label="Saved Harbour Wall"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-heart-filled"></use></svg></button></span>
+                <span class="track-row__actions"><button class="icon-button" type="button" aria-label="More options for Harbour Wall"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button></span>
+              </li>
+
+              <li class="track-row" data-kind="artist">
+                <span class="track-row__index">
+                  <span class="track-row__number">3</span>
+                  <button class="track-row__toggle" type="button" aria-label="Play Harbour"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg></button>
+                  <span class="track-row__eq" aria-hidden="true"><span class="eq"><i></i><i></i><i></i></span></span>
+                </span>
+                <span class="track-row__title">
+                  <img class="track-row__art" src="img/artists/coastal-divide.jpg" alt="" loading="lazy" />
+                  <span class="track-row__text">
+                    <span class="track-row__name truncate">Harbour</span>
+                    <span class="track-row__artist truncate">91,204 monthly listeners</span>
+                  </span>
+                </span>
+                <span class="track-row__meta">Artist</span>
+                <span><button class="icon-button track-row__like" type="button" data-like data-like-group="row" aria-pressed="false" aria-label="Save Harbour"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-heart"></use></svg></button></span>
+                <span class="track-row__actions"><button class="icon-button" type="button" aria-label="More options for Harbour"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button></span>
+              </li>
+
+              <li class="track-row" data-kind="playlist">
+                <span class="track-row__index">
+                  <span class="track-row__number">4</span>
+                  <button class="track-row__toggle" type="button" aria-label="Play Harbour Static"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg></button>
+                  <span class="track-row__eq" aria-hidden="true"><span class="eq"><i></i><i></i><i></i></span></span>
+                </span>
+                <span class="track-row__title">
+                  <img class="track-row__art" src="img/covers/saltglass.jpg" alt="" loading="lazy" />
+                  <span class="track-row__text">
+                    <span class="track-row__name truncate">Harbour Static</span>
+                    <span class="track-row__artist truncate">Made for you · 37 songs</span>
+                  </span>
+                </span>
+                <span class="track-row__meta">Playlist</span>
+                <span><button class="icon-button track-row__like" type="button" data-like data-like-group="row" aria-pressed="false" aria-label="Save Harbour Static"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-heart"></use></svg></button></span>
+                <span class="track-row__actions"><button class="icon-button" type="button" aria-label="More options for Harbour Static"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button></span>
+              </li>
+
+              <li class="track-row" data-kind="podcast">
+                <span class="track-row__index">
+                  <span class="track-row__number">5</span>
+                  <button class="track-row__toggle" type="button" aria-label="Play Harbour Road"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg></button>
+                  <span class="track-row__eq" aria-hidden="true"><span class="eq"><i></i><i></i><i></i></span></span>
+                </span>
+                <span class="track-row__title">
+                  <img class="track-row__art" src="img/covers/pod-long-way-round.jpg" alt="" loading="lazy" />
+                  <span class="track-row__text">
+                    <span class="track-row__name truncate">Harbour Road</span>
+                    <span class="track-row__artist truncate">Wanderline · 44 episodes</span>
+                  </span>
+                </span>
+                <span class="track-row__meta">Podcast</span>
+                <span><button class="icon-button track-row__like" type="button" data-like data-like-group="row" aria-pressed="false" aria-label="Save Harbour Road"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-heart"></use></svg></button></span>
+                <span class="track-row__actions"><button class="icon-button" type="button" aria-label="More options for Harbour Road"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button></span>
+              </li>
+            </ol>
+          </div>
+        </div>
+
+        <p class="states__note">
+          Neither of the playlist tables as it stands. Results are of different kinds, so the Album
+          column says nothing — a track has one, a playlist does not — and it is replaced by Kind;
+          the artist folds under the title, which is exactly the anatomy of the menu's rows. Coming
+          out of the menu into the page, nothing has to be re-read. No count line under the heading:
+          the total sits in the head's right slot, where every other view keeps its size readout.
+          And nothing where the album band would be — a query has no artwork to tint from. At rail
+          width the Kind column drops with the menu's kind tag, leaving the cover and the title.
+        </p>
+      </section>
+
+      <!-- ============ 07 · No matches ============ -->
+      <section class="section" aria-labelledby="ref-empty">
+        <div class="section__head">
+          <h2 class="section__title" id="ref-empty"><span class="states__no">07</span>No matches</h2>
+          <p class="label states__meta">0 results</p>
+        </div>
+
+        <div class="states__stage">
+          <div class="field-spec">
+            <p class="label">In the menu</p>
+            <div class="search-sheet">
+              <ul class="search-menu" role="listbox" aria-label="No matches in the menu">
+                <li class="search-menu__empty">No matches in the catalogue for “harbour lights, 1974”</li>
+              </ul>
+            </div>
+            <p class="states__note">
+              One muted line at the height of a result row. No action row, nothing to press Enter
+              on, and no spinner — the query came back, it simply came back empty.
+            </p>
+          </div>
+
+          <div class="field-spec">
+            <p class="label">On the results page</p>
+            <div class="search-sheet search-sheet--wide">
+              <div class="page-head">
+                <p class="page-head__title">Results for “harbour lights, 1974”</p>
+                <p class="page-head__note">0 results</p>
+              </div>
+              <div class="empty-state">
+                <p class="empty-state__title">Nothing in the catalogue matches that</p>
+                <p>Check the spelling, drop the year, or search an artist instead.</p>
+              </div>
+            </div>
+            <p class="states__note">
+              The head stays — it still says what was asked — and the body is one line with the
+              likely causes. The browse grid from the search view stays below it; an empty result is
+              not a dead end.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ 08 · Narrow ============ -->
+      <section class="section" aria-labelledby="ref-narrow">
+        <div class="section__head">
+          <h2 class="section__title" id="ref-narrow"><span class="states__no">08</span>Narrow window</h2>
+          <p class="label states__meta">20rem rail</p>
+        </div>
+
+        <div class="states__stage">
+          <div class="search-rail">
+            <form class="searchbar is-focus is-filled" role="search" onsubmit="return false">
+              <svg class="icon icon--md" aria-hidden="true"><use href="#i-search"></use></svg>
+              <input type="search" value="harbour" aria-label="Search in a phone-width rail" />
+              <button class="searchbar__clear" type="button" aria-label="Clear search">
+                <svg class="icon" aria-hidden="true"><use href="#i-close"></use></svg>
+              </button>
+            </form>
+
+            <ul class="search-menu" role="listbox" aria-label="Narrow rail results">
+              <li class="search-menu__row is-active" role="option" aria-selected="true" data-kind="album">
+                <img class="search-menu__art" src="img/covers/harbour-lights.jpg" alt="" />
+                <span class="search-menu__text">
+                  <span class="search-menu__title truncate">Harbour Lights</span>
+                  <span class="search-menu__sub truncate">Vela Moreno</span>
+                </span>
+                <span class="search-menu__type">Album</span>
+                <span class="search-menu__go"><svg class="icon" aria-hidden="true"><use href="#i-chevron-right"></use></svg></span>
+              </li>
+              <li class="search-menu__row" role="option" aria-selected="false" data-kind="track">
+                <img class="search-menu__art" src="img/covers/slow-tide.jpg" alt="" />
+                <span class="search-menu__text">
+                  <span class="search-menu__title truncate">Harbour Wall</span>
+                  <span class="search-menu__sub truncate">Vela Moreno · Slow Tide</span>
+                </span>
+                <span class="search-menu__type">Track</span>
+                <span class="search-menu__go"><svg class="icon" aria-hidden="true"><use href="#i-chevron-right"></use></svg></span>
+              </li>
+              <li class="search-menu__row search-menu__all" role="option" aria-selected="false">
+                <span class="truncate">See all 12 results for <b>“harbour”</b></span>
+                <svg class="icon" aria-hidden="true"><use href="#i-chevron-right"></use></svg>
+              </li>
+            </ul>
+          </div>
+        </div>
+
+        <p class="states__note">
+          At rail width the field is the rail: 20rem minus the drawer control and the nav cluster.
+          The menu follows the field exactly, the kind tag drops, and the query in the action row
+          truncates instead of wrapping. Rows keep their 44px height — this is the one place the
+          row loses a column, never its target size.
+        </p>
+      </section>
+
+      <footer class="tracklist__foot">
+        <p>
+          Reference sheet for the Takofy concept — see also <a href="loading.html">loading states</a>
+          and <a href="credits.html">art credits</a>. Everything above is a specimen: the search view
+          at <a href="search.html">search.html</a> still ships without a live index behind it.
+        </p>
+      </footer>
+    </div>
+  </main>
+</div>
+
+<!-- ===================== Now playing panel ===================== -->
+<aside class="now-playing" aria-label="Now playing">
+  <div class="now-playing__head">
+    <h2>Now playing</h2>
+    <button class="icon-button" type="button" aria-label="More options for the current track">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-more"></use></svg>
+    </button>
+  </div>
+
+  <div class="now-playing__art">
+    <img data-now-art src="img/covers/slow-tide.jpg" alt="Slow Tide cover" />
+  </div>
+
+  <div class="now-playing__meta">
+    <div>
+      <a class="now-playing__title truncate" href="album.html" data-now-title>Slow Tide</a>
+      <a class="now-playing__artist truncate" href="artist.html" data-now-artist>Vela Moreno</a>
+    </div>
+    <button class="icon-button icon-button--lg" type="button" data-like data-like-group="now" aria-pressed="false" aria-label="Save to your library">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-heart"></use></svg>
+    </button>
+  </div>
+
+  <p class="now-playing__spec">
+    <span><b>320</b> kbps</span><span>Ogg Vorbis</span><span>44.1 kHz</span><span>Stereo</span>
+  </p>
+
+  <div class="panel-tabs" role="tablist" aria-label="Now playing views">
+    <button class="panel-tab" type="button" role="tab" aria-selected="true" aria-controls="pane-queue" data-panel-tab>Queue</button>
+    <button class="panel-tab" type="button" role="tab" aria-selected="false" aria-controls="pane-lyrics" data-panel-tab>Lyrics</button>
+  </div>
+
+  <div class="panel-pane is-active" id="pane-queue" role="tabpanel" data-panel-pane>
+    <p class="queue-head">Next in queue</p>
+    <ul class="queue" data-queue-list data-playing-scope></ul>
+  </div>
+
+  <div class="panel-pane" id="pane-lyrics" role="tabpanel" data-panel-pane>
+    <div class="lyrics">
+      <p>Harbour wall, salt in the air</p>
+      <p>Nothing moves here but the light</p>
+      <p class="is-current">I keep the tide in a jar by the door</p>
+      <p>Count the bells, count them twice</p>
+      <p>Every green room has a window</p>
+      <p>Every window has your name</p>
+      <p>Slow tide, take your time</p>
+      <p>I am in no hurry tonight</p>
+    </div>
+  </div>
+</aside>
+
+<!-- ===================== Mobile tab bar ===================== -->
+<nav class="tabbar" aria-label="Primary">
+  <a href="index.html" data-nav="home"><svg class="icon icon--lg" aria-hidden="true"><use href="#i-home"></use></svg>Home</a>
+  <a href="search.html" data-nav="search"><svg class="icon icon--lg" aria-hidden="true"><use href="#i-search"></use></svg>Search</a>
+  <a href="podcasts.html" data-nav="podcasts"><svg class="icon icon--lg" aria-hidden="true"><use href="#i-mic"></use></svg>Podcasts</a>
+</nav>
+
+<!-- ===================== Playbar ===================== -->
+<footer class="playbar">
+  <div class="playbar__now">
+    <img class="playbar__art" data-now-art src="img/covers/slow-tide.jpg" alt="Slow Tide cover" />
+    <div class="playbar__text">
+      <a class="playbar__title truncate" href="album.html" data-now-title>Slow Tide</a>
+      <a class="playbar__artist truncate" href="artist.html" data-now-artist>Vela Moreno</a>
+    </div>
+    <button class="icon-button" type="button" data-like data-like-group="now" aria-pressed="false" aria-label="Save to your library">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-heart"></use></svg>
+    </button>
+    <button class="icon-button" type="button" aria-label="Open miniplayer">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-screen"></use></svg>
+    </button>
+  </div>
+
+  <div class="playbar__center">
+    <div class="playbar__buttons">
+      <button class="icon-button" type="button" data-toggle aria-pressed="false" aria-label="Shuffle">
+        <svg class="icon icon--md" aria-hidden="true"><use href="#i-shuffle"></use></svg>
+      </button>
+      <button class="icon-button" type="button" data-prev aria-label="Previous track">
+        <svg class="icon icon--md" aria-hidden="true"><use href="#i-prev"></use></svg>
+      </button>
+      <button class="play-button playbar__play" type="button" data-transport aria-label="Play or pause">
+        <svg class="icon icon--md" aria-hidden="true"><use href="#i-pause" data-transport-icon></use></svg>
+      </button>
+      <button class="icon-button" type="button" data-next aria-label="Next track">
+        <svg class="icon icon--md" aria-hidden="true"><use href="#i-next"></use></svg>
+      </button>
+      <button class="icon-button" type="button" data-toggle aria-pressed="false" aria-label="Repeat">
+        <svg class="icon icon--md" aria-hidden="true"><use href="#i-repeat"></use></svg>
+      </button>
+    </div>
+
+    <div class="playbar__progress">
+      <span class="playbar__time" data-elapsed>1:14</span>
+      <div class="slider" data-seek role="slider" tabindex="0" aria-label="Seek" aria-valuemin="0" aria-valuenow="74" aria-valuemax="222">
+        <div class="slider__track"></div>
+        <div class="slider__fill" data-seek-fill></div>
+        <div class="slider__thumb"></div>
+      </div>
+      <span class="playbar__time playbar__time--end" data-remaining>-2:28</span>
+    </div>
+  </div>
+
+  <div class="playbar__extras">
+    <button class="icon-button" type="button" aria-label="Queue">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-queue"></use></svg>
+    </button>
+    <button class="icon-button" type="button" aria-label="Connect to a device">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-devices"></use></svg>
+    </button>
+    <button class="icon-button" type="button" aria-label="Mute">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-volume" data-volume-icon></use></svg>
+    </button>
+    <div class="slider playbar__volume" data-volume role="slider" tabindex="0" aria-label="Volume" aria-valuemin="0" aria-valuenow="72" aria-valuemax="100">
+      <div class="slider__track"></div>
+      <div class="slider__fill"></div>
+      <div class="slider__thumb"></div>
+    </div>
+    <button class="icon-button" type="button" aria-label="Full screen">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-expand"></use></svg>
+    </button>
+  </div>
+
+  <div class="playbar__minibar" aria-hidden="true">
+    <div class="progress-bar__fill" data-mini-fill></div>
+  </div>
+</footer>
+
+<script src="main.js"></script>
+</body>
+</html>
