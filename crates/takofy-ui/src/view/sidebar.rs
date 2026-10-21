@@ -336,8 +336,13 @@ struct Draw<'a> {
     tokens: &'a Tokens,
     /// Whether a row may be dragged out of the column.
     drag: bool,
-    /// Whether the column may lift a row now.
+    /// Whether the column may lift a playlist row now.
     lift: bool,
+    /// Whether the column offers its rows as a target.
+    ///
+    /// An add only needs the row's own playlist, so it is offered whenever the
+    /// list is ready; the reorder it might mean instead is refused elsewhere.
+    offer: bool,
 }
 
 /// What a press in a list asks the window to do.
@@ -447,7 +452,7 @@ fn list_rows<T: ListItem + Clone>(
                 carry::lift(ui.ctx(), carry);
             }
             if ids.lifts
-                && draw.lift
+                && draw.offer
                 && let Some((first, place)) = origin
             {
                 let pitch = ROW_H + space::PX;
@@ -626,6 +631,7 @@ fn rows(
         tokens,
         drag,
         lift: drag && library.rootlist_movable(),
+        offer: drag,
     };
     let (action, open) = match library.sidebar_kind.chosen() {
         SidebarKind::Playlists => (
@@ -1674,6 +1680,23 @@ mod tests {
             offer.zone.list.width() > 0.0,
             "the rule a drop draws spans the rows"
         );
+    }
+
+    #[test]
+    fn a_list_that_can_not_be_reordered_still_offers_its_rows() {
+        let ctx = context();
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(vec![
+            playlist("spotify:playlist:A", "A"),
+            playlist("spotify:playlist:B", "B"),
+        ]));
+        assert!(!library.rootlist_movable());
+        let mut art = Art::default();
+
+        let _ = run_column(&ctx, Vec::new(), &mut library, &mut art);
+
+        let offer = carry::take_column_offer(&ctx).expect("the column offers its rows");
+        assert_eq!(offer.zone.count, 2);
     }
 
     #[test]

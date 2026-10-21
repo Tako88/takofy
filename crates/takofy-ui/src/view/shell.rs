@@ -166,7 +166,7 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
     let pointer = ui.ctx().pointer_latest_pos();
     let target = carry.as_deref().and_then(|carry| match carry.source {
         // The column is a write of its own: a playlist never reaches the queue.
-        Source::Playlist => rootlist_target(carry, column.as_ref(), pointer),
+        Source::Playlist => rootlist_target(carry, column.as_ref(), screen.library, pointer),
         Source::List(_) | Source::Queue => {
             // A row lifted from a page list lands in that list's own rows, so
             // that page's zone wins there; the sidebar's rows take an add; and
@@ -449,13 +449,18 @@ fn reorder_target(carry: &Carry, offer: Option<&Offer>, pointer: Option<Pos2>) -
 /// Where a carried playlist lands in the sidebar column, when it moved at all.
 ///
 /// A drop on the carried row's own two gaps is no move: it would name the place
-/// the row already holds.
+/// the row already holds. A column whose order is not the wire's lands nothing,
+/// so no rule is drawn on a list that would refuse the move.
 fn rootlist_target(
     carry: &Carry,
     column: Option<&ColumnOffer>,
+    library: &Library,
     pointer: Option<Pos2>,
 ) -> Option<Target> {
     let column = column?;
+    if !library.rootlist_movable() {
+        return None;
+    }
     let at = landing::resolve(pointer, Some(&column.zone))?;
     if let [row] = carry.rows[..]
         && (at.boundary == row || at.boundary == row + 1)
@@ -5170,6 +5175,78 @@ mod tests {
             "the row under the pointer takes the fill"
         );
         assert!(marker(&frame).is_none(), "an add draws no rule");
+    }
+
+    #[test]
+    fn a_row_that_can_take_a_track_is_offered_even_when_the_rootlist_is_not() {
+        let tokens = Tokens::DARK;
+        let mut transport = playing(cover("abc"));
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        page_of_tracks(&mut window, &[TRACK_A]);
+        // The rows name addable playlists of their own; the rootlist's read says
+        // the order is not the list's to change, which only a move needs.
+        let entry = |name: &str, tracks: usize| PlaylistEntry {
+            uri: format!("playlist:{name}"),
+            name: name.to_owned(),
+            named: true,
+            cover: None,
+            description: None,
+            owner: None,
+            tracks: Some(tracks),
+            access: Some(rootlist_access(true)),
+        };
+        window.library.playlists = Load::Ready(vec![entry("A", 2), entry("B", 3)]);
+        window
+            .library
+            .apply(&Update::RootlistAccess(rootlist_access(false)));
+        assert!(!window.library.rootlist_movable());
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let from = row_line(&frame, view_rect(&window), TRACK_A);
+        let row = sidebar_row_rect(&window, &frame, "B", "Playlist · 3 tracks");
+        let to = row.center();
+
+        let (_, held) = window.hold_drag(&mut transport, &mut queue, from, to);
+        assert!(
+            held.shapes
+                .iter()
+                .any(|clipped| matches!(&clipped.shape, egui::Shape::Rect(shape)
+                if shape.fill == tokens.palette.row_selected
+                    && (shape.rect.top() - row.top()).abs() < 1.0)),
+            "the row under the pointer takes the fill"
+        );
+        assert!(marker(&held).is_none(), "an add draws no rule");
+
+        let (command, _) = window.frame(&mut transport, &mut queue, vec![window.release(to)]);
+        assert_eq!(
+            command,
+            Some(Command::AddTrack {
+                playlist: "playlist:B".to_owned(),
+                revision: revision("root-1"),
+                from_index: 3,
+                track: TRACK_A.to_owned(),
+            }),
+            "a row that can take the track takes it"
+        );
+
+        window.library.apply(&Update::TrackAdded {
+            playlist: "playlist:B".to_owned(),
+            revision: revision("root-2"),
+        });
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            text_in(&frame, "Playlist · 4 tracks", sidebar_rect(&window)).is_some(),
+            "the row answers the add"
+        );
+
+        // A playlist row still does not lift here: a carry only means a move.
+        let from = row_line(&frame, sidebar_rect(&window), "A");
+        let (_, held) = window.hold_drag(&mut transport, &mut queue, from, to);
+        assert!(
+            carry::carried(&window.ctx).is_none(),
+            "a row order that is not the wire's does not lift"
+        );
+        assert!(marker(&held).is_none(), "and no rule is drawn");
     }
 
     #[test]
