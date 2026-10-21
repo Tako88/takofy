@@ -261,6 +261,12 @@ impl Queue {
         Some(boundary..boundary + count)
     }
 
+    /// Adds `entries` after the last entry, unpicked, and says where they landed.
+    /// An add has no position to choose; an empty queue takes none.
+    pub fn append(&mut self, entries: Vec<TrackEntry>) -> Option<Range<usize>> {
+        self.insert_at(self.tracks.len(), entries)
+    }
+
     /// Bubbles `rows` one row towards `step`, and reports each `(from, to)`.
     ///
     /// A row held back by a picked row that could not move stays where it is.
@@ -1441,6 +1447,57 @@ mod tests {
         let before = order(&queue);
 
         assert_eq!(queue.insert_at(1, Vec::new()), None);
+
+        assert_eq!(order(&queue), before);
+    }
+
+    #[test]
+    fn append_adds_after_the_last_entry_unpicked() {
+        let mut queue = started(3, 0);
+
+        assert_eq!(queue.append(vec![track("x"), track("y")]), Some(3..5));
+
+        assert_eq!(order(&queue), uris(&["t0", "t1", "t2", "x", "y"]));
+        assert!(picked(&queue).is_empty(), "an add must not pick its rows");
+    }
+
+    #[test]
+    fn append_while_the_last_entry_plays() {
+        let mut queue = started(3, 2);
+
+        assert_eq!(queue.append(vec![track("x")]), Some(3..4));
+
+        assert_eq!(order(&queue), uris(&["t0", "t1", "t2", "x"]));
+        assert!(queue.can_next(), "the added entry is reachable");
+        assert!(picked(&queue).is_empty());
+    }
+
+    #[test]
+    fn append_keeps_an_existing_pick() {
+        let mut queue = started(5, 0);
+        queue.press(2, Press::Replace);
+        queue.press(4, Press::Toggle);
+
+        assert_eq!(queue.append(vec![track("x")]), Some(5..6));
+
+        assert_eq!(picked(&queue), vec![2, 4]);
+    }
+
+    #[test]
+    fn an_empty_queue_takes_no_append() {
+        let mut queue = Queue::default();
+
+        assert_eq!(queue.append(vec![track("x")]), None);
+
+        assert!(order(&queue).is_empty());
+    }
+
+    #[test]
+    fn appending_nothing_changes_nothing() {
+        let mut queue = started(3, 0);
+        let before = order(&queue);
+
+        assert_eq!(queue.append(Vec::new()), None);
 
         assert_eq!(order(&queue), before);
     }

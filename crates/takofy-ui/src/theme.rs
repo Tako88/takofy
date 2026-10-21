@@ -148,6 +148,9 @@ pub mod extent {
     pub const SKELETON_LINE_SM: f32 = 6.0;
     pub const BUTTON: f32 = 28.0;
     pub const BUTTON_LG: f32 = 34.0;
+    /// The hit area a small control grows to while it is a drop target, 2.75 rem.
+    /// Nothing is drawn at this size: the glyph keeps its own box.
+    pub const DROP_HIT: f32 = 44.0;
     pub const SLIDER_H: f32 = 14.0;
     pub const SLIDER_TRACK_H: f32 = 3.0;
     pub const SLIDER_THUMB_W: f32 = 3.0;
