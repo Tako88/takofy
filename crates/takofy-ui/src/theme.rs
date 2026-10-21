@@ -404,9 +404,22 @@ pub mod motion {
 }
 
 pub mod scroll {
+    use super::space::S8;
+
     /// How far one line of wheel travel moves the content. A row is 44, so a
     /// notch clears a row and a bit rather than most of one.
     pub const POINTS_PER_LINE: f32 = 60.0;
+    /// How near the edge of a scrolling area a carried row has to be held
+    /// before the area follows it: one spacing step.
+    pub const DRAG_EDGE: f32 = S8;
+    /// The fastest a drag scrolls, in points per second, at the edge itself.
+    pub const DRAG_MAX: f32 = 900.0;
+}
+
+/// How far a thing is set back from the surface it sits on.
+pub mod opacity {
+    /// A row in flight: still legible, clearly not on the page.
+    pub const LIFTED: f32 = 0.55;
 }
 
 pub mod stroke {
@@ -431,7 +444,9 @@ pub struct Palette {
     pub surface: Color32,
     /// Popups and menus, above `surface`.
     pub surface_raised: Color32,
-    /// The fill under the pointer, and the selected row.
+    /// The fill under the pointer on a control — an icon button, the clear
+    /// button — and on egui's own widgets. Rows hover with `row_hover` and are
+    /// picked with `row_selected`.
     pub surface_hover: Color32,
     /// Wells that read as deeper than the window.
     pub surface_sunken: Color32,
@@ -468,9 +483,13 @@ pub struct Palette {
     pub accent_hover: Color32,
     /// A selected chip's fill: bone at low alpha, not a gamma-scaled text.
     pub pressed: Color32,
-    /// The fill under the pointer on a track row, bone at 6%. Not the palette's
-    /// `surface_hover`, which is a lighter grey from the reference's own scale.
+    /// The fill under the pointer on a track row, bone at 6%.
     pub row_hover: Color32,
+    /// The fill under a picked row, bone at 16%: the strongest wash a row takes.
+    pub row_selected: Color32,
+    /// The rule that shows where a carried row will land. Opaque bone, never
+    /// the accent.
+    pub mark: Color32,
     /// The wash a header band sits on. The reference writes this as `#3a3a3a`
     /// under a 0.4 opacity; a fill has one channel to carry that, so it is
     /// folded into the alpha here.
@@ -512,6 +531,8 @@ impl Palette {
         accent_hover: Color32::from_rgb(0x93, 0xbb, 0x7c),
         pressed: Color32::from_rgba_unmultiplied_const(0xf2, 0xf0, 0xea, 20),
         row_hover: Color32::from_rgba_unmultiplied_const(0xf2, 0xf0, 0xea, 15),
+        row_selected: Color32::from_rgba_unmultiplied_const(0xf2, 0xf0, 0xea, 41),
+        mark: Color32::from_rgb(0xf2, 0xf0, 0xea),
         hero_wash: Color32::from_rgba_unmultiplied_const(0x3a, 0x3a, 0x3a, 102),
         hero_scrim_top: Color32::from_rgba_unmultiplied_const(0x00, 0x00, 0x00, 82),
         hero_scrim_mid: Color32::from_rgba_unmultiplied_const(0x00, 0x00, 0x00, 148),
@@ -656,6 +677,7 @@ mod tests {
         assert_eq!(p.border_strong.to_srgba_unmultiplied()[3], 66);
         assert_eq!(p.scrim.to_srgba_unmultiplied()[3], 199);
         assert_eq!(p.row_hover.to_srgba_unmultiplied()[3], 15);
+        assert_eq!(p.row_selected.to_srgba_unmultiplied()[3], 41);
         assert_eq!(p.hero_wash.to_srgba_unmultiplied()[3], 102);
     }
 
@@ -744,6 +766,65 @@ mod tests {
             a < p.pressed.to_srgba_unmultiplied()[3],
             "a hover is lighter than a selection"
         );
+    }
+
+    /// Composites a translucent fill over an opaque one, in the same channel
+    /// order the painter blends, so a contrast check sees the row as drawn.
+    fn over(fill: Color32, behind: Color32) -> Color32 {
+        let [r, g, b, a] = fill.to_srgba_unmultiplied();
+        let [br, bg, bb, _] = behind.to_srgba_unmultiplied();
+        let mix = |front: u8, back: u8| {
+            let t = a as f32 / 255.0;
+            (front as f32 * t + back as f32 * (1.0 - t)).round() as u8
+        };
+        Color32::from_rgb(mix(r, br), mix(g, bg), mix(b, bb))
+    }
+
+    #[test]
+    fn the_selected_row_is_bone_at_sixteen_percent() {
+        let p = &Palette::DARK;
+        let [r, g, b, a] = p.row_selected.to_srgba_unmultiplied();
+        assert_eq!(a, 41);
+        for (got, want) in [(r, 0xf2), (g, 0xf0), (b, 0xea)] {
+            assert!(
+                got.abs_diff(want) <= 6,
+                "row_selected is {r},{g},{b},{a}, not bone"
+            );
+        }
+        assert!(
+            a > 2 * p.row_hover.to_srgba_unmultiplied()[3],
+            "a selection has to read well above a hover"
+        );
+    }
+
+    #[test]
+    fn the_marker_is_opaque_bone_and_not_the_accent() {
+        let p = &Palette::DARK;
+        let [r, g, b, a] = p.mark.to_srgba_unmultiplied();
+        assert_eq!((r, g, b, a), (0xf2, 0xf0, 0xea, 255));
+        assert_ne!(p.mark, p.accent);
+    }
+
+    #[test]
+    fn a_lifted_row_is_set_back_not_hidden() {
+        assert!((0.5..1.0).contains(&opacity::LIFTED));
+    }
+
+    #[test]
+    fn muted_ink_and_the_accent_bar_stay_readable_inside_a_selected_row() {
+        let p = &Palette::DARK;
+        for behind in [p.surface, p.panel] {
+            let row = over(p.row_selected, behind);
+            let muted = contrast_ratio(p.text_muted, row);
+            let accent = contrast_ratio(p.accent, row);
+            assert!(muted >= 4.5, "muted ink on a selected row is {muted:.2}:1");
+            assert!(accent >= 4.0, "the accent bar on a row is {accent:.2}:1");
+        }
+    }
+
+    #[test]
+    fn the_drag_edge_is_sixty_four_points() {
+        assert_eq!(scroll::DRAG_EDGE, space::S8);
     }
 
     #[test]
