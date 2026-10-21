@@ -22,6 +22,7 @@ mod collected;
 mod collection;
 mod cover;
 mod remote;
+mod search;
 
 pub use context::{ContextError, Page, PageTrack, page_from_proto, parse_page_json};
 pub use engine::{Engine, EngineError, TrackPages};

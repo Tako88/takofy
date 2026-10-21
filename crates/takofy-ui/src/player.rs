@@ -168,6 +168,25 @@ impl Transport {
         }
     }
 
+    /// How the transport holds `uri`: whether it is the loaded track, and
+    /// whether a pause would act on it.
+    ///
+    /// One decision, because two callers draw the same row: the search menu's
+    /// glyph promises what Enter will do (R10/R11), and the shell performs it.
+    /// A glyph that promised a pause the action turns into a restart is what
+    /// this rules out.
+    pub fn hold(&self, uri: &str) -> Hold {
+        let loaded = self.now_playing.as_ref().is_some_and(|now| now.uri == uri);
+        Hold {
+            loaded,
+            held: loaded
+                && matches!(
+                    self.state,
+                    TransportState::Playing | TransportState::Loading | TransportState::Paused
+                ),
+        }
+    }
+
     /// Whether the loaded track can be jumped in: playing or paused, with a
     /// known non-zero length.
     pub fn seekable(&self) -> bool {
@@ -239,6 +258,20 @@ impl Transport {
         let duration = self.duration_ms?;
         (duration > 0).then(|| (position_ms as f32 / duration as f32).clamp(0.0, 1.0))
     }
+}
+
+/// How the transport holds one track.
+///
+/// [`Transport::hold`] is the only place that decides it, so a row's glyph and
+/// the action it stands for cannot disagree.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Hold {
+    /// The transport's own track is this one.
+    pub loaded: bool,
+    /// Pausing acts on it: it is playing, loading, or paused. `false` with
+    /// [`Self::loaded`] means the transport is on the track but a move would
+    /// restart it instead.
+    pub held: bool,
 }
 
 /// The position after `elapsed`, or the anchor's own when not playing.
@@ -359,6 +392,47 @@ mod tests {
         assert_eq!(
             transport.state,
             TransportState::Failed(Failure::NoAudioDevice)
+        );
+    }
+
+    /// The one hold decision: only playing, loading and paused can be paused;
+    /// every other state is a restart, and a row draws its glyph from this.
+    #[test]
+    fn hold_separates_a_pausable_track_from_a_restart() {
+        let cases = [
+            (TransportState::Idle, false),
+            (TransportState::Loading, true),
+            (TransportState::Playing, true),
+            (TransportState::Paused, true),
+            (TransportState::Unavailable, false),
+            (TransportState::Stopped, false),
+            (TransportState::Failed(Failure::Other), false),
+        ];
+        for (state, held) in cases {
+            let mut transport = Transport::default();
+            transport.play("spotify:track:a", "A", "B", None);
+            transport.state = state;
+            assert_eq!(
+                transport.hold("spotify:track:a"),
+                Hold { loaded: true, held },
+                "{state:?}"
+            );
+            // A uri the transport is not on is never held, whatever the state.
+            assert_eq!(
+                transport.hold("spotify:track:b"),
+                Hold {
+                    loaded: false,
+                    held: false
+                },
+                "{state:?}"
+            );
+        }
+
+        let idle = Transport::default();
+        assert_eq!(
+            idle.hold("spotify:track:a"),
+            Hold::default(),
+            "nothing is loaded, so nothing is held"
         );
     }
 

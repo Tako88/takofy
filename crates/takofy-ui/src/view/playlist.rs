@@ -68,6 +68,11 @@ pub fn tracks_view(
         MainPage::Show => {
             return super::show::show_view(ui, library, transport, queue, art, now, now_ms, tokens);
         }
+        MainPage::Search => {
+            return super::search_results::search_view(
+                ui, table, library, transport, queue, art, now, tokens,
+            );
+        }
         MainPage::Playlist => {}
     }
 
@@ -238,6 +243,8 @@ enum MainPage {
     Artist,
     /// A show's band and its episodes.
     Show,
+    /// A search's results, under their query's heading.
+    Search,
 }
 
 /// Reads the pane's dispatch from the current page.
@@ -248,6 +255,7 @@ fn main_page(library: &Library) -> MainPage {
         Some(Page::Album(_)) => MainPage::Album,
         Some(Page::Artist(_)) => MainPage::Artist,
         Some(Page::Show(_)) => MainPage::Show,
+        Some(Page::Search(_)) => MainPage::Search,
     }
 }
 
@@ -3457,6 +3465,18 @@ mod dispatch_tests {
             MainPage::Show,
             "a show page has its own body now"
         );
+        let _ = library.open(Page::Search("never gonna".to_owned()));
+        assert_eq!(main_page(&library), MainPage::Search);
+    }
+
+    /// A query can spell a playlist's URI. The pane must still draw the results
+    /// page and not that playlist's tracklist: the page variant decides.
+    #[test]
+    fn a_search_query_that_spells_a_playlist_uri_draws_the_results_page() {
+        let mut library = Library::default();
+        let _ = library.open(Page::Search("spotify:playlist:a".to_owned()));
+
+        assert_eq!(main_page(&library), MainPage::Search);
     }
 }
 

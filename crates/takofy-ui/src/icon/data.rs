@@ -274,6 +274,13 @@ const ARROW_RIGHT_LINES: &[Line] = &[
 ];
 const ARROW_RIGHT_FILLS: &[&[Point]] = &[];
 
+const CHEVRON_RIGHT_LINES: &[Line] = &[Line {
+    points: &[(9.4, 6.0), (15.4, 12.0), (9.4, 18.0)],
+    closed: false,
+    width: None,
+}];
+const CHEVRON_RIGHT_FILLS: &[&[Point]] = &[];
+
 const HEART_LINES: &[Line] = &[Line {
     points: &[
         (20.4, 5.9),
@@ -506,6 +513,20 @@ const MORE_FILLS: &[&[Point]] = &[
         (20.692, 11.833),
     ],
 ];
+
+const CLOSE_LINES: &[Line] = &[
+    Line {
+        points: &[(6.0, 6.0), (18.0, 18.0)],
+        closed: false,
+        width: None,
+    },
+    Line {
+        points: &[(18.0, 6.0), (6.0, 18.0)],
+        closed: false,
+        width: None,
+    },
+];
+const CLOSE_FILLS: &[&[Point]] = &[];
 
 const PLUS_LINES: &[Line] = &[
     Line {
@@ -1135,6 +1156,11 @@ pub(super) fn glyph(icon: Icon) -> Glyph {
             lines: ARROW_RIGHT_LINES,
             fills: ARROW_RIGHT_FILLS,
         },
+        Icon::ChevronRight => Glyph {
+            source: 0x57f8234c4adbaf44,
+            lines: CHEVRON_RIGHT_LINES,
+            fills: CHEVRON_RIGHT_FILLS,
+        },
         Icon::Heart => Glyph {
             source: 0x29434e8862291e7c,
             lines: HEART_LINES,
@@ -1144,6 +1170,11 @@ pub(super) fn glyph(icon: Icon) -> Glyph {
             source: 0x87486938587c71e9,
             lines: MORE_LINES,
             fills: MORE_FILLS,
+        },
+        Icon::Close => Glyph {
+            source: 0xd16472c7a0ad9c71,
+            lines: CLOSE_LINES,
+            fills: CLOSE_FILLS,
         },
         Icon::Plus => Glyph {
             source: 0xf664a6ae583fb163,
@@ -1222,8 +1253,10 @@ pub(super) fn symbol_id(icon: Icon) -> &'static str {
         Icon::Panel => "i-panel",
         Icon::ArrowLeft => "i-arrow-left",
         Icon::ArrowRight => "i-arrow-right",
+        Icon::ChevronRight => "i-chevron-right",
         Icon::Heart => "i-heart",
         Icon::More => "i-more",
+        Icon::Close => "i-close",
         Icon::Plus => "i-plus",
         Icon::Volume => "i-volume",
         Icon::VolumeLow => "i-volume-low",

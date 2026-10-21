@@ -41,6 +41,11 @@ pub enum State {
     Playing,
     /// This is the transport's track, and it is held.
     Paused,
+    /// This is the transport's track, but nothing is sounding: it ended, it
+    /// failed, or it never started. The marker stays, because this is still
+    /// where the transport is; the equaliser does not, because nothing is
+    /// playing and a frozen one would read as a pause.
+    Stopped,
 }
 
 impl State {
@@ -48,21 +53,29 @@ impl State {
     fn current(self) -> bool {
         !matches!(self, Self::Resting)
     }
+
+    /// Whether the row is the transport's track and sounding: playing or held.
+    /// This is what the equaliser stands for.
+    fn sounding(self) -> bool {
+        matches!(self, Self::Playing | Self::Paused)
+    }
 }
 
 /// How a row relates to the transport.
 ///
 /// The row never reaches for the transport itself: the view reads it once per
-/// row and hands the row the answer.
+/// row and hands the row the answer. The held/pausable half is
+/// [`Transport::hold`]'s, so the glyph and the action it stands for cannot
+/// disagree.
 pub fn state_of(uri: &str, transport: &Transport) -> State {
-    let current = transport
-        .now_playing
-        .as_ref()
-        .is_some_and(|now| now.uri == uri);
-    match (current, transport.state) {
-        (false, _) => State::Resting,
-        (true, TransportState::Playing) => State::Playing,
-        (true, _) => State::Paused,
+    let hold = transport.hold(uri);
+    match (hold.loaded, hold.held, transport.state) {
+        (false, _, _) => State::Resting,
+        // Loading is a track on its way, so its bars move: it is not a pause.
+        (true, true, TransportState::Paused) => State::Paused,
+        (true, true, _) => State::Playing,
+        // Loaded, but a move would restart it rather than pause it.
+        (true, false, _) => State::Stopped,
     }
 }
 
@@ -281,7 +294,7 @@ fn index(ui: &Ui, rect: Rect, row: &Row<'_>, revealed: bool, tokens: &Tokens) {
             Size::SM,
             tokens.palette.text,
         );
-    } else if row.state.current() {
+    } else if row.state.sounding() {
         equaliser(ui, rect, row.state, tokens);
     } else {
         centred_line(
@@ -295,7 +308,7 @@ fn index(ui: &Ui, rect: Rect, row: &Row<'_>, revealed: bool, tokens: &Tokens) {
 }
 
 /// The equaliser: three bars, each a little behind the one before it.
-fn equaliser(ui: &Ui, rect: Rect, state: State, tokens: &Tokens) {
+pub(super) fn equaliser(ui: &Ui, rect: Rect, state: State, tokens: &Tokens) {
     let bar_w = eq::BAR_W;
     let bars = eq::BARS as f32;
     let width = bars * bar_w + (bars - 1.0) * eq::GAP;
@@ -942,6 +955,37 @@ mod tests {
             output.textures_delta.clear();
         }
         last
+    }
+
+    /// Finding 4: `Loading` is a track on its way and an ended one has nothing
+    /// sounding, so neither may masquerade as a pause — the equaliser would
+    /// freeze on a stopped track and read as "held".
+    #[test]
+    fn a_loaded_row_is_only_paused_when_the_transport_is() {
+        let uri = "spotify:track:a";
+        let cases = [
+            (TransportState::Idle, State::Stopped),
+            (TransportState::Loading, State::Playing),
+            (TransportState::Playing, State::Playing),
+            (TransportState::Paused, State::Paused),
+            (TransportState::Unavailable, State::Stopped),
+            (TransportState::Stopped, State::Stopped),
+            (
+                TransportState::Failed(crate::message::Failure::Other),
+                State::Stopped,
+            ),
+        ];
+        for (state, expected) in cases {
+            let mut transport = Transport::default();
+            transport.play(uri, "A", "B", None);
+            transport.state = state;
+            assert_eq!(state_of(uri, &transport), expected, "{state:?}");
+            assert_eq!(
+                state_of("spotify:track:b", &transport),
+                State::Resting,
+                "another row while {state:?}"
+            );
+        }
     }
 
     #[test]

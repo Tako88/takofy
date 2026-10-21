@@ -68,6 +68,8 @@ pub fn trail(library: &Library) -> Vec<Crumb<'_>> {
                 .current_show()
                 .map_or(page.kind(), |detail| detail.show.name.as_str()),
         ),
+        // A query has no name of its own to resolve, so the crumb is the kind.
+        Page::Search(_) => Some(page.kind()),
     };
     if let Some(label) = label {
         crumbs.push(Crumb {
@@ -243,6 +245,33 @@ mod tests {
         )));
 
         assert_eq!(current_label(&library), Some("Signal Decay"));
+    }
+
+    #[test]
+    fn a_search_page_names_its_kind() {
+        let mut library = Library::default();
+        library.open(Page::Search("never gonna".to_owned()));
+
+        assert_eq!(
+            trail(&library),
+            vec![
+                Crumb {
+                    label: "Home",
+                    current: false,
+                    link: false,
+                },
+                Crumb {
+                    label: "Playlists",
+                    current: false,
+                    link: true,
+                },
+                Crumb {
+                    label: "Search",
+                    current: true,
+                    link: false,
+                },
+            ]
+        );
     }
 
     #[test]

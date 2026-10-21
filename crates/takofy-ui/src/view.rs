@@ -20,6 +20,8 @@ pub mod playlist;
 mod queue_pane;
 mod queue_row;
 mod release_block;
+mod search_menu;
+mod search_results;
 mod section;
 mod shell;
 mod show;
