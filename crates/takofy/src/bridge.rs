@@ -4621,6 +4621,58 @@ mod tests {
     }
 
     #[test]
+    fn a_two_move_command_is_one_write_and_one_revision() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+        let base = revision(1);
+        let reply = revision(2);
+        *shared.move_script.lock().expect("lock") = MoveScript::Ready(reply.clone());
+        let moves = vec![
+            Move {
+                from: 0,
+                length: 1,
+                to: 4,
+            },
+            Move {
+                from: 1,
+                length: 1,
+                to: 4,
+            },
+        ];
+
+        let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::MoveTrack {
+                    playlist: "spotify:playlist:a".to_owned(),
+                    revision: base.clone(),
+                    moves: moves.clone(),
+                })
+                .expect("move");
+            ui_end.updates.recv().expect("moved")
+        });
+
+        assert_eq!(
+            update,
+            Update::TrackMoved {
+                playlist: "spotify:playlist:a".to_owned(),
+                revision: reply,
+            }
+        );
+        assert_eq!(shared.move_writes.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            shared.last_move.lock().expect("lock").clone(),
+            Some(("spotify:playlist:a".to_owned(), base, moves)),
+            "both moves are one write with one revision"
+        );
+    }
+
+    #[test]
     fn the_edge_steps_encode_the_gap_the_server_reads() {
         let base = revision(1);
         let write = |len: usize, from: usize, boundary: usize| {
