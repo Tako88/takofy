@@ -563,7 +563,7 @@ svg {
 }
 
 .library-item:hover {
-  background: var(--color-surface-hover);
+  background: var(--color-row-hover);
 }
 
 .library-item__art {
@@ -1331,8 +1331,9 @@ svg {
 }
 
 .track-row:hover,
-.track-row:focus-within {
-  background: rgba(242, 240, 234, 0.06);
+.track-row:focus-within,
+.track-row.is-demo-hover {
+  background: var(--color-row-hover);
 }
 
 /* The sounding row is marked by a rule at the margin. The title stays bone —
@@ -1373,14 +1374,19 @@ svg {
   stroke: none;
 }
 
+/* `is-demo-hover` is the drag board's way of holding the pointer still: the
+   specimens have to show hover and selection at the same instant, and a static
+   picture cannot be hovered. */
 .track-row:hover .track-row__number,
 .track-row:focus-within .track-row__number,
+.track-row.is-demo-hover .track-row__number,
 .track-row.is-playing .track-row__number {
   opacity: 0;
 }
 
 .track-row:hover .track-row__toggle,
 .track-row:focus-within .track-row__toggle,
+.track-row.is-demo-hover .track-row__toggle,
 .track-row.is-playing .track-row__toggle {
   opacity: 1;
 }
@@ -2243,7 +2249,7 @@ svg {
 
 .queue-item:hover,
 .queue-item:focus-within {
-  background: var(--color-surface-hover);
+  background: var(--color-row-hover);
 }
 
 .queue-item.is-playing {
@@ -3241,7 +3247,285 @@ svg {
 }
 
 /* --------------------------------------------------------------------------
-   21. Responsive — a desktop app that still behaves in a narrow window
+   21. Drag and drop — three claims, and no new loud colour
+   -------------------------------------------------------------------------- */
+
+/* Selection is an area. 16% bone against the row's 6% hover is three times the
+   lift, so a picked row is never a guess — and because a fill alone is a small
+   difference on black, the ink steps up with it: the number to full bone, the
+   secondary columns one tier, so "picked" is carried by ink as well as by area. */
+.track-row.is-selected,
+.queue-item.is-selected,
+.library-item.is-selected {
+  background: var(--color-row-selected);
+}
+
+.track-row.is-selected .track-row__index {
+  color: var(--color-text);
+}
+
+.track-row.is-selected :is(.track-row__meta, .track-row__duration) {
+  color: var(--color-text-muted);
+}
+
+/* A row on its way somewhere else stays where it is and steps back, so the hole
+   it came out of is visible while the ghost travels. */
+.track-row.is-lifted,
+.queue-item.is-lifted,
+.library-item.is-lifted {
+  opacity: var(--opacity-lifted);
+}
+
+/* "Add it here" is an area too — never a rule. That is how the sidebar's two
+   meanings split: a filled row adds, a rule between rows reorders. */
+.track-row.is-drop-target,
+.queue-item.is-drop-target,
+.library-item.is-drop-target,
+.icon-button.is-drop-target {
+  background: var(--color-row-selected);
+  color: var(--color-text);
+}
+
+/* A 1.75rem control is a fine thing to click and a poor thing to hit mid-drag,
+   so the drop target grows in the only place that costs no layout: an invisible
+   hit area around it. Nothing moves when the state turns on. */
+.icon-button.is-drop-target {
+  position: relative;
+}
+
+.icon-button.is-drop-target::after {
+  content: "";
+  position: absolute;
+  inset: calc((2.75rem - 1.75rem) / -2);
+}
+
+/* The landing marker: a 2pt bone rule on the edge of the row the block would
+   become the neighbour of. It is drawn inside that row's box, in the 1px gap the
+   list already has, so no row moves while the pointer travels. */
+.drop-before,
+.drop-after {
+  position: relative;
+}
+
+.drop-before::before,
+.drop-after::after {
+  content: "";
+  position: absolute;
+  /* Above the ghost: where a drag will land is the one thing it may never
+     cover. */
+  z-index: 20;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--color-mark);
+}
+
+.drop-before::before {
+  top: -1px;
+}
+
+/* At the very top of a list there is no gap to sit in, so the marker moves
+   inside the first row rather than merging with the list's own edge. */
+.tracklist > .drop-before:first-child::before,
+.library__list > .drop-before:first-child::before {
+  top: 0;
+}
+
+.drop-after::after {
+  bottom: -1px;
+}
+
+/* The lifted row, drawn as itself: the same row on the raised surface, edged and
+   shadowed, so what moves is the thing you grabbed and not a stand-in for it. It
+   is placed from the pointer and offset by 12pt / 16pt, so the row under the
+   pointer keeps showing through, the pointer tip stays uncovered, and the marker
+   is never mistaken for the ghost's own edge. */
+.drag-ghost {
+  position: absolute;
+  top: 0;
+  /* The ghost is the row's width, less the offset it is translated by, so it
+     never overhangs the list it came out of. */
+  left: 0;
+  right: var(--space-3);
+  z-index: 10;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-raised);
+  box-shadow: var(--shadow-md);
+  transform: translate(var(--space-3), var(--space-4));
+  pointer-events: none;
+  transition: none;
+}
+
+/* The block's size, said as a multiplier on the title rather than as a stack of
+   ghosts or a chip on the trailing edge — the trailing column already carries the
+   block's running time, and the title is where the row's identity is. */
+.drag-count {
+  margin-left: var(--space-2);
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-wide);
+}
+
+/* Refusal is not a red cross. The ghost simply stops being lifted — flat
+   surface, no shadow — and its ink drops to the app's disabled tier. It keeps a
+   hairline so it still reads as a row being carried rather than a hole; the
+   marker disappears and nothing else on screen moves. */
+.drag-ghost.is-refused {
+  border-color: var(--color-border);
+  background: var(--color-surface);
+  box-shadow: none;
+}
+
+.drag-ghost.is-refused :is(.track-row__name, .track-row__artist, .track-row__album, .track-row__meta, .track-row__duration, .track-row__index, .queue-item__name, .queue-item__artist, .queue-item__dur, .library-item__name, .library-item__kind) {
+  color: var(--color-text-subtle);
+}
+
+.drag-ghost.is-refused a {
+  color: inherit;
+}
+
+/* --------------------------------------------------------------------------
+   22. Drag board — the state specimens drawn in 21
+   -------------------------------------------------------------------------- */
+
+.drag-spec + .drag-spec {
+  margin-top: var(--space-5);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--color-border);
+}
+
+.drag-cap {
+  margin-bottom: var(--space-2);
+  color: var(--color-text-subtle);
+}
+
+/* Specimens stack a copy of the lifted row over the list it came from, so the
+   list itself has to stay out of the way of its z-index. */
+.drag-list {
+  position: relative;
+  isolation: isolate;
+}
+
+/* The ghost is positioned against the row it would land above; this zero-height
+   cell is that anchor, so no specimen needs a hand-tuned top offset. */
+.drag-anchor {
+  height: 0;
+  position: relative;
+}
+
+/* A specimen of the autoscroll edge: the list is taller than the picture of it,
+   so the last visible row is where the marker pins. */
+.drag-scroll {
+  max-height: calc(var(--row-h) * 5 + var(--space-3));
+  overflow: hidden;
+}
+
+/* A specimen that needs the queue next to the list: the list keeps its own
+   width and the pane takes the sidebar-of-now-playing width. */
+.drag-cross {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--nowplaying-w);
+  align-items: start;
+}
+
+.drag-pane {
+  padding: var(--space-2) var(--space-3) var(--space-4);
+  border-left: 1px solid var(--color-border);
+  background: var(--color-panel);
+}
+
+.drag-wide {
+  right: calc(var(--nowplaying-w) * -1 - var(--space-3));
+}
+
+/* Sidebar specimens: the rail's own width, boxed so it reads as one column. */
+.drag-pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-4);
+  align-items: start;
+}
+
+/* A rail beside prose rather than beside another rail: the column takes the
+   sidebar's own width so the paragraph starts where the sidebar would end. */
+.drag-pair--rail-note {
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
+}
+
+.drag-rail {
+  width: 100%;
+  max-width: var(--sidebar-w);
+  padding-bottom: var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+}
+
+.drag-rail__head {
+  padding: var(--space-2) var(--space-2) var(--space-1);
+  color: var(--color-text-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: 500;
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+}
+
+/* The token table at the foot of the page: value and the one-line reason for it,
+   in the mono voice the file itself is written in. */
+.drag-tokens {
+  display: grid;
+  grid-template-columns: 13rem minmax(0, 1fr);
+  gap: 0;
+  margin: var(--space-4) 0 0;
+  border-top: 1px solid var(--color-border);
+}
+
+/* The ruling that opens the page starts a band of its own instead of trailing the
+   intro paragraph it follows. */
+.states__intro + .section--first {
+  margin-top: var(--space-5);
+}
+
+.drag-tokens > * {
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.drag-tokens dt {
+  color: var(--color-text);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  padding-right: var(--space-4);
+}
+
+.drag-tokens dd {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+/* The playbar strip for the narrow-window answer: one control, filled as an
+   "add" target, in the row the app already puts its extras in. */
+.drag-strip {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+}
+
+.drag-strip .label {
+  margin-left: var(--space-2);
+  color: var(--color-text-subtle);
+}
+
+/* --------------------------------------------------------------------------
+   23. Responsive — a desktop app that still behaves in a narrow window
    -------------------------------------------------------------------------- */
 
 @media (max-width: 1360px) {
@@ -3680,5 +3964,38 @@ svg {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+  }
+}
+
+/* The board is a two-column argument — list beside pane, rail beside rail — until
+   the window is too narrow to read them side by side. */
+@media (max-width: 900px) {
+  .drag-cross {
+    grid-template-columns: minmax(0, 1fr);
+    /* The gutter becomes a gap deep enough for the ghost to hang in, so it does
+       not land on the pane's caption. */
+    row-gap: var(--space-8);
+  }
+
+  .drag-pane {
+    border-top: 1px solid var(--color-border);
+    border-left: 0;
+  }
+
+  .drag-wide {
+    right: var(--space-3);
+  }
+
+  .drag-pair,
+  .drag-pair--rail-note {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .drag-tokens {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .drag-tokens dt {
+    padding-bottom: 0;
+    border-bottom: 0;
   }
 }

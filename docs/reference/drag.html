@@ -1,0 +1,1048 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Drag and drop · Takofy</title>
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body class="app" data-page="drag">
+
+<!-- ===================== Sidebar ===================== -->
+<aside class="sidebar" aria-label="Your library">
+  <div class="chips" role="group" aria-label="Filter your library" data-chip-group data-chip-target="#library-list" data-count-target="[data-library-count]">
+    <button class="chip" type="button" data-chip="playlist" aria-pressed="false">Playlists</button>
+    <button class="chip" type="button" data-chip="artist" aria-pressed="false">Artists</button>
+    <button class="chip" type="button" data-chip="album" aria-pressed="false">Albums</button>
+    <button class="chip" type="button" data-chip="podcast" aria-pressed="false">Podcasts</button>
+  </div>
+
+  <div class="library">
+    <div class="library__head">
+      <span data-library-count></span>
+      <span class="library__head-actions">
+        <button class="icon-button" type="button" aria-label="Create playlist or folder">
+          <svg class="icon icon--md" aria-hidden="true"><use href="#i-plus"></use></svg>
+        </button>
+      </span>
+    </div>
+
+    <ul class="library__list" id="library-list" data-library-list></ul>
+  </div>
+</aside>
+
+<!-- ===================== Main ===================== -->
+<div class="app__main">
+  <header class="topbar">
+    <button class="icon-button topbar__drawer-toggle" type="button" data-drawer-toggle aria-expanded="false" aria-label="Open your library panel">
+      <svg class="icon icon--lg" aria-hidden="true"><use href="#i-panel"></use></svg>
+    </button>
+    <div class="topbar__nav">
+      <a class="round-button" href="index.html" data-nav="home" aria-label="Home">
+        <svg class="icon" aria-hidden="true"><use href="#i-home"></use></svg>
+      </a>
+      <button class="round-button" type="button" data-back aria-label="Go back">
+        <svg class="icon" aria-hidden="true"><use href="#i-arrow-left"></use></svg>
+      </button>
+      <button class="round-button" type="button" data-forward aria-label="Go forward">
+        <svg class="icon" aria-hidden="true"><use href="#i-arrow-right"></use></svg>
+      </button>
+    </div>
+    <form class="searchbar" role="search" onsubmit="return false">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-search"></use></svg>
+      <input type="search" placeholder="Search" aria-label="Search" />
+    </form>
+    <nav class="trail" aria-label="You are here">
+      <a href="index.html">Home</a>
+      <span class="trail__sep">/</span>
+      <span aria-current="page">Drag and drop</span>
+    </nav>
+  </header>
+
+  <main class="view states-page">
+    <div class="view__inner">
+      <div class="page-head">
+        <h1 class="page-head__title">Drag and drop</h1>
+        <p class="page-head__note">Concept · 10 states · pointer only</p>
+      </div>
+
+      <p class="states__intro">
+        Dragging rows is the first thing in this client that is neither a control nor a state of
+        playback. Nine states are drawn below and one is answered in words. Every specimen is built
+        from the app's own classes — the row you see is the row you already have, in a five-cell
+        tracklist; the states are column-agnostic, because a fill spans the row and a marker spans the
+        row whatever sits in it.
+      </p>
+
+      <!-- ============ The ruling ============ -->
+      <section class="section section--first" aria-labelledby="ruling">
+        <div class="section__head">
+          <h2 class="section__title" id="ruling">The ruling</h2>
+          <p class="label states__meta">green stays sound · 3 new tokens</p>
+        </div>
+
+        <div class="states__pair">
+          <div>
+            <p class="label drag-cap">green</p>
+            <p class="states__note">
+              Green stays spent on sound: the sounding row's 2pt bar at its left margin, the play
+              glyph, the focused field. It does not paint an insertion marker and it does not paint a
+              selection. A drag is not playback, and the moment green marks two different things the
+              playing row stops meaning anything.
+            </p>
+          </div>
+          <div>
+            <p class="label drag-cap">bone, in two kinds</p>
+            <p class="states__note">
+              Selection is an area of bone at 16% — three times the 6% a row takes under the pointer.
+              The landing marker is a 2pt rule of full bone. Same ink, different kind: an area says
+              “picked”, a rule says “lands here”, and being bone neither can be read as the accent bar
+              on the row that is actually sounding.
+            </p>
+          </div>
+        </div>
+
+        <p class="states__note">
+          Three consequences rule the rest of the page. “Add to this” is always an area. “Move to
+          here” is always a rule. A refusal is neither: it is the ghost going flat.
+        </p>
+      </section>
+
+      <!-- ============ D1 ============ -->
+      <section class="section" aria-labelledby="d1">
+        <div class="section__head">
+          <h2 class="section__title" id="d1"><span class="states__no">D1</span>Selected</h2>
+          <p class="label states__meta">fill only · 16% bone</p>
+        </div>
+
+        <div class="states__stage">
+          <div class="drag-spec">
+            <p class="label drag-cap">one row, no pointer near it</p>
+            <div class="tracks tracks--slim">
+              <ol class="tracklist">
+                <li class="track-row">
+                  <span class="track-row__index"><span class="track-row__number">1</span><span class="track-row__toggle"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play"></use></svg></span></span>
+                  <span class="track-row__title"><img class="track-row__art" src="img/covers/signal-decay.jpg" alt="" loading="lazy" /><span class="track-row__text"><span class="track-row__name truncate">Signal Decay</span></span></span>
+                  <span class="track-row__like" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-heart"></use></svg></span>
+                  <span class="track-row__duration">4:12</span>
+                  <span class="track-row__actions" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-more"></use></svg></span>
+                </li>
+                <li class="track-row is-selected">
+                  <span class="track-row__index"><span class="track-row__number">2</span><span class="track-row__toggle"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play"></use></svg></span></span>
+                  <span class="track-row__title"><img class="track-row__art" src="img/covers/slow-tide.jpg" alt="" loading="lazy" /><span class="track-row__text"><span class="track-row__name truncate">Harbour Wall</span></span></span>
+                  <span class="track-row__like" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-heart-filled"></use></svg></span>
+                  <span class="track-row__duration">4:05</span>
+                  <span class="track-row__actions" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-more"></use></svg></span>
+                </li>
+                <li class="track-row">
+                  <span class="track-row__index"><span class="track-row__number">3</span><span class="track-row__toggle"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play"></use></svg></span></span>
+                  <span class="track-row__title"><img class="track-row__art" src="img/covers/halcyon-street.jpg" alt="" loading="lazy" /><span class="track-row__text"><span class="track-row__name truncate">Halcyon Street</span></span></span>
+                  <span class="track-row__like" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-heart"></use></svg></span>
+                  <span class="track-row__duration">3:16</span>
+                  <span class="track-row__actions" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-more"></use></svg></span>
+                </li>
+              </ol>
+            </div>
+          </div>
+
+          <div class="drag-spec">
+            <p class="label drag-cap">three consecutive, pointer on the middle</p>
+            <div class="tracks tracks--slim">
+              <ol class="tracklist">
+                <li class="track-row">
+                  <span class="track-row__index"><span class="track-row__number">1</span><span class="track-row__toggle"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play"></use></svg></span></span>
+                  <span class="track-row__title"><img class="track-row__art" src="img/covers/signal-decay.jpg" alt="" loading="lazy" /><span class="track-row__text"><span class="track-row__name truncate">Signal Decay</span></span></span>
+                  <span class="track-row__like" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-heart"></use></svg></span>
+                  <span class="track-row__duration">4:12</span>
+                  <span class="track-row__actions" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-more"></use></svg></span>
+                </li>
+                <li class="track-row is-selected">
+                  <span class="track-row__index"><span class="track-row__number">2</span><span class="track-row__toggle"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play"></use></svg></span></span>
+                  <span class="track-row__title"><img class="track-row__art" src="img/covers/slow-tide.jpg" alt="" loading="lazy" /><span class="track-row__text"><span class="track-row__name truncate">Harbour Wall</span></span></span>
+                  <span class="track-row__like" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-heart-filled"></use></svg></span>
+                  <span class="track-row__duration">4:05</span>
+                  <span class="track-row__actions" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-more"></use></svg></span>
+                </li>
+                <li class="track-row is-selected is-demo-hover">
+                  <span class="track-row__index"><span class="track-row__number">3</span><span class="track-row__toggle"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play"></use></svg></span></span>
+                  <span class="track-row__title"><img class="track-row__art" src="img/covers/halcyon-street.jpg" alt="" loading="lazy" /><span class="track-row__text"><span class="track-row__name truncate">Halcyon Street</span></span></span>
+                  <span class="track-row__like" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-heart"></use></svg></span>
+                  <span class="track-row__duration">3:16</span>
+                  <span class="track-row__actions" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-more"></use></svg></span>
+                </li>
+                <li class="track-row is-selected">
+                  <span class="track-row__index"><span class="track-row__number">4</span><span class="track-row__toggle"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play"></use></svg></span></span>
+                  <span class="track-row__title"><img class="track-row__art" src="img/covers/low-country.jpg" alt="" loading="lazy" /><span class="track-row__text"><span class="track-row__name truncate">Low Country</span></span></span>
+                  <span class="track-row__like" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-heart"></use></svg></span>
+                  <span class="track-row__duration">4:31</span>
+                  <span class="track-row__actions" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-more"></use></svg></span>
+                </li>
+                <li class="track-row">
+                  <span class="track-row__index"><span class="track-row__number">5</span><span class="track-row__toggle"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play"></use></svg></span></span>
+                  <span class="track-row__title"><img class="track-row__art" src="img/covers/blue-hour.jpg" alt="" loading="lazy" /><span class="track-row__text"><span class="track-row__name truncate">Blue Hour</span></span></span>
+                  <span class="track-row__like" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-heart"></use></svg></span>
+                  <span class="track-row__duration">3:35</span>
+                  <span class="track-row__actions" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-more"></use></svg></span>
+                </li>
+              </ol>
+            </div>
+          </div>
+
+          <div class="drag-spec">
+            <p class="label drag-cap">hover beside selection — the pair to argue about</p>
+            <div class="tracks tracks--slim">
+              <ol class="tracklist">
+                <li class="track-row is-demo-hover">
+                  <span class="track-row__index"><span class="track-row__number">1</span><span class="track-row__toggle"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play"></use></svg></span></span>
+                  <span class="track-row__title"><img class="track-row__art" src="img/covers/signal-decay.jpg" alt="" loading="lazy" /><span class="track-row__text"><span class="track-row__name truncate">Signal Decay</span></span></span>
+                  <span class="track-row__like" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-heart"></use></svg></span>
+                  <span class="track-row__duration">4:12</span>
+                  <span class="track-row__actions" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-more"></use></svg></span>
+                </li>
+                <li class="track-row is-selected">
+                  <span class="track-row__index"><span class="track-row__number">2</span><span class="track-row__toggle"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play"></use></svg></span></span>
+                  <span class="track-row__title"><img class="track-row__art" src="img/covers/slow-tide.jpg" alt="" loading="lazy" /><span class="track-row__text"><span class="track-row__name truncate">Harbour Wall</span></span></span>
+                  <span class="track-row__like" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-heart-filled"></use></svg></span>
+                  <span class="track-row__duration">4:05</span>
+                  <span class="track-row__actions" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-more"></use></svg></span>
+                </li>
+                <li class="track-row">
+                  <span class="track-row__index"><span class="track-row__number">3</span><span class="track-row__toggle"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play"></use></svg></span></span>
+                  <span class="track-row__title"><img class="track-row__art" src="img/covers/halcyon-street.jpg" alt="" loading="lazy" /><span class="track-row__text"><span class="track-row__name truncate">Halcyon Street</span></span></span>
+                  <span class="track-row__like" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-heart"></use></svg></span>
+                  <span class="track-row__duration">3:16</span>
+                  <span class="track-row__actions" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-more"></use></svg></span>
+                </li>
+              </ol>
+            </div>
+          </div>
+
+          <div class="drag-spec">
+            <p class="label drag-cap">the block, with the sounding row inside it</p>
+            <div class="tracks tracks--slim">
+              <ol class="tracklist">
+                <li class="track-row is-selected is-playing">
+                  <span class="track-row__index"><span class="track-row__number">1</span><span class="track-row__toggle"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play"></use></svg></span><span class="track-row__eq" aria-hidden="true"><span class="eq"><i></i><i></i><i></i></span></span></span>
+                  <span class="track-row__title"><img class="track-row__art" src="img/covers/signal-decay.jpg" alt="" loading="lazy" /><span class="track-row__text"><span class="track-row__name truncate">Signal Decay</span></span></span>
+                  <span class="track-row__like" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-heart"></use></svg></span>
+                  <span class="track-row__duration">4:12</span>
+                  <span class="track-row__actions" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-more"></use></svg></span>
+                </li>
+                <li class="track-row is-selected is-demo-hover">
+                  <span class="track-row__index"><span class="track-row__number">2</span><span class="track-row__toggle"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play"></use></svg></span></span>
+                  <span class="track-row__title"><img class="track-row__art" src="img/covers/slow-tide.jpg" alt="" loading="lazy" /><span class="track-row__text"><span class="track-row__name truncate">Harbour Wall</span></span></span>
+                  <span class="track-row__like" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-heart-filled"></use></svg></span>
+                  <span class="track-row__duration">4:05</span>
+                  <span class="track-row__actions" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-more"></use></svg></span>
+                </li>
+                <li class="track-row is-selected">
+                  <span class="track-row__index"><span class="track-row__number">3</span><span class="track-row__toggle"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play"></use></svg></span></span>
+                  <span class="track-row__title"><img class="track-row__art" src="img/covers/halcyon-street.jpg" alt="" loading="lazy" /><span class="track-row__text"><span class="track-row__name truncate">Halcyon Street</span></span></span>
+                  <span class="track-row__like" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-heart"></use></svg></span>
+                  <span class="track-row__duration">3:16</span>
+                  <span class="track-row__actions" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-more"></use></svg></span>
+                </li>
+              </ol>
+            </div>
+          </div>
+        </div>
+
+        <p class="states__note">
+          16% bone, no edge of its own, no accent. The first pair is the one the brief asked to be
+          argued about: a hovered row at 6% above a selected row at 16% — three times the lift, and
+          the difference survives a glance on a black surface. Because a fill alone is a small
+          difference on black, the ink steps up with it: a picked row's number goes to full bone and
+          its secondary columns one tier, so “picked” is carried by ink as well as by area. A selected
+          row under the pointer keeps its fill and gains only what hover always gives it — the play
+          glyph in the index slot — because a picked row has nothing left to offer but its controls.
+          In the last specimen the sounding row keeps its accent bar inside the fill: at 16% the bar
+          still clears 4:1, so “playing” survives “picked”.
+        </p>
+      </section>
+
+      <!-- ============ D2 ============ -->
+      <section class="section" aria-labelledby="d2">
+        <div class="section__head">
+          <h2 class="section__title" id="d2"><span class="states__no">D2</span>The lifted row</h2>
+          <p class="label states__meta">source 55% · ghost raised</p>
+        </div>
+
+        <div class="states__stage">
+          <div class="drag-spec">
+            <p class="label drag-cap">source stays · ghost under the pointer</p>
+            <div class="tracks tracks--slim">
+              <ol class="tracklist drag-list">
+                <li class="track-row">
+                  <span class="track-row__index"><span class="track-row__number">1</span><span class="track-row__toggle"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play"></use></svg></span></span>
+                  <span class="track-row__title"><img class="track-row__art" src="img/covers/signal-decay.jpg" alt="" loading="lazy" /><span class="track-row__text"><span class="track-row__name truncate">Signal Decay</span></span></span>
+                  <span class="track-row__like" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-heart"></use></svg></span>
+                  <span class="track-row__duration">4:12</span>
+                  <span class="track-row__actions" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-more"></use></svg></span>
+                </li>
+                <li class="track-row is-selected is-lifted">
+                  <span class="track-row__index"><span class="track-row__number">2</span><span class="track-row__toggle"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play"></use></svg></span></span>
+                  <span class="track-row__title"><img class="track-row__art" src="img/covers/slow-tide.jpg" alt="" loading="lazy" /><span class="track-row__text"><span class="track-row__name truncate">Harbour Wall</span></span></span>
+                  <span class="track-row__like" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-heart-filled"></use></svg></span>
+                  <span class="track-row__duration">4:05</span>
+                  <span class="track-row__actions" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-more"></use></svg></span>
+                </li>
+                <li class="track-row">
+                  <span class="track-row__index"><span class="track-row__number">3</span><span class="track-row__toggle"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play"></use></svg></span></span>
+                  <span class="track-row__title"><img class="track-row__art" src="img/covers/halcyon-street.jpg" alt="" loading="lazy" /><span class="track-row__text"><span class="track-row__name truncate">Halcyon Street</span></span></span>
+                  <span class="track-row__like" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-heart"></use></svg></span>
+                  <span class="track-row__duration">3:16</span>
+                  <span class="track-row__actions" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-more"></use></svg></span>
+                </li>
+                <li class="track-row">
+                  <span class="track-row__index"><span class="track-row__number">4</span><span class="track-row__toggle"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play"></use></svg></span></span>
+                  <span class="track-row__title"><img class="track-row__art" src="img/covers/low-country.jpg" alt="" loading="lazy" /><span class="track-row__text"><span class="track-row__name truncate">Low Country</span></span></span>
+                  <span class="track-row__like" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-heart"></use></svg></span>
+                  <span class="track-row__duration">4:31</span>
+                  <span class="track-row__actions" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-more"></use></svg></span>
+                </li>
+                <li class="drag-anchor">
+                  <div class="drag-ghost">
+                    <div class="track-row">
+                      <span class="track-row__index"><span class="track-row__number">2</span></span>
+                      <span class="track-row__title"><img class="track-row__art" src="img/covers/slow-tide.jpg" alt="" /><span class="track-row__text"><span class="track-row__name truncate">Harbour Wall</span></span></span>
+                      <span class="track-row__like" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-heart-filled"></use></svg></span>
+                      <span class="track-row__duration">4:05</span>
+                      <span class="track-row__actions" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-more"></use></svg></span>
+                    </div>
+                  </div>
+                </li>
+                <li class="track-row drop-before">
+                  <span class="track-row__index"><span class="track-row__number">5</span><span class="track-row__toggle"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play"></use></svg></span></span>
+                  <span class="track-row__title"><img class="track-row__art" src="img/covers/blue-hour.jpg" alt="" loading="lazy" /><span class="track-row__text"><span class="track-row__name truncate">Blue Hour</span></span></span>
+                  <span class="track-row__like" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-heart"></use></svg></span>
+                  <span class="track-row__duration">3:35</span>
+                  <span class="track-row__actions" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-more"></use></svg></span>
+                </li>
+                <li class="track-row">
+                  <span class="track-row__index"><span class="track-row__number">6</span><span class="track-row__toggle"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play"></use></svg></span></span>
+                  <span class="track-row__title"><img class="track-row__art" src="img/covers/chrome-gospel.jpg" alt="" loading="lazy" /><span class="track-row__text"><span class="track-row__name truncate">Chrome Gospel</span></span></span>
+                  <span class="track-row__like" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-heart"></use></svg></span>
+                  <span class="track-row__duration">4:21</span>
+                  <span class="track-row__actions" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-more"></use></svg></span>
+                </li>
+              </ol>
+            </div>
+          </div>
+        </div>
+
+        <p class="states__note">
+          The source stays exactly where it was and steps back to 55%, so the hole you are working
+          from stays readable while the ghost travels. The ghost is the row itself, lifted onto the
+          raised surface: 1pt border and the menu shadow it shares with every popup, offset 12pt right
+          and 16pt down from the pointer so the row beneath keeps showing through and the marker is
+          never mistaken for the ghost's own edge. It does not shrink to a pill — what moves should
+          look like what you grabbed.
+        </p>
+      </section>
+
+      <!-- ============ D3 ============ -->
+      <section class="section" aria-labelledby="d3">
+        <div class="section__head">
+          <h2 class="section__title" id="d3"><span class="states__no">D3</span>Several at once</h2>
+          <p class="label states__meta">one ghost · ×4 on the title</p>
+        </div>
+
+        <div class="states__stage">
+          <div class="drag-spec">
+            <p class="label drag-cap">four selected · one ghost</p>
+            <div class="tracks tracks--slim">
+              <ol class="tracklist drag-list">
+                <li class="track-row">
+                  <span class="track-row__index"><span class="track-row__number">1</span><span class="track-row__toggle"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play"></use></svg></span></span>
+                  <span class="track-row__title"><img class="track-row__art" src="img/covers/signal-decay.jpg" alt="" loading="lazy" /><span class="track-row__text"><span class="track-row__name truncate">Signal Decay</span></span></span>
+                  <span class="track-row__like" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-heart"></use></svg></span>
+                  <span class="track-row__duration">4:12</span>
+                  <span class="track-row__actions" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-more"></use></svg></span>
+                </li>
+                <li class="track-row is-selected is-lifted">
+                  <span class="track-row__index"><span class="track-row__number">2</span></span>
+                  <span class="track-row__title"><img class="track-row__art" src="img/covers/slow-tide.jpg" alt="" loading="lazy" /><span class="track-row__text"><span class="track-row__name truncate">Harbour Wall</span></span></span>
+                  <span class="track-row__like" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-heart-filled"></use></svg></span>
+                  <span class="track-row__duration">4:05</span>
+                  <span class="track-row__actions" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-more"></use></svg></span>
+                </li>
+                <li class="track-row is-selected is-lifted">
+                  <span class="track-row__index"><span class="track-row__number">3</span></span>
+                  <span class="track-row__title"><img class="track-row__art" src="img/covers/halcyon-street.jpg" alt="" loading="lazy" /><span class="track-row__text"><span class="track-row__name truncate">Halcyon Street</span></span></span>
+                  <span class="track-row__like" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-heart"></use></svg></span>
+                  <span class="track-row__duration">3:16</span>
+                  <span class="track-row__actions" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-more"></use></svg></span>
+                </li>
+                <li class="track-row is-selected is-lifted">
+                  <span class="track-row__index"><span class="track-row__number">4</span></span>
+                  <span class="track-row__title"><img class="track-row__art" src="img/covers/low-country.jpg" alt="" loading="lazy" /><span class="track-row__text"><span class="track-row__name truncate">Low Country</span></span></span>
+                  <span class="track-row__like" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-heart"></use></svg></span>
+                  <span class="track-row__duration">4:31</span>
+                  <span class="track-row__actions" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-more"></use></svg></span>
+                </li>
+                <li class="track-row is-selected is-lifted">
+                  <span class="track-row__index"><span class="track-row__number">5</span></span>
+                  <span class="track-row__title"><img class="track-row__art" src="img/covers/blue-hour.jpg" alt="" loading="lazy" /><span class="track-row__text"><span class="track-row__name truncate">Blue Hour</span></span></span>
+                  <span class="track-row__like" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-heart"></use></svg></span>
+                  <span class="track-row__duration">3:35</span>
+                  <span class="track-row__actions" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-more"></use></svg></span>
+                </li>
+                <li class="drag-anchor">
+                  <div class="drag-ghost">
+                    <div class="track-row">
+                      <span class="track-row__index"><span class="track-row__number">4</span></span>
+                      <span class="track-row__title"><img class="track-row__art" src="img/covers/slow-tide.jpg" alt="" /><span class="track-row__text"><span class="track-row__name truncate">Harbour Wall <span class="drag-count">×4</span></span></span></span>
+                      <span class="track-row__like" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-heart-filled"></use></svg></span>
+                      <span class="track-row__duration">19:27</span>
+                      <span class="track-row__actions" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-more"></use></svg></span>
+                    </div>
+                  </div>
+                </li>
+                <li class="track-row drop-before">
+                  <span class="track-row__index"><span class="track-row__number">6</span><span class="track-row__toggle"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play"></use></svg></span></span>
+                  <span class="track-row__title"><img class="track-row__art" src="img/covers/chrome-gospel.jpg" alt="" loading="lazy" /><span class="track-row__text"><span class="track-row__name truncate">Chrome Gospel</span></span></span>
+                  <span class="track-row__like" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-heart"></use></svg></span>
+                  <span class="track-row__duration">4:21</span>
+                  <span class="track-row__actions" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-more"></use></svg></span>
+                </li>
+                <li class="track-row">
+                  <span class="track-row__index"><span class="track-row__number">7</span><span class="track-row__toggle"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play"></use></svg></span></span>
+                  <span class="track-row__title"><img class="track-row__art" src="img/covers/wintering.jpg" alt="" loading="lazy" /><span class="track-row__text"><span class="track-row__name truncate">Wintering</span></span></span>
+                  <span class="track-row__like" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-heart"></use></svg></span>
+                  <span class="track-row__duration">5:24</span>
+                  <span class="track-row__actions" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-more"></use></svg></span>
+                </li>
+              </ol>
+            </div>
+          </div>
+        </div>
+
+        <p class="states__note">
+          One row, always: a stack of ghosts lies about size the moment the block is longer than the
+          screen, and forty rows is a normal block. The ghost stands for the block rather than for the
+          first row in it, so it carries the block's own figures — its size as a multiplier on the
+          title, its running time where a single track keeps its duration. The multiplier goes on the
+          title for a reason the brief could not have known: the trailing column is already spoken
+          for, and a chip hung there would collide with the one number the block actually has.
+        </p>
+      </section>
+
+      <!-- ============ D4 ============ -->
+      <section class="section" aria-labelledby="d4">
+        <div class="section__head">
+          <h2 class="section__title" id="d4"><span class="states__no">D4</span>Where it lands</h2>
+          <p class="label states__meta">2pt bone · nothing moves</p>
+        </div>
+
+        <div class="states__stage">
+          <div class="drag-spec">
+            <p class="label drag-cap">at the top of the list</p>
+            <div class="tracks tracks--slim">
+              <ol class="tracklist">
+                <li class="track-row drop-before">
+                  <span class="track-row__index"><span class="track-row__number">1</span><span class="track-row__toggle"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play"></use></svg></span></span>
+                  <span class="track-row__title"><img class="track-row__art" src="img/covers/signal-decay.jpg" alt="" loading="lazy" /><span class="track-row__text"><span class="track-row__name truncate">Signal Decay</span></span></span>
+                  <span class="track-row__like" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-heart"></use></svg></span>
+                  <span class="track-row__duration">4:12</span>
+                  <span class="track-row__actions" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-more"></use></svg></span>
+                </li>
+                <li class="track-row">
+                  <span class="track-row__index"><span class="track-row__number">2</span><span class="track-row__toggle"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play"></use></svg></span></span>
+                  <span class="track-row__title"><img class="track-row__art" src="img/covers/slow-tide.jpg" alt="" loading="lazy" /><span class="track-row__text"><span class="track-row__name truncate">Harbour Wall</span></span></span>
+                  <span class="track-row__like" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-heart-filled"></use></svg></span>
+                  <span class="track-row__duration">4:05</span>
+                  <span class="track-row__actions" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-more"></use></svg></span>
+                </li>
+                <li class="track-row">
+                  <span class="track-row__index"><span class="track-row__number">3</span><span class="track-row__toggle"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play"></use></svg></span></span>
+                  <span class="track-row__title"><img class="track-row__art" src="img/covers/halcyon-street.jpg" alt="" loading="lazy" /><span class="track-row__text"><span class="track-row__name truncate">Halcyon Street</span></span></span>
+                  <span class="track-row__like" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-heart"></use></svg></span>
+                  <span class="track-row__duration">3:16</span>
+                  <span class="track-row__actions" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-more"></use></svg></span>
+                </li>
+              </ol>
+            </div>
+          </div>
+
+          <div class="drag-spec">
+            <p class="label drag-cap">between two rows</p>
+            <div class="tracks tracks--slim">
+              <ol class="tracklist">
+                <li class="track-row">
+                  <span class="track-row__index"><span class="track-row__number">1</span><span class="track-row__toggle"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play"></use></svg></span></span>
+                  <span class="track-row__title"><img class="track-row__art" src="img/covers/signal-decay.jpg" alt="" loading="lazy" /><span class="track-row__text"><span class="track-row__name truncate">Signal Decay</span></span></span>
+                  <span class="track-row__like" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-heart"></use></svg></span>
+                  <span class="track-row__duration">4:12</span>
+                  <span class="track-row__actions" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-more"></use></svg></span>
+                </li>
+                <li class="track-row drop-before">
+                  <span class="track-row__index"><span class="track-row__number">2</span><span class="track-row__toggle"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play"></use></svg></span></span>
+                  <span class="track-row__title"><img class="track-row__art" src="img/covers/slow-tide.jpg" alt="" loading="lazy" /><span class="track-row__text"><span class="track-row__name truncate">Harbour Wall</span></span></span>
+                  <span class="track-row__like" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-heart-filled"></use></svg></span>
+                  <span class="track-row__duration">4:05</span>
+                  <span class="track-row__actions" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-more"></use></svg></span>
+                </li>
+                <li class="track-row">
+                  <span class="track-row__index"><span class="track-row__number">3</span><span class="track-row__toggle"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play"></use></svg></span></span>
+                  <span class="track-row__title"><img class="track-row__art" src="img/covers/halcyon-street.jpg" alt="" loading="lazy" /><span class="track-row__text"><span class="track-row__name truncate">Halcyon Street</span></span></span>
+                  <span class="track-row__like" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-heart"></use></svg></span>
+                  <span class="track-row__duration">3:16</span>
+                  <span class="track-row__actions" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-more"></use></svg></span>
+                </li>
+              </ol>
+            </div>
+          </div>
+
+          <div class="drag-spec">
+            <p class="label drag-cap">at the very bottom</p>
+            <div class="tracks tracks--slim">
+              <ol class="tracklist">
+                <li class="track-row">
+                  <span class="track-row__index"><span class="track-row__number">1</span><span class="track-row__toggle"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play"></use></svg></span></span>
+                  <span class="track-row__title"><img class="track-row__art" src="img/covers/signal-decay.jpg" alt="" loading="lazy" /><span class="track-row__text"><span class="track-row__name truncate">Signal Decay</span></span></span>
+                  <span class="track-row__like" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-heart"></use></svg></span>
+                  <span class="track-row__duration">4:12</span>
+                  <span class="track-row__actions" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-more"></use></svg></span>
+                </li>
+                <li class="track-row">
+                  <span class="track-row__index"><span class="track-row__number">2</span><span class="track-row__toggle"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play"></use></svg></span></span>
+                  <span class="track-row__title"><img class="track-row__art" src="img/covers/slow-tide.jpg" alt="" loading="lazy" /><span class="track-row__text"><span class="track-row__name truncate">Harbour Wall</span></span></span>
+                  <span class="track-row__like" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-heart-filled"></use></svg></span>
+                  <span class="track-row__duration">4:05</span>
+                  <span class="track-row__actions" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-more"></use></svg></span>
+                </li>
+                <li class="track-row drop-after">
+                  <span class="track-row__index"><span class="track-row__number">3</span><span class="track-row__toggle"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play"></use></svg></span></span>
+                  <span class="track-row__title"><img class="track-row__art" src="img/covers/halcyon-street.jpg" alt="" loading="lazy" /><span class="track-row__text"><span class="track-row__name truncate">Halcyon Street</span></span></span>
+                  <span class="track-row__like" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-heart"></use></svg></span>
+                  <span class="track-row__duration">3:16</span>
+                  <span class="track-row__actions" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-more"></use></svg></span>
+                </li>
+              </ol>
+            </div>
+          </div>
+        </div>
+
+        <p class="states__note">
+          2pt, full bone, the row's own width, drawn inside the row it precedes — the top edge for
+          “before this row”, the bottom edge only for “after the last row”. Rows never move: the
+          marker lives in the 1px gap the list already has, so a forty-row list stays perfectly still
+          while the pointer travels. It is painted above the ghost, because the one thing a drag may
+          never hide is where it is going to land.
+        </p>
+      </section>
+
+      <!-- ============ D5 ============ -->
+      <section class="section" aria-labelledby="d5">
+        <div class="section__head">
+          <h2 class="section__title" id="d5"><span class="states__no">D5</span>Refused</h2>
+          <p class="label states__meta">no line · no red</p>
+        </div>
+
+        <div class="states__stage">
+          <div class="drag-spec">
+            <div class="drag-pair drag-pair--rail-note">
+              <div>
+                <p class="label drag-cap">a podcast is not a playlist</p>
+                <div class="drag-rail">
+                <p class="drag-rail__head">Your library</p>
+                <ul class="library__list drag-list">
+                  <li>
+                    <span class="library-item">
+                      <img class="library-item__art" src="img/covers/signal-decay.jpg" alt="" loading="lazy" />
+                      <span class="library-item__text"><span class="library-item__name truncate">Late Night Drive</span><span class="library-item__kind truncate">Playlist · Vela Moreno</span></span>
+                    </span>
+                  </li>
+                  <li>
+                    <span class="library-item">
+                      <img class="library-item__art" src="img/covers/pod-field-notes.jpg" alt="" loading="lazy" />
+                      <span class="library-item__text"><span class="library-item__name truncate">Field Notes</span><span class="library-item__kind truncate">Podcast · Northern Ridge</span></span>
+                    </span>
+                  </li>
+                  <li class="drag-anchor">
+                    <div class="drag-ghost is-refused">
+                      <div class="library-item">
+                        <img class="library-item__art" src="img/covers/slow-tide.jpg" alt="" />
+                        <span class="library-item__text"><span class="library-item__name truncate">Harbour Wall</span><span class="library-item__kind truncate">Track · Vela Moreno</span></span>
+                      </div>
+                    </div>
+                  </li>
+                  <li>
+                    <span class="library-item">
+                      <img class="library-item__art" src="img/covers/low-country.jpg" alt="" loading="lazy" />
+                      <span class="library-item__text"><span class="library-item__name truncate">Deep Focus</span><span class="library-item__kind truncate">Playlist · made for you</span></span>
+                    </span>
+                  </li>
+                  <li>
+                    <span class="library-item">
+                      <img class="library-item__art" src="img/covers/wintering.jpg" alt="" loading="lazy" />
+                      <span class="library-item__text"><span class="library-item__name truncate">Tape Hiss</span><span class="library-item__kind truncate">Playlist · made for you</span></span>
+                    </span>
+                  </li>
+                </ul>
+                </div>
+              </div>              <div>
+                <p class="label drag-cap">what changed</p>
+                <p class="states__note">
+                  The ghost stops being lifted: flat surface, no shadow, a hairline where the raised
+                  edge was, ink down to the disabled tier. No marker appears anywhere and nothing else
+                  on the page moves. A red cross or a “not allowed” badge would be loud for the most
+                  ordinary thing a drag does — most of the surface of this app refuses.
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ D6 ============ -->
+      <section class="section" aria-labelledby="d6">
+        <div class="section__head">
+          <h2 class="section__title" id="d6"><span class="states__no">D6</span>Crossing into the queue</h2>
+          <p class="label states__meta">the only far side</p>
+        </div>
+
+        <div class="states__stage">
+          <div class="drag-spec">
+            <p class="label drag-cap">list on the left · queue on the right</p>
+            <div class="drag-cross drag-list">
+              <div class="tracks tracks--slim">
+                <ol class="tracklist">
+                  <li class="track-row">
+                    <span class="track-row__index"><span class="track-row__number">1</span><span class="track-row__toggle"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play"></use></svg></span></span>
+                    <span class="track-row__title"><img class="track-row__art" src="img/covers/signal-decay.jpg" alt="" loading="lazy" /><span class="track-row__text"><span class="track-row__name truncate">Signal Decay</span></span></span>
+                    <span class="track-row__like" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-heart"></use></svg></span>
+                    <span class="track-row__duration">4:12</span>
+                    <span class="track-row__actions" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-more"></use></svg></span>
+                  </li>
+                  <li class="track-row is-selected is-lifted">
+                    <span class="track-row__index"><span class="track-row__number">2</span><span class="track-row__toggle"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play"></use></svg></span></span>
+                    <span class="track-row__title"><img class="track-row__art" src="img/covers/slow-tide.jpg" alt="" loading="lazy" /><span class="track-row__text"><span class="track-row__name truncate">Harbour Wall</span></span></span>
+                    <span class="track-row__like" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-heart-filled"></use></svg></span>
+                    <span class="track-row__duration">4:05</span>
+                    <span class="track-row__actions" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-more"></use></svg></span>
+                  </li>
+                  <li class="track-row">
+                    <span class="track-row__index"><span class="track-row__number">3</span><span class="track-row__toggle"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play"></use></svg></span></span>
+                    <span class="track-row__title"><img class="track-row__art" src="img/covers/halcyon-street.jpg" alt="" loading="lazy" /><span class="track-row__text"><span class="track-row__name truncate">Halcyon Street</span></span></span>
+                    <span class="track-row__like" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-heart"></use></svg></span>
+                    <span class="track-row__duration">3:16</span>
+                    <span class="track-row__actions" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-more"></use></svg></span>
+                  </li>
+                  <li class="track-row">
+                    <span class="track-row__index"><span class="track-row__number">4</span><span class="track-row__toggle"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play"></use></svg></span></span>
+                    <span class="track-row__title"><img class="track-row__art" src="img/covers/low-country.jpg" alt="" loading="lazy" /><span class="track-row__text"><span class="track-row__name truncate">Low Country</span></span></span>
+                    <span class="track-row__like" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-heart"></use></svg></span>
+                    <span class="track-row__duration">4:31</span>
+                    <span class="track-row__actions" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-more"></use></svg></span>
+                  </li>
+                  <li class="drag-anchor">
+                    <div class="drag-ghost drag-wide">
+                      <div class="track-row">
+                        <span class="track-row__index"><span class="track-row__number">2</span></span>
+                        <span class="track-row__title"><img class="track-row__art" src="img/covers/slow-tide.jpg" alt="" /><span class="track-row__text"><span class="track-row__name truncate">Harbour Wall</span></span></span>
+                        <span class="track-row__like" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-heart-filled"></use></svg></span>
+                        <span class="track-row__duration">4:05</span>
+                        <span class="track-row__actions" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-more"></use></svg></span>
+                      </div>
+                    </div>
+                  </li>
+                </ol>
+              </div>
+
+              <div class="drag-pane">
+                <p class="queue-head">Next in queue</p>
+                <ul class="queue">
+                  <li class="queue-item">
+                    <span class="queue-item__art"><img src="img/covers/terminal.jpg" alt="" loading="lazy" /></span>
+                    <span><span class="queue-item__name truncate">Cotton Light</span><span class="queue-item__artist truncate">Vela Moreno</span></span>
+                    <span class="queue-item__dur">3:18</span>
+                  </li>
+                  <li class="queue-item drop-before">
+                    <span class="queue-item__art"><img src="img/covers/wintering.jpg" alt="" loading="lazy" /></span>
+                    <span><span class="queue-item__name truncate">Kestrel</span><span class="queue-item__artist truncate">Vela Moreno</span></span>
+                    <span class="queue-item__dur">3:56</span>
+                  </li>
+                  <li class="queue-item">
+                    <span class="queue-item__art"><img src="img/covers/low-country.jpg" alt="" loading="lazy" /></span>
+                    <span><span class="queue-item__name truncate">Low Country</span><span class="queue-item__artist truncate">Fen &amp; Farrow</span></span>
+                    <span class="queue-item__dur">4:31</span>
+                  </li>
+                  <li class="queue-item">
+                    <span class="queue-item__art"><img src="img/covers/undertow.jpg" alt="" loading="lazy" /></span>
+                    <span><span class="queue-item__name truncate">Row of Pines</span><span class="queue-item__artist truncate">Nils Aker</span></span>
+                    <span class="queue-item__dur">3:49</span>
+                  </li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <p class="states__note">
+          The pointer leaves the list and enters the Now&nbsp;Playing pane, and the pane answers in its
+          own vocabulary unchanged: the same 2pt rule, between queue rows, at the queue's width —
+          because putting a track into the queue <em>is</em> an insertion, so the line needs no second
+          dialect. “Next in queue” keeps its place and its words; a caption that rewrites itself
+          mid-drag is one more thing to read while your hand is busy. Over the cover or the bitrate
+          readout there is no list, so the ghost goes flat. The rows being dragged are 44pt and the
+          queue's are 48pt — the marker does not care, because it is drawn on the neighbour.
+        </p>
+      </section>
+
+      <!-- ============ D7 ============ -->
+      <section class="section" aria-labelledby="d7">
+        <div class="section__head">
+          <h2 class="section__title" id="d7"><span class="states__no">D7</span>The sidebar's two meanings</h2>
+          <p class="label states__meta">fill = add · rule = reorder</p>
+        </div>
+
+        <div class="states__stage">
+          <div class="drag-pair">
+            <div>
+              <p class="label drag-cap">over a playlist row · add</p>
+              <div class="drag-rail">
+                <p class="drag-rail__head">Your library</p>
+                <ul class="library__list">
+                  <li>
+                    <span class="library-item">
+                      <img class="library-item__art" src="img/covers/signal-decay.jpg" alt="" loading="lazy" />
+                      <span class="library-item__text"><span class="library-item__name truncate">Late Night Drive</span><span class="library-item__kind truncate">Playlist · Vela Moreno</span></span>
+                    </span>
+                  </li>
+                  <li>
+                    <span class="library-item is-drop-target">
+                      <img class="library-item__art" src="img/covers/slow-tide.jpg" alt="" loading="lazy" />
+                      <span class="library-item__text"><span class="library-item__name truncate">Slow Tide</span><span class="library-item__kind truncate">Playlist · 11 tracks</span></span>
+                    </span>
+                  </li>
+                  <li>
+                    <span class="library-item">
+                      <img class="library-item__art" src="img/covers/low-country.jpg" alt="" loading="lazy" />
+                      <span class="library-item__text"><span class="library-item__name truncate">Deep Focus</span><span class="library-item__kind truncate">Playlist · made for you</span></span>
+                    </span>
+                  </li>
+                  <li>
+                    <span class="library-item">
+                      <img class="library-item__art" src="img/covers/wintering.jpg" alt="" loading="lazy" />
+                      <span class="library-item__text"><span class="library-item__name truncate">Tape Hiss</span><span class="library-item__kind truncate">Playlist · made for you</span></span>
+                    </span>
+                  </li>
+                </ul>
+              </div>
+            </div>
+
+            <div>
+              <p class="label drag-cap">between two rows · reorder</p>
+              <div class="drag-rail">
+                <p class="drag-rail__head">Your library</p>
+                <ul class="library__list">
+                  <li>
+                    <span class="library-item">
+                      <img class="library-item__art" src="img/covers/signal-decay.jpg" alt="" loading="lazy" />
+                      <span class="library-item__text"><span class="library-item__name truncate">Late Night Drive</span><span class="library-item__kind truncate">Playlist · Vela Moreno</span></span>
+                    </span>
+                  </li>
+                  <li>
+                    <span class="library-item drop-before">
+                      <img class="library-item__art" src="img/covers/slow-tide.jpg" alt="" loading="lazy" />
+                      <span class="library-item__text"><span class="library-item__name truncate">Slow Tide</span><span class="library-item__kind truncate">Playlist · 11 tracks</span></span>
+                    </span>
+                  </li>
+                  <li>
+                    <span class="library-item">
+                      <img class="library-item__art" src="img/covers/low-country.jpg" alt="" loading="lazy" />
+                      <span class="library-item__text"><span class="library-item__name truncate">Deep Focus</span><span class="library-item__kind truncate">Playlist · made for you</span></span>
+                    </span>
+                  </li>
+                  <li>
+                    <span class="library-item">
+                      <img class="library-item__art" src="img/covers/wintering.jpg" alt="" loading="lazy" />
+                      <span class="library-item__text"><span class="library-item__name truncate">Tape Hiss</span><span class="library-item__kind truncate">Playlist · made for you</span></span>
+                    </span>
+                  </li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <p class="states__note">
+          Same pointer, same column, two outcomes, and the difference is a shape. Over a playlist row
+          the row fills — add this track to it — and no rule appears. Between two rows the rule
+          appears and no row fills — put this playlist here. Never both at once: that is the whole
+          safety of it, and it is why a mis-drop cannot quietly reorder a library. The fill is the
+          same 16% the selection uses, because it is the same claim: this row is the object.
+        </p>
+      </section>
+
+      <!-- ============ D8 ============ -->
+      <section class="section" aria-labelledby="d8">
+        <div class="section__head">
+          <h2 class="section__title" id="d8"><span class="states__no">D8</span>Autoscroll</h2>
+          <p class="label states__meta">64pt edge · nothing added</p>
+        </div>
+
+        <div class="states__stage">
+          <div class="drag-spec">
+            <p class="label drag-cap">held at the bottom edge of a 1,400-row list</p>
+            <div class="tracks tracks--slim">
+              <ol class="tracklist drag-list drag-scroll">
+                <li class="track-row">
+                  <span class="track-row__index"><span class="track-row__number">1,388</span></span>
+                  <span class="track-row__title"><img class="track-row__art" src="img/covers/signal-decay.jpg" alt="" loading="lazy" /><span class="track-row__text"><span class="track-row__name truncate">Signal Decay</span></span></span>
+                  <span class="track-row__like" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-heart"></use></svg></span>
+                  <span class="track-row__duration">4:12</span>
+                  <span class="track-row__actions" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-more"></use></svg></span>
+                </li>
+                <li class="track-row">
+                  <span class="track-row__index"><span class="track-row__number">1,389</span></span>
+                  <span class="track-row__title"><img class="track-row__art" src="img/covers/slow-tide.jpg" alt="" loading="lazy" /><span class="track-row__text"><span class="track-row__name truncate">Harbour Wall</span></span></span>
+                  <span class="track-row__like" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-heart-filled"></use></svg></span>
+                  <span class="track-row__duration">4:05</span>
+                  <span class="track-row__actions" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-more"></use></svg></span>
+                </li>
+                <li class="track-row">
+                  <span class="track-row__index"><span class="track-row__number">1,390</span></span>
+                  <span class="track-row__title"><img class="track-row__art" src="img/covers/halcyon-street.jpg" alt="" loading="lazy" /><span class="track-row__text"><span class="track-row__name truncate">Halcyon Street</span></span></span>
+                  <span class="track-row__like" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-heart"></use></svg></span>
+                  <span class="track-row__duration">3:16</span>
+                  <span class="track-row__actions" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-more"></use></svg></span>
+                </li>
+                <li class="track-row">
+                  <span class="track-row__index"><span class="track-row__number">1,391</span></span>
+                  <span class="track-row__title"><img class="track-row__art" src="img/covers/low-country.jpg" alt="" loading="lazy" /><span class="track-row__text"><span class="track-row__name truncate">Low Country</span></span></span>
+                  <span class="track-row__like" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-heart"></use></svg></span>
+                  <span class="track-row__duration">4:31</span>
+                  <span class="track-row__actions" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-more"></use></svg></span>
+                </li>
+                <li class="track-row">
+                  <span class="track-row__index"><span class="track-row__number">1,392</span></span>
+                  <span class="track-row__title"><img class="track-row__art" src="img/covers/blue-hour.jpg" alt="" loading="lazy" /><span class="track-row__text"><span class="track-row__name truncate">Blue Hour</span></span></span>
+                  <span class="track-row__like" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-heart"></use></svg></span>
+                  <span class="track-row__duration">3:35</span>
+                  <span class="track-row__actions" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-more"></use></svg></span>
+                </li>
+                <li class="track-row drop-before">
+                  <span class="track-row__index"><span class="track-row__number">1,393</span></span>
+                  <span class="track-row__title"><img class="track-row__art" src="img/covers/chrome-gospel.jpg" alt="" loading="lazy" /><span class="track-row__text"><span class="track-row__name truncate">Chrome Gospel</span></span></span>
+                  <span class="track-row__like" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-heart"></use></svg></span>
+                  <span class="track-row__duration">4:21</span>
+                  <span class="track-row__actions" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-more"></use></svg></span>
+                </li>
+              </ol>
+            </div>
+          </div>
+        </div>
+
+        <p class="states__note">
+          Held within 64pt of an edge, the list scrolls itself. Nothing is added to say so: the
+          content moving under the pointer is the feedback, and a badge would lie about speed while
+          asking you to read something with your hand already busy. The one thing that does change is
+          the marker: it stays on the boundary at the visible edge — the first row the list is about
+          to reveal — so the target is unambiguous while the list slides beneath it.
+        </p>
+      </section>
+
+      <!-- ============ D9 ============ -->
+      <section class="section" aria-labelledby="d9">
+        <div class="section__head">
+          <h2 class="section__title" id="d9"><span class="states__no">D9</span>Narrow window</h2>
+          <p class="label states__meta">≤1120px · the queue button takes it</p>
+        </div>
+
+        <div class="states__stage">
+          <div class="drag-strip">
+            <span class="icon-button is-drop-target" aria-hidden="true"><svg class="icon icon--md"><use href="#i-queue"></use></svg></span>
+            <span class="icon-button" aria-hidden="true"><svg class="icon icon--md"><use href="#i-devices"></use></svg></span>
+            <span class="icon-button" aria-hidden="true"><svg class="icon icon--md"><use href="#i-volume"></use></svg></span>
+            <span class="label">playbar · queue button filled = add</span>
+          </div>
+        </div>
+
+        <p class="states__note">
+          At 1120px and below the Now&nbsp;Playing pane is not drawn, so there is nowhere to drop a
+          track to queue it. Leaving that alone would make queuing a wide-window talent, which it is
+          not. Instead the playbar's queue button accepts the drop and appends: no position to choose,
+          so it is an <em>add</em>, and it is drawn as an add — the button fills, exactly as a playlist
+          row does in D7. Choosing a position in the queue stays a wide-window ability; queuing does
+          not.
+        </p>
+
+        <p class="states__note">
+          Two build notes, because the drawing cannot say them. The button is 28pt, which is fine to
+          click and poor to hit mid-drag, so as a drop target it grows an invisible 44pt hit area
+          rather than its glyph — nothing moves when the state turns on. And below 1000px the playbar
+          sheds its extras cluster, queue glyph included, so this only holds if the queue control
+          moves into the transport cluster at that width. That is a change to the playbar, not to the
+          drag; it is listed here so it does not get discovered at 999px.
+        </p>
+      </section>
+
+      <!-- ============ D10 ============ -->
+      <section class="section" aria-labelledby="d10">
+        <div class="section__head">
+          <h2 class="section__title" id="d10"><span class="states__no">D10</span>Escape, and letting go</h2>
+          <p class="label states__meta">0ms · nothing flies home</p>
+        </div>
+
+        <p class="states__note">
+          Escape returns everything to rest in 0ms: the source back to full ink, the ghost gone, the
+          marker gone. A 180ms flight home reads as the app doing something you did not ask for, and
+          during a drag any animation is lag. The same holds at the other end — once the pointer has
+          travelled 4pt the row is lifted with no transition, and every state the pointer touches
+          while the button is down changes in 0ms. The app's 110ms hover fade is for the interface at
+          rest; it does not run while something is being carried.
+        </p>
+      </section>
+
+      <!-- ============ Tokens ============ -->
+      <section class="section" aria-labelledby="tokens">
+        <div class="section__head">
+          <h2 class="section__title" id="tokens">What gets built</h2>
+          <p class="label states__meta">3 new · 1 extracted</p>
+        </div>
+
+        <dl class="drag-tokens">
+          <dt>--color-row-hover</dt>
+          <dd>rgba(242, 240, 234, 0.06) — extracted, not new: every row type now hovers by the same amount, so selection is judged against one value instead of three.</dd>
+          <dt>--color-row-selected</dt>
+          <dd>rgba(242, 240, 234, 0.16) — selection is an area. Three times the hover, and still light enough that muted ink and the accent bar read inside it.</dd>
+          <dt>--color-mark</dt>
+          <dd>#f2f0ea — the landing marker is ink, not signal. “It lands here” is a statement of fact, not a status, so it borrows the text colour and never the accent.</dd>
+          <dt>--opacity-lifted</dt>
+          <dd>0.55 — a row on its way somewhere else steps back far enough to read as set aside, and not so far that its title stops being legible while the ghost travels.</dd>
+        </dl>
+
+        <p class="states__note">
+          No new radius, no new spacing step, no new duration. The two rule weights are the ones the
+          app already has — 1pt hairline for edges, 2pt marker for the landing line — and the three
+          motion values keep their hands off a drag entirely.
+        </p>
+      </section>
+
+      <footer class="tracklist__foot">
+        <p>
+          Concept · a state board, not a screen. Rows are the app's own; the pointer is not drawn. See
+          also <a href="loading.html">loading states</a>, <a href="search-reference.html">the search
+          reference sheet</a> and <a href="credits.html">art credits</a>.
+        </p>
+      </footer>
+    </div>
+  </main>
+</div>
+
+<!-- ===================== Now playing panel ===================== -->
+<aside class="now-playing" aria-label="Now playing">
+  <div class="now-playing__head">
+    <h2>Now playing</h2>
+    <button class="icon-button" type="button" aria-label="More options for the current track">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-more"></use></svg>
+    </button>
+  </div>
+
+  <div class="now-playing__art">
+    <img data-now-art src="img/covers/slow-tide.jpg" alt="Slow Tide cover" />
+  </div>
+
+  <div class="now-playing__meta">
+    <div>
+      <a class="now-playing__title truncate" href="album.html" data-now-title>Slow Tide</a>
+      <a class="now-playing__artist truncate" href="artist.html" data-now-artist>Vela Moreno</a>
+    </div>
+    <button class="icon-button icon-button--lg" type="button" data-like data-like-group="now" aria-pressed="false" aria-label="Save to your library">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-heart"></use></svg>
+    </button>
+  </div>
+
+  <p class="now-playing__spec">
+    <span><b>320</b> kbps</span><span>Ogg Vorbis</span><span>44.1 kHz</span><span>Stereo</span>
+  </p>
+
+  <div class="panel-pane is-active" id="pane-queue" role="tabpanel">
+    <p class="queue-head">Next in queue</p>
+    <ul class="queue" data-queue-list data-playing-scope></ul>
+  </div>
+</aside>
+
+<!-- ===================== Mobile tab bar ===================== -->
+<nav class="tabbar" aria-label="Primary">
+  <a href="index.html" data-nav="home"><svg class="icon icon--lg" aria-hidden="true"><use href="#i-home"></use></svg>Home</a>
+  <a href="search.html" data-nav="search"><svg class="icon icon--lg" aria-hidden="true"><use href="#i-search"></use></svg>Search</a>
+  <a href="podcasts.html" data-nav="podcasts"><svg class="icon icon--lg" aria-hidden="true"><use href="#i-mic"></use></svg>Podcasts</a>
+</nav>
+
+<!-- ===================== Playbar ===================== -->
+<footer class="playbar">
+  <div class="playbar__now">
+    <img class="playbar__art" data-now-art src="img/covers/slow-tide.jpg" alt="Slow Tide cover" />
+    <div class="playbar__text">
+      <a class="playbar__title truncate" href="album.html" data-now-title>Slow Tide</a>
+      <a class="playbar__artist truncate" href="artist.html" data-now-artist>Vela Moreno</a>
+    </div>
+    <button class="icon-button" type="button" data-like data-like-group="now" aria-pressed="false" aria-label="Save to your library">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-heart"></use></svg>
+    </button>
+    <button class="icon-button" type="button" aria-label="Open miniplayer">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-screen"></use></svg>
+    </button>
+  </div>
+
+  <div class="playbar__center">
+    <div class="playbar__buttons">
+      <button class="icon-button" type="button" data-toggle aria-pressed="false" aria-label="Shuffle">
+        <svg class="icon icon--md" aria-hidden="true"><use href="#i-shuffle"></use></svg>
+      </button>
+      <button class="icon-button" type="button" data-prev aria-label="Previous track">
+        <svg class="icon icon--md" aria-hidden="true"><use href="#i-prev"></use></svg>
+      </button>
+      <button class="play-button playbar__play" type="button" data-transport aria-label="Play or pause">
+        <svg class="icon icon--md" aria-hidden="true"><use href="#i-pause" data-transport-icon></use></svg>
+      </button>
+      <button class="icon-button" type="button" data-next aria-label="Next track">
+        <svg class="icon icon--md" aria-hidden="true"><use href="#i-next"></use></svg>
+      </button>
+      <button class="icon-button" type="button" data-toggle aria-pressed="false" aria-label="Repeat">
+        <svg class="icon icon--md" aria-hidden="true"><use href="#i-repeat"></use></svg>
+      </button>
+    </div>
+
+    <div class="playbar__progress">
+      <span class="playbar__time" data-elapsed>1:14</span>
+      <div class="slider" data-seek role="slider" tabindex="0" aria-label="Seek" aria-valuemin="0" aria-valuenow="74" aria-valuemax="222">
+        <div class="slider__track"></div>
+        <div class="slider__fill" data-seek-fill></div>
+        <div class="slider__thumb"></div>
+      </div>
+      <span class="playbar__time playbar__time--end" data-remaining>-2:28</span>
+    </div>
+  </div>
+
+  <div class="playbar__extras">
+    <button class="icon-button" type="button" aria-label="Queue">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-queue"></use></svg>
+    </button>
+    <button class="icon-button" type="button" aria-label="Connect to a device">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-devices"></use></svg>
+    </button>
+    <button class="icon-button" type="button" aria-label="Mute">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-volume" data-volume-icon></use></svg>
+    </button>
+    <div class="slider playbar__volume" data-volume role="slider" tabindex="0" aria-label="Volume" aria-valuemin="0" aria-valuenow="72" aria-valuemax="100">
+      <div class="slider__track"></div>
+      <div class="slider__fill"></div>
+      <div class="slider__thumb"></div>
+    </div>
+    <button class="icon-button" type="button" aria-label="Full screen">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-expand"></use></svg>
+    </button>
+  </div>
+
+  <div class="playbar__minibar" aria-hidden="true">
+    <div class="progress-bar__fill" data-mini-fill></div>
+  </div>
+</footer>
+
+<script src="main.js"></script>
+</body>
+</html>

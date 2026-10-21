@@ -33,11 +33,30 @@ html:root {
   --color-text-inverse: #0b0b0c;
 
   /* ── Brand ────────────────────────────────────────────────── */
-  /* Green is a functional signal here — it means "sound is coming out" and
-     nothing else. It is not the brand colour, so it never paints a surface. */
-  --color-accent: #1ed760;
-  --color-accent-hover: #3ee57b;
+  /* Pistachio is a functional signal here — it means "sound is coming out" and
+     nothing else. It is not the brand colour, so it never paints a surface.
+     Pulled off mint (no cyan in the hue) and a step darker than pastel, so it
+     reads as a moss green ink; ~7:1 on --color-surface, and black text sits on
+     it when it is a tile. */
+  --color-accent: #7da566;
+  --color-accent-hover: #93bb7c;
   --color-verified: #9fc6e8;
+
+  /* ── Drag & drop ──────────────────────────────────────────── */
+  /* Three values for one gesture, and none of them is the accent: green still
+     means "sound is coming out" and nothing else. Selection and the landing
+     marker are both the interface's own bone ink, differing in kind — an area
+     for "this is picked", a rule for "it lands here" — so neither can be read
+     as the playing row's 2pt bar. Row hover is named here because selection
+     has to be judged against it, and every row type has to hover the same
+     amount for that judgement to hold. */
+  --color-row-hover: rgba(242, 240, 234, 0.06);
+  --color-row-selected: rgba(242, 240, 234, 0.16);
+  --color-mark: #f2f0ea;
+  /* 0.38 read as gone: at that opacity the row's own title drops to ~3:1 on
+     black, and the whole job of the lifted source is to stay legible while the
+     ghost travels. 0.55 steps back and still reads. */
+  --opacity-lifted: 0.55;
 
   /* ── Type ─────────────────────────────────────────────────── */
   --font-sans: "Archivo", system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
