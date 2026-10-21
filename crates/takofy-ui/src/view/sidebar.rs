@@ -294,6 +294,8 @@ pub fn albums_view(library: &Library) -> ListView<'_, SavedAlbum> {
 struct Ids {
     scope: &'static str,
     kind: &'static str,
+    /// Whether this kind is a list a drag can lift a row out of.
+    lifts: bool,
 }
 
 impl Ids {
@@ -334,8 +336,8 @@ struct Draw<'a> {
     tokens: &'a Tokens,
     /// Whether a row may be dragged out of the column.
     drag: bool,
-    /// Whether the playlists may be reordered now.
-    movable: bool,
+    /// Whether the column may lift a row now.
+    lift: bool,
 }
 
 /// What a press in a list asks the window to do.
@@ -378,7 +380,7 @@ fn list_rows<T: ListItem + Clone>(
         ListView::List(items) => {
             let mut pressed: Option<String> = None;
             let entries = items.to_vec();
-            let mut lift: Option<Carry> = None;
+            let mut lifted_carry: Option<Carry> = None;
             // The first drawn row and the index it holds, so the offer describes
             // the rows wherever the scroll put them.
             let mut origin: Option<(usize, Rect)> = None;
@@ -421,18 +423,14 @@ fn list_rows<T: ListItem + Clone>(
                                 }
                                 // Only the playlists are a column a drag can lift;
                                 // every other kind draws exactly as it always did.
-                                if drawn.lift
-                                    && draw.drag
-                                    && ids.scope == "library-list"
-                                    && draw.movable
-                                {
+                                if drawn.lift && ids.lifts && draw.lift {
                                     let ghost = queue_row::Lifted::new(
                                         item.name().to_owned(),
                                         kind.clone(),
                                         None,
                                         draw.art.look(item.cover(), draw.now),
                                     );
-                                    lift = Some(Carry {
+                                    lifted_carry = Some(Carry {
                                         source: Source::Playlist,
                                         rows: vec![index],
                                         entries: Vec::new(),
@@ -445,11 +443,11 @@ fn list_rows<T: ListItem + Clone>(
                         });
                 },
             );
-            if let Some(carry) = lift {
+            if let Some(carry) = lifted_carry {
                 carry::lift(ui.ctx(), carry);
             }
-            if ids.scope == "library-list"
-                && draw.drag
+            if ids.lifts
+                && draw.lift
                 && let Some((first, place)) = origin
             {
                 let pitch = ROW_H + space::PX;
@@ -627,7 +625,7 @@ fn rows(
         now,
         tokens,
         drag,
-        movable: library.rootlist_movable(),
+        lift: drag && library.rootlist_movable(),
     };
     let (action, open) = match library.sidebar_kind.chosen() {
         SidebarKind::Playlists => (
@@ -639,6 +637,7 @@ fn rows(
                 Ids {
                     scope: "library-list",
                     kind: "library-row",
+                    lifts: true,
                 },
                 Words {
                     loading: "Loading your playlists…",
@@ -657,6 +656,7 @@ fn rows(
                 Ids {
                     scope: "library-shows",
                     kind: "library-show",
+                    lifts: false,
                 },
                 Words {
                     loading: "Loading your shows…",
@@ -675,6 +675,7 @@ fn rows(
                 Ids {
                     scope: "library-artists",
                     kind: "library-artist",
+                    lifts: false,
                 },
                 Words {
                     loading: "Loading your artists…",
@@ -693,6 +694,7 @@ fn rows(
                 Ids {
                     scope: "library-albums",
                     kind: "library-album",
+                    lifts: false,
                 },
                 Words {
                     loading: "Loading your albums…",
@@ -1095,10 +1097,12 @@ mod tests {
     const PLAYLIST_IDS: Ids = Ids {
         scope: "library-list",
         kind: "library-row",
+        lifts: true,
     };
     const SHOW_IDS: Ids = Ids {
         scope: "library-shows",
         kind: "library-show",
+        lifts: false,
     };
 
     fn followed_artist(uri: &str, name: &str) -> FollowedArtist {
