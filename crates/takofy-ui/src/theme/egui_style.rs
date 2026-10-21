@@ -91,10 +91,12 @@ fn visuals(p: &Palette) -> Visuals {
     v.widgets.open.bg_fill = p.surface_hover;
     v.widgets.open.bg_stroke = Stroke::new(stroke::HAIRLINE, p.border_strong);
 
-    // A selected row is a raised fill with a bone hairline. Green means sound is
-    // coming out and nothing else.
-    v.selection.bg_fill = p.surface_hover;
-    v.selection.stroke = Stroke::new(stroke::HAIRLINE, p.text);
+    // Text selection is the only thing egui paints from this field, and the
+    // reference gives it the accent: `::selection { background: accent; color:
+    // text-inverse }`. Green on a row would say sound is coming out, so rows are
+    // never selected through egui — their fill is painted from the tokens.
+    v.selection.bg_fill = p.accent;
+    v.selection.stroke = Stroke::new(stroke::HAIRLINE, p.text_inverse);
 
     v
 }
@@ -137,6 +139,24 @@ mod tests {
         let style = style(&Tokens::DARK);
         assert!(style.visuals.dark_mode);
         assert_eq!(style.animation_time, motion::BASE);
+    }
+
+    /// A selection has to be seen: the reference draws it as the accent under
+    /// inverse text, and the text field's own fill is a grey one step from the
+    /// row hover that used to stand here.
+    #[test]
+    fn text_selection_is_the_accent_under_inverse_text() {
+        let tokens = Tokens::DARK;
+        let style = style(&tokens);
+        assert_eq!(style.visuals.selection.bg_fill, tokens.palette.accent);
+        assert_eq!(
+            style.visuals.selection.stroke.color,
+            tokens.palette.text_inverse
+        );
+        assert_ne!(
+            style.visuals.selection.bg_fill, tokens.palette.surface_hover,
+            "a selection that matches the field's own hover cannot be seen"
+        );
     }
 
     #[test]

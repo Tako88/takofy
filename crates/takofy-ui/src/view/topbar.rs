@@ -433,8 +433,11 @@ fn search(
 
     let output = egui::TextEdit::singleline(&mut search.text)
         .id(id)
-        .frame(egui::Frame::NONE)
-        .margin(inset)
+        // The inset has to ride on the frame: `TextEdit::margin` is applied only
+        // when no frame is given, so a frameless edit would ignore it and paint
+        // its text over the magnifier. A `Frame::NONE` with a margin draws
+        // nothing and still insets.
+        .frame(egui::Frame::NONE.inner_margin(inset))
         .min_size(rect.size())
         .desired_width(rect.width())
         // egui's text-edit style is top-aligned; the field's 2rem box wants the
@@ -607,5 +610,75 @@ mod tests {
         });
         output.textures_delta.clear();
         assert_eq!(role, Some(egui::Role::SearchInput));
+    }
+
+    /// The magnifier sits at the field's left edge, so the text has to start
+    /// after it. `TextEdit::margin` is ignored when a frame is given, which is
+    /// how the text came to be painted over the glyph — this reads the painted
+    /// galley rather than the numbers that build it.
+    #[test]
+    fn the_text_starts_after_the_magnifier() {
+        let tokens = Tokens::DARK;
+        let ctx = egui::Context::default();
+        ctx.set_fonts(fonts::definitions());
+        ctx.set_global_style(crate::theme::style(&tokens));
+
+        let mut library = Library::default();
+        library.search.text = "harbour".to_owned();
+        let content = Rect::from_min_size(Pos2::ZERO, Vec2::new(1400.0, 900.0));
+        let regions = layout::regions_for(content.width());
+        let shell = layout::shell_for(&regions);
+        let bar = layout::grid_for(content, &shell).topbar;
+        let input = egui::RawInput {
+            screen_rect: Some(content),
+            ..Default::default()
+        };
+        // Two passes: the first sizes the edit, the second paints the text.
+        let mut field = None;
+        let mut first = ctx.run_ui(input.clone(), |ui| {
+            let topbar = show(ui, &mut library, regions.sidebar, bar, &tokens);
+            field = topbar.search_field.map(|drawn| drawn.rect);
+        });
+        first.textures_delta.clear();
+        let mut output = ctx.run_ui(input, |ui| {
+            let topbar = show(ui, &mut library, regions.sidebar, bar, &tokens);
+            field = topbar.search_field.map(|drawn| drawn.rect);
+        });
+        output.textures_delta.clear();
+        let field = field.expect("the field is drawn");
+
+        fn text_at(shapes: &[egui::epaint::ClippedShape], wanted: &str) -> Option<f32> {
+            fn walk(shape: &egui::Shape, wanted: &str, found: &mut Option<f32>) {
+                match shape {
+                    egui::Shape::Text(text) => {
+                        if text.galley.job.text == wanted {
+                            *found = Some(text.pos.x);
+                        }
+                    }
+                    egui::Shape::Vec(shapes) => {
+                        for shape in shapes {
+                            walk(shape, wanted, found);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let mut found = None;
+            for clipped in shapes {
+                walk(&clipped.shape, wanted, &mut found);
+            }
+            found
+        }
+
+        let x = text_at(&output.shapes, "harbour").expect("the typed text is painted");
+        let after_glyph = field.left() + space::S3 + Size::MD.side + space::S2;
+        assert!(
+            x >= after_glyph - 0.5,
+            "the text starts at {x}, inside the magnifier (glyph ends at {after_glyph})"
+        );
+        assert!(
+            x <= after_glyph + space::S5,
+            "the text starts at {x}, far past the glyph"
+        );
     }
 }
