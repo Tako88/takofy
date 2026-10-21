@@ -471,6 +471,16 @@ impl std::fmt::Debug for Revision {
     }
 }
 
+/// One `MOV` operation: `length` rows lifted out of `from` and inserted before
+/// whatever the list held at `to` before the move, so `to` is not a row index
+/// after the lift.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Move {
+    pub from: usize,
+    pub length: usize,
+    pub to: usize,
+}
+
 /// What a playlist page may change, and the version it was read at.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlaylistAccess {
@@ -481,7 +491,7 @@ pub struct PlaylistAccess {
 #[cfg(test)]
 mod tests {
     use super::{
-        AddedAt, CoverImage, CoverUrl, Episode, PlaylistAccess, PlaylistEntry, PublishedAt,
+        AddedAt, CoverImage, CoverUrl, Episode, Move, PlaylistAccess, PlaylistEntry, PublishedAt,
         Revision, TrackEntry, TrackLyrics,
     };
 
@@ -773,5 +783,17 @@ mod tests {
     fn cover_image_rejects_a_mismatched_buffer() {
         assert_eq!(CoverImage::new(2, 2, vec![0; 15]), None);
         assert_eq!(CoverImage::new(2, 2, vec![0; 17]), None);
+    }
+
+    #[test]
+    fn a_move_is_a_value_the_whole_write_can_share() {
+        let mv = Move {
+            from: 1,
+            length: 3,
+            to: 6,
+        };
+        let copy = mv;
+        assert_eq!(copy, mv);
+        assert_ne!(mv, Move { length: 1, ..mv });
     }
 }
