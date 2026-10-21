@@ -2,24 +2,26 @@
 //!
 //! The ghost rides the tooltip layer, above every panel, so a block dragged out of
 //! a list is not cut off by that list's clip rect. An accepted target draws it
-//! raised, with a shadow, and drops the marker where it will land; a refused one
-//! draws it flat and draws no marker at all.
+//! raised, with a shadow, and drops the marker where it will land; an add draws
+//! it raised with no marker; a refused one draws it flat and draws no marker at
+//! all.
 
 use egui::{Id, LayerId, Order, Pos2, Rect, Stroke, StrokeKind, Ui, UiBuilder, vec2};
 
 use crate::format::{format_position, total_duration_ms};
-use crate::landing::Landing;
+use crate::landing::Target;
 use crate::theme::{Tokens, radius, space, stroke};
 
 use super::carry::{Carry, Ghost};
 use super::rows::Ghosting;
 
-/// One frame of the ghost: what travels, where it lands, and where the pointer is.
+/// One frame of the ghost: what travels, what it lands on, and where the pointer
+/// is.
 pub struct Paint<'a> {
     pub carry: &'a Carry,
-    /// The landing this frame resolved, or `None` when the pointer is over
+    /// The target this frame resolved, or `None` when the pointer is over
     /// nothing that takes the block.
-    pub landing: Option<Landing>,
+    pub target: Option<Target>,
     pub pointer: Pos2,
     pub tokens: &'a Tokens,
 }
@@ -28,11 +30,11 @@ pub struct Paint<'a> {
 pub fn paint(ui: &mut Ui, paint: Paint<'_>) {
     let Paint {
         carry,
-        landing,
+        target,
         pointer,
         tokens,
     } = paint;
-    let flat = landing.is_none();
+    let flat = target.is_none();
     let rect = Rect::from_min_size(
         pointer + vec2(space::S3, space::S4),
         vec2((carry.size.x - space::S3).max(0.0), carry.size.y),
@@ -79,7 +81,7 @@ pub fn paint(ui: &mut Ui, paint: Paint<'_>) {
 
     // Last, so neither a row nor the ghost's own fill can cover the rule that
     // says where the block will land.
-    if let Some(landing) = landing {
+    if let Some(Target::At(landing)) = target {
         ghost
             .painter()
             .rect_filled(landing.marker, radius::NONE, tokens.palette.mark);
