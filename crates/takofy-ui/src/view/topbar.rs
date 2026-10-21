@@ -1,17 +1,25 @@
 //! The topbar: the drawer toggle, history, the search field and the trail.
 //!
-//! The trail, the history pair and the drawer toggle do something: they say
-//! where you are and how to leave. The search field waits for a view that does
-//! not exist yet, so it is drawn disabled and does not pretend.
+//! The trail, the history pair and the drawer toggle say where you are and how
+//! to leave. The search field is a real text edit: it owns the query, the clear
+//! control and the keyboard path its drop-down reads (R1–R5, R17, R18). Its
+//! states are border-only, because the menu hangs off the field's own width and
+//! a field that resizes while you type moves the thing you are aiming at.
 
-use egui::{FontId, Pos2, Rect, Stroke, StrokeKind, Ui, Vec2};
+use egui::{
+    Align, FontId, Key, Layout, Modifiers, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Ui,
+    UiBuilder, Vec2,
+};
 
 use crate::availability::Control;
 use crate::icon::{self, Icon};
 use crate::layout::{self, Sidebar};
 use crate::library::Library;
+use crate::search::{Act, KeyInput, MenuView};
 use crate::theme::icon::Size;
-use crate::theme::{MonoWeight, Tokens, extent, fonts, radius, space, stroke, text, tracking};
+use crate::theme::{
+    MonoWeight, Tokens, Weight, extent, fonts, radius, space, stroke, text, tracking,
+};
 
 use super::controls;
 use super::shell::{row_centred, rule};
@@ -26,6 +34,26 @@ pub struct Topbar {
     /// The drawer toggle's response, so the shell can read a click from it and
     /// hand focus back to it when the drawer closes.
     pub toggle: Option<egui::Response>,
+    /// The search field as this frame drew it, or `None` when the layout gave it
+    /// no room. The shell anchors the menu to `rect`, keeps the menu open on
+    /// `has_focus`, and applies `act` when no other command took the frame.
+    pub search_field: Option<Field>,
+}
+
+/// The search field as one frame drew it.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Field {
+    /// The painted box: what the menu hangs from and what counts as the field
+    /// for the pointer.
+    pub rect: Rect,
+    /// The text edit's widget id. The shell surrenders the field's focus through
+    /// it when it applies `OpenResults`, because only an applied action takes
+    /// the keyboard with the menu it closes.
+    pub id: egui::Id,
+    /// Whether the text edit has the keyboard after this frame.
+    pub has_focus: bool,
+    /// What this frame's keys asked the shell to do.
+    pub act: Act,
 }
 
 /// A move the topbar can ask the shell for.
@@ -129,11 +157,13 @@ pub fn show(
         }
     });
 
-    search(ui, places.search, library.page().is_none(), tokens);
-
+    // The trail draws before the field, because the crumbs borrow the library
+    // the field has to be edited through: once `trail` returns, the borrow is
+    // done and the search state is free.
     if trail(ui, &crumbs, places.trail, tokens) {
         nav = Some(Nav::Home);
     }
+    let search_field = search(ui, places.search, &mut library.search, tokens);
 
     rule(
         ui,
@@ -144,7 +174,11 @@ pub fn show(
         tokens.palette.border,
     );
 
-    Topbar { nav, toggle }
+    Topbar {
+        nav,
+        toggle,
+        search_field,
+    }
 }
 
 /// The natural width of the trail's text, which the solver needs before it can
@@ -251,23 +285,52 @@ fn trail(ui: &mut Ui, crumbs: &[crate::trail::Crumb<'_>], rect: Rect, tokens: &T
     clicked
 }
 
-/// The search field. It waits, so it never takes focus and never becomes a text
-/// editor that would fight the drawer for Escape.
-fn search(ui: &mut Ui, rect: Rect, root: bool, tokens: &Tokens) {
-    if rect.width() <= 0.0 {
-        return;
+/// The placeholder, in every topbar (R17).
+const PLACEHOLDER: &str = "Track names, artists, albums";
+
+/// The text edit's own key filter: egui's defaults, plus Escape.
+///
+/// egui's memory surrenders focus on Escape before the topbar sees it, so
+/// without this the field would blur before R3's first step could act. The two
+/// arrow flags are the text edit's defaults and must stay: they keep arrow
+/// presses out of spatial focus movement.
+///
+/// It is one constant because focus is taken two ways — the text edit's own
+/// `show`, and the clear control's hand-back — and the filter stored with the
+/// focused widget must be the same in both.
+const FIELD_FILTER: egui::EventFilter = egui::EventFilter {
+    tab: false,
+    horizontal_arrows: true,
+    vertical_arrows: true,
+    escape: true,
+};
+
+/// The search field: a real text edit inside the painted box.
+///
+/// The keys the field owns are taken before `TextEdit::show`, because a
+/// singleline edit surrenders focus on Enter and would eat the key that plays a
+/// marked row. Escape is taken only when the search state has something to undo,
+/// so a drawer under an empty, closed search keeps its own Escape.
+///
+/// The right inset is reserved whether or not the clear control is drawn, so the
+/// text column — and therefore the field's width — never changes (R4/R5).
+fn search(
+    ui: &mut Ui,
+    column: Rect,
+    search: &mut crate::search::Search,
+    tokens: &Tokens,
+) -> Option<Field> {
+    if column.width() <= 0.0 {
+        return None;
     }
     // The column is the topbar's full height; the field inside it is the
     // reference's 2rem, centred, so it does not read as a filled band.
-    let rect = Rect::from_center_size(rect.center(), Vec2::new(rect.width(), extent::SEARCH_H));
+    let rect = Rect::from_center_size(column.center(), Vec2::new(column.width(), extent::SEARCH_H));
 
-    ui.painter().rect(
-        rect,
-        radius::SM,
-        tokens.palette.surface_raised,
-        Stroke::new(stroke::HAIRLINE, tokens.palette.border),
-        StrokeKind::Inside,
-    );
+    // The fill first, the border last: TextEdit paints its own text in between,
+    // and the border is the only thing that changes with focus (R4).
+    ui.painter()
+        .rect_filled(rect, radius::SM, tokens.palette.surface_raised);
 
     let glyph = Rect::from_min_size(
         Pos2::new(
@@ -284,34 +347,265 @@ fn search(ui: &mut Ui, rect: Rect, root: bool, tokens: &Tokens) {
         tokens.palette.text_subtle,
     );
 
-    let placeholder = recipe::spaced(
-        ui,
-        if root {
-            "What do you want to play?"
-        } else {
-            "Search"
-        },
-        FontId::new(text::SM, fonts::sans(crate::theme::Weight::Regular)),
-        tokens.palette.text_subtle,
-        0.0,
+    // The clear control's box: the field's height, the field's right padding and
+    // the 12px glyph. Its width is reserved even when the glyph is not drawn.
+    let clear = Rect::from_min_max(
+        Pos2::new(
+            rect.right() - space::S3 - Size::SM.side - space::S1,
+            rect.top(),
+        ),
+        Pos2::new(rect.right() - space::S1, rect.bottom()),
     );
-    let at = Pos2::new(
-        glyph.right() + space::S2,
-        rect.center().y - placeholder.size().y / 2.0,
-    );
-    let room = (rect.right() - space::S3 - at.x).max(0.0);
-    if room >= placeholder.size().x {
-        ui.painter()
-            .galley(at, placeholder, tokens.palette.text_subtle);
+    // The text edit is the whole painted box and insets its text instead of
+    // being a narrower widget: a click on the magnifier, either gap or the
+    // padding is a click on the field (R2), not "elsewhere" that blurs it,
+    // closes the menu and never reaches `clicked_field`. The clear control is
+    // interacted after this, in the same layer, so it still wins on its own rect.
+    let inset = egui::Margin {
+        left: (glyph.right() + space::S2 - rect.left()).round() as i8,
+        right: (rect.right() - (clear.left() - space::S2)).round() as i8,
+        top: 0,
+        bottom: 0,
+    };
+
+    // The field's id is the control's, so the drawer's focus hand-back and the
+    // shell's reads name the same widget the text edit stores its state under.
+    let id = ui.scope_id().with((Control::SearchField, ()));
+    let focused_before = ui.memory(|memory| memory.has_focus(id));
+    // Read every key through the same unmodified match it is consumed with: a
+    // read that ignored the modifiers while the consume matched them let
+    // Cmd+Down mark a row and move the caret at once. Arrow repeats are fine;
+    // Enter and Escape act once per press, so a held key cannot do two things.
+    let (down, up, enter, enter_once, escape) = if focused_before {
+        ui.input(|input| {
+            (
+                pressed(input, Key::ArrowDown),
+                pressed(input, Key::ArrowUp),
+                pressed(input, Key::Enter),
+                pressed_once(input, Key::Enter),
+                pressed_once(input, Key::Escape),
+            )
+        })
+    } else {
+        (false, false, false, false, false)
+    };
+    if focused_before {
+        ui.input_mut(|input| {
+            // Read first, consume second: `consume_key` removes the event, so a
+            // read after it would see nothing.
+            if down {
+                input.consume_key(Modifiers::NONE, Key::ArrowDown);
+            }
+            if up {
+                input.consume_key(Modifiers::NONE, Key::ArrowUp);
+            }
+            // Every unmodified Enter is the field's while it has the keyboard: a
+            // held one would otherwise reach the text edit, which surrenders
+            // focus on any Enter. Only the first press acts.
+            if enter {
+                input.consume_key(Modifiers::NONE, Key::Enter);
+            }
+            if escape && search.escapes() {
+                input.consume_key(Modifiers::NONE, Key::Escape);
+            }
+        });
     }
 
-    controls::slot(
-        ui,
-        Control::SearchField,
-        egui::Role::SearchInput,
-        rect,
-        "Search",
-        tokens,
-        true,
+    let mut child = ui.new_child(
+        UiBuilder::new()
+            .id_salt("search-field-text")
+            .max_rect(rect)
+            .layout(Layout::left_to_right(Align::Center)),
     );
+    child.set_clip_rect(rect);
+    // The hint is the reference's subtle tier; egui's own hint colour is the
+    // muted one, a step too bright for a placeholder. The caret is the text
+    // token rather than egui's default blue, because the field's only states are
+    // the palette's.
+    child.visuals_mut().weak_text_color = Some(tokens.palette.text_subtle);
+    child.visuals_mut().text_cursor.stroke = Stroke::new(stroke::HAIRLINE, tokens.palette.text);
+    // While a row carries the rule, the field must not also blink a caret: the
+    // rule is what says where Enter lands (Q2). A zero-width stroke is empty, so
+    // epaint's line tessellator draws nothing for it.
+    if search.mark().is_some() {
+        child.visuals_mut().text_cursor.stroke.width = 0.0;
+    }
+
+    let output = egui::TextEdit::singleline(&mut search.text)
+        .id(id)
+        .frame(egui::Frame::NONE)
+        .margin(inset)
+        .min_size(rect.size())
+        .desired_width(rect.width())
+        // egui's text-edit style is top-aligned; the field's 2rem box wants the
+        // line on its centre, the way the reference's flex box centres it.
+        .align(egui::Align2::LEFT_CENTER)
+        .font(FontId::new(text::SM, fonts::sans(Weight::Regular)))
+        .text_color(tokens.palette.text)
+        .event_filter(FIELD_FILTER)
+        .hint_text(RichText::new(PLACEHOLDER))
+        .show(&mut child);
+    let response = output.response;
+    let typed = response.changed();
+    let clicked_field = response.clicked();
+    let focused = response.has_focus();
+    // The text edit's own `WidgetInfo` reports the generic text-input role.
+    // Refining the node directly — rather than through a second `widget_info` —
+    // sets the search role and the name without emitting a duplicate
+    // value-changed event for every keystroke (Q3).
+    ui.ctx().accesskit_node_builder(id, |node| {
+        node.set_role(egui::Role::SearchInput);
+        node.set_label("Search");
+    });
+
+    if !search.text.is_empty() {
+        let hit = ui.interact(clear, id.with("clear"), Sense::click());
+        if hit.clicked() {
+            search.text.clear();
+            // Only the text edit reports `changed`; a programmatic clear has to
+            // tell the state the key moved itself, and close the menu the query
+            // was keeping open (R3 step two, without the keyboard).
+            search.text_changed();
+            search.close();
+            ui.memory_mut(|memory| {
+                memory.request_focus(id);
+                // `request_focus` stores a default `EventFilter`, so without this
+                // the first Escape or arrow after clearing would behave as if the
+                // field were a plain widget.
+                memory.set_focus_lock_filter(id, FIELD_FILTER);
+            });
+        }
+        if hit.hovered() {
+            ui.painter()
+                .rect_filled(clear, radius::XS, tokens.palette.surface_hover);
+        }
+        let ink = if hit.hovered() {
+            tokens.palette.text
+        } else {
+            tokens.palette.text_subtle
+        };
+        let mark = Rect::from_center_size(clear.center(), Vec2::splat(Size::SM.side));
+        icon::paint(ui.painter(), Icon::Close, mark, Size::SM, ink);
+        hit.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Clear search"));
+    }
+
+    // Focus is read after the text edit so the border is this frame's truth. It
+    // is border-only: no glow, no icon swap, no width change (R4).
+    let border = if focused {
+        tokens.palette.text
+    } else {
+        tokens.palette.border
+    };
+    ui.painter().rect_stroke(
+        rect,
+        radius::SM,
+        Stroke::new(stroke::HAIRLINE, border),
+        StrokeKind::Inside,
+    );
+
+    let (shown, floor) = match search.menu_view() {
+        MenuView::Rows { tracks, floor, .. } => (tracks.len(), floor),
+        // There is no row to mark when the menu says nothing true (R14).
+        MenuView::Empty | MenuView::Failed(_) | MenuView::Nothing => (0, false),
+    };
+    let act = search.step(
+        KeyInput {
+            down,
+            up,
+            enter: enter_once,
+            escape,
+            typed,
+            clicked_field,
+            focused,
+        },
+        shown,
+        floor,
+    );
+    // `OpenResults` is applied by the shell, and only when no other command took
+    // the frame; the shell is the one that surrenders the field's focus, so a
+    // dropped action leaves the menu open with the keyboard still in the field.
+
+    Some(Field {
+        rect,
+        id,
+        // The clear control may have asked for the field back after `show`, so
+        // the answer is the memory's, not the response's.
+        has_focus: ui.memory(|memory| memory.has_focus(id)),
+        act,
+    })
+}
+
+/// Any press of `key` with no modifiers, auto-repeat included.
+///
+/// The field reads and consumes with the same rule: `consume_key` matches a key
+/// whose modifiers match logically, which would eat an Alt+Down the read never
+/// saw.
+fn pressed(input: &egui::InputState, key: Key) -> bool {
+    input.events.iter().any(|event| {
+        matches!(
+            event,
+            egui::Event::Key {
+                key: pressed,
+                pressed: true,
+                modifiers,
+                ..
+            } if *pressed == key && !modifiers.any()
+        )
+    })
+}
+
+/// A first press of `key` with no modifiers, never an auto-repeat.
+///
+/// A held Enter must not replay the marked row, and a held Escape must not step
+/// through both of R3's steps: one press, one action.
+fn pressed_once(input: &egui::InputState, key: Key) -> bool {
+    input.events.iter().any(|event| {
+        matches!(
+            event,
+            egui::Event::Key {
+                key: pressed,
+                pressed: true,
+                repeat: false,
+                modifiers,
+                ..
+            } if *pressed == key && !modifiers.any()
+        )
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Q3: a later `widget_info` on the text edit's own id refines the role
+    /// egui's builder gave it. Read inside the pass, because that is when an
+    /// AccessKit node exists.
+    #[test]
+    fn the_field_announces_itself_as_a_search_input() {
+        let tokens = Tokens::DARK;
+        let ctx = egui::Context::default();
+        ctx.set_fonts(fonts::definitions());
+        ctx.set_global_style(crate::theme::style(&tokens));
+        ctx.enable_accesskit();
+
+        let mut library = Library::default();
+        let content = Rect::from_min_size(Pos2::ZERO, Vec2::new(1400.0, 900.0));
+        let regions = layout::regions_for(content.width());
+        let shell = layout::shell_for(&regions);
+        let bar = layout::grid_for(content, &shell).topbar;
+
+        let mut role = None;
+        let input = egui::RawInput {
+            screen_rect: Some(content),
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| {
+            let topbar = show(ui, &mut library, regions.sidebar, bar, &tokens);
+            assert!(topbar.search_field.is_some(), "the field is drawn");
+            let id = ui.scope_id().with((Control::SearchField, ()));
+            role = ui.ctx().accesskit_node_builder(id, |node| node.role());
+        });
+        output.textures_delta.clear();
+        assert_eq!(role, Some(egui::Role::SearchInput));
+    }
 }

@@ -181,6 +181,23 @@ impl Search {
         }
     }
 
+    /// The whole answer the menu's query holds, or `None` when the menu has no
+    /// answer for the text as it stands.
+    ///
+    /// [`Self::menu_view`] carries only the five rows the menu draws; the queue
+    /// is the whole answer the wire returned (R16), so the shell asks for it
+    /// here rather than taking the menu's first five.
+    pub fn answer(&self) -> Option<&[TrackEntry]> {
+        let key = collapse(&self.text)?;
+        if self.menu.key.as_deref() != Some(key.as_str()) {
+            return None;
+        }
+        match &self.menu.load {
+            Load::Ready(tracks) => Some(tracks),
+            Load::Idle | Load::Loading | Load::Failed(_) => None,
+        }
+    }
+
     /// The results page's load, when it is about `query`.
     ///
     /// `None` means the page is not holding this query's answer, so the view
