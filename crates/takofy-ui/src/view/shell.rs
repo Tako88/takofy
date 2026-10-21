@@ -6898,6 +6898,51 @@ mod tests {
     }
 
     #[test]
+    fn a_right_click_on_a_playlist_row_opens_the_menu_the_shell_draws() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1"]);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let at = row_line(&frame, view_rect(&window), "p1");
+
+        // The row posts a request; the shell opens the menu on it in the same
+        // frame. The area's first frame is its sizing pass, and its second is
+        // the opening frame, which ignores keys.
+        for event in crate::view::test_support::secondary_click_events(at) {
+            let _ = window.frame(&mut transport, &mut queue, vec![event]);
+        }
+        assert!(window.menu.is_open(), "the right-click opened no menu");
+        settle_menu(&mut window, &mut transport, &mut queue);
+
+        // The pointer opened it, so nothing is lit until the keyboard asks.
+        assert_eq!(window.menu.lit(), None);
+        let _ = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![key(egui::Key::ArrowDown, true)],
+        );
+        let _ = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![key(egui::Key::ArrowDown, false)],
+        );
+        assert_eq!(window.menu.lit(), Some(0));
+
+        assert_eq!(
+            press(&mut window, &mut transport, &mut queue, egui::Key::Enter),
+            None,
+            "adding to the queue asks for no command"
+        );
+        assert!(!window.menu.is_open());
+        let queued: Vec<&str> = queue
+            .upcoming()
+            .map(|(_, entry)| entry.uri.as_str())
+            .collect();
+        assert_eq!(queued, vec!["list:p1"], "the row the menu was opened on");
+    }
+
+    #[test]
     fn a_chosen_add_to_queue_appends_and_closes() {
         let mut transport = Transport::default();
         let mut queue = Queue::default();
