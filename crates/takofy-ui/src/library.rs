@@ -230,6 +230,8 @@ impl Library {
                 playlist,
                 tracks,
                 cover,
+                // The page adopts the access when it starts writing.
+                access: _,
             } => {
                 // The cover upgrade is keyed by the update's own playlist, never
                 // the selected one, so a reply for A cannot land on B.
@@ -358,7 +360,10 @@ impl Library {
             | Update::SignInFailed(_)
             | Update::Transport(_)
             | Update::Cover { .. }
-            | Update::CoverFailed { .. } => {}
+            | Update::CoverFailed { .. }
+            // A move's own state belongs to the page, which adopts it next.
+            | Update::TrackMoved { .. }
+            | Update::MoveFailed { .. } => {}
         }
     }
 
@@ -1091,6 +1096,7 @@ mod tests {
             playlist: "a".to_owned(),
             tracks: vec![track("t")],
             cover: None,
+            access: None,
         });
         library.apply(&Update::Playlists(vec![playlist("a", "A")]));
 
@@ -1170,6 +1176,7 @@ mod tests {
             playlist: "a".to_owned(),
             tracks: vec![track("t")],
             cover: None,
+            access: None,
         });
 
         assert_eq!(
@@ -2466,6 +2473,7 @@ mod tests {
             playlist: "a".to_owned(),
             tracks: vec![track("t")],
             cover: None,
+            access: None,
         });
         library.open(album("album"));
 
@@ -2533,6 +2541,7 @@ mod tests {
             playlist: "a".to_owned(),
             tracks: vec![track("t")],
             cover: None,
+            access: None,
         });
         library.to_playlists();
 
@@ -2556,6 +2565,7 @@ mod tests {
             playlist: "a".to_owned(),
             tracks: vec![track("t")],
             cover: None,
+            access: None,
         });
 
         assert_eq!(library.page(), Some(&album("album")));
@@ -2606,6 +2616,7 @@ mod tests {
             playlist: "a".to_owned(),
             tracks: vec![track("t")],
             cover: None,
+            access: None,
         });
         library.open(album("album"));
         library.open(artist("artist"));
@@ -2635,6 +2646,7 @@ mod tests {
             playlist: "a".to_owned(),
             tracks: vec![track("t")],
             cover: None,
+            access: None,
         });
 
         library.apply(&Update::Playlists(vec![playlist("b", "B")]));
@@ -2696,6 +2708,7 @@ mod tests {
             playlist: "a".to_owned(),
             tracks: vec![track("t")],
             cover: None,
+            access: None,
         });
         library.to_playlists();
         assert_eq!(library.wanted, None);
@@ -2755,6 +2768,7 @@ mod tests {
             playlist: "a".to_owned(),
             tracks: tracks.clone(),
             cover: None,
+            access: None,
         });
 
         assert_eq!(library.tracks, Load::Ready(tracks_for("a", tracks)));
@@ -2768,6 +2782,7 @@ mod tests {
             playlist: "a".to_owned(),
             tracks: vec![track("t")],
             cover: None,
+            access: None,
         });
 
         assert_eq!(
@@ -2785,6 +2800,7 @@ mod tests {
             playlist: "a".to_owned(),
             tracks: vec![track("t")],
             cover: None,
+            access: None,
         });
 
         assert_eq!(library.tracks, Load::Loading);
@@ -2823,6 +2839,7 @@ mod tests {
             playlist: "a".to_owned(),
             tracks: vec![track("t")],
             cover: None,
+            access: None,
         });
         assert_eq!(library.tracks, Load::Idle);
     }
@@ -2845,6 +2862,7 @@ mod tests {
             playlist: "a".to_owned(),
             tracks: vec![track("t")],
             cover: None,
+            access: None,
         });
 
         library.apply(&Update::Playlists(vec![
@@ -2868,6 +2886,7 @@ mod tests {
             playlist: "a".to_owned(),
             tracks: vec![track("t")],
             cover: None,
+            access: None,
         });
 
         library.apply(&Update::Playlists(vec![playlist("b", "B")]));
@@ -2884,6 +2903,7 @@ mod tests {
             playlist: "a".to_owned(),
             tracks: vec![track("t")],
             cover: None,
+            access: None,
         });
 
         library.to_playlists();
@@ -2906,6 +2926,7 @@ mod tests {
             playlist: "a".to_owned(),
             tracks: vec![track("t0")],
             cover: None,
+            access: None,
         });
         library.to_playlists();
         let settled = Load::Ready(tracks_for("a", vec![track("t0")]));
@@ -2914,6 +2935,7 @@ mod tests {
             playlist: "a".to_owned(),
             tracks: vec![track("t1")],
             cover: None,
+            access: None,
         });
         assert_eq!(library.tracks, settled, "the late tracks are discarded");
 
@@ -2970,6 +2992,7 @@ mod tests {
             playlist: "a".to_owned(),
             tracks: vec![track("t")],
             cover: Some(context.clone()),
+            access: None,
         });
 
         assert_eq!(
@@ -2991,6 +3014,7 @@ mod tests {
             playlist: "a".to_owned(),
             tracks: vec![track("t")],
             cover: None,
+            access: None,
         });
 
         assert_eq!(
@@ -3014,6 +3038,7 @@ mod tests {
             playlist: "a".to_owned(),
             tracks: vec![track("t")],
             cover: Some(a_context.clone()),
+            access: None,
         });
 
         assert_eq!(
@@ -3035,6 +3060,7 @@ mod tests {
             playlist: "a".to_owned(),
             tracks: Vec::new(),
             cover: Some(context.clone()),
+            access: None,
         });
         library.apply(&Update::Playlists(vec![playlist("a", "A")]));
 
@@ -3053,6 +3079,7 @@ mod tests {
             playlist: "a".to_owned(),
             tracks: Vec::new(),
             cover: Some(context.clone()),
+            access: None,
         });
         library.apply(&Update::Playlists(vec![playlist("a", "A")]));
 
@@ -3071,6 +3098,7 @@ mod tests {
             playlist: "a".to_owned(),
             tracks: Vec::new(),
             cover: Some(context),
+            access: None,
         });
         library.apply(&Update::Playlists(vec![playlist("b", "B")]));
 
@@ -3648,6 +3676,7 @@ mod tests {
             playlist: "a".to_owned(),
             tracks: Vec::new(),
             cover: None,
+            access: None,
         });
         assert_eq!(library.tracks, Load::Ready(tracks_for("a", Vec::new())));
         let settled = !matches!(library.tracks, Load::Loading | Load::Idle);

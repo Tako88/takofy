@@ -1112,6 +1112,7 @@ mod tests {
             playlist: PLAYLIST.to_owned(),
             tracks: Vec::new(),
             cover: None,
+            access: None,
         });
     }
 
@@ -3743,6 +3744,7 @@ mod tests {
                 })
                 .collect(),
             cover: None,
+            access: None,
         });
     }
 

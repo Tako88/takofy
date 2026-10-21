@@ -4,8 +4,8 @@
 //! token or an auth error, so the compiler keeps secrets out of a view.
 
 use takofy_model::{
-    AlbumDetail, ArtistDetail, CoverImage, CoverUrl, FollowedArtist, FollowedShow, PlaylistEntry,
-    SavedAlbum, ShowDetail, TrackEntry, TrackLyrics,
+    AlbumDetail, ArtistDetail, CoverImage, CoverUrl, FollowedArtist, FollowedShow, PlaylistAccess,
+    PlaylistEntry, Revision, SavedAlbum, ShowDetail, TrackEntry, TrackLyrics,
 };
 
 /// A request from the window to the worker.
@@ -15,6 +15,13 @@ pub enum Command {
     Authorize,
     /// Load the tracks of one playlist.
     LoadTracks { playlist: String },
+    /// Move one row of a playlist to a new place, based on `revision`.
+    MoveTrack {
+        playlist: String,
+        revision: Revision,
+        from: usize,
+        to: usize,
+    },
     /// Load one album with its tracks.
     LoadAlbum { album: String },
     /// Load one artist, its discography and its followed state.
@@ -126,7 +133,16 @@ pub enum Update {
         playlist: String,
         tracks: Vec<TrackEntry>,
         cover: Option<CoverUrl>,
+        /// What the page may change, when the list's own state could be read.
+        access: Option<PlaylistAccess>,
     },
+    /// A playlist row moved, and this is the revision the next write must name.
+    TrackMoved {
+        playlist: String,
+        revision: Revision,
+    },
+    /// A playlist move did not stick.
+    MoveFailed { playlist: String, failure: Failure },
     /// A playlist's tracks could not be loaded.
     TracksFailed { playlist: String, failure: Failure },
     /// One album, its tracks in the album's own order.

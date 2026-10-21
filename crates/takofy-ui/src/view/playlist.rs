@@ -984,6 +984,7 @@ mod tests {
             playlist: playlist.to_owned(),
             tracks,
             cover: None,
+            access: None,
         });
         library
     }
@@ -1057,6 +1058,7 @@ mod tests {
             playlist: "spotify:playlist:a".to_owned(),
             tracks,
             cover: None,
+            access: None,
         });
         library
     }
@@ -1591,6 +1593,7 @@ mod tests {
             playlist: "spotify:playlist:b".to_owned(),
             tracks: vec![track("a", "t0"), track("b", "t1")],
             cover: None,
+            access: None,
         });
         let tokens = Tokens::DARK;
         run(&ctx, input(Vec::new()), |ui| {
@@ -2656,6 +2659,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             playlist: "a".to_owned(),
             tracks: vec![track("t", "t")],
             cover: None,
+            access: None,
         });
         library.to_playlists();
 
@@ -2682,6 +2686,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             playlist: "a".to_owned(),
             tracks: vec![track("t0", "t0")],
             cover: None,
+            access: None,
         });
         library.to_playlists();
 
@@ -3197,6 +3202,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             playlist: "a".to_owned(),
             tracks: vec![track("t0", "t0")],
             cover: None,
+            access: None,
         });
         assert_eq!(
             library.open(Page::Album("spotify:album:x".to_owned())),
@@ -3345,6 +3351,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             playlist: "a".to_owned(),
             tracks: Vec::new(),
             cover: Some(context_cover.clone()),
+            access: None,
         });
 
         art.begin_frame();
@@ -3411,6 +3418,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             playlist: "a".to_owned(),
             tracks: vec![track("t", "t")],
             cover: Some(context_cover.clone()),
+            access: None,
         });
         art.begin_frame();
         run(&ctx, input(Vec::new()), |ui| {
@@ -4292,6 +4300,7 @@ mod root_tests {
             playlist: "a".to_owned(),
             tracks: vec![episode.entry()],
             cover: None,
+            access: None,
         });
         let mut art = Art::default();
 

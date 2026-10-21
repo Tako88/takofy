@@ -8,6 +8,7 @@ use futures_util::StreamExt;
 use http::header::{ACCEPT, CONTENT_TYPE};
 use http::{HeaderMap, Method};
 use librespot::core::date::Date;
+use librespot::core::spclient::{RequestStrategy, SpClient};
 use librespot::core::{Session, SpotifyId, SpotifyUri};
 use librespot::metadata::{Album, Artist, Lyrics, Metadata, Playlist, Show};
 use librespot::protocol::extended_metadata::{
@@ -20,7 +21,7 @@ use librespot::protocol::metadata::{
 use protobuf::Message as _;
 use takofy_model::{
     AlbumDetail, ArtistDetail, CoverUrl, Episode, FollowedArtist, FollowedShow, PlaylistEntry,
-    PublishedAt, SavedAlbum, ShowDetail, TrackEntry, TrackLyrics,
+    PublishedAt, Revision, SavedAlbum, ShowDetail, TrackEntry, TrackLyrics,
 };
 
 use crate::album::{AlbumError, detail, positions};
@@ -36,6 +37,7 @@ use crate::context::{
 use crate::cover::{pick_cover, pick_images_cover};
 use crate::followed::{self, FollowedError, ShowCard};
 use crate::lyrics::{self, LyricsError};
+use crate::playlist_edit;
 use crate::rootlist::{RootlistError, RootlistPage, RootlistSource, RootlistWire, parse_rootlist};
 use crate::show::{ShowError, detail as show_detail, episode_uris};
 
@@ -240,6 +242,110 @@ fn playlist_label(uri: &str, name: Option<String>) -> (String, bool) {
         Some(name) => (name, true),
         None => (uri.to_owned(), false),
     }
+}
+
+/// What a playlist's own state says about writing to it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PlaylistState {
+    pub(crate) revision: Revision,
+    pub(crate) can_edit: bool,
+    pub(crate) owned: bool,
+    /// Every item's URI, in the list's own order.
+    pub(crate) items: Vec<String>,
+}
+
+/// Reads the version, permission and owner a playlist page must know.
+///
+/// A state that cannot be read answers `None` rather than failing the page: an
+/// unreadable list is one the page may not change.
+pub(crate) async fn read_playlist_state(session: &Session, uri: &str) -> Option<PlaylistState> {
+    let Ok(id @ SpotifyUri::Playlist { .. }) = SpotifyUri::from_uri(uri) else {
+        return None;
+    };
+    let playlist = match Playlist::get(session, &id).await {
+        Ok(playlist) => playlist,
+        Err(error) => {
+            log::warn!("playlist state could not be read: {error}");
+            return None;
+        }
+    };
+    let Some(revision) = Revision::from_wire(&playlist.revision) else {
+        log::warn!("playlist state named no revision");
+        return None;
+    };
+    Some(PlaylistState {
+        revision,
+        can_edit: playlist.capabilities.can_edit_items,
+        owned: playlist_edit::owned(playlist_owner(&playlist.id).as_deref(), &session.username()),
+        items: item_uris(
+            playlist
+                .contents
+                .items
+                .iter()
+                .map(|item| item.id.to_uri().ok()),
+        ),
+    })
+}
+
+/// Every item's URI, in the list's own order.
+///
+/// An item that cannot be spelled keeps its place as an empty string, so a
+/// position the page cannot see still breaks the prefix comparison.
+fn item_uris(uris: impl Iterator<Item = Option<String>>) -> Vec<String> {
+    uris.map(Option::unwrap_or_default).collect()
+}
+
+/// The one header a playlist write wants: the protobuf media type.
+///
+/// `request` is used rather than `request_with_protobuf` so the single-attempt
+/// strategy is the request's own; librespot still adds the access point, the
+/// query, the length, the token and the client token.
+fn playlist_headers() -> Option<HeaderMap> {
+    let protobuf: http::HeaderValue = "application/x-protobuf".parse().ok()?;
+    let mut headers = HeaderMap::new();
+    headers.insert(CONTENT_TYPE, protobuf);
+    Some(headers)
+}
+
+/// Puts the shared client's retry budget back however the move ends.
+struct Restore<'a>(&'a SpClient);
+
+impl Drop for Restore<'_> {
+    fn drop(&mut self) {
+        self.0.set_strategy(RequestStrategy::TryTimes(10));
+    }
+}
+
+/// Writes one move to a playlist, in exactly one attempt.
+///
+/// A move is not idempotent: a retry after a reply was lost would move the row
+/// twice, so the shared client is held to one attempt for this call and put
+/// back on every exit path, cancellation included.
+///
+/// The one attempt is session-wide while in force: the worker runs one command at a time.
+pub(crate) async fn write_move(
+    session: &Session,
+    uri: &str,
+    revision: &Revision,
+    from: usize,
+    to: usize,
+) -> Result<Revision, playlist_edit::PlaylistError> {
+    let endpoint = playlist_edit::move_endpoint(uri)?;
+    let headers = playlist_headers().ok_or_else(|| {
+        playlist_edit::PlaylistError::Source(
+            "the playlist media type is not a valid header".to_owned(),
+        )
+    })?;
+    let body = playlist_edit::move_body(revision, from, to);
+    let client = session.spclient();
+    client.set_strategy(RequestStrategy::TryTimes(1));
+    let _restore = Restore(client);
+    let answer = client
+        .request(&Method::POST, &endpoint, Some(headers), Some(&body))
+        .await;
+    let bytes =
+        answer.map_err(|error| playlist_edit::PlaylistError::Source(error.kind.to_string()))?;
+    playlist_edit::reply_revision(&bytes).ok_or(playlist_edit::PlaylistError::Reply)
 }
 
 /// Reads one album: its metadata, then the labels for its tracks.
@@ -1152,10 +1258,10 @@ mod tests {
 
     use super::{
         Labels, PlaylistMeta, TrackLabel, context_cover, distinct_uris, duration_ms, episode_from,
-        episode_labels, episode_of, expand_episodes, expand_labels, first_track_uri,
+        episode_labels, episode_of, expand_episodes, expand_labels, first_track_uri, item_uris,
         label_from_episode, label_of, merge_labels, needs_labels, non_blank, parse_show_uri,
-        partition_by_kind, playlist_cover, playlist_label, playlist_length, playlist_owner,
-        published_at, show_card, track_label_from,
+        partition_by_kind, playlist_cover, playlist_headers, playlist_label, playlist_length,
+        playlist_owner, published_at, show_card, track_label_from,
     };
 
     const TRACK_ID: &str = "4uLU6hMCjMI75M1A2tKUQC";
@@ -1766,6 +1872,28 @@ mod tests {
     }
 
     #[test]
+    fn item_uris_keeps_a_spellable_items_uri() {
+        let uris = [first_track()];
+        assert_eq!(
+            item_uris(uris.iter().map(|uri| uri.to_uri().ok())),
+            vec![format!("spotify:track:{TRACK_ID}")]
+        );
+    }
+
+    #[test]
+    fn item_uris_keeps_an_unspellable_item_in_place() {
+        let uris = [
+            Some("spotify:track:a".to_owned()),
+            None,
+            Some("spotify:track:b".to_owned()),
+        ];
+        assert_eq!(
+            item_uris(uris.into_iter()),
+            vec!["spotify:track:a", "", "spotify:track:b"]
+        );
+    }
+
+    #[test]
     fn playlist_cover_prefers_the_picture() {
         let mut labels = Labels::new();
         labels.insert(
@@ -1824,6 +1952,17 @@ mod tests {
         assert_eq!(non_blank("  \n"), None);
         assert_eq!(non_blank(" x "), Some("x".to_owned()));
         assert_eq!(non_blank("a\n b"), Some("a b".to_owned()));
+    }
+
+    #[test]
+    fn playlist_headers_name_the_protobuf_media_type() {
+        let headers = playlist_headers().expect("headers");
+        assert_eq!(
+            headers
+                .get(http::header::CONTENT_TYPE)
+                .expect("a content type"),
+            "application/x-protobuf"
+        );
     }
 
     #[test]

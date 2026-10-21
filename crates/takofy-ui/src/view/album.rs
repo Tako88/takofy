@@ -995,6 +995,7 @@ mod tests {
             playlist: PLAYLIST.to_owned(),
             tracks: vec![track("spotify:track:a", "One", "Band", 222_000)],
             cover: None,
+            access: None,
         });
         library
     }
