@@ -5252,17 +5252,14 @@ mod tests {
     #[test]
     fn a_track_over_a_row_that_cannot_take_it_draws_nothing() {
         let tokens = Tokens::DARK;
-        let cases: Vec<(&str, Option<usize>, Option<PlaylistAccess>, &str)> = vec![
-            (
-                "not editable",
-                Some(3),
-                Some(rootlist_access(false)),
-                "Playlist",
-            ),
-            ("no count", None, Some(rootlist_access(true)), "Playlist"),
-            ("no revision", Some(3), None, "Playlist"),
+        // The rootlist is movable in every case, so the column is offered and
+        // only what the entry itself holds keeps it from taking the track.
+        let cases: Vec<(&str, Option<usize>, Option<PlaylistAccess>)> = vec![
+            ("not editable", Some(3), Some(rootlist_access(false))),
+            ("no count", None, Some(rootlist_access(true))),
+            ("no revision", Some(3), None),
         ];
-        for (why, tracks, access, kind) in cases {
+        for (why, tracks, entry) in cases {
             let mut transport = playing(cover("abc"));
             let mut queue = Queue::default();
             let mut window = Window::new(Vec2::new(1400.0, 900.0));
@@ -5275,14 +5272,18 @@ mod tests {
                 description: None,
                 owner: None,
                 tracks,
-                access: access.clone(),
+                access: entry,
             }]);
-            if let Some(access) = access {
-                window.library.apply(&Update::RootlistAccess(access));
-            }
+            window
+                .library
+                .apply(&Update::RootlistAccess(rootlist_access(true)));
+            assert!(
+                window.library.rootlist_movable(),
+                "{why}: the column has to be offered"
+            );
             let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
             let from = row_line(&frame, view_rect(&window), TRACK_A);
-            let to = sidebar_row_rect(&window, &frame, "B", kind).center();
+            let to = sidebar_row_rect(&window, &frame, "B", "Playlist").center();
 
             let (_, frame) = window.hold_drag(&mut transport, &mut queue, from, to);
             assert!(
