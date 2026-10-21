@@ -3509,6 +3509,25 @@ mod tests {
     }
 
     #[test]
+    fn a_rootlist_access_read_while_a_move_is_pending_is_not_adopted() {
+        let mut library = sidebar_library(&["a", "b", "c"], 0x07, true, None);
+        assert!(library.move_playlist(0, 2, "a").is_some());
+
+        library.apply(&Update::RootlistAccess(rootlist_access(0x09, true)));
+        library.apply(&Update::PlaylistMoveFailed);
+
+        assert_eq!(
+            library.move_playlist(0, 2, "a"),
+            Some(Command::MovePlaylist {
+                revision: revision(0x07),
+                from: 0,
+                to: 2,
+            }),
+            "the access that arrived mid-write never became the held one"
+        );
+    }
+
+    #[test]
     fn a_playlists_read_after_the_reply_is_adopted() {
         let mut library = sidebar_library(&["a", "b", "c"], 0x07, true, None);
         assert!(library.move_playlist(0, 2, "a").is_some());
