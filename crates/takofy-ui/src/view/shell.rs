@@ -56,7 +56,7 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
             "sidebar",
             grid.sidebar,
             grid.sidebar.shrink(inset),
-            |ui| sidebar::show(ui, screen.library, screen.art, screen.now, tokens),
+            |ui| sidebar::column(ui, screen.library, screen.art, screen.now, tokens),
         ),
         // Below 900 the sidebar is not a column: the layout gives it no width
         // and the drawer toggle puts the same sidebar over the main pane.
