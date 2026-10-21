@@ -320,6 +320,13 @@ impl Library {
                     }
                     entry.tracks = entry.tracks.map(|count| count.saturating_add(1));
                 }
+                // A page held for that playlist was read before the add, so it
+                // shows the rows and names the revision of a list one track
+                // shorter: dropping it makes the next visit reload.
+                if matches!(&self.tracks, Load::Ready(tracks) if tracks.playlist == *playlist) {
+                    self.tracks = Load::Idle;
+                    self.wanted = None;
+                }
                 self.sidebar_notice = None;
             }
             Update::AddFailed { playlist } => {
@@ -3654,6 +3661,57 @@ mod tests {
         );
         assert_eq!(library.sidebar_notice, None);
         assert!(library.addable(1), "the write is answered");
+    }
+
+    #[test]
+    fn a_confirmed_add_drops_the_page_held_for_that_playlist() {
+        // The add is made from an album page, so the playlist's own rows were
+        // read before it and are still held behind it.
+        let mut library = page_with("b", &["t0", "t1"], access(0x01, true));
+        library.playlists = Load::Ready(vec![
+            with_access(playlist("a", "a"), 0x07, true, Some(1)),
+            with_access(playlist("b", "b"), 0x07, true, Some(2)),
+        ]);
+        library.apply(&Update::RootlistAccess(rootlist_access(0x07, true)));
+        library.open(album("spotify:album:x"));
+        assert!(library.add_track(1, &track("spotify:track:x")).is_some());
+
+        library.apply(&Update::TrackAdded {
+            playlist: "b".to_owned(),
+            revision: revision(0x08),
+        });
+
+        assert_eq!(library.tracks, Load::Idle, "the page is one track short");
+        assert_eq!(
+            library.back(),
+            Some(Command::LoadTracks {
+                playlist: "b".to_owned()
+            }),
+            "Back asks for the page again"
+        );
+    }
+
+    #[test]
+    fn a_confirmed_add_keeps_the_page_held_for_another_playlist() {
+        let mut library = page_with("a", &["t0", "t1"], access(0x01, true));
+        library.playlists = Load::Ready(vec![
+            with_access(playlist("a", "a"), 0x07, true, Some(1)),
+            with_access(playlist("b", "b"), 0x07, true, Some(2)),
+        ]);
+        library.apply(&Update::RootlistAccess(rootlist_access(0x07, true)));
+        library.open(album("spotify:album:x"));
+        assert!(library.add_track(1, &track("spotify:track:x")).is_some());
+
+        library.apply(&Update::TrackAdded {
+            playlist: "b".to_owned(),
+            revision: revision(0x08),
+        });
+
+        assert!(
+            matches!(&library.tracks, Load::Ready(tracks) if tracks.playlist == "a"),
+            "the add names another list"
+        );
+        assert_eq!(library.back(), None, "and that page is still ready");
     }
 
     #[test]
