@@ -4140,7 +4140,7 @@ mod tests {
                 playlist: PLAYLIST.to_owned(),
                 revision: revision("rev-1"),
                 from: 0,
-                to: 1,
+                to: 2,
             }),
             "the page asks for one write on the revision it was read at"
         );

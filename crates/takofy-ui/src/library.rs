@@ -615,7 +615,7 @@ impl Library {
                 from: step.from,
                 to: step.to,
             },
-            step.to,
+            step.landed,
         ))
     }
 
@@ -3043,7 +3043,7 @@ mod tests {
                     playlist: "a".to_owned(),
                     revision: revision(0x01),
                     from: 0,
-                    to: 1,
+                    to: 2,
                 },
                 1,
             ))
