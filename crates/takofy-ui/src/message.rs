@@ -22,6 +22,20 @@ pub enum Command {
         from: usize,
         to: usize,
     },
+    /// Move one row of the sidebar's playlists to a new place, based on
+    /// `revision`.
+    MovePlaylist {
+        revision: Revision,
+        from: usize,
+        to: usize,
+    },
+    /// Append one track to a playlist, based on `revision`.
+    AddTrack {
+        playlist: String,
+        revision: Revision,
+        from_index: usize,
+        track: String,
+    },
     /// Load one album with its tracks.
     LoadAlbum { album: String },
     /// Load one artist, its discography and its followed state.
@@ -128,6 +142,25 @@ pub enum Update {
     Playlists(Vec<PlaylistEntry>),
     /// The playlists could not be loaded.
     PlaylistFailed(Failure),
+    /// What the sidebar may write with, sent right after `Playlists` and only
+    /// when the read named a revision.
+    ///
+    /// Its `editable` means the sidebar's rows are the wire's own indices, so a
+    /// row index may be written as a wire index.
+    RootlistAccess(PlaylistAccess),
+    /// The sidebar's playlists moved, and this is the revision the next write
+    /// must name.
+    PlaylistMoved { revision: Revision },
+    /// A sidebar move did not stick.
+    PlaylistMoveFailed,
+    /// A track was appended to a playlist, and this is the revision the next
+    /// write must name.
+    TrackAdded {
+        playlist: String,
+        revision: Revision,
+    },
+    /// A track could not be appended to a playlist.
+    AddFailed { playlist: String },
     /// A playlist's tracks, plus the context's own image when it carried one.
     Tracks {
         playlist: String,

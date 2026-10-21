@@ -20,8 +20,8 @@ use librespot::protocol::metadata::{
 };
 use protobuf::Message as _;
 use takofy_model::{
-    AlbumDetail, ArtistDetail, CoverUrl, Episode, FollowedArtist, FollowedShow, PlaylistEntry,
-    PublishedAt, Revision, SavedAlbum, ShowDetail, TrackEntry, TrackLyrics,
+    AlbumDetail, ArtistDetail, CoverUrl, Episode, FollowedArtist, FollowedShow, PlaylistAccess,
+    PlaylistEntry, PublishedAt, Revision, SavedAlbum, ShowDetail, TrackEntry, TrackLyrics,
 };
 
 use crate::album::{AlbumError, detail, positions};
@@ -113,6 +113,7 @@ pub(crate) async fn label_playlists(session: &Session, uris: Vec<String>) -> Vec
                 description,
                 tracks,
                 owner,
+                access,
             } = meta;
             let cover = playlist_cover(picture, first_track.as_deref(), &labels);
             let (name, named) = playlist_label(&uri, name);
@@ -124,6 +125,7 @@ pub(crate) async fn label_playlists(session: &Session, uris: Vec<String>) -> Vec
                 description,
                 tracks,
                 owner,
+                access,
             }
         })
         .collect()
@@ -143,6 +145,8 @@ struct PlaylistMeta {
     tracks: Option<usize>,
     /// The playlist's owner as the wire names it, when it names one.
     owner: Option<String>,
+    /// The revision and permission the same read carried.
+    access: Option<PlaylistAccess>,
 }
 
 impl PlaylistMeta {
@@ -154,6 +158,7 @@ impl PlaylistMeta {
             description: None,
             tracks: None,
             owner: None,
+            access: None,
         }
     }
 }
@@ -209,6 +214,10 @@ async fn playlist_meta(session: &Session, uri: &str) -> PlaylistMeta {
         description: non_blank(&playlist.attributes.description),
         tracks: playlist_length(playlist.length),
         owner: playlist_owner(&playlist.id),
+        access: playlist_edit::listing_access(
+            &playlist.revision,
+            playlist.capabilities.can_edit_items,
+        ),
     }
 }
 
@@ -316,27 +325,23 @@ impl Drop for Restore<'_> {
     }
 }
 
-/// Writes one move to a playlist, in exactly one attempt.
+/// Writes one change set, in exactly one attempt.
 ///
-/// A move is not idempotent: a retry after a reply was lost would move the row
-/// twice, so the shared client is held to one attempt for this call and put
-/// back on every exit path, cancellation included.
+/// None of these writes is idempotent: a retry after a reply was lost would
+/// apply the change twice, so the shared client is held to one attempt for this
+/// call and put back on every exit path, cancellation included.
 ///
 /// The one attempt is session-wide while in force: the worker runs one command at a time.
-pub(crate) async fn write_move(
+async fn write_changes(
     session: &Session,
-    uri: &str,
-    revision: &Revision,
-    from: usize,
-    to: usize,
+    endpoint: String,
+    body: Vec<u8>,
 ) -> Result<Revision, playlist_edit::PlaylistError> {
-    let endpoint = playlist_edit::move_endpoint(uri)?;
     let headers = playlist_headers().ok_or_else(|| {
         playlist_edit::PlaylistError::Source(
             "the playlist media type is not a valid header".to_owned(),
         )
     })?;
-    let body = playlist_edit::move_body(revision, from, to);
     let client = session.spclient();
     client.set_strategy(RequestStrategy::TryTimes(1));
     let _restore = Restore(client);
@@ -346,6 +351,57 @@ pub(crate) async fn write_move(
     let bytes =
         answer.map_err(|error| playlist_edit::PlaylistError::Source(error.kind.to_string()))?;
     playlist_edit::reply_revision(&bytes).ok_or(playlist_edit::PlaylistError::Reply)
+}
+
+/// Writes one move to a playlist.
+pub(crate) async fn write_move(
+    session: &Session,
+    uri: &str,
+    revision: &Revision,
+    from: usize,
+    to: usize,
+) -> Result<Revision, playlist_edit::PlaylistError> {
+    let endpoint = playlist_edit::changes_endpoint(uri)?;
+    write_changes(
+        session,
+        endpoint,
+        playlist_edit::move_body(revision, from, to),
+    )
+    .await
+}
+
+/// Writes one move to the user's rootlist.
+pub(crate) async fn write_rootlist_move(
+    session: &Session,
+    revision: &Revision,
+    from: usize,
+    to: usize,
+) -> Result<Revision, playlist_edit::PlaylistError> {
+    let endpoint = playlist_edit::rootlist_changes_endpoint(&session.username())?;
+    write_changes(
+        session,
+        endpoint,
+        playlist_edit::move_body(revision, from, to),
+    )
+    .await
+}
+
+/// Appends one track to a playlist.
+pub(crate) async fn write_add(
+    session: &Session,
+    uri: &str,
+    revision: &Revision,
+    from_index: usize,
+    track: &str,
+) -> Result<Revision, playlist_edit::PlaylistError> {
+    playlist_edit::require_track(track)?;
+    let endpoint = playlist_edit::changes_endpoint(uri)?;
+    write_changes(
+        session,
+        endpoint,
+        playlist_edit::add_body(revision, from_index, track),
+    )
+    .await
 }
 
 /// Reads one album: its metadata, then the labels for its tracks.
@@ -2015,11 +2071,12 @@ mod tests {
     }
 
     #[test]
-    fn empty_playlist_meta_has_no_description_or_owner() {
+    fn empty_playlist_meta_has_no_description_owner_or_access() {
         let meta = PlaylistMeta::empty();
         assert_eq!(meta.description, None);
         assert_eq!(meta.owner, None);
         assert_eq!(meta.tracks, None);
+        assert_eq!(meta.access, None, "a meta that read nothing writes nothing");
     }
 
     #[test]

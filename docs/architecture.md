@@ -113,6 +113,39 @@ Lyrics follow the same rule from the other side: the pane asks for the playing
 track's lines when the tab is first opened, so playback never spends a request
 nobody asked to see.
 
+The sidebar column has two meanings, told apart by what is carried: a playlist
+row dragged to a gap moves the playlists, and a track dragged onto a playlist
+row is appended to it. One pointer position therefore cannot mean both, and a
+carried playlist never reaches the queue, so a mis-drop cannot quietly reorder
+a library. One pointer position never draws both a rule and a fill either: the
+boundary target draws the rule, the row target draws the fill, and the two are
+mutually exclusive by construction.
+
+Both are writes through the same single-attempt path as a page's move — the
+rootlist's own changes route for a move, the playlist's for an append — because
+none of the three is idempotent, and a retry after a lost reply would apply the
+change twice. A row index is only a wire index when the rootlist read kept every
+item and reached the list's end, so a read that dropped one makes the whole
+column read-only rather than move a different playlist. Length and revision
+always move together: a confirmed append replaces the entry's revision and adds
+one to its count, so the next append names a revision whose length it holds.
+
+The library allows one write at a time across the page move and the sidebar's
+two. While a sidebar write is in flight the sidebar's own read is dropped — the
+part of it that carries an order, because a read taken after the write reached
+the server can carry the new revision with the old order or the old count, and
+the confirmation cannot tell which side of the write it came from. A dropped
+read takes its access with it, since a revision only means something beside the
+order it was read with. An access that lands while an add is pending is taken
+all the same, because an add writes one playlist and not the rootlist; a
+reorder's access waits for the reply that replaces its revision. A page's read
+is not dropped: one that lands while that page's own move is pending keeps the
+order the drag made. A queue insert is outside that gate: it is local and names
+no revision, so no pending write can invalidate it. What the gate cannot fix is
+a reply that was lost after the server applied the write: the held revision is
+then old, the next write fails, and the library has to be reloaded. That is
+preferred to retrying a write that is not idempotent.
+
 ## Who owns what
 
 - The binary owns the tokio runtime, and the `Engine` in headless mode. In the

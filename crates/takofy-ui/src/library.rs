@@ -172,6 +172,35 @@ pub struct Library {
     /// taken after the write reached the server can carry the new revision with
     /// the old order, so adopting on the revision would undo the drag.
     pending: Option<reorder::Pending>,
+    /// The rootlist's revision, and whether the sidebar's rows are its indices.
+    rootlist: Option<PlaylistAccess>,
+    /// Whether the last playlists read was dropped while a write was pending.
+    ///
+    /// Its access has to be dropped with it: the access follows the list it
+    /// belongs to, and a revision only means something beside that order.
+    rootlist_dropped: bool,
+    /// The sidebar write in flight. It excludes the page's write and itself.
+    sidebar_pending: Option<SidebarPending>,
+    /// Why the last sidebar write failed, until a gesture or a read clears it.
+    pub sidebar_notice: Option<SidebarWrite>,
+}
+
+/// Which sidebar write is in flight, and what it would put back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SidebarPending {
+    /// A rootlist move, holding the playlists as they were before the drop.
+    Reorder { before: Vec<PlaylistEntry> },
+    /// A track being appended to one playlist.
+    Add { playlist: String },
+}
+
+/// Why a sidebar write failed, as the row's list says it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SidebarWrite {
+    /// A playlist could not be moved.
+    Reorder,
+    /// A track could not be added to a playlist.
+    Add,
 }
 
 /// Whether a chip naming artists is the one the user is looking at.
@@ -199,6 +228,13 @@ impl Library {
                 if self.playlists == Load::Idle {
                     self.playlists = Load::Loading;
                 }
+            }
+            // A read's order is never adopted while a sidebar write is pending:
+            // it may have been taken before the write reached the server, or
+            // after, and the confirmation cannot tell the two apart. Its access
+            // goes with it, for the same reason.
+            Update::Playlists(_) if self.sidebar_pending.is_some() => {
+                self.rootlist_dropped = true;
             }
             Update::Playlists(playlists) => {
                 let mut playlists = playlists.clone();
@@ -237,9 +273,87 @@ impl Library {
                     self.tracks = Load::Idle;
                 }
                 self.playlists = Load::Ready(playlists);
+                // A list is not movable until its own access arrives, so a read
+                // can never be reordered on the previous read's revision.
+                self.rootlist = None;
+                self.rootlist_dropped = false;
+                self.sidebar_notice = None;
             }
             Update::PlaylistFailed(failure) => {
                 self.playlists = Load::Failed(*failure);
+            }
+            // An access is safe to adopt while an add is pending, because an add
+            // writes a playlist and not the rootlist; a reorder is the one write
+            // that replaces the revision its read named, so its access waits
+            // for the reply.
+            Update::RootlistAccess(access) => {
+                if std::mem::take(&mut self.rootlist_dropped) {
+                    return;
+                }
+                if matches!(self.sidebar_pending, Some(SidebarPending::Reorder { .. })) {
+                    return;
+                }
+                self.rootlist = Some(access.clone());
+            }
+            // The reply only replaces the held revision: the order already moved
+            // at drop time, and reordering again here would move it twice.
+            Update::PlaylistMoved { revision } => {
+                if !matches!(self.sidebar_pending, Some(SidebarPending::Reorder { .. })) {
+                    return;
+                }
+                self.sidebar_pending = None;
+                if let Some(access) = &mut self.rootlist {
+                    access.revision = revision.clone();
+                }
+                self.sidebar_notice = None;
+            }
+            // A failed move puts the rows back where they were, and says so.
+            Update::PlaylistMoveFailed => {
+                if !matches!(self.sidebar_pending, Some(SidebarPending::Reorder { .. })) {
+                    return;
+                }
+                let Some(SidebarPending::Reorder { before }) = self.sidebar_pending.take() else {
+                    return;
+                };
+                self.playlists = Load::Ready(before);
+                self.sidebar_notice = Some(SidebarWrite::Reorder);
+            }
+            // Length and revision always move together, so an add never names a
+            // revision whose length it has already counted.
+            Update::TrackAdded { playlist, revision } => {
+                if !matches!(
+                    &self.sidebar_pending,
+                    Some(SidebarPending::Add { playlist: pending }) if pending == playlist
+                ) {
+                    return;
+                }
+                self.sidebar_pending = None;
+                if let Load::Ready(playlists) = &mut self.playlists
+                    && let Some(entry) = playlists.iter_mut().find(|entry| entry.uri == *playlist)
+                {
+                    if let Some(access) = &mut entry.access {
+                        access.revision = revision.clone();
+                    }
+                    entry.tracks = entry.tracks.map(|count| count.saturating_add(1));
+                }
+                // A page held for that playlist was read before the add, so it
+                // shows the rows and names the revision of a list one track
+                // shorter: dropping it makes the next visit reload.
+                if matches!(&self.tracks, Load::Ready(tracks) if tracks.playlist == *playlist) {
+                    self.tracks = Load::Idle;
+                    self.wanted = None;
+                }
+                self.sidebar_notice = None;
+            }
+            Update::AddFailed { playlist } => {
+                if !matches!(
+                    &self.sidebar_pending,
+                    Some(SidebarPending::Add { playlist: pending }) if pending == playlist
+                ) {
+                    return;
+                }
+                self.sidebar_pending = None;
+                self.sidebar_notice = Some(SidebarWrite::Add);
             }
             Update::Tracks {
                 playlist,
@@ -302,6 +416,12 @@ impl Library {
                     if let Some(access) = &mut tracks.access {
                         access.revision = revision.clone();
                     }
+                }
+                if let Load::Ready(playlists) = &mut self.playlists
+                    && let Some(entry) = playlists.iter_mut().find(|entry| entry.uri == *playlist)
+                    && let Some(access) = &mut entry.access
+                {
+                    access.revision = revision.clone();
                 }
             }
             // A failed write puts the rows back where they were, and says so.
@@ -545,9 +665,13 @@ impl Library {
 
     /// Whether a row may be lifted off the loaded page now.
     ///
-    /// A write in flight holds the page still: a drop would name a revision the
-    /// write is already replacing. A page the user cannot write still lifts,
-    /// because a drop into the queue is not a write to that page.
+    /// A page write in flight holds the page still: a drop would name a revision
+    /// the write is already replacing. A sidebar write does not stop a lift,
+    /// because the queue a page row can land in names no revision; the two
+    /// writes' own methods refuse instead.
+    ///
+    /// A page the user cannot write still lifts, because a drop into the queue
+    /// is not a write to that page.
     pub fn liftable(&self) -> bool {
         self.pending.is_none()
     }
@@ -558,11 +682,102 @@ impl Library {
     /// second one would name a revision the first is already replacing.
     pub fn movable(&self) -> bool {
         self.liftable()
+            && self.sidebar_pending.is_none()
             && matches!(
                 &self.tracks,
                 Load::Ready(tracks)
                     if tracks.access.as_ref().is_some_and(|access| access.editable)
             )
+    }
+
+    /// Whether the sidebar's playlists may be reordered now.
+    ///
+    /// It needs a read that kept every item, read at a known revision, and no
+    /// write in flight: a second write would name a revision the first is
+    /// already replacing.
+    pub fn rootlist_movable(&self) -> bool {
+        self.liftable()
+            && self.sidebar_pending.is_none()
+            && matches!(self.playlists, Load::Ready(_))
+            && self.rootlist.as_ref().is_some_and(|access| access.editable)
+    }
+
+    /// Whether `row` of the sidebar may take a track now.
+    ///
+    /// The open playlist is not a target: its rows are on screen and would not
+    /// show the new track, and dropping one of its own rows on it would quietly
+    /// duplicate it.
+    pub fn addable(&self, row: usize) -> bool {
+        if !self.liftable() || self.sidebar_pending.is_some() {
+            return false;
+        }
+        let Load::Ready(playlists) = &self.playlists else {
+            return false;
+        };
+        playlists
+            .get(row)
+            .is_some_and(|entry| entry.add_basis().is_some() && self.selected() != Some(&entry.uri))
+    }
+
+    /// Moves a dragged playlist row to the gap the pointer is over.
+    ///
+    /// The order moves at once and one write goes out on the rootlist's
+    /// revision. `boundary` is the gap in the pre-move list, which is exactly
+    /// the index the wire reads, so nothing is subtracted here.
+    pub fn move_playlist(
+        &mut self,
+        from: usize,
+        boundary: usize,
+        carried: &str,
+    ) -> Option<Command> {
+        if !self.rootlist_movable() {
+            return None;
+        }
+        let Load::Ready(playlists) = &self.playlists else {
+            return None;
+        };
+        if playlists.get(from).is_none_or(|entry| entry.uri != carried) {
+            return None;
+        }
+        let step = reorder::step(playlists.len(), from, boundary)?;
+        let before = playlists.clone();
+        let mut after = before.clone();
+        reorder::apply(&mut after, step);
+        let revision = self.rootlist.as_ref()?.revision.clone();
+        self.sidebar_pending = Some(SidebarPending::Reorder { before });
+        self.playlists = Load::Ready(after);
+        self.sidebar_notice = None;
+        Some(Command::MovePlaylist {
+            revision,
+            from: step.from,
+            to: step.to,
+        })
+    }
+
+    /// Appends a carried track to `row`, and asks for one write.
+    ///
+    /// Nothing moves on screen: the count is confirmed by the reply, and a
+    /// failure leaves it alone.
+    pub fn add_track(&mut self, row: usize, carried: &TrackEntry) -> Option<Command> {
+        if !self.addable(row) || !carried.is_track() {
+            return None;
+        }
+        let Load::Ready(playlists) = &self.playlists else {
+            return None;
+        };
+        let entry = playlists.get(row)?;
+        let (revision, from_index) = entry.add_basis()?;
+        let command = Command::AddTrack {
+            playlist: entry.uri.clone(),
+            revision: revision.clone(),
+            from_index,
+            track: carried.uri.clone(),
+        };
+        self.sidebar_pending = Some(SidebarPending::Add {
+            playlist: entry.uri.clone(),
+        });
+        self.sidebar_notice = None;
+        Some(command)
     }
 
     /// Moves a dragged row to the gap the pointer is over, and asks for one write.
@@ -583,7 +798,8 @@ impl Library {
         let Load::Ready(tracks) = &self.tracks else {
             return None;
         };
-        if self.pending.is_some()
+        if !self.liftable()
+            || self.sidebar_pending.is_some()
             || self.selected() != Some(playlist)
             || tracks.playlist != playlist
         {
@@ -1044,6 +1260,7 @@ mod tests {
             description: None,
             owner: None,
             tracks: None,
+            access: None,
         }
     }
 
@@ -1239,6 +1456,7 @@ mod tests {
             description: None,
             owner: None,
             tracks: None,
+            access: None,
         }
     }
 
@@ -3015,6 +3233,768 @@ mod tests {
             access: None,
         });
         assert_eq!(library.tracks, Load::Idle);
+    }
+
+    /// The entry with what the listing read said about writing to it.
+    fn with_access(
+        entry: PlaylistEntry,
+        byte: u8,
+        editable: bool,
+        tracks: Option<usize>,
+    ) -> PlaylistEntry {
+        PlaylistEntry {
+            access: Some(PlaylistAccess {
+                revision: revision(byte),
+                editable,
+            }),
+            tracks,
+            ..entry
+        }
+    }
+
+    fn rootlist_access(byte: u8, editable: bool) -> PlaylistAccess {
+        PlaylistAccess {
+            revision: revision(byte),
+            editable,
+        }
+    }
+
+    /// A library whose sidebar holds `names`, each read at `byte`.
+    fn sidebar_library(names: &[&str], byte: u8, editable: bool, tracks: Option<usize>) -> Library {
+        let mut library = Library::default();
+        let entries = names
+            .iter()
+            .map(|name| with_access(playlist(name, name), byte, editable, tracks))
+            .collect();
+        library.apply(&Update::Playlists(entries));
+        library.apply(&Update::RootlistAccess(rootlist_access(byte, editable)));
+        library
+    }
+
+    fn sidebar_order(library: &Library) -> Vec<String> {
+        match &library.playlists {
+            Load::Ready(playlists) => playlists.iter().map(|entry| entry.uri.clone()).collect(),
+            Load::Idle | Load::Loading | Load::Failed(_) => Vec::new(),
+        }
+    }
+
+    fn sidebar_entry(library: &Library, uri: &str) -> Option<PlaylistEntry> {
+        match &library.playlists {
+            Load::Ready(playlists) => playlists.iter().find(|entry| entry.uri == uri).cloned(),
+            Load::Idle | Load::Loading | Load::Failed(_) => None,
+        }
+    }
+
+    fn names(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
+    #[test]
+    fn a_downward_drag_names_the_gap_after_its_own_row() {
+        let mut library = sidebar_library(&["a", "b", "c", "d"], 0x07, true, None);
+
+        let found = library.move_playlist(0, 2, "a");
+
+        assert_eq!(
+            found,
+            Some(Command::MovePlaylist {
+                revision: revision(0x07),
+                from: 0,
+                to: 2,
+            })
+        );
+        assert_eq!(
+            sidebar_order(&library),
+            names(&["b", "a", "c", "d"]),
+            "the gap after b is where a lands"
+        );
+    }
+
+    #[test]
+    fn a_downward_drag_to_the_very_end_names_the_gap_at_the_length() {
+        let mut library = sidebar_library(&["a", "b", "c", "d"], 0x07, true, None);
+
+        let found = library.move_playlist(1, 4, "b");
+
+        assert_eq!(
+            found,
+            Some(Command::MovePlaylist {
+                revision: revision(0x07),
+                from: 1,
+                to: 4,
+            })
+        );
+        assert_eq!(sidebar_order(&library), names(&["a", "c", "d", "b"]));
+    }
+
+    #[test]
+    fn an_upward_drag_names_the_gap_it_lands_in() {
+        let mut library = sidebar_library(&["a", "b", "c", "d"], 0x07, true, None);
+
+        let found = library.move_playlist(3, 0, "d");
+
+        assert_eq!(
+            found,
+            Some(Command::MovePlaylist {
+                revision: revision(0x07),
+                from: 3,
+                to: 0,
+            })
+        );
+        assert_eq!(sidebar_order(&library), names(&["d", "a", "b", "c"]));
+    }
+
+    #[test]
+    fn a_drag_beside_itself_sends_nothing() {
+        let mut library = sidebar_library(&["a", "b", "c"], 0x07, true, None);
+
+        for boundary in [1, 2] {
+            assert_eq!(
+                library.move_playlist(1, boundary, "b"),
+                None,
+                "the gap {boundary} is where b already is"
+            );
+        }
+        assert_eq!(sidebar_order(&library), names(&["a", "b", "c"]));
+        assert!(library.rootlist_movable(), "and nothing was written");
+    }
+
+    #[test]
+    fn a_boundary_past_the_end_is_refused() {
+        let mut library = sidebar_library(&["a", "b"], 0x07, true, None);
+        assert_eq!(library.move_playlist(0, 3, "a"), None);
+    }
+
+    #[test]
+    fn a_move_names_the_held_revision() {
+        let mut library = sidebar_library(&["a", "b", "c"], 0x07, true, None);
+        library.apply(&Update::RootlistAccess(rootlist_access(0x09, true)));
+
+        assert_eq!(
+            library.move_playlist(0, 2, "a"),
+            Some(Command::MovePlaylist {
+                revision: revision(0x09),
+                from: 0,
+                to: 2,
+            })
+        );
+    }
+
+    #[test]
+    fn no_rootlist_access_refuses_a_move() {
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(vec![
+            playlist("a", "a"),
+            playlist("b", "b"),
+        ]));
+
+        assert!(!library.rootlist_movable());
+        assert_eq!(library.move_playlist(0, 2, "a"), None);
+        assert_eq!(sidebar_order(&library), names(&["a", "b"]));
+    }
+
+    #[test]
+    fn a_not_faithful_rootlist_refuses_a_move() {
+        let mut library = sidebar_library(&["a", "b"], 0x07, false, None);
+
+        assert!(!library.rootlist_movable());
+        assert_eq!(library.move_playlist(0, 2, "a"), None);
+    }
+
+    #[test]
+    fn a_playlist_that_is_not_where_the_drag_found_it_is_refused() {
+        let mut library = sidebar_library(&["a", "b"], 0x07, true, None);
+
+        assert_eq!(
+            library.move_playlist(0, 2, "b"),
+            None,
+            "the row holds another playlist now"
+        );
+        assert_eq!(library.move_playlist(9, 0, "a"), None, "no such row");
+        assert_eq!(sidebar_order(&library), names(&["a", "b"]));
+    }
+
+    #[test]
+    fn a_move_waits_while_a_write_is_pending() {
+        let mut library = sidebar_library(&["a", "b", "c"], 0x07, true, None);
+        assert!(library.move_playlist(0, 2, "a").is_some());
+
+        assert_eq!(library.move_playlist(0, 3, "b"), None);
+        assert!(!library.rootlist_movable());
+    }
+
+    #[test]
+    fn a_move_waits_while_a_page_move_is_pending() {
+        let mut library = page_with("a", &["t0", "t1", "t2"], access(0x01, true));
+        library.playlists = Load::Ready(vec![
+            with_access(playlist("p0", "p0"), 0x07, true, None),
+            with_access(playlist("p1", "p1"), 0x07, true, None),
+        ]);
+        library.apply(&Update::RootlistAccess(rootlist_access(0x07, true)));
+        assert!(library.move_track("a", 0, 2, &track("t0")).is_some());
+
+        assert_eq!(library.move_playlist(0, 2, "p0"), None);
+    }
+
+    #[test]
+    fn a_page_move_waits_while_a_sidebar_write_is_pending() {
+        let mut library = page_with("a", &["t0", "t1", "t2"], access(0x01, true));
+        library.playlists = Load::Ready(vec![
+            with_access(playlist("p0", "p0"), 0x07, true, None),
+            with_access(playlist("p1", "p1"), 0x07, true, None),
+        ]);
+        library.apply(&Update::RootlistAccess(rootlist_access(0x07, true)));
+        assert!(library.move_playlist(0, 2, "p0").is_some());
+
+        assert_eq!(library.move_track("a", 0, 2, &track("t0")), None);
+        assert!(!library.movable());
+    }
+
+    #[test]
+    fn a_loading_list_refuses_a_move() {
+        let mut library = Library::default();
+        library.apply(&Update::RootlistAccess(rootlist_access(0x07, true)));
+        assert_eq!(library.move_playlist(0, 2, "a"), None);
+
+        library.playlists = Load::Loading;
+        assert!(!library.rootlist_movable());
+    }
+
+    #[test]
+    fn the_reply_replaces_the_revision_and_reorders_nothing() {
+        let mut library = sidebar_library(&["a", "b", "c"], 0x07, true, None);
+        assert!(library.move_playlist(0, 2, "a").is_some());
+
+        library.apply(&Update::PlaylistMoved {
+            revision: revision(0x08),
+        });
+
+        assert_eq!(
+            sidebar_order(&library),
+            names(&["b", "a", "c"]),
+            "the order already moved at drop time"
+        );
+        assert!(library.rootlist_movable(), "the write is answered");
+        assert_eq!(
+            library.move_playlist(0, 3, "b"),
+            Some(Command::MovePlaylist {
+                revision: revision(0x08),
+                from: 0,
+                to: 3,
+            }),
+            "the next move names the reply's revision"
+        );
+    }
+
+    #[test]
+    fn a_failed_move_restores_the_order_before_the_drop_and_says_so() {
+        let mut library = sidebar_library(&["a", "b", "c"], 0x07, true, None);
+        assert!(library.move_playlist(0, 2, "a").is_some());
+
+        library.apply(&Update::PlaylistMoveFailed);
+
+        assert_eq!(sidebar_order(&library), names(&["a", "b", "c"]));
+        assert_eq!(library.sidebar_notice, Some(SidebarWrite::Reorder));
+        assert!(
+            library.rootlist_movable(),
+            "the held revision is kept, so another drag may try again"
+        );
+        assert_eq!(
+            library.move_playlist(0, 2, "a"),
+            Some(Command::MovePlaylist {
+                revision: revision(0x07),
+                from: 0,
+                to: 2,
+            }),
+            "the revision an unanswered write used is still the one held"
+        );
+    }
+
+    #[test]
+    fn a_playlists_read_while_a_move_is_pending_is_not_adopted() {
+        let mut library = sidebar_library(&["a", "b", "c"], 0x07, true, None);
+        assert!(library.move_playlist(0, 2, "a").is_some());
+
+        library.apply(&Update::Playlists(vec![
+            with_access(playlist("a", "a"), 0x07, true, None),
+            with_access(playlist("b", "b"), 0x07, true, None),
+            with_access(playlist("c", "c"), 0x07, true, None),
+        ]));
+        library.apply(&Update::RootlistAccess(rootlist_access(0x07, true)));
+
+        assert_eq!(
+            sidebar_order(&library),
+            names(&["b", "a", "c"]),
+            "a read taken before the drop would otherwise undo it"
+        );
+    }
+
+    #[test]
+    fn a_rootlist_access_read_while_a_move_is_pending_is_not_adopted() {
+        let mut library = sidebar_library(&["a", "b", "c"], 0x07, true, None);
+        assert!(library.move_playlist(0, 2, "a").is_some());
+
+        library.apply(&Update::RootlistAccess(rootlist_access(0x09, true)));
+        library.apply(&Update::PlaylistMoveFailed);
+
+        assert_eq!(
+            library.move_playlist(0, 2, "a"),
+            Some(Command::MovePlaylist {
+                revision: revision(0x07),
+                from: 0,
+                to: 2,
+            }),
+            "the access that arrived mid-write never became the held one"
+        );
+    }
+
+    #[test]
+    fn a_playlists_read_after_the_reply_is_adopted() {
+        let mut library = sidebar_library(&["a", "b", "c"], 0x07, true, None);
+        assert!(library.move_playlist(0, 2, "a").is_some());
+        library.apply(&Update::PlaylistMoved {
+            revision: revision(0x08),
+        });
+
+        library.apply(&Update::Playlists(vec![with_access(
+            playlist("z", "z"),
+            0x09,
+            true,
+            None,
+        )]));
+
+        assert_eq!(sidebar_order(&library), names(&["z"]));
+    }
+
+    #[test]
+    fn a_playlists_read_clears_the_held_access_until_its_own_arrives() {
+        let mut library = sidebar_library(&["a", "b"], 0x07, true, None);
+        assert!(library.rootlist_movable());
+
+        library.apply(&Update::Playlists(vec![
+            with_access(playlist("a", "a"), 0x07, true, None),
+            with_access(playlist("b", "b"), 0x07, true, None),
+        ]));
+
+        assert!(
+            !library.rootlist_movable(),
+            "the pair cannot straddle: the list waits for its own access"
+        );
+
+        library.apply(&Update::RootlistAccess(rootlist_access(0x09, true)));
+        assert!(library.rootlist_movable());
+    }
+
+    #[test]
+    fn an_adopted_read_clears_the_sidebar_notice() {
+        let mut library = sidebar_library(&["a", "b", "c"], 0x07, true, None);
+        assert!(library.move_playlist(0, 2, "a").is_some());
+        library.apply(&Update::PlaylistMoveFailed);
+        assert_eq!(library.sidebar_notice, Some(SidebarWrite::Reorder));
+
+        library.apply(&Update::Playlists(vec![with_access(
+            playlist("a", "a"),
+            0x07,
+            true,
+            None,
+        )]));
+
+        assert_eq!(library.sidebar_notice, None);
+    }
+
+    #[test]
+    fn a_new_gesture_clears_the_sidebar_notice_at_once() {
+        let mut library = sidebar_library(&["a", "b", "c"], 0x07, true, Some(2));
+        assert!(library.move_playlist(0, 2, "a").is_some());
+        library.apply(&Update::PlaylistMoveFailed);
+        assert_eq!(library.sidebar_notice, Some(SidebarWrite::Reorder));
+
+        assert!(library.move_playlist(0, 2, "a").is_some());
+
+        assert_eq!(library.sidebar_notice, None);
+    }
+
+    #[test]
+    fn a_confirmed_write_after_a_failed_one_clears_the_sidebar_notice() {
+        let mut library = sidebar_library(&["a", "b", "c"], 0x07, true, Some(2));
+        assert!(library.move_playlist(0, 2, "a").is_some());
+        library.apply(&Update::PlaylistMoveFailed);
+        assert!(library.move_playlist(0, 2, "a").is_some());
+
+        library.apply(&Update::PlaylistMoved {
+            revision: revision(0x08),
+        });
+
+        assert_eq!(library.sidebar_notice, None);
+    }
+
+    #[test]
+    fn an_add_asks_for_one_write_on_the_entrys_revision_and_length() {
+        let mut library = sidebar_library(&["a", "b"], 0x07, true, Some(3));
+        let carried = track("spotify:track:x");
+
+        assert_eq!(
+            library.add_track(1, &carried),
+            Some(Command::AddTrack {
+                playlist: "b".to_owned(),
+                revision: revision(0x07),
+                from_index: 3,
+                track: "spotify:track:x".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn an_add_changes_nothing_until_it_is_confirmed() {
+        let mut library = sidebar_library(&["a", "b"], 0x07, true, Some(3));
+        let before = sidebar_order(&library);
+
+        assert!(library.add_track(1, &track("spotify:track:x")).is_some());
+
+        assert_eq!(sidebar_order(&library), before);
+        assert_eq!(
+            sidebar_entry(&library, "b").and_then(|entry| entry.tracks),
+            Some(3)
+        );
+        assert!(!library.addable(0), "the write is in flight");
+    }
+
+    #[test]
+    fn a_confirmed_add_replaces_the_revision_and_counts_one_more() {
+        let mut library = sidebar_library(&["a", "b"], 0x07, true, Some(3));
+        assert!(library.add_track(1, &track("spotify:track:x")).is_some());
+
+        library.apply(&Update::TrackAdded {
+            playlist: "b".to_owned(),
+            revision: revision(0x08),
+        });
+
+        let entry = sidebar_entry(&library, "b").expect("still listed");
+        assert_eq!(entry.tracks, Some(4));
+        assert_eq!(
+            entry.access.map(|access| access.revision),
+            Some(revision(0x08))
+        );
+        assert_eq!(library.sidebar_notice, None);
+        assert!(library.addable(1), "the write is answered");
+    }
+
+    #[test]
+    fn a_confirmed_add_drops_the_page_held_for_that_playlist() {
+        // The add is made from an album page, so the playlist's own rows were
+        // read before it and are still held behind it.
+        let mut library = page_with("b", &["t0", "t1"], access(0x01, true));
+        library.playlists = Load::Ready(vec![
+            with_access(playlist("a", "a"), 0x07, true, Some(1)),
+            with_access(playlist("b", "b"), 0x07, true, Some(2)),
+        ]);
+        library.apply(&Update::RootlistAccess(rootlist_access(0x07, true)));
+        library.open(album("spotify:album:x"));
+        assert!(library.add_track(1, &track("spotify:track:x")).is_some());
+
+        library.apply(&Update::TrackAdded {
+            playlist: "b".to_owned(),
+            revision: revision(0x08),
+        });
+
+        assert_eq!(library.tracks, Load::Idle, "the page is one track short");
+        assert_eq!(
+            library.back(),
+            Some(Command::LoadTracks {
+                playlist: "b".to_owned()
+            }),
+            "Back asks for the page again"
+        );
+    }
+
+    #[test]
+    fn a_confirmed_add_keeps_the_page_held_for_another_playlist() {
+        let mut library = page_with("a", &["t0", "t1"], access(0x01, true));
+        library.playlists = Load::Ready(vec![
+            with_access(playlist("a", "a"), 0x07, true, Some(1)),
+            with_access(playlist("b", "b"), 0x07, true, Some(2)),
+        ]);
+        library.apply(&Update::RootlistAccess(rootlist_access(0x07, true)));
+        library.open(album("spotify:album:x"));
+        assert!(library.add_track(1, &track("spotify:track:x")).is_some());
+
+        library.apply(&Update::TrackAdded {
+            playlist: "b".to_owned(),
+            revision: revision(0x08),
+        });
+
+        assert!(
+            matches!(&library.tracks, Load::Ready(tracks) if tracks.playlist == "a"),
+            "the add names another list"
+        );
+        assert_eq!(library.back(), None, "and that page is still ready");
+    }
+
+    #[test]
+    fn the_next_add_builds_on_the_reply_and_the_new_count() {
+        let mut library = sidebar_library(&["a", "b"], 0x07, true, Some(3));
+        assert!(library.add_track(1, &track("spotify:track:x")).is_some());
+        library.apply(&Update::TrackAdded {
+            playlist: "b".to_owned(),
+            revision: revision(0x08),
+        });
+
+        assert_eq!(
+            library.add_track(1, &track("spotify:track:y")),
+            Some(Command::AddTrack {
+                playlist: "b".to_owned(),
+                revision: revision(0x08),
+                from_index: 4,
+                track: "spotify:track:y".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn a_failed_add_leaves_the_count_and_the_revision_and_says_so() {
+        let mut library = sidebar_library(&["a", "b"], 0x07, true, Some(3));
+        assert!(library.add_track(1, &track("spotify:track:x")).is_some());
+
+        library.apply(&Update::AddFailed {
+            playlist: "b".to_owned(),
+        });
+
+        let entry = sidebar_entry(&library, "b").expect("still listed");
+        assert_eq!(entry.tracks, Some(3));
+        assert_eq!(
+            entry.access.map(|access| access.revision),
+            Some(revision(0x07))
+        );
+        assert_eq!(library.sidebar_notice, Some(SidebarWrite::Add));
+        assert!(library.addable(1));
+    }
+
+    #[test]
+    fn a_list_that_can_not_be_edited_is_not_addable() {
+        let library = sidebar_library(&["a", "b"], 0x07, false, Some(3));
+
+        assert!(!library.addable(0));
+        let mut library = library;
+        assert_eq!(library.add_track(0, &track("spotify:track:x")), None);
+    }
+
+    #[test]
+    fn a_playlist_with_no_revision_or_no_count_is_not_addable() {
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(vec![
+            with_access(playlist("a", "a"), 0x07, true, None),
+            playlist("b", "b"),
+        ]));
+        library.apply(&Update::RootlistAccess(rootlist_access(0x07, true)));
+
+        assert!(!library.addable(0), "no count");
+        assert!(!library.addable(1), "no revision");
+        assert_eq!(library.add_track(0, &track("spotify:track:x")), None);
+    }
+
+    #[test]
+    fn the_open_playlist_is_not_addable() {
+        let mut library = sidebar_library(&["a", "b"], 0x07, true, Some(3));
+        library.select("a");
+        assert!(!library.addable(0));
+        assert!(library.addable(1));
+
+        library.open(Page::Album("spotify:album:b".to_owned()));
+        assert!(
+            library.addable(0),
+            "an album page leaves every playlist a target"
+        );
+
+        library.open(Page::Search("never gonna".to_owned()));
+        assert!(library.addable(0));
+    }
+
+    #[test]
+    fn an_episode_or_local_file_is_refused() {
+        let mut library = sidebar_library(&["a", "b"], 0x07, true, Some(3));
+
+        for uri in ["spotify:episode:1", "spotify:local:a:b:c:1000", "list:p0"] {
+            assert_eq!(
+                library.add_track(0, &track(uri)),
+                None,
+                "must refuse {uri:?}"
+            );
+        }
+        assert!(library.addable(0), "a refused carry is no write at all");
+    }
+
+    #[test]
+    fn an_add_waits_while_any_write_is_pending() {
+        let mut library = page_with("a", &["t0", "t1"], access(0x01, true));
+        library.playlists = Load::Ready(vec![
+            with_access(playlist("p0", "p0"), 0x07, true, Some(1)),
+            with_access(playlist("p1", "p1"), 0x07, true, Some(1)),
+        ]);
+        library.apply(&Update::RootlistAccess(rootlist_access(0x07, true)));
+        assert!(library.move_track("a", 0, 2, &track("t0")).is_some());
+
+        assert_eq!(library.add_track(1, &track("spotify:track:x")), None);
+
+        let mut library = sidebar_library(&["a", "b"], 0x07, true, Some(1));
+        assert!(library.move_playlist(0, 2, "a").is_some());
+        assert_eq!(library.add_track(1, &track("spotify:track:x")), None);
+    }
+
+    #[test]
+    fn a_stale_reply_with_nothing_pending_is_ignored() {
+        let mut library = sidebar_library(&["a", "b", "c"], 0x07, true, Some(2));
+        library.apply(&Update::PlaylistMoved {
+            revision: revision(0x08),
+        });
+        library.apply(&Update::PlaylistMoveFailed);
+        library.apply(&Update::TrackAdded {
+            playlist: "a".to_owned(),
+            revision: revision(0x08),
+        });
+        library.apply(&Update::AddFailed {
+            playlist: "a".to_owned(),
+        });
+
+        assert_eq!(sidebar_order(&library), names(&["a", "b", "c"]));
+        assert_eq!(
+            sidebar_entry(&library, "a").and_then(|entry| entry.tracks),
+            Some(2)
+        );
+        assert_eq!(library.sidebar_notice, None);
+        assert!(library.rootlist_movable());
+    }
+
+    #[test]
+    fn a_reply_for_another_playlist_does_not_end_the_write() {
+        let mut library = sidebar_library(&["a", "b"], 0x07, true, Some(2));
+        assert!(library.add_track(1, &track("spotify:track:x")).is_some());
+
+        library.apply(&Update::TrackAdded {
+            playlist: "a".to_owned(),
+            revision: revision(0x08),
+        });
+        library.apply(&Update::AddFailed {
+            playlist: "a".to_owned(),
+        });
+
+        assert!(!library.addable(0), "the write for b is still in flight");
+    }
+
+    #[test]
+    fn an_access_that_arrives_mid_add_is_not_lost() {
+        let mut library = sidebar_library(&["a", "b"], 0x07, true, Some(3));
+        // A read that lands just before the add drops the held access with the
+        // order it brought, so the column is only movable again once its own
+        // access arrives.
+        library.apply(&Update::Playlists(vec![
+            with_access(playlist("a", "a"), 0x07, true, Some(3)),
+            with_access(playlist("b", "b"), 0x07, true, Some(3)),
+        ]));
+        assert!(!library.rootlist_movable(), "no access yet");
+        assert!(library.add_track(1, &track("spotify:track:x")).is_some());
+
+        library.apply(&Update::RootlistAccess(rootlist_access(0x09, true)));
+        library.apply(&Update::TrackAdded {
+            playlist: "b".to_owned(),
+            revision: revision(0x08),
+        });
+
+        assert!(library.rootlist_movable(), "the access was kept");
+        assert_eq!(
+            library.move_playlist(0, 2, "a"),
+            Some(Command::MovePlaylist {
+                revision: revision(0x09),
+                from: 0,
+                to: 2,
+            })
+        );
+    }
+
+    #[test]
+    fn an_access_whose_read_was_refused_is_refused_with_it() {
+        let mut library = sidebar_library(&["a", "b"], 0x07, true, Some(3));
+        // A read that drops the held access waits for its own to arrive.
+        library.apply(&Update::Playlists(vec![
+            with_access(playlist("a", "a"), 0x07, true, Some(3)),
+            with_access(playlist("b", "b"), 0x07, true, Some(3)),
+        ]));
+        assert!(library.add_track(1, &track("spotify:track:x")).is_some());
+
+        library.apply(&Update::Playlists(vec![
+            with_access(playlist("b", "b"), 0x0a, true, Some(3)),
+            with_access(playlist("a", "a"), 0x0a, true, Some(3)),
+        ]));
+        library.apply(&Update::RootlistAccess(rootlist_access(0x0a, true)));
+        library.apply(&Update::TrackAdded {
+            playlist: "b".to_owned(),
+            revision: revision(0x08),
+        });
+
+        assert_eq!(
+            sidebar_order(&library),
+            names(&["a", "b"]),
+            "the read's order was refused"
+        );
+        assert!(
+            !library.rootlist_movable(),
+            "and its revision is no use beside this one"
+        );
+    }
+
+    #[test]
+    fn a_read_while_an_add_is_pending_is_not_adopted() {
+        let mut library = sidebar_library(&["a", "b"], 0x07, true, Some(3));
+        assert!(library.add_track(1, &track("spotify:track:x")).is_some());
+
+        library.apply(&Update::Playlists(vec![
+            with_access(playlist("a", "a"), 0x07, true, Some(3)),
+            with_access(playlist("b", "b"), 0x08, true, Some(4)),
+        ]));
+
+        assert_eq!(
+            sidebar_entry(&library, "b").and_then(|entry| entry.tracks),
+            Some(3),
+            "a read taken after the server applied the add would count twice"
+        );
+        library.apply(&Update::TrackAdded {
+            playlist: "b".to_owned(),
+            revision: revision(0x09),
+        });
+        assert_eq!(
+            sidebar_entry(&library, "b").and_then(|entry| entry.tracks),
+            Some(4),
+            "the confirmation counts from the count the drop named"
+        );
+    }
+
+    #[test]
+    fn a_page_move_reply_updates_the_entrys_revision() {
+        let mut library = page_with("a", &["t0", "t1"], access(0x01, true));
+        library.apply(&Update::Playlists(vec![with_access(
+            playlist("a", "a"),
+            0x01,
+            true,
+            Some(2),
+        )]));
+        library.apply(&Update::RootlistAccess(rootlist_access(0x07, true)));
+        assert!(library.move_track("a", 0, 2, &track("t0")).is_some());
+
+        library.apply(&Update::TrackMoved {
+            playlist: "a".to_owned(),
+            revision: revision(0x02),
+        });
+
+        library.open(Page::Album("spotify:album:b".to_owned()));
+        assert_eq!(
+            library.add_track(0, &track("spotify:track:x")),
+            Some(Command::AddTrack {
+                playlist: "a".to_owned(),
+                revision: revision(0x02),
+                from_index: 2,
+                track: "spotify:track:x".to_owned(),
+            }),
+            "the add names the revision the move's reply named"
+        );
     }
 
     fn moved(uris: &[&str]) -> Vec<TrackEntry> {

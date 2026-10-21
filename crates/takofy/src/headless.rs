@@ -40,7 +40,7 @@ pub(crate) async fn run(
 
 /// Lists the rootlist and returns the URI of the chosen playlist.
 async fn pick_playlist(engine: &Engine) -> Result<Option<String>, EngineError> {
-    let playlists = engine.rootlist().await?;
+    let playlists = engine.rootlist().await?.entries;
     if playlists.is_empty() {
         println!("no playlists found");
         return Ok(None);
