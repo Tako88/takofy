@@ -35,11 +35,13 @@ pub enum Step {
     Down,
 }
 
-/// The queue and the index it is on.
+/// The queue and the index it is on, when it is on one.
 #[derive(Debug, Clone, Default)]
 pub struct Queue {
     tracks: Vec<TrackEntry>,
-    index: usize,
+    /// The entry that is playing, or `None` while the queue is armed: it holds
+    /// rows and nothing is current, so the first play starts the first row.
+    index: Option<usize>,
     /// Set when a `Play` is in flight; `Ended`/`Unavailable` before the load's
     /// first event are the previous track's and must be ignored.
     awaiting_start: bool,
@@ -72,30 +74,26 @@ impl Queue {
 
     /// Steps forward one entry, if there is one.
     pub fn next(&mut self, transport: &mut Transport) -> Option<Command> {
-        if !self.can_next() {
-            return None;
-        }
+        let index = self.index.filter(|index| index + 1 < self.tracks.len())?;
         self.skips = 0;
-        self.goto(self.index + 1, transport)
+        self.goto(index + 1, transport)
     }
 
     /// Restarts the current entry when it is past the threshold or is the
     /// first, otherwise steps back one.
     pub fn previous(&mut self, position_ms: u32, transport: &mut Transport) -> Option<Command> {
-        if self.tracks.is_empty() {
-            return None;
-        }
+        let index = self.index?;
         self.skips = 0;
-        if position_ms > RESTART_AFTER_MS || self.index == 0 {
+        if position_ms > RESTART_AFTER_MS || index == 0 {
             if transport.seekable() {
                 // A restart is a `Seek`, and no load follows it, so the guard
                 // stays clear.
                 Some(Command::Seek { position_ms: 0 })
             } else {
-                self.goto(self.index, transport)
+                self.goto(index, transport)
             }
         } else {
-            self.goto(self.index - 1, transport)
+            self.goto(index - 1, transport)
         }
     }
 
@@ -113,7 +111,9 @@ impl Queue {
             | TransportState::Unavailable
             | TransportState::Failed(_) => {
                 self.skips = 0;
-                self.goto(self.index, transport)
+                // An armed queue has no current entry to replay, so the first
+                // play starts the first row.
+                self.goto(self.index.unwrap_or(0), transport)
             }
         }
     }
@@ -161,12 +161,19 @@ impl Queue {
 
     /// Whether there is an entry after the current one.
     pub fn can_next(&self) -> bool {
-        self.index + 1 < self.tracks.len()
+        matches!(self.index, Some(index) if index + 1 < self.tracks.len())
     }
 
-    /// Whether the queue has anything to step through.
+    /// Whether the queue has a current entry, and so something to step back
+    /// from.
     pub fn can_previous(&self) -> bool {
-        !self.tracks.is_empty()
+        self.index.is_some()
+    }
+
+    /// Whether the queue holds rows with nothing current: a drop brought it
+    /// entries and no play has started them yet.
+    pub fn armed(&self) -> bool {
+        self.index.is_none() && !self.tracks.is_empty()
     }
 
     /// Every entry after the current one, with its absolute index in the queue.
@@ -174,24 +181,19 @@ impl Queue {
     /// The index is the position in the list `start` was given, so it stays the
     /// row's identity across advances: advancing only moves the current index.
     pub fn upcoming(&self) -> impl ExactSizeIterator<Item = (usize, &TrackEntry)> + '_ {
-        let first = self.index + 1;
+        let first = self.first_upcoming();
         self.tracks.iter().enumerate().skip(first)
     }
 
-    /// The first index an edit may touch: the entry after the current one.
+    /// The first index an edit may touch: the entry after the current one, or
+    /// the first row while the queue is armed.
     pub fn first_upcoming(&self) -> usize {
-        self.index + 1
-    }
-
-    /// Whether the queue has rows a drop could land among. An empty queue takes
-    /// none.
-    pub fn can_insert(&self) -> bool {
-        !self.tracks.is_empty()
+        self.index.map_or(0, |index| index + 1)
     }
 
     /// Whether row `row` is picked. Only the upcoming rows can be.
     pub fn selected(&self, row: usize) -> bool {
-        row > self.index && self.selection.contains(row)
+        row >= self.first_upcoming() && self.selection.contains(row)
     }
 
     /// Applies a press to `row`, ignoring the rows the queue will not edit.
@@ -223,7 +225,7 @@ impl Queue {
     /// A contiguous block dropped on itself, or just beside itself, is not a
     /// move: it returns `None` and changes nothing.
     pub fn move_rows(&mut self, rows: &[usize], boundary: usize) -> Option<Range<usize>> {
-        let boundary = self.edit_boundary(boundary)?;
+        let boundary = self.edit_boundary(boundary);
         let mut rows = self.editable_rows(rows);
         rows.sort_unstable();
         rows.dedup();
@@ -252,7 +254,7 @@ impl Queue {
         if entries.is_empty() {
             return None;
         }
-        let boundary = self.edit_boundary(boundary)?;
+        let boundary = self.edit_boundary(boundary);
         let count = entries.len();
 
         self.tracks.splice(boundary..boundary, entries);
@@ -262,7 +264,8 @@ impl Queue {
     }
 
     /// Adds `entries` after the last entry, unpicked, and says where they landed.
-    /// An add has no position to choose; an empty queue takes none.
+    /// An add has no position to choose, so an empty queue takes them at the
+    /// first row and is left armed.
     pub fn append(&mut self, entries: Vec<TrackEntry>) -> Option<Range<usize>> {
         self.insert_at(self.tracks.len(), entries)
     }
@@ -374,13 +377,13 @@ impl Queue {
     }
 
     fn goto_next(&mut self, transport: &mut Transport) -> Option<Command> {
-        let next = self.index + 1;
+        let next = self.index? + 1;
         self.goto(next, transport)
     }
 
     /// Whether `row` is in the editable region: after the current entry.
     fn editable(&self, row: usize) -> bool {
-        row > self.index && row < self.tracks.len()
+        row >= self.first_upcoming() && row < self.tracks.len()
     }
 
     /// The rows of `rows` that are in the editable region, in the order given.
@@ -395,16 +398,13 @@ impl Queue {
     fn selected_rows(&self) -> Vec<usize> {
         self.selection
             .rows()
-            .filter(|row| *row > self.index)
+            .filter(|row| *row >= self.first_upcoming())
             .collect()
     }
 
-    /// `boundary` pulled into the editable region, or `None` when the queue has
-    /// no row an edit could land among.
-    fn edit_boundary(&self, boundary: usize) -> Option<usize> {
-        let low = self.first_upcoming();
-        let high = self.tracks.len();
-        (low <= high).then(|| boundary.clamp(low, high))
+    /// `boundary` pulled into the editable region.
+    fn edit_boundary(&self, boundary: usize) -> usize {
+        boundary.clamp(self.first_upcoming(), self.tracks.len())
     }
 
     /// Moves the index and asks the transport to play that entry.
@@ -418,7 +418,7 @@ impl Queue {
                 entry.cover.clone(),
             )
         };
-        self.index = index;
+        self.index = Some(index);
         self.awaiting_start = true;
         Some(transport.play(&uri, &title, &artists, cover))
     }
@@ -1363,7 +1363,7 @@ mod tests {
         );
         assert_eq!(
             (queue.index, queue.awaiting_start, queue.skips),
-            (2, true, 1)
+            (Some(2), true, 1)
         );
 
         assert!(queue.move_rows(&[3], 5).is_some());
@@ -1372,7 +1372,7 @@ mod tests {
 
         assert_eq!(
             (queue.index, queue.awaiting_start, queue.skips),
-            (2, true, 1),
+            (Some(2), true, 1),
             "no edit may move the index, disarm a load or reset a skip"
         );
     }
@@ -1425,17 +1425,101 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_queue_takes_no_insert() {
+    fn an_empty_queue_takes_nothing_to_play() {
         let mut queue = Queue::default();
-        assert_eq!(queue.insert_at(0, vec![track("x")]), None);
-        assert!(order(&queue).is_empty());
+
+        assert_eq!(
+            queue.toggle(&mut Transport::default()),
+            None,
+            "an empty queue has no first row to start"
+        );
+    }
+
+    #[test]
+    fn an_insert_lands_in_an_empty_queue_and_leaves_it_armed() {
+        let mut queue = Queue::default();
+
+        assert_eq!(queue.insert_at(0, vec![track("x")]), Some(0..1));
+
+        assert_eq!(order(&queue), uris(&["x"]));
+        assert_eq!(queue.first_upcoming(), 0, "nothing is current yet");
+        assert_eq!(queue.upcoming().len(), 1);
+        assert!(queue.armed(), "the row waits for a first play");
+    }
+
+    #[test]
+    fn the_first_play_of_an_armed_queue_starts_its_first_row() {
+        let mut queue = Queue::default();
+        let mut transport = Transport::default();
+        let armed = queue.append(vec![track("x"), track("y")]);
+        assert_eq!(armed, Some(0..2));
+
+        assert!(!queue.can_previous(), "nothing has played yet");
+        assert!(!queue.can_next(), "nothing is current to step from");
+        assert_eq!(queue.next(&mut transport), None);
+        assert_eq!(queue.previous(0, &mut transport), None);
+
+        assert_eq!(queue.toggle(&mut transport), Some(play("x")));
+
+        assert_eq!(queue.first_upcoming(), 1);
+        assert!(queue.can_next());
+        assert!(!queue.armed(), "it is playing the row that was waiting");
+    }
+
+    #[test]
+    fn an_armed_queue_ignores_the_events_of_a_track_it_never_started() {
+        let mut queue = Queue::default();
+        let mut transport = Transport::default();
+        assert_eq!(queue.append(vec![track("x"), track("y")]), Some(0..2));
+
+        for update in [TransportUpdate::Ended, TransportUpdate::Unavailable] {
+            assert_eq!(
+                feed(&mut queue, &mut transport, update.clone()),
+                None,
+                "nothing is playing, so {update:?} is nobody's"
+            );
+        }
+        assert!(
+            queue.armed(),
+            "an armed queue must not walk itself on a stray event"
+        );
+        assert_eq!(order(&queue), uris(&["x", "y"]));
+    }
+
+    #[test]
+    fn a_jump_starts_an_armed_row_and_leaves_the_ones_before_it() {
+        let mut queue = Queue::default();
+        let mut transport = Transport::default();
+        assert_eq!(
+            queue.append(vec![track("x"), track("y"), track("z")]),
+            Some(0..3)
+        );
+
+        assert_eq!(queue.jump(2, &mut transport), Some(play("z")));
+
+        assert_eq!(queue.first_upcoming(), 3);
+        assert_eq!(order(&queue), uris(&["x", "y", "z"]));
+        assert!(!queue.armed());
+    }
+
+    #[test]
+    fn an_armed_queue_edits_every_row() {
+        let mut queue = Queue::default();
+        let armed = queue.append(vec![track("x"), track("y"), track("z")]);
+        assert_eq!(armed, Some(0..3));
+
+        assert_eq!(queue.lift(0), Some(vec![0]), "the first row is editable");
+        queue.press(0, Press::Replace);
+        assert_eq!(picked(&queue), vec![0]);
+        assert_eq!(queue.step_rows(&[0], Step::Down), Some(vec![(0, 1)]));
+        assert_eq!(order(&queue), uris(&["y", "x", "z"]));
+        assert_eq!(picked(&queue), vec![1], "the pick follows the row");
     }
 
     #[test]
     fn an_empty_queue_moves_nothing() {
         let mut queue = Queue::default();
-        assert!(!queue.can_insert());
-        assert_eq!(queue.first_upcoming(), 1);
+        assert_eq!(queue.first_upcoming(), 0);
         assert_eq!(queue.move_rows(&[0], 0), None);
         assert_eq!(queue.step_rows(&[0], Step::Up), None);
         assert_eq!(queue.lift(0), None);
@@ -1484,12 +1568,13 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_queue_takes_no_append() {
+    fn an_empty_queue_takes_an_append_at_its_first_row() {
         let mut queue = Queue::default();
 
-        assert_eq!(queue.append(vec![track("x")]), None);
+        assert_eq!(queue.append(vec![track("x")]), Some(0..1));
 
-        assert!(order(&queue).is_empty());
+        assert_eq!(order(&queue), uris(&["x"]));
+        assert_eq!(queue.first_upcoming(), 0);
     }
 
     #[test]

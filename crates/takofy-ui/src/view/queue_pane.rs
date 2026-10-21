@@ -127,21 +127,17 @@ pub fn show(
                     let visible = ui.clip_rect();
 
                     // The caption band is part of the target and means the first
-                    // upcoming row, and the pad below the list means appending to
-                    // the end.
-                    if queue.can_insert() {
-                        reply.zone = Some(Zone {
-                            hit: Rect::from_min_max(
-                                band.min,
-                                pos2(band.right(), list.bottom() + space::S4),
-                            )
+                    // upcoming row; the empty column below the list means
+                    // appending to the end, which is where an armed queue takes
+                    // the rows a drag brings it.
+                    reply.zone = Some(Zone {
+                        hit: Rect::from_min_max(band.min, pos2(band.right(), pane.bottom()))
                             .intersect(pane),
-                            list,
-                            row_h: ROW_H,
-                            first: queue.first_upcoming(),
-                            count,
-                        });
-                    }
+                        list,
+                        row_h: ROW_H,
+                        first: queue.first_upcoming(),
+                        count,
+                    });
 
                     if count == 0 {
                         empty(ui, list, tokens);
@@ -506,7 +502,14 @@ mod tests {
         let now = Instant::now();
         let (reply, output) = pass(&ctx, PANE, &Queue::default(), &mut art, now, Vec::new());
 
-        assert_eq!(reply, Reply::default());
+        assert_eq!(
+            reply.zone.map(|zone| (zone.first, zone.count)),
+            Some((0, 0))
+        );
+        assert_eq!(
+            (reply.play, reply.press, reply.lift, reply.focused),
+            (None, None, None, None)
+        );
         let texts = drawn_texts(&output);
         assert!(texts.contains(&"NEXT IN QUEUE"), "{texts:?}");
         assert!(texts.contains(&EMPTY), "{texts:?}");
@@ -604,6 +607,47 @@ mod tests {
         );
         assert_eq!(reply.play, Some(4), "a double click asks for the row");
         assert_eq!(reply.press, None, "a double click is not a press");
+    }
+
+    #[test]
+    fn a_double_click_starts_an_armed_queue() {
+        let ctx = context();
+        let mut art = Art::default();
+        let mut armed = Queue::default();
+        assert_eq!(armed.append((0..3).map(track).collect()), Some(0..3));
+        let now = Instant::now();
+        let (_, output) = pass(&ctx, PANE, &armed, &mut art, now, Vec::new());
+        let at = painted_at(&output, "t1").expect("an armed row is painted");
+
+        let reply = click_with(
+            &ctx,
+            PANE,
+            &armed,
+            at + Vec2::new(4.0, 4.0),
+            Modifiers::NONE,
+            2,
+        );
+        assert_eq!(
+            reply.play,
+            Some(1),
+            "a double click picks the row out of the waiting list"
+        );
+        assert_eq!(reply.press, None, "a double click is not a press");
+    }
+
+    #[test]
+    fn an_armed_row_is_pickable_without_starting_the_queue() {
+        let ctx = context();
+        let mut art = Art::default();
+        let mut armed = Queue::default();
+        assert_eq!(armed.append((0..3).map(track).collect()), Some(0..3));
+        let now = Instant::now();
+        let (_, output) = pass(&ctx, PANE, &armed, &mut art, now, Vec::new());
+        let at = painted_at(&output, "t2").expect("an armed row is painted");
+
+        let reply = click(&ctx, PANE, &armed, at + Vec2::new(4.0, 4.0));
+        assert_eq!(reply.press, Some((2, Press::Replace)));
+        assert_eq!(reply.play, None, "one click only picks the row");
     }
 
     #[test]
@@ -748,13 +792,39 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_queue_reports_no_zone() {
+    fn an_empty_queue_is_a_target_that_takes_its_first_row() {
         let ctx = context();
         let mut art = Art::default();
         let now = Instant::now();
         let (reply, _) = pass(&ctx, PANE, &Queue::default(), &mut art, now, Vec::new());
+        let zone = reply.zone.expect("an armed queue takes rows");
 
-        assert_eq!(reply.zone, None, "an empty queue takes no drop");
+        assert_eq!((zone.first, zone.count), (0, 0), "there is no row yet");
+        let at = Pos2::new(zone.list.center().x, PANE.center().y);
+        let landing = resolve(Some(at), Some(&zone)).expect("the column is a target");
+        assert_eq!(landing.boundary, 0, "the first row is the only place");
+    }
+
+    #[test]
+    fn the_empty_column_below_a_short_list_appends() {
+        let ctx = context();
+        let mut art = Art::default();
+        let queue = queue_of(2, 0);
+        let now = Instant::now();
+        let (reply, _) = pass(&ctx, PANE, &queue, &mut art, now, Vec::new());
+        let zone = reply.zone.expect("a queue is a target");
+
+        let at = Pos2::new(zone.list.center().x, PANE.bottom() - space::S1);
+        assert!(
+            at.y > zone.list.bottom() + space::S4,
+            "the pointer must sit well below the list and its pad: {at:?}"
+        );
+        let landing = resolve(Some(at), Some(&zone)).expect("the empty column is the target");
+        assert_eq!(
+            landing.boundary,
+            zone.first + zone.count,
+            "a drop in the empty column appends after the last row"
+        );
     }
 
     #[test]

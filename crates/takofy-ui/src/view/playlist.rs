@@ -2215,8 +2215,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         // would win. The command's uri is `a` whichever row is taken, so the
         // queue's position is the only thing that tells the two apart: starting
         // the second leaves nothing after it, while the first would leave entry
-        // two. `Queue::can_previous` reports only that the queue is non-empty, so
-        // it cannot sharpen this; `can_next` is the sharp assertion.
+        // two, so `can_next` is the sharp assertion.
         //
         // Index 1 also exercises `row_rect`'s pitch: the other tests only ever
         // click index 0.

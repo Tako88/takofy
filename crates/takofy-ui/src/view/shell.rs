@@ -165,13 +165,7 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
         // A row lifted from a page list lands in that list's own rows, so that
         // page's zone wins there; everywhere else the queue's zones decide.
         reorder_target(carry, offer.as_ref(), ui.ctx().pointer_latest_pos()).or_else(|| {
-            let area = queue_area(
-                screen.queue,
-                regions.now_playing,
-                regions.playbar,
-                bar_rect,
-                carry,
-            );
+            let area = queue_area(regions.now_playing, regions.playbar, bar_rect, carry);
             landing::target(
                 ui.ctx().pointer_latest_pos(),
                 queue_reply.zone.as_ref(),
@@ -356,10 +350,14 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
     }
     *screen.drawer = next;
 
-    // The space toggles the track the transport already names, and nothing else:
-    // a row starts a track on Enter or a double click. It comes after the drawer
-    // step so that pausing does not also close a drawer nobody picked from.
-    if command.is_none() && space && screen.transport.now_playing.is_some() {
+    // The space toggles the track the transport already names, or starts an armed
+    // queue's first row; a row starts a track on Enter or a double click. It comes
+    // after the drawer step so that pausing does not also close a drawer nobody
+    // picked from.
+    if command.is_none()
+        && space
+        && (screen.transport.now_playing.is_some() || screen.queue.armed())
+    {
         command = screen.queue.toggle(screen.transport);
     }
 
@@ -517,20 +515,10 @@ fn settle_carry(
     None
 }
 
-/// The queue button's drop area, when it is one: only while the pane is hidden;
-/// only for page lists, because the button adds and never moves; only for a
-/// queue that takes a drop at all.
-fn queue_area(
-    queue: &Queue,
-    now_playing: NowPlaying,
-    form: Playbar,
-    bar: Rect,
-    carry: &Carry,
-) -> Option<Area> {
-    if now_playing != NowPlaying::Hidden
-        || !queue.can_insert()
-        || !matches!(carry.source, Source::List(_))
-    {
+/// The queue button's drop area, when it is one: only while the pane is hidden,
+/// and only for page lists, because the button adds and never moves.
+fn queue_area(now_playing: NowPlaying, form: Playbar, bar: Rect, carry: &Carry) -> Option<Area> {
+    if now_playing != NowPlaying::Hidden || !matches!(carry.source, Source::List(_)) {
         return None;
     }
     Some(Area::around(playbar::queue_button(bar, form)))
@@ -4079,7 +4067,7 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_queue_takes_no_drop() {
+    fn an_empty_queue_takes_the_first_row_and_stays_armed() {
         let mut transport = Transport::default();
         let mut queue = Queue::default();
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
@@ -4089,10 +4077,27 @@ mod tests {
         let to = pane_rect(&window).center();
 
         assert_eq!(window.drag(&mut transport, &mut queue, from, to), None);
+        assert_eq!(entries(&queue), ["list:p1"]);
         assert!(
-            entries(&queue).is_empty(),
-            "a queue with nothing in it is not a target"
+            !queue.can_previous(),
+            "a drop queues the row, it does not start it"
         );
+        assert_eq!(queue.first_upcoming(), 0, "the row waits for a play");
+
+        let (command, _) = tap(
+            &mut window,
+            &mut transport,
+            &mut queue,
+            key(egui::Key::Space, true),
+        );
+        assert_eq!(
+            command,
+            Some(Command::Play {
+                uri: "list:p1".to_owned()
+            }),
+            "a space starts the waiting row"
+        );
+        assert_eq!(queue.first_upcoming(), 1, "and it is the current entry now");
     }
 
     #[test]
@@ -4992,7 +4997,32 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_queue_refuses_the_queue_button() {
+    fn the_empty_column_below_a_short_queue_takes_the_row_at_the_end() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(2, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0"]);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let pane = pane_rect(&window);
+        let last = row_line(&frame, pane, "t1");
+        let from = row_line(&frame, view_rect(&window), "p0");
+        let to = Pos2::new(pane.center().x, pane.bottom() - 4.0);
+        assert!(
+            to.y > last.y + QUEUE_ROW_H,
+            "the pointer must sit below the list, not on a row: {to:?}"
+        );
+
+        assert_eq!(window.drag(&mut transport, &mut queue, from, to), None);
+        assert_eq!(entries(&queue), ["t0", "t1", "list:p0"]);
+        assert_eq!(
+            queue.first_upcoming() + queue.upcoming().len(),
+            3,
+            "the row lands at the end"
+        );
+    }
+
+    #[test]
+    fn an_empty_queue_takes_the_queue_buttons_add() {
         let mut transport = Transport::default();
         let mut queue = Queue::default();
         let mut window = Window::new(Vec2::new(900.0, 900.0));
@@ -5003,16 +5033,15 @@ mod tests {
 
         let (_, frame) = window.hold_drag(&mut transport, &mut queue, from, to);
         assert!(
-            claimed_fill(&frame, &window).is_none(),
-            "an empty queue takes no add"
-        );
-        assert_eq!(
-            ghost_at(&frame, to),
-            Some(Tokens::DARK.palette.surface),
-            "the ghost is flat"
+            claimed_fill(&frame, &window).is_some(),
+            "the button claims the add"
         );
         let (_, _) = window.frame(&mut transport, &mut queue, vec![window.release(to)]);
-        assert!(entries(&queue).is_empty(), "an empty queue stays empty");
+        assert_eq!(entries(&queue), ["list:p1"]);
+        assert!(
+            !queue.can_previous(),
+            "the button queues the row, it does not start it"
+        );
     }
 
     #[test]
