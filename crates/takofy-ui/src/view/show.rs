@@ -28,6 +28,7 @@ use crate::theme::Tokens;
 
 use super::episode_row;
 use super::hero;
+use super::rows::Look;
 use super::section;
 use super::skeleton;
 use super::text as recipe;
@@ -145,6 +146,8 @@ pub fn show_view(
                                 meta: &meta,
                                 duration: duration.as_deref(),
                                 state: state_of(&episode.uri, transport),
+                                look: Look::default(),
+                                refocus: false,
                             };
                             if episode_row::show(ui, rect, &row, tokens) == Some(Click::Play) {
                                 command = queue.start(&entries(detail), index, transport);

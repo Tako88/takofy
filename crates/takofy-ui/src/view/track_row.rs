@@ -151,13 +151,6 @@ impl Row<'_> {
 }
 
 /// One row's own paint, kept so a carried row can be drawn away from its list.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the drag layer owns the carried block, and it is what paints this snapshot"
-    )
-)]
 #[derive(Clone, Debug, PartialEq)]
 pub struct Lifted {
     columns: Columns,

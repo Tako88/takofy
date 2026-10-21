@@ -156,12 +156,14 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
         },
     ));
 
-    // The panel only reports the row it was clicked on. Applying the jump here,
-    // and only when no other region asked for a command, keeps a frame from
-    // moving the queue past a click whose `Play` would then be dropped.
+    // The panel only reports the row it was asked to play. Applying the jump
+    // here, and only when no other region asked for a command, keeps a frame
+    // from moving the queue past a click whose `Play` would then be dropped.
+    // The pane's press, lift and drop target are applied with the drag wiring.
     if command.is_none() {
         command = reply
-            .row
+            .queue
+            .play
             .and_then(|index| screen.queue.jump(index, screen.transport));
     }
     // The lyrics fetch is the open tab's, and it is asked for only once the
@@ -1800,7 +1802,35 @@ mod tests {
     }
 
     #[test]
-    fn a_click_on_a_queue_row_plays_that_entry() {
+    fn a_single_click_on_a_queue_row_does_not_play() {
+        // A single click is a press; the shell applies presses with the drag
+        // wiring, so nothing may move the transport here.
+        let mut transport = playing(cover("abc"));
+        let tracks = vec![
+            track(0, Some(cover("abc"))),
+            track(1, Some(cover("row1"))),
+            track(2, Some(cover("row2"))),
+        ];
+        let mut queue = Queue::default();
+        queue.start(&tracks, 0, &mut transport);
+
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let at = painted_at(&frame, "t2").expect("row t2 is painted");
+
+        assert_eq!(
+            window.click(&mut transport, &mut queue, at + Vec2::new(6.0, 6.0)),
+            None
+        );
+        assert_eq!(
+            transport.now_playing.as_ref().map(|now| now.uri.as_str()),
+            Some("t0"),
+            "a single click must not move the transport"
+        );
+    }
+
+    #[test]
+    fn a_double_click_on_a_queue_row_plays_that_entry() {
         // The panel reports the row and the shell is what moves the queue and
         // the transport, so nothing can name a track the transport never got.
         let mut transport = playing(cover("abc"));
@@ -1817,7 +1847,7 @@ mod tests {
         let at = painted_at(&frame, "t2").expect("row t2 is painted");
 
         assert_eq!(
-            window.click(&mut transport, &mut queue, at + Vec2::new(6.0, 6.0)),
+            window.double_click(&mut transport, &mut queue, at + Vec2::new(6.0, 6.0)),
             Some(Command::Play {
                 uri: "t2".to_owned()
             })
