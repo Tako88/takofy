@@ -4428,6 +4428,80 @@ mod tests {
     }
 
     #[test]
+    fn a_drag_that_starts_inside_a_pick_carries_the_whole_block() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        page_of_tracks(&mut window, &["a", "b", "c", "d"]);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let view = view_rect(&window);
+        let at = |title: &str| row_line(&frame, view, title);
+
+        let _ = window.click(&mut transport, &mut queue, at("b"));
+        window.held = egui::Modifiers::SHIFT;
+        let _ = window.click(&mut transport, &mut queue, at("d"));
+        window.held = egui::Modifiers::NONE;
+
+        // The press is inside the pick, and the pick is what travels.
+        let from = at("c");
+        let to = page_boundary(&frame, view, &["a", "b", "c", "d"], 0);
+        assert_eq!(
+            window.drag(&mut transport, &mut queue, from, to),
+            Some(Command::MoveTrack {
+                playlist: PLAYLIST.to_owned(),
+                revision: revision("rev-1"),
+                moves: vec![Move {
+                    from: 1,
+                    length: 3,
+                    to: 0,
+                }],
+            }),
+            "a contiguous block is one move of its own length"
+        );
+        assert_eq!(page_rows(&window), ["b", "c", "d", "a"]);
+    }
+
+    #[test]
+    fn a_gapped_pick_gathered_at_the_end_is_the_measured_chain() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        page_of_tracks(&mut window, &["a", "b", "c", "d"]);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let view = view_rect(&window);
+        let at = |title: &str| row_line(&frame, view, title);
+
+        let _ = window.click(&mut transport, &mut queue, at("a"));
+        window.held = egui::Modifiers::COMMAND;
+        let _ = window.click(&mut transport, &mut queue, at("c"));
+        window.held = egui::Modifiers::NONE;
+
+        let from = at("c");
+        let to = page_boundary(&frame, view, &["a", "b", "c", "d"], 4);
+        assert_eq!(
+            window.drag(&mut transport, &mut queue, from, to),
+            Some(Command::MoveTrack {
+                playlist: PLAYLIST.to_owned(),
+                revision: revision("rev-1"),
+                moves: vec![
+                    Move {
+                        from: 0,
+                        length: 1,
+                        to: 4,
+                    },
+                    Move {
+                        from: 1,
+                        length: 1,
+                        to: 4,
+                    },
+                ],
+            }),
+            "a gapped pair is a chain in one delta"
+        );
+        assert_eq!(page_rows(&window), ["b", "d", "a", "c"]);
+    }
+
+    #[test]
     fn a_block_target_is_drawn_exactly_where_a_move_would_land() {
         let len = 6;
         let list = egui::Id::unique("list");
