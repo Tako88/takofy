@@ -461,7 +461,9 @@ pub struct Palette {
     pub text_disabled: Color32,
     /// Text on a light fill.
     pub text_inverse: Color32,
-    /// Sound is coming out. Never a surface.
+    /// Sound is coming out. Never a surface. Pistachio rather than mint, so the
+    /// signal carries no cyan; ~7:1 on the surface, and black text sits on it
+    /// when it is a tile.
     pub accent: Color32,
     pub accent_hover: Color32,
     /// A selected chip's fill: bone at low alpha, not a gamma-scaled text.
@@ -506,8 +508,8 @@ impl Palette {
         text_subtle: Color32::from_rgb(0x83, 0x80, 0x7a),
         text_disabled: Color32::from_rgb(0x4d, 0x4c, 0x48),
         text_inverse: Color32::from_rgb(0x0b, 0x0b, 0x0c),
-        accent: Color32::from_rgb(0x1e, 0xd7, 0x60),
-        accent_hover: Color32::from_rgb(0x3e, 0xe5, 0x7b),
+        accent: Color32::from_rgb(0x7d, 0xa5, 0x66),
+        accent_hover: Color32::from_rgb(0x93, 0xbb, 0x7c),
         pressed: Color32::from_rgba_unmultiplied_const(0xf2, 0xf0, 0xea, 20),
         row_hover: Color32::from_rgba_unmultiplied_const(0xf2, 0xf0, 0xea, 15),
         hero_wash: Color32::from_rgba_unmultiplied_const(0x3a, 0x3a, 0x3a, 102),
