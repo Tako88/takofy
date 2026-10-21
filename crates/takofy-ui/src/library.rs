@@ -664,6 +664,14 @@ impl Library {
             .is_some_and(|pending| pending.playlist == playlist)
     }
 
+    /// Whether any write is in flight, on the page or in the sidebar.
+    ///
+    /// A menu opened over a write would act on rows that write is already
+    /// replacing, so it waits for the reply.
+    pub fn write_in_flight(&self) -> bool {
+        self.pending.is_some() || self.sidebar_pending.is_some()
+    }
+
     /// Whether a row may be lifted off the loaded page now.
     ///
     /// A page write in flight holds the page still: a drop would name a revision
@@ -3452,6 +3460,20 @@ mod tests {
 
         assert_eq!(move_one(&mut library, "a", 0, 2, &track("t0")), None);
         assert!(!library.movable());
+    }
+
+    #[test]
+    fn write_in_flight_is_any_pending_write() {
+        let library = Library::default();
+        assert!(!library.write_in_flight(), "an idle library has no write");
+
+        let mut page = page_with("a", &["t0", "t1", "t2"], access(0x01, true));
+        assert!(move_one(&mut page, "a", 0, 2, &track("t0")).is_some());
+        assert!(page.write_in_flight(), "a page move is a write");
+
+        let mut sidebar = sidebar_library(&["a", "b", "c"], 0x07, true, None);
+        assert!(sidebar.move_playlist(0, 2, "a").is_some());
+        assert!(sidebar.write_in_flight(), "a sidebar write is a write");
     }
 
     #[test]

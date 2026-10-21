@@ -74,6 +74,19 @@ impl Selection {
         }
     }
 
+    /// The rows a command opened on `row` acts on.
+    ///
+    /// A row inside the pick acts on the whole pick and leaves it alone: the
+    /// menu must never collapse what the user gathered. A row outside it is
+    /// picked first, so a menu about one row can never stand over another row
+    /// that looks picked.
+    pub fn act_on(&mut self, row: usize) -> Vec<usize> {
+        if !self.contains(row) {
+            self.press(row, Press::Replace);
+        }
+        self.rows().collect()
+    }
+
     /// Picks `row` for dragging, without losing a selection it already sits in.
     pub fn lift(&mut self, row: usize) {
         if !self.contains(row) {
@@ -302,6 +315,38 @@ mod tests {
             selection.press(row, Press::Toggle);
         }
         assert_eq!(rows(&selection), vec![1, 4, 7]);
+    }
+
+    #[test]
+    fn act_on_a_row_inside_the_pick_returns_the_whole_pick_and_keeps_it() {
+        let mut selection = picked([2, 4, 5]);
+        assert_eq!(selection.act_on(4), vec![2, 4, 5]);
+        assert_eq!(rows(&selection), vec![2, 4, 5], "the pick was collapsed");
+        assert_eq!(selection.anchor, Some(2));
+    }
+
+    #[test]
+    fn act_on_a_row_outside_replaces_the_pick_with_that_row() {
+        let mut selection = picked([2, 4]);
+        assert_eq!(selection.act_on(1), vec![1]);
+        assert_eq!(rows(&selection), vec![1]);
+        assert_eq!(selection.anchor, Some(1));
+    }
+
+    #[test]
+    fn act_on_with_no_pick_picks_the_row() {
+        let mut selection = Selection::default();
+        assert_eq!(selection.act_on(3), vec![3]);
+        assert_eq!(rows(&selection), vec![3]);
+    }
+
+    #[test]
+    fn act_on_returns_rows_ascending() {
+        let mut selection = Selection::default();
+        for row in [7, 1, 4] {
+            selection.press(row, Press::Toggle);
+        }
+        assert_eq!(selection.act_on(7), vec![1, 4, 7]);
     }
 
     #[test]

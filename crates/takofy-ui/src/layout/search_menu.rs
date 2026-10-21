@@ -191,7 +191,7 @@ fn inner_rect(row: Rect) -> Rect {
 
 /// Whether a rect has a finite origin and size, so the clamps below are real
 /// arithmetic and not NaN.
-fn is_sane(rect: Rect) -> bool {
+pub(super) fn is_sane(rect: Rect) -> bool {
     rect.min.x.is_finite()
         && rect.min.y.is_finite()
         && rect.width().is_finite()
@@ -200,7 +200,7 @@ fn is_sane(rect: Rect) -> bool {
 
 /// A rect with a finite origin and a non-negative size, so a bad caller cannot
 /// turn an arithmetic clamp into a NaN.
-fn sane(rect: Rect) -> Rect {
+pub(super) fn sane(rect: Rect) -> Rect {
     if !is_sane(rect) {
         return Rect::ZERO;
     }
