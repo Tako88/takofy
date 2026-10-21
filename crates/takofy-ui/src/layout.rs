@@ -13,6 +13,7 @@ pub mod episode;
 pub mod hero;
 pub mod panel;
 pub mod queue;
+pub mod search_menu;
 pub mod table;
 pub mod tracks;
 
