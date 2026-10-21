@@ -43,6 +43,11 @@ impl SignIn {
             (
                 Update::Playlists(_)
                 | Update::PlaylistFailed(_)
+                | Update::RootlistAccess(_)
+                | Update::PlaylistMoved { .. }
+                | Update::PlaylistMoveFailed
+                | Update::TrackAdded { .. }
+                | Update::AddFailed { .. }
                 | Update::Tracks { .. }
                 | Update::TrackMoved { .. }
                 | Update::MoveFailed { .. }
