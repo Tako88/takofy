@@ -38,6 +38,8 @@ pub enum Command {
     LoadRelated { artist: String, uris: Vec<String> },
     /// Load the albums the user saved, as the library root draws them.
     LoadSavedAlbums,
+    /// The tracks one search query answers.
+    Search { query: String },
     /// Start playing a track.
     Play { uri: String },
     /// Pause playback.
@@ -79,6 +81,8 @@ pub enum Failure {
     SavedAlbums,
     /// A track's lyrics could not be loaded.
     Lyrics,
+    /// A search's results could not be loaded.
+    Search,
     /// Anything else; reproduce with `--headless` for the message.
     Other,
 }
@@ -175,6 +179,13 @@ pub enum Update {
     Lyrics { track: String, lyrics: TrackLyrics },
     /// A track's lyrics could not be loaded.
     LyricsFailed { track: String, failure: Failure },
+    /// The tracks one search query answered, echoed with the query that asked.
+    Search {
+        query: String,
+        tracks: Vec<TrackEntry>,
+    },
+    /// A search's results could not be loaded; echoed with the query that asked.
+    SearchFailed { query: String, failure: Failure },
     /// A playback change.
     Transport(TransportUpdate),
 }

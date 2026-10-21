@@ -161,8 +161,8 @@ pub fn availability(control: Control) -> Availability {
         Control::FilterArtists => Availability::Ready,
         Control::FilterAlbums => Availability::Ready,
         Control::FilterPodcasts => Availability::Ready, // #3
-        Control::SearchField => Availability::Waiting,  // #16
-        Control::TrailHome => Availability::Waiting,    // #17
+        Control::SearchField => Availability::Ready,
+        Control::TrailHome => Availability::Waiting, // #17
         Control::NowPlayingMore => Availability::Waiting, // #16
 
         // Transport and seek are their own issue.
@@ -263,6 +263,7 @@ mod tests {
                     | Control::FilterArtists
                     | Control::FilterAlbums
                     | Control::FilterPodcasts
+                    | Control::SearchField
             );
             assert_eq!(
                 availability(control) == Availability::Ready,

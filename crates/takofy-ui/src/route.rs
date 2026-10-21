@@ -14,6 +14,14 @@ pub enum Page {
     Artist(String),
     /// A show, by URI.
     Show(String),
+    /// A search's results, by query.
+    ///
+    /// The payload is not a URI: it is the collapsed query the field stands for
+    /// (R6). It can therefore look like one — a query of `spotify:playlist:x`
+    /// is a legitimate thing to type — so every consumer decides by [`Page`]
+    /// variant first and reads the payload second. Nothing may guess a page's
+    /// kind from its payload's shape.
+    Search(String),
 }
 
 impl Page {
@@ -31,10 +39,18 @@ impl Page {
         }
     }
 
-    /// The URI the page was opened with.
+    /// The URI the page was opened with, or a search page's query.
+    ///
+    /// A search page's payload is a query and not a URI; it is returned here
+    /// because it is the page's identity, the one string the history and the
+    /// reads are keyed by.
     pub fn uri(&self) -> &str {
         match self {
-            Page::Playlist(uri) | Page::Album(uri) | Page::Artist(uri) | Page::Show(uri) => uri,
+            Page::Playlist(uri)
+            | Page::Album(uri)
+            | Page::Artist(uri)
+            | Page::Show(uri)
+            | Page::Search(uri) => uri,
         }
     }
 
@@ -45,6 +61,7 @@ impl Page {
             Page::Album(_) => "Album",
             Page::Artist(_) => "Artist",
             Page::Show(_) => "Show",
+            Page::Search(_) => "Search",
         }
     }
 }
@@ -169,6 +186,10 @@ mod tests {
 
     fn show(uri: &str) -> Option<Page> {
         Some(Page::Show(uri.to_owned()))
+    }
+
+    fn search(query: &str) -> Option<Page> {
+        Some(Page::Search(query.to_owned()))
     }
 
     #[test]
@@ -392,10 +413,46 @@ mod tests {
             (Page::Album("a".to_owned()), "a", "Album"),
             (Page::Artist("r".to_owned()), "r", "Artist"),
             (Page::Show("s".to_owned()), "s", "Show"),
+            (Page::Search("q".to_owned()), "q", "Search"),
         ];
         for (page, uri, kind) in cases {
             assert_eq!(page.uri(), uri);
             assert_eq!(page.kind(), kind);
         }
+    }
+
+    /// A query can be anything the field accepts, including something that
+    /// spells a URI. Such a page is a search and must never be mistaken for the
+    /// page that URI names: the payload is read, the kind is decided by the
+    /// variant.
+    #[test]
+    fn a_search_query_that_spells_a_uri_is_still_a_search() {
+        let page = Page::Search("spotify:playlist:x".to_owned());
+
+        assert_eq!(page.kind(), "Search");
+        assert_eq!(page.uri(), "spotify:playlist:x");
+        assert_ne!(page, Page::Playlist("spotify:playlist:x".to_owned()));
+    }
+
+    /// The history is pruned of playlists that left the library, and a search
+    /// whose query spells a playlist URI must survive that pruning: it is not a
+    /// page the playlist list can name.
+    #[test]
+    fn retain_keeps_a_search_query_that_spells_a_playlist_uri() {
+        let mut history = History::default();
+        history.go(search("spotify:playlist:x"));
+
+        history.retain(|page| !matches!(page, Page::Playlist(_)));
+
+        assert_eq!(history.current(), search("spotify:playlist:x").as_ref());
+    }
+
+    #[test]
+    fn the_same_query_twice_is_one_page() {
+        let mut history = History::default();
+        history.go(search("never gonna"));
+
+        assert!(!history.go(search("never gonna")));
+        assert!(history.go(search("never gonna give")));
     }
 }

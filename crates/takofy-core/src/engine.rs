@@ -5,7 +5,7 @@ use librespot::core::{Session, SessionConfig};
 
 use crate::album::AlbumError;
 use crate::artist::ArtistError;
-use crate::context::{ContextError, Walker};
+use crate::context::{ContextError, Page, PageSource, Walker};
 use crate::credentials::AccessToken;
 use crate::followed::FollowedError;
 use crate::lyrics::LyricsError;
@@ -16,6 +16,7 @@ use crate::remote::{
     read_release_tracks, read_saved_albums, read_show, write_follow,
 };
 use crate::rootlist::{RootlistError, fetch_all};
+use crate::search::search_uri;
 use crate::show::ShowError;
 use takofy_model::{
     AlbumDetail, ArtistDetail, CoverUrl, FollowedArtist, FollowedShow, PlaylistEntry, SavedAlbum,
@@ -96,6 +97,21 @@ impl Engine {
         }
     }
 
+    /// The tracks one search query answers, labelled, in the wire's own order.
+    ///
+    /// One page only: the search route answers twenty tracks and offers no
+    /// paging, so this never walks. A blank query asks for nothing and answers
+    /// nothing without a request.
+    pub async fn search(&self, query: &str) -> Result<Vec<TrackEntry>, EngineError> {
+        let source = RemoteContext {
+            session: &self.session,
+        };
+        let Some(page) = search_page(source, query).await? else {
+            return Ok(Vec::new());
+        };
+        Ok(label_tracks(&self.session, page.tracks).await)
+    }
+
     /// One album, its tracks labelled.
     ///
     /// Unlike a playlist this is a single request and a single labelling pass:
@@ -163,6 +179,18 @@ impl Engine {
     }
 }
 
+/// The first page one search query answers, through any page source.
+///
+/// Split out of [`Engine::search`] so the URI the walker resolves can be
+/// asserted without a session. A blank query resolves nothing, and a search
+/// answers at most one page.
+async fn search_page<S: PageSource>(source: S, query: &str) -> Result<Option<Page>, ContextError> {
+    let Some(uri) = search_uri(query) else {
+        return Ok(None);
+    };
+    Walker::new(source, uri).next_page().await
+}
+
 /// The track pages of one playlist.
 pub struct TrackPages<'a> {
     session: &'a Session,
@@ -181,5 +209,81 @@ impl TrackPages<'_> {
     /// The context's own image, once the first page has been resolved.
     pub fn cover(&self) -> Option<CoverUrl> {
         self.walker.cover()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::search_page;
+    use crate::context::{ContextError, Page, PageSource, PageTrack, Resolved};
+
+    /// A source that records every URI it is asked to resolve and answers one
+    /// page with one track.
+    #[derive(Clone, Default)]
+    struct Recording {
+        resolved: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl Recording {
+        fn resolved(&self) -> Vec<String> {
+            self.resolved.lock().expect("lock").clone()
+        }
+    }
+
+    impl PageSource for Recording {
+        async fn resolve(&self, uri: &str) -> Result<Resolved, ContextError> {
+            self.resolved.lock().expect("lock").push(uri.to_owned());
+            Ok(Resolved {
+                pages: vec![Page {
+                    tracks: vec![PageTrack {
+                        uri: "spotify:track:a".to_owned(),
+                        added_at: None,
+                    }],
+                    next: None,
+                }],
+                cover: None,
+            })
+        }
+
+        async fn next(&self, url: &str) -> Result<Page, ContextError> {
+            panic!("a search resolves once and never pages (asked for {url})");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_search_walks_a_search_context_uri() {
+        let source = Recording::default();
+        let page = search_page(source.clone(), "never gonna")
+            .await
+            .expect("walk")
+            .expect("one page");
+
+        assert_eq!(
+            source.resolved(),
+            vec!["spotify:search:never+gonna".to_owned()],
+            "the walker must be given a context URI, not a bare query"
+        );
+        assert_eq!(
+            page,
+            Page {
+                tracks: vec![PageTrack {
+                    uri: "spotify:track:a".to_owned(),
+                    added_at: None,
+                }],
+                next: None,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn a_blank_query_resolves_nothing() {
+        let source = Recording::default();
+        assert_eq!(
+            search_page(source.clone(), "  \t ").await.expect("walk"),
+            None
+        );
+        assert_eq!(source.resolved(), Vec::<String>::new());
     }
 }

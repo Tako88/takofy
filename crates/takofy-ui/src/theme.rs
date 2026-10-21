@@ -188,6 +188,18 @@ pub mod extent {
     /// The search field's floor. Not a reference value: a round 8 rem chosen
     /// on the reference's own scale, to be tuned at the minimum window.
     pub const SEARCH_MIN_W: f32 = 128.0;
+    /// The gap between the search field and its drop-down, 6px. The reference
+    /// writes it as `calc(100% + 6px)`: a bare value, not a step on the scale.
+    pub const MENU_GAP: f32 = 6.0;
+    /// A search menu row's cover tile, 2.25 rem. The same box as a library
+    /// row's art, named for the row that reads it.
+    pub const MENU_COVER: f32 = 36.0;
+    /// The narrowest title column a menu row keeps while it also draws
+    /// `MENU_COVER`. Below it the row drops the cover and hands its width to the
+    /// text: a narrow row loses a column before it loses a line. Not a reference
+    /// value — the reference's own narrow-window rule, expressed here as the
+    /// room about ten characters of `text::BASE` need.
+    pub const MENU_TEXT_MIN: f32 = 72.0;
     /// The progress bar's maximum width, 32 rem.
     pub const PROGRESS_MAX_W: f32 = 512.0;
     /// The time readout's column, 2.5 rem.

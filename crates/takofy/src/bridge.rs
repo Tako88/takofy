@@ -336,6 +336,12 @@ pub(crate) fn start<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                         break;
                     }
                 }
+                Event::Command(Some(Command::Search { query })) => {
+                    let step = load_search(&mut host, &mut stop_rx, &task_notifier, &query).await;
+                    if step.stopped() {
+                        break;
+                    }
+                }
                 Event::Command(Some(Command::LoadReleaseTracks { release, tracks })) => {
                     let step = load_release_tracks(
                         &mut host,
@@ -704,6 +710,36 @@ async fn load_lyrics<H: SessionHost>(
     }
 }
 
+/// Loads one search query's tracks and announces them.
+///
+/// The query is echoed verbatim. The window clears its in-flight marker on an
+/// echo that matches the key it sent, so a reworded query here would strand
+/// the read.
+async fn load_search<H: SessionHost>(
+    host: &mut H,
+    stop: &mut StopReceiver<()>,
+    notifier: &Notifier,
+    query: &str,
+) -> Step {
+    match stop_or(stop, host.search(query)).await {
+        None => Step::Stopped,
+        Some(Ok(tracks)) => {
+            notifier.send(Update::Search {
+                query: query.to_owned(),
+                tracks,
+            });
+            Step::Done
+        }
+        Some(Err(error)) => {
+            notifier.send(Update::SearchFailed {
+                query: query.to_owned(),
+                failure: search_failure(&error),
+            });
+            Step::Done
+        }
+    }
+}
+
 /// Labels one release's tracks and announces them.
 async fn load_release_tracks<H: SessionHost>(
     host: &mut H,
@@ -862,6 +898,14 @@ pub(crate) fn albums_failure(error: &SessionError) -> Failure {
 pub(crate) fn lyrics_failure(error: &SessionError) -> Failure {
     log::warn!("session failure: {}", error.kind());
     Failure::Lyrics
+}
+
+/// A search has its own failure: the menu and the page name only the search,
+/// and the field stays editable so typing retries. The reason is for the log,
+/// never the window.
+pub(crate) fn search_failure(error: &SessionError) -> Failure {
+    log::warn!("search failure: {}", error.kind());
+    Failure::Search
 }
 
 /// Logs the failure variant, then hands the update to the window. The variant
@@ -1286,6 +1330,23 @@ mod tests {
         }
     }
 
+    /// A scripted search answer; the default is no tracks.
+    ///
+    /// `Pending` never answers, so a stop can be tested while the load is still
+    /// in flight (the same shape [`LyricsScript`] uses).
+    #[derive(Clone)]
+    enum SearchScript {
+        Ready(Vec<TrackEntry>),
+        Fail,
+        Pending,
+    }
+
+    impl Default for SearchScript {
+        fn default() -> Self {
+            Self::Ready(Vec::new())
+        }
+    }
+
     /// A scripted release-label answer.
     #[derive(Clone, Default)]
     enum ReleaseScript {
@@ -1316,6 +1377,7 @@ mod tests {
         saved_albums_script: Mutex<SavedAlbumsScript>,
         artist_script: Mutex<ArtistScript>,
         lyrics_script: Mutex<LyricsScript>,
+        search_script: Mutex<SearchScript>,
         release_script: Mutex<ReleaseScript>,
         follow_script: Mutex<FollowScript>,
         connected: AtomicBool,
@@ -1329,10 +1391,14 @@ mod tests {
         saved_album_lists: AtomicUsize,
         artists: AtomicUsize,
         lyrics_loads: AtomicUsize,
+        searches: AtomicUsize,
+        /// Every query asked for, in order, so an echo can be compared.
+        searched: Mutex<Vec<String>>,
         releases: AtomicUsize,
         follow_writes: AtomicUsize,
         artist_started: Mutex<Option<Sender<()>>>,
         lyrics_started: Mutex<Option<Sender<()>>>,
+        search_started: Mutex<Option<Sender<()>>>,
         show_started: Mutex<Option<Sender<()>>>,
 
         last_follow: Mutex<Option<(String, bool)>>,
@@ -1612,6 +1678,33 @@ mod tests {
                     LyricsScript::Ready(lyrics) => Ok(lyrics),
                     LyricsScript::Fail => Err(SessionError::NotConnected),
                     LyricsScript::Pending => std::future::pending().await,
+                }
+            }
+        }
+
+        fn search(
+            &self,
+            query: &str,
+        ) -> impl Future<Output = Result<Vec<TrackEntry>, SessionError>> + Send {
+            self.shared.searches.fetch_add(1, Ordering::SeqCst);
+            self.shared
+                .searched
+                .lock()
+                .expect("lock")
+                .push(query.to_owned());
+            if let Some(tx) = self.shared.search_started.lock().expect("lock").take() {
+                let _ = tx.send(());
+            }
+            let connected = self.shared.connected.load(Ordering::SeqCst);
+            let script = self.shared.search_script.lock().expect("lock").clone();
+            async move {
+                if !connected {
+                    return Err(SessionError::NotConnected);
+                }
+                match script {
+                    SearchScript::Ready(tracks) => Ok(tracks),
+                    SearchScript::Fail => Err(SessionError::NotConnected),
+                    SearchScript::Pending => std::future::pending().await,
                 }
             }
         }
@@ -3394,6 +3487,217 @@ mod tests {
         };
 
         run_ordered(runtime, window, teardown);
+    }
+
+    #[test]
+    fn a_scripted_search_echoes_the_query_it_was_asked() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+        let tracks = vec![track("spotify:track:a")];
+        *shared.search_script.lock().expect("lock") = SearchScript::Ready(tracks.clone());
+        // An interior double space: the echo must be the command's string
+        // byte for byte, because the window clears its in-flight marker on a
+        // match and would otherwise never ask again.
+        let query = "never  gonna";
+
+        let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::Search {
+                    query: query.to_owned(),
+                })
+                .expect("search");
+            ui_end.updates.recv().expect("results")
+        });
+
+        assert_eq!(
+            update,
+            Update::Search {
+                query: query.to_owned(),
+                tracks,
+            }
+        );
+        assert_eq!(shared.searches.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            *shared.searched.lock().expect("lock"),
+            vec![query.to_owned()],
+            "the worker must ask for the query the window sent"
+        );
+    }
+
+    #[test]
+    fn a_failed_search_is_announced() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+        *shared.search_script.lock().expect("lock") = SearchScript::Fail;
+
+        let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::Search {
+                    query: "never gonna".to_owned(),
+                })
+                .expect("search");
+            ui_end.updates.recv().expect("failure")
+        });
+
+        assert_eq!(
+            update,
+            Update::SearchFailed {
+                query: "never gonna".to_owned(),
+                failure: Failure::Search,
+            }
+        );
+        assert_eq!(shared.searches.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_stop_during_a_search_shuts_down() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+        *shared.search_script.lock().expect("lock") = SearchScript::Pending;
+        let (started_tx, started_rx) = channel();
+        *shared.search_started.lock().expect("lock") = Some(started_tx);
+
+        let runtime = runtime();
+        let (ui_end, _slot, worker) = start(runtime.handle(), host, store, source);
+
+        let window = move || {
+            loop {
+                if matches!(ui_end.updates.recv().expect("update"), Update::Playlists(_)) {
+                    break;
+                }
+            }
+            ui_end
+                .commands
+                .send(Command::Search {
+                    query: "never gonna".to_owned(),
+                })
+                .expect("search");
+            started_rx.recv().expect("search started");
+        };
+        let teardown = move || async move {
+            // A hung stop must fail the test, not hang the suite.
+            tokio::time::timeout(Duration::from_secs(1), worker.finish())
+                .await
+                .expect("finish must resolve when the stop interrupts the search");
+            assert_eq!(
+                shared.shutdowns.load(Ordering::SeqCst),
+                1,
+                "the shutdown must run when the stop interrupts the search"
+            );
+        };
+
+        run_ordered(runtime, window, teardown);
+    }
+
+    #[test]
+    fn two_back_to_back_searches_announce_their_own_queries() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+        let tracks = vec![track("spotify:track:a")];
+        *shared.search_script.lock().expect("lock") = SearchScript::Ready(tracks.clone());
+
+        let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            let mut received = Vec::new();
+            for query in ["first", "second"] {
+                ui_end
+                    .commands
+                    .send(Command::Search {
+                        query: query.to_owned(),
+                    })
+                    .expect("search");
+                received.push(ui_end.updates.recv().expect("results"));
+            }
+            received
+        });
+
+        assert_eq!(
+            updates,
+            vec![
+                Update::Search {
+                    query: "first".to_owned(),
+                    tracks: tracks.clone(),
+                },
+                Update::Search {
+                    query: "second".to_owned(),
+                    tracks,
+                },
+            ]
+        );
+        assert_eq!(
+            *shared.searched.lock().expect("lock"),
+            vec!["first".to_owned(), "second".to_owned()],
+            "the two reads must be asked for in the order they were sent"
+        );
+    }
+
+    #[test]
+    fn two_searches_queued_before_either_reply_announce_their_own_queries() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+        let tracks = vec![track("spotify:track:a")];
+        *shared.search_script.lock().expect("lock") = SearchScript::Ready(tracks.clone());
+
+        let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            // Both reads are queued before either answer is read: a window
+            // that is typing does not wait for the first reply to ask again.
+            for query in ["first", "second"] {
+                ui_end
+                    .commands
+                    .send(Command::Search {
+                        query: query.to_owned(),
+                    })
+                    .expect("search");
+            }
+            let mut received = Vec::new();
+            for _ in 0..2 {
+                received.push(ui_end.updates.recv().expect("results"));
+            }
+            received
+        });
+
+        assert_eq!(
+            updates,
+            vec![
+                Update::Search {
+                    query: "first".to_owned(),
+                    tracks: tracks.clone(),
+                },
+                Update::Search {
+                    query: "second".to_owned(),
+                    tracks,
+                },
+            ]
+        );
+        assert_eq!(
+            *shared.searched.lock().expect("lock"),
+            vec!["first".to_owned(), "second".to_owned()],
+            "the queued reads are asked for in the order they were sent"
+        );
     }
 
     #[test]
