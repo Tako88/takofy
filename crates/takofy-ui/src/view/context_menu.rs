@@ -128,8 +128,12 @@ pub fn show(ui: &mut Ui, frame: Frame<'_>) -> Option<Closed> {
     let surface_id = area_id.with("surface");
 
     // The pointer reached a row, so the pointer owns the tier from this frame on.
+    // A pointer merely resting where the menu opens is not the last device: a
+    // keyboard open would otherwise lose its lit row to a pointer that never moved.
     let hovered = pointer_row(ui, rect, menu.items().len());
-    menu.pointer_over(hovered);
+    if ui.input(|input| input.pointer.is_moving()) {
+        menu.pointer_over(hovered);
+    }
 
     let mut chosen = None;
     let mut sizing = false;
@@ -171,9 +175,9 @@ pub fn show(ui: &mut Ui, frame: Frame<'_>) -> Option<Closed> {
     }
 
     if !fresh {
-        // Escape is consumed on every path, including the focus one below: the
-        // drawer reads it without consuming, and one Escape must not close two
-        // things.
+        // Escape is read and consumed before anything else, so the focus path
+        // below never sees it and the drawer - which reads it without consuming
+        // - never gets one the menu closed on.
         let (escape, tab, down, up, first, last, enter) = ui.input_mut(|input| {
             (
                 input.consume_key(Modifiers::NONE, Key::Escape),
