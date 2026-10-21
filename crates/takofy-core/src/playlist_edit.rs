@@ -314,7 +314,6 @@ mod tests {
                 .any(|run| run == [0x12, 0x2b, 0x08, 0xc8, 0x01, 0x12]),
             "the add and its item keep their own tags"
         );
-        assert!(body.contains(&0x2b), "the op's add field is 43 bytes");
         assert_eq!(body.len(), 103);
         let read = page(&body);
         let add = read.deltas[0].ops[0].add.as_ref().expect("an add");
