@@ -391,6 +391,12 @@ pub mod motion {
     pub const STAGGER: f32 = 0.120;
 }
 
+pub mod scroll {
+    /// How far one line of wheel travel moves the content. A row is 44, so a
+    /// notch clears a row and a bit rather than most of one.
+    pub const POINTS_PER_LINE: f32 = 60.0;
+}
+
 pub mod stroke {
     /// The one width a divider is allowed to be.
     pub const HAIRLINE: f32 = 1.0;

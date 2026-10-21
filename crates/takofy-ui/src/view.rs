@@ -77,6 +77,9 @@ pub(crate) fn inner<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
 
 /// Draws the current state, returning a command when the user asks for one.
 pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Command> {
+    // Before anything scrolls: the wheel moves the page in the frame it arrives.
+    crate::scroll::instant(ui.ctx());
+
     match *screen.state {
         // Starting, authorizing and a prompt are one card: with words when there
         // are words, with a spinner while the flow works.

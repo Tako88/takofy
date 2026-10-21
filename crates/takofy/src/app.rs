@@ -11,7 +11,7 @@ use takofy_ui::message::{Command, Update};
 use takofy_ui::player::{REDRAW, Transport, TransportState};
 use takofy_ui::queue::Queue;
 use takofy_ui::signin::SignIn;
-use takofy_ui::theme::{Tokens, fonts, style};
+use takofy_ui::theme::{Tokens, fonts, scroll, style};
 use takofy_ui::{layout, view};
 
 use crate::bridge::UiEnd;
@@ -53,6 +53,11 @@ impl TakofyApp {
         let tokens = Tokens::DARK;
         cc.egui_ctx.set_fonts(fonts::definitions());
         cc.egui_ctx.set_global_style(style(&tokens));
+        // The wheel's own conversion, so a page passed to egui still travels the
+        // same distance per line as one this client applies itself.
+        cc.egui_ctx.options_mut(|options| {
+            options.input_options.line_scroll_speed = scroll::POINTS_PER_LINE;
+        });
         Self {
             state: SignIn::default(),
             library: Library::default(),

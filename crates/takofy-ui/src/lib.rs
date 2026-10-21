@@ -18,6 +18,7 @@ pub mod player;
 pub mod queue;
 pub mod releases;
 pub mod route;
+pub mod scroll;
 pub mod sidebar_kind;
 pub mod signin;
 pub mod theme;
