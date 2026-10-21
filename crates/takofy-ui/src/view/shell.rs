@@ -537,6 +537,8 @@ fn land(queue: &mut Queue, carry: &Carry, target: Target) {
         (Target::At(at), Source::List(_)) => queue.insert_at(at.boundary, carry.entries.clone()),
         // A row dropped in its own list is moved by `reorder`, not by the queue.
         (Target::Reorder(_), _) => None,
+        // The sidebar's two meanings are writes of their own, never a queue move.
+        (Target::Rootlist(_) | Target::Add(_), _) => None,
         // An add asks for no row: the pane that would show it is not on screen.
         (Target::End, Source::List(_)) => {
             let _ = queue.append(carry.entries.clone());

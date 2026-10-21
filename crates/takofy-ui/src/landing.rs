@@ -26,6 +26,15 @@ pub struct Zone {
     pub count: usize,
 }
 
+/// One row of a list, and the box a fill for it covers.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Slot {
+    /// The row's index in the list that owns it.
+    pub row: usize,
+    /// The row's own box, clipped to what the list shows.
+    pub rect: Rect,
+}
+
 /// Where a drop lands, and the rule that shows it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Landing {
@@ -51,13 +60,17 @@ impl Area {
     }
 }
 
-/// What a drop does: land at a boundary, with its marker, or join the end with
-/// none.
+/// What a drop does: land at a boundary, with its marker, join the end with
+/// none, or take a whole row.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Target {
     At(Landing),
     /// Land in the rows of the list the row was lifted from, at a boundary.
     Reorder(Landing),
+    /// Land in the sidebar's playlists, at a boundary.
+    Rootlist(Landing),
+    /// Add to the playlist whose row this is.
+    Add(Slot),
     End,
 }
 
@@ -67,10 +80,53 @@ impl Target {
     /// An add has no position to show, so it draws no marker.
     pub fn marker(self) -> Option<Rect> {
         match self {
-            Target::At(landing) | Target::Reorder(landing) => Some(landing.marker),
-            Target::End => None,
+            Target::At(landing) | Target::Reorder(landing) | Target::Rootlist(landing) => {
+                Some(landing.marker)
+            }
+            Target::Add(_) | Target::End => None,
         }
     }
+
+    /// The row a target fills, if it fills one.
+    ///
+    /// A boundary target draws a rule instead: the two never meet.
+    pub fn fill(self) -> Option<Rect> {
+        match self {
+            Target::Add(slot) => Some(slot.rect),
+            Target::At(_) | Target::Reorder(_) | Target::Rootlist(_) | Target::End => None,
+        }
+    }
+}
+
+/// The row a pointer is over, and the box a fill for it would cover.
+///
+/// A boundary a pointer is inside no row at all, because a fill says "this row"
+/// and there is no row between two. The gap between two rows belongs to the one
+/// above it: a gap is a hairline and a row is the whole pitch.
+pub fn slot_at(pointer: Option<Pos2>, zone: Option<&Zone>, drawn: f32) -> Option<Slot> {
+    let pointer = pointer?;
+    let zone = zone?;
+    if !zone.hit.contains(pointer) {
+        return None;
+    }
+    if !zone.row_h.is_finite() || zone.row_h <= 0.0 {
+        return None;
+    }
+    let offset = (pointer.y - zone.list.top()) / zone.row_h;
+    if !offset.is_finite() || offset < 0.0 {
+        return None;
+    }
+    let row = offset.floor() as usize;
+    if row >= zone.count {
+        return None;
+    }
+    let top = zone.list.top() + row as f32 * zone.row_h;
+    let rect = Rect::from_min_size(pos2(zone.list.left(), top), vec2(zone.list.width(), drawn))
+        .intersect(zone.hit);
+    Some(Slot {
+        row: zone.first + row,
+        rect,
+    })
 }
 
 /// Resolves a pointer against a zone, or `None` when it lands nowhere.
@@ -119,6 +175,7 @@ pub fn target(pointer: Option<Pos2>, zone: Option<&Zone>, area: Option<&Area>) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::theme::space;
 
     fn hit() -> Rect {
         Rect::from_min_size(pos2(0.0, 0.0), vec2(300.0, 200.0))
@@ -338,6 +395,185 @@ mod tests {
         let area = Area::around(button());
         assert_eq!(target(None, None, Some(&area)), None);
         assert_eq!(target(None, None, None), None);
+    }
+
+    /// The playlists' rows box: a 4-row list of `H`-tall rows at `extent::ROW_H`.
+    fn slots(list: Rect, count: usize) -> Zone {
+        Zone {
+            hit: list,
+            list,
+            row_h: extent::ROW_H + space::PX,
+            first: 0,
+            count,
+        }
+    }
+
+    fn drawn() -> f32 {
+        extent::ROW_H
+    }
+
+    #[test]
+    fn a_pointer_over_a_row_names_that_row() {
+        let list = Rect::from_min_size(pos2(0.0, 0.0), vec2(300.0, 4.0 * extent::ROW_H));
+        let zone = slots(list, 4);
+        let pitch = extent::ROW_H + space::PX;
+
+        let found = slot_at(pointer(150.0, 2.0 * pitch + 10.0), Some(&zone), drawn()).unwrap();
+
+        assert_eq!(found.row, 2);
+        assert_eq!(found.rect.top(), 2.0 * pitch);
+        assert_eq!(found.rect.height(), drawn());
+    }
+
+    #[test]
+    fn the_gap_between_two_rows_belongs_to_the_row_above() {
+        let list = Rect::from_min_size(pos2(0.0, 0.0), vec2(300.0, 4.0 * extent::ROW_H));
+        let zone = slots(list, 4);
+        let pitch = extent::ROW_H + space::PX;
+        let in_the_gap = pos2(150.0, pitch - space::PX / 2.0);
+
+        let found = slot_at(Some(in_the_gap), Some(&zone), drawn()).unwrap();
+
+        assert_eq!(found.row, 0, "a hairline gap is the row it follows");
+    }
+
+    #[test]
+    fn below_the_last_row_is_no_row() {
+        let list = Rect::from_min_size(pos2(0.0, 0.0), vec2(300.0, 4.0 * extent::ROW_H));
+        let mut zone = slots(list, 2);
+        zone.hit = Rect::from_min_size(pos2(0.0, 0.0), vec2(300.0, 200.0));
+
+        assert_eq!(slot_at(pointer(150.0, 150.0), Some(&zone), drawn()), None);
+    }
+
+    #[test]
+    fn outside_the_hit_area_is_no_row() {
+        let list = Rect::from_min_size(pos2(0.0, 10.0), vec2(300.0, 4.0 * extent::ROW_H));
+        let zone = slots(list, 4);
+
+        assert_eq!(slot_at(pointer(150.0, 2.0), Some(&zone), drawn()), None);
+        assert_eq!(slot_at(pointer(-1.0, 20.0), Some(&zone), drawn()), None);
+        assert_eq!(slot_at(None, Some(&zone), drawn()), None);
+        assert_eq!(slot_at(pointer(150.0, 20.0), None, drawn()), None);
+    }
+
+    #[test]
+    fn a_scrolled_list_names_the_row_under_the_pointer() {
+        let pitch = extent::ROW_H + space::PX;
+        let visible = Rect::from_min_size(pos2(0.0, 0.0), vec2(300.0, 200.0));
+        // The list's own top is row 0, seven pitches above the visible top.
+        let list = Rect::from_min_size(pos2(0.0, -7.0 * pitch), vec2(300.0, 400.0));
+        let mut zone = slots(list, 20);
+        zone.hit = visible;
+
+        let found = slot_at(pointer(150.0, 2.0 * pitch + 4.0), Some(&zone), drawn()).unwrap();
+
+        assert_eq!(found.row, 9, "row 7 is the first one on screen");
+        assert_eq!(found.rect.top(), 2.0 * pitch);
+    }
+
+    #[test]
+    fn the_fill_is_the_drawn_row_not_the_pitch() {
+        let list = Rect::from_min_size(pos2(0.0, 0.0), vec2(300.0, 4.0 * extent::ROW_H));
+        let zone = slots(list, 4);
+
+        let found = slot_at(pointer(150.0, 10.0), Some(&zone), drawn()).unwrap();
+
+        assert_eq!(
+            found.rect.height(),
+            extent::ROW_H,
+            "the gap under the row takes no fill"
+        );
+        assert!(found.rect.height() < zone.row_h);
+    }
+
+    #[test]
+    fn the_fill_is_clipped_to_the_visible_list() {
+        let pitch = extent::ROW_H + space::PX;
+        let visible = Rect::from_min_size(pos2(0.0, 0.0), vec2(300.0, 30.0));
+        // Row 0 sits a pitch above the visible top, and row 1 is cut off below.
+        let list = Rect::from_min_size(pos2(0.0, -pitch), vec2(300.0, 400.0));
+        let mut zone = slots(list, 10);
+        zone.hit = visible;
+
+        let found = slot_at(pointer(150.0, 20.0), Some(&zone), drawn()).unwrap();
+
+        assert_eq!(found.row, 1);
+        assert_eq!(found.rect.top(), visible.top());
+        assert_eq!(
+            found.rect.bottom(),
+            visible.bottom(),
+            "the fill stops where the list does"
+        );
+    }
+
+    #[test]
+    fn a_degenerate_pitch_names_no_row() {
+        let list = Rect::from_min_size(pos2(0.0, 0.0), vec2(300.0, 200.0));
+        for row_h in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+            let mut zone = slots(list, 4);
+            zone.row_h = row_h;
+            assert_eq!(slot_at(pointer(150.0, 10.0), Some(&zone), drawn()), None);
+        }
+    }
+
+    #[test]
+    fn an_add_draws_a_fill_and_no_rule() {
+        let slot = Slot {
+            row: 1,
+            rect: Rect::from_min_size(pos2(0.0, 44.0), vec2(300.0, extent::ROW_H)),
+        };
+        let target = Target::Add(slot);
+        assert_eq!(target.fill(), Some(slot.rect));
+        assert_eq!(target.marker(), None);
+    }
+
+    #[test]
+    fn a_rootlist_move_draws_a_rule_and_no_fill() {
+        let landing = resolve(
+            pointer(150.0, 2.0 * extent::ROW_H + 10.0),
+            Some(&slots(
+                Rect::from_min_size(pos2(0.0, 0.0), vec2(300.0, 4.0 * extent::ROW_H)),
+                4,
+            )),
+        )
+        .unwrap();
+
+        let target = Target::Rootlist(landing);
+
+        assert_eq!(target.marker(), Some(landing.marker));
+        assert_eq!(target.fill(), None);
+    }
+
+    #[test]
+    fn no_target_draws_both_a_rule_and_a_fill() {
+        let landing = Landing {
+            boundary: 1,
+            marker: Rect::from_min_size(pos2(0.0, 0.0), vec2(300.0, stroke::RULE)),
+        };
+        let slot = Slot {
+            row: 0,
+            rect: Rect::from_min_size(pos2(0.0, 0.0), vec2(300.0, extent::ROW_H)),
+        };
+
+        for target in [
+            Target::At(landing),
+            Target::Reorder(landing),
+            Target::Rootlist(landing),
+            Target::Add(slot),
+            Target::End,
+        ] {
+            // No wildcard: a variant added without a class is a compile error.
+            let fills = match target {
+                Target::Add(_) => true,
+                Target::At(_) | Target::Reorder(_) | Target::Rootlist(_) | Target::End => false,
+            };
+            assert_eq!(target.fill().is_some(), fills, "{target:?}");
+            assert!(
+                !(target.marker().is_some() && target.fill().is_some()),
+                "{target:?} must not draw both a rule and a fill"
+            );
+        }
     }
 
     #[test]
