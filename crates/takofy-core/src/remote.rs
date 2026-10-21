@@ -331,7 +331,7 @@ pub(crate) async fn write_move(
     from: usize,
     to: usize,
 ) -> Result<Revision, playlist_edit::PlaylistError> {
-    let endpoint = playlist_edit::move_endpoint(uri)?;
+    let endpoint = playlist_edit::changes_endpoint(uri)?;
     let headers = playlist_headers().ok_or_else(|| {
         playlist_edit::PlaylistError::Source(
             "the playlist media type is not a valid header".to_owned(),
