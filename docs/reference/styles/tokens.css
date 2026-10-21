@@ -113,6 +113,9 @@ html:root {
   --playbar-h: 4rem;
   --topbar-h: 3.5rem;
   --row-h: 2.75rem;
+  /* The height the actionbar collapses to when it sticks. Anything sticky under
+     it offsets by this, so a filter row cannot tuck itself under the bar. */
+  --actionbar-h: 3.75rem;
 
   /* ── Motion ───────────────────────────────────────────────── */
   --ease-out: cubic-bezier(0.3, 0, 0, 1);

@@ -139,6 +139,15 @@
     return shown === total ? total + " saved" : shown + " of " + total;
   }
 
+  /* A tracklist's readout, which only exists while a query is narrowing the list —
+     at rest the list is countable by looking at it, and a page that already says
+     "62 songs" in its hero must not be contradicted by a second total. The unit
+     comes from the markup because a discography is counted in releases. */
+  function trackLabel(shown, total, unit) {
+    unit = unit || "tracks";
+    return shown + " of " + total + " " + (total === 1 ? unit.replace(/s$/, "") : unit);
+  }
+
   function icon(id, cls) {
     return '<svg class="icon ' + (cls || "") + '" aria-hidden="true"><use href="#' + id + '"></use></svg>';
   }
@@ -445,10 +454,32 @@
         '<span class="library-item__name truncate">' + item.name + "</span>" +
         '<span class="library-item__kind truncate">' + item.sub + "</span></span></a></li>"
       );
-    }).join("");
+    }).join("") +
+      // The filter can empty this list, and an empty column with no sentence in
+      // it reads as a bug rather than as a result.
+      '<li class="library__empty" id="library-list-empty" hidden></li>';
 
+    setLibraryCount(countLabel(LIBRARY.length, LIBRARY.length));
+  }
+
+  /* The size readout is the field's resting label (its placeholder) and, at the
+     same time, a status node a screen reader hears while the query is typed —
+     the visible half of it is covered by the caret the moment you start typing. */
+  function setLibraryCount(text) {
     var countEl = $("[data-library-count]");
-    if (countEl) countEl.textContent = countLabel(LIBRARY.length, LIBRARY.length);
+    if (countEl) countEl.textContent = text;
+    var input = $("[data-library-filter]");
+    if (input) input.setAttribute("placeholder", text);
+  }
+
+  function libraryQuery() {
+    var input = $("[data-library-filter]");
+    return input ? input.value.trim() : "";
+  }
+
+  function activeKind(group) {
+    var chip = $('[data-chip][aria-pressed="true"]', group);
+    return chip ? chip.getAttribute("data-chip") : "";
   }
 
   function renderQueue() {
@@ -492,22 +523,161 @@
     if (!target) return;
     var scope = document.querySelector(target);
     if (!scope) return;
+    if (kind == null) kind = activeKind(group);
+
+    // Two axes, one list: the chips narrow by kind, the field narrows by name,
+    // and they are cumulative rather than competing. "Artists" plus "har" is one
+    // row, which is what a person typing into a filtered column expects.
+    var query = libraryQuery().toLowerCase();
     var items = $$("[data-kind]", scope);
     var shown = 0;
     items.forEach(function (item) {
-      var match = !kind || item.getAttribute("data-kind") === kind;
+      var byKind = !kind || item.getAttribute("data-kind") === kind;
+      var byName = !query || item.textContent.toLowerCase().indexOf(query) > -1;
+      var match = byKind && byName;
       item.hidden = !match;
       if (match) shown++;
     });
-    var empty = document.querySelector(target + "-empty");
-    if (empty) empty.hidden = shown > 0;
 
-    // Groups that own a size readout keep it honest as the filter changes.
+    var empty = document.querySelector(target + "-empty");
+    if (empty) {
+      empty.textContent = query ? "Nothing matches “" + libraryQuery() + "”" : "Nothing here";
+      empty.hidden = shown > 0;
+    }
+
+    // Groups that own a size readout keep it honest as either axis changes.
+    var text = countLabel(shown, items.length);
     var countSel = group.getAttribute("data-count-target");
     if (countSel) {
       var countEl = document.querySelector(countSel);
-      if (countEl) countEl.textContent = countLabel(shown, items.length);
+      if (countEl) countEl.textContent = text;
     }
+    setLibraryCount(text);
+  }
+
+  /* One field, bound per page: typing re-runs the chip filter with whatever kind
+     is already pressed, and Escape or the clear control puts the library back. */
+  function bindLibraryFilter() {
+    var input = $("[data-library-filter]");
+    if (!input) return;
+    var group = input.closest(".sidebar") && $("[data-chip-group]", input.closest(".sidebar"));
+    if (!group) return;
+    var clear = $("[data-library-filter-clear]");
+
+    function run() {
+      if (clear) clear.hidden = input.value === "";
+      applyFilter(group);
+    }
+
+    input.addEventListener("input", run);
+
+    input.addEventListener("keydown", function (event) {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      input.value = "";
+      run();
+    });
+
+    if (clear) {
+      clear.addEventListener("click", function () {
+        input.value = "";
+        run();
+        input.focus();
+      });
+    }
+
+    // Browsers restore search fields on back-navigation; the list has to agree
+    // with the box the moment the page comes back.
+    run();
+  }
+
+  /* A page-level list filter: the same field as the sidebar's, pointed at one
+     list instead of the library. Numbers are left alone on purpose — in a
+     playlist a row's number is the track's position, which is worth keeping.
+     Nothing here renumbers, and nothing moves: rows are hidden, not removed. */
+  function bindListFilters() {
+    $$("[data-list-filter]").forEach(function (form) {
+      var input = $("input", form);
+      var selector = form.getAttribute("data-list-target");
+      var scope = selector ? document.querySelector(selector) : null;
+      if (!input || !scope) return;
+
+      var clear = $("[data-list-filter-clear]", form);
+      var countEl = $("[data-list-count]", form.parentElement) || $("[data-list-count]");
+      var root = form.closest(".tracks") || form.closest(".section") || document;
+      var emptyEl = $("[data-list-empty]", root);
+      var headEl = scope.parentElement ? scope.parentElement.querySelector(":scope > .tracklist__head") : null;
+      var footEl = $("[data-list-foot]");
+      // The chips own a richer empty state of their own (a heading and a
+      // sentence); the text filter speaks through a plain note, and only one of
+      // the two is ever on screen.
+      var chipEmpty = document.querySelector(selector + "-empty");
+      var unit = form.getAttribute("data-list-unit") || "tracks";
+      var rows = Array.prototype.slice.call(scope.children);
+
+      // A field that shares its row with kind chips has to respect them: the two
+      // axes are cumulative, exactly as they are in the sidebar.
+      var chipGroup = form.closest("[data-chip-group]");
+      var chips = chipGroup ? $$("[data-chip]", chipGroup) : [];
+
+      function chipKind() {
+        var pressed = chipGroup ? $('[data-chip][aria-pressed="true"]', chipGroup) : null;
+        return pressed ? pressed.getAttribute("data-chip") : "";
+      }
+
+      function run() {
+        var query = input.value.trim();
+        var needle = query.toLowerCase();
+        var kind = chipKind();
+        var shown = 0;
+
+        rows.forEach(function (row) {
+          var byKind = !kind || row.getAttribute("data-kind") === kind;
+          var byName = !needle || row.textContent.toLowerCase().indexOf(needle) > -1;
+          var match = byKind && byName;
+          row.hidden = !match;
+          if (match) shown++;
+        });
+
+        // A column header over nothing is a table of no data; it goes with the
+        // empty sentence, not instead of it.
+        if (headEl) headEl.hidden = query !== "" && shown === 0;
+        if (countEl) countEl.textContent = query ? trackLabel(shown, rows.length, unit) : "";
+        if (emptyEl) {
+          if (query) emptyEl.textContent = "Nothing in this list matches “" + query + "”";
+          emptyEl.hidden = query === "" || shown > 0;
+        }
+        if (chipEmpty) chipEmpty.hidden = query !== "" || shown > 0;
+        // The list's own footer counts the whole list; while a query narrows it,
+        // the count in the tool row is the truthful one.
+        if (footEl) footEl.hidden = query !== "";
+        if (clear) clear.hidden = query === "";
+      }
+
+      input.addEventListener("input", run);
+      input.addEventListener("keydown", function (event) {
+        if (event.key !== "Escape") return;
+        event.preventDefault();
+        input.value = "";
+        run();
+      });
+
+      // Bound after the chip handler, so the pressed state has already changed
+      // by the time this re-applies both axes.
+      chips.forEach(function (chip) {
+        chip.addEventListener("click", run);
+      });
+
+      if (clear) {
+        clear.addEventListener("click", function () {
+          input.value = "";
+          run();
+          input.focus();
+        });
+      }
+
+      run();
+    });
   }
 
   /* ----------------------------------------------------------------------
@@ -599,12 +769,23 @@
     var actionbar = $(".actionbar");
     var sentinelTop = $("[data-scroll-top]");
 
+    /* Rows that hold their place under the actionbar. Their sticky offset is read
+       once — it is a token, not something that moves — and compared against where
+       the row actually sits on every scroll. */
+    var stickyRows = $$("[data-sticky-row]").map(function (row) {
+      return { el: row, top: parseFloat(getComputedStyle(row).top) || 0 };
+    });
+
     function update() {
       var scrolled = view.scrollTop;
       if (topbar) topbar.classList.toggle("is-stuck", scrolled > 120);
       if (actionbar && sentinelTop) {
         actionbar.classList.toggle("is-stuck", sentinelTop.getBoundingClientRect().bottom <= 64);
       }
+      stickyRows.forEach(function (row) {
+        var holding = row.el.getBoundingClientRect().top <= row.top + 1;
+        row.el.classList.toggle("is-stuck", holding);
+      });
     }
 
     view.addEventListener("scroll", update, { passive: true });
@@ -665,10 +846,40 @@
   }
 
   /* ----------------------------------------------------------------------
-     Keyboard shortcuts — a client, so: space, arrows, /, m
+     Keyboard shortcuts — a client, so: space, shift+arrows, m, and Ctrl/Cmd+F
+     for the page's own filter instead of the browser's find
      ---------------------------------------------------------------------- */
 
   function bindKeys() {
+    /* Ctrl/Cmd+F is the app's find, not the browser's. The field it wants is
+       already on the page and already knows what it filters, so the shortcut
+       means "find in what I am looking at": the list on screen first, the
+       library second. It is bound here rather than inside a field because it has
+       to work from wherever the focus happens to be. */
+    document.addEventListener("keydown", function (event) {
+      if (!event.key || event.key.toLowerCase() !== "f") return;
+      if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+
+      var field = $("[data-list-filter] input") || $("[data-library-filter]");
+      if (!field) return;
+
+      event.preventDefault();
+
+      // Below 900px the library's field lives in the drawer, and focusing
+      // something the eye cannot see helps nobody. The toggle owns that state,
+      // so the toggle is what gets pressed.
+      var sidebar = field.closest(".sidebar");
+      var toggle = $("[data-drawer-toggle]");
+      if (sidebar && toggle && getComputedStyle(toggle).display !== "none" && !sidebar.classList.contains("is-open")) {
+        toggle.click();
+      }
+
+      field.focus();
+      // Selecting what is already there makes the second Ctrl+F a reset: type
+      // over the old query instead of appending to it.
+      field.select();
+    });
+
     document.addEventListener("keydown", function (event) {
       var tag = (event.target.tagName || "").toLowerCase();
       if (tag === "input" || tag === "textarea" || event.target.isContentEditable) return;
@@ -702,6 +913,8 @@
     renderLibrary();
     renderQueue();
     bindChips(document);
+    bindLibraryFilter();
+    bindListFilters();
     bindViewToggle();
     bindTabs();
     bindLoadDemo();

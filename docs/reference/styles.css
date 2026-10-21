@@ -502,6 +502,178 @@ svg {
   text-transform: uppercase;
 }
 
+/* One field, two homes: the sidebar's header line and a list's tool row. It is
+   underlined rather than boxed everywhere, so the boxed things around it — chips,
+   the topbar searchbar, the buttons — keep their own weight. The size readout it
+   came with lives on as a status node, announced as you type. */
+.filter-field {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 1.75rem;
+  min-width: 0;
+  border-bottom: 1px solid var(--color-border);
+  transition: border-color var(--dur-fast) var(--ease-out);
+}
+
+.filter-field:focus-within {
+  border-color: var(--color-text);
+  color: var(--color-text);
+}
+
+/* Typed text drops the label's caps and tracking: you are reading your own
+   words back, not a label, and 10px caps is a poor thing to proofread. */
+.filter-field input {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--color-text);
+  font-size: var(--text-xs);
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.filter-field input:focus {
+  outline: none;
+}
+
+.filter-field input::placeholder {
+  color: var(--color-text-subtle);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+}
+
+/* Every engine draws its own clear affordance inside a search input; this field
+   has one, in the app's own weight. */
+.filter-field input::-webkit-search-cancel-button {
+  display: none;
+}
+
+.filter-field__clear {
+  position: relative;
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 1rem;
+  height: 1rem;
+  color: var(--color-text-subtle);
+}
+
+.filter-field__clear:hover {
+  color: var(--color-text);
+}
+
+/* A 16px glyph needs a target a hand can find. */
+.filter-field__clear::after {
+  content: "";
+  position: absolute;
+  inset: -0.5rem;
+}
+
+/* In the sidebar the field shares its line with the create button, so it takes
+   whatever the button leaves. */
+.library__head .filter-field {
+  flex: 1 1 auto;
+}
+
+/* A list's tool row. The field is a tool here, not a band: it takes a column at
+   the right edge and the count keeps the left, so a filtered list still says how
+   many rows it is showing. The space under it is padding rather than margin,
+   because the row is sticky and its background has to cover that space. */
+.list-tools {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-4);
+  padding-bottom: var(--space-2);
+}
+
+.list-tools .filter-field {
+  flex: 0 1 15rem;
+}
+
+/* Where the list already has a heading, a field can join that line instead of
+   starting a second right-aligned row under it. */
+.section__head--tools {
+  align-items: center;
+  gap: var(--space-5);
+}
+
+.section__head--tools .filter-field {
+  flex: 0 1 15rem;
+  margin-left: auto;
+}
+
+/* A chip row can carry the field too. The count and the field travel together to
+   the trailing edge, so the chips keep their own reading order at the left: chips
+   choose the kind, the field narrows by name, and neither moves the other. */
+.filter-cluster {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  margin-left: auto;
+}
+
+.filter-cluster .filter-field {
+  /* No shrink: the field keeps its column and the chips wrap around it instead. */
+  flex: 0 0 15rem;
+}
+
+.filter-count {
+  color: var(--color-text-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: 500;
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* The count only exists while a query narrows the list; an empty one must not
+   keep holding a gap open next to the field. */
+.filter-count:empty {
+  display: none;
+}
+
+/* A filter row holds its place once the list it filters reaches it. A long list
+   is exactly where you stop to look for one track, and a field that scrolls out
+   of reach is useless. It is sticky inside its own block, so it releases at the
+   end of that list and never bands over the section below.
+
+   The offset clears the actionbar above it, which is sticky too and has already
+   collapsed to a fixed height by the time this row arrives. */
+[data-sticky-row] {
+  position: sticky;
+  top: var(--actionbar-h);
+  z-index: 3;
+  background: var(--color-surface);
+}
+
+/* Rows slide under the band, so when it is holding it needs an edge to say so. */
+[data-sticky-row].is-stuck {
+  border-bottom: 1px solid var(--color-border);
+}
+
+/* A filtered-to-nothing list needs a sentence, or the blank space reads as a bug. */
+.list-empty {
+  padding: var(--space-3);
+  color: var(--color-text-subtle);
+  font-size: var(--text-sm);
+}
+
+/* A filtered-to-nothing column needs a sentence, or it reads as a bug. */
+.library__empty {
+  padding: var(--space-2);
+  color: var(--color-text-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-wide);
+}
+
 .library__head-actions {
   display: flex;
   gap: var(--space-1);
@@ -1214,6 +1386,9 @@ svg {
 
 .actionbar.is-stuck {
   padding-block: var(--space-2);
+  /* Pinned to one height, so the bands that stick underneath it have a number to
+     clear instead of a guess. */
+  min-height: var(--actionbar-h);
   border-bottom: 1px solid var(--color-border);
   background: rgba(7, 7, 8, 0.86);
   background: color-mix(in srgb, var(--color-surface) 86%, transparent);
@@ -1529,6 +1704,12 @@ svg {
   gap: var(--space-4);
   padding-top: var(--space-5);
   border-top: 1px solid var(--color-border);
+}
+
+/* These rules are separators between blocks, so the first block has nothing to be
+   separated from: above it sits the filter row, and its own edge is enough. */
+.discography > .album-block:first-child {
+  border-top: 0;
 }
 
 .album-block__head {
@@ -3989,6 +4170,12 @@ svg {
   .drag-pair,
   .drag-pair--rail-note {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* The count and a fixed-width field do not fit one line at rail width, so the
+     field takes what the count leaves. */
+  .list-tools .filter-field {
+    flex: 1 1 auto;
   }
 
   .drag-tokens {

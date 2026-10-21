@@ -19,7 +19,14 @@
 
   <div class="library">
     <div class="library__head">
-      <span data-library-count></span>
+      <form class="filter-field" role="search" onsubmit="return false">
+        <svg class="icon icon--sm" aria-hidden="true"><use href="#i-search"></use></svg>
+        <input type="search" data-library-filter aria-label="Filter your library" placeholder="28 saved" autocomplete="off" />
+        <button class="filter-field__clear" type="button" data-library-filter-clear aria-label="Clear filter" hidden>
+          <svg class="icon icon--sm" aria-hidden="true"><use href="#i-close"></use></svg>
+        </button>
+      </form>
+      <span class="visually-hidden" role="status" aria-live="polite" data-library-count></span>
       <span class="library__head-actions">
         <button class="icon-button" type="button" aria-label="Create playlist or folder">
           <svg class="icon icon--md" aria-hidden="true"><use href="#i-plus"></use></svg>

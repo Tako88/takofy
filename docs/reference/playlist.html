@@ -19,7 +19,14 @@
 
   <div class="library">
     <div class="library__head">
-      <span data-library-count></span>
+      <form class="filter-field" role="search" onsubmit="return false">
+        <svg class="icon icon--sm" aria-hidden="true"><use href="#i-search"></use></svg>
+        <input type="search" data-library-filter aria-label="Filter your library" placeholder="28 saved" autocomplete="off" />
+        <button class="filter-field__clear" type="button" data-library-filter-clear aria-label="Clear filter" hidden>
+          <svg class="icon icon--sm" aria-hidden="true"><use href="#i-close"></use></svg>
+        </button>
+      </form>
+      <span class="visually-hidden" role="status" aria-live="polite" data-library-count></span>
       <span class="library__head-actions">
         <button class="icon-button" type="button" aria-label="Create playlist or folder">
           <svg class="icon icon--md" aria-hidden="true"><use href="#i-plus"></use></svg>
@@ -109,6 +116,17 @@
 
     <div class="view__inner">
       <div class="tracks tracks--playlist">
+        <div class="list-tools" data-sticky-row>
+          <p class="filter-count" role="status" aria-live="polite" data-list-count></p>
+          <form class="filter-field" role="search" onsubmit="return false" data-list-filter data-list-target="#playlist-tracks">
+            <svg class="icon icon--sm" aria-hidden="true"><use href="#i-search"></use></svg>
+            <input type="search" aria-label="Filter this playlist" placeholder="Filter" autocomplete="off" />
+            <button class="filter-field__clear" type="button" data-list-filter-clear aria-label="Clear filter" hidden>
+              <svg class="icon icon--sm" aria-hidden="true"><use href="#i-close"></use></svg>
+            </button>
+          </form>
+        </div>
+
         <div class="tracklist__head">
           <span class="tracklist__head-number">#</span>
           <span>Title</span>
@@ -120,7 +138,7 @@
           <span></span>
         </div>
 
-        <ol class="tracklist" data-playing-scope>
+        <ol class="tracklist" id="playlist-tracks" data-playing-scope>
           <li class="track-row" data-track="Signal Decay" data-artist="Nils Aker" data-art="img/covers/signal-decay.jpg" data-duration="252">
             <span class="track-row__index">
               <span class="track-row__number">1</span>
@@ -320,11 +338,612 @@
             <span class="track-row__duration">3:48</span>
             <span class="track-row__actions"><button class="icon-button" type="button" aria-label="More options for Terminal"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button></span>
           </li>
+
+          <li class="track-row" data-track="Saltglass" data-artist="Vela Moreno" data-art="img/covers/saltglass.jpg" data-duration="253">
+            <span class="track-row__index">
+              <span class="track-row__number">11</span>
+              <button class="track-row__toggle" type="button" aria-label="Play Saltglass"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play" data-play-icon"></use></svg></button>
+              <span class="track-row__eq" aria-hidden="true"><span class="eq"><i></i><i></i><i></i></span></span>
+            </span>
+            <span class="track-row__title">
+              <img class="track-row__art" src="img/covers/saltglass.jpg" alt="" loading="lazy" />
+              <span class="track-row__text">
+                <span class="track-row__name truncate">Saltglass</span>
+              </span>
+            </span>
+            <span class="track-row__artist truncate"><a href="artist.html">Vela Moreno</a></span>
+            <span class="track-row__album truncate"><a href="album.html">Saltglass</a></span>
+            <span class="track-row__meta">1 month ago</span>
+            <span><button class="icon-button track-row__like" type="button" data-like data-like-group="row" aria-pressed="false" aria-label="Save Saltglass to your library"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-heart"></use></svg></button></span>
+            <span class="track-row__duration">4:13</span>
+            <span class="track-row__actions"><button class="icon-button" type="button" aria-label="More options for Saltglass"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button></span>
+          </li>
+
+          <li class="track-row" data-track="Low Water" data-artist="Vela Moreno" data-art="img/covers/slow-tide.jpg" data-duration="182">
+            <span class="track-row__index">
+              <span class="track-row__number">12</span>
+              <button class="track-row__toggle" type="button" aria-label="Play Low Water"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play" data-play-icon"></use></svg></button>
+              <span class="track-row__eq" aria-hidden="true"><span class="eq"><i></i><i></i><i></i></span></span>
+            </span>
+            <span class="track-row__title">
+              <img class="track-row__art" src="img/covers/slow-tide.jpg" alt="" loading="lazy" />
+              <span class="track-row__text">
+                <span class="track-row__name truncate">Low Water</span>
+              </span>
+            </span>
+            <span class="track-row__artist truncate"><a href="artist.html">Vela Moreno</a></span>
+            <span class="track-row__album truncate"><a href="album.html">Slow Tide</a></span>
+            <span class="track-row__meta">1 month ago</span>
+            <span><button class="icon-button track-row__like" type="button" data-like data-like-group="row" aria-pressed="false" aria-label="Save Low Water to your library"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-heart"></use></svg></button></span>
+            <span class="track-row__duration">3:02</span>
+            <span class="track-row__actions"><button class="icon-button" type="button" aria-label="More options for Low Water"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button></span>
+          </li>
+
+          <li class="track-row" data-track="Cold Storage" data-artist="Nils Aker" data-art="img/covers/cold-storage.jpg" data-duration="304">
+            <span class="track-row__index">
+              <span class="track-row__number">13</span>
+              <button class="track-row__toggle" type="button" aria-label="Play Cold Storage"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play" data-play-icon"></use></svg></button>
+              <span class="track-row__eq" aria-hidden="true"><span class="eq"><i></i><i></i><i></i></span></span>
+            </span>
+            <span class="track-row__title">
+              <img class="track-row__art" src="img/covers/cold-storage.jpg" alt="" loading="lazy" />
+              <span class="track-row__text">
+                <span class="track-row__name truncate">Cold Storage</span>
+              </span>
+            </span>
+            <span class="track-row__artist truncate"><a href="artist.html">Nils Aker</a></span>
+            <span class="track-row__album truncate"><a href="album.html">Cold Storage</a></span>
+            <span class="track-row__meta">1 month ago</span>
+            <span><button class="icon-button track-row__like" type="button" data-like data-like-group="row" aria-pressed="true" aria-label="Saved Cold Storage"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-heart-filled"></use></svg></button></span>
+            <span class="track-row__duration">5:04</span>
+            <span class="track-row__actions"><button class="icon-button" type="button" aria-label="More options for Cold Storage"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button></span>
+          </li>
+
+          <li class="track-row" data-track="Window Seat" data-artist="Vela Moreno" data-art="img/covers/saltglass.jpg" data-duration="209">
+            <span class="track-row__index">
+              <span class="track-row__number">14</span>
+              <button class="track-row__toggle" type="button" aria-label="Play Window Seat"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play" data-play-icon"></use></svg></button>
+              <span class="track-row__eq" aria-hidden="true"><span class="eq"><i></i><i></i><i></i></span></span>
+            </span>
+            <span class="track-row__title">
+              <img class="track-row__art" src="img/covers/saltglass.jpg" alt="" loading="lazy" />
+              <span class="track-row__text">
+                <span class="track-row__name truncate">Window Seat</span>
+              </span>
+            </span>
+            <span class="track-row__artist truncate"><a href="artist.html">Vela Moreno</a></span>
+            <span class="track-row__album truncate"><a href="album.html">Saltglass</a></span>
+            <span class="track-row__meta">1 month ago</span>
+            <span><button class="icon-button track-row__like" type="button" data-like data-like-group="row" aria-pressed="false" aria-label="Save Window Seat to your library"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-heart"></use></svg></button></span>
+            <span class="track-row__duration">3:29</span>
+            <span class="track-row__actions"><button class="icon-button" type="button" aria-label="More options for Window Seat"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button></span>
+          </li>
+
+          <li class="track-row" data-track="Fog Signal" data-artist="Vela Moreno" data-art="img/covers/harbour-lights.jpg" data-duration="266">
+            <span class="track-row__index">
+              <span class="track-row__number">15</span>
+              <button class="track-row__toggle" type="button" aria-label="Play Fog Signal"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play" data-play-icon"></use></svg></button>
+              <span class="track-row__eq" aria-hidden="true"><span class="eq"><i></i><i></i><i></i></span></span>
+            </span>
+            <span class="track-row__title">
+              <img class="track-row__art" src="img/covers/harbour-lights.jpg" alt="" loading="lazy" />
+              <span class="track-row__text">
+                <span class="track-row__name truncate">Fog Signal</span>
+              </span>
+            </span>
+            <span class="track-row__artist truncate"><a href="artist.html">Vela Moreno</a></span>
+            <span class="track-row__album truncate"><a href="album.html">Harbour Lights</a></span>
+            <span class="track-row__meta">1 month ago</span>
+            <span><button class="icon-button track-row__like" type="button" data-like data-like-group="row" aria-pressed="false" aria-label="Save Fog Signal to your library"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-heart"></use></svg></button></span>
+            <span class="track-row__duration">4:26</span>
+            <span class="track-row__actions"><button class="icon-button" type="button" aria-label="More options for Fog Signal"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button></span>
+          </li>
+
+          <li class="track-row" data-track="Paper Rooms" data-artist="Hana Sō" data-art="img/covers/paper-rooms.jpg" data-duration="238">
+            <span class="track-row__index">
+              <span class="track-row__number">16</span>
+              <button class="track-row__toggle" type="button" aria-label="Play Paper Rooms"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play" data-play-icon"></use></svg></button>
+              <span class="track-row__eq" aria-hidden="true"><span class="eq"><i></i><i></i><i></i></span></span>
+            </span>
+            <span class="track-row__title">
+              <img class="track-row__art" src="img/covers/paper-rooms.jpg" alt="" loading="lazy" />
+              <span class="track-row__text">
+                <span class="track-row__name truncate">Paper Rooms</span>
+              </span>
+            </span>
+            <span class="track-row__artist truncate"><a href="artist.html">Hana Sō</a></span>
+            <span class="track-row__album truncate"><a href="album.html">Paper Rooms</a></span>
+            <span class="track-row__meta">1 month ago</span>
+            <span><button class="icon-button track-row__like" type="button" data-like data-like-group="row" aria-pressed="false" aria-label="Save Paper Rooms to your library"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-heart"></use></svg></button></span>
+            <span class="track-row__duration">3:58</span>
+            <span class="track-row__actions"><button class="icon-button" type="button" aria-label="More options for Paper Rooms"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button></span>
+          </li>
+
+          <li class="track-row" data-track="Row of Pines" data-artist="Nils Aker" data-art="img/covers/cold-storage.jpg" data-duration="229">
+            <span class="track-row__index">
+              <span class="track-row__number">17</span>
+              <button class="track-row__toggle" type="button" aria-label="Play Row of Pines"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play" data-play-icon"></use></svg></button>
+              <span class="track-row__eq" aria-hidden="true"><span class="eq"><i></i><i></i><i></i></span></span>
+            </span>
+            <span class="track-row__title">
+              <img class="track-row__art" src="img/covers/cold-storage.jpg" alt="" loading="lazy" />
+              <span class="track-row__text">
+                <span class="track-row__name truncate">Row of Pines</span>
+              </span>
+            </span>
+            <span class="track-row__artist truncate"><a href="artist.html">Nils Aker</a></span>
+            <span class="track-row__album truncate"><a href="album.html">Cold Storage</a></span>
+            <span class="track-row__meta">2 months ago</span>
+            <span><button class="icon-button track-row__like" type="button" data-like data-like-group="row" aria-pressed="true" aria-label="Saved Row of Pines"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-heart-filled"></use></svg></button></span>
+            <span class="track-row__duration">3:49</span>
+            <span class="track-row__actions"><button class="icon-button" type="button" aria-label="More options for Row of Pines"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button></span>
+          </li>
+
+          <li class="track-row" data-track="Green Room" data-artist="Vela Moreno" data-art="img/covers/slow-tide.jpg" data-duration="261">
+            <span class="track-row__index">
+              <span class="track-row__number">18</span>
+              <button class="track-row__toggle" type="button" aria-label="Play Green Room"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play" data-play-icon"></use></svg></button>
+              <span class="track-row__eq" aria-hidden="true"><span class="eq"><i></i><i></i><i></i></span></span>
+            </span>
+            <span class="track-row__title">
+              <img class="track-row__art" src="img/covers/slow-tide.jpg" alt="" loading="lazy" />
+              <span class="track-row__text">
+                <span class="track-row__name truncate">Green Room</span>
+              </span>
+            </span>
+            <span class="track-row__artist truncate"><a href="artist.html">Vela Moreno</a></span>
+            <span class="track-row__album truncate"><a href="album.html">Slow Tide</a></span>
+            <span class="track-row__meta">2 months ago</span>
+            <span><button class="icon-button track-row__like" type="button" data-like data-like-group="row" aria-pressed="false" aria-label="Save Green Room to your library"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-heart"></use></svg></button></span>
+            <span class="track-row__duration">4:21</span>
+            <span class="track-row__actions"><button class="icon-button" type="button" aria-label="More options for Green Room"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button></span>
+          </li>
+
+          <li class="track-row" data-track="Dune Song" data-artist="Coastal Divide" data-art="img/covers/dune-song.jpg" data-duration="342">
+            <span class="track-row__index">
+              <span class="track-row__number">19</span>
+              <button class="track-row__toggle" type="button" aria-label="Play Dune Song"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play" data-play-icon"></use></svg></button>
+              <span class="track-row__eq" aria-hidden="true"><span class="eq"><i></i><i></i><i></i></span></span>
+            </span>
+            <span class="track-row__title">
+              <img class="track-row__art" src="img/covers/dune-song.jpg" alt="" loading="lazy" />
+              <span class="track-row__text">
+                <span class="track-row__name truncate">Dune Song</span>
+              </span>
+            </span>
+            <span class="track-row__artist truncate"><a href="artist.html">Coastal Divide</a></span>
+            <span class="track-row__album truncate"><a href="album.html">Dune Song</a></span>
+            <span class="track-row__meta">2 months ago</span>
+            <span><button class="icon-button track-row__like" type="button" data-like data-like-group="row" aria-pressed="false" aria-label="Save Dune Song to your library"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-heart"></use></svg></button></span>
+            <span class="track-row__duration">5:42</span>
+            <span class="track-row__actions"><button class="icon-button" type="button" aria-label="More options for Dune Song"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button></span>
+          </li>
+
+          <li class="track-row" data-track="Amber Room" data-artist="Vela Moreno" data-art="img/covers/saltglass.jpg" data-duration="247">
+            <span class="track-row__index">
+              <span class="track-row__number">20</span>
+              <button class="track-row__toggle" type="button" aria-label="Play Amber Room"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play" data-play-icon"></use></svg></button>
+              <span class="track-row__eq" aria-hidden="true"><span class="eq"><i></i><i></i><i></i></span></span>
+            </span>
+            <span class="track-row__title">
+              <img class="track-row__art" src="img/covers/saltglass.jpg" alt="" loading="lazy" />
+              <span class="track-row__text">
+                <span class="track-row__name truncate">Amber Room</span>
+              </span>
+            </span>
+            <span class="track-row__artist truncate"><a href="artist.html">Vela Moreno</a></span>
+            <span class="track-row__album truncate"><a href="album.html">Saltglass</a></span>
+            <span class="track-row__meta">2 months ago</span>
+            <span><button class="icon-button track-row__like" type="button" data-like data-like-group="row" aria-pressed="false" aria-label="Save Amber Room to your library"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-heart"></use></svg></button></span>
+            <span class="track-row__duration">4:07</span>
+            <span class="track-row__actions"><button class="icon-button" type="button" aria-label="More options for Amber Room"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button></span>
+          </li>
+
+          <li class="track-row" data-track="Glovebox" data-artist="The Rookery" data-art="img/covers/terminal.jpg" data-duration="214">
+            <span class="track-row__index">
+              <span class="track-row__number">21</span>
+              <button class="track-row__toggle" type="button" aria-label="Play Glovebox"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play" data-play-icon"></use></svg></button>
+              <span class="track-row__eq" aria-hidden="true"><span class="eq"><i></i><i></i><i></i></span></span>
+            </span>
+            <span class="track-row__title">
+              <img class="track-row__art" src="img/covers/terminal.jpg" alt="" loading="lazy" />
+              <span class="track-row__text">
+                <span class="track-row__name truncate">Glovebox</span>
+              </span>
+            </span>
+            <span class="track-row__artist truncate"><a href="artist.html">The Rookery</a></span>
+            <span class="track-row__album truncate"><a href="album.html">Terminal</a></span>
+            <span class="track-row__meta">2 months ago</span>
+            <span><button class="icon-button track-row__like" type="button" data-like data-like-group="row" aria-pressed="false" aria-label="Save Glovebox to your library"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-heart"></use></svg></button></span>
+            <span class="track-row__duration">3:34</span>
+            <span class="track-row__actions"><button class="icon-button" type="button" aria-label="More options for Glovebox"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button></span>
+          </li>
+
+          <li class="track-row" data-track="Thirteen Weeks" data-artist="Vela Moreno" data-art="img/covers/slow-tide.jpg" data-duration="215">
+            <span class="track-row__index">
+              <span class="track-row__number">22</span>
+              <button class="track-row__toggle" type="button" aria-label="Play Thirteen Weeks"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play" data-play-icon"></use></svg></button>
+              <span class="track-row__eq" aria-hidden="true"><span class="eq"><i></i><i></i><i></i></span></span>
+            </span>
+            <span class="track-row__title">
+              <img class="track-row__art" src="img/covers/slow-tide.jpg" alt="" loading="lazy" />
+              <span class="track-row__text">
+                <span class="track-row__name truncate">Thirteen Weeks</span>
+              </span>
+            </span>
+            <span class="track-row__artist truncate"><a href="artist.html">Vela Moreno</a></span>
+            <span class="track-row__album truncate"><a href="album.html">Slow Tide</a></span>
+            <span class="track-row__meta">2 months ago</span>
+            <span><button class="icon-button track-row__like" type="button" data-like data-like-group="row" aria-pressed="false" aria-label="Save Thirteen Weeks to your library"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-heart"></use></svg></button></span>
+            <span class="track-row__duration">3:35</span>
+            <span class="track-row__actions"><button class="icon-button" type="button" aria-label="More options for Thirteen Weeks"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button></span>
+          </li>
+
+          <li class="track-row" data-track="Fieldwork" data-artist="Marta Ísleif" data-art="img/covers/fieldwork.jpg" data-duration="262">
+            <span class="track-row__index">
+              <span class="track-row__number">23</span>
+              <button class="track-row__toggle" type="button" aria-label="Play Fieldwork"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play" data-play-icon"></use></svg></button>
+              <span class="track-row__eq" aria-hidden="true"><span class="eq"><i></i><i></i><i></i></span></span>
+            </span>
+            <span class="track-row__title">
+              <img class="track-row__art" src="img/covers/fieldwork.jpg" alt="" loading="lazy" />
+              <span class="track-row__text">
+                <span class="track-row__name truncate">Fieldwork</span>
+              </span>
+            </span>
+            <span class="track-row__artist truncate"><a href="artist.html">Marta Ísleif</a></span>
+            <span class="track-row__album truncate"><a href="album.html">Fieldwork</a></span>
+            <span class="track-row__meta">2 months ago</span>
+            <span><button class="icon-button track-row__like" type="button" data-like data-like-group="row" aria-pressed="false" aria-label="Save Fieldwork to your library"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-heart"></use></svg></button></span>
+            <span class="track-row__duration">4:22</span>
+            <span class="track-row__actions"><button class="icon-button" type="button" aria-label="More options for Fieldwork"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button></span>
+          </li>
+
+          <li class="track-row" data-track="Two Lamps" data-artist="Vela Moreno" data-art="img/covers/harbour-lights.jpg" data-duration="187">
+            <span class="track-row__index">
+              <span class="track-row__number">24</span>
+              <button class="track-row__toggle" type="button" aria-label="Play Two Lamps"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play" data-play-icon"></use></svg></button>
+              <span class="track-row__eq" aria-hidden="true"><span class="eq"><i></i><i></i><i></i></span></span>
+            </span>
+            <span class="track-row__title">
+              <img class="track-row__art" src="img/covers/harbour-lights.jpg" alt="" loading="lazy" />
+              <span class="track-row__text">
+                <span class="track-row__name truncate">Two Lamps</span>
+              </span>
+            </span>
+            <span class="track-row__artist truncate"><a href="artist.html">Vela Moreno</a></span>
+            <span class="track-row__album truncate"><a href="album.html">Harbour Lights</a></span>
+            <span class="track-row__meta">2 months ago</span>
+            <span><button class="icon-button track-row__like" type="button" data-like data-like-group="row" aria-pressed="true" aria-label="Saved Two Lamps"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-heart-filled"></use></svg></button></span>
+            <span class="track-row__duration">3:07</span>
+            <span class="track-row__actions"><button class="icon-button" type="button" aria-label="More options for Two Lamps"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button></span>
+          </li>
+
+          <li class="track-row" data-track="Long Way Down" data-artist="Coastal Divide" data-art="img/covers/long-way-down.jpg" data-duration="389">
+            <span class="track-row__index">
+              <span class="track-row__number">25</span>
+              <button class="track-row__toggle" type="button" aria-label="Play Long Way Down"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play" data-play-icon"></use></svg></button>
+              <span class="track-row__eq" aria-hidden="true"><span class="eq"><i></i><i></i><i></i></span></span>
+            </span>
+            <span class="track-row__title">
+              <img class="track-row__art" src="img/covers/long-way-down.jpg" alt="" loading="lazy" />
+              <span class="track-row__text">
+                <span class="track-row__name truncate">Long Way Down</span>
+              </span>
+            </span>
+            <span class="track-row__artist truncate"><a href="artist.html">Coastal Divide</a></span>
+            <span class="track-row__album truncate"><a href="album.html">Long Way Down</a></span>
+            <span class="track-row__meta">2 months ago</span>
+            <span><button class="icon-button track-row__like" type="button" data-like data-like-group="row" aria-pressed="false" aria-label="Save Long Way Down to your library"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-heart"></use></svg></button></span>
+            <span class="track-row__duration">6:29</span>
+            <span class="track-row__actions"><button class="icon-button" type="button" aria-label="More options for Long Way Down"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button></span>
+          </li>
+
+          <li class="track-row" data-track="Half Light" data-artist="Vela Moreno" data-art="img/covers/saltglass.jpg" data-duration="242">
+            <span class="track-row__index">
+              <span class="track-row__number">26</span>
+              <button class="track-row__toggle" type="button" aria-label="Play Half Light"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play" data-play-icon"></use></svg></button>
+              <span class="track-row__eq" aria-hidden="true"><span class="eq"><i></i><i></i><i></i></span></span>
+            </span>
+            <span class="track-row__title">
+              <img class="track-row__art" src="img/covers/saltglass.jpg" alt="" loading="lazy" />
+              <span class="track-row__text">
+                <span class="track-row__name truncate">Half Light</span>
+              </span>
+            </span>
+            <span class="track-row__artist truncate"><a href="artist.html">Vela Moreno</a></span>
+            <span class="track-row__album truncate"><a href="album.html">Saltglass</a></span>
+            <span class="track-row__meta">3 months ago</span>
+            <span><button class="icon-button track-row__like" type="button" data-like data-like-group="row" aria-pressed="false" aria-label="Save Half Light to your library"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-heart"></use></svg></button></span>
+            <span class="track-row__duration">4:02</span>
+            <span class="track-row__actions"><button class="icon-button" type="button" aria-label="More options for Half Light"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button></span>
+          </li>
+
+          <li class="track-row" data-track="Salt Air" data-artist="Vela Moreno" data-art="img/covers/slow-tide.jpg" data-duration="178">
+            <span class="track-row__index">
+              <span class="track-row__number">27</span>
+              <button class="track-row__toggle" type="button" aria-label="Play Salt Air"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play" data-play-icon"></use></svg></button>
+              <span class="track-row__eq" aria-hidden="true"><span class="eq"><i></i><i></i><i></i></span></span>
+            </span>
+            <span class="track-row__title">
+              <img class="track-row__art" src="img/covers/slow-tide.jpg" alt="" loading="lazy" />
+              <span class="track-row__text">
+                <span class="track-row__name truncate">Salt Air</span>
+              </span>
+            </span>
+            <span class="track-row__artist truncate"><a href="artist.html">Vela Moreno</a></span>
+            <span class="track-row__album truncate"><a href="album.html">Slow Tide</a></span>
+            <span class="track-row__meta">3 months ago</span>
+            <span><button class="icon-button track-row__like" type="button" data-like data-like-group="row" aria-pressed="false" aria-label="Save Salt Air to your library"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-heart"></use></svg></button></span>
+            <span class="track-row__duration">2:58</span>
+            <span class="track-row__actions"><button class="icon-button" type="button" aria-label="More options for Salt Air"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button></span>
+          </li>
+
+          <li class="track-row" data-track="Velvet Static" data-artist="Hana Sō" data-art="img/covers/blue-hour.jpg" data-duration="207">
+            <span class="track-row__index">
+              <span class="track-row__number">28</span>
+              <button class="track-row__toggle" type="button" aria-label="Play Velvet Static"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play" data-play-icon"></use></svg></button>
+              <span class="track-row__eq" aria-hidden="true"><span class="eq"><i></i><i></i><i></i></span></span>
+            </span>
+            <span class="track-row__title">
+              <img class="track-row__art" src="img/covers/blue-hour.jpg" alt="" loading="lazy" />
+              <span class="track-row__text">
+                <span class="track-row__name truncate">Velvet Static</span>
+              </span>
+            </span>
+            <span class="track-row__artist truncate"><a href="artist.html">Hana Sō</a></span>
+            <span class="track-row__album truncate"><a href="album.html">Blue Hour</a></span>
+            <span class="track-row__meta">3 months ago</span>
+            <span><button class="icon-button track-row__like" type="button" data-like data-like-group="row" aria-pressed="false" aria-label="Save Velvet Static to your library"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-heart"></use></svg></button></span>
+            <span class="track-row__duration">3:27</span>
+            <span class="track-row__actions"><button class="icon-button" type="button" aria-label="More options for Velvet Static"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button></span>
+          </li>
+
+          <li class="track-row" data-track="Driftwood" data-artist="Vela Moreno" data-art="img/covers/saltglass.jpg" data-duration="194">
+            <span class="track-row__index">
+              <span class="track-row__number">29</span>
+              <button class="track-row__toggle" type="button" aria-label="Play Driftwood"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play" data-play-icon"></use></svg></button>
+              <span class="track-row__eq" aria-hidden="true"><span class="eq"><i></i><i></i><i></i></span></span>
+            </span>
+            <span class="track-row__title">
+              <img class="track-row__art" src="img/covers/saltglass.jpg" alt="" loading="lazy" />
+              <span class="track-row__text">
+                <span class="track-row__name truncate">Driftwood</span>
+              </span>
+            </span>
+            <span class="track-row__artist truncate"><a href="artist.html">Vela Moreno</a></span>
+            <span class="track-row__album truncate"><a href="album.html">Saltglass</a></span>
+            <span class="track-row__meta">3 months ago</span>
+            <span><button class="icon-button track-row__like" type="button" data-like data-like-group="row" aria-pressed="false" aria-label="Save Driftwood to your library"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-heart"></use></svg></button></span>
+            <span class="track-row__duration">3:14</span>
+            <span class="track-row__actions"><button class="icon-button" type="button" aria-label="More options for Driftwood"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button></span>
+          </li>
+
+          <li class="track-row" data-track="Out Past the Buoy" data-artist="Vela Moreno" data-art="img/covers/harbour-lights.jpg" data-duration="312">
+            <span class="track-row__index">
+              <span class="track-row__number">30</span>
+              <button class="track-row__toggle" type="button" aria-label="Play Out Past the Buoy"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play" data-play-icon"></use></svg></button>
+              <span class="track-row__eq" aria-hidden="true"><span class="eq"><i></i><i></i><i></i></span></span>
+            </span>
+            <span class="track-row__title">
+              <img class="track-row__art" src="img/covers/harbour-lights.jpg" alt="" loading="lazy" />
+              <span class="track-row__text">
+                <span class="track-row__name truncate">Out Past the Buoy</span>
+              </span>
+            </span>
+            <span class="track-row__artist truncate"><a href="artist.html">Vela Moreno</a></span>
+            <span class="track-row__album truncate"><a href="album.html">Harbour Lights</a></span>
+            <span class="track-row__meta">3 months ago</span>
+            <span><button class="icon-button track-row__like" type="button" data-like data-like-group="row" aria-pressed="false" aria-label="Save Out Past the Buoy to your library"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-heart"></use></svg></button></span>
+            <span class="track-row__duration">5:12</span>
+            <span class="track-row__actions"><button class="icon-button" type="button" aria-label="More options for Out Past the Buoy"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button></span>
+          </li>
+
+          <li class="track-row" data-track="Nightjar" data-artist="Vela Moreno" data-art="img/covers/slow-tide.jpg" data-duration="284">
+            <span class="track-row__index">
+              <span class="track-row__number">31</span>
+              <button class="track-row__toggle" type="button" aria-label="Play Nightjar"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play" data-play-icon"></use></svg></button>
+              <span class="track-row__eq" aria-hidden="true"><span class="eq"><i></i><i></i><i></i></span></span>
+            </span>
+            <span class="track-row__title">
+              <img class="track-row__art" src="img/covers/slow-tide.jpg" alt="" loading="lazy" />
+              <span class="track-row__text">
+                <span class="track-row__name truncate">Nightjar</span>
+              </span>
+            </span>
+            <span class="track-row__artist truncate"><a href="artist.html">Vela Moreno</a></span>
+            <span class="track-row__album truncate"><a href="album.html">Slow Tide</a></span>
+            <span class="track-row__meta">3 months ago</span>
+            <span><button class="icon-button track-row__like" type="button" data-like data-like-group="row" aria-pressed="false" aria-label="Save Nightjar to your library"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-heart"></use></svg></button></span>
+            <span class="track-row__duration">4:44</span>
+            <span class="track-row__actions"><button class="icon-button" type="button" aria-label="More options for Nightjar"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button></span>
+          </li>
+
+          <li class="track-row" data-track="Paper Thin" data-artist="Vela Moreno" data-art="img/covers/saltglass.jpg" data-duration="218">
+            <span class="track-row__index">
+              <span class="track-row__number">32</span>
+              <button class="track-row__toggle" type="button" aria-label="Play Paper Thin"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play" data-play-icon"></use></svg></button>
+              <span class="track-row__eq" aria-hidden="true"><span class="eq"><i></i><i></i><i></i></span></span>
+            </span>
+            <span class="track-row__title">
+              <img class="track-row__art" src="img/covers/saltglass.jpg" alt="" loading="lazy" />
+              <span class="track-row__text">
+                <span class="track-row__name truncate">Paper Thin</span>
+              </span>
+            </span>
+            <span class="track-row__artist truncate"><a href="artist.html">Vela Moreno</a></span>
+            <span class="track-row__album truncate"><a href="album.html">Saltglass</a></span>
+            <span class="track-row__meta">3 months ago</span>
+            <span><button class="icon-button track-row__like" type="button" data-like data-like-group="row" aria-pressed="false" aria-label="Save Paper Thin to your library"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-heart"></use></svg></button></span>
+            <span class="track-row__duration">3:38</span>
+            <span class="track-row__actions"><button class="icon-button" type="button" aria-label="More options for Paper Thin"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button></span>
+          </li>
+
+          <li class="track-row" data-track="Marram" data-artist="Vela Moreno" data-art="img/covers/saltglass.jpg" data-duration="171">
+            <span class="track-row__index">
+              <span class="track-row__number">33</span>
+              <button class="track-row__toggle" type="button" aria-label="Play Marram"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play" data-play-icon"></use></svg></button>
+              <span class="track-row__eq" aria-hidden="true"><span class="eq"><i></i><i></i><i></i></span></span>
+            </span>
+            <span class="track-row__title">
+              <img class="track-row__art" src="img/covers/saltglass.jpg" alt="" loading="lazy" />
+              <span class="track-row__text">
+                <span class="track-row__name truncate">Marram</span>
+              </span>
+            </span>
+            <span class="track-row__artist truncate"><a href="artist.html">Vela Moreno</a></span>
+            <span class="track-row__album truncate"><a href="album.html">Saltglass</a></span>
+            <span class="track-row__meta">3 months ago</span>
+            <span><button class="icon-button track-row__like" type="button" data-like data-like-group="row" aria-pressed="false" aria-label="Save Marram to your library"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-heart"></use></svg></button></span>
+            <span class="track-row__duration">2:51</span>
+            <span class="track-row__actions"><button class="icon-button" type="button" aria-label="More options for Marram"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button></span>
+          </li>
+
+          <li class="track-row" data-track="Kestrel (Night Version)" data-artist="Vela Moreno" data-art="img/covers/kestrel-single.jpg" data-duration="288">
+            <span class="track-row__index">
+              <span class="track-row__number">34</span>
+              <button class="track-row__toggle" type="button" aria-label="Play Kestrel (Night Version)"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play" data-play-icon"></use></svg></button>
+              <span class="track-row__eq" aria-hidden="true"><span class="eq"><i></i><i></i><i></i></span></span>
+            </span>
+            <span class="track-row__title">
+              <img class="track-row__art" src="img/covers/kestrel-single.jpg" alt="" loading="lazy" />
+              <span class="track-row__text">
+                <span class="track-row__name truncate">Kestrel (Night Version)</span>
+              </span>
+            </span>
+            <span class="track-row__artist truncate"><a href="artist.html">Vela Moreno</a></span>
+            <span class="track-row__album truncate"><a href="album.html">Kestrel</a></span>
+            <span class="track-row__meta">4 months ago</span>
+            <span><button class="icon-button track-row__like" type="button" data-like data-like-group="row" aria-pressed="false" aria-label="Save Kestrel (Night Version) to your library"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-heart"></use></svg></button></span>
+            <span class="track-row__duration">4:48</span>
+            <span class="track-row__actions"><button class="icon-button" type="button" aria-label="More options for Kestrel (Night Version)"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button></span>
+          </li>
+
+          <li class="track-row" data-track="Pale Blue" data-artist="Vela Moreno" data-art="img/covers/slow-tide.jpg" data-duration="192">
+            <span class="track-row__index">
+              <span class="track-row__number">35</span>
+              <button class="track-row__toggle" type="button" aria-label="Play Pale Blue"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play" data-play-icon"></use></svg></button>
+              <span class="track-row__eq" aria-hidden="true"><span class="eq"><i></i><i></i><i></i></span></span>
+            </span>
+            <span class="track-row__title">
+              <img class="track-row__art" src="img/covers/slow-tide.jpg" alt="" loading="lazy" />
+              <span class="track-row__text">
+                <span class="track-row__name truncate">Pale Blue</span>
+              </span>
+            </span>
+            <span class="track-row__artist truncate"><a href="artist.html">Vela Moreno</a></span>
+            <span class="track-row__album truncate"><a href="album.html">Slow Tide</a></span>
+            <span class="track-row__meta">4 months ago</span>
+            <span><button class="icon-button track-row__like" type="button" data-like data-like-group="row" aria-pressed="false" aria-label="Save Pale Blue to your library"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-heart"></use></svg></button></span>
+            <span class="track-row__duration">3:12</span>
+            <span class="track-row__actions"><button class="icon-button" type="button" aria-label="More options for Pale Blue"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button></span>
+          </li>
+
+          <li class="track-row" data-track="Nine Bells" data-artist="Vela Moreno" data-art="img/covers/saltglass.jpg" data-duration="306">
+            <span class="track-row__index">
+              <span class="track-row__number">36</span>
+              <button class="track-row__toggle" type="button" aria-label="Play Nine Bells"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play" data-play-icon"></use></svg></button>
+              <span class="track-row__eq" aria-hidden="true"><span class="eq"><i></i><i></i><i></i></span></span>
+            </span>
+            <span class="track-row__title">
+              <img class="track-row__art" src="img/covers/saltglass.jpg" alt="" loading="lazy" />
+              <span class="track-row__text">
+                <span class="track-row__name truncate">Nine Bells</span>
+              </span>
+            </span>
+            <span class="track-row__artist truncate"><a href="artist.html">Vela Moreno</a></span>
+            <span class="track-row__album truncate"><a href="album.html">Saltglass</a></span>
+            <span class="track-row__meta">4 months ago</span>
+            <span><button class="icon-button track-row__like" type="button" data-like data-like-group="row" aria-pressed="true" aria-label="Saved Nine Bells"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-heart-filled"></use></svg></button></span>
+            <span class="track-row__duration">5:06</span>
+            <span class="track-row__actions"><button class="icon-button" type="button" aria-label="More options for Nine Bells"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button></span>
+          </li>
+
+          <li class="track-row" data-track="Slow Tide (Reprise)" data-artist="Vela Moreno" data-art="img/covers/slow-tide.jpg" data-duration="125">
+            <span class="track-row__index">
+              <span class="track-row__number">37</span>
+              <button class="track-row__toggle" type="button" aria-label="Play Slow Tide (Reprise)"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play" data-play-icon"></use></svg></button>
+              <span class="track-row__eq" aria-hidden="true"><span class="eq"><i></i><i></i><i></i></span></span>
+            </span>
+            <span class="track-row__title">
+              <img class="track-row__art" src="img/covers/slow-tide.jpg" alt="" loading="lazy" />
+              <span class="track-row__text">
+                <span class="track-row__name truncate">Slow Tide (Reprise)</span>
+              </span>
+            </span>
+            <span class="track-row__artist truncate"><a href="artist.html">Vela Moreno</a></span>
+            <span class="track-row__album truncate"><a href="album.html">Slow Tide</a></span>
+            <span class="track-row__meta">4 months ago</span>
+            <span><button class="icon-button track-row__like" type="button" data-like data-like-group="row" aria-pressed="false" aria-label="Save Slow Tide (Reprise) to your library"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-heart"></use></svg></button></span>
+            <span class="track-row__duration">2:05</span>
+            <span class="track-row__actions"><button class="icon-button" type="button" aria-label="More options for Slow Tide (Reprise)"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button></span>
+          </li>
+
+          <li class="track-row" data-track="Last Ferry" data-artist="Vela Moreno" data-art="img/covers/saltglass.jpg" data-duration="202">
+            <span class="track-row__index">
+              <span class="track-row__number">38</span>
+              <button class="track-row__toggle" type="button" aria-label="Play Last Ferry"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play" data-play-icon"></use></svg></button>
+              <span class="track-row__eq" aria-hidden="true"><span class="eq"><i></i><i></i><i></i></span></span>
+            </span>
+            <span class="track-row__title">
+              <img class="track-row__art" src="img/covers/saltglass.jpg" alt="" loading="lazy" />
+              <span class="track-row__text">
+                <span class="track-row__name truncate">Last Ferry</span>
+              </span>
+            </span>
+            <span class="track-row__artist truncate"><a href="artist.html">Vela Moreno</a></span>
+            <span class="track-row__album truncate"><a href="album.html">Saltglass</a></span>
+            <span class="track-row__meta">4 months ago</span>
+            <span><button class="icon-button track-row__like" type="button" data-like data-like-group="row" aria-pressed="false" aria-label="Save Last Ferry to your library"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-heart"></use></svg></button></span>
+            <span class="track-row__duration">3:22</span>
+            <span class="track-row__actions"><button class="icon-button" type="button" aria-label="More options for Last Ferry"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button></span>
+          </li>
+
+          <li class="track-row" data-track="Cotton Light" data-artist="Vela Moreno" data-art="img/covers/slow-tide.jpg" data-duration="198">
+            <span class="track-row__index">
+              <span class="track-row__number">39</span>
+              <button class="track-row__toggle" type="button" aria-label="Play Cotton Light"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play" data-play-icon"></use></svg></button>
+              <span class="track-row__eq" aria-hidden="true"><span class="eq"><i></i><i></i><i></i></span></span>
+            </span>
+            <span class="track-row__title">
+              <img class="track-row__art" src="img/covers/slow-tide.jpg" alt="" loading="lazy" />
+              <span class="track-row__text">
+                <span class="track-row__name truncate">Cotton Light</span>
+              </span>
+            </span>
+            <span class="track-row__artist truncate"><a href="artist.html">Vela Moreno</a></span>
+            <span class="track-row__album truncate"><a href="album.html">Slow Tide</a></span>
+            <span class="track-row__meta">4 months ago</span>
+            <span><button class="icon-button track-row__like" type="button" data-like data-like-group="row" aria-pressed="true" aria-label="Saved Cotton Light"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-heart-filled"></use></svg></button></span>
+            <span class="track-row__duration">3:18</span>
+            <span class="track-row__actions"><button class="icon-button" type="button" aria-label="More options for Cotton Light"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button></span>
+          </li>
+
+          <li class="track-row" data-track="Kestrel" data-artist="Vela Moreno" data-art="img/covers/slow-tide.jpg" data-duration="236">
+            <span class="track-row__index">
+              <span class="track-row__number">40</span>
+              <button class="track-row__toggle" type="button" aria-label="Play Kestrel"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play" data-play-icon"></use></svg></button>
+              <span class="track-row__eq" aria-hidden="true"><span class="eq"><i></i><i></i><i></i></span></span>
+            </span>
+            <span class="track-row__title">
+              <img class="track-row__art" src="img/covers/slow-tide.jpg" alt="" loading="lazy" />
+              <span class="track-row__text">
+                <span class="track-row__name truncate">Kestrel</span>
+              </span>
+            </span>
+            <span class="track-row__artist truncate"><a href="artist.html">Vela Moreno</a></span>
+            <span class="track-row__album truncate"><a href="album.html">Slow Tide</a></span>
+            <span class="track-row__meta">4 months ago</span>
+            <span><button class="icon-button track-row__like" type="button" data-like data-like-group="row" aria-pressed="false" aria-label="Save Kestrel to your library"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-heart"></use></svg></button></span>
+            <span class="track-row__duration">3:56</span>
+            <span class="track-row__actions"><button class="icon-button" type="button" aria-label="More options for Kestrel"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button></span>
+          </li>
         </ol>
+        <p class="list-empty" data-list-empty hidden></p>
       </div>
 
-      <p class="tracklist__foot tracklist__foot--plain">
-        <span class="label">Showing 10 of 62 · 52 more tracks</span>
+      <p class="tracklist__foot tracklist__foot--plain" data-list-foot>
+        <span class="label">Showing 40 of 62 · 22 more tracks</span>
       </p>
 
       <section class="section" aria-labelledby="recommended">

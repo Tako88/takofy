@@ -19,7 +19,14 @@
 
   <div class="library">
     <div class="library__head">
-      <span data-library-count></span>
+      <form class="filter-field" role="search" onsubmit="return false">
+        <svg class="icon icon--sm" aria-hidden="true"><use href="#i-search"></use></svg>
+        <input type="search" data-library-filter aria-label="Filter your library" placeholder="28 saved" autocomplete="off" />
+        <button class="filter-field__clear" type="button" data-library-filter-clear aria-label="Clear filter" hidden>
+          <svg class="icon icon--sm" aria-hidden="true"><use href="#i-close"></use></svg>
+        </button>
+      </form>
+      <span class="visually-hidden" role="status" aria-live="polite" data-library-count></span>
       <span class="library__head-actions">
         <button class="icon-button" type="button" aria-label="Create playlist or folder">
           <svg class="icon icon--md" aria-hidden="true"><use href="#i-plus"></use></svg>
@@ -232,11 +239,21 @@
           <span class="section__link">4 releases · 26 tracks</span>
         </div>
 
-        <div class="filters" data-chip-group data-chip-exclusive data-chip-target="#discography-list">
+        <div class="filters" data-sticky-row data-chip-group data-chip-exclusive data-chip-target="#discography-list">
           <button class="chip" type="button" data-chip="" aria-pressed="true">All</button>
           <button class="chip" type="button" data-chip="album" aria-pressed="false">Albums</button>
           <button class="chip" type="button" data-chip="ep" aria-pressed="false">EPs</button>
           <button class="chip" type="button" data-chip="single" aria-pressed="false">Singles</button>
+          <div class="filter-cluster">
+            <p class="filter-count" role="status" aria-live="polite" data-list-count></p>
+            <form class="filter-field" role="search" onsubmit="return false" data-list-filter data-list-target="#discography-list" data-list-unit="releases">
+              <svg class="icon icon--sm" aria-hidden="true"><use href="#i-search"></use></svg>
+              <input type="search" aria-label="Filter these releases" placeholder="Filter" autocomplete="off" />
+              <button class="filter-field__clear" type="button" data-list-filter-clear aria-label="Clear filter" hidden>
+                <svg class="icon icon--sm" aria-hidden="true"><use href="#i-close"></use></svg>
+              </button>
+            </form>
+          </div>
         </div>
 
         <div class="discography" id="discography-list">
@@ -693,6 +710,8 @@
           <p class="empty-state__title">Nothing in this format yet</p>
           <p>Vela Moreno has no releases of that type.</p>
         </div>
+
+        <p class="list-empty" data-list-empty hidden></p>
       </section>
 
       <!-- Fans also like -->
