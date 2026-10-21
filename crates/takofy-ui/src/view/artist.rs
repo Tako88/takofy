@@ -36,6 +36,7 @@ use super::artist_hero::{self, ArtistHero};
 use super::filter_row;
 use super::media;
 use super::release_block::{self, Block};
+use super::rows::Look;
 use super::section;
 use super::skeleton;
 use super::track_list::{head, list_rect};
@@ -304,6 +305,8 @@ fn popular(
     let list = list_rect(ui, count);
     ui.allocate_rect(list, Sense::hover());
     let visible = ui.clip_rect();
+    // Nothing is picked yet, so every row of this list stands at rest.
+    let look = Look::default();
 
     for (index, entry) in artist.top_tracks.iter().enumerate() {
         let rect = table_layout::row_rect(list, index, extent::ROW_H);
@@ -325,12 +328,15 @@ fn popular(
             duration: duration.as_deref(),
             state: state_of(&entry.uri, transport),
             cover: Cover::Missing,
+            look,
         };
         match track_row::show(ui, rect, columns, &row, tokens) {
             Some(Click::Play) => {
                 *command = queue.start(&artist.top_tracks, index, transport);
             }
-            Some(Click::Open(_)) | None => {}
+            // A press and a lift belong to the list's selection, which nothing
+            // keeps yet.
+            Some(Click::Select(_) | Click::Lift) | Some(Click::Open(_)) | None => {}
         }
     }
 }

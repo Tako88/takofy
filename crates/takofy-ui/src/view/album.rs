@@ -26,6 +26,7 @@ use crate::theme::{Tokens, extent};
 use crate::view::text as recipe;
 
 use super::hero;
+use super::rows::Look;
 use super::skeleton;
 use super::track_list::{head, list_rect};
 use super::track_row::{self, Click, Row, TitleCell, state_of};
@@ -136,6 +137,8 @@ pub fn album_view(
                         let list = list_rect(ui, count);
                         ui.allocate_rect(list, Sense::hover());
                         let visible = ui.clip_rect();
+                        // Nothing is picked yet, so every row of this list stands at rest.
+                        let look = Look::default();
 
                         for (index, entry) in album.tracks.iter().enumerate() {
                             let rect = table_layout::row_rect(list, index, extent::ROW_H);
@@ -162,6 +165,7 @@ pub fn album_view(
                                 state: state_of(&entry.uri, transport),
                                 // The band already holds the record's one picture.
                                 cover: Cover::Missing,
+                                look,
                             };
                             // A row plays; its artist subline, when the album named
                             // a resolvable artist, opens that artist's page.
@@ -170,6 +174,8 @@ pub fn album_view(
                                     command = queue.start(&album.tracks, index, transport);
                                 }
                                 Some(Click::Open(page)) => open = Some(page),
+                                // A press and a lift belong to the list's selection, which is not wired yet.
+                                Some(Click::Select(_) | Click::Lift) => {}
                                 None => {}
                             }
                         }

@@ -25,6 +25,7 @@ use crate::theme::{
     MonoWeight, Tokens, Weight, extent, fonts, radius, space, stroke, text, tracking,
 };
 
+use super::rows::Look;
 use super::track_row::{self, Click, Row, TitleCell, state_of};
 use super::{art, controls, text as recipe};
 
@@ -228,6 +229,8 @@ fn body(
         Labels::Ready(tracks) => {
             let columns = table_layout::columns(width, table.columns().for_album());
             let visible = ui.clip_rect();
+            // Nothing is picked yet, so every row of this list stands at rest.
+            let look = Look::default();
             for (index, entry) in tracks.iter().enumerate() {
                 let rect = table_layout::row_rect(list, index, extent::ROW_H);
                 if !visible.intersects(rect) {
@@ -250,10 +253,12 @@ fn body(
                     state: state_of(&entry.uri, transport),
                     // The block's head already holds the release's one picture.
                     cover: Cover::Missing,
+                    look,
                 };
                 match track_row::show(ui, rect, columns, &row, tokens) {
                     Some(Click::Play) => clicked.row = Some(index),
-                    Some(Click::Open(_)) | None => {}
+                    // A press and a lift belong to the list's selection, which is not wired yet.
+                    Some(Click::Select(_) | Click::Lift) | Some(Click::Open(_)) | None => {}
                 }
             }
         }

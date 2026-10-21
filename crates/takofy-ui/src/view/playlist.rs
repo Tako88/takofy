@@ -27,6 +27,7 @@ use crate::theme::{Tokens, extent, space};
 use super::filter_row;
 use super::hero;
 use super::media;
+use super::rows::Look;
 use super::skeleton;
 use super::text as recipe;
 use super::track_list::{head, list_rect};
@@ -167,6 +168,8 @@ pub fn tracks_view(
                     let list = list_rect(ui, count);
                     ui.allocate_rect(list, Sense::hover());
                     let visible = ui.clip_rect();
+                    // Nothing is picked yet, so every row of this list stands at rest.
+                    let look = Look::default();
 
                     for (index, entry) in tracks.tracks.iter().enumerate() {
                         let rect = table_layout::row_rect(list, index, extent::ROW_H);
@@ -188,12 +191,15 @@ pub fn tracks_view(
                             duration: duration.as_deref(),
                             state: state_of(&entry.uri, transport),
                             cover: art.look(entry.cover.as_ref(), now),
+                            look,
                         };
                         match track_row::show(ui, rect, columns, &row, tokens) {
                             Some(Click::Play) => {
                                 command = queue.start(&tracks.tracks, index, transport);
                             }
                             Some(Click::Open(page)) => open = Some(page),
+                            // A press and a lift belong to the list's selection, which is not wired yet.
+                            Some(Click::Select(_) | Click::Lift) => {}
                             None => {}
                         }
                     }
@@ -1543,6 +1549,7 @@ mod tests {
             duration: None,
             state: State::Resting,
             cover: Cover::Missing,
+            look: Look::default(),
         };
 
         run(&ctx, input(Vec::new()), |ui| {
@@ -1556,7 +1563,8 @@ mod tests {
                 crate::view::test_support::button(rect.center(), false),
             ] {
                 run(&ctx, input(vec![event]), |ui| {
-                    clicked |= track_row::show(ui, rect, columns, &row, &tokens).is_some();
+                    clicked |=
+                        track_row::show(ui, rect, columns, &row, &tokens) == Some(Click::Play);
                 });
             }
         }
@@ -1589,6 +1597,7 @@ mod tests {
             duration: Some("3:42"),
             state: State::Resting,
             cover: Cover::Missing,
+            look: Look::default(),
         };
 
         let mut output = ctx.run_ui(input(Vec::new()), |ui| {
@@ -1992,6 +2001,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             duration: Some("3:42"),
             state: State::Resting,
             cover: Cover::Missing,
+            look: Look::default(),
         };
 
         let mut output = ctx.run_ui(input(Vec::new()), |ui| {
