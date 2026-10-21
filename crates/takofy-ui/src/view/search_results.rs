@@ -12,7 +12,7 @@
 
 use std::time::Instant;
 
-use egui::{Sense, Ui};
+use egui::{Id, Sense, Ui};
 
 use crate::cover::Art;
 use crate::format::format_position;
@@ -22,9 +22,11 @@ use crate::message::Command;
 use crate::player::Transport;
 use crate::queue::Queue;
 use crate::route::Page;
+use crate::scroll;
 use crate::theme::{Tokens, extent};
 use crate::view::text as recipe;
 
+use super::carry::{self, Ghost};
 use super::section;
 use super::skeleton;
 use super::track_list::{head, list_rect};
@@ -67,6 +69,7 @@ pub fn search_view(
     egui::ScrollArea::vertical()
         .id_salt(("search", query.as_str()))
         .show(ui, |ui| {
+            scroll::follow_drag(ui);
             // The page is drawn only for its own query. The state is pointed at
             // it when the page opens, so this is the one guard that keeps a
             // superseded answer off the page. Reaching it with no read at all is
@@ -127,6 +130,11 @@ pub fn search_view(
                         let list = list_rect(ui, count);
                         ui.allocate_rect(list, Sense::hover());
                         let visible = ui.clip_rect();
+                        let mut selection = carry::List::open(
+                            ui.ctx(),
+                            Id::unique(("search-tracks", query.as_str())),
+                            count,
+                        );
 
                         for (index, entry) in tracks.iter().enumerate() {
                             let rect = table_layout::row_rect(list, index, extent::ROW_H);
@@ -148,6 +156,7 @@ pub fn search_view(
                                 duration: duration.as_deref(),
                                 state: state_of(&entry.uri, transport),
                                 cover: art.look(entry.cover.as_ref(), now),
+                                look: selection.look(index),
                             };
                             // R16: a row plays the whole answer, entered here, so
                             // next and previous walk the results.
@@ -156,9 +165,17 @@ pub fn search_view(
                                     command = queue.start(tracks, index, transport);
                                 }
                                 Some(Click::Open(page)) => open = Some(page),
+                                Some(Click::Select(press)) => selection.press(index, press),
+                                Some(Click::Lift) => selection.lift(
+                                    index,
+                                    entry.clone(),
+                                    rect.size(),
+                                    Ghost::Table(row.lifted(columns)),
+                                ),
                                 None => {}
                             }
                         }
+                        selection.finish(ui.ctx());
                     }
                 }
             });
@@ -175,12 +192,13 @@ pub fn search_view(
 
 #[cfg(test)]
 mod tests {
-    use egui::{Context, Pos2, RawInput, Rect, Vec2};
+    use egui::{Context, Event, Pos2, RawInput, Rect, Vec2};
     use takofy_model::TrackEntry;
 
     use super::*;
     use crate::message::Update;
     use crate::theme::{fonts, space, style};
+    use crate::view::test_support::click_events;
 
     /// The probe window: wide enough for the page's table.
     const PROBE: Vec2 = Vec2::new(900.0, 400.0);
@@ -222,7 +240,16 @@ mod tests {
     }
 
     /// One frame of the page, at a fixed clock.
-    fn frame(ctx: &Context, library: &mut Library) -> egui::FullOutput {
+    fn frame(ctx: &Context, library: &mut Library) -> (Option<Command>, egui::FullOutput) {
+        frame_with(ctx, library, Vec::new())
+    }
+
+    /// One frame of the page with one pass's events.
+    fn frame_with(
+        ctx: &Context,
+        library: &mut Library,
+        events: Vec<Event>,
+    ) -> (Option<Command>, egui::FullOutput) {
         let tokens = Tokens::DARK;
         let mut transport = Transport::default();
         let mut queue = Queue::default();
@@ -230,10 +257,12 @@ mod tests {
         art.begin_frame();
         let input = RawInput {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, PROBE)),
+            events,
             ..Default::default()
         };
+        let mut command = None;
         let mut output = ctx.run_ui(input, |ui| {
-            let _ = search_view(
+            command = search_view(
                 ui,
                 Table::Full,
                 library,
@@ -245,7 +274,20 @@ mod tests {
             );
         });
         output.textures_delta.clear();
+        (command, output)
+    }
+
+    /// The rect a painted label occupies, read back from the frame.
+    fn text_rect(output: &egui::FullOutput, label: &str) -> Option<Rect> {
         output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::Shape::Text(text) if text.galley.text() == label => {
+                    Some(Rect::from_min_size(text.pos, text.galley.size()))
+                }
+                _ => None,
+            })
     }
 
     /// Every line the frame painted, as it reads: the visible run of an elided
@@ -269,7 +311,7 @@ mod tests {
     fn the_head_counts_one_hit_in_the_singular() {
         let ctx = context();
         let mut library = answered("never gonna", 1);
-        let lines = painted_lines(&frame(&ctx, &mut library));
+        let lines = painted_lines(&frame(&ctx, &mut library).1);
 
         assert!(
             lines.iter().any(|(line, _)| line == "1 RESULT"),
@@ -286,7 +328,7 @@ mod tests {
         for count in [0, 2, 20] {
             let ctx = context();
             let mut library = answered("never gonna", count);
-            let lines = painted_lines(&frame(&ctx, &mut library));
+            let lines = painted_lines(&frame(&ctx, &mut library).1);
 
             let expected = format!("{count} RESULTS");
             assert!(
@@ -306,7 +348,7 @@ mod tests {
             around and desert you, never gonna make you cry, never gonna say goodbye, never \
             gonna tell a lie and hurt you";
         let mut library = answered(query, 1);
-        let lines = painted_lines(&frame(&ctx, &mut library));
+        let lines = painted_lines(&frame(&ctx, &mut library).1);
 
         let (heading, width) = lines
             .iter()
@@ -336,5 +378,59 @@ mod tests {
         library.search.retry_page("give you up");
 
         let _ = frame(&ctx, &mut library);
+    }
+
+    #[test]
+    fn a_single_click_selects_and_a_double_click_plays_it() {
+        let ctx = context();
+        let mut library = answered("never gonna", 2);
+        let (_, output) = frame(&ctx, &mut library);
+        let row = text_rect(&output, "t1").expect("the row's title");
+
+        let mut command = None;
+        for event in click_events(row.center()) {
+            command = frame_with(&ctx, &mut library, vec![event]).0;
+        }
+
+        assert_eq!(command, None, "a single click plays nothing");
+        assert!(
+            crate::view::carry::List::open(
+                &ctx,
+                egui::Id::unique(("search-tracks", "never gonna")),
+                2
+            )
+            .look(1)
+            .selected,
+            "the row under the click is picked"
+        );
+        assert!(
+            !crate::view::carry::List::open(
+                &ctx,
+                egui::Id::unique(("search-tracks", "never gonna")),
+                2
+            )
+            .look(0)
+            .selected,
+            "and only that row"
+        );
+
+        let mut command = None;
+        // A fresh page for the double click: a third click inside the window is
+        // a triple click, and that plays nothing.
+        let ctx = context();
+        let mut library = answered("never gonna", 2);
+        for _ in 0..2 {
+            for event in click_events(row.center()) {
+                command = frame_with(&ctx, &mut library, vec![event]).0;
+            }
+        }
+
+        assert_eq!(
+            command,
+            Some(Command::Play {
+                uri: "t1".to_owned()
+            }),
+            "a double click plays the track"
+        );
     }
 }

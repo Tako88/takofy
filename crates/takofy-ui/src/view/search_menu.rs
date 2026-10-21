@@ -7,10 +7,15 @@
 //! draws over the view, the way the drawer's `Area` does.
 //!
 //! Two tiers, never three (R9). The keyboard owns the 2px rule, the
-//! `surface_hover` wash and the action glyph; the pointer owns a 4% wash and a
-//! 1rem tick, and never borrows the rule or the glyph. The playing row keeps the
-//! accent rule and the equaliser, and identity beats focus: if the playing row
-//! is also marked, the accent rule stays and the glyph becomes pause (R11).
+//! `row_selected` wash and the action glyph; the pointer owns a `row_hover` wash
+//! and a 1rem tick, and never borrows the rule or the glyph. The playing row
+//! keeps the accent rule and the equaliser, and identity beats focus: if the
+//! playing row is also marked, the accent rule stays and the glyph becomes pause
+//! (R11).
+//!
+//! The washes are the app-wide row tokens (`row_hover` for the pointer,
+//! `row_selected` for the mark), not the reference's literal values: its 4% wash
+//! predates the row-hover token.
 //!
 //! The rows are `Sense::CLICK`, never `Sense::click()` (R18): the list is not a
 //! tab stop, so the keyboard path is arrows only and the rule always says where
@@ -387,11 +392,10 @@ fn paint_highlight(
 ) {
     if marked {
         ui.painter()
-            .rect_filled(row, corners, tokens.palette.surface_hover);
+            .rect_filled(row, corners, tokens.palette.row_selected);
     } else if hovered {
-        // The pointer is a 4% wash of the text colour, never the hover fill.
         ui.painter()
-            .rect_filled(row, corners, tokens.palette.text.gamma_multiply(0.04));
+            .rect_filled(row, corners, tokens.palette.row_hover);
         let tick = Rect::from_center_size(
             pos2(row.left() + stroke::RULE / 2.0, row.center().y),
             vec2(stroke::RULE, space::S4),
@@ -595,6 +599,60 @@ mod tests {
             output.textures_delta.clear();
         }
         result.expect("two passes")
+    }
+
+    /// The fills one menu row's highlight paints.
+    fn highlight_fills(marked: bool, hovered: bool) -> Vec<egui::Color32> {
+        let ctx = context();
+        let tokens = Tokens::DARK;
+        let card = Rect::from_min_size(Pos2::ZERO, vec2(320.0, 400.0));
+        let row = geometry::row_rect(card, 0);
+        let mut output = ctx.run_ui(
+            RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0))),
+                ..Default::default()
+            },
+            |ui| paint_highlight(ui, &tokens, row, radius::MD, marked, hovered),
+        );
+        output.textures_delta.clear();
+        output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Rect(shape) => Some(shape.fill),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_marked_menu_row_takes_the_selection_fill_and_a_hovered_one_the_row_hover() {
+        let tokens = Tokens::DARK;
+        assert_eq!(
+            highlight_fills(true, true),
+            vec![tokens.palette.row_selected],
+            "a marked row under the pointer painted more than the selection"
+        );
+        assert_eq!(
+            highlight_fills(true, false),
+            vec![tokens.palette.row_selected],
+            "a marked row painted something else"
+        );
+
+        let hovered = highlight_fills(false, true);
+        assert_eq!(
+            hovered.first(),
+            Some(&tokens.palette.row_hover),
+            "a hovered row washed with something other than the row hover"
+        );
+        assert!(
+            hovered.contains(&tokens.palette.text_muted),
+            "the pointer's tick went with the wash: {hovered:?}"
+        );
+        assert!(
+            highlight_fills(false, false).is_empty(),
+            "a row with neither the mark nor the pointer painted"
+        );
     }
 
     /// Finding 1: every state of the menu is one click-swallowing surface, so a

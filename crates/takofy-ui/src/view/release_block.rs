@@ -10,7 +10,7 @@
 //! [`extent::ROW_H`] until the labels arrive. That keeps the scrollbar honest
 //! while the rows fill in.
 
-use egui::{FontId, Rect, Sense, Ui, Vec2, pos2, vec2};
+use egui::{FontId, Id, Rect, Sense, Ui, Vec2, pos2, vec2};
 use takofy_model::Release;
 
 use crate::availability::Control;
@@ -25,6 +25,7 @@ use crate::theme::{
     MonoWeight, Tokens, Weight, extent, fonts, radius, space, stroke, text, tracking,
 };
 
+use super::carry::{self, Ghost};
 use super::track_row::{self, Click, Row, TitleCell, state_of};
 use super::{art, controls, text as recipe};
 
@@ -228,6 +229,11 @@ fn body(
         Labels::Ready(tracks) => {
             let columns = table_layout::columns(width, table.columns().for_album());
             let visible = ui.clip_rect();
+            let mut selection = carry::List::open(
+                ui.ctx(),
+                Id::unique(("release-tracks", &release.uri)),
+                tracks.len(),
+            );
             for (index, entry) in tracks.iter().enumerate() {
                 let rect = table_layout::row_rect(list, index, extent::ROW_H);
                 if !visible.intersects(rect) {
@@ -250,12 +256,21 @@ fn body(
                     state: state_of(&entry.uri, transport),
                     // The block's head already holds the release's one picture.
                     cover: Cover::Missing,
+                    look: selection.look(index),
                 };
                 match track_row::show(ui, rect, columns, &row, tokens) {
                     Some(Click::Play) => clicked.row = Some(index),
+                    Some(Click::Select(press)) => selection.press(index, press),
+                    Some(Click::Lift) => selection.lift(
+                        index,
+                        entry.clone(),
+                        rect.size(),
+                        Ghost::Table(row.lifted(columns)),
+                    ),
                     Some(Click::Open(_)) | None => {}
                 }
             }
+            selection.finish(ui.ctx());
         }
     }
 
@@ -264,13 +279,14 @@ fn body(
 
 #[cfg(test)]
 mod tests {
-    use egui::{Context, Pos2, RawInput, Rect, Vec2};
-    use takofy_model::{Release, ReleaseKind};
+    use egui::{Context, Event, Id, Pos2, RawInput, Rect, Vec2};
+    use takofy_model::{Release, ReleaseKind, TrackEntry};
 
     use super::*;
     use crate::cover::Cover;
     use crate::releases::Labels;
     use crate::theme::{Tokens, fonts, style};
+    use crate::view::test_support::click_events;
 
     fn context() -> Context {
         let tokens = Tokens::DARK;
@@ -331,5 +347,102 @@ mod tests {
             assert_eq!(advance(width, 3), height(3), "three rows at {width} px");
             assert_eq!(advance(width, 0), height(0), "no rows at {width} px");
         }
+    }
+
+    fn labelled(uri: &str, title: &str) -> TrackEntry {
+        TrackEntry {
+            uri: uri.to_owned(),
+            title: title.to_owned(),
+            artists: String::new(),
+            album: None,
+            album_uri: None,
+            artist_uris: Vec::new(),
+            added_at: None,
+            duration_ms: None,
+            named: true,
+            cover: None,
+        }
+    }
+
+    /// One frame of a labelled block, and what its rows reported.
+    fn painted(
+        ctx: &Context,
+        release: &Release,
+        tracks: &[TrackEntry],
+        events: Vec<Event>,
+    ) -> (Clicked, egui::FullOutput) {
+        let tokens = Tokens::DARK;
+        let transport = Transport::default();
+        let block = Block {
+            release,
+            labels: Labels::Ready(tracks),
+            cover: Cover::Missing,
+            on_screen: true,
+            playable: true,
+        };
+        let input = RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 800.0))),
+            events,
+            ..Default::default()
+        };
+        let mut clicked = Clicked::default();
+        let mut output = ctx.run_ui(input, |ui| {
+            clicked = show(ui, Table::Full, &block, &transport, &tokens);
+        });
+        output.textures_delta.clear();
+        (clicked, output)
+    }
+
+    /// The rect a painted label occupies, read back from the frame.
+    fn text_rect(output: &egui::FullOutput, label: &str) -> Option<Rect> {
+        output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Text(text) if text.galley.text() == label => {
+                    Some(Rect::from_min_size(text.pos, text.galley.size()))
+                }
+                _ => None,
+            })
+    }
+
+    #[test]
+    fn a_single_click_selects_and_a_double_click_plays_it() {
+        let ctx = context();
+        let release = release(2);
+        let tracks = vec![
+            labelled("spotify:track:1", "First"),
+            labelled("spotify:track:2", "Second"),
+        ];
+        let (_, output) = painted(&ctx, &release, &tracks, Vec::new());
+        let row = text_rect(&output, "Second").expect("the row's title");
+        let id = Id::unique(("release-tracks", &release.uri));
+
+        let mut clicked = Clicked::default();
+        for event in click_events(row.center()) {
+            clicked = painted(&ctx, &release, &tracks, vec![event]).0;
+        }
+
+        assert_eq!(clicked.row, None, "a single click plays nothing");
+        assert!(
+            crate::view::carry::List::open(&ctx, id, 2).look(1).selected,
+            "the row under the click is picked"
+        );
+        assert!(
+            !crate::view::carry::List::open(&ctx, id, 2).look(0).selected,
+            "and only that row"
+        );
+
+        let mut clicked = Clicked::default();
+        // A fresh block for the double click: a third click inside the window is
+        // a triple click, and that plays nothing.
+        let ctx = context();
+        for _ in 0..2 {
+            for event in click_events(row.center()) {
+                clicked = painted(&ctx, &release, &tracks, vec![event]).0;
+            }
+        }
+
+        assert_eq!(clicked.row, Some(1), "a double click plays the row");
     }
 }

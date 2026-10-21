@@ -17,7 +17,7 @@
 
 use std::time::Instant;
 
-use egui::{Rect, Sense, Ui, Vec2, vec2};
+use egui::{Id, Rect, Sense, Ui, Vec2, vec2};
 use takofy_model::{FollowedArtist, Release};
 
 use crate::cover::{Art, Cover};
@@ -29,10 +29,12 @@ use crate::player::Transport;
 use crate::queue::Queue;
 use crate::releases::Labels;
 use crate::route::Page;
+use crate::scroll;
 use crate::theme::{Tokens, extent, space};
 use crate::view::text as recipe;
 
 use super::artist_hero::{self, ArtistHero};
+use super::carry::{self, Ghost};
 use super::filter_row;
 use super::media;
 use super::release_block::{self, Block};
@@ -74,6 +76,7 @@ pub fn artist_view(
     egui::ScrollArea::vertical()
         .id_salt(("artist", uri.as_str()))
         .show(ui, |ui| {
+            scroll::follow_drag(ui);
             let page = library.artist_page();
             match page.load {
                 Load::Idle => {}
@@ -304,6 +307,11 @@ fn popular(
     let list = list_rect(ui, count);
     ui.allocate_rect(list, Sense::hover());
     let visible = ui.clip_rect();
+    let mut selection = carry::List::open(
+        ui.ctx(),
+        Id::unique(("artist-popular", artist.uri.as_str())),
+        count,
+    );
 
     for (index, entry) in artist.top_tracks.iter().enumerate() {
         let rect = table_layout::row_rect(list, index, extent::ROW_H);
@@ -325,14 +333,23 @@ fn popular(
             duration: duration.as_deref(),
             state: state_of(&entry.uri, transport),
             cover: Cover::Missing,
+            look: selection.look(index),
         };
         match track_row::show(ui, rect, columns, &row, tokens) {
             Some(Click::Play) => {
                 *command = queue.start(&artist.top_tracks, index, transport);
             }
+            Some(Click::Select(press)) => selection.press(index, press),
+            Some(Click::Lift) => selection.lift(
+                index,
+                entry.clone(),
+                rect.size(),
+                Ghost::Table(row.lifted(columns)),
+            ),
             Some(Click::Open(_)) | None => {}
         }
     }
+    selection.finish(ui.ctx());
 }
 
 /// The rect a release block will occupy, solved before it is drawn so its
@@ -787,6 +804,167 @@ mod tests {
             "the hero's title: {texts:?}"
         );
         assert!(texts.contains(&"ARTIST"), "the hero's eyebrow: {texts:?}");
+    }
+
+    /// Whether `artist`'s popular list holds `index` as part of its selection.
+    fn picked(ctx: &Context, artist: &str, index: usize) -> bool {
+        crate::view::carry::List::open(ctx, egui::Id::unique(("artist-popular", artist)), 2)
+            .look(index)
+            .selected
+    }
+
+    /// Whether one release block's list holds `index` as part of its selection.
+    fn release_picked(ctx: &Context, release: &str, index: usize) -> bool {
+        crate::view::carry::List::open(ctx, egui::Id::unique(("release-tracks", release)), 1)
+            .look(index)
+            .selected
+    }
+
+    #[test]
+    fn a_single_click_selects_and_a_double_click_plays_it() {
+        let ctx = context();
+        let size = Vec2::new(900.0, 800.0);
+        let top = || {
+            vec![
+                track("spotify:track:a", "One", "Vela Moreno", 222_000),
+                track("spotify:track:b", "Two", "Vela Moreno", 198_000),
+            ]
+        };
+        let mut library = library_with(detail(top(), Vec::new()));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let rect = popular_row_rect(&ctx, size, 1, 2);
+        let command = click(
+            &ctx,
+            size,
+            rect.center(),
+            1,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+
+        assert_eq!(command, None, "a single click plays nothing");
+        assert!(transport.now_playing.is_none(), "and starts nothing");
+        assert!(picked(&ctx, ARTIST, 1), "the row under the click is picked");
+        assert!(!picked(&ctx, ARTIST, 0), "and only that row");
+
+        // A fresh page for the double click: a third click inside the window is
+        // a triple click, and that plays nothing.
+        let ctx = context();
+        let mut library = library_with(detail(top(), Vec::new()));
+        let mut transport = Transport::default();
+        let command = click(
+            &ctx,
+            size,
+            rect.center(),
+            2,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+
+        assert_eq!(
+            command,
+            Some(Command::Play {
+                uri: "spotify:track:b".to_owned()
+            }),
+            "a double click starts the track"
+        );
+    }
+
+    #[test]
+    fn release_blocks_keep_their_own_selection_until_navigation() {
+        let ctx = context();
+        let mut library = library_with(detail(
+            Vec::new(),
+            vec![
+                release("spotify:album:r1", "Album One", &["spotify:track:1"]),
+                release("spotify:album:r2", "Album Two", &["spotify:track:2"]),
+            ],
+        ));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        // The blocks ask for their labels, then the answers land.
+        let _ = frame(
+            &ctx,
+            tall(),
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        assert_eq!(
+            library.releases.requests().len(),
+            2,
+            "both blocks ask for their labels"
+        );
+        for (release_uri, title) in [
+            ("spotify:album:r1", "First One"),
+            ("spotify:album:r2", "Second One"),
+        ] {
+            library.apply(&Update::ReleaseTracks {
+                release: release_uri.to_owned(),
+                tracks: vec![track(
+                    &format!("spotify:track:{release_uri}"),
+                    title,
+                    "Vela Moreno",
+                    200_000,
+                )],
+            });
+        }
+
+        let (_, output) = frame(
+            &ctx,
+            tall(),
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        assert!(drawn(&output, "First One"), "the first block's row");
+        assert!(drawn(&output, "Second One"), "the second block's row");
+        let row = text_rect(&output, "Second One").expect("the second block's row");
+
+        let command = click(
+            &ctx,
+            tall(),
+            row.center(),
+            1,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        assert_eq!(command, None, "a single click plays nothing");
+        assert!(
+            release_picked(&ctx, "spotify:album:r2", 0),
+            "the block under the click picks its row"
+        );
+        assert!(
+            !release_picked(&ctx, "spotify:album:r1", 0),
+            "the other block keeps its own selection"
+        );
+
+        let _ = library.open(Page::Album("spotify:album:other".to_owned()));
+        crate::view::carry::follow_page(&ctx, library.page());
+
+        assert!(
+            !release_picked(&ctx, "spotify:album:r1", 0),
+            "navigation forgets the first block's selection"
+        );
+        assert!(
+            !release_picked(&ctx, "spotify:album:r2", 0),
+            "and the second's"
+        );
     }
 
     #[test]

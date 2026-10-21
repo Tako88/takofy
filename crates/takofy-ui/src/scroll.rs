@@ -6,7 +6,8 @@
 //! own wheel motion takes the wheel back: a notch lands at once, and whatever
 //! egui was holding back is overwritten before anything can consume it.
 
-use egui::{Context, Event, MouseWheelUnit, TouchPhase, Vec2};
+use egui::style::ScrollAnimation;
+use egui::{Context, DragAndDrop, Event, MouseWheelUnit, Pos2, Rect, TouchPhase, Ui, Vec2, vec2};
 
 use crate::theme::scroll;
 
@@ -52,11 +53,57 @@ pub fn instant(ctx: &Context) {
     });
 }
 
+/// How far a scroll area should move this frame while a row is carried over it,
+/// in points, negative upwards.
+///
+/// A pointer held inside `DRAG_EDGE` of the top or bottom edge scrolls towards
+/// that edge, faster the deeper into the margin it is. A pointer outside the
+/// area's columns, or a stalled frame, scrolls nothing.
+pub fn drag_step(pointer: Pos2, viewport: Rect, dt: f32) -> f32 {
+    if !pointer.x.is_finite()
+        || !pointer.y.is_finite()
+        || !dt.is_finite()
+        || !viewport.is_finite()
+        || !viewport.x_range().contains(pointer.x)
+    {
+        return 0.0;
+    }
+
+    let up = ((viewport.top() + scroll::DRAG_EDGE - pointer.y) / scroll::DRAG_EDGE).clamp(0.0, 1.0);
+    let down =
+        ((pointer.y - (viewport.bottom() - scroll::DRAG_EDGE)) / scroll::DRAG_EDGE).clamp(0.0, 1.0);
+    let depth = if up > down { -up } else { down };
+
+    depth * scroll::DRAG_MAX * dt.clamp(0.0, 0.1)
+}
+
+/// Scrolls the area a carried row is held near an edge of.
+///
+/// Runs first inside a scroll area's content, so this frame's rows are laid out
+/// at the offset the frame will draw and a drop marker resolves against it.
+pub fn follow_drag(ui: &mut Ui) {
+    let ctx = ui.ctx().clone();
+    if !DragAndDrop::has_any_payload(&ctx) {
+        return;
+    }
+    let Some(pointer) = ctx.pointer_latest_pos() else {
+        return;
+    };
+    let dt = ctx.input(|input| input.stable_dt);
+    let step = drag_step(pointer, ui.clip_rect(), dt);
+    if step == 0.0 {
+        return;
+    }
+
+    ui.scroll_with_delta_animation(vec2(0.0, -step), ScrollAnimation::none());
+    ctx.request_repaint();
+}
+
 #[cfg(test)]
 mod tests {
     use egui::{
-        Context, Event, Modifiers, MouseWheelSource, MouseWheelUnit, RawInput, Rect, ScrollArea,
-        TouchPhase, pos2, vec2,
+        Context, DragAndDrop, Event, Modifiers, MouseWheelSource, MouseWheelUnit, Pos2, RawInput,
+        Rect, ScrollArea, TouchPhase, pos2, vec2,
     };
 
     use super::*;
@@ -135,5 +182,152 @@ mod tests {
             moved.abs() < f32::EPSILON,
             "the zoom owns that notch, so nothing scrolls: {moved}"
         );
+    }
+
+    /// A viewport at the origin, 800 wide and 400 tall.
+    fn viewport() -> Rect {
+        Rect::from_min_size(pos2(0.0, 0.0), vec2(800.0, 400.0))
+    }
+
+    const DT: f32 = 0.05;
+
+    #[test]
+    fn the_middle_scrolls_nothing() {
+        assert_eq!(drag_step(pos2(400.0, 200.0), viewport(), DT), 0.0);
+    }
+
+    #[test]
+    fn at_the_sixty_four_point_line_is_zero() {
+        let edge = scroll::DRAG_EDGE;
+
+        assert_eq!(drag_step(pos2(400.0, edge), viewport(), DT), 0.0);
+        assert_eq!(
+            drag_step(pos2(400.0, viewport().bottom() - edge), viewport(), DT),
+            0.0
+        );
+    }
+
+    #[test]
+    fn halfway_in_is_half_speed() {
+        let edge = scroll::DRAG_EDGE;
+        let half = scroll::DRAG_MAX * DT / 2.0;
+        let top = drag_step(pos2(400.0, edge / 2.0), viewport(), DT);
+        let bottom = drag_step(
+            pos2(400.0, viewport().bottom() - edge / 2.0),
+            viewport(),
+            DT,
+        );
+
+        assert!((top + half).abs() < 0.01, "half speed up: {top}");
+        assert!((bottom - half).abs() < 0.01, "half speed down: {bottom}");
+    }
+
+    #[test]
+    fn the_edge_and_beyond_is_full_speed_either_way() {
+        let full = scroll::DRAG_MAX * DT;
+
+        for y in [0.0, -50.0] {
+            assert_eq!(drag_step(pos2(400.0, y), viewport(), DT), -full, "{y}");
+        }
+        for y in [400.0, 450.0] {
+            assert_eq!(drag_step(pos2(400.0, y), viewport(), DT), full, "{y}");
+        }
+    }
+
+    #[test]
+    fn outside_the_columns_scrolls_nothing() {
+        assert_eq!(drag_step(pos2(-1.0, 0.0), viewport(), DT), 0.0);
+        assert_eq!(drag_step(pos2(801.0, 400.0), viewport(), DT), 0.0);
+    }
+
+    #[test]
+    fn a_short_viewport_picks_the_nearer_edge() {
+        let short = Rect::from_min_size(pos2(0.0, 0.0), vec2(800.0, 100.0));
+
+        assert!(drag_step(pos2(400.0, 30.0), short, DT) < 0.0);
+        assert!(drag_step(pos2(400.0, 70.0), short, DT) > 0.0);
+    }
+
+    #[test]
+    fn a_stall_is_capped() {
+        let capped = scroll::DRAG_MAX * 0.1;
+
+        assert_eq!(drag_step(pos2(400.0, 0.0), viewport(), 1.0), -capped);
+    }
+
+    #[test]
+    fn non_finite_is_zero() {
+        let broken = Rect::from_min_size(pos2(0.0, 0.0), vec2(800.0, f32::NAN));
+        let cases = [
+            (pos2(f32::NAN, 10.0), viewport(), DT),
+            (pos2(400.0, f32::INFINITY), viewport(), DT),
+            (pos2(400.0, 10.0), broken, DT),
+            (pos2(400.0, 10.0), viewport(), f32::NAN),
+            (pos2(400.0, 10.0), viewport(), f32::INFINITY),
+        ];
+
+        for (pointer, area, dt) in cases {
+            assert_eq!(drag_step(pointer, area, dt), 0.0, "{pointer:?} {dt}");
+        }
+    }
+
+    /// One frame in a scrolling area with `follow_drag` first in it, given the
+    /// pointer's own position, and the offset the area ended on.
+    fn dragged(ctx: &Context, pointer: Pos2, time: f64) -> f32 {
+        let raw = RawInput {
+            screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(800.0, 400.0))),
+            time: Some(time),
+            events: vec![Event::PointerMoved(pointer)],
+            ..Default::default()
+        };
+        let mut offset = 0.0;
+        let mut full = ctx.run_ui(raw, |ui| {
+            offset = ScrollArea::vertical()
+                .show(ui, |ui| {
+                    follow_drag(ui);
+                    for _ in 0..100 {
+                        ui.allocate_space(vec2(800.0, 40.0));
+                    }
+                })
+                .state
+                .clamped_offset()
+                .y;
+        });
+        full.textures_delta.clear();
+        offset
+    }
+
+    #[test]
+    fn a_held_carry_at_the_bottom_edge_scrolls_the_area() {
+        let ctx = Context::default();
+        let pointer = pos2(400.0, 395.0);
+        let _ = dragged(&ctx, pointer, 1.0);
+        DragAndDrop::set_payload(&ctx, ());
+
+        // The offset lands on the frame after the delta, because a scroll area
+        // animates every delta, however short the animation.
+        let scrolled = dragged(&ctx, pointer, 1.016);
+        let scrolled = dragged(&ctx, pointer, 1.032).max(scrolled);
+
+        assert!(scrolled > 1.0, "the area follows the carry: {scrolled}");
+    }
+
+    #[test]
+    fn no_payload_no_scroll() {
+        let ctx = Context::default();
+        let pointer = pos2(400.0, 395.0);
+        let _ = dragged(&ctx, pointer, 1.0);
+
+        assert_eq!(dragged(&ctx, pointer, 1.016), 0.0);
+    }
+
+    #[test]
+    fn a_pointer_in_the_middle_does_not_scroll() {
+        let ctx = Context::default();
+        let pointer = pos2(400.0, 200.0);
+        let _ = dragged(&ctx, pointer, 1.0);
+        DragAndDrop::set_payload(&ctx, ());
+
+        assert_eq!(dragged(&ctx, pointer, 1.016), 0.0);
     }
 }
