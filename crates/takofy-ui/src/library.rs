@@ -18,6 +18,7 @@ use crate::lyrics::LyricsPanel;
 use crate::message::{Command, Failure, Update};
 use crate::releases::Releases;
 use crate::route::{History, Page};
+use crate::search::Search;
 use crate::sidebar_kind::{SidebarFilter, SidebarKind};
 
 /// How the library page draws its saved things.
@@ -113,6 +114,11 @@ pub struct Library {
     wanted_related: Option<String>,
     /// The panel under the library: its tab and the playing track's lyrics.
     pub lyrics: LyricsPanel,
+    /// The topbar's search: the query, the menu's mark and its two reads.
+    ///
+    /// It is keyed by the query rather than by a page, so it survives every
+    /// page change; only the layout root's own reset could drop it.
+    pub search: Search,
     pub tracks: Load<TracksFor>,
     /// The album the album page draws.
     pub album: Load<AlbumDetail>,
@@ -341,6 +347,11 @@ impl Library {
             Update::Lyrics { .. } | Update::LyricsFailed { .. } => {
                 self.lyrics.apply(update);
             }
+            // A search reply is about a query, not a page, so it is forwarded
+            // whatever page is on screen; the state keeps its own guard.
+            Update::Search { .. } | Update::SearchFailed { .. } => {
+                self.search.apply(update);
+            }
             Update::NeedsAuthorization
             | Update::SignInFailed(_)
             | Update::Transport(_)
@@ -352,6 +363,16 @@ impl Library {
     /// The page on screen, or `None` for the library root.
     pub fn page(&self) -> Option<&Page> {
         self.history.current()
+    }
+
+    /// The query of the results page on screen, if one is.
+    ///
+    /// Search is the one page whose identity is a query rather than a URI, so
+    /// the shell hands it to the search state instead of a page handle. No
+    /// search page can be open yet: the route lands with the results page, and
+    /// this is the one line the two meet at.
+    pub fn page_search_query(&self) -> Option<&str> {
+        None
     }
 
     /// Which playlist's tracks are on screen, if any.

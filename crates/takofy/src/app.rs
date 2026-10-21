@@ -48,6 +48,18 @@ pub(crate) struct TakofyApp {
 }
 
 impl TakofyApp {
+    /// Sends the search read this frame wants, if one is due.
+    ///
+    /// The page's query is copied out first, because the library names it and
+    /// the search state is then asked mutably. Split from `logic` so a test can
+    /// ask without an eframe frame.
+    fn request_search(&mut self) {
+        let page = self.library.page_search_query().map(str::to_owned);
+        if let Some(command) = self.library.search.request(page.as_deref()) {
+            let _ = self.ui_end.commands.send(command);
+        }
+    }
+
     /// Installs the theme and takes ownership of the window's end.
     pub(crate) fn new(cc: &eframe::CreationContext<'_>, ui_end: UiEnd) -> Self {
         let tokens = Tokens::DARK;
@@ -107,6 +119,9 @@ impl eframe::App for TakofyApp {
         if let Some(command) = self.library.related_request() {
             let _ = self.ui_end.commands.send(command);
         }
+        // The search reads are want-driven like the lists above: the menu while
+        // the field is open, the page while it is on screen.
+        self.request_search();
         // After the drain and before the draw, so a cover that just arrived is
         // ready in this same frame's `ui()`.
         self.art.upload(ctx);
@@ -227,6 +242,7 @@ fn schedule_wake(ctx: &egui::Context, art: &Art, now: Instant) {
 mod tests {
     use std::sync::mpsc::channel;
 
+    use eframe::App;
     use takofy_model::{CoverImage, CoverUrl, TrackEntry};
     use takofy_ui::library::Load;
     use takofy_ui::message::{Command, Failure, TransportUpdate};
@@ -726,6 +742,126 @@ mod tests {
                 .repaint_delay,
             Duration::MAX,
             "an idle window must not be woken"
+        );
+    }
+
+    /// A window with no worker behind it, so what `logic` sends can be read
+    /// back from the command channel.
+    fn test_window() -> (TakofyApp, tokio::sync::mpsc::UnboundedReceiver<Command>) {
+        let (sender, updates) = channel();
+        // Nothing will ever arrive; a disconnected channel is what the window
+        // already tolerates.
+        drop(sender);
+        let (commands, received) = tokio::sync::mpsc::unbounded_channel();
+        let app = TakofyApp {
+            state: SignIn::default(),
+            library: Library::default(),
+            transport: Transport::default(),
+            queue: Queue::default(),
+            drawer: Drawer::default(),
+            ui_end: UiEnd { updates, commands },
+            tokens: Tokens::DARK,
+            art: Art::new(),
+            since: None,
+        };
+        (app, received)
+    }
+
+    /// Types `text` into the field, as one frame of the real path would.
+    fn type_search(library: &mut Library, text: &str) {
+        library.search.text = text.to_owned();
+        let input = takofy_ui::search::KeyInput {
+            typed: true,
+            focused: true,
+            ..takofy_ui::search::KeyInput::default()
+        };
+        let _ = library.search.step(input, 0, false);
+    }
+
+    #[test]
+    fn drain_feeds_the_search_state() {
+        let (tx, rx) = channel();
+        let mut state = SignIn::SignedIn;
+        let mut library = Library::default();
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        type_search(&mut library, "never gonna");
+        assert_eq!(
+            library.search.request(None),
+            Some(Command::Search {
+                query: "never gonna".to_owned()
+            })
+        );
+        tx.send(Update::Search {
+            query: "never gonna".to_owned(),
+            tracks: vec![track("spotify:track:a")],
+        })
+        .expect("send");
+
+        let commands = drain(
+            &rx,
+            &mut state,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut Art::default(),
+            Instant::now(),
+        );
+
+        assert!(commands.is_empty());
+        assert_eq!(
+            library.search.menu_view(),
+            takofy_ui::search::MenuView::Rows {
+                tracks: &[track("spotify:track:a")],
+                total: 1,
+                floor: false,
+            },
+            "a drained reply reaches the search state"
+        );
+    }
+
+    /// Runs one frame of the real `logic` pass, which is where a search read is
+    /// armed. `logic` is an [`eframe::App`] method, so the frame is the one
+    /// eframe's own test harness builds.
+    fn logic_frame(app: &mut TakofyApp) {
+        app.logic(
+            &egui::Context::default(),
+            &mut eframe::Frame::_new_kittest(),
+        );
+    }
+
+    #[test]
+    fn logic_asks_for_the_typed_query_once() {
+        let (mut app, mut received) = test_window();
+        type_search(&mut app.library, "never gonna");
+
+        logic_frame(&mut app);
+        assert_eq!(
+            received.try_recv().expect("the search read"),
+            Command::Search {
+                query: "never gonna".to_owned()
+            }
+        );
+        logic_frame(&mut app);
+        assert!(
+            received.try_recv().is_err(),
+            "one read on the wire at a time, so a burst cannot queue twenty"
+        );
+    }
+
+    #[test]
+    fn focus_alone_asks_for_no_search() {
+        let (mut app, mut received) = test_window();
+        let focused = takofy_ui::search::KeyInput {
+            focused: true,
+            ..takofy_ui::search::KeyInput::default()
+        };
+        let _ = app.library.search.step(focused, 0, false);
+
+        logic_frame(&mut app);
+        assert!(
+            received.try_recv().is_err(),
+            "an empty query fetches nothing (R6)"
         );
     }
 }
