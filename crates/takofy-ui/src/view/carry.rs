@@ -30,7 +30,6 @@ use super::track_row;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Source {
     /// The queue, which moves its own rows.
-    #[cfg_attr(not(test), expect(dead_code, reason = "only a queue lift builds this"))]
     Queue,
     /// A page list, which inserts its rows into the queue.
     List(Id),
@@ -83,19 +82,11 @@ pub fn carried(ctx: &Context) -> Option<Arc<Carry>> {
 }
 
 /// Whether a block is carried at all, from any list.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the ghost and the shell ask this once they run")
-)]
 pub fn carrying(ctx: &Context) -> bool {
     DragAndDrop::has_any_payload(ctx)
 }
 
 /// Forgets every list's selection when the page changes.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the shell calls this on navigation")
-)]
 pub fn follow_page(ctx: &Context, page: Option<&Page>) {
     ctx.data_mut(|data| {
         data.get_temp_mut_or_default::<Picks>(picks()).follow(page);
@@ -104,10 +95,6 @@ pub fn follow_page(ctx: &Context, page: Option<&Page>) {
 
 /// The block a queue lift carries, or `None` when the queue will not lift it or
 /// cannot name an entry for every row it picked.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the shell calls this on a queue lift")
-)]
 pub fn from_queue(queue: &mut Queue, lift: Lift) -> Option<Carry> {
     let rows = queue.lift(lift.index)?;
     let entries = queue.entries_at(&rows);

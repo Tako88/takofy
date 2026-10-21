@@ -12,6 +12,7 @@ mod carry;
 pub mod controls;
 mod episode_row;
 mod filter_row;
+mod ghost;
 mod hero;
 pub mod lyrics_pane;
 pub mod media;

@@ -157,13 +157,6 @@ pub struct Lifted {
     cover: Cover,
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the drag layer owns the carried block, and it is what paints this snapshot"
-    )
-)]
 impl Lifted {
     /// Draws the row into `rect` with no interaction of its own: a ghost is
     /// painted over whatever is under the pointer, and must take nothing from it.
