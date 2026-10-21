@@ -3315,7 +3315,7 @@ mod tests {
         };
 
         // The pointer arrives over row 3: it owns the highlight, so row 3 takes
-        // the 4% wash and the tick.
+        // the row hover wash and the tick.
         let third = layout::search_menu::row_rect(menu, 3).center();
         let _ = window.frame(
             &mut transport,

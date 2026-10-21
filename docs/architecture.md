@@ -54,9 +54,10 @@ landed on, so the window can draw the time left and follow the player's truth
 rather than a guess. The play queue is a window reducer too: it owns the index
 and the advance rule, folds the same updates the transport does, and hands back
 an ordinary `Play`, so the worker stays a dumb executor and never learns about
-the queue. None of this changes the shutdown order — the command task still
-owns the engine and the player, and teardown still joins it before the runtime
-drops.
+the queue. It also owns the edits to its own order and the selection over its
+rows, since both are indices into it. None of this changes the shutdown order —
+the command task still owns the engine and the player, and teardown still joins
+it before the runtime drops.
 
 Cover art runs through the same split. The binary fetches and decodes; the
 window only holds textures. A frame's protocol is `begin_frame` → `look` →

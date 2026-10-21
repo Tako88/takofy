@@ -483,7 +483,7 @@ pub struct Palette {
     pub accent_hover: Color32,
     /// A selected chip's fill: bone at low alpha, not a gamma-scaled text.
     pub pressed: Color32,
-    /// The fill under the pointer on a track row, bone at 6%.
+    /// The fill under the pointer on a row, bone at 6%.
     pub row_hover: Color32,
     /// The fill under a picked row, bone at 16%: the strongest wash a row takes.
     pub row_selected: Color32,
@@ -813,7 +813,7 @@ mod tests {
     #[test]
     fn muted_ink_and_the_accent_bar_stay_readable_inside_a_selected_row() {
         let p = &Palette::DARK;
-        for behind in [p.surface, p.panel] {
+        for behind in [p.surface, p.panel, p.surface_raised] {
             let row = over(p.row_selected, behind);
             let muted = contrast_ratio(p.text_muted, row);
             let accent = contrast_ratio(p.accent, row);

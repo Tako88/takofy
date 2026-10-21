@@ -617,7 +617,7 @@ fn row_chrome(
         );
     } else if response.hovered() {
         ui.painter()
-            .rect_filled(rect, radius::SM, tokens.palette.surface_hover);
+            .rect_filled(rect, radius::SM, tokens.palette.row_hover);
     }
 
     if response.has_focus() {
@@ -715,7 +715,7 @@ fn state(ui: &mut Ui, rect: Rect, text: RichText) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use egui::{Event, Pos2, Vec2};
+    use egui::{Color32, Event, Pos2, Vec2};
     use takofy_model::{FollowedShow, PlaylistEntry};
 
     use crate::message::{Failure, Update};
@@ -1463,6 +1463,51 @@ mod tests {
         assert!(
             texts.contains(&"Loading your artists…".to_owned()),
             "{texts:?}"
+        );
+    }
+
+    /// The fills the row chrome paints with the pointer at `at`.
+    fn chrome_fills(at: Option<Pos2>) -> Vec<Color32> {
+        let ctx = context();
+        let tokens = Tokens::DARK;
+        let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(254.0, ROW_H));
+        let mut fills = Vec::new();
+        for _ in 0..2 {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(254.0, 800.0))),
+                    events: at.map(Event::PointerMoved).into_iter().collect(),
+                    ..Default::default()
+                },
+                |ui| {
+                    let id = egui::Id::unique("library-row");
+                    let _ = row_chrome(ui, rect, id, "A", false, &tokens);
+                },
+            );
+            output.textures_delta.clear();
+            fills = output
+                .shapes
+                .iter()
+                .filter_map(|clipped| match &clipped.shape {
+                    egui::epaint::Shape::Rect(shape) if shape.rect == rect => Some(shape.fill),
+                    _ => None,
+                })
+                .collect();
+        }
+        fills
+    }
+
+    #[test]
+    fn a_hovered_library_row_washes_with_row_hover() {
+        let tokens = Tokens::DARK;
+        assert_eq!(
+            chrome_fills(Some(Pos2::new(120.0, ROW_H / 2.0))),
+            vec![tokens.palette.row_hover],
+            "a hovered library row washed with something other than the row hover"
+        );
+        assert!(
+            chrome_fills(None).is_empty(),
+            "a library row with the pointer away washed"
         );
     }
 
