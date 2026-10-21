@@ -227,9 +227,7 @@ impl Library {
             // A read's order is never adopted while a sidebar write is pending:
             // it may have been taken before the write reached the server, or
             // after, and the confirmation cannot tell the two apart.
-            Update::Playlists(playlists) if self.sidebar_pending.is_some() => {
-                let _ = playlists;
-            }
+            Update::Playlists(_) if self.sidebar_pending.is_some() => {}
             Update::Playlists(playlists) => {
                 let mut playlists = playlists.clone();
                 for entry in &mut playlists {
