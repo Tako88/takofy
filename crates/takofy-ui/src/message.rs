@@ -4,8 +4,8 @@
 //! token or an auth error, so the compiler keeps secrets out of a view.
 
 use takofy_model::{
-    AlbumDetail, ArtistDetail, CoverImage, CoverUrl, FollowedArtist, FollowedShow, PlaylistAccess,
-    PlaylistEntry, Revision, SavedAlbum, ShowDetail, TrackEntry, TrackLyrics,
+    AlbumDetail, ArtistDetail, CoverImage, CoverUrl, FollowedArtist, FollowedShow, Move,
+    PlaylistAccess, PlaylistEntry, Revision, SavedAlbum, ShowDetail, TrackEntry, TrackLyrics,
 };
 
 /// A request from the window to the worker.
@@ -15,12 +15,11 @@ pub enum Command {
     Authorize,
     /// Load the tracks of one playlist.
     LoadTracks { playlist: String },
-    /// Move one row of a playlist to a new place, based on `revision`.
+    /// Move rows of a playlist to a new place, as one change set on `revision`.
     MoveTrack {
         playlist: String,
         revision: Revision,
-        from: usize,
-        to: usize,
+        moves: Vec<Move>,
     },
     /// Move one row of the sidebar's playlists to a new place, based on
     /// `revision`.

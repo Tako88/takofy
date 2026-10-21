@@ -21,6 +21,7 @@ use takofy_model::TrackEntry;
 
 use crate::message::{Command, TransportUpdate, Update};
 use crate::player::{RESTART_AFTER_MS, Transport, TransportState};
+use crate::reorder;
 use crate::selection::{Press, Selection};
 
 /// How many tracks an unplayable run may skip before the queue stops and shows
@@ -226,24 +227,15 @@ impl Queue {
     /// move: it returns `None` and changes nothing.
     pub fn move_rows(&mut self, rows: &[usize], boundary: usize) -> Option<Range<usize>> {
         let boundary = self.edit_boundary(boundary);
-        let mut rows = self.editable_rows(rows);
-        rows.sort_unstable();
-        rows.dedup();
-
-        let (&first, &last) = (rows.first()?, rows.last()?);
-        if rows.len() == last - first + 1 && (first..=last + 1).contains(&boundary) {
-            return None;
-        }
-
-        let before = rows.iter().filter(|row| **row < boundary).count();
-        let landed = boundary - before;
-        let moved = self.entries_at(&rows);
-        for row in rows.iter().rev() {
+        let rows = self.editable_rows(rows);
+        let found = reorder::gather(self.tracks.len(), &rows, boundary)?;
+        let moved = self.entries_at(&found.rows);
+        for row in found.rows.iter().rev() {
             self.tracks.remove(*row);
         }
-        self.tracks.splice(landed..landed, moved);
+        self.tracks.splice(found.landed..found.landed, moved);
 
-        let range = landed..landed + rows.len();
+        let range = found.landed..found.landed + found.rows.len();
         self.selection.set(range.clone());
         Some(range)
     }
@@ -430,6 +422,7 @@ mod tests {
 
     use super::*;
     use crate::message::Failure;
+    use crate::reorder;
 
     fn track(uri: &str) -> TrackEntry {
         TrackEntry {
@@ -1286,6 +1279,80 @@ mod tests {
         let mut queue = started(5, 0);
         assert_eq!(queue.move_rows(&[3], 2), Some(2..3));
         assert_eq!(order(&queue), uris(&["t0", "t1", "t3", "t2", "t4"]));
+    }
+
+    /// A queue holding `count` rows with nothing current, so every row and
+    /// boundary is editable.
+    fn armed(count: usize) -> Queue {
+        let mut queue = Queue::default();
+        queue.append(tracks(count));
+        queue
+    }
+
+    /// Every non-empty pick set over `len` rows, each ascending.
+    fn subsets(len: usize) -> Vec<Vec<usize>> {
+        (1..(1usize << len) as u64)
+            .map(|mask| {
+                (0..len)
+                    .filter(|row| mask >> row & 1 == 1)
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn moving_a_block_leaves_the_order_a_playlist_block_leaves() {
+        for len in 1..=6 {
+            for rows in subsets(len) {
+                for boundary in 0..=len {
+                    let mut queue = armed(len);
+                    let before = order(&queue);
+                    let found = reorder::block(&before, &rows, boundary);
+                    let moved = queue.move_rows(&rows, boundary);
+                    match found {
+                        None => {
+                            assert_eq!(moved, None, "{len} {rows:?} {boundary}");
+                            assert_eq!(order(&queue), before, "{len} {rows:?} {boundary}");
+                        }
+                        Some(found) => {
+                            assert_eq!(
+                                moved,
+                                Some(found.landed..found.landed + rows.len()),
+                                "{len} {rows:?} {boundary}"
+                            );
+                            assert_eq!(order(&queue), found.order, "{len} {rows:?} {boundary}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn moving_a_block_past_the_current_entry_agrees_where_the_queue_may_edit() {
+        // A started queue clamps a boundary and drops the rows at or before the
+        // current entry, so the sweep is its own editable region.
+        for len in 1..=6 {
+            for rows in subsets(len).into_iter().filter(|rows| rows[0] >= 1) {
+                for boundary in 1..=len {
+                    let mut queue = started(len, 0);
+                    let before = order(&queue);
+                    let found = reorder::block(&before, &rows, boundary);
+                    let moved = queue.move_rows(&rows, boundary);
+                    match found {
+                        None => assert_eq!(moved, None, "{len} {rows:?} {boundary}"),
+                        Some(found) => {
+                            assert_eq!(
+                                moved,
+                                Some(found.landed..found.landed + rows.len()),
+                                "{len} {rows:?} {boundary}"
+                            );
+                            assert_eq!(order(&queue), found.order, "{len} {rows:?} {boundary}");
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]

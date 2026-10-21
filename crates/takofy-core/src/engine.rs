@@ -21,7 +21,7 @@ use crate::rootlist::{RootlistError, fetch_all};
 use crate::search::search_uri;
 use crate::show::ShowError;
 use takofy_model::{
-    AlbumDetail, ArtistDetail, CoverUrl, FollowedArtist, FollowedShow, PlaylistAccess,
+    AlbumDetail, ArtistDetail, CoverUrl, FollowedArtist, FollowedShow, Move, PlaylistAccess,
     PlaylistEntry, Revision, SavedAlbum, ShowDetail, TrackEntry, TrackLyrics,
 };
 
@@ -141,10 +141,9 @@ impl Engine {
         &self,
         playlist_uri: &str,
         revision: &Revision,
-        from: usize,
-        to: usize,
+        moves: &[Move],
     ) -> Result<Revision, EngineError> {
-        Ok(write_move(&self.session, playlist_uri, revision, from, to).await?)
+        Ok(write_move(&self.session, playlist_uri, revision, moves).await?)
     }
 
     /// Writes one move to the user's rootlist, answering the revision to hold

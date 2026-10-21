@@ -261,12 +261,10 @@ fn body(
                 match track_row::show(ui, rect, columns, &row, tokens) {
                     Some(Click::Play) => clicked.row = Some(index),
                     Some(Click::Select(press)) => selection.press(index, press),
-                    Some(Click::Lift) => selection.lift(
-                        index,
-                        entry.clone(),
-                        rect.size(),
-                        Ghost::Table(row.lifted(columns)),
-                    ),
+                    Some(Click::Lift) => {
+                        let ghost = Ghost::Table(row.lifted(columns));
+                        selection.lift(index, rect.size(), ghost, |row| tracks.get(row).cloned());
+                    }
                     Some(Click::Open(_)) | None => {}
                 }
             }

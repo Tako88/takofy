@@ -16,6 +16,7 @@ use crate::layout::{self, Grid, NowPlaying, Playbar, Sidebar};
 use crate::library::Library;
 use crate::message::Command;
 use crate::queue::{Queue, Step};
+use crate::reorder;
 use crate::route::Page;
 use crate::search::Act;
 use crate::theme::{Tokens, radius, stroke};
@@ -437,12 +438,8 @@ fn alt_step(ui: &Ui, screen: &mut Screen<'_>, focused: Option<usize>) {
 fn reorder_target(carry: &Carry, offer: Option<&Offer>, pointer: Option<Pos2>) -> Option<Target> {
     let offer = offer.filter(|offer| carry.source == Source::List(offer.list))?;
     let at = landing::resolve(pointer, Some(&offer.zone))?;
-    // A single row's own gap and the next would not step, so it lands nowhere.
-    if let [row] = carry.rows[..]
-        && (at.boundary == row || at.boundary == row + 1)
-    {
-        return None;
-    }
+    // The marker is drawn where a move would land, so a blocked drop draws none.
+    reorder::gather(offer.zone.count, &carry.rows, at.boundary)?;
     Some(Target::Reorder(at))
 }
 
@@ -505,10 +502,10 @@ fn add(screen: &mut Screen<'_>, carry: &Carry, slot: landing::Slot, free: bool) 
     screen.library.add_track(slot.row, carry.track()?)
 }
 
-/// Moves the dropped row in its own list and picks where it landed.
+/// Moves the dropped rows in their own list and picks where they landed.
 ///
-/// A page that is no longer free to write, or a carry that is not exactly one
-/// row, lands nothing: the move is the page's to accept.
+/// A page that is no longer free to write lands nothing: the move is the page's
+/// to accept, and a block it refuses is refused whole.
 fn reorder(
     ctx: &egui::Context,
     screen: &mut Screen<'_>,
@@ -522,14 +519,11 @@ fn reorder(
         return None;
     }
     let offer = offer?;
-    let [row] = carry.rows[..] else {
-        return None;
-    };
-    let entry = carry.entries.first()?;
-    let (command, landed) = screen
-        .library
-        .move_track(&offer.playlist, row, at.boundary, entry)?;
-    carry::select_only(ctx, offer.list, landed);
+    let (command, landed) =
+        screen
+            .library
+            .move_tracks(&offer.playlist, &carry.rows, at.boundary, &carry.entries)?;
+    carry::select_rows(ctx, offer.list, landed);
     Some(command)
 }
 
@@ -832,7 +826,7 @@ pub(super) fn rule(ui: &Ui, rect: Rect, color: Color32) {
 mod tests {
     use std::time::Instant;
 
-    use takofy_model::{CoverUrl, PlaylistAccess, PlaylistEntry, Revision, TrackEntry};
+    use takofy_model::{CoverUrl, Move, PlaylistAccess, PlaylistEntry, Revision, TrackEntry};
 
     use super::*;
     use crate::cover::Art;
@@ -4352,8 +4346,11 @@ mod tests {
             Some(Command::MoveTrack {
                 playlist: PLAYLIST.to_owned(),
                 revision: revision("rev-1"),
-                from: 0,
-                to: 2,
+                moves: vec![Move {
+                    from: 0,
+                    length: 1,
+                    to: 2,
+                }],
             }),
             "the page asks for one write on the revision it was read at"
         );
@@ -4368,6 +4365,194 @@ mod tests {
             None,
             "the gesture sends one write, not one a frame"
         );
+    }
+
+    fn carried_rows(list: egui::Id, rows: Vec<usize>) -> Carry {
+        use crate::cover::Cover;
+        use crate::view::queue_row;
+
+        Carry {
+            source: Source::List(list),
+            rows,
+            entries: Vec::new(),
+            size: Vec2::new(10.0, 20.0),
+            ghost: carry::Ghost::Queue(
+                queue_row::Row {
+                    index: 0,
+                    title: "A Title",
+                    artist: "A Band",
+                    duration: None,
+                    cover: Cover::Missing,
+                    look: crate::view::rows::Look::default(),
+                    refocus: false,
+                }
+                .lifted(),
+            ),
+            playlist: None,
+        }
+    }
+
+    #[test]
+    fn a_block_dropped_in_the_queue_lands_as_a_block_in_row_order() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        let carry = Carry {
+            entries: vec![track(8, None), track(9, None)],
+            ..carried_rows(egui::Id::unique("list"), vec![0, 2])
+        };
+
+        land(
+            &mut queue,
+            &carry,
+            Target::At(Landing {
+                boundary: 2,
+                marker: Rect::ZERO,
+            }),
+        );
+
+        assert_eq!(entries(&queue), ["t0", "t1", "t8", "t9", "t2", "t3"]);
+    }
+
+    #[test]
+    fn a_block_appended_by_the_button_joins_the_end_whole() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        let carry = Carry {
+            entries: vec![track(8, None), track(9, None)],
+            ..carried_rows(egui::Id::unique("list"), vec![0, 2])
+        };
+
+        land(&mut queue, &carry, Target::End);
+
+        assert_eq!(entries(&queue), ["t0", "t1", "t2", "t3", "t8", "t9"]);
+    }
+
+    #[test]
+    fn a_drag_that_starts_inside_a_pick_carries_the_whole_block() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        page_of_tracks(&mut window, &["a", "b", "c", "d"]);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let view = view_rect(&window);
+        let at = |title: &str| row_line(&frame, view, title);
+
+        let _ = window.click(&mut transport, &mut queue, at("b"));
+        window.held = egui::Modifiers::SHIFT;
+        let _ = window.click(&mut transport, &mut queue, at("d"));
+        window.held = egui::Modifiers::NONE;
+
+        // The press is inside the pick, and the pick is what travels.
+        let from = at("c");
+        let to = page_boundary(&frame, view, &["a", "b", "c", "d"], 0);
+        assert_eq!(
+            window.drag(&mut transport, &mut queue, from, to),
+            Some(Command::MoveTrack {
+                playlist: PLAYLIST.to_owned(),
+                revision: revision("rev-1"),
+                moves: vec![Move {
+                    from: 1,
+                    length: 3,
+                    to: 0,
+                }],
+            }),
+            "a contiguous block is one move of its own length"
+        );
+        assert_eq!(page_rows(&window), ["b", "c", "d", "a"]);
+    }
+
+    #[test]
+    fn a_gapped_pick_gathered_at_the_end_is_the_measured_chain() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        page_of_tracks(&mut window, &["a", "b", "c", "d"]);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let view = view_rect(&window);
+        let at = |title: &str| row_line(&frame, view, title);
+
+        let _ = window.click(&mut transport, &mut queue, at("a"));
+        window.held = egui::Modifiers::COMMAND;
+        let _ = window.click(&mut transport, &mut queue, at("c"));
+        window.held = egui::Modifiers::NONE;
+
+        let from = at("c");
+        let to = page_boundary(&frame, view, &["a", "b", "c", "d"], 4);
+        assert_eq!(
+            window.drag(&mut transport, &mut queue, from, to),
+            Some(Command::MoveTrack {
+                playlist: PLAYLIST.to_owned(),
+                revision: revision("rev-1"),
+                moves: vec![
+                    Move {
+                        from: 0,
+                        length: 1,
+                        to: 4,
+                    },
+                    Move {
+                        from: 1,
+                        length: 1,
+                        to: 4,
+                    },
+                ],
+            }),
+            "a gapped pair is a chain in one delta"
+        );
+        assert_eq!(page_rows(&window), ["b", "d", "a", "c"]);
+    }
+
+    #[test]
+    fn a_block_target_is_drawn_exactly_where_a_move_would_land() {
+        let len = 6;
+        let list = egui::Id::unique("list");
+        let rows = Rect::from_min_size(
+            egui::Pos2::ZERO,
+            Vec2::new(300.0, len as f32 * extent::ROW_H),
+        );
+        let zone = crate::landing::Zone {
+            hit: rows,
+            list: rows,
+            row_h: extent::ROW_H,
+            first: 0,
+            count: len,
+        };
+        let offer = Offer {
+            list,
+            playlist: PLAYLIST.to_owned(),
+            zone,
+        };
+        let pointer = |boundary: usize| Some(egui::pos2(150.0, boundary as f32 * extent::ROW_H));
+
+        for picks in [vec![1], vec![1, 2, 3], vec![1, 3]] {
+            let carry = carried_rows(list, picks.clone());
+            for boundary in 0..=len {
+                let drawn = reorder_target(&carry, Some(&offer), pointer(boundary)).is_some();
+                let moves = reorder::gather(len, &picks, boundary).is_some();
+                assert_eq!(drawn, moves, "{picks:?} at {boundary}");
+            }
+        }
+
+        // A single row's own two gaps, and a contiguous block's inner gaps.
+        let single = carried_rows(list, vec![1]);
+        assert_eq!(reorder_target(&single, Some(&offer), pointer(1)), None);
+        assert_eq!(reorder_target(&single, Some(&offer), pointer(2)), None);
+        let block = carried_rows(list, vec![1, 2, 3]);
+        for boundary in 1..=4 {
+            assert_eq!(
+                reorder_target(&block, Some(&offer), pointer(boundary)),
+                None,
+                "the block already sits at {boundary}"
+            );
+        }
+
+        // A gapped block draws a marker at every boundary but its own pick.
+        let gapped = carried_rows(list, vec![1, 3]);
+        for boundary in 0..=len {
+            assert!(
+                reorder_target(&gapped, Some(&offer), pointer(boundary)).is_some(),
+                "a gapped block moves at every boundary: {boundary}"
+            );
+        }
     }
 
     #[test]
@@ -4386,8 +4571,11 @@ mod tests {
             Some(Command::MoveTrack {
                 playlist: PLAYLIST.to_owned(),
                 revision: revision("rev-1"),
-                from: 2,
-                to: 0,
+                moves: vec![Move {
+                    from: 2,
+                    length: 1,
+                    to: 0,
+                }],
             })
         );
         assert_eq!(page_rows(&window), ["list:p2", "list:p0", "list:p1"]);
@@ -4661,8 +4849,11 @@ mod tests {
             Some(Command::MoveTrack {
                 playlist: PLAYLIST.to_owned(),
                 revision: revision("rev-2"),
-                from: 2,
-                to: 0,
+                moves: vec![Move {
+                    from: 2,
+                    length: 1,
+                    to: 0,
+                }],
             }),
             "the second move is based on the reply's revision"
         );

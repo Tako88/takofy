@@ -217,12 +217,12 @@ pub fn tracks_view(
                             Some(Click::Select(press)) => selection.press(index, press),
                             // A write in flight holds the page still; a page it
                             // may not write still lifts.
-                            Some(Click::Lift) if liftable => selection.lift(
-                                index,
-                                entry.clone(),
-                                rect.size(),
-                                Ghost::Table(row.lifted(columns)),
-                            ),
+                            Some(Click::Lift) if liftable => {
+                                let ghost = Ghost::Table(row.lifted(columns));
+                                selection.lift(index, rect.size(), ghost, |row| {
+                                    tracks.tracks.get(row).cloned()
+                                });
+                            }
                             Some(Click::Lift) => {}
                             None => {}
                         }
@@ -1847,7 +1847,7 @@ mod tests {
         let mut library = library_with(tracks.clone());
         assert!(
             library
-                .move_track("spotify:playlist:a", 0, 2, &tracks[0])
+                .move_tracks("spotify:playlist:a", &[0], 2, &[tracks[0].clone()])
                 .is_some(),
             "the page takes the move first"
         );

@@ -3,7 +3,7 @@
 use librespot::core::SpotifyUri;
 use librespot::protocol::playlist4_external::SelectedListContent;
 use protobuf::Message as _;
-use takofy_model::{PlaylistAccess, Revision};
+use takofy_model::{Move, PlaylistAccess, Revision};
 
 use crate::wire::{put_bytes, put_message, put_varint_field};
 
@@ -25,6 +25,18 @@ pub enum PlaylistError {
     /// The write was accepted but the reply named no revision to hold next.
     #[error("the reply carried no revision")]
     Reply,
+    /// The write asked for no ops, so there is nothing to send.
+    #[error("no moves to write")]
+    NoMoves,
+}
+
+/// Whether `moves` names anything to write.
+pub fn require_moves(moves: &[Move]) -> Result<(), PlaylistError> {
+    if moves.is_empty() {
+        Err(PlaylistError::NoMoves)
+    } else {
+        Ok(())
+    }
 }
 
 /// `Op.kind` for an add in the playlist schema.
@@ -42,14 +54,16 @@ fn op(kind: u32, field: u32, inner: &[u8]) -> Vec<u8> {
     op
 }
 
-/// A change set holding one operation, based on `revision`.
+/// A change set holding `ops`, based on `revision`.
 ///
-/// The change set and its single delta both name the revision the write was
-/// based on, because a delta applies to one version.
-fn changes(revision: &Revision, op: &[u8]) -> Vec<u8> {
+/// The change set and its delta both name the revision the write was based on,
+/// because a delta applies to one version. A delta's ops apply in sequence.
+fn changes(revision: &Revision, ops: &[Vec<u8>]) -> Vec<u8> {
     let mut delta = Vec::new();
     put_bytes(1, revision.as_bytes(), &mut delta);
-    put_message(2, op, &mut delta);
+    for op in ops {
+        put_message(2, op, &mut delta);
+    }
 
     let mut body = Vec::new();
     put_bytes(1, revision.as_bytes(), &mut body);
@@ -57,16 +71,22 @@ fn changes(revision: &Revision, op: &[u8]) -> Vec<u8> {
     body
 }
 
-/// The change set that moves one row, based on `revision`.
+/// The change set that applies `moves`, based on `revision`.
 ///
-/// One `MOV` of length one: `to` is the gap in the list **before** the move, so
-/// a move downward names the gap after its own row.
-pub fn move_body(revision: &Revision, from: usize, to: usize) -> Vec<u8> {
-    let mut mov = Vec::new();
-    put_varint_field(1, from as u64, &mut mov);
-    put_varint_field(2, 1, &mut mov);
-    put_varint_field(3, to as u64, &mut mov);
-    changes(revision, &op(MOV, 4, &mov))
+/// Each `MOV` carries `from`, `length` and `to`, where `to` is the gap in the
+/// list **before** that move, so a move downward names the gap after its own run.
+pub fn move_body(revision: &Revision, moves: &[Move]) -> Vec<u8> {
+    let ops: Vec<Vec<u8>> = moves
+        .iter()
+        .map(|mv| {
+            let mut mov = Vec::new();
+            put_varint_field(1, mv.from as u64, &mut mov);
+            put_varint_field(2, mv.length as u64, &mut mov);
+            put_varint_field(3, mv.to as u64, &mut mov);
+            op(MOV, 4, &mov)
+        })
+        .collect();
+    changes(revision, &ops)
 }
 
 /// The change set that appends one item, based on `revision`.
@@ -80,7 +100,7 @@ pub fn add_body(revision: &Revision, from_index: usize, uri: &str) -> Vec<u8> {
     let mut add = Vec::new();
     put_varint_field(1, from_index as u64, &mut add);
     put_message(2, &item, &mut add);
-    changes(revision, &op(ADD, 2, &add))
+    changes(revision, &[op(ADD, 2, &add)])
 }
 
 /// The change set that removes `length` items from `from_index`, based on
@@ -91,7 +111,7 @@ pub fn remove_body(revision: &Revision, from_index: usize, length: usize) -> Vec
     let mut rem = Vec::new();
     put_varint_field(1, from_index as u64, &mut rem);
     put_varint_field(2, length as u64, &mut rem);
-    changes(revision, &op(REM, 3, &rem))
+    changes(revision, &[op(REM, 3, &rem)])
 }
 
 /// The revision a write's answer holds next, when it names one.
@@ -176,9 +196,9 @@ mod tests {
 
     use super::{
         PlaylistError, access, add_body, changes_endpoint, listing_access, move_body, owned,
-        remove_body, reply_revision, require_track, rootlist_changes_endpoint,
+        remove_body, reply_revision, require_moves, require_track, rootlist_changes_endpoint,
     };
-    use takofy_model::{PlaylistAccess, Revision};
+    use takofy_model::{Move, PlaylistAccess, Revision};
 
     /// The revision the probe wrote, 24 bytes.
     const PROBE_REV: [u8; 24] = [
@@ -201,9 +221,23 @@ mod tests {
         ListChanges::parse_from_bytes(bytes).expect("a change set")
     }
 
+    fn one(from: usize, to: usize) -> [Move; 1] {
+        [Move {
+            from,
+            length: 1,
+            to,
+        }]
+    }
+
+    #[test]
+    fn an_empty_move_list_is_no_write() {
+        assert_eq!(require_moves(&[]), Err(PlaylistError::NoMoves));
+        assert_eq!(require_moves(&one(0, 1)), Ok(()));
+    }
+
     #[test]
     fn a_move_body_is_the_probes_66_bytes() {
-        let body = move_body(&probe(), 0, 1);
+        let body = move_body(&probe(), &one(0, 1));
         let mut expected = vec![
             0x0a, 0x18, // ListChanges.base_revision: 24 bytes
         ];
@@ -228,7 +262,7 @@ mod tests {
     #[test]
     fn a_20_byte_revision_writes_58_bytes() {
         let revision = Revision::from_wire(&[0xa5; 20]).expect("a revision");
-        let body = move_body(&revision, 0, 1);
+        let body = move_body(&revision, &one(0, 1));
         // Mov: three varint fields, two bytes each = 6.
         // Op: kind (2) + mov tag and length (2) + Mov (6) = 10.
         // Delta: base tag, length and 20 bytes (22) + op tag and length (2) + Op (10) = 34.
@@ -241,17 +275,90 @@ mod tests {
 
     #[test]
     fn the_delta_and_the_change_set_carry_the_same_base() {
-        let read = page(&move_body(&probe(), 2, 4));
+        let read = page(&move_body(&probe(), &one(2, 4)));
         assert_eq!(read.base_revision(), &PROBE_REV[..]);
         assert_eq!(read.deltas.len(), 1);
         assert_eq!(read.deltas[0].base_version(), &PROBE_REV[..]);
         assert_eq!(read.deltas[0].ops.len(), 1);
         assert_eq!(read.deltas[0].ops[0].kind(), op::Kind::MOV);
+
+        let chain = [
+            Move {
+                from: 0,
+                length: 1,
+                to: 4,
+            },
+            Move {
+                from: 1,
+                length: 1,
+                to: 4,
+            },
+        ];
+        let read = page(&move_body(&probe(), &chain));
+        assert_eq!(read.base_revision(), &PROBE_REV[..]);
+        assert_eq!(read.deltas.len(), 1);
+        assert_eq!(read.deltas[0].base_version(), &PROBE_REV[..]);
+        assert_eq!(read.deltas[0].ops.len(), 2);
+    }
+
+    #[test]
+    fn a_contiguous_block_is_one_mov_of_its_length() {
+        let block = Move {
+            from: 1,
+            length: 3,
+            to: 6,
+        };
+        let body = move_body(&probe(), &[block]);
+        assert!(
+            body.ends_with(&[0x08, 0x01, 0x10, 0x03, 0x18, 0x06]),
+            "one MOV naming from 1, length 3, to 6"
+        );
+        let read = page(&body);
+        assert_eq!(read.deltas[0].ops.len(), 1);
+        let mov = read.deltas[0].ops[0].mov.as_ref().expect("a move");
+        assert_eq!((mov.from_index(), mov.length(), mov.to_index()), (1, 3, 6));
+    }
+
+    #[test]
+    fn a_chain_is_two_ops_in_one_delta() {
+        let chain = [
+            Move {
+                from: 0,
+                length: 1,
+                to: 4,
+            },
+            Move {
+                from: 1,
+                length: 1,
+                to: 4,
+            },
+        ];
+        let body = move_body(&probe(), &chain);
+        let read = page(&body);
+        assert_eq!(read.deltas.len(), 1, "one delta carries both ops");
+        let ops = &read.deltas[0].ops;
+        assert_eq!(ops.len(), 2);
+        assert_eq!(ops[0].kind(), op::Kind::MOV);
+        assert_eq!(ops[1].kind(), op::Kind::MOV);
+        let first = ops[0].mov.as_ref().expect("a move");
+        assert_eq!(
+            (first.from_index(), first.length(), first.to_index()),
+            (0, 1, 4)
+        );
+        let second = ops[1].mov.as_ref().expect("a move");
+        assert_eq!(
+            (second.from_index(), second.length(), second.to_index()),
+            (1, 1, 4)
+        );
+
+        // Mov = 2 + 2 + 2 = 6; Op = 2 + (2 + 6) = 10 each.
+        // Delta = (2 + 24) + 2 * (2 + 10) = 50; ListChanges = (2 + 24) + (2 + 50) = 78.
+        assert_eq!(body.len(), 78);
     }
 
     #[test]
     fn a_far_move_writes_multi_byte_indices() {
-        let body = move_body(&probe(), 200, 3);
+        let body = move_body(&probe(), &one(200, 3));
         assert!(
             body.ends_with(&[0x08, 0xc8, 0x01, 0x10, 0x01, 0x18, 0x03]),
             "200 is two bytes"
@@ -264,7 +371,7 @@ mod tests {
             (200, 1, 3)
         );
 
-        let deep = move_body(&probe(), 3, 300);
+        let deep = move_body(&probe(), &one(3, 300));
         assert!(deep.ends_with(&[0x08, 0x03, 0x10, 0x01, 0x18, 0xac, 0x02]));
         let read = page(&deep);
         let mov = read.deltas[0].ops[0].mov.as_ref().expect("a move");
