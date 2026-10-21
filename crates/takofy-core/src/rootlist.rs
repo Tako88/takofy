@@ -7,6 +7,7 @@ use librespot::core::SpotifyUri;
 use librespot::protocol::playlist4_external::{Item, SelectedListContent};
 use protobuf::Message;
 use protobuf_json_mapping::ParseOptions;
+use takofy_model::{PlaylistAccess, Revision};
 
 /// The wire format a rootlist body arrived in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,6 +25,8 @@ pub struct RootlistPage {
     pub scanned: usize,
     /// `SelectedListContent.length`, when set and non-negative.
     pub total: Option<usize>,
+    /// The list's revision, when the page named one.
+    pub revision: Option<Revision>,
 }
 
 /// Why a rootlist read failed.
@@ -81,6 +84,7 @@ fn page_from_content(content: &SelectedListContent) -> RootlistPage {
         total: content
             .length
             .and_then(|length| usize::try_from(length).ok()),
+        revision: content.revision.as_deref().and_then(Revision::from_wire),
     }
 }
 
@@ -93,14 +97,34 @@ fn playlist_uri(item: &Item) -> Option<String> {
     }
 }
 
+/// A finished walk: the playlists it kept, and whether its indices are the
+/// wire's own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Walked {
+    pub playlists: Vec<String>,
+    /// What the sidebar may write with, or `None` when the read named no
+    /// revision.
+    pub access: Option<PlaylistAccess>,
+}
+
 /// Walks the rootlist until `length` items are seen, a page comes back empty, or
 /// the raw-item cap trips.
-pub(crate) async fn fetch_all(source: &impl RootlistSource) -> Result<Vec<String>, RootlistError> {
+pub(crate) async fn fetch_all(source: &impl RootlistSource) -> Result<Walked, RootlistError> {
     let mut playlists = Vec::new();
     let mut from = 0;
     let mut scanned_total = 0usize;
+    let mut revision: Option<Revision> = None;
+    let mut first = true;
+    let mut steady = true;
+    let mut met_total = false;
     loop {
         let page = source.page(from, PAGE_SIZE).await?;
+        if first {
+            revision = page.revision;
+            first = false;
+        } else if page.revision != revision {
+            steady = false;
+        }
         if page.scanned == 0 {
             break;
         }
@@ -109,6 +133,7 @@ pub(crate) async fn fetch_all(source: &impl RootlistSource) -> Result<Vec<String
         if let Some(total) = page.total
             && scanned_total >= total
         {
+            met_total = total == scanned_total;
             break;
         }
         if scanned_total > MAX_ITEMS {
@@ -116,7 +141,13 @@ pub(crate) async fn fetch_all(source: &impl RootlistSource) -> Result<Vec<String
         }
         from += page.scanned;
     }
-    Ok(playlists)
+    // A dropped item, an unknown or unmet total, or a revision that moved under
+    // the walk all make the row index stop being the wire's index.
+    let access = revision.map(|revision| PlaylistAccess {
+        revision,
+        editable: steady && met_total && scanned_total == playlists.len(),
+    });
+    Ok(Walked { playlists, access })
 }
 
 #[cfg(test)]
@@ -132,6 +163,7 @@ mod tests {
         MAX_ITEMS, PAGE_SIZE, RootlistError, RootlistPage, RootlistSource, RootlistWire, fetch_all,
         parse_rootlist,
     };
+    use takofy_model::{PlaylistAccess, Revision};
 
     const PLAYLIST_A: &str = "spotify:playlist:37i9dQZF1DXcBWIGoYBM5M";
     const PLAYLIST_B: &str = "spotify:playlist:37i9dQZF1DX0XUsuxWHRQd";
@@ -145,14 +177,23 @@ mod tests {
     }
 
     fn binary(items: Vec<Item>, length: Option<i32>) -> Vec<u8> {
+        binary_at(items, length, None)
+    }
+
+    fn binary_at(items: Vec<Item>, length: Option<i32>, revision: Option<&[u8]>) -> Vec<u8> {
         let mut list = ListItems::new();
         list.pos = Some(0);
         list.truncated = Some(false);
         list.items = items;
         let mut content = SelectedListContent::new();
         content.length = length;
+        content.revision = revision.map(<[u8]>::to_vec);
         content.contents = MessageField::some(list);
         content.write_to_bytes().expect("serialize fixture")
+    }
+
+    fn revision(byte: u8) -> Revision {
+        Revision::from_wire(&[byte]).expect("a revision")
     }
 
     fn page_with(count: usize, total: Option<usize>) -> RootlistPage {
@@ -162,6 +203,24 @@ mod tests {
                 .collect(),
             scanned: count,
             total,
+            revision: Some(revision(1)),
+        }
+    }
+
+    /// One page of `count` playlists, at `revision`, reporting `total`.
+    fn page_at(
+        count: usize,
+        total: Option<usize>,
+        revision: Option<Revision>,
+        scanned: usize,
+    ) -> RootlistPage {
+        RootlistPage {
+            playlists: (0..count)
+                .map(|index| format!("spotify:playlist:{index:022}"))
+                .collect(),
+            scanned,
+            total,
+            revision,
         }
     }
 
@@ -229,6 +288,7 @@ mod tests {
                     playlists: Vec::new(),
                     scanned: 0,
                     total: None,
+                    revision: None,
                 }),
             }
         }
@@ -283,20 +343,25 @@ mod tests {
 
     #[test]
     fn json_wire_parses_the_same_fixture() {
-        let bytes = binary(vec![item(PLAYLIST_A), item(FOLDER)], Some(2));
+        let bytes = binary_at(
+            vec![item(PLAYLIST_A), item(FOLDER)],
+            Some(2),
+            Some(&[0xde, 0xad]),
+        );
         let content = SelectedListContent::parse_from_bytes(&bytes).expect("fixture");
         let json = protobuf_json_mapping::print_to_string(&content).expect("serialize json");
         let page = parse_rootlist(json.as_bytes(), RootlistWire::Json).expect("valid json");
         assert_eq!(page.playlists, vec![PLAYLIST_A.to_owned()]);
         assert_eq!(page.scanned, 2);
         assert_eq!(page.total, Some(2));
+        assert_eq!(page.revision, Revision::from_wire(&[0xde, 0xad]));
     }
 
     #[tokio::test]
     async fn paging_stops_at_total() {
         let source = Scripted::new(vec![page_with(2, Some(2)), page_with(5, None)]);
         let result = fetch_all(&source).await.expect("walk");
-        assert_eq!(result.len(), 2);
+        assert_eq!(result.playlists.len(), 2);
         assert_eq!(source.calls(), 1);
     }
 
@@ -309,7 +374,7 @@ mod tests {
             page_with(1, None),
         ]);
         let result = fetch_all(&source).await.expect("walk");
-        assert_eq!(result.len(), total);
+        assert_eq!(result.playlists.len(), total);
         assert_eq!(source.calls(), 2);
     }
 
@@ -327,6 +392,7 @@ mod tests {
             playlists: vec![PLAYLIST_A.to_owned()],
             scanned: 2,
             total: None,
+            revision: None,
         }]);
         fetch_all(&folder_heavy).await.expect("walk");
         assert_eq!(folder_heavy.froms(), vec![0, 2]);
@@ -336,7 +402,7 @@ mod tests {
     async fn empty_page_stops_without_total() {
         let source = Scripted::new(vec![page_with(0, None)]);
         let result = fetch_all(&source).await.expect("walk");
-        assert!(result.is_empty());
+        assert!(result.playlists.is_empty());
         assert_eq!(source.calls(), 1);
     }
 
@@ -346,6 +412,119 @@ mod tests {
         let error = fetch_all(&source).await.expect_err("cap");
         assert!(matches!(error, RootlistError::TooLarge));
         assert_eq!(source.calls(), MAX_ITEMS / PAGE_SIZE + 1);
+    }
+
+    #[test]
+    fn parse_keeps_the_revision_of_the_page() {
+        let bytes = binary_at(vec![item(PLAYLIST_A)], Some(1), Some(&[0xde, 0xad]));
+        let page = parse_rootlist(&bytes, RootlistWire::Binary).expect("valid fixture");
+        assert_eq!(page.revision, Revision::from_wire(&[0xde, 0xad]));
+    }
+
+    #[test]
+    fn a_page_without_a_revision_has_none() {
+        let bytes = binary(vec![item(PLAYLIST_A)], Some(1));
+        let page = parse_rootlist(&bytes, RootlistWire::Binary).expect("valid fixture");
+        assert_eq!(page.revision, None);
+    }
+
+    #[test]
+    fn an_empty_revision_is_none() {
+        let bytes = binary_at(vec![item(PLAYLIST_A)], Some(1), Some(&[]));
+        let page = parse_rootlist(&bytes, RootlistWire::Binary).expect("valid fixture");
+        assert_eq!(page.revision, None);
+    }
+
+    #[tokio::test]
+    async fn a_whole_read_of_playlists_is_index_faithful() {
+        let source = Scripted::new(vec![page_at(2, Some(2), Some(revision(7)), 2)]);
+        let walked = fetch_all(&source).await.expect("walk");
+        assert_eq!(walked.playlists.len(), 2);
+        assert_eq!(
+            walked.access,
+            Some(PlaylistAccess {
+                revision: revision(7),
+                editable: true,
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn a_dropped_item_makes_the_read_not_faithful() {
+        // A folder marker keeps its place in `scanned` and takes none in the
+        // playlists, so row 1 on screen is row 2 on the wire.
+        let source = Scripted::new(vec![page_at(1, Some(2), Some(revision(7)), 2)]);
+        let walked = fetch_all(&source).await.expect("walk");
+        assert_eq!(walked.playlists.len(), 1);
+        assert_eq!(
+            walked.access,
+            Some(PlaylistAccess {
+                revision: revision(7),
+                editable: false,
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unknown_total_is_not_faithful() {
+        let source = Scripted::new(vec![page_at(1, None, Some(revision(7)), 1)]);
+        let walked = fetch_all(&source).await.expect("walk");
+        assert!(
+            !walked.access.expect("a revision").editable,
+            "an unknown total cannot say the read reached the end"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_total_the_read_did_not_reach_is_not_faithful() {
+        // The list ends early, so the rows on screen are not the whole list.
+        let source = Scripted::new(vec![
+            page_at(2, Some(9), Some(revision(7)), 2),
+            page_at(0, None, Some(revision(7)), 0),
+        ]);
+        let walked = fetch_all(&source).await.expect("walk");
+        assert_eq!(walked.playlists.len(), 2);
+        assert!(!walked.access.expect("a revision").editable);
+    }
+
+    #[tokio::test]
+    async fn a_revision_that_changes_between_pages_is_not_faithful() {
+        let source = Scripted::new(vec![
+            page_at(2, Some(4), Some(revision(7)), 2),
+            page_at(2, Some(4), Some(revision(8)), 2),
+        ]);
+        let walked = fetch_all(&source).await.expect("walk");
+        assert!(
+            !walked.access.expect("a revision").editable,
+            "the list changed under the walk"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_page_that_names_no_revision_breaks_the_walk() {
+        let source = Scripted::new(vec![
+            page_at(2, Some(4), Some(revision(7)), 2),
+            page_at(2, Some(4), None, 2),
+        ]);
+        let walked = fetch_all(&source).await.expect("walk");
+        assert!(!walked.access.expect("a revision").editable);
+    }
+
+    #[tokio::test]
+    async fn the_first_pages_revision_is_the_one_held() {
+        let source = Scripted::new(vec![
+            page_at(2, Some(4), Some(revision(7)), 2),
+            page_at(2, Some(4), Some(revision(7)), 2),
+        ]);
+        let walked = fetch_all(&source).await.expect("walk");
+        assert_eq!(walked.access.expect("a revision").revision, revision(7));
+    }
+
+    #[tokio::test]
+    async fn a_read_with_no_revision_offers_no_access() {
+        let source = Scripted::new(vec![page_at(2, Some(2), None, 2)]);
+        let walked = fetch_all(&source).await.expect("walk");
+        assert_eq!(walked.access, None);
     }
 
     #[tokio::test]

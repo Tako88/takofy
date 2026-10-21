@@ -14,7 +14,8 @@ use crate::playlist_edit::{self, PlaylistError};
 use crate::remote::{
     ROOTLIST_WIRE, RemoteContext, RemoteRootlist, label_playlists, label_tracks, read_album,
     read_artist, read_followed_artists, read_followed_shows, read_lyrics, read_playlist_state,
-    read_related, read_release_tracks, read_saved_albums, read_show, write_follow, write_move,
+    read_related, read_release_tracks, read_saved_albums, read_show, write_add, write_follow,
+    write_move, write_rootlist_move,
 };
 use crate::rootlist::{RootlistError, fetch_all};
 use crate::search::search_uri;
@@ -62,14 +63,17 @@ impl Engine {
         Ok(Self { session })
     }
 
-    /// The user's playlists, labelled.
-    pub async fn rootlist(&self) -> Result<Vec<PlaylistEntry>, EngineError> {
+    /// The user's playlists, labelled, with what the column may write.
+    pub async fn rootlist(&self) -> Result<RootlistRead, EngineError> {
         let source = RemoteRootlist {
             session: &self.session,
             wire: ROOTLIST_WIRE,
         };
-        let uris = fetch_all(&source).await?;
-        Ok(label_playlists(&self.session, uris).await)
+        let walked = fetch_all(&source).await?;
+        Ok(RootlistRead {
+            entries: label_playlists(&self.session, walked.playlists).await,
+            access: walked.access,
+        })
     }
 
     /// Starts a player over this session.
@@ -141,6 +145,28 @@ impl Engine {
         to: usize,
     ) -> Result<Revision, EngineError> {
         Ok(write_move(&self.session, playlist_uri, revision, from, to).await?)
+    }
+
+    /// Writes one move to the user's rootlist, answering the revision to hold
+    /// next.
+    pub async fn move_playlist(
+        &self,
+        revision: &Revision,
+        from: usize,
+        to: usize,
+    ) -> Result<Revision, EngineError> {
+        Ok(write_rootlist_move(&self.session, revision, from, to).await?)
+    }
+
+    /// Appends one track to a playlist, answering the revision to hold next.
+    pub async fn add_track(
+        &self,
+        playlist_uri: &str,
+        revision: &Revision,
+        from_index: usize,
+        track_uri: &str,
+    ) -> Result<Revision, EngineError> {
+        Ok(write_add(&self.session, playlist_uri, revision, from_index, track_uri).await?)
     }
 
     /// The tracks one search query answers, labelled, in the wire's own order.
@@ -223,6 +249,17 @@ impl Engine {
     pub async fn saved_albums(&self) -> Result<Vec<SavedAlbum>, EngineError> {
         Ok(read_saved_albums(&self.session).await?)
     }
+}
+
+/// The rootlist: its entries, and what the column may write with.
+///
+/// `access` is `None` when the read named no revision, and its `editable` is
+/// false whenever the read dropped an item, so a row index stops being the
+/// wire's index.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RootlistRead {
+    pub entries: Vec<PlaylistEntry>,
+    pub access: Option<PlaylistAccess>,
 }
 
 /// One playlist page: its rows, the context's own image, and what it may change.
