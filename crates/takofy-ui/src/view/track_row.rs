@@ -256,9 +256,15 @@ impl Lifted {
                 tokens.palette.text_subtle,
             );
         }
-        // A block carries its running time where a single row carries its length.
+        // A block carries its running time where a single row carries its length,
+        // and a block whose total is unknown carries none of its rows' lengths.
+        let duration = if ghosting.count > 1 {
+            ghosting.total
+        } else {
+            ghosting.total.or(self.duration.as_deref())
+        };
         if drawable(columns.duration)
-            && let Some(duration) = ghosting.total.or(self.duration.as_deref())
+            && let Some(duration) = duration
         {
             right(
                 ui,
@@ -1693,6 +1699,38 @@ mod tests {
             !texts.contains(&"3:42"),
             "a block's running time replaces one row's length: {texts:?}"
         );
+    }
+
+    #[test]
+    fn a_block_with_no_total_paints_no_duration() {
+        let ctx = context();
+        let tokens = Tokens::DARK;
+        let lifted = row_of(4).lifted(columns());
+        let rect = Rect::from_min_size(
+            Pos2::new(120.0, 90.0),
+            vec2(900.0, crate::theme::extent::ROW_H),
+        );
+
+        let mut output = ctx.run_ui(input(), |ui| {
+            lifted.paint(
+                ui,
+                rect,
+                Ghosting {
+                    count: 3,
+                    total: None,
+                    flat: false,
+                },
+                &tokens,
+            );
+        });
+        output.textures_delta.clear();
+        let texts = drawn_texts(&output);
+
+        assert!(
+            !texts.contains(&"3:42"),
+            "a block with no honest total paints none, not one row's length: {texts:?}"
+        );
+        assert!(texts.contains(&"×3"), "the block still says how many it is");
     }
 
     /// An absent column is a zero-width rect, and a line elided to nothing still

@@ -147,7 +147,13 @@ impl Lifted {
 fn paint(ui: &Ui, rect: Rect, row: &Row<'_>, ghosting: Option<Ghosting<'_>>, tokens: &Tokens) {
     let flat = ghosting.is_some_and(|ghost| ghost.flat);
     let count = ghosting.and_then(|ghost| (ghost.count > 1).then_some(ghost.count));
-    let length = ghosting.and_then(|ghost| ghost.total).or(row.duration);
+    // A block's total stands in for its rows' lengths, and an unknown one stands
+    // in for nothing rather than for the row under the pointer.
+    let length = match ghosting {
+        Some(ghost) if ghost.count > 1 => ghost.total,
+        Some(ghost) => ghost.total.or(row.duration),
+        None => row.duration,
+    };
     let duration = length.map(|label| {
         recipe::line(
             ui,
@@ -656,6 +662,37 @@ mod tests {
             !texts.contains(&"3:42"),
             "the block's time stands in for the row's: {texts:?}"
         );
+    }
+
+    #[test]
+    fn a_block_with_no_total_paints_no_duration() {
+        let ctx = context();
+        let tokens = Tokens::DARK;
+        let row = Row {
+            duration: Some("3:42"),
+            ..row(0, "A Title", "A Band")
+        };
+        let lifted = row.lifted();
+        let mut output = ctx.run_ui(input(Vec::new()), |ui| {
+            lifted.paint(
+                ui,
+                PROBE,
+                Ghosting {
+                    count: 3,
+                    total: None,
+                    flat: false,
+                },
+                &tokens,
+            );
+        });
+        output.textures_delta.clear();
+        let texts = drawn_texts(&output);
+
+        assert!(
+            !texts.contains(&"3:42"),
+            "a block with no honest total paints none, not one row's length: {texts:?}"
+        );
+        assert!(texts.contains(&"×3"), "the block still says how many it is");
     }
 
     #[test]
