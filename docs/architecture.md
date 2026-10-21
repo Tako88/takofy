@@ -79,6 +79,23 @@ answer and never on the press.
 Labels branch on URI kind: a track and an episode resolve through their own
 batch, and an episode is a label like a track with its show as its credit.
 
+A playlist reorder is the second write, and it is applied locally first: the
+rows take their new order as the drop lands, and then one `MOV` goes out through
+librespot's spclient on the revision that read named. That request is made in a
+single attempt — `TryTimes(1)` for the one POST, the default strategy restored
+after it — because a `MOV` is not idempotent: a retry after a 5xx or a lost reply
+can move the row twice on a server that has already applied it, so the one
+request that might have landed is not repeated. While a write is in flight no
+read's order is adopted; a probe recorded the server answering a write with the
+new revision and the old order, so adopting on revision equality would undo the
+drag, and the worker answers in the order its commands were sent, which is what
+makes the gate correct. The page reads only the first page of its context and a
+move touches indices inside it, so every boundary the marker draws is a wire
+index. A failed write puts the rows back where they were and the page says so
+above them: the sentence is the whole affordance, and trying again means
+dragging again rather than a button that could write twice for one gesture. Two
+devices editing one list are last-write-wins, each naming the revision it read.
+
 The library is four kinds over three collection sets. Followed shows, followed
 artists and saved albums each come from their own set — saved albums share the
 `collection` set with liked songs, so the read keeps the album URIs and drops

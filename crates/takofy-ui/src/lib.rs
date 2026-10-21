@@ -18,6 +18,7 @@ pub mod message;
 pub mod player;
 pub mod queue;
 pub mod releases;
+pub mod reorder;
 pub mod route;
 pub mod scroll;
 pub mod search;

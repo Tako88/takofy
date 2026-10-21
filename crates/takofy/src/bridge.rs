@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use takofy_core::credentials::{AccessToken, CredentialStore};
 use takofy_core::login::{AuthError, SourceErrorKind, TokenSource, authorize, resume};
 use takofy_core::playback::{PlaybackError, PlaybackEvent};
-use takofy_model::CoverUrl;
+use takofy_model::{CoverUrl, Revision};
 use takofy_ui::message::{Command, Failure, TransportUpdate, Update};
 use tokio::runtime::{Handle, Runtime};
 use tokio::sync::Semaphore;
@@ -363,6 +363,26 @@ pub(crate) fn start<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                         break;
                     }
                 }
+                Event::Command(Some(Command::MoveTrack {
+                    playlist,
+                    revision,
+                    from,
+                    to,
+                })) => {
+                    let step = move_track(
+                        &mut host,
+                        &mut stop_rx,
+                        &task_notifier,
+                        &playlist,
+                        &revision,
+                        from,
+                        to,
+                    )
+                    .await;
+                    if step.stopped() {
+                        break;
+                    }
+                }
                 Event::Command(Some(Command::Play { uri })) => {
                     play(&mut host, &task_notifier, &uri);
                 }
@@ -494,6 +514,7 @@ async fn load_tracks<H: SessionHost>(
                     playlist: playlist.to_owned(),
                     tracks: page.tracks,
                     cover: page.cover,
+                    access: page.access,
                 },
                 |failure| Update::TracksFailed {
                     playlist: playlist.to_owned(),
@@ -799,6 +820,39 @@ async fn set_follow<H: SessionHost>(
     }
 }
 
+/// Writes one move and announces the revision its reply names.
+///
+/// The announced revision is the one the next move must be based on. A failure
+/// is `Save`, not `Load`, because the user asked for this and it did not stick.
+async fn move_track<H: SessionHost>(
+    host: &mut H,
+    stop: &mut StopReceiver<()>,
+    notifier: &Notifier,
+    playlist: &str,
+    revision: &Revision,
+    from: usize,
+    to: usize,
+) -> Step {
+    match stop_or(stop, host.move_track(playlist, revision, from, to)).await {
+        None => Step::Stopped,
+        Some(Ok(revision)) => {
+            notifier.send(Update::TrackMoved {
+                playlist: playlist.to_owned(),
+                revision,
+            });
+            Step::Done
+        }
+        Some(Err(error)) => {
+            log::warn!("move write failed: {}", error.kind());
+            notifier.send(Update::MoveFailed {
+                playlist: playlist.to_owned(),
+                failure: Failure::Save,
+            });
+            Step::Done
+        }
+    }
+}
+
 /// Starts the player if needed and hands the one drain thread its events.
 fn play<H: SessionHost>(host: &mut H, notifier: &Notifier, uri: &str) {
     match host.play(uri) {
@@ -995,7 +1049,8 @@ mod tests {
     use takofy_core::login::{SourceError, SourceErrorKind, TokenSet, TokenSource};
     use takofy_model::{
         AlbumDetail, ArtistDetail, CoverImage, CoverUrl, Episode, FollowedArtist, FollowedShow,
-        LyricLine, PlaylistEntry, SavedAlbum, Show, ShowDetail, TrackEntry, TrackLyrics,
+        LyricLine, PlaylistAccess, PlaylistEntry, SavedAlbum, Show, ShowDetail, TrackEntry,
+        TrackLyrics,
     };
     use takofy_ui::signin::failure_message;
     use tokio::runtime::Runtime;
@@ -1364,6 +1419,21 @@ mod tests {
         Fail,
     }
 
+    /// A scripted move write; the default names a revision the window has not
+    /// seen, so a test that cares names its own.
+    #[derive(Clone)]
+    enum MoveScript {
+        Ready(Revision),
+        Fail,
+        Pending,
+    }
+
+    impl Default for MoveScript {
+        fn default() -> Self {
+            Self::Ready(Revision::from_wire(&[1]).expect("a revision"))
+        }
+    }
+
     #[derive(Default)]
     struct FakeState {
         connect_scripts: Mutex<Vec<ConnectScript>>,
@@ -1380,6 +1450,7 @@ mod tests {
         search_script: Mutex<SearchScript>,
         release_script: Mutex<ReleaseScript>,
         follow_script: Mutex<FollowScript>,
+        move_script: Mutex<MoveScript>,
         connected: AtomicBool,
         connects: AtomicUsize,
         rootlists: AtomicUsize,
@@ -1396,12 +1467,15 @@ mod tests {
         searched: Mutex<Vec<String>>,
         releases: AtomicUsize,
         follow_writes: AtomicUsize,
+        move_writes: AtomicUsize,
         artist_started: Mutex<Option<Sender<()>>>,
         lyrics_started: Mutex<Option<Sender<()>>>,
         search_started: Mutex<Option<Sender<()>>>,
         show_started: Mutex<Option<Sender<()>>>,
 
         last_follow: Mutex<Option<(String, bool)>>,
+        last_move: Mutex<Option<(String, Revision, usize, usize)>>,
+        move_started: Mutex<Option<Sender<()>>>,
         plays: AtomicUsize,
         pauses: AtomicUsize,
         resumes: AtomicUsize,
@@ -1748,6 +1822,33 @@ mod tests {
             }
         }
 
+        fn move_track(
+            &self,
+            playlist: &str,
+            revision: &Revision,
+            from: usize,
+            to: usize,
+        ) -> impl Future<Output = Result<Revision, SessionError>> + Send {
+            self.shared.move_writes.fetch_add(1, Ordering::SeqCst);
+            *self.shared.last_move.lock().expect("lock") =
+                Some((playlist.to_owned(), revision.clone(), from, to));
+            if let Some(tx) = self.shared.move_started.lock().expect("lock").take() {
+                let _ = tx.send(());
+            }
+            let connected = self.shared.connected.load(Ordering::SeqCst);
+            let script = self.shared.move_script.lock().expect("lock").clone();
+            async move {
+                if !connected {
+                    return Err(SessionError::NotConnected);
+                }
+                match script {
+                    MoveScript::Ready(revision) => Ok(revision),
+                    MoveScript::Fail => Err(SessionError::NotConnected),
+                    MoveScript::Pending => std::future::pending().await,
+                }
+            }
+        }
+
         fn play(&mut self, _uri: &str) -> Result<(), SessionError> {
             self.shared.plays.fetch_add(1, Ordering::SeqCst);
             if !self.shared.connected.load(Ordering::SeqCst) {
@@ -1916,6 +2017,10 @@ mod tests {
             owner: None,
             tracks: None,
         }
+    }
+
+    fn revision(byte: u8) -> Revision {
+        Revision::from_wire(&[byte]).expect("a revision")
     }
 
     fn expect_updates(ui_end: &UiEnd, count: usize) -> Vec<Update> {
@@ -2625,11 +2730,13 @@ mod tests {
             Ok(TrackPage {
                 tracks: vec![track("t")],
                 cover: Some(cover.clone()),
+                access: None,
             }),
             |page| Update::Tracks {
                 playlist: playlist.clone(),
                 tracks: page.tracks,
                 cover: page.cover,
+                access: None,
             },
             |failure| Update::TracksFailed {
                 playlist: playlist.clone(),
@@ -2642,6 +2749,7 @@ mod tests {
                 playlist,
                 tracks: vec![track("t")],
                 cover: Some(cover),
+                access: None,
             }
         );
     }
@@ -2662,6 +2770,7 @@ mod tests {
                 playlist: playlist.clone(),
                 tracks: page.tracks,
                 cover: page.cover,
+                access: None,
             },
             |failure| Update::TracksFailed {
                 playlist: playlist.clone(),
@@ -3832,6 +3941,236 @@ mod tests {
     }
 
     #[test]
+    fn a_move_announces_the_reply_revision_and_sends_what_was_asked() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+        let base = revision(1);
+        let reply = revision(2);
+        *shared.move_script.lock().expect("lock") = MoveScript::Ready(reply.clone());
+
+        let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::MoveTrack {
+                    playlist: "spotify:playlist:a".to_owned(),
+                    revision: base.clone(),
+                    from: 1,
+                    to: 4,
+                })
+                .expect("move");
+            ui_end.updates.recv().expect("moved")
+        });
+
+        assert_eq!(
+            update,
+            Update::TrackMoved {
+                playlist: "spotify:playlist:a".to_owned(),
+                revision: reply,
+            }
+        );
+        assert_eq!(shared.move_writes.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            shared.last_move.lock().expect("lock").clone(),
+            Some(("spotify:playlist:a".to_owned(), base, 1, 4)),
+            "the write is sent with the revision and the indices that were asked for"
+        );
+    }
+
+    #[test]
+    fn the_edge_steps_encode_the_indices_the_server_expects() {
+        let base = revision(1);
+        let write = |len: usize, from: usize, boundary: usize| {
+            let found = takofy_ui::reorder::step(len, from, boundary).expect("a move");
+            takofy_core::playlist_edit::move_body(&base, found.from, found.to)
+        };
+
+        assert!(
+            write(5, 0, 5).ends_with(&[0x08, 0x00, 0x10, 0x01, 0x18, 0x04]),
+            "the bottom of the list is the last index, not one past it"
+        );
+        assert!(write(5, 3, 0).ends_with(&[0x08, 0x03, 0x10, 0x01, 0x18, 0x00]));
+        assert!(write(5, 2, 5).ends_with(&[0x08, 0x02, 0x10, 0x01, 0x18, 0x04]));
+    }
+
+    #[test]
+    fn a_failed_move_is_a_save_failure() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+        *shared.move_script.lock().expect("lock") = MoveScript::Fail;
+
+        let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::MoveTrack {
+                    playlist: "spotify:playlist:a".to_owned(),
+                    revision: revision(1),
+                    from: 0,
+                    to: 1,
+                })
+                .expect("move");
+            ui_end.updates.recv().expect("move failed")
+        });
+
+        assert_eq!(
+            update,
+            Update::MoveFailed {
+                playlist: "spotify:playlist:a".to_owned(),
+                failure: Failure::Save,
+            }
+        );
+        assert_eq!(shared.move_writes.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_move_before_connect_is_announced_as_a_failure() {
+        let store = Arc::new(MemoryStore::default());
+        let source = Arc::new(FixedSource::default());
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::default());
+        let shared = Arc::clone(&host.shared);
+
+        let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            assert_eq!(
+                ui_end.updates.recv().expect("resume update"),
+                Update::NeedsAuthorization
+            );
+            ui_end
+                .commands
+                .send(Command::MoveTrack {
+                    playlist: "spotify:playlist:a".to_owned(),
+                    revision: revision(1),
+                    from: 0,
+                    to: 1,
+                })
+                .expect("move");
+            ui_end.updates.recv().expect("move failed")
+        });
+
+        assert_eq!(
+            update,
+            Update::MoveFailed {
+                playlist: "spotify:playlist:a".to_owned(),
+                failure: Failure::Save,
+            }
+        );
+        assert_eq!(shared.move_writes.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_stop_with_the_move_pending_shuts_down() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+        *shared.move_script.lock().expect("lock") = MoveScript::Pending;
+        let (started_tx, started_rx) = channel();
+        *shared.move_started.lock().expect("lock") = Some(started_tx);
+
+        let runtime = runtime();
+        let (ui_end, _slot, worker) = start(runtime.handle(), host, store, source);
+
+        let window = move || {
+            loop {
+                if matches!(ui_end.updates.recv().expect("update"), Update::Playlists(_)) {
+                    break;
+                }
+            }
+            ui_end
+                .commands
+                .send(Command::MoveTrack {
+                    playlist: "spotify:playlist:a".to_owned(),
+                    revision: revision(1),
+                    from: 0,
+                    to: 1,
+                })
+                .expect("move");
+            started_rx.recv().expect("move started");
+        };
+        let teardown = move || async move {
+            // A hung stop must fail the test, not hang the suite.
+            tokio::time::timeout(Duration::from_secs(1), worker.finish())
+                .await
+                .expect("finish must resolve when the stop interrupts the move");
+            assert_eq!(
+                shared.shutdowns.load(Ordering::SeqCst),
+                1,
+                "the shutdown must run when the stop interrupts the move"
+            );
+        };
+
+        run_ordered(runtime, window, teardown);
+    }
+
+    #[test]
+    fn replies_keep_the_order_their_commands_were_sent_in() {
+        // the page's read rule rests on this order
+        fn run(move_first: bool) -> Vec<Update> {
+            let store = Arc::new(MemoryStore::seeded("stored"));
+            let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+            let list = vec![playlist("spotify:playlist:a", "A")];
+            let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+            let shared = Arc::clone(&host.shared);
+            *shared.move_script.lock().expect("lock") = MoveScript::Ready(revision(2));
+
+            run_window(runtime(), host, store, source, |ui_end, slot| {
+                slot.install(Arc::new(RecordingWaker::default()));
+                let _ = expect_updates(&ui_end, 2);
+                let move_command = Command::MoveTrack {
+                    playlist: "spotify:playlist:a".to_owned(),
+                    revision: revision(1),
+                    from: 0,
+                    to: 1,
+                };
+                let load_command = Command::LoadTracks {
+                    playlist: "spotify:playlist:a".to_owned(),
+                };
+                if move_first {
+                    ui_end.commands.send(move_command).expect("move");
+                    ui_end.commands.send(load_command).expect("load");
+                } else {
+                    ui_end.commands.send(load_command).expect("load");
+                    ui_end.commands.send(move_command).expect("move");
+                }
+                vec![
+                    ui_end.updates.recv().expect("first reply"),
+                    ui_end.updates.recv().expect("second reply"),
+                ]
+            })
+        }
+
+        fn moved(update: &Update) -> bool {
+            matches!(update, Update::TrackMoved { .. })
+        }
+
+        fn read(update: &Update) -> bool {
+            matches!(update, Update::Tracks { .. })
+        }
+
+        let move_first = run(true);
+        assert!(
+            moved(&move_first[0]) && read(&move_first[1]),
+            "a move sent first must answer first: {move_first:?}"
+        );
+
+        let read_first = run(false);
+        assert!(
+            read(&read_first[0]) && moved(&read_first[1]),
+            "a read sent first must answer first: {read_first:?}"
+        );
+    }
+
+    #[test]
     fn a_failed_track_load_is_announced_and_the_task_shuts_down() {
         let store = Arc::new(MemoryStore::seeded("stored"));
         let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
@@ -3894,6 +4233,7 @@ mod tests {
         let update = run_track_page(TrackPage {
             tracks: vec![track("t")],
             cover: Some(cover.clone()),
+            access: None,
         });
         assert_eq!(
             update,
@@ -3901,6 +4241,7 @@ mod tests {
                 playlist: "spotify:playlist:a".to_owned(),
                 tracks: vec![track("t")],
                 cover: Some(cover),
+                access: None,
             }
         );
     }
@@ -3910,6 +4251,7 @@ mod tests {
         let update = run_track_page(TrackPage {
             tracks: vec![track("t")],
             cover: None,
+            access: None,
         });
         assert_eq!(
             update,
@@ -3917,6 +4259,29 @@ mod tests {
                 playlist: "spotify:playlist:a".to_owned(),
                 tracks: vec![track("t")],
                 cover: None,
+                access: None,
+            }
+        );
+    }
+
+    #[test]
+    fn a_track_page_access_reaches_the_update() {
+        let access = PlaylistAccess {
+            revision: revision(1),
+            editable: true,
+        };
+        let update = run_track_page(TrackPage {
+            tracks: vec![track("t")],
+            cover: None,
+            access: Some(access.clone()),
+        });
+        assert_eq!(
+            update,
+            Update::Tracks {
+                playlist: "spotify:playlist:a".to_owned(),
+                tracks: vec![track("t")],
+                cover: None,
+                access: Some(access),
             }
         );
     }

@@ -7,8 +7,8 @@
 use std::collections::HashMap;
 
 use takofy_model::{
-    AlbumDetail, ArtistDetail, CoverUrl, FollowedArtist, FollowedShow, PlaylistEntry, SavedAlbum,
-    ShowDetail, TrackEntry,
+    AlbumDetail, ArtistDetail, CoverUrl, FollowedArtist, FollowedShow, PlaylistAccess,
+    PlaylistEntry, SavedAlbum, ShowDetail, TrackEntry,
 };
 
 use crate::discography::Filter;
@@ -17,6 +17,7 @@ use crate::library_filter::{RootFilter, RootKind};
 use crate::lyrics::LyricsPanel;
 use crate::message::{Command, Failure, Update};
 use crate::releases::Releases;
+use crate::reorder;
 use crate::route::{History, Page};
 use crate::search::Search;
 use crate::sidebar_kind::{SidebarFilter, SidebarKind};
@@ -53,6 +54,14 @@ pub enum Load<T> {
 pub struct TracksFor {
     pub playlist: String,
     pub tracks: Vec<TrackEntry>,
+    /// What the page may change, when a read has carried the list's own state.
+    pub access: Option<PlaylistAccess>,
+    /// Why the last write for this page failed, until the next gesture or the
+    /// next adopted read.
+    ///
+    /// The sentence is the whole affordance: "Try again" means drag again, so
+    /// there is no Retry that could write twice for one gesture.
+    pub notice: Option<Failure>,
 }
 
 /// What the playlist band draws for its cover.
@@ -157,6 +166,12 @@ pub struct Library {
     /// Context images, keyed by the playlist that owns them, so an upgrade that
     /// arrives before the playlists list is ready is not lost.
     context_covers: HashMap<String, CoverUrl>,
+    /// The write in flight: its playlist, the rows before it and the rows after.
+    ///
+    /// While one is set, no read's order is adopted for that playlist. A read
+    /// taken after the write reached the server can carry the new revision with
+    /// the old order, so adopting on the revision would undo the drag.
+    pending: Option<reorder::Pending>,
 }
 
 /// Whether a chip naming artists is the one the user is looking at.
@@ -230,6 +245,7 @@ impl Library {
                 playlist,
                 tracks,
                 cover,
+                access,
             } => {
                 // The cover upgrade is keyed by the update's own playlist, never
                 // the selected one, so a reply for A cannot land on B.
@@ -243,15 +259,68 @@ impl Library {
                     }
                 }
                 if self.wanted.as_deref() == Some(playlist.as_str()) {
-                    self.tracks = Load::Ready(TracksFor {
-                        playlist: playlist.clone(),
-                        tracks: tracks.clone(),
-                    });
+                    let pending = self
+                        .pending
+                        .as_ref()
+                        .filter(|pending| pending.playlist == *playlist);
+                    if let Some(pending) = pending {
+                        let held = match &self.tracks {
+                            Load::Ready(current) => current.access.clone(),
+                            Load::Idle | Load::Loading | Load::Failed(_) => None,
+                        };
+                        self.tracks = Load::Ready(TracksFor {
+                            playlist: playlist.clone(),
+                            tracks: pending.after.clone(),
+                            access: held.or_else(|| access.clone()),
+                            notice: None,
+                        });
+                    } else {
+                        self.tracks = Load::Ready(TracksFor {
+                            playlist: playlist.clone(),
+                            tracks: tracks.clone(),
+                            access: access.clone(),
+                            notice: None,
+                        });
+                    }
                 }
             }
             Update::TracksFailed { playlist, failure } => {
                 if self.wanted.as_deref() == Some(playlist.as_str()) {
                     self.tracks = Load::Failed(*failure);
+                }
+            }
+            // The reply ends the write and names the revision the next one uses.
+            Update::TrackMoved { playlist, revision } => {
+                if !self.writing(playlist) {
+                    return;
+                }
+                self.pending = None;
+                if let Load::Ready(tracks) = &mut self.tracks
+                    && tracks.playlist == *playlist
+                {
+                    tracks.notice = None;
+                    if let Some(access) = &mut tracks.access {
+                        access.revision = revision.clone();
+                    }
+                }
+            }
+            // A failed write puts the rows back where they were, and says so.
+            Update::MoveFailed { playlist, failure } => {
+                if !self.writing(playlist) {
+                    return;
+                }
+                let Some(pending) = self.pending.take() else {
+                    return;
+                };
+                // A page that is no longer on screen keeps its rows; Back reloads it.
+                if self.selected() != Some(playlist.as_str()) {
+                    return;
+                }
+                if let Load::Ready(tracks) = &mut self.tracks
+                    && tracks.playlist == *playlist
+                {
+                    tracks.tracks = pending.before;
+                    tracks.notice = Some(*failure);
                 }
             }
             // A reply lands only while its own load is in flight: a stale one is
@@ -465,6 +534,89 @@ impl Library {
     /// Whether there is a page to go forward to.
     pub fn can_forward(&self) -> bool {
         self.history.can_forward()
+    }
+
+    /// Whether a write for this playlist is in flight.
+    fn writing(&self, playlist: &str) -> bool {
+        self.pending
+            .as_ref()
+            .is_some_and(|pending| pending.playlist == playlist)
+    }
+
+    /// Whether a row may be lifted off the loaded page now.
+    ///
+    /// A write in flight holds the page still: a drop would name a revision the
+    /// write is already replacing. A page the user cannot write still lifts,
+    /// because a drop into the queue is not a write to that page.
+    pub fn liftable(&self) -> bool {
+        self.pending.is_none()
+    }
+
+    /// Whether the loaded track page may reorder its rows now.
+    ///
+    /// It needs a read that named an editable list, and no write in flight: a
+    /// second one would name a revision the first is already replacing.
+    pub fn movable(&self) -> bool {
+        self.liftable()
+            && matches!(
+                &self.tracks,
+                Load::Ready(tracks)
+                    if tracks.access.as_ref().is_some_and(|access| access.editable)
+            )
+    }
+
+    /// Moves a dragged row to the gap the pointer is over, and asks for one write.
+    ///
+    /// It refuses unless that playlist is the page on screen, the page is
+    /// editable, it still holds `carried` at `from`, and no write is in flight:
+    /// one gesture is one write. The new order is on screen at once and kept
+    /// until the reply lands; the returned index is where the row went. A write
+    /// that fails puts the rows back and the page says so — trying again means
+    /// dragging again, not a second write for the same gesture.
+    pub fn move_track(
+        &mut self,
+        playlist: &str,
+        from: usize,
+        boundary: usize,
+        carried: &TrackEntry,
+    ) -> Option<(Command, usize)> {
+        let Load::Ready(tracks) = &self.tracks else {
+            return None;
+        };
+        if self.pending.is_some()
+            || self.selected() != Some(playlist)
+            || tracks.playlist != playlist
+        {
+            return None;
+        }
+        let access = tracks.access.clone().filter(|access| access.editable)?;
+        if tracks.tracks.get(from) != Some(carried) {
+            return None;
+        }
+        let step = reorder::step(tracks.tracks.len(), from, boundary)?;
+        let before = tracks.tracks.clone();
+        let mut after = before.clone();
+        reorder::apply(&mut after, step);
+        self.pending = Some(reorder::Pending {
+            playlist: playlist.to_owned(),
+            before,
+            after: after.clone(),
+        });
+        self.tracks = Load::Ready(TracksFor {
+            playlist: playlist.to_owned(),
+            tracks: after,
+            access: Some(access.clone()),
+            notice: None,
+        });
+        Some((
+            Command::MoveTrack {
+                playlist: playlist.to_owned(),
+                revision: access.revision,
+                from: step.from,
+                to: step.to,
+            },
+            step.to,
+        ))
     }
 
     /// Marks a playlist as wanted and returns the command that loads it.
@@ -843,8 +995,8 @@ impl Library {
 #[cfg(test)]
 mod tests {
     use takofy_model::{
-        AddedAt, AlbumDetail, ArtistDetail, CoverUrl, Episode, FollowedShow, PlaylistEntry,
-        ReleaseKind, Show, ShowDetail, TrackEntry, TrackLyrics,
+        AddedAt, AlbumDetail, ArtistDetail, CoverUrl, Episode, FollowedShow, PlaylistAccess,
+        PlaylistEntry, ReleaseKind, Revision, Show, ShowDetail, TrackEntry, TrackLyrics,
     };
 
     use super::*;
@@ -921,7 +1073,33 @@ mod tests {
         TracksFor {
             playlist: playlist.to_owned(),
             tracks,
+            access: None,
+            notice: None,
         }
+    }
+
+    fn revision(byte: u8) -> Revision {
+        Revision::from_wire(&[byte, 0x0a]).expect("a revision")
+    }
+
+    fn access(byte: u8, editable: bool) -> Option<PlaylistAccess> {
+        Some(PlaylistAccess {
+            revision: revision(byte),
+            editable,
+        })
+    }
+
+    /// A playlist page showing `uris`, with `access` as what it may change.
+    fn page_with(playlist: &str, uris: &[&str], access: Option<PlaylistAccess>) -> Library {
+        let mut library = Library::default();
+        library.select(playlist);
+        library.apply(&Update::Tracks {
+            playlist: playlist.to_owned(),
+            tracks: uris.iter().map(|uri| track(uri)).collect(),
+            cover: None,
+            access,
+        });
+        library
     }
 
     fn album(uri: &str) -> Page {
@@ -1091,6 +1269,7 @@ mod tests {
             playlist: "a".to_owned(),
             tracks: vec![track("t")],
             cover: None,
+            access: None,
         });
         library.apply(&Update::Playlists(vec![playlist("a", "A")]));
 
@@ -1170,6 +1349,7 @@ mod tests {
             playlist: "a".to_owned(),
             tracks: vec![track("t")],
             cover: None,
+            access: None,
         });
 
         assert_eq!(
@@ -2466,6 +2646,7 @@ mod tests {
             playlist: "a".to_owned(),
             tracks: vec![track("t")],
             cover: None,
+            access: None,
         });
         library.open(album("album"));
 
@@ -2533,6 +2714,7 @@ mod tests {
             playlist: "a".to_owned(),
             tracks: vec![track("t")],
             cover: None,
+            access: None,
         });
         library.to_playlists();
 
@@ -2556,6 +2738,7 @@ mod tests {
             playlist: "a".to_owned(),
             tracks: vec![track("t")],
             cover: None,
+            access: None,
         });
 
         assert_eq!(library.page(), Some(&album("album")));
@@ -2606,6 +2789,7 @@ mod tests {
             playlist: "a".to_owned(),
             tracks: vec![track("t")],
             cover: None,
+            access: None,
         });
         library.open(album("album"));
         library.open(artist("artist"));
@@ -2635,6 +2819,7 @@ mod tests {
             playlist: "a".to_owned(),
             tracks: vec![track("t")],
             cover: None,
+            access: None,
         });
 
         library.apply(&Update::Playlists(vec![playlist("b", "B")]));
@@ -2696,6 +2881,7 @@ mod tests {
             playlist: "a".to_owned(),
             tracks: vec![track("t")],
             cover: None,
+            access: None,
         });
         library.to_playlists();
         assert_eq!(library.wanted, None);
@@ -2755,6 +2941,7 @@ mod tests {
             playlist: "a".to_owned(),
             tracks: tracks.clone(),
             cover: None,
+            access: None,
         });
 
         assert_eq!(library.tracks, Load::Ready(tracks_for("a", tracks)));
@@ -2768,6 +2955,7 @@ mod tests {
             playlist: "a".to_owned(),
             tracks: vec![track("t")],
             cover: None,
+            access: None,
         });
 
         assert_eq!(
@@ -2785,6 +2973,7 @@ mod tests {
             playlist: "a".to_owned(),
             tracks: vec![track("t")],
             cover: None,
+            access: None,
         });
 
         assert_eq!(library.tracks, Load::Loading);
@@ -2823,8 +3012,493 @@ mod tests {
             playlist: "a".to_owned(),
             tracks: vec![track("t")],
             cover: None,
+            access: None,
         });
         assert_eq!(library.tracks, Load::Idle);
+    }
+
+    fn moved(uris: &[&str]) -> Vec<TrackEntry> {
+        uris.iter().map(|uri| track(uri)).collect()
+    }
+
+    fn ready(playlist: &str, uris: &[&str], access: Option<PlaylistAccess>) -> Load<TracksFor> {
+        Load::Ready(TracksFor {
+            playlist: playlist.to_owned(),
+            tracks: moved(uris),
+            access,
+            notice: None,
+        })
+    }
+
+    #[test]
+    fn a_move_applies_at_once_and_asks_for_one_write_on_the_held_revision() {
+        let mut library = page_with("a", &["t0", "t1", "t2"], access(0x01, true));
+
+        let found = library.move_track("a", 0, 2, &track("t0"));
+
+        assert_eq!(
+            found,
+            Some((
+                Command::MoveTrack {
+                    playlist: "a".to_owned(),
+                    revision: revision(0x01),
+                    from: 0,
+                    to: 1,
+                },
+                1,
+            ))
+        );
+        assert_eq!(
+            library.tracks,
+            ready("a", &["t1", "t0", "t2"], access(0x01, true)),
+            "the dragged order is on screen before the write is answered"
+        );
+        assert_eq!(
+            library.pending,
+            Some(reorder::Pending {
+                playlist: "a".to_owned(),
+                before: moved(&["t0", "t1", "t2"]),
+                after: moved(&["t1", "t0", "t2"]),
+            })
+        );
+    }
+
+    #[test]
+    fn a_move_selects_nothing_new_and_returns_where_the_row_landed() {
+        let mut library = page_with("a", &["t0", "t1", "t2"], access(0x01, true));
+        let page = library.page().cloned();
+
+        let found = library.move_track("a", 2, 0, &track("t2"));
+
+        assert_eq!(found.map(|(_, landed)| landed), Some(0));
+        assert_eq!(library.page(), page.as_ref());
+        assert_eq!(library.selected(), Some("a"));
+    }
+
+    #[test]
+    fn a_read_only_page_refuses_a_move() {
+        let mut library = page_with("a", &["t0", "t1"], access(0x01, false));
+
+        assert!(!library.movable());
+        assert_eq!(library.move_track("a", 0, 2, &track("t0")), None);
+        assert_eq!(library.pending, None);
+        assert_eq!(
+            library.tracks,
+            ready("a", &["t0", "t1"], access(0x01, false))
+        );
+    }
+
+    #[test]
+    fn a_page_with_no_access_refuses_a_move() {
+        let mut library = page_with("a", &["t0", "t1"], None);
+
+        assert!(!library.movable());
+        assert_eq!(library.move_track("a", 0, 2, &track("t0")), None);
+        assert_eq!(library.pending, None);
+    }
+
+    #[test]
+    fn a_second_move_waits_for_the_first() {
+        let mut library = page_with("a", &["t0", "t1", "t2"], access(0x01, true));
+        assert!(library.move_track("a", 0, 2, &track("t0")).is_some());
+
+        assert_eq!(
+            library.move_track("a", 0, 2, &track("t1")),
+            None,
+            "one gesture is one write, so a second waits for the reply"
+        );
+        assert!(!library.movable());
+    }
+
+    #[test]
+    fn a_move_whose_row_changed_under_the_drag_is_refused() {
+        let mut library = page_with("a", &["t0", "t1"], access(0x01, true));
+
+        assert_eq!(library.move_track("a", 0, 2, &track("gone")), None);
+        assert_eq!(
+            library.move_track("a", 9, 2, &track("t0")),
+            None,
+            "a row the list does not hold"
+        );
+        assert_eq!(library.pending, None);
+    }
+
+    #[test]
+    fn a_move_for_a_playlist_not_on_screen_is_refused() {
+        let mut library = page_with("a", &["t0", "t1"], access(0x01, true));
+
+        assert_eq!(library.move_track("b", 0, 2, &track("t0")), None);
+
+        library.to_playlists();
+        assert_eq!(
+            library.move_track("a", 0, 2, &track("t0")),
+            None,
+            "the ready rows are kept for Back, not for a drop"
+        );
+        assert_eq!(library.pending, None);
+    }
+
+    #[test]
+    fn a_drop_beside_itself_sends_nothing() {
+        let mut library = page_with("a", &["t0", "t1", "t2"], access(0x01, true));
+
+        assert_eq!(library.move_track("a", 1, 1, &track("t1")), None);
+        assert_eq!(library.move_track("a", 1, 2, &track("t1")), None);
+        assert_eq!(library.pending, None);
+        assert_eq!(
+            library.tracks,
+            ready("a", &["t0", "t1", "t2"], access(0x01, true))
+        );
+    }
+
+    #[test]
+    fn the_reply_revision_replaces_the_held_one_and_ends_the_write() {
+        let mut library = page_with("a", &["t0", "t1"], access(0x01, true));
+        assert!(library.move_track("a", 0, 2, &track("t0")).is_some());
+
+        library.apply(&Update::TrackMoved {
+            playlist: "a".to_owned(),
+            revision: revision(0x02),
+        });
+
+        assert_eq!(library.pending, None);
+        assert_eq!(
+            library.tracks,
+            ready("a", &["t1", "t0"], access(0x02, true))
+        );
+    }
+
+    #[test]
+    fn the_next_move_is_based_on_the_reply_revision() {
+        let mut library = page_with("a", &["t0", "t1", "t2"], access(0x01, true));
+        assert!(library.move_track("a", 0, 2, &track("t0")).is_some());
+        library.apply(&Update::TrackMoved {
+            playlist: "a".to_owned(),
+            revision: revision(0x02),
+        });
+
+        let found = library.move_track("a", 2, 0, &track("t2"));
+
+        assert_eq!(
+            found.map(|(command, _)| command),
+            Some(Command::MoveTrack {
+                playlist: "a".to_owned(),
+                revision: revision(0x02),
+                from: 2,
+                to: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn a_read_while_a_write_is_pending_is_not_adopted_even_with_an_equal_revision() {
+        let mut library = page_with("a", &["t0", "t1"], access(0x01, true));
+        assert!(library.move_track("a", 0, 2, &track("t0")).is_some());
+
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: moved(&["t0", "t1"]),
+            cover: None,
+            access: access(0x01, true),
+        });
+
+        assert_eq!(
+            library.tracks,
+            ready("a", &["t1", "t0"], access(0x01, true)),
+            "the server echoes the old order under the new revision"
+        );
+        assert!(library.pending.is_some(), "the write is still in flight");
+    }
+
+    #[test]
+    fn a_read_while_a_write_is_pending_keeps_the_held_revision() {
+        let mut library = page_with("a", &["t0", "t1"], access(0x01, true));
+        assert!(library.move_track("a", 0, 2, &track("t0")).is_some());
+
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: moved(&["t0", "t1"]),
+            cover: None,
+            access: access(0x02, true),
+        });
+
+        assert_eq!(
+            library.tracks,
+            ready("a", &["t1", "t0"], access(0x01, true)),
+            "the held access is the one the write was sent on"
+        );
+    }
+
+    #[test]
+    fn a_read_onto_a_loading_page_while_a_write_is_pending_draws_the_moved_order() {
+        let mut library = page_with("a", &["t0", "t1"], access(0x01, true));
+        assert!(library.move_track("a", 0, 2, &track("t0")).is_some());
+        library.select("a");
+        assert_eq!(library.tracks, Load::Loading);
+
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: moved(&["t0", "t1"]),
+            cover: None,
+            access: access(0x01, true),
+        });
+
+        assert_eq!(
+            library.tracks,
+            ready("a", &["t1", "t0"], access(0x01, true)),
+            "the reload does not undo the drag it was asked for before"
+        );
+    }
+
+    #[test]
+    fn a_read_with_nothing_pending_is_adopted_even_with_an_equal_revision() {
+        let mut library = page_with("a", &["t0", "t1"], access(0x01, true));
+
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: moved(&["t1", "t0"]),
+            cover: None,
+            access: access(0x01, true),
+        });
+
+        assert_eq!(
+            library.tracks,
+            ready("a", &["t1", "t0"], access(0x01, true))
+        );
+    }
+
+    #[test]
+    fn a_read_after_the_reply_is_adopted() {
+        let mut library = page_with("a", &["t0", "t1"], access(0x01, true));
+        assert!(library.move_track("a", 0, 2, &track("t0")).is_some());
+        library.apply(&Update::TrackMoved {
+            playlist: "a".to_owned(),
+            revision: revision(0x02),
+        });
+
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: moved(&["t0", "t1"]),
+            cover: None,
+            access: access(0x02, true),
+        });
+
+        assert_eq!(
+            library.tracks,
+            ready("a", &["t0", "t1"], access(0x02, true)),
+            "nothing is pending, so every read is adopted"
+        );
+    }
+
+    #[test]
+    fn a_failed_write_reverts_to_the_order_before_it_and_says_save() {
+        let mut library = page_with("a", &["t0", "t1"], access(0x01, true));
+        assert!(library.move_track("a", 0, 2, &track("t0")).is_some());
+
+        library.apply(&Update::MoveFailed {
+            playlist: "a".to_owned(),
+            failure: Failure::Save,
+        });
+
+        assert_eq!(library.pending, None);
+        assert_eq!(
+            library.tracks,
+            Load::Ready(TracksFor {
+                playlist: "a".to_owned(),
+                tracks: moved(&["t0", "t1"]),
+                access: access(0x01, true),
+                notice: Some(Failure::Save),
+            })
+        );
+    }
+
+    #[test]
+    fn a_failed_write_for_a_page_no_longer_shown_only_ends_the_write() {
+        let mut library = page_with("a", &["t0", "t1"], access(0x01, true));
+        assert!(library.move_track("a", 0, 2, &track("t0")).is_some());
+        library.to_playlists();
+
+        library.apply(&Update::MoveFailed {
+            playlist: "a".to_owned(),
+            failure: Failure::Save,
+        });
+
+        assert_eq!(library.pending, None);
+        assert_eq!(
+            library.tracks,
+            Load::Ready(TracksFor {
+                playlist: "a".to_owned(),
+                tracks: moved(&["t1", "t0"]),
+                access: access(0x01, true),
+                notice: None,
+            }),
+            "nothing is on screen to put back, and Back reloads the list"
+        );
+    }
+
+    #[test]
+    fn an_adopted_read_clears_the_notice() {
+        let mut library = page_with("a", &["t0", "t1"], access(0x01, true));
+        assert!(library.move_track("a", 0, 2, &track("t0")).is_some());
+        library.apply(&Update::MoveFailed {
+            playlist: "a".to_owned(),
+            failure: Failure::Save,
+        });
+
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: moved(&["t0", "t1"]),
+            cover: None,
+            access: access(0x01, true),
+        });
+
+        assert_eq!(
+            library.tracks,
+            ready("a", &["t0", "t1"], access(0x01, true))
+        );
+    }
+
+    #[test]
+    fn a_new_gesture_clears_the_notice_at_once() {
+        let mut library = page_with("a", &["t0", "t1"], access(0x01, true));
+        assert!(library.move_track("a", 0, 2, &track("t0")).is_some());
+        library.apply(&Update::MoveFailed {
+            playlist: "a".to_owned(),
+            failure: Failure::Save,
+        });
+
+        assert!(library.move_track("a", 0, 2, &track("t0")).is_some());
+
+        assert_eq!(
+            library.tracks,
+            ready("a", &["t1", "t0"], access(0x01, true)),
+            "the sentence goes when the user tries again, not when the reply lands"
+        );
+    }
+
+    #[test]
+    fn a_successful_write_after_a_failed_one_clears_the_notice() {
+        let mut library = page_with("a", &["t0", "t1"], access(0x01, true));
+        assert!(library.move_track("a", 0, 2, &track("t0")).is_some());
+        library.apply(&Update::MoveFailed {
+            playlist: "a".to_owned(),
+            failure: Failure::Save,
+        });
+        assert!(library.move_track("a", 0, 2, &track("t0")).is_some());
+
+        library.apply(&Update::TrackMoved {
+            playlist: "a".to_owned(),
+            revision: revision(0x02),
+        });
+
+        assert_eq!(
+            library.tracks,
+            ready("a", &["t1", "t0"], access(0x02, true)),
+            "a saved order must not still claim it could not be saved"
+        );
+    }
+
+    #[test]
+    fn a_reply_for_another_playlist_does_not_touch_the_page() {
+        let mut library = page_with("a", &["t0", "t1"], access(0x01, true));
+        assert!(library.move_track("a", 0, 2, &track("t0")).is_some());
+
+        library.apply(&Update::TrackMoved {
+            playlist: "b".to_owned(),
+            revision: revision(0x09),
+        });
+        library.apply(&Update::MoveFailed {
+            playlist: "b".to_owned(),
+            failure: Failure::Save,
+        });
+
+        assert!(
+            library.pending.is_some(),
+            "the write for a is still in flight"
+        );
+        assert_eq!(
+            library.tracks,
+            ready("a", &["t1", "t0"], access(0x01, true))
+        );
+    }
+
+    #[test]
+    fn a_reply_while_the_page_is_loading_only_ends_the_write() {
+        let mut library = page_with("a", &["t0", "t1"], access(0x01, true));
+        assert!(library.move_track("a", 0, 2, &track("t0")).is_some());
+        library.select("a");
+
+        library.apply(&Update::TrackMoved {
+            playlist: "a".to_owned(),
+            revision: revision(0x02),
+        });
+
+        assert_eq!(library.pending, None);
+        assert_eq!(library.tracks, Load::Loading);
+    }
+
+    #[test]
+    fn a_reply_while_the_page_is_off_screen_only_ends_the_write() {
+        let mut library = page_with("a", &["t0", "t1"], access(0x01, true));
+        assert!(library.move_track("a", 0, 2, &track("t0")).is_some());
+        library.to_playlists();
+
+        library.apply(&Update::TrackMoved {
+            playlist: "a".to_owned(),
+            revision: revision(0x02),
+        });
+
+        assert_eq!(library.pending, None);
+        assert_eq!(
+            library.tracks,
+            ready("a", &["t1", "t0"], access(0x02, true)),
+            "the rows are kept for Back, which reloads them anyway"
+        );
+    }
+
+    #[test]
+    fn a_failed_write_while_the_page_is_loading_only_ends_the_write() {
+        let mut library = page_with("a", &["t0", "t1"], access(0x01, true));
+        assert!(library.move_track("a", 0, 2, &track("t0")).is_some());
+        library.select("a");
+
+        library.apply(&Update::MoveFailed {
+            playlist: "a".to_owned(),
+            failure: Failure::Save,
+        });
+
+        assert_eq!(library.pending, None);
+        assert_eq!(library.tracks, Load::Loading);
+    }
+
+    #[test]
+    fn a_tracks_failure_while_a_write_is_pending_keeps_the_write() {
+        let mut library = page_with("a", &["t0", "t1"], access(0x01, true));
+        assert!(library.move_track("a", 0, 2, &track("t0")).is_some());
+
+        library.apply(&Update::TracksFailed {
+            playlist: "a".to_owned(),
+            failure: Failure::Load,
+        });
+
+        assert_eq!(library.tracks, Load::Failed(Failure::Load));
+        assert!(
+            library.pending.is_some(),
+            "only the write's own reply ends it"
+        );
+    }
+
+    #[test]
+    fn movable_needs_an_editable_ready_page_and_no_write_in_flight() {
+        assert!(!Library::default().movable(), "nothing is loaded");
+        assert!(!page_with("a", &["t0"], None).movable(), "no access");
+        assert!(!page_with("a", &["t0"], access(0x01, false)).movable());
+
+        let mut library = page_with("a", &["t0", "t1"], access(0x01, true));
+        assert!(library.movable());
+
+        assert!(library.move_track("a", 0, 2, &track("t0")).is_some());
+        assert!(!library.movable(), "a write is in flight");
     }
 
     #[test]
@@ -2845,6 +3519,7 @@ mod tests {
             playlist: "a".to_owned(),
             tracks: vec![track("t")],
             cover: None,
+            access: None,
         });
 
         library.apply(&Update::Playlists(vec![
@@ -2868,6 +3543,7 @@ mod tests {
             playlist: "a".to_owned(),
             tracks: vec![track("t")],
             cover: None,
+            access: None,
         });
 
         library.apply(&Update::Playlists(vec![playlist("b", "B")]));
@@ -2884,6 +3560,7 @@ mod tests {
             playlist: "a".to_owned(),
             tracks: vec![track("t")],
             cover: None,
+            access: None,
         });
 
         library.to_playlists();
@@ -2906,6 +3583,7 @@ mod tests {
             playlist: "a".to_owned(),
             tracks: vec![track("t0")],
             cover: None,
+            access: None,
         });
         library.to_playlists();
         let settled = Load::Ready(tracks_for("a", vec![track("t0")]));
@@ -2914,6 +3592,7 @@ mod tests {
             playlist: "a".to_owned(),
             tracks: vec![track("t1")],
             cover: None,
+            access: None,
         });
         assert_eq!(library.tracks, settled, "the late tracks are discarded");
 
@@ -2970,6 +3649,7 @@ mod tests {
             playlist: "a".to_owned(),
             tracks: vec![track("t")],
             cover: Some(context.clone()),
+            access: None,
         });
 
         assert_eq!(
@@ -2991,6 +3671,7 @@ mod tests {
             playlist: "a".to_owned(),
             tracks: vec![track("t")],
             cover: None,
+            access: None,
         });
 
         assert_eq!(
@@ -3014,6 +3695,7 @@ mod tests {
             playlist: "a".to_owned(),
             tracks: vec![track("t")],
             cover: Some(a_context.clone()),
+            access: None,
         });
 
         assert_eq!(
@@ -3035,6 +3717,7 @@ mod tests {
             playlist: "a".to_owned(),
             tracks: Vec::new(),
             cover: Some(context.clone()),
+            access: None,
         });
         library.apply(&Update::Playlists(vec![playlist("a", "A")]));
 
@@ -3053,6 +3736,7 @@ mod tests {
             playlist: "a".to_owned(),
             tracks: Vec::new(),
             cover: Some(context.clone()),
+            access: None,
         });
         library.apply(&Update::Playlists(vec![playlist("a", "A")]));
 
@@ -3071,6 +3755,7 @@ mod tests {
             playlist: "a".to_owned(),
             tracks: Vec::new(),
             cover: Some(context),
+            access: None,
         });
         library.apply(&Update::Playlists(vec![playlist("b", "B")]));
 
@@ -3648,6 +4333,7 @@ mod tests {
             playlist: "a".to_owned(),
             tracks: Vec::new(),
             cover: None,
+            access: None,
         });
         assert_eq!(library.tracks, Load::Ready(tracks_for("a", Vec::new())));
         let settled = !matches!(library.tracks, Load::Loading | Load::Idle);

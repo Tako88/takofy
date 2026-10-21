@@ -414,9 +414,82 @@ pub struct TrackLyrics {
     pub synced: bool,
 }
 
+/// A playlist's revision, as the wire carries it.
+///
+/// Opaque bytes that identify one version of a playlist. It is never printed:
+/// its `Debug` says only that it is one, so a revision cannot reach a log line.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Revision(Vec<u8>);
+
+impl Revision {
+    /// Reads a revision from the wire, rejecting an empty one.
+    ///
+    /// An empty revision is no revision at all, and a write based on it would
+    /// name no version of the list.
+    pub fn from_wire(bytes: &[u8]) -> Option<Self> {
+        (!bytes.is_empty()).then(|| Self(bytes.to_vec()))
+    }
+
+    /// The revision's bytes, as a write sends them back.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for Revision {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Revision(..)")
+    }
+}
+
+/// What a playlist page may change, and the version it was read at.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlaylistAccess {
+    pub revision: Revision,
+    pub editable: bool,
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{AddedAt, CoverImage, CoverUrl, Episode, PublishedAt, TrackLyrics};
+    use super::{
+        AddedAt, CoverImage, CoverUrl, Episode, PlaylistAccess, PublishedAt, Revision, TrackLyrics,
+    };
+
+    #[test]
+    fn an_empty_revision_is_none() {
+        assert_eq!(Revision::from_wire(&[]), None);
+        assert!(
+            Revision::from_wire(&[0]).is_some(),
+            "a zero byte is still a byte"
+        );
+    }
+
+    #[test]
+    fn a_revision_keeps_its_bytes() {
+        let bytes = [0x00, 0x00, 0x00, 0x06, 0xc1, 0x52];
+        let revision = Revision::from_wire(&bytes).expect("a revision");
+        assert_eq!(revision.as_bytes(), &bytes);
+    }
+
+    #[test]
+    fn a_revision_never_prints_its_bytes() {
+        let secret = format!(
+            "{:?}",
+            Revision::from_wire(&[0xde, 0xad]).expect("a revision")
+        );
+        assert_eq!(secret, "Revision(..)");
+
+        let access = PlaylistAccess {
+            revision: Revision::from_wire(&[0xde, 0xad]).expect("a revision"),
+            editable: true,
+        };
+        let printed = format!("{access:?}");
+        assert!(printed.contains("Revision(..)"), "{printed}");
+        assert!(
+            !printed.contains("222"),
+            "the decimal bytes leaked: {printed}"
+        );
+    }
 
     fn episode() -> Episode {
         Episode {

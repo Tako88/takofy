@@ -15,6 +15,7 @@ pub mod login;
 pub mod lyrics;
 pub mod oauth;
 pub mod playback;
+pub mod playlist_edit;
 pub mod rootlist;
 pub mod show;
 
@@ -23,8 +24,9 @@ mod collection;
 mod cover;
 mod remote;
 mod search;
+mod wire;
 
 pub use context::{ContextError, Page, PageTrack, page_from_proto, parse_page_json};
-pub use engine::{Engine, EngineError, TrackPages};
+pub use engine::{Engine, EngineError, PlaylistPage, TrackPages};
 pub use playback::{Outcome, Playback, PlaybackError, PlaybackEvent, drive, map_event};
 pub use rootlist::{RootlistError, RootlistPage, RootlistWire, parse_rootlist};
