@@ -543,12 +543,21 @@ impl Library {
             .is_some_and(|pending| pending.playlist == playlist)
     }
 
+    /// Whether a row may be lifted off the loaded page now.
+    ///
+    /// A write in flight holds the page still: a drop would name a revision the
+    /// write is already replacing. A page the user cannot write still lifts,
+    /// because a drop into the queue is not a write to that page.
+    pub fn liftable(&self) -> bool {
+        self.pending.is_none()
+    }
+
     /// Whether the loaded track page may reorder its rows now.
     ///
     /// It needs a read that named an editable list, and no write in flight: a
     /// second one would name a revision the first is already replacing.
     pub fn movable(&self) -> bool {
-        self.pending.is_none()
+        self.liftable()
             && matches!(
                 &self.tracks,
                 Load::Ready(tracks)

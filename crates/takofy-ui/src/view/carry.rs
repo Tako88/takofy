@@ -7,16 +7,19 @@
 //! A page list opens one [`List`] for the frame, tells it which row is selected
 //! and which was lifted, and finishes it after its rows are drawn. The list hands
 //! the stored selection back to the frame's temp memory, so a selection survives
-//! the frames a click does not touch and is forgotten when the page changes.
+//! the frames a click does not touch and is forgotten when the page changes. A
+//! page that may reorder also offers its rows, so the shell can land a drop in the
+//! list they came from.
 //!
 //! None of this draws or moves anything: the shell is the only side that resolves
-//! the payload, paints its ghost, applies the drop and clears it.
+//! the payload and the offer, paints its ghost, applies the drop and clears it.
 
 use std::sync::Arc;
 
 use egui::{Context, DragAndDrop, Id, Vec2};
 use takofy_model::TrackEntry;
 
+use crate::landing::Zone;
 use crate::queue::Queue;
 use crate::route::Page;
 use crate::selection::{Picks, Press, Selection};
@@ -65,9 +68,25 @@ const _: fn() = || {
     ok::<Carry>();
 };
 
+/// The rows an editable page offers as a drop target this frame.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Offer {
+    /// The list that offered, which is the id its rows lift under.
+    pub list: Id,
+    /// The playlist those rows belong to.
+    pub playlist: String,
+    /// The rows' box, which a drop is resolved against.
+    pub zone: Zone,
+}
+
 /// The id the frame's selections live under.
 fn picks() -> Id {
     Id::unique("picks")
+}
+
+/// The id the frame's offer lives under.
+fn offer_id() -> Id {
+    Id::unique("reorder-offer")
 }
 
 /// Puts `carry` in the frame's payload: what the shell resolves, paints and
@@ -84,6 +103,26 @@ pub fn carried(ctx: &Context) -> Option<Arc<Carry>> {
 /// Whether a block is carried at all, from any list.
 pub fn carrying(ctx: &Context) -> bool {
     DragAndDrop::has_any_payload(ctx)
+}
+
+/// The offer a page made this frame, read once so it cannot outlive the frame
+/// that drew it: a page that did not draw offers nothing.
+pub fn take_offer(ctx: &Context) -> Option<Offer> {
+    ctx.data_mut(|data| {
+        let offer = data.get_temp::<Offer>(offer_id());
+        data.remove::<Offer>(offer_id());
+        offer
+    })
+}
+
+/// Replaces `list`'s selection with `row` alone, so the next frame draws the
+/// row that landed as the picked one.
+pub fn select_only(ctx: &Context, list: Id, row: usize) {
+    ctx.data_mut(|data| {
+        data.get_temp_mut_or_default::<Picks>(picks())
+            .get_mut(list)
+            .set([row]);
+    });
 }
 
 /// Forgets every list's selection when the page changes.
@@ -119,6 +158,7 @@ pub struct List {
     selection: Selection,
     changed: bool,
     lift: Option<Carry>,
+    offer: Option<Offer>,
     carry: Option<Arc<Carry>>,
 }
 
@@ -137,6 +177,7 @@ impl List {
             changed: selection != stored,
             selection,
             lift: None,
+            offer: None,
             carry: carried(ctx),
         }
     }
@@ -174,7 +215,17 @@ impl List {
         });
     }
 
-    /// Stores the selection for the next frame and sets this frame's payload.
+    /// Offers this list's rows to the shell as a target a reorder can land in.
+    pub fn offer(&mut self, playlist: &str, zone: Zone) {
+        self.offer = Some(Offer {
+            list: self.id,
+            playlist: playlist.to_owned(),
+            zone,
+        });
+    }
+
+    /// Stores the selection for the next frame and sets this frame's payload and
+    /// offer.
     pub fn finish(self, ctx: &Context) {
         if self.changed {
             ctx.data_mut(|data| {
@@ -185,6 +236,9 @@ impl List {
         }
         if let Some(carry) = self.lift {
             lift(ctx, carry);
+        }
+        if let Some(offer) = self.offer {
+            ctx.data_mut(|data| data.insert_temp(offer_id(), offer));
         }
     }
 }
@@ -197,6 +251,7 @@ mod tests {
     use crate::cover::Cover;
     use crate::player::Transport;
     use crate::selection::Press;
+    use crate::theme::extent;
 
     fn context() -> Context {
         Context::default()
@@ -242,6 +297,79 @@ mod tests {
             size: vec2(100.0, 44.0),
             ghost: ghost(),
         }
+    }
+
+    fn zone() -> Zone {
+        let rows = Rect::from_min_size(pos2(0.0, 10.0), vec2(300.0, 4.0 * extent::ROW_H));
+        Zone {
+            hit: rows,
+            list: rows,
+            row_h: extent::ROW_H,
+            first: 0,
+            count: 4,
+        }
+    }
+
+    #[test]
+    fn an_offer_is_read_once() {
+        let ctx = context();
+        let id = Id::unique("list");
+        let mut list = List::open(&ctx, id, 4);
+        list.offer("spotify:playlist:a", zone());
+        assert_eq!(
+            take_offer(&ctx),
+            None,
+            "the frame's offer is set when the list finishes"
+        );
+
+        list.finish(&ctx);
+        assert_eq!(
+            take_offer(&ctx),
+            Some(Offer {
+                list: id,
+                playlist: "spotify:playlist:a".to_owned(),
+                zone: zone(),
+            }),
+            "the frame's offer names the list, the playlist and the rows"
+        );
+        assert_eq!(take_offer(&ctx), None, "an offer is read once");
+
+        // A page that draws but offers nothing leaves nothing behind, so the
+        // frame after it cannot act on the frame before.
+        let list = List::open(&ctx, id, 4);
+        list.finish(&ctx);
+        assert_eq!(
+            take_offer(&ctx),
+            None,
+            "a page that offers nothing offers nothing"
+        );
+    }
+
+    #[test]
+    fn select_only_replaces_a_lists_selection() {
+        let ctx = context();
+        let first = Id::unique("first");
+        let second = Id::unique("second");
+        let mut list = List::open(&ctx, first, 6);
+        list.press(1, Press::Replace);
+        list.press(4, Press::Toggle);
+        list.finish(&ctx);
+        let mut other = List::open(&ctx, second, 6);
+        other.press(2, Press::Replace);
+        other.finish(&ctx);
+
+        select_only(&ctx, first, 3);
+
+        let list = List::open(&ctx, first, 6);
+        assert!(list.look(3).selected, "the row that landed is the pick");
+        assert!(
+            !list.look(1).selected && !list.look(4).selected,
+            "every pick before it is gone"
+        );
+        assert!(
+            List::open(&ctx, second, 6).look(2).selected,
+            "another list keeps its own selection"
+        );
     }
 
     fn queue_of(count: usize, current: usize) -> Queue {

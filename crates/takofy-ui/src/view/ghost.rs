@@ -81,9 +81,9 @@ pub fn paint(ui: &mut Ui, paint: Paint<'_>) {
 
     // Last, so neither a row nor the ghost's own fill can cover the rule that
     // says where the block will land.
-    if let Some(Target::At(landing)) = target {
+    if let Some(marker) = target.and_then(Target::marker) {
         ghost
             .painter()
-            .rect_filled(landing.marker, radius::NONE, tokens.palette.mark);
+            .rect_filled(marker, radius::NONE, tokens.palette.mark);
     }
 }

@@ -6,12 +6,12 @@
 //! solved as rects instead, which is what the reference's CSS grid does.
 
 use egui::{
-    Align, Color32, DragAndDrop, Layout, Order, PointerButton, Rect, Stroke, StrokeKind, Ui,
+    Align, Color32, DragAndDrop, Layout, Order, PointerButton, Pos2, Rect, Stroke, StrokeKind, Ui,
     UiBuilder, Vec2,
 };
 
 use crate::drawer::{Drawer, Input};
-use crate::landing::{self, Area, Target};
+use crate::landing::{self, Area, Landing, Target};
 use crate::layout::{self, Grid, NowPlaying, Playbar, Sidebar};
 use crate::library::Library;
 use crate::message::Command;
@@ -21,7 +21,7 @@ use crate::search::Act;
 use crate::theme::{Tokens, radius, stroke};
 
 use super::Screen;
-use super::carry::{self, Carry, Source};
+use super::carry::{self, Carry, Offer, Source};
 use super::{ghost, now_playing, playbar, playlist, queue_pane, search_menu, sidebar, topbar};
 
 /// The signed-in shell: three columns over a playbar, each panel a hairline box
@@ -159,19 +159,25 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
     // (a page list sets its payload in `List::finish`, inside the view region).
     let bar_rect = grid.playbar.shrink(inset);
     let carry = carry::carried(ui.ctx());
+    // Read every frame, carried or not, so a page that did not draw offers nothing.
+    let offer = carry::take_offer(ui.ctx());
     let target = carry.as_deref().and_then(|carry| {
-        let area = queue_area(
-            screen.queue,
-            regions.now_playing,
-            regions.playbar,
-            bar_rect,
-            carry,
-        );
-        landing::target(
-            ui.ctx().pointer_latest_pos(),
-            queue_reply.zone.as_ref(),
-            area.as_ref(),
-        )
+        // A row lifted from a page list lands in that list's own rows, so that
+        // page's zone wins there; everywhere else the queue's zones decide.
+        reorder_target(carry, offer.as_ref(), ui.ctx().pointer_latest_pos()).or_else(|| {
+            let area = queue_area(
+                screen.queue,
+                regions.now_playing,
+                regions.playbar,
+                bar_rect,
+                carry,
+            );
+            landing::target(
+                ui.ctx().pointer_latest_pos(),
+                queue_reply.zone.as_ref(),
+                area.as_ref(),
+            )
+        })
     });
 
     command = command.or(region(ui, "playbar", grid.playbar, bar_rect, |ui| {
@@ -316,7 +322,15 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
 
     // Settled before the drawer, so the Escape that cancels a drag does not also
     // close it. egui takes that Escape itself, before any region draws.
-    settle_carry(ui, screen, target, tokens);
+    let free = command.is_none();
+    command = command.or(settle_carry(
+        ui,
+        screen,
+        target,
+        offer.as_ref(),
+        free,
+        tokens,
+    ));
 
     // The drawer is stepped after the regions, so a playlist picked from the rail
     // closes it in the same frame it is picked.
@@ -414,28 +428,80 @@ fn alt_step(ui: &Ui, screen: &mut Screen<'_>, focused: Option<usize>) {
     ui.ctx().request_repaint();
 }
 
+/// Where a carried page row lands in the list it came from, when that list
+/// offered its rows this frame.
+fn reorder_target(carry: &Carry, offer: Option<&Offer>, pointer: Option<Pos2>) -> Option<Target> {
+    let offer = offer.filter(|offer| carry.source == Source::List(offer.list))?;
+    let at = landing::resolve(pointer, Some(&offer.zone))?;
+    // A single row's own gap and the next would not step, so it lands nowhere.
+    if let [row] = carry.rows[..]
+        && (at.boundary == row || at.boundary == row + 1)
+    {
+        return None;
+    }
+    Some(Target::Reorder(at))
+}
+
+/// Moves the dropped row in its own list and picks where it landed.
+///
+/// A page that is no longer free to write, or a carry that is not exactly one
+/// row, lands nothing: the move is the page's to accept.
+fn reorder(
+    ctx: &egui::Context,
+    screen: &mut Screen<'_>,
+    offer: Option<&Offer>,
+    carry: &Carry,
+    at: Landing,
+    free: bool,
+) -> Option<Command> {
+    // A refused reorder is dropped, not retried, even though the drag marked it.
+    if !free {
+        return None;
+    }
+    let offer = offer?;
+    let [row] = carry.rows[..] else {
+        return None;
+    };
+    let entry = carry.entries.first()?;
+    let (command, landed) = screen
+        .library
+        .move_track(&offer.playlist, row, at.boundary, entry)?;
+    carry::select_only(ctx, offer.list, landed);
+    Some(command)
+}
+
 /// Looks at the carried block once every region has drawn: lands it, drops it, or
 /// paints its ghost.
-fn settle_carry(ui: &mut Ui, screen: &mut Screen<'_>, target: Option<Target>, tokens: &Tokens) {
+fn settle_carry(
+    ui: &mut Ui,
+    screen: &mut Screen<'_>,
+    target: Option<Target>,
+    offer: Option<&Offer>,
+    free: bool,
+    tokens: &Tokens,
+) -> Option<Command> {
     let ctx = ui.ctx().clone();
-    let Some(carry) = carry::carried(&ctx) else {
-        return;
-    };
+    let carry = carry::carried(&ctx)?;
     let pointer = ctx.pointer_latest_pos();
 
     if ctx.input(|input| input.pointer.button_released(PointerButton::Primary)) {
-        if let Some(target) = target {
-            land(screen.queue, &carry, target);
-        }
+        let command = match target {
+            Some(Target::Reorder(at)) => reorder(&ctx, screen, offer, &carry, at, free),
+            Some(target) => {
+                land(screen.queue, &carry, target);
+                None
+            }
+            None => None,
+        };
         DragAndDrop::clear_payload(&ctx);
         ctx.request_repaint();
-        return;
+        return command;
     }
     // Defensive: egui keeps a button down until it sees the release, so this
     // covers only a release the window never delivered.
     if !ctx.input(|input| input.pointer.primary_down()) {
         DragAndDrop::clear_payload(&ctx);
-        return;
+        return None;
     }
     if let Some(pointer) = pointer {
         ghost::paint(
@@ -448,6 +514,7 @@ fn settle_carry(ui: &mut Ui, screen: &mut Screen<'_>, target: Option<Target>, to
             },
         );
     }
+    None
 }
 
 /// The queue button's drop area, when it is one: only while the pane is hidden;
@@ -480,6 +547,8 @@ fn land(queue: &mut Queue, carry: &Carry, target: Target) {
         // The button adds; it never moves a queue row.
         (Target::At(_) | Target::End, Source::Queue) => None,
         (Target::At(at), Source::List(_)) => queue.insert_at(at.boundary, carry.entries.clone()),
+        // A row dropped in its own list is moved by `reorder`, not by the queue.
+        (Target::Reorder(_), _) => None,
         // An add asks for no row: the pane that would show it is not on screen.
         (Target::End, Source::List(_)) => {
             let _ = queue.append(carry.entries.clone());
@@ -703,7 +772,7 @@ pub(super) fn rule(ui: &Ui, rect: Rect, color: Color32) {
 mod tests {
     use std::time::Instant;
 
-    use takofy_model::{CoverUrl, PlaylistEntry, TrackEntry};
+    use takofy_model::{CoverUrl, PlaylistAccess, PlaylistEntry, Revision, TrackEntry};
 
     use super::*;
     use crate::cover::Art;
@@ -3721,8 +3790,22 @@ mod tests {
 
     /// A playlist page with one row per title, so a track can be dragged out of
     /// it. The uris are the page's own, so they cannot be mistaken for the
-    /// queue's.
+    /// queue's. The page is editable, the way a list the user owns is.
     fn playlist_page(window: &mut Window, titles: &[&str]) {
+        playlist_page_with(window, titles, page_access(true));
+    }
+
+    /// The same page, read at a revision the user may not write.
+    fn read_only_playlist_page(window: &mut Window, titles: &[&str]) {
+        playlist_page_with(window, titles, page_access(false));
+    }
+
+    /// The page a read that named no state leaves: nothing may be written.
+    fn playlist_page_without_access(window: &mut Window, titles: &[&str]) {
+        playlist_page_with(window, titles, None);
+    }
+
+    fn playlist_page_with(window: &mut Window, titles: &[&str], access: Option<PlaylistAccess>) {
         window.library.apply(&Update::Playlists(vec![PlaylistEntry {
             uri: PLAYLIST.to_owned(),
             name: "Mix".to_owned(),
@@ -3744,8 +3827,56 @@ mod tests {
                 })
                 .collect(),
             cover: None,
-            access: None,
+            access,
         });
+    }
+
+    /// A revision the pages in these tests were read at.
+    fn revision(tag: &str) -> Revision {
+        Revision::from_wire(tag.as_bytes()).expect("a non-empty revision")
+    }
+
+    /// What a page may change, at a revision of its own.
+    fn page_access(editable: bool) -> Option<PlaylistAccess> {
+        Some(PlaylistAccess {
+            revision: revision("rev-1"),
+            editable,
+        })
+    }
+
+    /// The rows the page holds, in the order it holds them.
+    fn page_rows(window: &Window) -> Vec<String> {
+        match &window.library.tracks {
+            Load::Ready(tracks) => tracks
+                .tracks
+                .iter()
+                .map(|entry| entry.uri.clone())
+                .collect(),
+            Load::Idle | Load::Loading | Load::Failed(_) => Vec::new(),
+        }
+    }
+
+    /// A point at the boundary `at` of the page's rows, from the lines it
+    /// painted: 0 is above the first row, `count` below the last. A row's title
+    /// sits in the upper half of its row, so a row's own line is the gap it
+    /// opens above itself.
+    fn page_boundary(
+        output: &egui::FullOutput,
+        area: Rect,
+        titles: &[&str],
+        at: usize,
+    ) -> egui::Pos2 {
+        let last = titles.len() - 1;
+        let line = row_line(output, area, titles[at.min(last)]);
+        let y = if at > last { line.y + 24.0 } else { line.y };
+        egui::pos2(line.x, y)
+    }
+
+    /// A point inside the row painted as `title` in `area`, in the half that
+    /// decides the boundary it takes: `after` is the gap below it.
+    fn row_half(output: &egui::FullOutput, area: Rect, title: &str, after: bool) -> egui::Pos2 {
+        let line = row_line(output, area, title);
+        egui::pos2(line.x, line.y + if after { 20.0 } else { -4.0 })
     }
 
     /// Clicks the queue row painted as `title` inside `area`.
@@ -3965,7 +4096,7 @@ mod tests {
     }
 
     #[test]
-    fn dragging_a_playlist_track_into_the_queue_inserts_it_at_the_marker_and_does_not_play_it() {
+    fn a_playlist_row_dropped_on_the_queue_is_still_queued() {
         let mut transport = playing(cover("abc"));
         let mut queue = queue_of(4, &mut transport);
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
@@ -3985,6 +4116,401 @@ mod tests {
             transport.now_playing.as_ref().map(|now| now.uri.as_str()),
             Some("t0")
         );
+        assert_eq!(
+            page_rows(&window),
+            ["list:p0", "list:p1", "list:p2"],
+            "a drop in the queue is no write to the page it came from"
+        );
+    }
+
+    #[test]
+    fn dragging_a_playlist_row_below_the_next_moves_it_and_sends_one_write() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1", "p2"]);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let view = view_rect(&window);
+        let from = row_line(&frame, view, "p0");
+        let to = page_boundary(&frame, view, &["p0", "p1", "p2"], 2);
+
+        assert_eq!(
+            window.drag(&mut transport, &mut queue, from, to),
+            Some(Command::MoveTrack {
+                playlist: PLAYLIST.to_owned(),
+                revision: revision("rev-1"),
+                from: 0,
+                to: 1,
+            }),
+            "the page asks for one write on the revision it was read at"
+        );
+        assert_eq!(
+            page_rows(&window),
+            ["list:p1", "list:p0", "list:p2"],
+            "the row has already moved on screen"
+        );
+        assert!(!window.library.movable(), "the write is in flight");
+        assert_eq!(
+            window.frame(&mut transport, &mut queue, Vec::new()).0,
+            None,
+            "the gesture sends one write, not one a frame"
+        );
+    }
+
+    #[test]
+    fn dragging_a_row_to_the_top_writes_index_zero() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1", "p2"]);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let view = view_rect(&window);
+        let from = row_line(&frame, view, "p2");
+        let to = page_boundary(&frame, view, &["p0", "p1", "p2"], 0);
+
+        assert_eq!(
+            window.drag(&mut transport, &mut queue, from, to),
+            Some(Command::MoveTrack {
+                playlist: PLAYLIST.to_owned(),
+                revision: revision("rev-1"),
+                from: 2,
+                to: 0,
+            })
+        );
+        assert_eq!(page_rows(&window), ["list:p2", "list:p0", "list:p1"]);
+    }
+
+    #[test]
+    fn a_drop_beside_itself_moves_nothing_and_writes_nothing() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1", "p2"]);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let view = view_rect(&window);
+        for (title, beside) in [("p1", 1), ("p1", 2), ("p2", 3)] {
+            assert_eq!(
+                window.drag(
+                    &mut transport,
+                    &mut queue,
+                    row_line(&frame, view, title),
+                    page_boundary(&frame, view, &["p0", "p1", "p2"], beside)
+                ),
+                None,
+                "the gap {beside} is where {title} already is"
+            );
+            assert_eq!(
+                page_rows(&window),
+                ["list:p0", "list:p1", "list:p2"],
+                "nothing moved"
+            );
+            assert!(window.library.movable(), "and nothing was written");
+        }
+    }
+
+    #[test]
+    fn a_drop_beside_itself_draws_no_marker_and_a_flat_ghost() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1", "p2"]);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let view = view_rect(&window);
+        for (title, beside) in [("p0", 1), ("p1", 2)] {
+            let from = row_line(&frame, view, title);
+            let to = page_boundary(&frame, view, &["p0", "p1", "p2"], beside);
+            let (_, frame) = window.hold_drag(&mut transport, &mut queue, from, to);
+            assert!(
+                carry::carrying(&window.ctx),
+                "the gap {beside} of {title} is reached by a drag"
+            );
+            assert!(
+                marker(&frame).is_none(),
+                "the gap {beside} of {title} marks no landing"
+            );
+            assert_eq!(
+                ghost_at(&frame, to),
+                Some(Tokens::DARK.palette.surface),
+                "the gap {beside} of {title} draws the ghost flat"
+            );
+            let corner = to + Vec2::new(space::S3, space::S4);
+            assert!(
+                !shadows(&frame)
+                    .iter()
+                    .any(|cast| (cast.min - corner).length() < 0.5),
+                "a flat ghost casts no shadow"
+            );
+            let (command, _) = window.frame(&mut transport, &mut queue, vec![window.release(to)]);
+            assert_eq!(command, None, "the gap {beside} of {title} writes nothing");
+            assert_eq!(
+                page_rows(&window),
+                ["list:p0", "list:p1", "list:p2"],
+                "and moves nothing"
+            );
+        }
+    }
+
+    #[test]
+    fn a_row_that_changed_under_the_drag_is_refused_on_release() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1", "p2"]);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let view = view_rect(&window);
+        let from = row_line(&frame, view, "p1");
+        let to = page_boundary(&frame, view, &["p0", "p1", "p2"], 0);
+        let _ = window.hold_drag(&mut transport, &mut queue, from, to);
+        assert!(carry::carrying(&window.ctx), "the row is in flight");
+
+        // A read lands while the block is held, and another entry now sits at `from`.
+        window.library.apply(&Update::Tracks {
+            playlist: PLAYLIST.to_owned(),
+            tracks: ["p2", "p0", "p1"]
+                .iter()
+                .map(|title| TrackEntry {
+                    uri: format!("list:{title}"),
+                    title: (*title).to_owned(),
+                    ..track(0, None)
+                })
+                .collect(),
+            cover: None,
+            access: page_access(true),
+        });
+
+        let (command, _) = window.frame(&mut transport, &mut queue, vec![window.release(to)]);
+        assert_eq!(command, None, "the carried entry no longer holds the row");
+        assert_eq!(
+            page_rows(&window),
+            ["list:p2", "list:p0", "list:p1"],
+            "a refused reorder moves nothing"
+        );
+        assert!(window.library.movable(), "and writes nothing");
+    }
+
+    #[test]
+    fn the_marker_shows_where_the_row_lands_in_its_own_list() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1", "p2"]);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let view = view_rect(&window);
+        let from = row_line(&frame, view, "p0");
+        let to = page_boundary(&frame, view, &["p0", "p1", "p2"], 2);
+
+        let (_, frame) = window.hold_drag(&mut transport, &mut queue, from, to);
+        let marker = marker(&frame).expect("the page draws where the row lands");
+        assert!(
+            view.contains_rect(marker),
+            "the marker is the page's own, not the queue's"
+        );
+        let first = row_line(&frame, view, "p1");
+        let second = row_line(&frame, view, "p2");
+        assert!(
+            marker.top() > first.y && marker.top() < second.y,
+            "it sits in the gap the drop takes, between p1 and p2: {marker:?}"
+        );
+    }
+
+    #[test]
+    fn a_read_only_playlist_row_still_queues_but_never_reorders() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        read_only_playlist_page(&mut window, &["p0", "p1", "p2"]);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let pane = pane_rect(&window);
+        let view = view_rect(&window);
+        let from = row_line(&frame, view, "p1");
+        let to = below(row_line(&frame, pane, "t3"), -0.25);
+
+        assert_eq!(window.drag(&mut transport, &mut queue, from, to), None);
+        assert_eq!(
+            entries(&queue),
+            ["t0", "t1", "t2", "list:p1", "t3"],
+            "a drop into the queue is not a write to the page"
+        );
+
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let from = row_line(&frame, view, "p0");
+        let to = row_half(&frame, view, "p2", false);
+        assert_eq!(
+            window.drag(&mut transport, &mut queue, from, to),
+            None,
+            "the page offers no reorder"
+        );
+        assert_eq!(
+            page_rows(&window),
+            ["list:p0", "list:p1", "list:p2"],
+            "so its rows do not move"
+        );
+    }
+
+    #[test]
+    fn a_page_without_access_never_reorders() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page_without_access(&mut window, &["p0", "p1", "p2"]);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let view = view_rect(&window);
+        let from = row_line(&frame, view, "p0");
+        let to = row_half(&frame, view, "p2", false);
+
+        assert_eq!(window.drag(&mut transport, &mut queue, from, to), None);
+        assert_eq!(page_rows(&window), ["list:p0", "list:p1", "list:p2"]);
+    }
+
+    #[test]
+    fn while_a_write_is_pending_no_row_lifts() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1", "p2"]);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let view = view_rect(&window);
+        let from = row_line(&frame, view, "p0");
+        let to = page_boundary(&frame, view, &["p0", "p1", "p2"], 2);
+        assert!(
+            window.drag(&mut transport, &mut queue, from, to).is_some(),
+            "the first move is written"
+        );
+        assert!(!window.library.movable());
+
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let from = row_line(&frame, view, "p2");
+        let (_, _) = window.hold_drag(
+            &mut transport,
+            &mut queue,
+            from,
+            row_half(&frame, view, "p2", true),
+        );
+        assert!(
+            carry::carried(&window.ctx).is_none(),
+            "no row lifts while the revision it would write is already spent"
+        );
+    }
+
+    #[test]
+    fn a_failed_write_puts_the_row_back_and_says_so() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1", "p2"]);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let view = view_rect(&window);
+        let from = row_line(&frame, view, "p0");
+        let to = page_boundary(&frame, view, &["p0", "p1", "p2"], 2);
+        assert!(window.drag(&mut transport, &mut queue, from, to).is_some());
+        assert_eq!(page_rows(&window), ["list:p1", "list:p0", "list:p2"]);
+
+        window.library.apply(&Update::MoveFailed {
+            playlist: PLAYLIST.to_owned(),
+            failure: Failure::Save,
+        });
+        assert_eq!(
+            page_rows(&window),
+            ["list:p0", "list:p1", "list:p2"],
+            "the row went back"
+        );
+
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let notice = crate::signin::failure_message(Failure::Save);
+        let at = painted_at(&frame, notice).expect("the failure is drawn");
+        let first = painted_at(&frame, "p0").expect("the first row is drawn");
+        assert!(at.y < first.y, "the failure heads the rows it put back");
+    }
+
+    #[test]
+    fn a_reply_lets_the_next_move_build_on_its_revision() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1", "p2"]);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let view = view_rect(&window);
+        let from = row_line(&frame, view, "p0");
+        let to = page_boundary(&frame, view, &["p0", "p1", "p2"], 2);
+        assert!(window.drag(&mut transport, &mut queue, from, to).is_some());
+
+        window.library.apply(&Update::TrackMoved {
+            playlist: PLAYLIST.to_owned(),
+            revision: revision("rev-2"),
+        });
+        assert!(window.library.movable(), "the reply ends the write");
+
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let from = row_line(&frame, view, "p2");
+        let to = page_boundary(&frame, view, &["p1", "p0", "p2"], 0);
+        assert_eq!(
+            window.drag(&mut transport, &mut queue, from, to),
+            Some(Command::MoveTrack {
+                playlist: PLAYLIST.to_owned(),
+                revision: revision("rev-2"),
+                from: 2,
+                to: 0,
+            }),
+            "the second move is based on the reply's revision"
+        );
+        assert_eq!(page_rows(&window), ["list:p2", "list:p1", "list:p0"]);
+    }
+
+    #[test]
+    fn the_selection_after_a_move_is_the_landed_index_holding_the_moved_track() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1", "p2"]);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let view = view_rect(&window);
+        let from = row_line(&frame, view, "p0");
+        let to = page_boundary(&frame, view, &["p0", "p1", "p2"], 2);
+        assert!(window.drag(&mut transport, &mut queue, from, to).is_some());
+
+        let id = egui::Id::unique(("playlist-tracks", PLAYLIST));
+        let list = carry::List::open(&window.ctx, id, 3);
+        assert!(list.look(1).selected, "the row that landed is picked");
+        assert!(
+            !list.look(0).selected && !list.look(2).selected,
+            "and nothing else is"
+        );
+        assert_eq!(
+            page_rows(&window)[1],
+            "list:p0",
+            "the pick is on the track that moved"
+        );
+    }
+
+    #[test]
+    fn a_drop_on_a_frame_another_region_took_moves_nothing() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1", "p2"]);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let view = view_rect(&window);
+        let from = row_line(&frame, view, "p0");
+        let to = page_boundary(&frame, view, &["p0", "p1", "p2"], 2);
+        let _ = window.hold_drag(&mut transport, &mut queue, from, to);
+
+        // Enter plays the row the drag left focused, so the drop finds the one
+        // command taken.
+        let (command, _) = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![window.release(to), key(egui::Key::Enter, true)],
+        );
+        assert!(
+            matches!(command, Some(Command::Play { .. })),
+            "another region took the frame: {command:?}"
+        );
+        assert_eq!(
+            page_rows(&window),
+            ["list:p0", "list:p1", "list:p2"],
+            "a drop behind another region's command moves nothing"
+        );
+        assert!(window.library.movable(), "and writes nothing");
     }
 
     #[test]
@@ -4645,7 +5171,8 @@ mod tests {
         playlist_page(&mut window, &["p0", "p1"]);
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
         let from = row_line(&frame, view_rect(&window), "p1");
-        let to = egui::pos2(window.size.x - 80.0, view_rect(&window).center().y);
+        // Above the rows: off the queue button and off the page's own list.
+        let to = egui::pos2(window.size.x - 80.0, view_rect(&window).top() + 8.0);
         let before = entries(&queue);
 
         let (_, frame) = window.hold_drag(&mut transport, &mut queue, from, to);

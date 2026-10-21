@@ -56,7 +56,21 @@ impl Area {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Target {
     At(Landing),
+    /// Land in the rows of the list the row was lifted from, at a boundary.
+    Reorder(Landing),
     End,
+}
+
+impl Target {
+    /// The rule the target draws where a carried block lands, if it draws one.
+    ///
+    /// An add has no position to show, so it draws no marker.
+    pub fn marker(self) -> Option<Rect> {
+        match self {
+            Target::At(landing) | Target::Reorder(landing) => Some(landing.marker),
+            Target::End => None,
+        }
+    }
 }
 
 /// Resolves a pointer against a zone, or `None` when it lands nowhere.
@@ -122,6 +136,20 @@ mod tests {
 
     fn pointer(x: f32, y: f32) -> Option<Pos2> {
         Some(pos2(x, y))
+    }
+
+    #[test]
+    fn a_reorder_carries_its_landing_and_is_not_a_queue_move() {
+        let hit = hit();
+        let zone = zone(hit, hit, 0, 4);
+        let landing = resolve(pointer(150.0, 100.0), Some(&zone)).unwrap();
+        assert_eq!(Target::Reorder(landing), Target::Reorder(landing));
+        assert_ne!(
+            Target::Reorder(landing),
+            Target::At(landing),
+            "the same boundary, but a move in another list"
+        );
+        assert_eq!(Target::Reorder(landing).marker(), Some(landing.marker));
     }
 
     #[test]
