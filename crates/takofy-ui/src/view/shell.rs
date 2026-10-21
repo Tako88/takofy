@@ -343,7 +343,7 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
         // A choice is applied only when no region took the frame's command:
         // `library.open` mutates before it returns, so applying one whose
         // command would then be dropped leaves state changed for a command
-        // nobody sends.
+        // nobody sends. A dropped choice is spent with its press, not retried.
         free: command.is_none(),
         tokens,
     };
@@ -6895,6 +6895,147 @@ mod tests {
         for _ in 0..2 {
             let _ = window.frame(transport, queue, Vec::new());
         }
+    }
+
+    /// The `⋯` of the row titled `title`, found as the rightmost glyph on that
+    /// row's line: the like sits left of it, and the band's own `⋯` is a row
+    /// higher.
+    fn more_button(output: &egui::FullOutput, view: Rect, title: &str) -> egui::Pos2 {
+        let line = row_line(output, view, title).y;
+        output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Path(_) => Some(clipped.shape.visual_bounding_rect()),
+                _ => None,
+            })
+            .filter(|rect| {
+                view.contains(rect.center()) && (rect.center().y - line).abs() < extent::ROW_H
+            })
+            .max_by(|left, right| left.center().x.total_cmp(&right.center().x))
+            .map(|rect| rect.center())
+            .expect("the row paints a `⋯`")
+    }
+
+    #[test]
+    fn clicking_the_open_more_closes_its_menu_and_keeps_the_keyboard() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1"]);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let more = more_button(&frame, view_rect(&window), "p0");
+
+        let _ = window.click(&mut transport, &mut queue, more);
+        settle_menu(&mut window, &mut transport, &mut queue);
+        assert!(window.menu.is_open(), "the `⋯` opened no menu");
+
+        // The same `⋯` again closes it instead of resetting it.
+        let _ = window.click(&mut transport, &mut queue, more);
+        assert!(
+            !window.menu.is_open(),
+            "the `⋯` reset its own menu instead of closing it"
+        );
+
+        // And the keyboard is back on the `⋯`, so Enter opens the menu again.
+        let _ = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![key(egui::Key::Enter, true)],
+        );
+        assert!(
+            window.menu.is_open(),
+            "the `⋯` did not take the keyboard back"
+        );
+    }
+
+    #[test]
+    fn a_held_enter_that_opened_the_menu_fires_nothing() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1"]);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let more = more_button(&frame, view_rect(&window), "p0");
+
+        // Open from the `⋯` and close, so the button holds the keyboard.
+        let _ = window.click(&mut transport, &mut queue, more);
+        settle_menu(&mut window, &mut transport, &mut queue);
+        let _ = press(&mut window, &mut transport, &mut queue, egui::Key::Escape);
+        assert!(!window.menu.is_open(), "Escape closed the menu");
+
+        // Enter opens it and is held: no release comes before the repeats.
+        let _ = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![key(egui::Key::Enter, true)],
+        );
+        assert!(window.menu.is_open(), "Enter opened no menu");
+        for _ in 0..3 {
+            let _ = window.frame(
+                &mut transport,
+                &mut queue,
+                vec![key_repeat(egui::Key::Enter)],
+            );
+        }
+
+        assert!(window.menu.is_open(), "a held Enter closed the menu");
+        assert_eq!(window.menu.lit(), Some(0), "a held Enter moved the lit row");
+        assert_eq!(
+            queue.upcoming().count(),
+            0,
+            "a held Enter fired Add to queue"
+        );
+    }
+
+    #[test]
+    fn a_held_enter_after_choosing_does_not_reopen_the_menu() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1"]);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let more = more_button(&frame, view_rect(&window), "p0");
+
+        let _ = window.click(&mut transport, &mut queue, more);
+        settle_menu(&mut window, &mut transport, &mut queue);
+        let _ = press(
+            &mut window,
+            &mut transport,
+            &mut queue,
+            egui::Key::ArrowDown,
+        );
+        assert_eq!(window.menu.lit(), Some(0));
+
+        // Enter chooses, closes and hands the keyboard back to the `⋯`.
+        let chosen = window
+            .frame(
+                &mut transport,
+                &mut queue,
+                vec![key(egui::Key::Enter, true)],
+            )
+            .0;
+        assert_eq!(chosen, None, "adding to the queue asks for no command");
+        assert!(!window.menu.is_open(), "the choice left the menu open");
+        assert_eq!(queue.upcoming().count(), 1, "the choice queued nothing");
+
+        // Held, the repeats land on the `⋯` that now holds the keyboard.
+        for _ in 0..3 {
+            let _ = window.frame(
+                &mut transport,
+                &mut queue,
+                vec![key_repeat(egui::Key::Enter)],
+            );
+        }
+        assert!(
+            !window.menu.is_open(),
+            "a held Enter reopened the menu it chose from"
+        );
+        assert_eq!(
+            queue.upcoming().count(),
+            1,
+            "a held Enter queued the row again"
+        );
     }
 
     #[test]

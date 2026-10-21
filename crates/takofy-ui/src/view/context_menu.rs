@@ -12,7 +12,7 @@
 //! page and the user never has to find their way back.
 
 use egui::{
-    EventFilter, FontId, Id, Key, Modifiers, Order, Rect, Sense, Ui, WidgetInfo, pos2, vec2,
+    Event, EventFilter, FontId, Id, Key, Modifiers, Order, Rect, Sense, Ui, WidgetInfo, pos2, vec2,
 };
 
 use crate::icon::{self, Icon};
@@ -42,7 +42,7 @@ pub struct Frame<'a> {
     pub menu: &'a mut Menu,
     /// Whether the frame's command is still unclaimed, so a choice can be
     /// applied. A choice made while another region took the frame's command is
-    /// not offered at all, which is what leaves the menu open to try again.
+    /// not offered, and its gesture is spent: the user must make it again.
     pub free: bool,
     pub tokens: &'a Tokens,
 }
@@ -174,11 +174,15 @@ pub fn show(ui: &mut Ui, frame: Frame<'_>) -> Option<Closed> {
         menu.settle_opened();
     }
 
+    // Enter is consumed on every frame, so a repeat reaches neither the `⋯` nor
+    // the drawer, and only a fresh press chooses.
+    let enter = ui.input_mut(consume_enter);
+
     if !fresh {
         // Escape is read and consumed before anything else, so the focus path
         // below never sees it and the drawer - which reads it without consuming
         // - never gets one the menu closed on.
-        let (escape, tab, down, up, first, last, enter) = ui.input_mut(|input| {
+        let (escape, tab, down, up, first, last) = ui.input_mut(|input| {
             (
                 input.consume_key(Modifiers::NONE, Key::Escape),
                 input.consume_key(Modifiers::NONE, Key::Tab),
@@ -186,7 +190,6 @@ pub fn show(ui: &mut Ui, frame: Frame<'_>) -> Option<Closed> {
                 input.consume_key(Modifiers::NONE, Key::ArrowUp),
                 input.consume_key(Modifiers::NONE, Key::Home),
                 input.consume_key(Modifiers::NONE, Key::End),
-                input.consume_key(Modifiers::NONE, Key::Enter),
             )
         });
         if escape {
@@ -248,6 +251,55 @@ pub fn show(ui: &mut Ui, frame: Frame<'_>) -> Option<Closed> {
         return Some(closed);
     }
     None
+}
+
+/// Consumes this frame's Enter presses and reports whether one was a fresh press.
+///
+/// egui counts a held key's auto-repeat as a press, so a held Enter would fire a
+/// row; the event itself is read instead.
+fn consume_enter(input: &mut egui::InputState) -> bool {
+    let mut fresh = false;
+    input.events.retain(|event| {
+        let Event::Key {
+            key: Key::Enter,
+            pressed: true,
+            repeat,
+            ..
+        } = event
+        else {
+            return true;
+        };
+        fresh |= !repeat;
+        false
+    });
+    fresh
+}
+
+/// Consumes this frame's Enter and Space repeats and says whether they were all
+/// a held key's.
+///
+/// egui reports a focused button's Enter or Space as a click and counts the
+/// repeats too, so a held key would reopen the menu it just closed.
+pub fn held_repeat(ui: &Ui) -> bool {
+    let mut fresh = false;
+    let mut repeated = false;
+    ui.input_mut(|input| {
+        input.events.retain(|event| {
+            let Event::Key {
+                key: Key::Enter | Key::Space,
+                pressed: true,
+                repeat,
+                ..
+            } = event
+            else {
+                return true;
+            };
+            fresh |= !repeat;
+            repeated |= *repeat;
+            !*repeat
+        })
+    });
+    repeated && !fresh
 }
 
 /// Draws the command rows, and reports the one a click chose.
@@ -635,6 +687,18 @@ mod tests {
             pressed: true,
             repeat: false,
             modifiers,
+        }
+    }
+
+    /// One press with no release before it, which egui marks as a held key's
+    /// auto-repeat from its own `keys_down`.
+    fn repeat(key: Key) -> Event {
+        Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: true,
+            modifiers: Modifiers::NONE,
         }
     }
 
@@ -1111,12 +1175,9 @@ mod tests {
         let _ = menu.close(Reason::Escape);
 
         let mut menu = opened(Device::Keyboard);
-        let drawn = frame(
-            &ctx,
-            &mut menu,
-            true,
-            vec![key_event(Key::Enter, Modifiers::NONE)],
-        );
+        // The opening Enter comes with its release: egui marks a press with no
+        // release between it and the one before as an auto-repeat.
+        let drawn = press(&ctx, &mut menu, Key::Enter);
         assert_eq!(drawn.closed, None, "the opening Enter fired a verb");
         assert!(menu.is_open(), "the opening Enter closed the menu");
 
@@ -1126,6 +1187,32 @@ mod tests {
             drawn.closed.map(|closed| closed.chose),
             Some(Some(Verb::AddToQueue))
         );
+    }
+
+    #[test]
+    fn a_repeated_enter_chooses_nothing_and_leaks_nowhere() {
+        let ctx = context();
+        // The user opens the menu with Enter and holds it: egui marks every
+        // press with no release between it and the one before as a repeat.
+        let mut menu = opened(Device::Keyboard);
+        warm(&ctx, &mut menu);
+        let _ = menu.close(Reason::Escape);
+
+        let mut menu = opened(Device::Keyboard);
+        let opening = frame(
+            &ctx,
+            &mut menu,
+            true,
+            vec![key_event(Key::Enter, Modifiers::NONE)],
+        );
+        assert_eq!(opening.closed, None, "the opening Enter fired a row");
+
+        let (drawn, leaked) = draw(&ctx, &mut menu, true, vec![repeat(Key::Enter)], |ui, _| {
+            ui.input(|input| input.key_pressed(Key::Enter))
+        });
+        assert_eq!(drawn.closed, None, "a held Enter fired a row");
+        assert!(menu.is_open(), "a held Enter closed the menu");
+        assert!(!leaked, "the repeat reached the `⋯` or the drawer");
     }
 
     #[test]

@@ -950,8 +950,8 @@ fn more(
     let id = controls::slot_id(ui, Control::TrackMore, key);
     // A right-click or the keyboard opens the menu from the row's body, so the
     // button says it is open for either opener.
-    let open =
-        context_menu::open_opener(ui.ctx()).is_some_and(|opener| opener == id || opener == body);
+    let opener = context_menu::open_opener(ui.ctx());
+    let open = opener.is_some_and(|opener| opener == id || opener == body);
     let slot = controls::icon_button_open(
         ui,
         tokens,
@@ -971,18 +971,25 @@ fn more(
     // egui does not focus a widget on a click; the row's body asks for it by hand
     // and the more does the same, so Enter and the focus ring land where the
     // pointer last was.
-    if slot.response.clicked() {
+    let clicked = slot.response.clicked();
+    if clicked {
         slot.response.request_focus();
     }
 
     // A press on a focused `⋯` is also Enter or Space, which egui reports as a
     // click without a pointer, so the device decides what the sheet's tiers mean.
-    let device = if ui.input(|input| input.pointer.button_clicked(egui::PointerButton::Primary)) {
+    let pointer = ui.input(|input| input.pointer.button_clicked(egui::PointerButton::Primary));
+    let device = if pointer {
         Device::Pointer
     } else {
         Device::Keyboard
     };
-    let door = slot.response.clicked().then_some(Door {
+    // The `⋯` whose own menu is up closes it through the outside click rather
+    // than posting a fresh request over it, and a held key's repeats are not
+    // presses of the user's.
+    let toggle = clicked && pointer && opener == Some(id);
+    let held = clicked && !pointer && context_menu::held_repeat(ui);
+    let door = (clicked && !toggle && !held).then_some(Door {
         anchor: Anchor::Button(rect),
         opener: id,
         device,
@@ -1664,6 +1671,76 @@ mod tests {
                 "a right-click at {point:?} did more than open the menu: {answers:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_pointer_click_on_the_open_more_posts_no_door_and_keeps_the_keyboard() {
+        let ctx = context();
+        let row = menu_row();
+        let key = (row.uri, row.number);
+        let mut more_id = None;
+        let mut output = ctx.run_ui(input_with(Vec::new()), |ui| {
+            more_id = Some(controls::slot_id(ui, Control::TrackMore, key));
+            let _ = show(ui, body_rect(), columns(), &row, &Tokens::DARK);
+        });
+        output.textures_delta.clear();
+        let id = more_id.expect("a frame ran");
+
+        // The menu is up, and this `⋯` is the one that opened it.
+        context_menu::note_open(&ctx, Some(id));
+        let answers = run(
+            &ctx,
+            &row,
+            &click_events(actions().center()),
+            Modifiers::NONE,
+        );
+        assert_eq!(
+            door(&answers),
+            None,
+            "the open `⋯` posted a fresh request instead of closing"
+        );
+
+        let mut focused = false;
+        let mut output = ctx.run_ui(input_with(Vec::new()), |ui| {
+            let _ = show(ui, body_rect(), columns(), &row, &Tokens::DARK);
+            focused = ui.memory(|memory| memory.has_focus(id));
+        });
+        output.textures_delta.clear();
+        assert!(focused, "the keyboard did not come back to the `⋯`");
+    }
+
+    #[test]
+    fn a_held_enter_does_not_reopen_the_menu_from_the_more() {
+        let ctx = context();
+        let row = menu_row();
+        // The click gives the `⋯` the keyboard, as a pointer does.
+        let _ = run(
+            &ctx,
+            &row,
+            &click_events(actions().center()),
+            Modifiers::NONE,
+        );
+
+        let press = Event::Key {
+            key: Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        };
+        let first = run(&ctx, &row, std::slice::from_ref(&press), Modifiers::NONE);
+        assert!(
+            door(&first).is_some(),
+            "a fresh Enter on the `⋯` opened nothing"
+        );
+
+        // Still held: egui marks a press with no release before it a repeat.
+        let held = run(&ctx, &row, &[press], Modifiers::NONE);
+        assert_eq!(door(&held), None, "a held Enter reopened the menu");
+        assert!(
+            held.iter().flatten().next().is_none(),
+            "a held Enter reported {held:?}"
+        );
     }
 
     #[test]
