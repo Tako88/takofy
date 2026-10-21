@@ -234,17 +234,62 @@ pub fn icon_button_keyed(
     live: bool,
 ) -> Slot {
     let slot = slot_keyed(ui, control, key, Role::Button, rect, label, tokens, live);
-    if let Some(fill) = wash(ui, tokens, slot.hover) {
-        ui.painter().rect_filled(rect, radius::SM, fill);
-    }
+    paint_icon_button(ui, tokens, rect, icon, size, &slot, live, false);
+    slot
+}
+
+/// An icon button a carried block hangs over: the selection's 16% fill and a lit
+/// glyph, because a drop claims it the way a pick claims a row.
+///
+/// It takes no `live`: the claim makes the button inert, so it never competes
+/// with a click or a focus ring.
+// a11y: always Waiting and announced disabled; the drop is the only live thing here.
+pub fn icon_button_claimed(
+    ui: &mut Ui,
+    tokens: &Tokens,
+    control: Control,
+    rect: Rect,
+    icon: Icon,
+    size: Size,
+    label: &str,
+) -> Slot {
+    let slot = slot(ui, control, Role::Button, rect, label, tokens, false);
+    paint_icon_button(ui, tokens, rect, icon, size, &slot, slot.live, true);
+    slot
+}
+
+/// An icon button's body: the wash, or the claim's fill, and the glyph over it.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a drawn button needs its slot, its glyph and its look"
+)]
+fn paint_icon_button(
+    ui: &mut Ui,
+    tokens: &Tokens,
+    rect: Rect,
+    icon: Icon,
+    size: Size,
+    slot: &Slot,
+    live: bool,
+    claimed: bool,
+) {
+    let color = if claimed {
+        ui.painter()
+            .rect_filled(rect, radius::SM, tokens.palette.row_selected);
+        tokens.palette.text
+    } else {
+        if let Some(fill) = wash(ui, tokens, slot.hover) {
+            ui.painter().rect_filled(rect, radius::SM, fill);
+        }
+        foreground(tokens, live, slot.hover)
+    };
     icon::paint(
         ui.painter(),
         icon,
         centred(ui, rect, size.side),
         size,
-        foreground(tokens, live, slot.hover),
+        color,
     );
-    slot
 }
 
 /// A bordered button: the history pair, and the play tile.
@@ -934,5 +979,126 @@ mod tests {
         assert_eq!(fraction_at(400.0, 100.0, 200.0), 1.0);
         assert_eq!(fraction_at(50.0, 100.0, 200.0), 0.0);
         assert_eq!(fraction_at(150.0, 100.0, 0.0), 0.0);
+    }
+
+    /// The colours a frame put into glyph shapes. The wash and the claim's fill
+    /// are `Shape::Rect`, so only the two kinds a glyph emits are read and the
+    /// backgrounds are excluded by kind.
+    fn glyph_colours(output: &egui::FullOutput) -> Vec<Color32> {
+        let mut colours = Vec::new();
+        for clipped in &output.shapes {
+            match &clipped.shape {
+                egui::Shape::Path(path) => {
+                    if path.fill != Color32::TRANSPARENT {
+                        colours.push(path.fill);
+                    }
+                    if let egui::epaint::ColorMode::Solid(color) = &path.stroke.color
+                        && path.stroke.width > 0.0
+                    {
+                        colours.push(*color);
+                    }
+                }
+                egui::Shape::Circle(circle) => colours.push(circle.fill),
+                _ => {}
+            }
+        }
+        colours
+    }
+
+    #[test]
+    fn a_claimed_button_fills_with_the_selection_and_is_inert() {
+        let tokens = Tokens::DARK;
+        let rect = Rect::from_min_size(Pos2::new(100.0, 100.0), Vec2::splat(28.0));
+
+        let ctx = Context::default();
+        let mut output = ctx.run_ui(input(Vec::new()), |ui| {
+            let slot = icon_button_claimed(
+                ui,
+                &tokens,
+                Control::Queue,
+                rect,
+                Icon::Queue,
+                Size::MD,
+                "Queue",
+            );
+            assert!(!slot.live, "a claimed button never acts");
+            assert!(
+                !slot.response.sense.senses_click(),
+                "a claimed button takes no click; only the drop is live"
+            );
+        });
+        output.textures_delta.clear();
+
+        let fills: Vec<Rect> = output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(shape) if shape.fill == tokens.palette.row_selected => {
+                    Some(shape.rect)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(fills, vec![rect], "the claim fills exactly the button");
+
+        let colours = glyph_colours(&output);
+        assert!(!colours.is_empty(), "the claimed button paints its glyph");
+        for color in colours {
+            assert_eq!(color, tokens.palette.text, "a claimed glyph is lit");
+            assert_ne!(color, tokens.palette.text_disabled);
+        }
+
+        // The same control with nothing to act on keeps the disabled tone: the
+        // claim, not the control, is what lights the glyph.
+        let plain = Context::default();
+        let mut output = plain.run_ui(input(Vec::new()), |ui| {
+            let _ = icon_button(
+                ui,
+                &tokens,
+                Control::Queue,
+                rect,
+                Icon::Queue,
+                Size::MD,
+                "Queue",
+                false,
+            );
+        });
+        output.textures_delta.clear();
+        let colours = glyph_colours(&output);
+        assert!(!colours.is_empty(), "the plain button paints its glyph");
+        for color in colours {
+            assert_eq!(color, tokens.palette.text_disabled);
+        }
+    }
+
+    /// A claimed button is inert by construction, so a control the availability
+    /// table lets act still takes no click and no focus ring while a carry claims
+    /// it.
+    #[test]
+    fn a_claimed_button_is_inert_even_when_its_control_is_ready() {
+        assert_eq!(
+            availability(Control::DrawerToggle),
+            Availability::Ready,
+            "the test needs a control the availability table lets act"
+        );
+        let ctx = Context::default();
+        let mut offered = None;
+        run(&ctx, input(Vec::new()), |ui| {
+            let slot = icon_button_claimed(
+                ui,
+                &Tokens::DARK,
+                Control::DrawerToggle,
+                cell(0.0),
+                Icon::Queue,
+                Size::MD,
+                "Toggle",
+            );
+            offered = Some((slot.live, slot.hover, slot.response.sense));
+        });
+        let (live, hover, sense) = offered.expect("the claimed button drew");
+        assert!(!live, "a claimed button is never live");
+        assert_eq!(hover, 0.0, "a claimed button has no hover to paint");
+        assert!(!sense.senses_click());
+        assert!(!sense.is_focusable());
     }
 }

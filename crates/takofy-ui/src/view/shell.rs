@@ -166,6 +166,8 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
                 screen.queue,
                 screen.position_ms,
                 regions.playbar,
+                // The carry claims the queue button once the drop target lands.
+                false,
                 ui.available_rect_before_wrap(),
                 now_playing_cover,
                 tokens,

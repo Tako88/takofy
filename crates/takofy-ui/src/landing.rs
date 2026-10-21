@@ -1,14 +1,15 @@
 //! Where a carried row would land, and where the marker that says so sits.
 //!
 //! A list reports a `Zone`: the box a pointer has to be inside, the rows box,
-//! their pitch and the first index it may take a drop at. Resolving the pointer
-//! against that zone is the whole of the drop arithmetic; nothing here draws or
-//! touches a queue.
+//! their pitch and the first index it may take a drop at. A control that takes a
+//! whole drop reports an `Area`, because an add has no position to choose.
+//! Resolving the pointer against them is the whole of the drop arithmetic;
+//! nothing here draws or touches a queue.
 
-use egui::{Pos2, Rect, pos2, vec2};
+use egui::{Pos2, Rect, Vec2, pos2, vec2};
 
 use crate::layout::table::boundary_at;
-use crate::theme::stroke;
+use crate::theme::{extent, stroke};
 
 /// A list's rows, as a drop target.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -32,6 +33,30 @@ pub struct Landing {
     pub boundary: usize,
     /// The marker, a rule the width of the list.
     pub marker: Rect,
+}
+
+/// A target that takes a drop whole, with no position: "add" is an area.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Area {
+    pub hit: Rect,
+}
+
+impl Area {
+    /// A `DROP_HIT` square on `button`'s centre, never smaller than the button.
+    pub fn around(button: Rect) -> Self {
+        Self {
+            hit: Rect::from_center_size(button.center(), Vec2::splat(extent::DROP_HIT))
+                .union(button),
+        }
+    }
+}
+
+/// What a drop does: land at a boundary, with its marker, or join the end with
+/// none.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Target {
+    At(Landing),
+    End,
 }
 
 /// Resolves a pointer against a zone, or `None` when it lands nowhere.
@@ -65,10 +90,21 @@ pub fn resolve(pointer: Option<Pos2>, zone: Option<&Zone>) -> Option<Landing> {
     Some(Landing { boundary, marker })
 }
 
+/// Resolves a pointer against the frame's targets. A zone the pointer is in
+/// wins.
+///
+/// The area's edge is inside it: egui's `Rect::contains` is inclusive.
+pub fn target(pointer: Option<Pos2>, zone: Option<&Zone>, area: Option<&Area>) -> Option<Target> {
+    resolve(pointer, zone).map(Target::At).or_else(|| {
+        let pointer = pointer?;
+        area.filter(|area| area.hit.contains(pointer))
+            .map(|_| Target::End)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::theme::extent;
 
     fn hit() -> Rect {
         Rect::from_min_size(pos2(0.0, 0.0), vec2(300.0, 200.0))
@@ -207,5 +243,103 @@ mod tests {
             assert_eq!(landing.boundary, 2);
             assert!(landing.marker.top().is_finite());
         }
+    }
+
+    /// A 28pt button centred on (100, 100), which is the size a small control
+    /// keeps while its hit area grows to 44.
+    fn button() -> Rect {
+        Rect::from_center_size(pos2(100.0, 100.0), Vec2::splat(extent::BUTTON))
+    }
+
+    #[test]
+    fn an_area_is_a_44pt_square_on_its_buttons_centre() {
+        let area = Area::around(button());
+        assert_eq!(area.hit.size(), Vec2::splat(extent::DROP_HIT));
+        assert_eq!(area.hit.center(), button().center());
+    }
+
+    #[test]
+    fn a_pointer_inside_an_area_joins_the_end() {
+        let area = Area::around(button());
+        let target = target(Some(area.hit.center()), None, Some(&area));
+        assert_eq!(target, Some(Target::End));
+    }
+
+    #[test]
+    fn a_pointer_in_the_area_but_outside_the_glyph_still_joins_the_end() {
+        let area = Area::around(button());
+        let outside_the_glyph = pos2(area.hit.center().x + 19.0, area.hit.center().y);
+        assert!(!button().contains(outside_the_glyph));
+        assert_eq!(
+            target(Some(outside_the_glyph), None, Some(&area)),
+            Some(Target::End)
+        );
+    }
+
+    #[test]
+    fn a_pointer_outside_the_area_lands_nothing() {
+        let area = Area::around(button());
+        assert_eq!(target(Some(pos2(200.0, 200.0)), None, Some(&area)), None);
+    }
+
+    #[test]
+    fn the_area_edge_is_inside_and_a_hair_past_it_is_not() {
+        let area = Area::around(button());
+        assert_eq!((area.hit.left(), area.hit.right()), (78.0, 122.0));
+        assert_eq!((area.hit.top(), area.hit.bottom()), (78.0, 122.0));
+
+        for edge in [
+            pos2(122.0, 100.0),
+            pos2(78.0, 78.0),
+            pos2(78.0, 122.0),
+            pos2(122.0, 122.0),
+        ] {
+            assert_eq!(
+                target(Some(edge), None, Some(&area)),
+                Some(Target::End),
+                "{edge:?}"
+            );
+        }
+        for past in [pos2(122.01, 100.0), pos2(100.0, 77.99), pos2(77.99, 122.01)] {
+            assert_eq!(target(Some(past), None, Some(&area)), None, "{past:?}");
+        }
+    }
+
+    #[test]
+    fn no_pointer_and_no_targets_land_nothing() {
+        let area = Area::around(button());
+        assert_eq!(target(None, None, Some(&area)), None);
+        assert_eq!(target(None, None, None), None);
+    }
+
+    #[test]
+    fn a_zone_wins_over_an_area_it_overlaps() {
+        let hit = hit();
+        let zone = zone(hit, hit, 0, 4);
+        let area = Area::around(button());
+        let pointer = pointer(100.0, 100.0);
+        assert!(hit.contains(pos2(100.0, 100.0)));
+        assert_eq!(
+            target(pointer, Some(&zone), Some(&area)),
+            resolve(pointer, Some(&zone)).map(Target::At)
+        );
+        assert_eq!(
+            target(pointer, Some(&zone), None),
+            target(pointer, Some(&zone), Some(&area)),
+            "the area must not change a zone's answer"
+        );
+    }
+
+    #[test]
+    fn a_zone_alone_resolves_as_before() {
+        let hit = hit();
+        let zone = zone(hit, hit, 0, 4);
+        let pointer = pointer(150.0, 2.0 * extent::ROW_H + 10.0);
+        let landing = resolve(pointer, Some(&zone)).unwrap();
+        assert_eq!(landing.boundary, 2);
+        assert_eq!(
+            target(pointer, Some(&zone), None),
+            Some(Target::At(landing))
+        );
     }
 }
