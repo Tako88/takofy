@@ -122,6 +122,25 @@ pub struct PlaylistEntry {
     /// an opaque id, so the band's line may read `Made by 31l6…`. It is drawn as
     /// given, never hidden or heuristically filtered.
     pub owner: Option<String>,
+    /// The revision the entry was read at and whether its items may be edited.
+    ///
+    /// `None` when the read named no revision: an entry with no access names no
+    /// version of its own list, so nothing may be written through it.
+    pub access: Option<PlaylistAccess>,
+}
+
+impl PlaylistEntry {
+    /// The revision and length an add would be based on, when one may be made.
+    ///
+    /// It needs an editable list read at a known revision and a known count: the
+    /// count is the index an append names, so an unknown one appends nowhere.
+    pub fn add_basis(&self) -> Option<(&Revision, usize)> {
+        let access = self.access.as_ref()?;
+        if !access.editable {
+            return None;
+        }
+        Some((&access.revision, self.tracks?))
+    }
 }
 
 /// When a track joined the playlist it is drawn in, in epoch milliseconds.
@@ -209,6 +228,16 @@ pub struct TrackEntry {
     pub named: bool,
     /// The track's own album cover, when the metadata carried one.
     pub cover: Option<CoverUrl>,
+}
+
+impl TrackEntry {
+    /// Whether this entry is a track a playlist can hold.
+    ///
+    /// An episode and a local file are rows too, but neither may be added to a
+    /// playlist, so the URI kind decides rather than the row's shape.
+    pub fn is_track(&self) -> bool {
+        self.uri.starts_with("spotify:track:")
+    }
 }
 
 /// An episode as a page or a list row draws it.
@@ -414,9 +443,163 @@ pub struct TrackLyrics {
     pub synced: bool,
 }
 
+/// A playlist's revision, as the wire carries it.
+///
+/// Opaque bytes that identify one version of a playlist. It is never printed:
+/// its `Debug` says only that it is one, so a revision cannot reach a log line.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Revision(Vec<u8>);
+
+impl Revision {
+    /// Reads a revision from the wire, rejecting an empty one.
+    ///
+    /// An empty revision is no revision at all, and a write based on it would
+    /// name no version of the list.
+    pub fn from_wire(bytes: &[u8]) -> Option<Self> {
+        (!bytes.is_empty()).then(|| Self(bytes.to_vec()))
+    }
+
+    /// The revision's bytes, as a write sends them back.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for Revision {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Revision(..)")
+    }
+}
+
+/// One `MOV` operation: `length` rows lifted out of `from` and inserted before
+/// whatever the list held at `to` before the move, so `to` is not a row index
+/// after the lift.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Move {
+    pub from: usize,
+    pub length: usize,
+    pub to: usize,
+}
+
+/// What a playlist page may change, and the version it was read at.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlaylistAccess {
+    pub revision: Revision,
+    pub editable: bool,
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{AddedAt, CoverImage, CoverUrl, Episode, PublishedAt, TrackLyrics};
+    use super::{
+        AddedAt, CoverImage, CoverUrl, Episode, Move, PlaylistAccess, PlaylistEntry, PublishedAt,
+        Revision, TrackEntry, TrackLyrics,
+    };
+
+    fn revision(byte: u8) -> Revision {
+        Revision::from_wire(&[byte]).expect("a revision")
+    }
+
+    fn playlist(tracks: Option<usize>, access: Option<PlaylistAccess>) -> PlaylistEntry {
+        PlaylistEntry {
+            uri: "spotify:playlist:a".to_owned(),
+            name: "A".to_owned(),
+            named: true,
+            cover: None,
+            description: None,
+            tracks,
+            owner: None,
+            access,
+        }
+    }
+
+    fn access(editable: bool) -> Option<PlaylistAccess> {
+        Some(PlaylistAccess {
+            revision: revision(1),
+            editable,
+        })
+    }
+
+    fn track(uri: &str) -> TrackEntry {
+        TrackEntry {
+            uri: uri.to_owned(),
+            title: "A Title".to_owned(),
+            artists: String::new(),
+            album: None,
+            album_uri: None,
+            artist_uris: Vec::new(),
+            added_at: None,
+            duration_ms: None,
+            named: true,
+            cover: None,
+        }
+    }
+
+    #[test]
+    fn add_basis_needs_an_editable_revision_and_a_count() {
+        assert_eq!(playlist(Some(4), None).add_basis(), None, "no access");
+        assert_eq!(
+            playlist(Some(4), access(false)).add_basis(),
+            None,
+            "not editable"
+        );
+        assert_eq!(playlist(None, access(true)).add_basis(), None, "no count");
+        assert_eq!(playlist(None, None).add_basis(), None, "neither");
+
+        assert_eq!(
+            playlist(Some(4), access(true)).add_basis(),
+            Some((&revision(1), 4))
+        );
+
+        // A count of zero is a real count: an append to an empty list names it.
+        assert_eq!(
+            playlist(Some(0), access(true)).add_basis(),
+            Some((&revision(1), 0))
+        );
+    }
+
+    #[test]
+    fn an_episode_or_local_uri_is_not_a_track() {
+        for uri in ["spotify:episode:1", "spotify:local:a:b:c:1", "", "list:p0"] {
+            assert!(!track(uri).is_track(), "must refuse {uri:?}");
+        }
+        assert!(track("spotify:track:4uLU6hMCjMI75M1A2tKUQC").is_track());
+    }
+
+    #[test]
+    fn an_empty_revision_is_none() {
+        assert_eq!(Revision::from_wire(&[]), None);
+        assert!(
+            Revision::from_wire(&[0]).is_some(),
+            "a zero byte is still a byte"
+        );
+    }
+
+    #[test]
+    fn a_revision_keeps_its_bytes() {
+        let bytes = [0x00, 0x00, 0x00, 0x06, 0xc1, 0x52];
+        let revision = Revision::from_wire(&bytes).expect("a revision");
+        assert_eq!(revision.as_bytes(), &bytes);
+    }
+
+    #[test]
+    fn a_revision_never_prints_its_bytes() {
+        let secret = format!(
+            "{:?}",
+            Revision::from_wire(&[0xde, 0xad]).expect("a revision")
+        );
+        assert_eq!(secret, "Revision(..)");
+
+        let access = PlaylistAccess {
+            revision: Revision::from_wire(&[0xde, 0xad]).expect("a revision"),
+            editable: true,
+        };
+        let printed = format!("{access:?}");
+        assert!(printed.contains("Revision(..)"), "{printed}");
+        assert!(
+            !printed.contains("222"),
+            "the decimal bytes leaked: {printed}"
+        );
+    }
 
     fn episode() -> Episode {
         Episode {
@@ -600,5 +783,17 @@ mod tests {
     fn cover_image_rejects_a_mismatched_buffer() {
         assert_eq!(CoverImage::new(2, 2, vec![0; 15]), None);
         assert_eq!(CoverImage::new(2, 2, vec![0; 17]), None);
+    }
+
+    #[test]
+    fn a_move_is_a_value_the_whole_write_can_share() {
+        let mv = Move {
+            from: 1,
+            length: 3,
+            to: 6,
+        };
+        let copy = mv;
+        assert_eq!(copy, mv);
+        assert_ne!(mv, Move { length: 1, ..mv });
     }
 }

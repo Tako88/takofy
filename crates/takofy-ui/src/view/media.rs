@@ -233,7 +233,7 @@ pub fn row(ui: &mut Ui, rect: Rect, media: &Media<'_>, tokens: &Tokens) -> bool 
     }
     if response.hovered() {
         ui.painter()
-            .rect_filled(rect, radius::SM, tokens.palette.surface_hover);
+            .rect_filled(rect, radius::SM, tokens.palette.row_hover);
     }
     if response.has_focus() {
         controls::focus_ring(ui, rect, tokens);
@@ -356,6 +356,7 @@ pub fn art_rect(rect: Rect) -> Rect {
 mod tests {
     use super::*;
     use crate::theme::{fonts, style};
+    use egui::{Color32, Event};
 
     fn context() -> egui::Context {
         let ctx = egui::Context::default();
@@ -490,6 +491,55 @@ mod tests {
         assert!(
             !texts.iter().any(|text| text.contains("0 ")),
             "an artist's size cell draws nothing: {texts:?}"
+        );
+    }
+
+    /// The fills one list row paints inside its own rect, for a pointer at `at`.
+    fn row_fills(at: Option<Pos2>) -> Vec<Color32> {
+        let ctx = context();
+        let tokens = Tokens::DARK;
+        let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, extent::ROW_H));
+        let mut fills = Vec::new();
+        for _ in 0..2 {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 200.0))),
+                    events: at.map(Event::PointerMoved).into_iter().collect(),
+                    ..Default::default()
+                },
+                |ui| {
+                    let _ = row(
+                        ui,
+                        rect,
+                        &media("spotify:album:a", false, "11 tracks"),
+                        &tokens,
+                    );
+                },
+            );
+            output.textures_delta.clear();
+            fills = output
+                .shapes
+                .iter()
+                .filter_map(|clipped| match &clipped.shape {
+                    egui::epaint::Shape::Rect(shape) if shape.rect == rect => Some(shape.fill),
+                    _ => None,
+                })
+                .collect();
+        }
+        fills
+    }
+
+    #[test]
+    fn a_hovered_media_row_washes_with_row_hover() {
+        let tokens = Tokens::DARK;
+        assert_eq!(
+            row_fills(Some(Pos2::new(400.0, extent::ROW_H / 2.0))),
+            vec![tokens.palette.row_hover],
+            "a hovered list row washed with something other than the row hover"
+        );
+        assert!(
+            row_fills(None).is_empty(),
+            "a list row with the pointer away washed"
         );
     }
 

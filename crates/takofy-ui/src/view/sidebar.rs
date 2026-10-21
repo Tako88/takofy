@@ -10,8 +10,11 @@ use takofy_model::{CoverUrl, FollowedArtist, FollowedShow, PlaylistEntry, SavedA
 
 use crate::availability::Control;
 use crate::cover::{Art, Cover};
-use crate::format::{library_count, library_kind, sidebar_kind_label};
+use crate::format::{
+    library_count, library_kind, playlist_detail, sidebar_kind_label, sidebar_notice,
+};
 use crate::icon::Icon;
+use crate::landing::Zone;
 use crate::layout::chips;
 use crate::library::{Library, Load};
 use crate::message::{Command, Failure};
@@ -24,7 +27,10 @@ use crate::theme::{
 };
 
 use super::art;
+use super::carry::{self, Carry, ColumnOffer, Ghost, Source};
 use super::controls;
+use super::queue_row;
+use super::rows::{self, Look};
 use super::shell::rule;
 use super::text as recipe;
 
@@ -35,12 +41,37 @@ pub(super) const ROW_H: f32 = extent::LIBRARY_ART + 2.0 * space::S2;
 const CHIP_COLUMNS: usize = 2;
 
 /// Draws the sidebar, returning a command if one of its controls asked for one.
+///
+/// Its rows do not lift: a write started here would leave a pending write that
+/// no command ever answers, because the drawer discards this form's command.
 pub fn show(
     ui: &mut Ui,
     library: &mut Library,
     art: &mut Art,
     now: Instant,
     tokens: &Tokens,
+) -> Option<Command> {
+    draw(ui, library, art, now, tokens, false)
+}
+
+/// Draws the sidebar as the column, whose rows lift and offer themselves.
+pub fn column(
+    ui: &mut Ui,
+    library: &mut Library,
+    art: &mut Art,
+    now: Instant,
+    tokens: &Tokens,
+) -> Option<Command> {
+    draw(ui, library, art, now, tokens, true)
+}
+
+fn draw(
+    ui: &mut Ui,
+    library: &mut Library,
+    art: &mut Art,
+    now: Instant,
+    tokens: &Tokens,
+    drag: bool,
 ) -> Option<Command> {
     let band = ui.available_rect_before_wrap();
     let y = filters(ui, library, tokens, band);
@@ -50,7 +81,7 @@ pub fn show(
         Pos2::new(band.left() + space::S2, y),
         Vec2::new(band.width() - 2.0 * space::S2, band.bottom() - y),
     );
-    rows(ui, list, library, art, now, tokens)
+    rows(ui, list, library, art, now, tokens, drag)
 }
 
 /// The four filters, in a fixed 2x2 block at the top of the sidebar.
@@ -263,6 +294,8 @@ pub fn albums_view(library: &Library) -> ListView<'_, SavedAlbum> {
 struct Ids {
     scope: &'static str,
     kind: &'static str,
+    /// Whether this kind is a list a drag can lift a row out of.
+    lifts: bool,
 }
 
 impl Ids {
@@ -301,6 +334,15 @@ struct Draw<'a> {
     art: &'a mut Art,
     now: Instant,
     tokens: &'a Tokens,
+    /// Whether a row may be dragged out of the column.
+    drag: bool,
+    /// Whether the column may lift a playlist row now.
+    lift: bool,
+    /// Whether the column offers its rows as a target.
+    ///
+    /// An add only needs the row's own playlist, so it is offered whenever the
+    /// list is ready; the reorder it might mean instead is refused elsewhere.
+    offer: bool,
 }
 
 /// What a press in a list asks the window to do.
@@ -343,6 +385,14 @@ fn list_rows<T: ListItem + Clone>(
         ListView::List(items) => {
             let mut pressed: Option<String> = None;
             let entries = items.to_vec();
+            let mut lifted_carry: Option<Carry> = None;
+            // The first drawn row and the index it holds, so the offer describes
+            // the rows wherever the scroll put them.
+            let mut origin: Option<(usize, Rect)> = None;
+            let lifted = match carry::carried(ui.ctx()) {
+                Some(carried) if carried.source == Source::Playlist => carried.rows.clone(),
+                _ => Vec::new(),
+            };
             ui.scope_builder(
                 UiBuilder::new()
                     .id_salt(ids.scope)
@@ -353,12 +403,16 @@ fn list_rows<T: ListItem + Clone>(
                     egui::ScrollArea::vertical()
                         .auto_shrink([false, false])
                         .show_rows(ui, ROW_H, entries.len(), |ui, range| {
+                            let start = range.start;
                             for index in range {
                                 let Some(item) = entries.get(index) else {
                                     continue;
                                 };
                                 let (_, place) =
                                     ui.allocate_space(Vec2::new(ui.available_width(), ROW_H));
+                                if origin.is_none() {
+                                    origin = Some((start, place));
+                                }
                                 let kind = item.kind();
                                 let row = LibraryRow {
                                     id: ids.id(ui, item.uri()),
@@ -366,14 +420,62 @@ fn list_rows<T: ListItem + Clone>(
                                     kind: &kind,
                                     cover: draw.art.look(item.cover(), draw.now),
                                     selected: current == Some(item.uri()),
+                                    lifted: lifted.contains(&index),
                                 };
-                                if one(ui, place, row, draw.tokens) {
+                                let drawn = one(ui, place, row, draw.tokens, draw.drag);
+                                if drawn.clicked {
                                     pressed = Some(item.uri().to_owned());
+                                }
+                                // Only the playlists are a column a drag can lift;
+                                // every other kind draws exactly as it always did.
+                                if drawn.lift && ids.lifts && draw.lift {
+                                    let ghost = queue_row::Lifted::new(
+                                        item.name().to_owned(),
+                                        kind.clone(),
+                                        None,
+                                        draw.art.look(item.cover(), draw.now),
+                                    );
+                                    lifted_carry = Some(Carry {
+                                        source: Source::Playlist,
+                                        rows: vec![index],
+                                        entries: Vec::new(),
+                                        playlist: Some(item.uri().to_owned()),
+                                        size: place.size(),
+                                        ghost: Ghost::Queue(ghost),
+                                    });
                                 }
                             }
                         });
                 },
             );
+            if let Some(carry) = lifted_carry {
+                carry::lift(ui.ctx(), carry);
+            }
+            if ids.lifts
+                && draw.offer
+                && let Some((first, place)) = origin
+            {
+                let pitch = ROW_H + space::PX;
+                // The rows box before the scroll moved it, so the offer describes
+                // the same rows the painter drew.
+                let list = Rect::from_min_size(
+                    Pos2::new(place.left(), place.top() - first as f32 * pitch),
+                    Vec2::new(place.width(), entries.len() as f32 * pitch),
+                );
+                carry::offer_column(
+                    ui.ctx(),
+                    ColumnOffer {
+                        zone: Zone {
+                            hit: rect,
+                            list,
+                            row_h: pitch,
+                            first: 0,
+                            count: entries.len(),
+                        },
+                        drawn: ROW_H,
+                    },
+                );
+            }
             pressed.map(Action::Open)
         }
     }
@@ -399,7 +501,7 @@ impl ListItem for PlaylistEntry {
     }
 
     fn kind(&self) -> String {
-        library_kind("Playlist", self.owner.as_deref())
+        library_kind("Playlist", playlist_detail(self).as_deref())
     }
 
     fn cover(&self) -> Option<&CoverUrl> {
@@ -495,12 +597,42 @@ fn rows(
     art: &mut Art,
     now: Instant,
     tokens: &Tokens,
+    drag: bool,
 ) -> Option<Command> {
     if rect.height() < ROW_H {
         return None;
     }
 
-    let mut draw = Draw { art, now, tokens };
+    // The failure line sits at the foot of the playlist list, and the rows make
+    // room for it rather than drawing over it.
+    let notice = match library.sidebar_kind.chosen() {
+        SidebarKind::Playlists => library.sidebar_notice.map(sidebar_notice),
+        SidebarKind::Podcasts | SidebarKind::Artists | SidebarKind::Albums => None,
+    };
+    let line = egui::FontId::new(text::XXS, fonts::mono(MonoWeight::Regular));
+    let foot = notice.map(|_| ui.fonts_mut(|fonts| fonts.row_height(&line)));
+    let (rect, foot) = match foot {
+        Some(height) => (
+            Rect::from_min_max(
+                rect.min,
+                Pos2::new(rect.right(), (rect.bottom() - height).max(rect.top())),
+            ),
+            Some(Rect::from_min_max(
+                Pos2::new(rect.left(), (rect.bottom() - height).max(rect.top())),
+                rect.max,
+            )),
+        ),
+        None => (rect, None),
+    };
+
+    let mut draw = Draw {
+        art,
+        now,
+        tokens,
+        drag,
+        lift: drag && library.rootlist_movable(),
+        offer: drag,
+    };
     let (action, open) = match library.sidebar_kind.chosen() {
         SidebarKind::Playlists => (
             list_rows(
@@ -511,6 +643,7 @@ fn rows(
                 Ids {
                     scope: "library-list",
                     kind: "library-row",
+                    lifts: true,
                 },
                 Words {
                     loading: "Loading your playlists…",
@@ -529,6 +662,7 @@ fn rows(
                 Ids {
                     scope: "library-shows",
                     kind: "library-show",
+                    lifts: false,
                 },
                 Words {
                     loading: "Loading your shows…",
@@ -547,6 +681,7 @@ fn rows(
                 Ids {
                     scope: "library-artists",
                     kind: "library-artist",
+                    lifts: false,
                 },
                 Words {
                     loading: "Loading your artists…",
@@ -565,6 +700,7 @@ fn rows(
                 Ids {
                     scope: "library-albums",
                     kind: "library-album",
+                    lifts: false,
                 },
                 Words {
                     loading: "Loading your albums…",
@@ -575,6 +711,16 @@ fn rows(
             Open::Page(Page::Album),
         ),
     };
+
+    if let (Some(foot), Some(notice)) = (foot, notice) {
+        ui.painter().text(
+            Pos2::new(foot.left(), foot.center().y),
+            egui::Align2::LEFT_CENTER,
+            notice,
+            line,
+            tokens.palette.text_subtle,
+        );
+    }
 
     match action {
         Some(Action::Open(uri)) => open.go(library, &uri),
@@ -592,10 +738,17 @@ fn row_chrome(
     rect: Rect,
     id: egui::Id,
     label: &str,
-    selected: bool,
+    look: Look,
     tokens: &Tokens,
+    drag: bool,
 ) -> egui::Response {
-    let response = ui.interact(rect, id, Sense::click());
+    let sense = if drag {
+        Sense::click_and_drag()
+    } else {
+        Sense::click()
+    };
+    let selected = look.selected;
+    let response = ui.interact(rect, id, sense);
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, label));
     let _ = ui
         .ctx()
@@ -615,9 +768,10 @@ fn row_chrome(
             radius::SM,
             tokens.palette.text,
         );
-    } else if response.hovered() {
+    } else if response.hovered() && !look.carrying {
+        // The only fill in the column during a drag is the target's.
         ui.painter()
-            .rect_filled(rect, radius::SM, tokens.palette.surface_hover);
+            .rect_filled(rect, radius::SM, tokens.palette.row_hover);
     }
 
     if response.has_focus() {
@@ -634,20 +788,36 @@ struct LibraryRow<'a> {
     kind: &'a str,
     cover: Cover,
     selected: bool,
+    /// Whether the carried block names this row.
+    lifted: bool,
+}
+
+/// What drawing one row reported.
+struct Drawn {
+    clicked: bool,
+    /// Whether this frame began a drag out of the row.
+    lift: bool,
 }
 
 /// One library row: a placeholder tile, the name and the kind.
 ///
 /// The tile stands in until covers are fetched.
-fn one(ui: &mut Ui, rect: Rect, row: LibraryRow<'_>, tokens: &Tokens) -> bool {
+fn one(ui: &mut Ui, rect: Rect, row: LibraryRow<'_>, tokens: &Tokens, drag: bool) -> Drawn {
     let LibraryRow {
         id,
         name,
         kind,
         cover,
         selected,
+        lifted,
     } = row;
-    let response = row_chrome(ui, rect, id, name, selected, tokens);
+    let look = Look {
+        selected,
+        lifted,
+        carrying: carry::carrying(ui.ctx()),
+    };
+    let before = rows::dim(ui, look);
+    let response = row_chrome(ui, rect, id, name, look, tokens, drag);
 
     let tile = Rect::from_min_size(
         Pos2::new(
@@ -694,8 +864,12 @@ fn one(ui: &mut Ui, rect: Rect, row: LibraryRow<'_>, tokens: &Tokens) -> bool {
         kind_line,
         tokens.palette.text_subtle,
     );
+    ui.set_opacity(before);
 
-    response.clicked()
+    Drawn {
+        clicked: response.clicked(),
+        lift: response.drag_started_by(egui::PointerButton::Primary),
+    }
 }
 
 /// A line of text where a list would be, for the empty and failed states.
@@ -715,7 +889,7 @@ fn state(ui: &mut Ui, rect: Rect, text: RichText) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use egui::{Event, Pos2, Vec2};
+    use egui::{Color32, Event, Pos2, Vec2};
     use takofy_model::{FollowedShow, PlaylistEntry};
 
     use crate::message::{Failure, Update};
@@ -740,6 +914,7 @@ mod tests {
             description: None,
             owner: None,
             tracks: None,
+            access: None,
         }]));
         let mut art = Art::default();
         let input = egui::RawInput {
@@ -928,10 +1103,12 @@ mod tests {
     const PLAYLIST_IDS: Ids = Ids {
         scope: "library-list",
         kind: "library-row",
+        lifts: true,
     };
     const SHOW_IDS: Ids = Ids {
         scope: "library-shows",
         kind: "library-show",
+        lifts: false,
     };
 
     fn followed_artist(uri: &str, name: &str) -> FollowedArtist {
@@ -1001,6 +1178,7 @@ mod tests {
             description: None,
             owner: None,
             tracks: None,
+            access: None,
         }]);
         library.followed = Load::Ready(vec![followed_show("spotify:show:a", "A")]);
         library.followed_artists = Load::Ready(vec![
@@ -1107,6 +1285,7 @@ mod tests {
             description: None,
             owner: None,
             tracks: None,
+            access: None,
         }
     }
 
@@ -1170,8 +1349,9 @@ mod tests {
                     kind: "Playlist",
                     cover: Cover::Missing,
                     selected: false,
+                    lifted: false,
                 };
-                one(ui, rect, row, &tokens);
+                one(ui, rect, row, &tokens, false);
             },
         );
         output.textures_delta.clear();
@@ -1204,8 +1384,9 @@ mod tests {
                     kind: "Playlist",
                     cover: Cover::Missing,
                     selected: true,
+                    lifted: false,
                 };
-                one(ui, rect, row, &tokens);
+                one(ui, rect, row, &tokens, false);
                 announced = ui
                     .ctx()
                     .accesskit_node_builder(id, |node| node.is_selected())
@@ -1215,6 +1396,389 @@ mod tests {
         output.textures_delta.clear();
 
         assert_eq!(announced, Some(true), "a selected row says so");
+    }
+
+    /// One frame of the column form: its rows may lift and offer themselves.
+    fn run_column(
+        ctx: &egui::Context,
+        events: Vec<Event>,
+        library: &mut Library,
+        art: &mut Art,
+    ) -> (egui::FullOutput, Option<Command>) {
+        run_with(ctx, events, library, art, true)
+    }
+
+    /// One frame of either form, over the characterised band.
+    fn run_with(
+        ctx: &egui::Context,
+        events: Vec<Event>,
+        library: &mut Library,
+        art: &mut Art,
+        drag: bool,
+    ) -> (egui::FullOutput, Option<Command>) {
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(254.0, 800.0))),
+            events,
+            ..Default::default()
+        };
+        let tokens = Tokens::DARK;
+        let mut command = None;
+        let mut output = ctx.run_ui(input, |ui| {
+            let next = if drag {
+                column(ui, library, art, Instant::now(), &tokens)
+            } else {
+                show(ui, library, art, Instant::now(), &tokens)
+            };
+            if let Some(next) = next {
+                command = Some(next);
+            }
+        });
+        output.textures_delta.clear();
+        (output, command)
+    }
+
+    /// Drags from a row's line towards the middle of the list, stopping with the
+    /// button still down, and returns the last frame.
+    fn hold_from(
+        ctx: &egui::Context,
+        from: Pos2,
+        library: &mut Library,
+        art: &mut Art,
+        drag: bool,
+    ) -> egui::FullOutput {
+        let mut events = crate::view::test_support::drag_events(from, from + Vec2::new(0.0, 60.0));
+        events.pop();
+        let _ = run_with(ctx, Vec::new(), library, art, drag);
+        let mut last = None;
+        for event in events {
+            let (output, _) = run_with(ctx, vec![event], library, art, drag);
+            last = Some(output);
+        }
+        last.expect("a drag moves the pointer at least once")
+    }
+
+    /// A library whose sidebar holds the named playlists, movable at `byte`.
+    fn movable_playlists(
+        names: &[&str],
+        byte: u8,
+        editable: bool,
+        tracks: Option<usize>,
+    ) -> Library {
+        let mut library = Library::default();
+        let entries = names
+            .iter()
+            .map(|name| {
+                let mut entry = playlist(&format!("spotify:playlist:{name}"), name);
+                entry.tracks = tracks;
+                entry.access = Some(takofy_model::PlaylistAccess {
+                    revision: takofy_model::Revision::from_wire(&[byte]).expect("a revision"),
+                    editable,
+                });
+                entry
+            })
+            .collect();
+        library.apply(&Update::Playlists(entries));
+        library.apply(&Update::RootlistAccess(takofy_model::PlaylistAccess {
+            revision: takofy_model::Revision::from_wire(&[byte]).expect("a revision"),
+            editable,
+        }));
+        library
+    }
+
+    fn name_line(output: &egui::FullOutput, label: &str) -> Pos2 {
+        let (pos, size) = painted_text(output, label);
+        Pos2::new(pos.x + 10.0, pos.y + size.y / 2.0)
+    }
+
+    /// The top of the row painted as `label`, from the two lines it draws.
+    ///
+    /// A row centres its name and kind in itself, so the name's own top plus
+    /// half the pair, less half a row, is the box's top.
+    fn row_top(output: &egui::FullOutput, label: &str, kind: &str) -> f32 {
+        let (name, name_size) = painted_text(output, label);
+        let (_, kind_size) = painted_text(output, kind);
+        name.y + (name_size.y + kind_size.y) / 2.0 - ROW_H / 2.0
+    }
+
+    #[test]
+    fn a_drag_on_a_playlist_row_lifts_it_when_the_rootlist_is_movable() {
+        let ctx = context();
+        let mut library = movable_playlists(&["A", "B"], 7, true, None);
+        let mut art = Art::default();
+        let (output, _) = run_column(&ctx, Vec::new(), &mut library, &mut art);
+        let from = name_line(&output, "B");
+
+        let _ = hold_from(&ctx, from, &mut library, &mut art, true);
+
+        let carry = carry::carried(&ctx).expect("a payload");
+        assert_eq!(carry.source, Source::Playlist);
+        assert_eq!(carry.rows, vec![1]);
+        assert_eq!(carry.playlist.as_deref(), Some("spotify:playlist:B"));
+        assert!(carry.entries.is_empty(), "a playlist carries no entries");
+    }
+
+    #[test]
+    fn a_drag_does_not_lift_when_the_rootlist_is_not_movable() {
+        // No access, not editable, and a write in flight all refuse the lift.
+        let mut cases: Vec<(&str, Library)> = Vec::new();
+
+        let mut no_access = Library::default();
+        no_access.apply(&Update::Playlists(vec![
+            playlist("spotify:playlist:A", "A"),
+            playlist("spotify:playlist:B", "B"),
+        ]));
+        cases.push(("no access", no_access));
+        cases.push((
+            "not editable",
+            movable_playlists(&["A", "B"], 7, false, None),
+        ));
+
+        let mut pending = movable_playlists(&["A", "B"], 7, true, None);
+        assert!(pending.move_playlist(0, 2, "spotify:playlist:A").is_some());
+        cases.push(("write in flight", pending));
+
+        for (why, mut library) in cases {
+            let ctx = context();
+            let mut art = Art::default();
+            let (output, _) = run_column(&ctx, Vec::new(), &mut library, &mut art);
+            let from = name_line(&output, "B");
+
+            let _ = hold_from(&ctx, from, &mut library, &mut art, true);
+
+            assert!(carry::carried(&ctx).is_none(), "{why} must not lift");
+        }
+    }
+
+    #[test]
+    fn the_non_drag_form_never_lifts() {
+        let ctx = context();
+        let mut library = movable_playlists(&["A", "B"], 7, true, None);
+        let mut art = Art::default();
+        let (output, _) = run(&ctx, Vec::new(), &mut library, &mut art);
+        let from = name_line(&output, "B");
+
+        let mut events = crate::view::test_support::drag_events(from, from + Vec2::new(0.0, 60.0));
+        events.pop();
+        for event in events {
+            let _ = run(&ctx, vec![event], &mut library, &mut art);
+        }
+
+        assert!(
+            carry::carried(&ctx).is_none(),
+            "the drawer's form discards its command, so it never starts a write"
+        );
+        assert_eq!(carry::take_column_offer(&ctx), None);
+    }
+
+    #[test]
+    fn other_kinds_never_lift_or_offer() {
+        for kind in [
+            SidebarKind::Podcasts,
+            SidebarKind::Artists,
+            SidebarKind::Albums,
+        ] {
+            let ctx = context();
+            let mut library = movable_playlists(&["A"], 7, true, None);
+            library.apply(&Update::FollowedShows(vec![followed_show(
+                "spotify:show:s",
+                "A show",
+            )]));
+            library.apply(&Update::FollowedArtists(vec![followed_artist(
+                "spotify:artist:a",
+                "An artist",
+            )]));
+            library.apply(&Update::SavedAlbums(vec![saved_album(
+                "spotify:album:a",
+                "An album",
+                "Vela",
+            )]));
+            assert!(library.sidebar_kind.choose(kind));
+            let mut art = Art::default();
+            let (output, _) = run_column(&ctx, Vec::new(), &mut library, &mut art);
+            let label = match kind {
+                SidebarKind::Podcasts => "A show",
+                SidebarKind::Artists => "An artist",
+                SidebarKind::Albums => "An album",
+                SidebarKind::Playlists => unreachable!(),
+            };
+            let from = name_line(&output, label);
+
+            let _ = hold_from(&ctx, from, &mut library, &mut art, true);
+
+            assert!(carry::carried(&ctx).is_none(), "{kind:?} must not lift");
+            assert_eq!(
+                carry::take_column_offer(&ctx),
+                None,
+                "{kind:?} is no drop target"
+            );
+        }
+    }
+
+    #[test]
+    fn a_click_still_opens_the_playlist() {
+        let ctx = context();
+        let mut library = movable_playlists(&["A", "B"], 7, true, None);
+        let mut art = Art::default();
+        let (output, _) = run_column(&ctx, Vec::new(), &mut library, &mut art);
+        let at = name_line(&output, "A");
+
+        let mut command = None;
+        for event in click_events(at) {
+            let (_, next) = run_column(&ctx, vec![event], &mut library, &mut art);
+            if next.is_some() {
+                command = next;
+            }
+        }
+
+        assert_eq!(
+            command,
+            Some(Command::LoadTracks {
+                playlist: "spotify:playlist:A".to_owned()
+            })
+        );
+    }
+
+    #[test]
+    fn the_playlists_list_offers_its_rows_at_the_pitch_it_drew() {
+        let ctx = context();
+        let mut library = movable_playlists(&["A", "B", "C"], 7, true, None);
+        let mut art = Art::default();
+        let (output, _) = run_column(&ctx, Vec::new(), &mut library, &mut art);
+
+        let offer = carry::take_column_offer(&ctx).expect("the column offers itself");
+
+        assert_eq!(offer.drawn, ROW_H);
+        assert_eq!(offer.zone.row_h, ROW_H + space::PX);
+        assert_eq!(offer.zone.count, 3);
+        assert_eq!(offer.zone.first, 0);
+
+        let pitch = ROW_H + space::PX;
+        for (row, label) in ["A", "B", "C"].into_iter().enumerate() {
+            let top = row_top(&output, label, "Playlist");
+            assert!(
+                (offer.zone.list.top() + row as f32 * pitch - top).abs() < 0.01,
+                "row {row} starts {row} pitches below the list: {} vs {top}",
+                offer.zone.list.top()
+            );
+        }
+    }
+
+    #[test]
+    fn the_offers_origin_matches_a_drawn_row() {
+        let ctx = context();
+        let mut library = movable_playlists(&["A", "B", "C"], 7, true, None);
+        let mut art = Art::default();
+        let (output, _) = run_column(&ctx, Vec::new(), &mut library, &mut art);
+        let offer = carry::take_column_offer(&ctx).expect("the column offers itself");
+
+        // The offer's own formula is `painted top - first index * pitch`, which
+        // is asserted here against what the painter drew rather than by driving
+        // a scroll, so it holds at any offset.
+        let painted = row_top(&output, "A", "Playlist");
+        assert!((offer.zone.list.top() - painted).abs() < 0.01);
+        assert!(
+            offer.zone.list.width() > 0.0,
+            "the rule a drop draws spans the rows"
+        );
+    }
+
+    #[test]
+    fn a_list_that_can_not_be_reordered_still_offers_its_rows() {
+        let ctx = context();
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(vec![
+            playlist("spotify:playlist:A", "A"),
+            playlist("spotify:playlist:B", "B"),
+        ]));
+        assert!(!library.rootlist_movable());
+        let mut art = Art::default();
+
+        let _ = run_column(&ctx, Vec::new(), &mut library, &mut art);
+
+        let offer = carry::take_column_offer(&ctx).expect("the column offers its rows");
+        assert_eq!(offer.zone.count, 2);
+    }
+
+    #[test]
+    fn a_list_that_is_not_ready_offers_nothing() {
+        let ctx = context();
+        let mut library = Library::default();
+        library.playlists = Load::Loading;
+        let mut art = Art::default();
+
+        let _ = run_column(&ctx, Vec::new(), &mut library, &mut art);
+
+        assert_eq!(carry::take_column_offer(&ctx), None);
+    }
+
+    #[test]
+    fn an_addable_row_reads_its_track_count_and_an_other_row_its_owner() {
+        let library = movable_playlists(&["A"], 7, true, Some(4));
+        let Load::Ready(playlists) = &library.playlists else {
+            panic!("the list is ready");
+        };
+        assert_eq!(ListItem::kind(&playlists[0]), "Playlist · 4 tracks");
+        let mut owned = playlist("spotify:playlist:O", "O");
+        owned.owner = Some("Vela Moreno".to_owned());
+        assert_eq!(
+            ListItem::kind(&owned),
+            "Playlist · Vela Moreno",
+            "a playlist that cannot take an add keeps its owner line"
+        );
+    }
+
+    #[test]
+    fn the_failure_line_names_what_could_not_be_done() {
+        let ctx = context();
+        let mut library = movable_playlists(&["A", "B"], 7, true, None);
+        library.sidebar_notice = Some(crate::library::SidebarWrite::Reorder);
+        let mut art = Art::default();
+
+        let (output, _) = run_column(&ctx, Vec::new(), &mut library, &mut art);
+
+        assert!(
+            painted(&output, "Could not move that playlist. Try again."),
+            "the list says what could not be done"
+        );
+    }
+
+    #[test]
+    fn no_row_washes_while_a_block_is_carried() {
+        let ctx = context();
+        let mut library = movable_playlists(&["A", "B"], 7, true, None);
+        let mut art = Art::default();
+        let (output, _) = run_column(&ctx, Vec::new(), &mut library, &mut art);
+        let at = name_line(&output, "B");
+        let tokens = Tokens::DARK;
+
+        // The pointer arrives over the row, and a block is carried from elsewhere.
+        carry::lift(
+            &ctx,
+            Carry {
+                source: Source::Queue,
+                rows: vec![0],
+                entries: Vec::new(),
+                size: Vec2::new(100.0, ROW_H),
+                ghost: Ghost::Queue(queue_row::Lifted::new(
+                    "A Title".to_owned(),
+                    String::new(),
+                    None,
+                    Cover::Missing,
+                )),
+                playlist: None,
+            },
+        );
+        let mut washed = false;
+        for _ in 0..3 {
+            let (output, _) =
+                run_column(&ctx, vec![Event::PointerMoved(at)], &mut library, &mut art);
+            washed |= output.shapes.iter().any(|clipped| {
+                matches!(&clipped.shape, egui::epaint::Shape::Rect(shape)
+                    if shape.fill == tokens.palette.row_hover)
+            });
+        }
+
+        assert!(!washed, "the only fill in the column is the target's");
     }
 
     /// A library with both lists ready, the way the window hands them over.
@@ -1463,6 +2027,55 @@ mod tests {
         assert!(
             texts.contains(&"Loading your artists…".to_owned()),
             "{texts:?}"
+        );
+    }
+
+    /// The fills the row chrome paints with the pointer at `at`.
+    fn chrome_fills(at: Option<Pos2>) -> Vec<Color32> {
+        let ctx = context();
+        let tokens = Tokens::DARK;
+        let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(254.0, ROW_H));
+        let mut fills = Vec::new();
+        for _ in 0..2 {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(254.0, 800.0))),
+                    events: at.map(Event::PointerMoved).into_iter().collect(),
+                    ..Default::default()
+                },
+                |ui| {
+                    let id = egui::Id::unique("library-row");
+                    let look = Look {
+                        selected: false,
+                        ..Look::default()
+                    };
+                    let _ = row_chrome(ui, rect, id, "A", look, &tokens, false);
+                },
+            );
+            output.textures_delta.clear();
+            fills = output
+                .shapes
+                .iter()
+                .filter_map(|clipped| match &clipped.shape {
+                    egui::epaint::Shape::Rect(shape) if shape.rect == rect => Some(shape.fill),
+                    _ => None,
+                })
+                .collect();
+        }
+        fills
+    }
+
+    #[test]
+    fn a_hovered_library_row_washes_with_row_hover() {
+        let tokens = Tokens::DARK;
+        assert_eq!(
+            chrome_fills(Some(Pos2::new(120.0, ROW_H / 2.0))),
+            vec![tokens.palette.row_hover],
+            "a hovered library row washed with something other than the row hover"
+        );
+        assert!(
+            chrome_fills(None).is_empty(),
+            "a library row with the pointer away washed"
         );
     }
 

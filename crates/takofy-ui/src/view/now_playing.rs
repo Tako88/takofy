@@ -1,9 +1,9 @@
 //! The Now Playing panel: what the transport is on, and what is queued after it.
 //!
 //! The panel is handed everything it draws — the transport, the queue, the art
-//! store and the frame's clock — and reports the queue row a click picked. It
-//! never reaches for any of them itself, and applying the jump is the shell's
-//! job, once every region has drawn.
+//! store and the frame's clock — and reports what its queue pane asked for. It
+//! never reaches for any of them itself, and applying a jump, a press or a lift
+//! is the shell's job, once every region has drawn.
 //!
 //! The tabs are the reference's pair and both are live: the queue is state the
 //! window holds, and the lyrics pane asks for what it draws.
@@ -40,10 +40,10 @@ const TABS: [(&str, Control); 2] = [
 /// Every one of these is the caller's to apply, after every region has drawn: a
 /// frame that already carries a command must not also move the queue, or the
 /// queue would name a track the transport was never asked to play.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Reply {
-    /// The absolute index of a clicked queue row.
-    pub row: Option<usize>,
+    /// What the queue pane asked for.
+    pub queue: queue_pane::Reply,
     /// The tab a press asked for.
     pub tab: Option<Tab>,
     /// Whether the lyrics pane's Retry was pressed.
@@ -89,7 +89,7 @@ pub fn show(
     let retry = match showing {
         Tab::Queue => {
             return Reply {
-                row: queue_pane::show(ui, stack.pane, queue, frame.art, frame.now, tokens),
+                queue: queue_pane::show(ui, stack.pane, queue, frame.art, frame.now, tokens),
                 tab,
                 retry: false,
             };
@@ -104,7 +104,7 @@ pub fn show(
         ),
     };
     Reply {
-        row: None,
+        queue: queue_pane::Reply::default(),
         tab,
         retry,
     }
@@ -271,6 +271,7 @@ mod tests {
     use super::*;
     use crate::cover::Art;
     use crate::message::{TransportUpdate, Update};
+    use crate::selection::Press;
     use crate::theme::{fonts, style};
 
     const PROBE: Vec2 = Vec2::new(360.0, 700.0);
@@ -365,8 +366,8 @@ mod tests {
             self
         }
 
-        /// Draws one frame and returns the row index it reported.
-        fn frame(&mut self, ctx: &Context, events: Vec<Event>) -> Option<usize> {
+        /// Draws one frame and returns the queue reply it reported.
+        fn frame(&mut self, ctx: &Context, events: Vec<Event>) -> queue_pane::Reply {
             let tokens = Tokens::DARK;
             let cover = self.art.look(
                 self.transport
@@ -401,7 +402,7 @@ mod tests {
                     },
                 );
             });
-            reply.row
+            reply.queue
         }
 
         /// Draws one frame and returns the text it painted.
@@ -455,17 +456,18 @@ mod tests {
     }
 
     /// A click at `at` over the three passes egui's hit test needs, returning the
-    /// row index the panel reported.
-    fn click(panel: &mut Panel, ctx: &Context, at: Pos2) -> Option<usize> {
+    /// queue reply that asked for something.
+    fn click(panel: &mut Panel, ctx: &Context, at: Pos2) -> queue_pane::Reply {
         // Warm up so hit-testing has a previous pass to read.
         panel.frame(ctx, Vec::new());
-        let mut clicked = None;
+        let mut reply = queue_pane::Reply::default();
         for event in crate::view::test_support::click_events(at) {
-            if let Some(next) = panel.frame(ctx, vec![event]) {
-                clicked = Some(next);
+            let next = panel.frame(ctx, vec![event]);
+            if next.play.is_some() || next.press.is_some() || next.lift.is_some() {
+                reply = next;
             }
         }
-        clicked
+        reply
     }
 
     #[test]
@@ -599,11 +601,13 @@ mod tests {
         let frame = panel.output(&ctx);
         let at = painted_at(&frame, "t3").expect("row t3 is painted");
 
+        let reply = click(&mut panel, &ctx, at + Vec2::new(6.0, 6.0));
         assert_eq!(
-            click(&mut panel, &ctx, at + Vec2::new(6.0, 6.0)),
-            Some(3),
+            reply.press,
+            Some((3, Press::Replace)),
             "the click reports the queue's own index, not the row's position"
         );
+        assert_eq!(reply.play, None, "a single click does not play");
         assert_eq!(
             panel
                 .transport
@@ -666,8 +670,11 @@ mod tests {
         let frame = panel.output(&ctx);
         let at = painted_at(&frame, &upcoming[0]).expect("the first remaining row is painted");
         assert_eq!(
-            click(&mut panel, &ctx, at + Vec2::new(6.0, 6.0)),
-            Some(crate::queue::MAX_CONSECUTIVE_SKIPS as usize + 1),
+            click(&mut panel, &ctx, at + Vec2::new(6.0, 6.0)).press,
+            Some((
+                crate::queue::MAX_CONSECUTIVE_SKIPS as usize + 1,
+                Press::Replace
+            )),
             "a click must still reach the entry after the cap stopped the run"
         );
     }
@@ -690,8 +697,8 @@ mod tests {
         let frame = panel.output(&ctx);
         let at = painted_at(&frame, "t2").expect("row t2 is painted");
         assert_eq!(
-            click(&mut panel, &ctx, at + Vec2::new(6.0, 6.0)),
-            Some(2),
+            click(&mut panel, &ctx, at + Vec2::new(6.0, 6.0)).press,
+            Some((2, Press::Replace)),
             "a paused queue's rows must still report their index"
         );
     }
@@ -705,10 +712,11 @@ mod tests {
         let at = painted_at(&frame, "LYRICS").expect("the lyrics tab is drawn");
 
         // The tab is live now, so a press reaches the panel; what a press means is
-        // the shell's business, and a `Reply` is not a queue row.
+        // the shell's business, and a tab is not a queue row.
+        let reply = click(&mut panel, &ctx, at + Vec2::new(2.0, 2.0));
         assert_eq!(
-            click(&mut panel, &ctx, at + Vec2::new(2.0, 2.0)),
-            None,
+            (reply.press, reply.play),
+            (None, None),
             "a tab press is not a queue row"
         );
 

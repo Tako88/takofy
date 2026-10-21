@@ -4,8 +4,8 @@
 //! token or an auth error, so the compiler keeps secrets out of a view.
 
 use takofy_model::{
-    AlbumDetail, ArtistDetail, CoverImage, CoverUrl, FollowedArtist, FollowedShow, PlaylistEntry,
-    SavedAlbum, ShowDetail, TrackEntry, TrackLyrics,
+    AlbumDetail, ArtistDetail, CoverImage, CoverUrl, FollowedArtist, FollowedShow, Move,
+    PlaylistAccess, PlaylistEntry, Revision, SavedAlbum, ShowDetail, TrackEntry, TrackLyrics,
 };
 
 /// A request from the window to the worker.
@@ -15,6 +15,26 @@ pub enum Command {
     Authorize,
     /// Load the tracks of one playlist.
     LoadTracks { playlist: String },
+    /// Move rows of a playlist to a new place, as one change set on `revision`.
+    MoveTrack {
+        playlist: String,
+        revision: Revision,
+        moves: Vec<Move>,
+    },
+    /// Move one row of the sidebar's playlists to a new place, based on
+    /// `revision`.
+    MovePlaylist {
+        revision: Revision,
+        from: usize,
+        to: usize,
+    },
+    /// Append one track to a playlist, based on `revision`.
+    AddTrack {
+        playlist: String,
+        revision: Revision,
+        from_index: usize,
+        track: String,
+    },
     /// Load one album with its tracks.
     LoadAlbum { album: String },
     /// Load one artist, its discography and its followed state.
@@ -121,12 +141,40 @@ pub enum Update {
     Playlists(Vec<PlaylistEntry>),
     /// The playlists could not be loaded.
     PlaylistFailed(Failure),
+    /// What the sidebar may write with, sent right after `Playlists` and only
+    /// when the read named a revision.
+    ///
+    /// Its `editable` means the sidebar's rows are the wire's own indices, so a
+    /// row index may be written as a wire index.
+    RootlistAccess(PlaylistAccess),
+    /// The sidebar's playlists moved, and this is the revision the next write
+    /// must name.
+    PlaylistMoved { revision: Revision },
+    /// A sidebar move did not stick.
+    PlaylistMoveFailed,
+    /// A track was appended to a playlist, and this is the revision the next
+    /// write must name.
+    TrackAdded {
+        playlist: String,
+        revision: Revision,
+    },
+    /// A track could not be appended to a playlist.
+    AddFailed { playlist: String },
     /// A playlist's tracks, plus the context's own image when it carried one.
     Tracks {
         playlist: String,
         tracks: Vec<TrackEntry>,
         cover: Option<CoverUrl>,
+        /// What the page may change, when the list's own state could be read.
+        access: Option<PlaylistAccess>,
     },
+    /// A playlist row moved, and this is the revision the next write must name.
+    TrackMoved {
+        playlist: String,
+        revision: Revision,
+    },
+    /// A playlist move did not stick.
+    MoveFailed { playlist: String, failure: Failure },
     /// A playlist's tracks could not be loaded.
     TracksFailed { playlist: String, failure: Failure },
     /// One album, its tracks in the album's own order.

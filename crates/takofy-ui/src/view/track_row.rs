@@ -5,6 +5,10 @@
 //! number gives way to a play glyph under the pointer, the equaliser stands in
 //! while this is the transport's track, and the like appears on hover or focus.
 //!
+//! Its body is the click target and the drag source both. What a press or a lift
+//! means to the list's selection belongs to the list, so the row only reports it,
+//! and a carried row is drawn from its own [`Lifted`] snapshot.
+//!
 //! The row is one focus stop. The like and the more are waiting controls, so they
 //! never join the tab order, and a list of sixty tracks is sixty stops rather than
 //! a hundred and eighty. The album and artist cells are links that take a single
@@ -26,9 +30,11 @@ use crate::icon::{self, Icon};
 use crate::layout::table::{Columns, number_box, title_parts};
 use crate::player::{Transport, TransportState};
 use crate::route::Page;
+use crate::selection::Press;
 use crate::theme::icon::Size;
-use crate::theme::{Tokens, ease, eq, motion, radius, stroke, text};
+use crate::theme::{Tokens, ease, eq, motion, radius, space, stroke, text, tracking};
 
+use super::rows::{self, Ghosting, Look};
 use super::{art, controls, text as recipe};
 
 /// A row's relationship to the transport.
@@ -116,6 +122,200 @@ pub struct Row<'a> {
     pub state: State,
     /// The track's cover, as the art pipeline resolves it.
     pub cover: Cover,
+    /// Where the row stands in its list: picked, carried, or neither.
+    pub look: Look,
+}
+
+impl Row<'_> {
+    /// The row as it is drawn in flight: owned, and free of interaction.
+    pub fn lifted(&self, columns: Columns) -> Lifted {
+        Lifted {
+            columns,
+            cell: self.title_cell,
+            number: self.number,
+            title: self.title.to_owned(),
+            artist: self.artist.to_owned(),
+            album: self.album.map(str::to_owned),
+            added: self.added.map(str::to_owned),
+            duration: self.duration.map(str::to_owned),
+            cover: self.cover,
+        }
+    }
+}
+
+/// One row's own paint, kept so a carried row can be drawn away from its list.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Lifted {
+    columns: Columns,
+    cell: TitleCell,
+    number: usize,
+    title: String,
+    artist: String,
+    album: Option<String>,
+    added: Option<String>,
+    duration: Option<String>,
+    cover: Cover,
+}
+
+impl Lifted {
+    /// Draws the row into `rect` with no interaction of its own: a ghost is
+    /// painted over whatever is under the pointer, and must take nothing from it.
+    pub fn paint(&self, ui: &Ui, rect: Rect, ghosting: Ghosting<'_>, tokens: &Tokens) {
+        let columns = self.columns.at(rect.min);
+        let title_ink = ink(
+            tokens.palette.text,
+            tokens.palette.text_subtle,
+            ghosting.flat,
+        );
+        let secondary_ink = ink(
+            tokens.palette.text_muted,
+            tokens.palette.text_subtle,
+            ghosting.flat,
+        );
+
+        let number = number_box(columns.index);
+        if drawable(number) {
+            centred_line(
+                ui,
+                number,
+                &self.number.to_string(),
+                recipe::track_mono(text::XXS),
+                tokens.palette.text_subtle,
+            );
+        }
+
+        match self.cell {
+            TitleCell::ArtThenName => {
+                let parts = title_parts(columns.title);
+                if drawable(parts.art) {
+                    art::tile(
+                        ui.painter(),
+                        parts.art,
+                        radius::XS,
+                        tokens.palette.border,
+                        self.cover,
+                        tokens,
+                    );
+                }
+                if drawable(parts.text) {
+                    let top = vertically_centred(ui, parts.text, &recipe::track_name());
+                    self.paint_title(ui, parts.text, top, ghosting, title_ink, tokens);
+                }
+            }
+            TitleCell::NameOverArtist => {
+                let artist_font = recipe::track_secondary();
+                let artist_h = if self.artist.is_empty() {
+                    0.0
+                } else {
+                    line_height(ui, &artist_font)
+                };
+                let name_h = line_height(ui, &recipe::track_name());
+                let (name_top, artist_top) = stacked_tops(columns.title, name_h, artist_h);
+                self.paint_title(ui, columns.title, name_top, ghosting, title_ink, tokens);
+                if !self.artist.is_empty() && drawable(columns.title) {
+                    left_at(
+                        ui,
+                        columns.title,
+                        artist_top,
+                        &self.artist,
+                        artist_font,
+                        secondary_ink,
+                    );
+                }
+            }
+        }
+
+        if !self.artist.is_empty() && drawable(columns.artist) {
+            left(
+                ui,
+                columns.artist,
+                &self.artist,
+                recipe::track_secondary(),
+                secondary_ink,
+            );
+        }
+        if drawable(columns.album)
+            && let Some(album) = self.album.as_deref().filter(|album| !album.is_empty())
+        {
+            left(
+                ui,
+                columns.album,
+                album,
+                recipe::track_secondary(),
+                secondary_ink,
+            );
+        }
+        if drawable(columns.added)
+            && let Some(added) = self.added.as_deref()
+        {
+            left(
+                ui,
+                columns.added,
+                added,
+                recipe::track_mono(text::XXS),
+                tokens.palette.text_subtle,
+            );
+        }
+        // A block carries its running time where a single row carries its length,
+        // and a block whose total is unknown carries none of its rows' lengths.
+        let duration = if ghosting.count > 1 {
+            ghosting.total
+        } else {
+            ghosting.total.or(self.duration.as_deref())
+        };
+        if drawable(columns.duration)
+            && let Some(duration) = duration
+        {
+            right(
+                ui,
+                columns.duration,
+                duration,
+                recipe::track_mono(text::XS),
+                tokens.palette.text_subtle,
+            );
+        }
+    }
+
+    /// Paints the title line, and the count a block stands for beside it.
+    fn paint_title(
+        &self,
+        ui: &Ui,
+        rect: Rect,
+        top: f32,
+        ghosting: Ghosting<'_>,
+        title_ink: Color32,
+        tokens: &Tokens,
+    ) {
+        if !drawable(rect) {
+            return;
+        }
+        let count_ink = ink(
+            tokens.palette.text_muted,
+            tokens.palette.text_subtle,
+            ghosting.flat,
+        );
+        let mut width = rect.width();
+        let count = (ghosting.count > 1).then(|| {
+            let galley = recipe::spaced(
+                ui,
+                &format!("×{}", ghosting.count),
+                recipe::track_mono(text::XXS),
+                count_ink,
+                recipe::tracking_pts(text::XXS, tracking::WIDE),
+            );
+            // The count takes its room from the title rather than from the
+            // column, so the two never overlap.
+            width = (rect.width() - galley.size().x - space::S2).max(0.0);
+            galley
+        });
+        let galley = recipe::line(ui, &self.title, recipe::track_name(), title_ink, 0.0, width);
+        ui.painter()
+            .galley(Pos2::new(rect.left(), top), galley.clone(), title_ink);
+        if let Some(count) = count {
+            let pos = Pos2::new(rect.left() + galley.size().x + space::S2, top);
+            ui.painter().galley(pos, count, count_ink);
+        }
+    }
 }
 
 /// What a click on a row asked for.
@@ -125,6 +325,10 @@ pub enum Click {
     Play,
     /// Open the page its album or first artist cell links to.
     Open(Page),
+    /// Pick the row, which is what a single click on its body does.
+    Select(Press),
+    /// The pointer began dragging the row out of the list.
+    Lift,
 }
 
 /// What a link cell's interaction reports to the row.
@@ -156,7 +360,8 @@ pub fn show(
     // twice: keyed by the track alone, two rows would share one hover, one focus
     // node and one click, and the wrong occurrence would play.
     let key = (row.uri, row.number);
-    let response = ui.interact(rect, ui.scope_id().with(("track-row", key)), Sense::click());
+    let body = rows::body(ui, rect, ui.scope_id().with(("track-row", key)), row.look);
+    let response = &body.response;
     response.widget_info(|| {
         egui::WidgetInfo::labeled(
             egui::Role::Button,
@@ -164,18 +369,7 @@ pub fn show(
             format!("{} by {}", row.title, row.artist),
         )
     });
-    if response.clicked() {
-        // A click leaves the keyboard where the pointer went, so Escape-less Tab
-        // order continues from the row that was picked. The space never reaches
-        // here: the shell takes it for the transport before anything draws.
-        response.request_focus();
-    }
-    if response.has_focus() {
-        // A row reachable by Tab has to come into view when it is reached. Only a
-        // drawn row can hold focus, so this is about a row that is clipped rather
-        // than one that was culled.
-        response.scroll_to_me(None);
-    }
+
     // The reference reveals the play glyph and the like on hover *and* on
     // focus-within, because a keyboard has no pointer.
     //
@@ -183,23 +377,23 @@ pub fn show(
     // interacted after this row, and egui marks only the top hit widget as
     // hovered, so the row loses the hover the moment the pointer enters a link
     // cell. `contains_pointer()` asks whether the pointer is in the row's rect
-    // at all, which is what the highlight, the play glyph and the like follow.
-    let revealed = response.hovered() || response.contains_pointer() || response.has_focus();
-    let fill = ui.ctx().animate_bool_with_time_and_easing(
+    // at all, which is what the highlight, the play glyph and the like follow. A
+    // carried row reveals nothing: the pointer is holding a block, not reaching
+    // for a control.
+    let hovered = (response.hovered() || response.contains_pointer()) && !row.look.carrying;
+    // A lift hands the row the focus, so the carried row has to shed that too.
+    let revealed = (hovered || response.has_focus()) && !row.look.carrying;
+    let hover = rows::fade(
+        ui,
         ui.scope_id().with(("track-row-hover", key)),
         revealed,
-        motion::FAST,
-        ease::out,
+        row.look,
     );
 
-    if fill > 0.0 {
-        ui.painter().rect_filled(
-            rect,
-            radius::SM,
-            tokens.palette.row_hover.gamma_multiply(fill),
-        );
-    }
-    if response.has_focus() {
+    let before = rows::dim(ui, row.look);
+    rows::wash(ui, rect, hover, row.look, tokens);
+    // A ring on a carried row is noise: the pointer already holds it.
+    if response.has_focus() && !row.look.carrying {
         controls::focus_ring(ui, rect, tokens);
     }
 
@@ -217,24 +411,22 @@ pub fn show(
     let title_link = title(ui, columns.title, row, key, tokens);
     let artist_link = artist(ui, columns.artist, row, key, tokens);
     let album_link = album(ui, columns.album, row, key, tokens);
-    added(ui, columns.added, row.added, tokens);
+    added(ui, columns.added, row.added, tokens, row.look.selected);
     let on_like = like(ui, columns.like, key, revealed, tokens);
-    duration(ui, columns.duration, row.duration, tokens);
+    duration(
+        ui,
+        columns.duration,
+        row.duration,
+        tokens,
+        row.look.selected,
+    );
     let on_more = more(ui, columns.actions, key, row, tokens);
 
-    // The row's own keyboard activation is answered before the link cells are
-    // read, so a link click landing in the same frame can never swallow it.
-    // (egui surrenders the row's focus on the frame a link's click is reported,
-    // so the two cannot in fact both be true today; reading the keyboard first
-    // keeps the play whatever the hit test does.) A double click on a control
-    // inside the row is not a double click on the row, or the like and the more
-    // would start playback as a side effect. Neither can act yet, so neither
-    // takes the click; they only keep it.
+    // A control inside the row takes the click it is given rather than passing it
+    // on: neither can act yet, so neither reports anything, but a click on one is
+    // not a click on the row.
     let on_control = on_like || on_more;
     let keyboard = response.has_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
-    if keyboard && !on_control {
-        return Some(Click::Play);
-    }
 
     // The link cells are interacted after the row, so on a hit-test tie the cell
     // wins the click and the row never sees the double click that would play. A
@@ -245,17 +437,35 @@ pub fn show(
         link_hovered |= link.hovered;
         open = open.or(link.page);
     }
+
+    ui.set_opacity(before);
+
+    // The row's own keyboard activation is answered before the link cells are
+    // read, so a link click landing in the same frame can never swallow it.
+    // (egui surrenders the row's focus on the frame a link's click is reported,
+    // so the two cannot in fact both be true today; reading the keyboard first
+    // keeps the play whatever the hit test does.)
+    if keyboard && !on_control {
+        return Some(Click::Play);
+    }
     if let Some(page) = open {
         return Some(Click::Open(page));
     }
-
     // `link_hovered` is a belt-and-braces guard, not the mechanism: when a link
     // wins the hit test, the row's `double_clicked()` is already false because
     // egui tells only the hit widget, so the second click of a double click on a
     // link rides on the first click's navigation, which has already re-laid out
-    // the page. The keyboard was answered above, before any link click could
-    // take it.
-    (response.double_clicked() && !link_hovered && !on_control).then_some(Click::Play)
+    // the page.
+    if response.double_clicked() && !link_hovered && !on_control {
+        return Some(Click::Play);
+    }
+    if body.lift {
+        return Some(Click::Lift);
+    }
+    if link_hovered || on_control {
+        return None;
+    }
+    body.press.map(Click::Select)
 }
 
 /// The tops of a stacked title's two lines, centred together in `rect`.
@@ -297,12 +507,18 @@ fn index(ui: &Ui, rect: Rect, row: &Row<'_>, revealed: bool, tokens: &Tokens) {
     } else if row.state.sounding() {
         equaliser(ui, rect, row.state, tokens);
     } else {
+        // A picked row lifts its number and its figures, so the row reads as
+        // chosen rather than as one the pointer happens to be over.
         centred_line(
             ui,
             rect,
             &row.number.to_string(),
             recipe::track_mono(text::XXS),
-            tokens.palette.text_subtle,
+            ink(
+                tokens.palette.text_subtle,
+                tokens.palette.text,
+                row.look.selected,
+            ),
         );
     }
 }
@@ -607,7 +823,7 @@ fn link_cell(
 }
 
 /// The date the track was added, which only a playlist carries.
-fn added(ui: &Ui, rect: Rect, label: Option<&str>, tokens: &Tokens) {
+fn added(ui: &Ui, rect: Rect, label: Option<&str>, tokens: &Tokens, selected: bool) {
     if !drawable(rect) {
         return;
     }
@@ -617,7 +833,11 @@ fn added(ui: &Ui, rect: Rect, label: Option<&str>, tokens: &Tokens) {
             rect,
             label,
             recipe::track_mono(text::XXS),
-            tokens.palette.text_subtle,
+            ink(
+                tokens.palette.text_subtle,
+                tokens.palette.text_muted,
+                selected,
+            ),
         );
     }
 }
@@ -630,7 +850,7 @@ fn like(ui: &mut Ui, rect: Rect, key: (&str, usize), revealed: bool, tokens: &To
     if !drawable(rect) || !revealed {
         return false;
     }
-    controls::icon_button_keyed(
+    let response = controls::icon_button_keyed(
         ui,
         tokens,
         Control::TrackLike,
@@ -642,13 +862,12 @@ fn like(ui: &mut Ui, rect: Rect, key: (&str, usize), revealed: bool, tokens: &To
         // Saving a track needs a write to the Web API, which this build never
         // makes, so the control stands where the reference has it and cannot act.
         false,
-    )
-    .response
-    .hovered()
+    );
+    under_pointer(&response)
 }
 
 /// The track's length, right-aligned in its column.
-fn duration(ui: &Ui, rect: Rect, label: Option<&str>, tokens: &Tokens) {
+fn duration(ui: &Ui, rect: Rect, label: Option<&str>, tokens: &Tokens, selected: bool) {
     if !drawable(rect) {
         return;
     }
@@ -658,7 +877,11 @@ fn duration(ui: &Ui, rect: Rect, label: Option<&str>, tokens: &Tokens) {
             rect,
             label,
             recipe::track_mono(text::XS),
-            tokens.palette.text_subtle,
+            ink(
+                tokens.palette.text_subtle,
+                tokens.palette.text_muted,
+                selected,
+            ),
         );
     }
 }
@@ -670,7 +893,7 @@ fn more(ui: &mut Ui, rect: Rect, key: (&str, usize), row: &Row<'_>, tokens: &Tok
     if !drawable(rect) {
         return false;
     }
-    controls::icon_button_keyed(
+    let response = controls::icon_button_keyed(
         ui,
         tokens,
         Control::TrackMore,
@@ -680,9 +903,22 @@ fn more(ui: &mut Ui, rect: Rect, key: (&str, usize), row: &Row<'_>, tokens: &Tok
         Size::SM,
         &format!("More options for {}", row.title),
         false,
-    )
-    .response
-    .hovered()
+    );
+    under_pointer(&response)
+}
+
+/// Whether the pointer is on a control inside the row.
+///
+/// `hovered()` goes false while the button is down, because egui hovers only
+/// what is being clicked. The row reads where the pointer is instead, so the
+/// press that a control takes is not also taken for a press on the row.
+fn under_pointer(slot: &controls::Slot) -> bool {
+    slot.response.hovered() || slot.response.contains_pointer()
+}
+
+/// One of two inks, chosen by a flag: `picked` is the ink a picked row takes.
+fn ink(resting: Color32, picked: Color32, picked_now: bool) -> Color32 {
+    if picked_now { picked } else { resting }
 }
 
 /// Whether a rect is worth drawing into. An absent column arrives as a zero-width
@@ -746,17 +982,140 @@ fn centred(ui: &Ui, rect: Rect, side: f32) -> Rect {
 
 #[cfg(test)]
 mod tests {
+    use egui::{Event, Key, Modifiers};
+
     use super::*;
     use crate::cover::Cover;
     use crate::route::Page;
     use crate::theme::Tokens;
-    use crate::view::test_support::click_events;
+    use crate::view::test_support::{button, click_events};
 
-    fn input() -> egui::RawInput {
+    fn input_with(events: Vec<Event>) -> egui::RawInput {
         egui::RawInput {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(900.0, 800.0))),
+            events,
             ..Default::default()
         }
+    }
+
+    fn input() -> egui::RawInput {
+        input_with(Vec::new())
+    }
+
+    /// The rect the pointer tests draw their row into.
+    fn body_rect() -> Rect {
+        crate::layout::table::row_rect(
+            Rect::from_min_size(Pos2::ZERO, vec2(900.0, crate::theme::extent::ROW_H)),
+            0,
+            crate::theme::extent::ROW_H,
+        )
+    }
+
+    fn columns() -> Columns {
+        crate::layout::table::columns(900.0, crate::layout::Table::Full.columns())
+    }
+
+    /// A playlist row with both link cells live and every column filled.
+    fn row_of(number: usize) -> Row<'static> {
+        Row {
+            uri: "spotify:track:a",
+            number,
+            title: "Harbour Wall",
+            title_cell: TitleCell::ArtThenName,
+            artist: "Slow Tide",
+            artist_uri: Some("spotify:artist:b"),
+            album: Some("Record"),
+            album_uri: Some("spotify:album:c"),
+            added: Some("2 Jan 2024"),
+            duration: Some("3:42"),
+            state: State::Resting,
+            cover: Cover::Missing,
+            look: Look::default(),
+        }
+    }
+
+    /// A point on the row that is the row's own: the index column carries neither
+    /// a link nor a control.
+    fn body_point() -> Pos2 {
+        number_box(columns().at(body_rect().min).index).center()
+    }
+
+    /// Runs one pass per event, and reports what each pass answered.
+    fn run(
+        ctx: &egui::Context,
+        row: &Row<'_>,
+        events: &[Event],
+        modifiers: Modifiers,
+    ) -> Vec<Option<Click>> {
+        let tokens = Tokens::DARK;
+        let rect = body_rect();
+        let columns = columns();
+        // Warm up, so hit testing has a previous pass to read. The held
+        // modifiers arrive as an event and stay held for the passes after it.
+        let mut output = ctx.run_ui(input_with(vec![Event::ModifiersChanged(modifiers)]), |ui| {
+            let _ = show(ui, rect, columns, row, &tokens);
+        });
+        output.textures_delta.clear();
+
+        let mut answers = Vec::new();
+        for event in events {
+            let mut answer = None;
+            let mut output = ctx.run_ui(input_with(vec![event.clone()]), |ui| {
+                answer = show(ui, rect, columns, row, &tokens);
+            });
+            output.textures_delta.clear();
+            answers.push(answer);
+        }
+        answers
+    }
+
+    /// The fill painted behind the row on one frame.
+    fn row_fill(ctx: &egui::Context, row: &Row<'_>, pos: Pos2) -> Option<Color32> {
+        let tokens = Tokens::DARK;
+        let rect = body_rect();
+        let columns = columns();
+        let mut output = ctx.run_ui(input_with(vec![Event::PointerMoved(pos)]), |ui| {
+            let _ = show(ui, rect, columns, row, &tokens);
+        });
+        output.textures_delta.clear();
+        output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Rect(shape) if shape.rect == rect => Some(shape.fill),
+                _ => None,
+            })
+    }
+
+    /// Every label one frame painted.
+    fn drawn_texts(output: &egui::FullOutput) -> Vec<&str> {
+        output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Text(text) => Some(text.galley.text()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Whether one frame painted anything into `rect`, glyphs and icons alike.
+    fn painted_into(output: &egui::FullOutput, rect: Rect) -> bool {
+        output
+            .shapes
+            .iter()
+            .any(|clipped| clipped.shape.visual_bounding_rect().intersects(rect))
+    }
+
+    /// One press at `from` released `by` points away.
+    fn twitch(from: Pos2, by: f32) -> Vec<Event> {
+        let to = from + vec2(by, 0.0);
+        vec![
+            Event::PointerMoved(from),
+            button(from, true),
+            Event::PointerMoved(to),
+            button(to, false),
+        ]
     }
 
     #[test]
@@ -908,6 +1267,7 @@ mod tests {
             duration: None,
             state: State::Resting,
             cover: Cover::Missing,
+            look: Look::default(),
         }
     }
 
@@ -932,29 +1292,11 @@ mod tests {
             })
     }
 
-    /// The click one frame reports for a pointer at `pos`, feeding one event per
-    /// pass as egui wants.
+    /// The click one sequence of passes reports for a pointer at `pos`.
     fn click(ctx: &egui::Context, pos: Pos2) -> Option<Click> {
-        let tokens = Tokens::DARK;
-        let columns = crate::layout::table::columns(900.0, crate::layout::Table::Full.columns());
-        let rect = crate::layout::table::row_rect(
-            Rect::from_min_size(Pos2::ZERO, vec2(900.0, crate::theme::extent::ROW_H)),
-            0,
-            crate::theme::extent::ROW_H,
-        );
-        let mut last = None;
-        for event in click_events(pos) {
-            let input = egui::RawInput {
-                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(900.0, 800.0))),
-                events: vec![event],
-                ..Default::default()
-            };
-            let mut output = ctx.run_ui(input, |ui| {
-                last = show(ui, rect, columns, &episode_row(), &tokens);
-            });
-            output.textures_delta.clear();
-        }
-        last
+        run(ctx, &episode_row(), &click_events(pos), Modifiers::NONE)
+            .pop()
+            .flatten()
     }
 
     /// Finding 4: `Loading` is a track on its way and an ended one has nothing
@@ -1015,5 +1357,419 @@ mod tests {
             Some(Click::Open(Page::credit("spotify:show:s"))),
             "a click on the episode's credit opens the show page"
         );
+    }
+
+    #[test]
+    fn a_single_click_on_the_body_selects_and_does_not_play() {
+        let ctx = context();
+        let row = row_of(1);
+        let answers = run(&ctx, &row, &click_events(body_point()), Modifiers::NONE);
+
+        assert_eq!(
+            answers.iter().flatten().next(),
+            Some(&Click::Select(Press::Replace)),
+            "a single click picks the row"
+        );
+        assert!(
+            !answers.iter().flatten().any(|click| *click == Click::Play),
+            "a single click played: {answers:?}"
+        );
+    }
+
+    #[test]
+    fn a_double_click_plays() {
+        let ctx = context();
+        let row = row_of(1);
+        let point = body_point();
+        let mut events = click_events(point).to_vec();
+        events.extend(click_events(point));
+        let answers = run(&ctx, &row, &events, Modifiers::NONE);
+
+        assert!(
+            answers.iter().flatten().any(|click| *click == Click::Play),
+            "a double click did not play: {answers:?}"
+        );
+    }
+
+    #[test]
+    fn enter_on_a_focused_row_plays_and_does_not_select() {
+        let ctx = context();
+        let row = row_of(1);
+        let point = body_point();
+        // The click is what gives the row the keyboard, and it selects once.
+        let first = run(&ctx, &row, &click_events(point), Modifiers::NONE);
+        assert!(
+            first
+                .iter()
+                .flatten()
+                .any(|click| matches!(click, Click::Select(_))),
+            "the row never took the keyboard: {first:?}"
+        );
+
+        let key = |pressed| Event::Key {
+            key: Key::Enter,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        };
+        let answers = run(&ctx, &row, &[key(true), key(false)], Modifiers::NONE);
+
+        assert_eq!(
+            answers.iter().flatten().last(),
+            Some(&Click::Play),
+            "Enter on a focused row plays"
+        );
+        assert!(
+            !answers
+                .iter()
+                .flatten()
+                .any(|click| matches!(click, Click::Select(_))),
+            "Enter selected the row as well as playing it: {answers:?}"
+        );
+    }
+
+    #[test]
+    fn a_link_click_opens_and_does_not_select() {
+        let ctx = context();
+        let row = row_of(1);
+        let artist = columns().at(body_rect().min).artist.center();
+        let answers = run(&ctx, &row, &click_events(artist), Modifiers::NONE);
+
+        assert_eq!(
+            answers.iter().flatten().last(),
+            Some(&Click::Open(Page::credit("spotify:artist:b"))),
+            "a click on the artist cell opens it"
+        );
+        assert!(
+            !answers
+                .iter()
+                .flatten()
+                .any(|click| matches!(click, Click::Select(_))),
+            "a link click selected the row: {answers:?}"
+        );
+    }
+
+    #[test]
+    fn a_click_on_the_like_or_more_does_not_select_or_play() {
+        let columns = columns().at(body_rect().min);
+        for point in [columns.like.center(), columns.actions.center()] {
+            let ctx = context();
+            let row = row_of(1);
+            // A double click, because the second click is the one that would
+            // otherwise play the row underneath the control.
+            let mut events = click_events(point).to_vec();
+            events.extend(click_events(point));
+            let answers = run(&ctx, &row, &events, Modifiers::NONE);
+
+            assert!(
+                answers.iter().flatten().next().is_none(),
+                "a click on a control at {point:?} reported {answers:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn shift_and_ctrl_clicks_carry_their_press() {
+        for (modifiers, press) in [
+            (Modifiers::SHIFT, Press::Extend),
+            (Modifiers::COMMAND, Press::Toggle),
+            (Modifiers::ALT, Press::Replace),
+        ] {
+            let ctx = context();
+            let row = row_of(1);
+            let answers = run(&ctx, &row, &click_events(body_point()), modifiers);
+            assert_eq!(
+                answers.iter().flatten().last(),
+                Some(&Click::Select(press)),
+                "{modifiers:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_three_point_twitch_between_clicks_does_not_lift_but_seven_points_does() {
+        let ctx = context();
+        let row = row_of(1);
+        let answers = run(&ctx, &row, &twitch(body_point(), 3.0), Modifiers::NONE);
+        assert!(
+            answers
+                .iter()
+                .flatten()
+                .any(|click| matches!(click, Click::Select(_))),
+            "a twitch is still a click: {answers:?}"
+        );
+        assert!(
+            !answers.iter().flatten().any(|click| *click == Click::Lift),
+            "a three-point twitch lifted the row: {answers:?}"
+        );
+
+        let ctx = context();
+        let row = row_of(1);
+        let answers = run(&ctx, &row, &twitch(body_point(), 7.0), Modifiers::NONE);
+        assert!(
+            answers.iter().flatten().any(|click| *click == Click::Lift),
+            "a seven-point move between the press and the release is a lift: {answers:?}"
+        );
+        assert!(
+            !answers
+                .iter()
+                .flatten()
+                .any(|click| matches!(click, Click::Select(_))),
+            "a lift also selected the row: {answers:?}"
+        );
+    }
+
+    #[test]
+    fn a_lifted_row_reports_a_lift_once() {
+        let ctx = context();
+        let row = row_of(1);
+        let from = body_point();
+        let mut events = vec![Event::PointerMoved(from), button(from, true)];
+        for step in 1..=6 {
+            events.push(Event::PointerMoved(from + vec2(step as f32 * 3.0, 0.0)));
+        }
+        events.push(button(from + vec2(18.0, 0.0), false));
+
+        let answers = run(&ctx, &row, &events, Modifiers::NONE);
+        assert_eq!(
+            answers
+                .iter()
+                .flatten()
+                .filter(|click| **click == Click::Lift)
+                .count(),
+            1,
+            "one drag reported more than one lift: {answers:?}"
+        );
+    }
+
+    #[test]
+    fn a_hovered_row_washes_with_row_hover() {
+        let ctx = context();
+        let tokens = Tokens::DARK;
+        let row = row_of(1);
+        let point = body_point();
+
+        // The reveal eases in, so the pointer rests for longer than one frame.
+        for _ in 0..12 {
+            let _ = row_fill(&ctx, &row, point);
+        }
+        assert_eq!(
+            row_fill(&ctx, &row, point),
+            Some(tokens.palette.row_hover),
+            "the hovered row washed with something other than the row hover"
+        );
+        // The reveal eases out too, so the pointer rests away for the same time.
+        for _ in 0..12 {
+            let _ = row_fill(&ctx, &row, Pos2::new(899.0, 799.0));
+        }
+        assert_eq!(
+            row_fill(&ctx, &row, Pos2::new(899.0, 799.0)),
+            None,
+            "a row with the pointer away still washed"
+        );
+    }
+
+    #[test]
+    fn the_row_does_not_reveal_or_fade_while_carrying() {
+        let ctx = context();
+        let row = Row {
+            look: Look {
+                carrying: true,
+                ..Look::default()
+            },
+            ..row_of(1)
+        };
+        let point = body_point();
+        for _ in 0..12 {
+            let _ = row_fill(&ctx, &row, point);
+        }
+
+        assert_eq!(
+            row_fill(&ctx, &row, point),
+            None,
+            "a carried row washed under the pointer"
+        );
+        // The number stands where the play glyph would, so the row is not
+        // revealed either.
+        let tokens = Tokens::DARK;
+        let mut output = ctx.run_ui(input_with(vec![Event::PointerMoved(point)]), |ui| {
+            let _ = show(ui, body_rect(), columns(), &row, &tokens);
+        });
+        output.textures_delta.clear();
+        assert!(
+            drawn_texts(&output).contains(&"1"),
+            "the number gave way to the play glyph while carrying"
+        );
+    }
+
+    /// A lift hands the row the focus, so a carried row has to shed the reveal
+    /// that focus would otherwise bring.
+    #[test]
+    fn a_carried_row_holding_the_focus_keeps_its_number_and_hides_the_like() {
+        let ctx = context();
+        let tokens = Tokens::DARK;
+        let row = row_of(1);
+        let point = body_point();
+        let like = columns().at(body_rect().min).like;
+
+        // The press is what gives the row the keyboard.
+        let answers = run(&ctx, &row, &click_events(point), Modifiers::NONE);
+        assert!(
+            answers
+                .iter()
+                .flatten()
+                .any(|click| matches!(click, Click::Select(_))),
+            "the row never took the keyboard: {answers:?}"
+        );
+
+        // The pointer leaves, so only the focus can reveal anything.
+        let mut focused = ctx.run_ui(
+            input_with(vec![Event::PointerMoved(Pos2::new(899.0, 799.0))]),
+            |ui| {
+                let _ = show(ui, body_rect(), columns(), &row, &tokens);
+            },
+        );
+        focused.textures_delta.clear();
+        assert!(
+            painted_into(&focused, like),
+            "the focused row revealed nothing, so the focus is not the row's"
+        );
+        assert!(
+            !drawn_texts(&focused).contains(&"1"),
+            "the focused row kept its number: {:?}",
+            drawn_texts(&focused)
+        );
+
+        let carried = Row {
+            look: Look {
+                carrying: true,
+                ..Look::default()
+            },
+            ..row_of(1)
+        };
+        let mut output = ctx.run_ui(input(), |ui| {
+            let _ = show(ui, body_rect(), columns(), &carried, &tokens);
+        });
+        output.textures_delta.clear();
+        assert!(
+            drawn_texts(&output).contains(&"1"),
+            "a carried row holding the focus gave its number to the play glyph: {:?}",
+            drawn_texts(&output)
+        );
+        assert!(
+            !painted_into(&output, like),
+            "a carried row holding the focus still drew its like"
+        );
+    }
+
+    #[test]
+    fn a_lifted_snapshot_paints_its_own_row_and_the_block_figures() {
+        let ctx = context();
+        let tokens = Tokens::DARK;
+        let row = row_of(4);
+        let lifted = row.lifted(columns());
+        let rect = Rect::from_min_size(
+            Pos2::new(120.0, 90.0),
+            vec2(900.0, crate::theme::extent::ROW_H),
+        );
+
+        let mut output = ctx.run_ui(input(), |ui| {
+            lifted.paint(
+                ui,
+                rect,
+                Ghosting {
+                    count: 4,
+                    total: Some("21:30"),
+                    flat: false,
+                },
+                &tokens,
+            );
+        });
+        output.textures_delta.clear();
+        let texts = drawn_texts(&output);
+
+        for label in ["Harbour Wall", "Slow Tide", "Record", "4", "×4", "21:30"] {
+            assert!(
+                texts.contains(&label),
+                "the ghost is missing {label}: {texts:?}"
+            );
+        }
+        assert!(
+            !texts.contains(&"3:42"),
+            "a block's running time replaces one row's length: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn a_block_with_no_total_paints_no_duration() {
+        let ctx = context();
+        let tokens = Tokens::DARK;
+        let lifted = row_of(4).lifted(columns());
+        let rect = Rect::from_min_size(
+            Pos2::new(120.0, 90.0),
+            vec2(900.0, crate::theme::extent::ROW_H),
+        );
+
+        let mut output = ctx.run_ui(input(), |ui| {
+            lifted.paint(
+                ui,
+                rect,
+                Ghosting {
+                    count: 3,
+                    total: None,
+                    flat: false,
+                },
+                &tokens,
+            );
+        });
+        output.textures_delta.clear();
+        let texts = drawn_texts(&output);
+
+        assert!(
+            !texts.contains(&"3:42"),
+            "a block with no honest total paints none, not one row's length: {texts:?}"
+        );
+        assert!(texts.contains(&"×3"), "the block still says how many it is");
+    }
+
+    /// An absent column is a zero-width rect, and a line elided to nothing still
+    /// lays out an ellipsis, so a lifted row must guard each column it paints.
+    #[test]
+    fn a_lifted_snapshot_paints_nothing_into_a_column_its_table_omits() {
+        let ctx = context();
+        let tokens = Tokens::DARK;
+        let present = crate::layout::table::Present {
+            artist: false,
+            album: false,
+            ..crate::layout::Table::Full.columns()
+        };
+        let columns = crate::layout::table::columns(900.0, present);
+        assert_eq!(columns.artist.width(), 0.0);
+        assert_eq!(columns.album.width(), 0.0);
+
+        let lifted = row_of(4).lifted(columns);
+        let rect = Rect::from_min_size(
+            Pos2::new(120.0, 90.0),
+            vec2(900.0, crate::theme::extent::ROW_H),
+        );
+        let mut output = ctx.run_ui(input(), |ui| {
+            lifted.paint(ui, rect, Ghosting::default(), &tokens);
+        });
+        output.textures_delta.clear();
+        let texts = drawn_texts(&output);
+
+        for label in ["Harbour Wall", "4", "3:42"] {
+            assert!(
+                texts.contains(&label),
+                "the ghost is missing {label}: {texts:?}"
+            );
+        }
+        for absent in ["…", "Slow Tide", "Record"] {
+            assert!(
+                !texts.contains(&absent),
+                "the ghost drew {absent} into a column its table omits: {texts:?}"
+            );
+        }
     }
 }

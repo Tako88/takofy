@@ -2,9 +2,10 @@
 //! playbar's clock, the hero's byline, the playlist band's description, and the
 //! age a playlist row gives its date.
 
-use takofy_model::{AddedAt, PublishedAt, ReleaseKind, TrackEntry};
+use takofy_model::{AddedAt, PlaylistEntry, PublishedAt, ReleaseKind, TrackEntry};
 
 use crate::discography::Chip;
+use crate::library::SidebarWrite;
 use crate::library_filter::RootKind;
 use crate::sidebar_kind::SidebarKind;
 
@@ -300,6 +301,25 @@ pub fn library_kind(kind: &str, detail: Option<&str>) -> String {
     }
 }
 
+/// What a playlist row says under its name.
+///
+/// A playlist that can take an add reads its own track count, because the count
+/// is the answer an add gets. Every other row reads its owner, as it always did.
+pub fn playlist_detail(entry: &PlaylistEntry) -> Option<String> {
+    match entry.add_basis() {
+        Some((_, tracks)) => Some(track_count_label(tracks)),
+        None => entry.owner.clone(),
+    }
+}
+
+/// What the sidebar says when one of its writes fails.
+pub fn sidebar_notice(write: SidebarWrite) -> &'static str {
+    match write {
+        SidebarWrite::Reorder => "Could not move that playlist. Try again.",
+        SidebarWrite::Add => "Could not add that track. Try again.",
+    }
+}
+
 /// The root's filter row labels each chip as the reference writes it.
 pub fn root_filter_label(kind: RootKind) -> &'static str {
     match kind {
@@ -426,6 +446,84 @@ pub fn plain_description(raw: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use takofy_model::{PlaylistAccess, Revision};
+
+    fn entry(
+        owner: Option<&str>,
+        tracks: Option<usize>,
+        access: Option<PlaylistAccess>,
+    ) -> PlaylistEntry {
+        PlaylistEntry {
+            uri: "spotify:playlist:a".to_owned(),
+            name: "A".to_owned(),
+            named: true,
+            cover: None,
+            description: None,
+            tracks,
+            owner: owner.map(str::to_owned),
+            access,
+        }
+    }
+
+    fn editable(editable: bool) -> Option<PlaylistAccess> {
+        Some(PlaylistAccess {
+            revision: Revision::from_wire(&[1]).expect("a revision"),
+            editable,
+        })
+    }
+
+    #[test]
+    fn an_addable_playlist_reads_its_track_count() {
+        assert_eq!(
+            playlist_detail(&entry(Some("Vela Moreno"), Some(12), editable(true))),
+            Some("12 tracks".to_owned())
+        );
+        assert_eq!(
+            playlist_detail(&entry(None, Some(0), editable(true))),
+            Some("0 tracks".to_owned()),
+            "an empty playlist still says how empty"
+        );
+    }
+
+    #[test]
+    fn one_track_is_singular() {
+        assert_eq!(
+            playlist_detail(&entry(Some("Vela Moreno"), Some(1), editable(true))),
+            Some("1 track".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_playlist_that_cannot_be_edited_keeps_its_owner() {
+        assert_eq!(
+            playlist_detail(&entry(Some("Vela Moreno"), Some(12), editable(false))),
+            Some("Vela Moreno".to_owned())
+        );
+        assert_eq!(
+            playlist_detail(&entry(None, Some(12), editable(false))),
+            None
+        );
+    }
+
+    #[test]
+    fn an_editable_playlist_with_no_count_keeps_its_owner() {
+        assert_eq!(
+            playlist_detail(&entry(Some("Vela Moreno"), None, editable(true))),
+            Some("Vela Moreno".to_owned())
+        );
+    }
+
+    #[test]
+    fn the_two_notices_name_what_could_not_be_done() {
+        assert_eq!(
+            sidebar_notice(SidebarWrite::Reorder),
+            "Could not move that playlist. Try again."
+        );
+        assert_eq!(
+            sidebar_notice(SidebarWrite::Add),
+            "Could not add that track. Try again."
+        );
+    }
 
     #[test]
     fn release_count_label_counts_releases() {

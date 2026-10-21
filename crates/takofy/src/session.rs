@@ -8,11 +8,11 @@ use std::future::Future;
 
 use librespot::core::SessionConfig;
 use takofy_core::credentials::AccessToken;
-use takofy_core::engine::{Engine, EngineError};
+use takofy_core::engine::{Engine, EngineError, RootlistRead};
 use takofy_core::playback::{Playback, PlaybackError, PlaybackEvent};
 use takofy_model::{
-    AlbumDetail, ArtistDetail, CoverUrl, FollowedArtist, FollowedShow, PlaylistEntry, SavedAlbum,
-    ShowDetail, TrackEntry, TrackLyrics,
+    AlbumDetail, ArtistDetail, CoverUrl, FollowedArtist, FollowedShow, Move, PlaylistAccess,
+    Revision, SavedAlbum, ShowDetail, TrackEntry, TrackLyrics,
 };
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::oneshot::Receiver;
@@ -41,6 +41,7 @@ impl SessionError {
             Self::Engine(EngineError::Artist(_)) => "artist",
             Self::Engine(EngineError::Show(_)) => "show",
             Self::Engine(EngineError::Lyrics(_)) => "lyrics",
+            Self::Engine(EngineError::Playlist(_)) => "playlist",
             Self::Engine(EngineError::Followed(_)) => "followed",
             Self::Playback(error) => match error {
                 PlaybackError::NoAudioBackend => "no audio backend",
@@ -58,6 +59,7 @@ impl SessionError {
 pub(crate) struct TrackPage {
     pub tracks: Vec<TrackEntry>,
     pub cover: Option<CoverUrl>,
+    pub access: Option<PlaylistAccess>,
 }
 
 /// One artist's page data, plus whether the user follows it.
@@ -83,12 +85,38 @@ pub(crate) trait SessionHost: Send + 'static {
         token: &AccessToken,
     ) -> impl Future<Output = Result<(), SessionError>> + Send;
 
-    fn rootlist(&self) -> impl Future<Output = Result<Vec<PlaylistEntry>, SessionError>> + Send;
+    fn rootlist(&self) -> impl Future<Output = Result<RootlistRead, SessionError>> + Send;
+
+    /// Writes one move to the sidebar's playlists, answering the revision to
+    /// hold next.
+    fn move_playlist(
+        &self,
+        revision: &Revision,
+        from: usize,
+        to: usize,
+    ) -> impl Future<Output = Result<Revision, SessionError>> + Send;
+
+    /// Appends one track to a playlist, answering the revision to hold next.
+    fn add_track(
+        &self,
+        playlist: &str,
+        revision: &Revision,
+        from_index: usize,
+        track: &str,
+    ) -> impl Future<Output = Result<Revision, SessionError>> + Send;
 
     fn tracks(
         &mut self,
         playlist: &str,
     ) -> impl Future<Output = Result<TrackPage, SessionError>> + Send;
+
+    /// Writes one move to a playlist, answering the revision to hold next.
+    fn move_track(
+        &self,
+        playlist: &str,
+        revision: &Revision,
+        moves: &[Move],
+    ) -> impl Future<Output = Result<Revision, SessionError>> + Send;
 
     fn album(&self, album: &str) -> impl Future<Output = Result<AlbumDetail, SessionError>> + Send;
 
@@ -200,9 +228,40 @@ impl SessionHost for LiveSession {
         Ok(())
     }
 
-    async fn rootlist(&self) -> Result<Vec<PlaylistEntry>, SessionError> {
+    async fn rootlist(&self) -> Result<RootlistRead, SessionError> {
         match &self.engine {
             Some(engine) => engine.rootlist().await.map_err(SessionError::Engine),
+            None => Err(SessionError::NotConnected),
+        }
+    }
+
+    async fn move_playlist(
+        &self,
+        revision: &Revision,
+        from: usize,
+        to: usize,
+    ) -> Result<Revision, SessionError> {
+        match &self.engine {
+            Some(engine) => engine
+                .move_playlist(revision, from, to)
+                .await
+                .map_err(SessionError::Engine),
+            None => Err(SessionError::NotConnected),
+        }
+    }
+
+    async fn add_track(
+        &self,
+        playlist: &str,
+        revision: &Revision,
+        from_index: usize,
+        track: &str,
+    ) -> Result<Revision, SessionError> {
+        match &self.engine {
+            Some(engine) => engine
+                .add_track(playlist, revision, from_index, track)
+                .await
+                .map_err(SessionError::Engine),
             None => Err(SessionError::NotConnected),
         }
     }
@@ -211,16 +270,30 @@ impl SessionHost for LiveSession {
         let Some(engine) = &self.engine else {
             return Err(SessionError::NotConnected);
         };
-        let mut pages = engine.tracks(playlist);
-        let tracks = pages
-            .next()
+        let page = engine
+            .playlist_page(playlist)
             .await
-            .map_err(SessionError::Engine)?
-            .unwrap_or_default();
+            .map_err(SessionError::Engine)?;
         Ok(TrackPage {
-            tracks,
-            cover: pages.cover(),
+            tracks: page.tracks,
+            cover: page.cover,
+            access: page.access,
         })
+    }
+
+    async fn move_track(
+        &self,
+        playlist: &str,
+        revision: &Revision,
+        moves: &[Move],
+    ) -> Result<Revision, SessionError> {
+        match &self.engine {
+            Some(engine) => engine
+                .move_track(playlist, revision, moves)
+                .await
+                .map_err(SessionError::Engine),
+            None => Err(SessionError::NotConnected),
+        }
     }
 
     async fn album(&self, album: &str) -> Result<AlbumDetail, SessionError> {

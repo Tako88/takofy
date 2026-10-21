@@ -7,7 +7,7 @@
 
 use std::time::Instant;
 
-use egui::{Pos2, Rect, Sense, Ui, vec2};
+use egui::{Id, Pos2, Rect, Sense, Ui, vec2};
 use takofy_model::PlaylistEntry;
 
 use crate::cover::{Art, Cover};
@@ -15,6 +15,7 @@ use crate::format::{
     added_label, byline, format_position, library_kind, library_note, media_size, media_type,
     plain_description, root_empty_label, root_filter_label, root_loading_label, total_duration_ms,
 };
+use crate::landing::Zone;
 use crate::layout::{Table, cards, table as table_layout};
 use crate::library::{BandCover, Library, Load, MediaLayout, band_cover};
 use crate::library_filter::{self, Item, RootKind};
@@ -22,8 +23,10 @@ use crate::message::{Command, Failure};
 use crate::player::Transport;
 use crate::queue::Queue;
 use crate::route::Page;
+use crate::scroll;
 use crate::theme::{Tokens, extent, space};
 
+use super::carry::{self, Ghost};
 use super::filter_row;
 use super::hero;
 use super::media;
@@ -80,12 +83,16 @@ pub fn tracks_view(
     // must not fetch a first-track cover it is about to replace with the
     // context image.
     let settled = !matches!(library.tracks, Load::Loading);
+    // Read before the rows, which borrow the tracks these ask about.
+    let movable = library.movable();
+    let liftable = library.liftable();
     let mut command = None;
     let mut retry = false;
     // A link click is applied after the scroll area, because the matches below
     // borrow the tracks it has to move away from.
     let mut open: Option<Page> = None;
     egui::ScrollArea::vertical().show(ui, |ui| {
+        scroll::follow_drag(ui);
         // The band heads the playlist whenever the library can name the
         // selection; with no name there is nothing to say above the rows. It
         // takes the width and starts at the cursor, so the header and the rows
@@ -159,6 +166,12 @@ pub fn tracks_view(
                             .for_playlist(table_layout::is_playlist(&tracks.playlist)),
                     );
                     head(ui, columns, tokens);
+                    if let Some(failure) = tracks.notice {
+                        ui.label(recipe::muted(
+                            crate::signin::failure_message(failure),
+                            tokens,
+                        ));
+                    }
                     let count = tracks.tracks.len();
                     // The whole list is reserved at once, so the scrollbar is right,
                     // and only the rows the viewport can show are laid out and given
@@ -167,6 +180,12 @@ pub fn tracks_view(
                     let list = list_rect(ui, count);
                     ui.allocate_rect(list, Sense::hover());
                     let visible = ui.clip_rect();
+                    // The page is in the id: a selection belongs to a page, not to a row index.
+                    let mut selection = carry::List::open(
+                        ui.ctx(),
+                        Id::unique(("playlist-tracks", tracks.playlist.as_str())),
+                        count,
+                    );
 
                     for (index, entry) in tracks.tracks.iter().enumerate() {
                         let rect = table_layout::row_rect(list, index, extent::ROW_H);
@@ -188,15 +207,41 @@ pub fn tracks_view(
                             duration: duration.as_deref(),
                             state: state_of(&entry.uri, transport),
                             cover: art.look(entry.cover.as_ref(), now),
+                            look: selection.look(index),
                         };
                         match track_row::show(ui, rect, columns, &row, tokens) {
                             Some(Click::Play) => {
                                 command = queue.start(&tracks.tracks, index, transport);
                             }
                             Some(Click::Open(page)) => open = Some(page),
+                            Some(Click::Select(press)) => selection.press(index, press),
+                            // A write in flight holds the page still; a page it
+                            // may not write still lifts.
+                            Some(Click::Lift) if liftable => {
+                                let ghost = Ghost::Table(row.lifted(columns));
+                                selection.lift(index, rect.size(), ghost, |row| {
+                                    tracks.tracks.get(row).cloned()
+                                });
+                            }
+                            Some(Click::Lift) => {}
                             None => {}
                         }
                     }
+                    // Only a page that may take the write says where its own
+                    // rows land.
+                    if movable {
+                        selection.offer(
+                            &tracks.playlist,
+                            Zone {
+                                hit: list.intersect(visible),
+                                list,
+                                row_h: extent::ROW_H,
+                                first: 0,
+                                count,
+                            },
+                        );
+                    }
+                    selection.finish(ui.ctx());
                 }
             }
         });
@@ -794,8 +839,12 @@ mod tests {
     use crate::message::Update;
     use crate::theme::hero::PLAY;
     use crate::theme::{fonts, style};
+    use crate::view::rows::Look;
     use crate::view::track_row::State;
-    use takofy_model::{AddedAt, AlbumDetail, CoverImage, CoverUrl, PlaylistEntry, TrackEntry};
+    use takofy_model::{
+        AddedAt, AlbumDetail, CoverImage, CoverUrl, PlaylistAccess, PlaylistEntry, Revision,
+        TrackEntry,
+    };
 
     /// The probe window: 900 by 400, the size every bare-row test runs in.
     const PROBE: Vec2 = Vec2::new(900.0, 400.0);
@@ -872,6 +921,18 @@ mod tests {
                 egui::epaint::Shape::Text(text) if text.galley.text() == label => {
                     Some(text.galley.clone())
                 }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{label:?} was not painted"))
+    }
+
+    /// Where the galley whose text is exactly `label` was painted.
+    fn galley_at(output: &egui::FullOutput, label: &str) -> Pos2 {
+        output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Text(text) if text.galley.text() == label => Some(text.pos),
                 _ => None,
             })
             .unwrap_or_else(|| panic!("{label:?} was not painted"))
@@ -965,6 +1026,7 @@ mod tests {
             playlist: playlist.to_owned(),
             tracks,
             cover: None,
+            access: None,
         });
         library
     }
@@ -1031,6 +1093,15 @@ mod tests {
             .collect()
     }
 
+    /// The access a read hands a page: what it may change, and the version it was
+    /// read at.
+    fn access(editable: bool) -> Option<PlaylistAccess> {
+        Some(PlaylistAccess {
+            revision: Revision::from_wire(b"rev-1").expect("a non-empty revision"),
+            editable,
+        })
+    }
+
     fn library_with(tracks: Vec<TrackEntry>) -> Library {
         let mut library = Library::default();
         library.select("spotify:playlist:a");
@@ -1038,6 +1109,20 @@ mod tests {
             playlist: "spotify:playlist:a".to_owned(),
             tracks,
             cover: None,
+            access: access(true),
+        });
+        library
+    }
+
+    /// The same page, read at a revision the user may not write.
+    fn read_only_library_with(tracks: Vec<TrackEntry>) -> Library {
+        let mut library = Library::default();
+        library.select("spotify:playlist:a");
+        library.apply(&Update::Tracks {
+            playlist: "spotify:playlist:a".to_owned(),
+            tracks,
+            cover: None,
+            access: access(false),
         });
         library
     }
@@ -1054,6 +1139,7 @@ mod tests {
             description: None,
             owner: None,
             tracks: None,
+            access: None,
         }]));
         library
     }
@@ -1089,6 +1175,7 @@ mod tests {
             description: description.map(str::to_owned),
             owner: owner.map(str::to_owned),
             tracks: None,
+            access: None,
         }
     }
 
@@ -1111,6 +1198,7 @@ mod tests {
             description: None,
             owner: None,
             tracks: None,
+            access: None,
         }
     }
 
@@ -1138,6 +1226,7 @@ mod tests {
             description: None,
             owner: None,
             tracks: None,
+            access: None,
         }
     }
 
@@ -1464,6 +1553,353 @@ mod tests {
         clicks(PROBE, ctx, centre, 2, library, transport, queue)
     }
 
+    /// Whether `playlist`'s list holds `index` as part of its selection.
+    fn picked(ctx: &Context, playlist: &str, count: usize, index: usize) -> bool {
+        crate::view::carry::List::open(ctx, egui::Id::unique(("playlist-tracks", playlist)), count)
+            .look(index)
+            .selected
+    }
+
+    /// One pass of the tracklist with one event, and the command it reported.
+    fn pass(
+        ctx: &Context,
+        event: Event,
+        library: &mut Library,
+        transport: &mut Transport,
+        queue: &mut Queue,
+    ) -> Option<Command> {
+        let tokens = Tokens::DARK;
+        let mut command = None;
+        run(ctx, input(vec![event]), |ui| {
+            command = tracks_view(
+                ui,
+                Table::Full,
+                library,
+                transport,
+                queue,
+                &mut Art::default(),
+                Instant::now(),
+                NOW_MS,
+                &tokens,
+            );
+        });
+        command
+    }
+
+    /// A press on `from` and a nine-point drag: the passes that lift a row.
+    fn lift_row(
+        ctx: &Context,
+        from: Pos2,
+        library: &mut Library,
+        transport: &mut Transport,
+        queue: &mut Queue,
+    ) {
+        let mut events = vec![
+            Event::PointerMoved(from),
+            crate::view::test_support::button(from, true),
+        ];
+        for step in 1..=3 {
+            events.push(Event::PointerMoved(
+                from + Vec2::new(step as f32 * 3.0, 0.0),
+            ));
+        }
+        for event in events {
+            let _ = pass(ctx, event, library, transport, queue);
+        }
+    }
+
+    #[test]
+    fn a_single_click_selects_and_a_double_click_plays_it() {
+        let ctx = context();
+        let mut library = library_with(vec![track("a", "t0"), track("b", "t1")]);
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+
+        let centre = row_rect_for(&ctx, 2, 1).center();
+        let command = click(&ctx, centre, &mut library, &mut transport, &mut queue);
+
+        assert_eq!(command, None, "a single click plays nothing");
+        assert!(transport.now_playing.is_none(), "and starts nothing");
+        assert!(
+            picked(&ctx, "spotify:playlist:a", 2, 1),
+            "the row under the click is picked"
+        );
+        assert!(
+            !picked(&ctx, "spotify:playlist:a", 2, 0),
+            "and only that row"
+        );
+
+        // A fresh page for the double click: a third click inside the window is
+        // a triple click, and that plays nothing.
+        let ctx = context();
+        let mut library = library_with(vec![track("a", "t0"), track("b", "t1")]);
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let command = double_click(&ctx, centre, &mut library, &mut transport, &mut queue);
+
+        assert_eq!(
+            command,
+            Some(Command::Play {
+                uri: "b".to_owned()
+            }),
+            "a double click starts the track"
+        );
+    }
+
+    #[test]
+    fn a_selection_stays_on_the_playlist_it_was_made_on() {
+        let ctx = context();
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut first = library_with(vec![track("a", "t0"), track("b", "t1")]);
+        let centre = row_rect_for(&ctx, 2, 1).center();
+        let _ = click(&ctx, centre, &mut first, &mut transport, &mut queue);
+
+        let mut second = Library::default();
+        let _ = second.select("spotify:playlist:b");
+        second.apply(&Update::Tracks {
+            playlist: "spotify:playlist:b".to_owned(),
+            tracks: vec![track("a", "t0"), track("b", "t1")],
+            cover: None,
+            access: None,
+        });
+        let tokens = Tokens::DARK;
+        run(&ctx, input(Vec::new()), |ui| {
+            let _ = tracks_view(
+                ui,
+                Table::Full,
+                &mut second,
+                &mut transport,
+                &mut queue,
+                &mut Art::default(),
+                Instant::now(),
+                NOW_MS,
+                &tokens,
+            );
+        });
+
+        assert!(
+            picked(&ctx, "spotify:playlist:a", 2, 1),
+            "the first playlist keeps its pick"
+        );
+        assert!(
+            !picked(&ctx, "spotify:playlist:b", 2, 1),
+            "the second playlist does not show it against the same index"
+        );
+    }
+
+    #[test]
+    fn lifting_a_row_puts_that_track_in_the_payload() {
+        let ctx = context();
+        let mut library = library_with(vec![track("a", "t0"), track("b", "t1")]);
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+
+        let centre = row_rect_for(&ctx, 2, 1).center();
+        lift_row(&ctx, centre, &mut library, &mut transport, &mut queue);
+
+        let carried = crate::view::carry::carried(&ctx).expect("a carried track");
+        assert_eq!(
+            carried.source,
+            crate::view::carry::Source::List(egui::Id::unique((
+                "playlist-tracks",
+                "spotify:playlist:a"
+            ))),
+            "the playlist names itself as the source"
+        );
+        assert_eq!(carried.rows, vec![1], "one row travels");
+        assert_eq!(carried.entries.len(), 1);
+        assert_eq!(carried.entries[0].uri, "b", "the row under the pointer");
+        assert!(
+            matches!(carried.ghost, crate::view::carry::Ghost::Table(_)),
+            "a track row's own snapshot is the ghost"
+        );
+    }
+
+    #[test]
+    fn a_carried_list_scrolls_at_its_edge() {
+        let ctx = context();
+        let tokens = Tokens::DARK;
+        let tracks: Vec<TrackEntry> = (0..40)
+            .map(|index| track(&format!("t{index}"), &format!("t{index}")))
+            .collect();
+        let mut library = library_with(tracks);
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+
+        let mut drawn = |raw: RawInput, library: &mut Library| -> Vec<String> {
+            let output = run(&ctx, raw, |ui| {
+                let _ = tracks_view(
+                    ui,
+                    Table::Full,
+                    library,
+                    &mut transport,
+                    &mut queue,
+                    &mut Art::default(),
+                    Instant::now(),
+                    NOW_MS,
+                    &tokens,
+                );
+            });
+            drawn_texts(&output)
+                .into_iter()
+                .map(str::to_owned)
+                .collect()
+        };
+
+        let before = drawn(sized_input(PROBE, Vec::new()), &mut library);
+        egui::DragAndDrop::set_payload(&ctx, ());
+
+        // The pointer holds the list's bottom edge for a quarter of a second.
+        let edge = Pos2::new(PROBE.x / 2.0, PROBE.y - 1.0);
+        let mut time = 1.0;
+        for _ in 0..24 {
+            time += 0.016;
+            let mut raw = sized_input(PROBE, vec![Event::PointerMoved(edge)]);
+            raw.time = Some(time);
+            let _ = drawn(raw, &mut library);
+        }
+        let after = drawn(sized_input(PROBE, Vec::new()), &mut library);
+
+        assert!(
+            after
+                .iter()
+                .any(|line| line.starts_with('t') && !before.contains(line)),
+            "the carried list scrolls at its edge: {after:?}"
+        );
+    }
+
+    #[test]
+    fn an_editable_page_offers_its_rows() {
+        let ctx = context();
+        let mut library = library_with(vec![track("a", "t0"), track("b", "t1")]);
+        let output = tracklist_frame_in(&ctx, TALL, &mut library);
+
+        let offer = crate::view::carry::take_offer(&ctx).expect("an editable page offers its rows");
+        assert_eq!(
+            offer.list,
+            egui::Id::unique(("playlist-tracks", "spotify:playlist:a")),
+            "the offer names the list its rows lift under"
+        );
+        assert_eq!(offer.playlist, "spotify:playlist:a");
+        assert_eq!(offer.zone.first, 0, "the page numbers its rows from zero");
+        assert_eq!(offer.zone.count, 2);
+        assert_eq!(offer.zone.row_h, extent::ROW_H);
+        for row in ["t0", "t1"] {
+            assert!(
+                offer.zone.hit.contains(galley_at(&output, row)),
+                "{row} is inside the drop target"
+            );
+        }
+    }
+
+    #[test]
+    fn a_read_only_page_offers_nothing() {
+        let ctx = context();
+        let mut library = read_only_library_with(vec![track("a", "t0"), track("b", "t1")]);
+        let _ = tracklist_frame(&ctx, Table::Full, &mut library);
+
+        assert_eq!(
+            crate::view::carry::take_offer(&ctx),
+            None,
+            "a page the user may not write takes no reorder"
+        );
+    }
+
+    #[test]
+    fn a_read_only_page_still_lifts_and_carries() {
+        let ctx = context();
+        let mut library = read_only_library_with(vec![track("a", "t0"), track("b", "t1")]);
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+
+        let centre = row_rect_for(&ctx, 2, 1).center();
+        lift_row(&ctx, centre, &mut library, &mut transport, &mut queue);
+
+        let carried = crate::view::carry::carried(&ctx).expect("a read-only page still lifts");
+        assert_eq!(carried.rows, vec![1]);
+        assert_eq!(
+            carried.entries[0].uri, "b",
+            "the lifted track travels to the queue"
+        );
+    }
+
+    #[test]
+    fn a_page_without_access_offers_nothing() {
+        let ctx = context();
+        let mut library = library_selected(
+            "spotify:playlist:a",
+            vec![track("a", "t0"), track("b", "t1")],
+        );
+        let _ = tracklist_frame(&ctx, Table::Full, &mut library);
+
+        assert_eq!(
+            crate::view::carry::take_offer(&ctx),
+            None,
+            "a read that named no state offers no reorder"
+        );
+    }
+
+    #[test]
+    fn a_reverted_move_says_so_above_the_rows() {
+        let ctx = context();
+        let tracks = vec![track("a", "t0"), track("b", "t1"), track("c", "t2")];
+        let mut library = library_with(tracks.clone());
+        assert!(
+            library
+                .move_tracks("spotify:playlist:a", &[0], 2, &[tracks[0].clone()])
+                .is_some(),
+            "the page takes the move first"
+        );
+        library.apply(&Update::MoveFailed {
+            playlist: "spotify:playlist:a".to_owned(),
+            failure: Failure::Save,
+        });
+
+        let output = tracklist_frame(&ctx, Table::Full, &mut library);
+        let drawn = drawn_galleys(&output);
+        let notice = crate::signin::failure_message(Failure::Save);
+        assert!(
+            galley_top(&drawn, notice) < galley_top(&drawn, "t0"),
+            "the failure heads the rows it puts back"
+        );
+        assert_eq!(painted_rows(&output), vec![0, 1, 2], "the order is back");
+    }
+
+    #[test]
+    fn the_failed_page_draws_its_failure_and_a_retry_that_reloads() {
+        let ctx = context();
+        let mut library = library_with(vec![track("a", "t0")]);
+        library.apply(&Update::TracksFailed {
+            playlist: "spotify:playlist:a".to_owned(),
+            failure: Failure::Load,
+        });
+        let output = tracklist_frame(&ctx, Table::Full, &mut library);
+        let painted = drawn_texts(&output);
+        assert!(
+            painted.contains(&crate::signin::failure_message(Failure::Load)),
+            "the failure is drawn: {painted:?}"
+        );
+        assert!(painted.contains(&"Retry"), "with the retry beside it");
+
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let retry = galley_at(&output, "Retry");
+        assert_eq!(
+            click(
+                &ctx,
+                retry + Vec2::new(4.0, 4.0),
+                &mut library,
+                &mut transport,
+                &mut queue
+            ),
+            Some(Command::LoadTracks {
+                playlist: "spotify:playlist:a".to_owned()
+            }),
+            "the retry asks for the page again"
+        );
+    }
+
     #[test]
     fn a_double_click_on_a_row_starts_that_track_through_the_queue() {
         let ctx = context();
@@ -1543,6 +1979,7 @@ mod tests {
             duration: None,
             state: State::Resting,
             cover: Cover::Missing,
+            look: Look::default(),
         };
 
         run(&ctx, input(Vec::new()), |ui| {
@@ -1556,7 +1993,8 @@ mod tests {
                 crate::view::test_support::button(rect.center(), false),
             ] {
                 run(&ctx, input(vec![event]), |ui| {
-                    clicked |= track_row::show(ui, rect, columns, &row, &tokens).is_some();
+                    clicked |=
+                        track_row::show(ui, rect, columns, &row, &tokens) == Some(Click::Play);
                 });
             }
         }
@@ -1589,6 +2027,7 @@ mod tests {
             duration: Some("3:42"),
             state: State::Resting,
             cover: Cover::Missing,
+            look: Look::default(),
         };
 
         let mut output = ctx.run_ui(input(Vec::new()), |ui| {
@@ -1780,8 +2219,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         // would win. The command's uri is `a` whichever row is taken, so the
         // queue's position is the only thing that tells the two apart: starting
         // the second leaves nothing after it, while the first would leave entry
-        // two. `Queue::can_previous` reports only that the queue is non-empty, so
-        // it cannot sharpen this; `can_next` is the sharp assertion.
+        // two, so `can_next` is the sharp assertion.
         //
         // Index 1 also exercises `row_rect`'s pitch: the other tests only ever
         // click index 0.
@@ -1992,6 +2430,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             duration: Some("3:42"),
             state: State::Resting,
             cover: Cover::Missing,
+            look: Look::default(),
         };
 
         let mut output = ctx.run_ui(input(Vec::new()), |ui| {
@@ -2418,6 +2857,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             playlist: "a".to_owned(),
             tracks: vec![track("t", "t")],
             cover: None,
+            access: None,
         });
         library.to_playlists();
 
@@ -2444,6 +2884,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             playlist: "a".to_owned(),
             tracks: vec![track("t0", "t0")],
             cover: None,
+            access: None,
         });
         library.to_playlists();
 
@@ -2959,6 +3400,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             playlist: "a".to_owned(),
             tracks: vec![track("t0", "t0")],
             cover: None,
+            access: None,
         });
         assert_eq!(
             library.open(Page::Album("spotify:album:x".to_owned())),
@@ -3107,6 +3549,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             playlist: "a".to_owned(),
             tracks: Vec::new(),
             cover: Some(context_cover.clone()),
+            access: None,
         });
 
         art.begin_frame();
@@ -3173,6 +3616,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             playlist: "a".to_owned(),
             tracks: vec![track("t", "t")],
             cover: Some(context_cover.clone()),
+            access: None,
         });
         art.begin_frame();
         run(&ctx, input(Vec::new()), |ui| {
@@ -3572,6 +4016,7 @@ mod root_tests {
             description: None,
             owner: None,
             tracks: None,
+            access: None,
         }
     }
 
@@ -4054,6 +4499,7 @@ mod root_tests {
             playlist: "a".to_owned(),
             tracks: vec![episode.entry()],
             cover: None,
+            access: None,
         });
         let mut art = Art::default();
 

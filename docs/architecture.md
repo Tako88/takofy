@@ -54,9 +54,10 @@ landed on, so the window can draw the time left and follow the player's truth
 rather than a guess. The play queue is a window reducer too: it owns the index
 and the advance rule, folds the same updates the transport does, and hands back
 an ordinary `Play`, so the worker stays a dumb executor and never learns about
-the queue. None of this changes the shutdown order — the command task still
-owns the engine and the player, and teardown still joins it before the runtime
-drops.
+the queue. It also owns the edits to its own order and the selection over its
+rows, since both are indices into it. None of this changes the shutdown order —
+the command task still owns the engine and the player, and teardown still joins
+it before the runtime drops.
 
 Cover art runs through the same split. The binary fetches and decodes; the
 window only holds textures. A frame's protocol is `begin_frame` → `look` →
@@ -78,6 +79,27 @@ answer and never on the press.
 Labels branch on URI kind: a track and an episode resolve through their own
 batch, and an episode is a label like a track with its show as its credit.
 
+A playlist reorder is the second write, and it is applied locally first: the
+rows take their new order as the drop lands, and then the moves go out through
+librespot's spclient on the revision that read named. A block of rows is still
+one POST: contiguous picks are one `MOV` of their own length, and gapped picks
+are a sequence of `MOV`s in one delta, each naming indices in the list the
+previous move left, so the order on screen is the replay of the moves that were
+written. That request is made in a single attempt — `TryTimes(1)` for the one
+POST, the default strategy restored after it — because a `MOV` is not
+idempotent: a retry after a 5xx or a lost reply can move the row twice on a
+server that has already applied it, so the one request that might have landed is
+not repeated. While a write is in flight no
+read's order is adopted; a probe recorded the server answering a write with the
+new revision and the old order, so adopting on revision equality would undo the
+drag, and the worker answers in the order its commands were sent, which is what
+makes the gate correct. The page reads only the first page of its context and a
+move touches indices inside it, so every boundary the marker draws is a wire
+index. A failed write puts the rows back where they were and the page says so
+above them: the sentence is the whole affordance, and trying again means
+dragging again rather than a button that could write twice for one gesture. Two
+devices editing one list are last-write-wins, each naming the revision it read.
+
 The library is four kinds over three collection sets. Followed shows, followed
 artists and saved albums each come from their own set — saved albums share the
 `collection` set with liked songs, so the read keeps the album URIs and drops
@@ -94,6 +116,39 @@ a dozen likeness reads, and an artist the wire names nobody for asks for nothing
 Lyrics follow the same rule from the other side: the pane asks for the playing
 track's lines when the tab is first opened, so playback never spends a request
 nobody asked to see.
+
+The sidebar column has two meanings, told apart by what is carried: a playlist
+row dragged to a gap moves the playlists, and a track dragged onto a playlist
+row is appended to it. One pointer position therefore cannot mean both, and a
+carried playlist never reaches the queue, so a mis-drop cannot quietly reorder
+a library. One pointer position never draws both a rule and a fill either: the
+boundary target draws the rule, the row target draws the fill, and the two are
+mutually exclusive by construction.
+
+Both are writes through the same single-attempt path as a page's move — the
+rootlist's own changes route for a move, the playlist's for an append — because
+none of the three is idempotent, and a retry after a lost reply would apply the
+change twice. A row index is only a wire index when the rootlist read kept every
+item and reached the list's end, so a read that dropped one makes the whole
+column read-only rather than move a different playlist. Length and revision
+always move together: a confirmed append replaces the entry's revision and adds
+one to its count, so the next append names a revision whose length it holds.
+
+The library allows one write at a time across the page move and the sidebar's
+two. While a sidebar write is in flight the sidebar's own read is dropped — the
+part of it that carries an order, because a read taken after the write reached
+the server can carry the new revision with the old order or the old count, and
+the confirmation cannot tell which side of the write it came from. A dropped
+read takes its access with it, since a revision only means something beside the
+order it was read with. An access that lands while an add is pending is taken
+all the same, because an add writes one playlist and not the rootlist; a
+reorder's access waits for the reply that replaces its revision. A page's read
+is not dropped: one that lands while that page's own move is pending keeps the
+order the drag made. A queue insert is outside that gate: it is local and names
+no revision, so no pending write can invalidate it. What the gate cannot fix is
+a reply that was lost after the server applied the write: the held revision is
+then old, the next write fails, and the library has to be reloaded. That is
+preferred to retrying a write that is not idempotent.
 
 ## Who owns what
 

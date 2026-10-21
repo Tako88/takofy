@@ -50,6 +50,27 @@ const EXTRAS_REDUCED: [(Control, Icon); 3] = [
     (Control::Fullscreen, Icon::Expand),
 ];
 
+const DOWN: [(Control, Icon); 2] = [
+    (Control::Shuffle, Icon::Shuffle),
+    (Control::Previous, Icon::Previous),
+];
+const UP_FULL: [(Control, Icon); 2] =
+    [(Control::Next, Icon::Next), (Control::Repeat, Icon::Repeat)];
+/// Below 1000px the extras shed the queue, so it joins the transport after
+/// repeat. Play stays centred: the row centres on `DOWN`.
+const UP_REDUCED: [(Control, Icon); 3] = [
+    (Control::Next, Icon::Next),
+    (Control::Repeat, Icon::Repeat),
+    (Control::Queue, Icon::Queue),
+];
+
+fn up_controls(form: Playbar) -> &'static [(Control, Icon)] {
+    match form {
+        Playbar::Full => &UP_FULL,
+        Playbar::Reduced => &UP_REDUCED,
+    }
+}
+
 fn now_controls(form: Playbar) -> &'static [(Control, Icon)] {
     match form {
         Playbar::Full => &NOW_FULL,
@@ -68,7 +89,7 @@ fn extras_controls(form: Playbar) -> &'static [(Control, Icon)] {
 /// control in it asked for.
 #[expect(
     clippy::too_many_arguments,
-    reason = "the bar draws three columns from the transport, the queue and the frame"
+    reason = "the bar draws three columns from the transport, the queue, the carry and the frame"
 )]
 pub fn show(
     ui: &mut Ui,
@@ -76,21 +97,23 @@ pub fn show(
     queue: &mut Queue,
     position_ms: u32,
     form: Playbar,
+    queue_claimed: bool,
     rect: Rect,
     cover: Cover,
     tokens: &Tokens,
 ) -> Option<Command> {
     let cols = layout::playbar_for(rect, form);
     let [now, centre, extras] = cols.columns(rect);
+    let claimed = queue_claimed.then_some(Control::Queue);
 
     row_centred(ui, "playbar-now", now, |ui| {
         now_column(ui, transport, cover, tokens, form);
     });
     let command = row_centred(ui, "playbar-centre", centre, |ui| {
-        centre_column(ui, transport, queue, position_ms, tokens)
+        centre_column(ui, transport, queue, position_ms, form, claimed, tokens)
     });
     row_centred(ui, "playbar-extras", extras, |ui| {
-        extras_column(ui, tokens, form);
+        extras_column(ui, tokens, form, claimed);
     });
     command
 }
@@ -199,6 +222,7 @@ fn now_column(ui: &mut Ui, transport: &Transport, cover: Cover, tokens: &Tokens,
         ui,
         tokens,
         now_controls(form),
+        None,
         &mut x,
         art_rect.center().y,
         &|_| true,
@@ -213,22 +237,21 @@ fn centre_column(
     transport: &mut Transport,
     queue: &mut Queue,
     position_ms: u32,
+    form: Playbar,
+    claimed: Option<Control>,
     tokens: &Tokens,
 ) -> Option<Command> {
     let stack = extent::BUTTON_LG + space::S1 + extent::SLIDER_H;
     let top = row_centre(ui) - stack / 2.0;
-    let down = [
-        (Control::Shuffle, Icon::Shuffle),
-        (Control::Previous, Icon::Previous),
-    ];
-    let up = [(Control::Next, Icon::Next), (Control::Repeat, Icon::Repeat)];
-    let width = 2.0 * run_width(&down) + extent::BUTTON_LG;
+    let up = up_controls(form);
+    let width = 2.0 * run_width(&DOWN) + extent::BUTTON_LG;
     let mut x = ui.max_rect().center().x - width / 2.0;
 
     let mut clicked = draw_run(
         ui,
         tokens,
-        &down,
+        &DOWN,
+        claimed,
         &mut x,
         top + extent::BUTTON / 2.0,
         &|control| control != Control::Previous || queue.can_previous(),
@@ -254,7 +277,8 @@ fn centre_column(
     if let Some(control) = draw_run(
         ui,
         tokens,
-        &up,
+        up,
+        claimed,
         &mut x,
         top + extent::BUTTON / 2.0,
         &|control| control != Control::Next || queue.can_next(),
@@ -390,11 +414,57 @@ fn seek_command(
 }
 
 /// The buttons the reference sheds first as the window narrows, and the volume.
-fn extras_column(ui: &mut Ui, tokens: &Tokens, form: Playbar) {
+fn extras_column(ui: &mut Ui, tokens: &Tokens, form: Playbar, claimed: Option<Control>) {
     let controls = extras_controls(form);
     let width = run_width(controls);
     let mut x = ui.max_rect().right() - width;
-    draw_run(ui, tokens, controls, &mut x, row_centre(ui), &|_| true);
+    draw_run(
+        ui,
+        tokens,
+        controls,
+        claimed,
+        &mut x,
+        row_centre(ui),
+        &|_| true,
+    );
+}
+
+/// A `BUTTON` square whose left edge is `x` and whose centre is `centre_y`.
+fn square(x: f32, centre_y: f32) -> Rect {
+    Rect::from_min_size(
+        Pos2::new(x, centre_y - extent::BUTTON / 2.0),
+        Vec2::splat(extent::BUTTON),
+    )
+}
+
+/// Where the queue button is drawn inside the bar `rect`: the shell's drop area
+/// is built around it, so it is computed from the same tables the draw walks.
+pub fn queue_button(rect: Rect, form: Playbar) -> Rect {
+    debug_assert_eq!(
+        EXTRAS_FULL.first().map(|(control, _)| *control),
+        Some(Control::Queue),
+        "the full bar's queue button is the first of its extras"
+    );
+    debug_assert_eq!(
+        UP_REDUCED.last().map(|(control, _)| *control),
+        Some(Control::Queue),
+        "the reduced bar's queue button is the last of the transport"
+    );
+
+    let [_, centre, extras] = layout::playbar_for(rect, form).columns(rect);
+    match form {
+        Playbar::Full => square(
+            extras.right() - run_width(extras_controls(form)),
+            extras.center().y,
+        ),
+        Playbar::Reduced => {
+            let stack = extent::BUTTON_LG + space::S1 + extent::SLIDER_H;
+            let y = centre.center().y - stack / 2.0 + extent::BUTTON / 2.0;
+            let start = centre.center().x - (2.0 * run_width(&DOWN) + extent::BUTTON_LG) / 2.0;
+            let up = start + run_width(&DOWN) + extent::BUTTON_LG + space::S1;
+            square(up + run_width(up_controls(form)) - extent::BUTTON, y)
+        }
+    }
 }
 
 /// Draws a run left to right, advancing `x` past it, and returns the one
@@ -403,6 +473,7 @@ fn draw_run(
     ui: &mut Ui,
     tokens: &Tokens,
     controls: &[(Control, Icon)],
+    claimed: Option<Control>,
     x: &mut f32,
     centre_y: f32,
     can_act: &dyn Fn(Control) -> bool,
@@ -428,16 +499,13 @@ fn draw_run(
                 Pos2::new(*x, centre_y - extent::BUTTON / 2.0),
                 Vec2::splat(extent::BUTTON),
             );
-            let slot = controls::icon_button(
-                ui,
-                tokens,
-                *control,
-                rect,
-                *glyph,
-                Size::MD,
-                "",
-                can_act(*control),
-            );
+            let slot = if claimed == Some(*control) {
+                // A claimed control is inert, so the moment is not consulted.
+                controls::icon_button_claimed(ui, tokens, *control, rect, *glyph, Size::MD, "")
+            } else {
+                let live = can_act(*control);
+                controls::icon_button(ui, tokens, *control, rect, *glyph, Size::MD, "", live)
+            };
             if slot.response.clicked() {
                 clicked = Some(*control);
             }
@@ -737,6 +805,7 @@ mod tests {
                     &mut queue,
                     0,
                     Playbar::Full,
+                    false,
                     bar,
                     Cover::Missing,
                     &tokens,
@@ -789,6 +858,7 @@ mod tests {
                     &mut queue,
                     0,
                     Playbar::Full,
+                    false,
                     bar,
                     Cover::Missing,
                     &tokens,
@@ -881,6 +951,119 @@ mod tests {
         assert!(!reduced.contains(&Control::Devices));
         assert!(full.contains(&Control::Queue));
         assert!(full.contains(&Control::Devices));
+        // Shed from the extras, carried by the transport.
+        assert!(up_controls(Playbar::Reduced).contains(&(Control::Queue, Icon::Queue)));
+    }
+
+    #[test]
+    fn the_queue_control_is_in_exactly_one_run_in_each_form() {
+        for form in [Playbar::Full, Playbar::Reduced] {
+            let runs = [
+                now_controls(form),
+                DOWN.as_slice(),
+                up_controls(form),
+                extras_controls(form),
+            ];
+            let count = runs
+                .iter()
+                .flat_map(|run| run.iter())
+                .filter(|(control, _)| *control == Control::Queue)
+                .count();
+            assert_eq!(count, 1, "{form:?}: the queue must be drawn once");
+        }
+    }
+
+    #[test]
+    fn the_reduced_transport_ends_with_the_queue_and_the_full_one_does_not() {
+        assert_eq!(
+            up_controls(Playbar::Reduced)
+                .last()
+                .map(|(control, _)| *control),
+            Some(Control::Queue)
+        );
+        assert!(
+            !up_controls(Playbar::Full)
+                .iter()
+                .any(|(control, _)| *control == Control::Queue)
+        );
+    }
+
+    #[test]
+    fn the_queue_button_and_its_drop_area_fit_at_every_supported_width() {
+        for width in 640..=2000 {
+            let width = width as f32;
+            let rect =
+                Rect::from_min_size(Pos2::new(0.0, 100.0), Vec2::new(width, extent::PLAYBAR_H));
+            let form = layout::regions_for(width).playbar;
+            let [_, centre, extras] = layout::playbar_for(rect, form).columns(rect);
+            let column = match form {
+                Playbar::Full => extras,
+                Playbar::Reduced => centre,
+            };
+
+            let button = queue_button(rect, form);
+            assert_eq!(button.size(), Vec2::splat(extent::BUTTON), "{width}");
+            assert!(
+                column.contains(button.min) && column.contains(button.max),
+                "{width}: {form:?} draws the queue button at {button:?} outside {column:?}"
+            );
+
+            let area = crate::landing::Area::around(button).hit;
+            // The reduced transport sits 12pt above the centre of a 64pt bar and
+            // the 44pt area reaches 22pt above a 28pt button, so its top laps the
+            // bar's edge by exactly 2pt. That is still the panel above it.
+            assert!(
+                area.left() >= rect.left()
+                    && area.right() <= rect.right()
+                    && area.top() >= rect.top() - 2.0
+                    && area.bottom() <= rect.bottom(),
+                "{width}: {form:?} puts the drop area at {area:?} outside {rect:?}"
+            );
+        }
+    }
+
+    /// The shell builds the queue's drop area around `queue_button`, so that
+    /// function has to return the rect the bar actually paints.
+    #[test]
+    fn the_claimed_queue_button_is_painted_where_queue_button_says() {
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        let bar = Rect::from_min_size(Pos2::new(0.0, 100.0), Vec2::new(900.0, extent::PLAYBAR_H));
+        let mut transport = playing(0);
+
+        let mut output = ctx.run_ui(
+            RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 300.0))),
+                ..Default::default()
+            },
+            |ui| {
+                let mut queue = Queue::default();
+                let _ = show(
+                    ui,
+                    &mut transport,
+                    &mut queue,
+                    0,
+                    Playbar::Reduced,
+                    true,
+                    bar,
+                    Cover::Missing,
+                    &tokens,
+                );
+            },
+        );
+        output.textures_delta.clear();
+
+        let claimed: Vec<Rect> = output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(shape) if shape.fill == tokens.palette.row_selected => {
+                    Some(shape.rect)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(claimed, vec![queue_button(bar, Playbar::Reduced)]);
     }
 
     #[test]

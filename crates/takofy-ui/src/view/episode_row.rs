@@ -7,10 +7,15 @@
 //! A row's identity is its URI and its position in the list. A show cannot list
 //! one episode twice today, but the position costs nothing and keeps the row's
 //! contract the same as every other list's.
+//!
+//! Its body is a click target and a drag source both. The toggle and a double
+//! click play the episode; a single click picks the row, and a drag lifts it, so
+//! scanning the list with the pointer never starts playback.
 
 use egui::emath::GuiRounding;
 use egui::{FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2, WidgetInfo};
 
+use crate::cover::Cover;
 use crate::icon::{self, Icon};
 use crate::layout::episode::row_parts;
 use crate::theme::icon::Size;
@@ -19,6 +24,8 @@ use crate::theme::{
 };
 
 use super::controls;
+use super::queue_row;
+use super::rows::{self, Look};
 use super::text as recipe;
 use super::track_row::{Click, State};
 
@@ -34,52 +41,94 @@ pub struct Row<'a> {
     pub meta: &'a str,
     pub duration: Option<&'a str>,
     pub state: State,
+    /// Where the row stands in its list's selection, and in a carry.
+    pub look: Look,
+    /// Whether this row is the one a just-finished edit landed on.
+    pub refocus: bool,
 }
 
-/// Draws one row into `rect` and reports a play request.
+impl Row<'_> {
+    /// The row as it is drawn in flight: owned, and free of interaction.
+    ///
+    /// An episode has no cover anywhere in its row, so its ghost carries the
+    /// missing-cover slot rather than a picture the page never fetched.
+    pub fn lifted(&self) -> queue_row::Lifted {
+        queue_row::Lifted::new(
+            self.title.to_owned(),
+            self.meta.to_owned(),
+            self.duration.map(str::to_owned),
+            Cover::Missing,
+        )
+    }
+}
+
+/// Draws one row into `rect` and reports what the pointer or the keyboard asked
+/// for.
 ///
-/// The toggle asks for one episode; a double click anywhere on the row asks for
-/// the same. A single click only takes focus, so scanning a list does not start
-/// playback by accident.
+/// The toggle asks for one episode; a double click anywhere else on the row asks
+/// for the same. A single click only picks the row, so scanning a list does not
+/// start playback by accident.
 pub fn show(ui: &mut Ui, rect: Rect, row: &Row<'_>, tokens: &Tokens) -> Option<Click> {
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return None;
     }
     let key = (row.uri, row.index);
-    let response = ui.interact(
-        rect,
-        ui.scope_id().with(("episode-row", key)),
-        Sense::click(),
-    );
+    let body = rows::body(ui, rect, ui.scope_id().with(("episode-row", key)), row.look);
+    let response = &body.response;
     response.widget_info(|| WidgetInfo::labeled(egui::Role::Button, true, spoken(row)));
-    if response.clicked() {
-        // The keyboard follows the pointer: Tab continues from the row that was
-        // picked. The space never reaches here; the shell takes it for the
-        // transport before anything draws.
+    if row.refocus {
+        // A row an edit landed on takes the keyboard with it.
         response.request_focus();
     }
-    if response.has_focus() {
-        // A row reached by Tab has to come into view, and only a drawn row can
-        // hold focus.
-        response.scroll_to_me(None);
-    }
 
-    let highlight = ui.ctx().animate_bool_with_time_and_easing(
+    let hover = rows::fade(
+        ui,
         ui.scope_id().with(("episode-row-hover", key)),
         response.hovered() || response.has_focus(),
-        motion::FAST,
-        ease::out,
+        row.look,
     );
-    if highlight > 0.0 {
-        ui.painter().rect_filled(
-            rect,
-            radius::SM,
-            tokens.palette.surface_hover.gamma_multiply(highlight),
-        );
-    }
-    if response.has_focus() {
+    let before = rows::dim(ui, row.look);
+    rows::wash(ui, rect, hover, row.look, tokens);
+    // A ring on a carried row is noise: the pointer already holds it.
+    if response.has_focus() && !row.look.carrying {
         controls::focus_ring(ui, rect, tokens);
     }
+    let (played, toggle) = paint(ui, rect, row, key, tokens);
+    ui.set_opacity(before);
+
+    // Keyboard activation is answered before the pointer's, so a click landing in
+    // the same frame can never swallow it.
+    let keyboard = response.has_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+    if keyboard || played {
+        return Some(Click::Play);
+    }
+    // A double click is a second way to play the row, but not over the toggle:
+    // the toggle has already answered its own click, and counting the same
+    // press twice would restart the episode it just started.
+    let over_toggle = response
+        .interact_pointer_pos()
+        .is_some_and(|at| toggle.contains(at));
+    if response.double_clicked() && !over_toggle {
+        return Some(Click::Play);
+    }
+    if body.lift {
+        return Some(Click::Lift);
+    }
+    if over_toggle {
+        return None;
+    }
+    body.press.map(Click::Select)
+}
+
+/// Draws the row's hairline, its length, its toggle and its text, and reports
+/// whether the toggle was clicked with the rect it answered in.
+fn paint(
+    ui: &mut Ui,
+    rect: Rect,
+    row: &Row<'_>,
+    key: (&str, usize),
+    tokens: &Tokens,
+) -> (bool, Rect) {
     // The reference closes every row with a hairline rather than drawing a box.
     ui.painter().rect_filled(
         Rect::from_min_size(
@@ -115,23 +164,7 @@ pub fn show(ui: &mut Ui, rect: Rect, row: &Row<'_>, tokens: &Tokens) -> Option<C
             tokens.palette.text_subtle,
         );
     }
-
-    // Keyboard activation is answered before the pointer's, so a click landing in
-    // the same frame can never swallow it.
-    let keyboard = response.has_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
-    if keyboard || played {
-        return Some(Click::Play);
-    }
-    // A double click is a second way to play the row, but not over the toggle:
-    // the toggle has already answered its own click, and counting the same
-    // press twice would restart the episode it just started.
-    let over_toggle = response
-        .interact_pointer_pos()
-        .is_some_and(|at| parts.toggle.contains(at));
-    if response.double_clicked() && !over_toggle {
-        return Some(Click::Play);
-    }
-    None
+    (played, parts.toggle)
 }
 
 /// The bordered square that starts one episode.
@@ -269,9 +302,10 @@ fn spoken(row: &Row<'_>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use egui::{Context, Event, Pos2, RawInput, Shape, Ui, vec2};
+    use egui::{Context, Event, Pos2, RawInput, Shape, Ui, Vec2, vec2};
 
     use super::*;
+    use crate::selection::Press;
     use crate::theme::{fonts, style};
 
     const PROBE: Rect = Rect {
@@ -319,6 +353,8 @@ mod tests {
             meta: "",
             duration: None,
             state: State::Resting,
+            look: Look::default(),
+            refocus: false,
         }
     }
 
@@ -387,16 +423,205 @@ mod tests {
         let ctx = context();
         let tokens = Tokens::DARK;
         let row = row("A Title");
-        let mut played = false;
+        let mut answers = Vec::new();
         for event in crate::view::test_support::click_events(Pos2::new(300.0, 40.0)) {
-            let played = &mut played;
+            let answers = &mut answers;
             run(&ctx, input(vec![event]), |ui| {
-                if show(ui, PROBE, &row, &tokens) == Some(Click::Play) {
-                    *played = true;
+                if let Some(click) = show(ui, PROBE, &row, &tokens) {
+                    answers.push(click);
                 }
             });
         }
-        assert!(!played, "one click on the row is not a play");
+        assert!(
+            !answers.contains(&Click::Play),
+            "one click on the row is not a play"
+        );
+        assert_eq!(
+            answers,
+            vec![Click::Select(Press::Replace)],
+            "one click on the row is a press"
+        );
+    }
+
+    #[test]
+    fn a_double_click_plays() {
+        let ctx = context();
+        let row = row("A Title");
+        run(&ctx, input(Vec::new()), |ui| {
+            let _ = show(ui, PROBE, &row, &Tokens::DARK);
+        });
+        let mut played = false;
+        for _ in 0..2 {
+            for event in crate::view::test_support::click_events(Pos2::new(300.0, 40.0)) {
+                let played = &mut played;
+                run(&ctx, input(vec![event]), |ui| {
+                    if show(ui, PROBE, &row, &Tokens::DARK) == Some(Click::Play) {
+                        *played = true;
+                    }
+                });
+            }
+        }
+        assert!(played, "a double click must play the episode");
+    }
+
+    #[test]
+    fn shift_and_ctrl_clicks_carry_their_press() {
+        for (modifiers, press) in [
+            (
+                egui::Modifiers {
+                    shift: true,
+                    ..egui::Modifiers::NONE
+                },
+                Press::Extend,
+            ),
+            (
+                egui::Modifiers {
+                    command: true,
+                    ..egui::Modifiers::NONE
+                },
+                Press::Toggle,
+            ),
+        ] {
+            let ctx = context();
+            let row = row("A Title");
+            run(&ctx, input(Vec::new()), |ui| {
+                let _ = show(ui, PROBE, &row, &Tokens::DARK);
+            });
+            let mut answers = Vec::new();
+            let mut events = vec![Event::ModifiersChanged(modifiers)];
+            events.extend(crate::view::test_support::click_events(Pos2::new(
+                300.0, 40.0,
+            )));
+            for event in events {
+                let answers = &mut answers;
+                run(&ctx, input(vec![event]), |ui| {
+                    if let Some(click) = show(ui, PROBE, &row, &Tokens::DARK) {
+                        answers.push(click);
+                    }
+                });
+            }
+            assert_eq!(answers, vec![Click::Select(press)], "{modifiers:?}");
+        }
+    }
+
+    #[test]
+    fn a_seven_point_drag_lifts_the_row_and_a_three_point_twitch_does_not() {
+        for (travel, lifts) in [(3.0, false), (7.0, true)] {
+            let ctx = context();
+            let row = row("A Title");
+            run(&ctx, input(Vec::new()), |ui| {
+                let _ = show(ui, PROBE, &row, &Tokens::DARK);
+            });
+            let start = Pos2::new(300.0, 40.0);
+            let end = start + Vec2::new(travel, 0.0);
+            let mut lifted = false;
+            for event in [
+                Event::PointerMoved(start),
+                crate::view::test_support::button(start, true),
+                Event::PointerMoved(end),
+                crate::view::test_support::button(end, false),
+            ] {
+                let lifted = &mut lifted;
+                run(&ctx, input(vec![event]), |ui| {
+                    if show(ui, PROBE, &row, &Tokens::DARK) == Some(Click::Lift) {
+                        *lifted = true;
+                    }
+                });
+            }
+            assert_eq!(lifted, lifts, "a {travel}-point move");
+        }
+    }
+
+    #[test]
+    fn a_lifted_row_reports_a_lift_once() {
+        let ctx = context();
+        let row = row("A Title");
+        run(&ctx, input(Vec::new()), |ui| {
+            let _ = show(ui, PROBE, &row, &Tokens::DARK);
+        });
+
+        let start = Pos2::new(300.0, 40.0);
+        let end = start + Vec2::new(10.0, 0.0);
+        let mut lifts = 0;
+        for events in [
+            vec![Event::PointerMoved(start)],
+            vec![crate::view::test_support::button(start, true)],
+            vec![Event::PointerMoved(end)],
+            vec![Event::PointerMoved(end + Vec2::new(2.0, 0.0))],
+            vec![Event::PointerMoved(end + Vec2::new(4.0, 0.0))],
+        ] {
+            let lifts = &mut lifts;
+            run(&ctx, input(events), |ui| {
+                if show(ui, PROBE, &row, &Tokens::DARK) == Some(Click::Lift) {
+                    *lifts += 1;
+                }
+            });
+        }
+        assert_eq!(lifts, 1, "a held drag lifts once, not every frame");
+    }
+
+    #[test]
+    fn the_row_does_not_reveal_or_fade_while_carrying() {
+        let ctx = context();
+        let tokens = Tokens::DARK;
+        let row = Row {
+            look: Look {
+                carrying: true,
+                ..Look::default()
+            },
+            ..row("A Title")
+        };
+        let at = Pos2::new(300.0, 40.0);
+        let mut washed = false;
+        for _ in 0..30 {
+            let mut output = ctx.run_ui(input(vec![Event::PointerMoved(at)]), |ui| {
+                let _ = show(ui, PROBE, &row, &tokens);
+            });
+            output.textures_delta.clear();
+            washed |= output.shapes.iter().any(|clipped| {
+                matches!(&clipped.shape, Shape::Rect(shape) if shape.fill == tokens.palette.row_hover)
+            });
+        }
+        assert!(!washed, "nothing hovers while a block is carried");
+    }
+
+    #[test]
+    fn a_hovered_row_washes_with_row_hover() {
+        let ctx = context();
+        let tokens = Tokens::DARK;
+        let row = row("A Title");
+        let at = Pos2::new(300.0, 40.0);
+        let mut washed = false;
+        for _ in 0..30 {
+            let mut output = ctx.run_ui(input(vec![Event::PointerMoved(at)]), |ui| {
+                let _ = show(ui, PROBE, &row, &tokens);
+            });
+            output.textures_delta.clear();
+            washed |= output.shapes.iter().any(|clipped| {
+                matches!(&clipped.shape, Shape::Rect(shape) if shape.fill == tokens.palette.row_hover)
+            });
+        }
+        assert!(washed, "a hovered row must paint the row hover wash");
+    }
+
+    #[test]
+    fn the_ghost_is_a_queue_row_with_no_cover() {
+        let row = Row {
+            description: Some("A long way home."),
+            meta: "Field Notes",
+            duration: Some("46 min"),
+            ..row("A Title")
+        };
+        let ghost = row.lifted();
+        assert_eq!(
+            ghost,
+            queue_row::Lifted::new(
+                "A Title".to_owned(),
+                "Field Notes".to_owned(),
+                Some("46 min".to_owned()),
+                Cover::Missing
+            )
+        );
     }
 
     #[test]

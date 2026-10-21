@@ -308,6 +308,19 @@ pub fn row_rect(list: Rect, index: usize, row_h: f32) -> Rect {
     Rect::from_min_size(pos2(list.left(), top), vec2(list.width(), row_h))
 }
 
+/// The boundary nearest `y`: 0 is before the first row, `count` after the last.
+///
+/// The inverse of [`row_rect`], so a pointer's height and the row it landed on
+/// are two readings of one layout. A degenerate pitch or a non-finite pointer
+/// reports the first boundary rather than panicking.
+pub fn boundary_at(list: Rect, y: f32, row_h: f32, count: usize) -> usize {
+    if !y.is_finite() || !row_h.is_finite() || row_h <= 0.0 {
+        return 0;
+    }
+    let boundary = ((y - list.top()) / row_h).round();
+    boundary.clamp(0.0, count as f32) as usize
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -686,5 +699,62 @@ mod tests {
         assert_eq!(row_rect(list, 0, 0.0).height(), 0.0);
         assert_eq!(row_rect(list, 0, f32::NAN).height(), 0.0);
         assert_eq!(row_rect(list, 0, -10.0).height(), 0.0);
+    }
+
+    fn list() -> Rect {
+        Rect::from_min_size(pos2(10.0, 100.0), vec2(300.0, 176.0))
+    }
+
+    #[test]
+    fn the_boundary_in_a_rows_top_half_is_its_own_index_and_the_bottom_half_the_next() {
+        let list = list();
+        let row_h = extent::ROW_H;
+        assert_eq!(boundary_at(list, list.top() + 1.0, row_h, 4), 0);
+        assert_eq!(
+            boundary_at(list, list.top() + row_h / 2.0 - 1.0, row_h, 4),
+            0
+        );
+        assert_eq!(
+            boundary_at(list, list.top() + row_h / 2.0 + 1.0, row_h, 4),
+            1
+        );
+        assert_eq!(boundary_at(list, list.top() + row_h + 1.0, row_h, 4), 1);
+        assert_eq!(
+            boundary_at(list, list.top() + 2.0 * row_h - 1.0, row_h, 4),
+            2
+        );
+    }
+
+    #[test]
+    fn above_the_list_is_the_first_boundary() {
+        let list = list();
+        assert_eq!(boundary_at(list, list.top() - 50.0, extent::ROW_H, 4), 0);
+    }
+
+    #[test]
+    fn below_the_list_is_the_count() {
+        let list = list();
+        assert_eq!(boundary_at(list, list.bottom() + 50.0, extent::ROW_H, 4), 4);
+    }
+
+    #[test]
+    fn a_zero_or_non_finite_pitch_is_the_first_boundary() {
+        let list = list();
+        let y = list.top() + 100.0;
+        assert_eq!(boundary_at(list, y, 0.0, 4), 0);
+        assert_eq!(boundary_at(list, y, -1.0, 4), 0);
+        assert_eq!(boundary_at(list, y, f32::NAN, 4), 0);
+        assert_eq!(boundary_at(list, f32::NAN, extent::ROW_H, 4), 0);
+    }
+
+    #[test]
+    fn boundary_at_inverts_row_rect() {
+        let list = list();
+        let row_h = extent::ROW_H;
+        for index in 0..4 {
+            let rect = row_rect(list, index, row_h);
+            assert_eq!(boundary_at(list, rect.top() + 1.0, row_h, 4), index);
+            assert_eq!(boundary_at(list, rect.center().y, row_h, 4), index + 1);
+        }
     }
 }
