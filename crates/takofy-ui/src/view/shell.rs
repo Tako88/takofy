@@ -21,7 +21,7 @@ use crate::search::Act;
 use crate::theme::{Tokens, radius, stroke};
 
 use super::Screen;
-use super::carry::{self, Carry, Offer, Source};
+use super::carry::{self, Carry, ColumnOffer, Offer, Source};
 use super::{ghost, now_playing, playbar, playlist, queue_pane, search_menu, sidebar, topbar};
 
 /// The signed-in shell: three columns over a playbar, each panel a hairline box
@@ -159,19 +159,25 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
     // (a page list sets its payload in `List::finish`, inside the view region).
     let bar_rect = grid.playbar.shrink(inset);
     let carry = carry::carried(ui.ctx());
-    // Read every frame, carried or not, so a page that did not draw offers nothing.
+    // Read every frame, carried or not, so a surface that did not draw offers
+    // nothing.
     let offer = carry::take_offer(ui.ctx());
-    let target = carry.as_deref().and_then(|carry| {
-        // A row lifted from a page list lands in that list's own rows, so that
-        // page's zone wins there; everywhere else the queue's zones decide.
-        reorder_target(carry, offer.as_ref(), ui.ctx().pointer_latest_pos()).or_else(|| {
-            let area = queue_area(regions.now_playing, regions.playbar, bar_rect, carry);
-            landing::target(
-                ui.ctx().pointer_latest_pos(),
-                queue_reply.zone.as_ref(),
-                area.as_ref(),
-            )
-        })
+    let column = carry::take_column_offer(ui.ctx());
+    let pointer = ui.ctx().pointer_latest_pos();
+    let target = carry.as_deref().and_then(|carry| match carry.source {
+        // The column is a write of its own: a playlist never reaches the queue.
+        Source::Playlist => rootlist_target(carry, column.as_ref(), pointer),
+        Source::List(_) | Source::Queue => {
+            // A row lifted from a page list lands in that list's own rows, so
+            // that page's zone wins there; the sidebar's rows take an add; and
+            // everywhere else the queue's zones decide.
+            reorder_target(carry, offer.as_ref(), pointer)
+                .or_else(|| add_target(carry, column.as_ref(), screen.library, pointer))
+                .or_else(|| {
+                    let area = queue_area(regions.now_playing, regions.playbar, bar_rect, carry);
+                    landing::target(pointer, queue_reply.zone.as_ref(), area.as_ref())
+                })
+        }
     });
 
     command = command.or(region(ui, "playbar", grid.playbar, bar_rect, |ui| {
@@ -440,6 +446,60 @@ fn reorder_target(carry: &Carry, offer: Option<&Offer>, pointer: Option<Pos2>) -
     Some(Target::Reorder(at))
 }
 
+/// Where a carried playlist lands in the sidebar column, when it moved at all.
+///
+/// A drop on the carried row's own two gaps is no move: it would name the place
+/// the row already holds.
+fn rootlist_target(
+    carry: &Carry,
+    column: Option<&ColumnOffer>,
+    pointer: Option<Pos2>,
+) -> Option<Target> {
+    let column = column?;
+    let at = landing::resolve(pointer, Some(&column.zone))?;
+    if let [row] = carry.rows[..]
+        && (at.boundary == row || at.boundary == row + 1)
+    {
+        return None;
+    }
+    Some(Target::Rootlist(at))
+}
+
+/// Where a carried track adds itself: the playlist row under the pointer, when
+/// that row may take it.
+fn add_target(
+    carry: &Carry,
+    column: Option<&ColumnOffer>,
+    library: &Library,
+    pointer: Option<Pos2>,
+) -> Option<Target> {
+    let column = column?;
+    carry.track()?;
+    let slot = landing::slot_at(pointer, Some(&column.zone), column.drawn)?;
+    library.addable(slot.row).then_some(Target::Add(slot))
+}
+
+/// Moves a dropped playlist in the sidebar, and asks for one rootlist write.
+fn rearrange(screen: &mut Screen<'_>, carry: &Carry, at: Landing, free: bool) -> Option<Command> {
+    if !free {
+        return None;
+    }
+    let [row] = carry.rows[..] else {
+        return None;
+    };
+    screen
+        .library
+        .move_playlist(row, at.boundary, carry.playlist.as_deref()?)
+}
+
+/// Adds the carried track to the row it was dropped on, and asks for one write.
+fn add(screen: &mut Screen<'_>, carry: &Carry, slot: landing::Slot, free: bool) -> Option<Command> {
+    if !free {
+        return None;
+    }
+    screen.library.add_track(slot.row, carry.track()?)
+}
+
 /// Moves the dropped row in its own list and picks where it landed.
 ///
 /// A page that is no longer free to write, or a carry that is not exactly one
@@ -485,6 +545,8 @@ fn settle_carry(
     if ctx.input(|input| input.pointer.button_released(PointerButton::Primary)) {
         let command = match target {
             Some(Target::Reorder(at)) => reorder(&ctx, screen, offer, &carry, at, free),
+            Some(Target::Rootlist(at)) => rearrange(screen, &carry, at, free),
+            Some(Target::Add(slot)) => add(screen, &carry, slot, free),
             Some(target) => {
                 land(screen.queue, &carry, target);
                 None
@@ -775,6 +837,7 @@ mod tests {
     use crate::queue::Queue;
     use crate::route::Page;
     use crate::search::Device;
+    use crate::selection::Press;
     use crate::signin::SignIn;
     use crate::theme::{extent, fonts, icon, space, style};
 
@@ -3616,6 +3679,137 @@ mod tests {
         queue
     }
 
+    /// The sidebar column's content box: the panel less its hairline.
+    fn sidebar_rect(window: &Window) -> Rect {
+        let content = Rect::from_min_size(egui::Pos2::ZERO, window.size);
+        let regions = layout::regions_for(content.width());
+        let shell = layout::shell_for(&regions);
+        layout::grid_for(content, &shell)
+            .sidebar
+            .shrink(stroke::HAIRLINE)
+    }
+
+    /// The rows the sidebar holds, in the order it holds them.
+    fn sidebar_order(window: &Window) -> Vec<String> {
+        match &window.library.playlists {
+            Load::Ready(entries) => entries.iter().map(|entry| entry.name.clone()).collect(),
+            Load::Idle | Load::Loading | Load::Failed(_) => Vec::new(),
+        }
+    }
+
+    /// Puts `rows` in the sidebar, each read at `access`.
+    ///
+    /// The list is written directly so a page already on screen survives it: a
+    /// `Playlists` update prunes a page whose playlist is not in it.
+    fn sidebar_playlists(
+        window: &mut Window,
+        rows: &[(&str, Option<usize>)],
+        access: Option<PlaylistAccess>,
+    ) {
+        window.library.playlists = Load::Ready(
+            rows.iter()
+                .map(|(name, tracks)| PlaylistEntry {
+                    uri: format!("playlist:{name}"),
+                    name: (*name).to_owned(),
+                    named: true,
+                    cover: None,
+                    description: None,
+                    owner: None,
+                    tracks: *tracks,
+                    access: access.clone(),
+                })
+                .collect(),
+        );
+        if let Some(access) = access {
+            window.library.apply(&Update::RootlistAccess(access));
+        }
+    }
+
+    fn rootlist_access(editable: bool) -> PlaylistAccess {
+        PlaylistAccess {
+            revision: revision("root-1"),
+            editable,
+        }
+    }
+
+    /// A page whose rows are real track URIs, so one can be added to a playlist.
+    fn page_of_tracks(window: &mut Window, uris: &[&str]) {
+        window.library.apply(&Update::Playlists(vec![PlaylistEntry {
+            uri: PLAYLIST.to_owned(),
+            name: "Mix".to_owned(),
+            named: true,
+            cover: None,
+            description: None,
+            owner: None,
+            tracks: None,
+            access: None,
+        }]));
+        window.library.select(PLAYLIST);
+        window.library.apply(&Update::Tracks {
+            playlist: PLAYLIST.to_owned(),
+            tracks: uris
+                .iter()
+                .map(|uri| TrackEntry {
+                    uri: (*uri).to_owned(),
+                    title: (*uri).to_owned(),
+                    ..track(0, None)
+                })
+                .collect(),
+            cover: None,
+            access: page_access(true),
+        });
+    }
+
+    const TRACK_A: &str = "spotify:track:4uLU6hMCjMI75M1A2tKUQC";
+    const TRACK_B: &str = "spotify:track:7ouMYWpwJ422jRcDASZB7P";
+
+    /// The top of the sidebar row painted as `title`, from the two lines it
+    /// draws. A row centres its name and kind in itself, and that offset is the
+    /// same for every row, so one row's lines measure all of them.
+    fn sidebar_row_top(output: &egui::FullOutput, area: Rect, title: &str, kind: &str) -> f32 {
+        let name = text_in(output, title, area)
+            .unwrap_or_else(|| panic!("{title} is painted in the sidebar"));
+        let kind = text_in(output, kind, area)
+            .unwrap_or_else(|| panic!("{kind} is painted in the sidebar"));
+        let inset = sidebar::ROW_H / 2.0 - (name.height() + kind.height()) / 2.0;
+        name.top() - inset
+    }
+
+    /// A point at the gap `at` of the sidebar's rows: 0 is above the first row,
+    /// `titles.len()` below the last.
+    fn sidebar_boundary(
+        window: &Window,
+        output: &egui::FullOutput,
+        titles: &[&str],
+        kind: &str,
+        at: usize,
+    ) -> egui::Pos2 {
+        let area = sidebar_rect(window);
+        let pitch = sidebar::ROW_H + space::PX;
+        let last = titles.len() - 1;
+        let y = if at > last {
+            sidebar_row_top(output, area, titles[last], kind) + pitch
+        } else {
+            sidebar_row_top(output, area, titles[at], kind)
+        };
+        egui::pos2(area.left() + 100.0, y)
+    }
+
+    /// The box a sidebar row's fill covers, from the row's own painted line.
+    fn sidebar_row_rect(
+        window: &Window,
+        output: &egui::FullOutput,
+        title: &str,
+        kind: &str,
+    ) -> Rect {
+        let area = sidebar_rect(window);
+        let top = sidebar_row_top(output, area, title, kind);
+        Rect::from_min_size(
+            egui::pos2(area.left() + space::S2, top),
+            Vec2::new(area.width() - 2.0 * space::S2, sidebar::ROW_H),
+        )
+    }
+
     /// Every entry in the queue, in order, wherever the index has got to.
     fn entries(queue: &Queue) -> Vec<String> {
         let count = queue.first_upcoming() + queue.upcoming().len();
@@ -4494,6 +4688,718 @@ mod tests {
             "list:p0",
             "the pick is on the track that moved"
         );
+    }
+
+    #[test]
+    fn dragging_a_playlist_below_the_next_moves_it_and_sends_one_write() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_playlists(
+            &mut window,
+            &[("A", None), ("B", None), ("C", None)],
+            Some(rootlist_access(true)),
+        );
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let from = row_line(&frame, sidebar_rect(&window), "A");
+        let to = sidebar_boundary(&window, &frame, &["A", "B", "C"], "Playlist", 2);
+
+        assert_eq!(
+            window.drag(&mut transport, &mut queue, from, to),
+            Some(Command::MovePlaylist {
+                revision: revision("root-1"),
+                from: 0,
+                to: 2,
+            }),
+            "the boundary is the gap, which is what the wire reads"
+        );
+        assert_eq!(sidebar_order(&window), ["B", "A", "C"]);
+        assert!(!window.library.rootlist_movable(), "the write is in flight");
+        assert_eq!(
+            window.frame(&mut transport, &mut queue, Vec::new()).0,
+            None,
+            "the gesture sends one write, not one a frame"
+        );
+    }
+
+    #[test]
+    fn dragging_a_playlist_to_the_top_writes_gap_zero() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_playlists(
+            &mut window,
+            &[("A", None), ("B", None), ("C", None)],
+            Some(rootlist_access(true)),
+        );
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let from = row_line(&frame, sidebar_rect(&window), "C");
+        let to = sidebar_boundary(&window, &frame, &["A", "B", "C"], "Playlist", 0);
+
+        assert_eq!(
+            window.drag(&mut transport, &mut queue, from, to),
+            Some(Command::MovePlaylist {
+                revision: revision("root-1"),
+                from: 2,
+                to: 0,
+            })
+        );
+        assert_eq!(sidebar_order(&window), ["C", "A", "B"]);
+    }
+
+    #[test]
+    fn dragging_a_playlist_to_the_very_end_writes_the_length() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_playlists(
+            &mut window,
+            &[("A", None), ("B", None), ("C", None)],
+            Some(rootlist_access(true)),
+        );
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let from = row_line(&frame, sidebar_rect(&window), "A");
+        let to = sidebar_boundary(&window, &frame, &["A", "B", "C"], "Playlist", 3);
+
+        assert_eq!(
+            window.drag(&mut transport, &mut queue, from, to),
+            Some(Command::MovePlaylist {
+                revision: revision("root-1"),
+                from: 0,
+                to: 3,
+            })
+        );
+        assert_eq!(sidebar_order(&window), ["B", "C", "A"]);
+    }
+
+    #[test]
+    fn a_sidebar_drop_beside_itself_moves_nothing_and_writes_nothing() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_playlists(
+            &mut window,
+            &[("A", None), ("B", None), ("C", None)],
+            Some(rootlist_access(true)),
+        );
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        for boundary in [1, 2] {
+            let from = row_line(&frame, sidebar_rect(&window), "B");
+            let to = sidebar_boundary(&window, &frame, &["A", "B", "C"], "Playlist", boundary);
+            assert_eq!(
+                window.drag(&mut transport, &mut queue, from, to),
+                None,
+                "the gap {boundary} is where B already is"
+            );
+            assert_eq!(sidebar_order(&window), ["A", "B", "C"], "nothing moved");
+            assert!(window.library.rootlist_movable(), "and nothing was written");
+        }
+    }
+
+    #[test]
+    fn a_failed_rootlist_write_puts_the_row_back_and_says_so() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_playlists(
+            &mut window,
+            &[("A", None), ("B", None), ("C", None)],
+            Some(rootlist_access(true)),
+        );
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let from = row_line(&frame, sidebar_rect(&window), "A");
+        let to = sidebar_boundary(&window, &frame, &["A", "B", "C"], "Playlist", 2);
+        assert!(window.drag(&mut transport, &mut queue, from, to).is_some());
+        assert_eq!(sidebar_order(&window), ["B", "A", "C"]);
+
+        window.library.apply(&Update::PlaylistMoveFailed);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+
+        assert_eq!(sidebar_order(&window), ["A", "B", "C"]);
+        assert!(
+            text_in(
+                &frame,
+                "Could not move that playlist. Try again.",
+                sidebar_rect(&window)
+            )
+            .is_some(),
+            "the list says what could not be done"
+        );
+        assert!(
+            window.library.rootlist_movable(),
+            "another drag may try again"
+        );
+    }
+
+    #[test]
+    fn a_rootlist_reply_lets_the_next_move_build_on_its_revision() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_playlists(
+            &mut window,
+            &[("A", None), ("B", None), ("C", None)],
+            Some(rootlist_access(true)),
+        );
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let from = row_line(&frame, sidebar_rect(&window), "A");
+        let to = sidebar_boundary(&window, &frame, &["A", "B", "C"], "Playlist", 2);
+        assert!(window.drag(&mut transport, &mut queue, from, to).is_some());
+        window.library.apply(&Update::PlaylistMoved {
+            revision: revision("root-2"),
+        });
+
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let from = row_line(&frame, sidebar_rect(&window), "B");
+        let to = sidebar_boundary(&window, &frame, &["B", "A", "C"], "Playlist", 3);
+
+        assert_eq!(
+            window.drag(&mut transport, &mut queue, from, to),
+            Some(Command::MovePlaylist {
+                revision: revision("root-2"),
+                from: 0,
+                to: 3,
+            }),
+            "the next move names the reply's revision"
+        );
+    }
+
+    #[test]
+    fn a_playlist_carried_between_two_rows_draws_the_rule_and_no_fill() {
+        let tokens = Tokens::DARK;
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_playlists(
+            &mut window,
+            &[("A", None), ("B", None), ("C", None)],
+            Some(rootlist_access(true)),
+        );
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let from = row_line(&frame, sidebar_rect(&window), "A");
+        let to = sidebar_boundary(&window, &frame, &["A", "B", "C"], "Playlist", 2);
+
+        let (_, frame) = window.hold_drag(&mut transport, &mut queue, from, to);
+
+        assert!(marker(&frame).is_some(), "a reorder draws the rule");
+        assert!(
+            !frame
+                .shapes
+                .iter()
+                .any(|clipped| matches!(&clipped.shape, egui::Shape::Rect(shape)
+                    if shape.fill == tokens.palette.row_selected
+                        && sidebar_rect(&window).contains_rect(shape.rect))),
+            "a reorder draws no fill"
+        );
+    }
+
+    #[test]
+    fn a_playlist_carried_over_the_queue_is_never_queued() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_playlists(
+            &mut window,
+            &[("A", None), ("B", None)],
+            Some(rootlist_access(true)),
+        );
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let from = row_line(&frame, sidebar_rect(&window), "A");
+        let to = pane_rect(&window).center();
+        let before = entries(&queue);
+
+        assert_eq!(window.drag(&mut transport, &mut queue, from, to), None);
+
+        assert_eq!(entries(&queue), before, "a playlist is no queue entry");
+        assert_eq!(sidebar_order(&window), ["A", "B"]);
+        assert!(window.library.rootlist_movable(), "and nothing was written");
+    }
+
+    #[test]
+    fn a_playlist_carried_over_the_queue_button_is_refused() {
+        // The queue column is hidden below this width, so the playbar's button
+        // is the only queue target there is.
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1100.0, 900.0));
+        sidebar_playlists(
+            &mut window,
+            &[("A", None), ("B", None)],
+            Some(rootlist_access(true)),
+        );
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let from = row_line(&frame, sidebar_rect(&window), "A");
+        let to = queue_button_at(&window).center();
+        let before = entries(&queue);
+
+        assert_eq!(window.drag(&mut transport, &mut queue, from, to), None);
+
+        assert_eq!(entries(&queue), before);
+        assert!(window.library.rootlist_movable());
+    }
+
+    #[test]
+    fn a_drop_while_a_write_is_pending_is_refused() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_playlists(
+            &mut window,
+            &[("A", None), ("B", None), ("C", None)],
+            Some(rootlist_access(true)),
+        );
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let from = row_line(&frame, sidebar_rect(&window), "A");
+        let to = sidebar_boundary(&window, &frame, &["A", "B", "C"], "Playlist", 2);
+        assert!(window.drag(&mut transport, &mut queue, from, to).is_some());
+
+        // A second drop would name a revision the first is already replacing.
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let from = row_line(&frame, sidebar_rect(&window), "B");
+        let to = sidebar_boundary(&window, &frame, &["B", "A", "C"], "Playlist", 3);
+
+        assert_eq!(window.drag(&mut transport, &mut queue, from, to), None);
+        assert_eq!(sidebar_order(&window), ["B", "A", "C"]);
+    }
+
+    #[test]
+    fn a_queue_drop_still_works_while_a_sidebar_write_is_pending() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(5, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1", "p2"]);
+        sidebar_playlists(
+            &mut window,
+            &[("A", None), ("B", None), ("C", None)],
+            Some(rootlist_access(true)),
+        );
+        assert!(
+            window.library.move_playlist(0, 2, "playlist:A").is_some(),
+            "the sidebar write is in flight"
+        );
+
+        // A queue insert names no revision, so the gate leaves it alone.
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let pane = pane_rect(&window);
+        let from = row_line(&frame, view_rect(&window), "p1");
+        let to = below(row_line(&frame, pane, "t3"), -0.25);
+        assert_eq!(window.drag(&mut transport, &mut queue, from, to), None);
+        assert_eq!(entries(&queue), ["t0", "t1", "t2", "list:p1", "t3", "t4"]);
+
+        // A page move is the other write, and it waits.
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let view = view_rect(&window);
+        let from = row_line(&frame, view, "p0");
+        let to = page_boundary(&frame, view, &["p0", "p1", "p2"], 2);
+        assert_eq!(window.drag(&mut transport, &mut queue, from, to), None);
+        assert_eq!(page_rows(&window), ["list:p0", "list:p1", "list:p2"]);
+    }
+
+    #[test]
+    fn a_sidebar_drop_on_a_frame_another_region_took_moves_nothing() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1", "p2"]);
+        // A page ahead of the one the drop returns to, so Back has a load to ask
+        // for and takes the frame.
+        let _ = window.library.select("spotify:playlist:other");
+        sidebar_playlists(
+            &mut window,
+            &[("A", None), ("B", None), ("C", None)],
+            Some(rootlist_access(true)),
+        );
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let from = row_line(&frame, sidebar_rect(&window), "A");
+        let to = sidebar_boundary(&window, &frame, &["A", "B", "C"], "Playlist", 2);
+        let _ = window.hold_drag(&mut transport, &mut queue, from, to);
+
+        let (command, _) = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![window.release(to), key(egui::Key::BrowserBack, true)],
+        );
+
+        assert!(
+            matches!(command, Some(Command::LoadTracks { .. })),
+            "another region took the frame: {command:?}"
+        );
+        assert_eq!(sidebar_order(&window), ["A", "B", "C"]);
+        assert!(window.library.rootlist_movable(), "and writes nothing");
+    }
+
+    /// A queue of entries whose URIs are real tracks, so one can be added.
+    fn queue_of_tracks(uris: &[&str], transport: &mut Transport) -> Queue {
+        let tracks: Vec<TrackEntry> = uris
+            .iter()
+            .map(|uri| TrackEntry {
+                uri: (*uri).to_owned(),
+                title: (*uri).to_owned(),
+                ..track(0, None)
+            })
+            .collect();
+        let mut queue = Queue::default();
+        queue.start(&tracks, 0, transport);
+        queue
+    }
+
+    #[test]
+    fn dropping_a_track_on_a_playlist_row_sends_one_add() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        page_of_tracks(&mut window, &[TRACK_A]);
+        sidebar_playlists(
+            &mut window,
+            &[("A", Some(2)), ("B", Some(3))],
+            Some(rootlist_access(true)),
+        );
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let from = row_line(&frame, view_rect(&window), TRACK_A);
+        let to = sidebar_row_rect(&window, &frame, "B", "Playlist · 3 tracks").center();
+
+        assert_eq!(
+            window.drag(&mut transport, &mut queue, from, to),
+            Some(Command::AddTrack {
+                playlist: "playlist:B".to_owned(),
+                revision: revision("root-1"),
+                from_index: 3,
+                track: TRACK_A.to_owned(),
+            }),
+            "the length is the index an append names"
+        );
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            text_in(&frame, "Playlist · 3 tracks", sidebar_rect(&window)).is_some(),
+            "the count waits for the reply"
+        );
+    }
+
+    #[test]
+    fn a_confirmed_add_counts_one_more_on_the_row() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        page_of_tracks(&mut window, &[TRACK_A]);
+        sidebar_playlists(
+            &mut window,
+            &[("A", Some(2)), ("B", Some(3))],
+            Some(rootlist_access(true)),
+        );
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let from = row_line(&frame, view_rect(&window), TRACK_A);
+        let to = sidebar_row_rect(&window, &frame, "B", "Playlist · 3 tracks").center();
+        assert!(window.drag(&mut transport, &mut queue, from, to).is_some());
+
+        window.library.apply(&Update::TrackAdded {
+            playlist: "playlist:B".to_owned(),
+            revision: revision("root-2"),
+        });
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+
+        assert!(
+            text_in(&frame, "Playlist · 4 tracks", sidebar_rect(&window)).is_some(),
+            "the row answers the add"
+        );
+        assert_eq!(
+            sidebar_order(&window),
+            ["A", "B"],
+            "an add reorders nothing"
+        );
+    }
+
+    #[test]
+    fn a_failed_add_leaves_the_count_and_says_so() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        page_of_tracks(&mut window, &[TRACK_A]);
+        sidebar_playlists(
+            &mut window,
+            &[("A", Some(2)), ("B", Some(3))],
+            Some(rootlist_access(true)),
+        );
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let from = row_line(&frame, view_rect(&window), TRACK_A);
+        let to = sidebar_row_rect(&window, &frame, "B", "Playlist · 3 tracks").center();
+        assert!(window.drag(&mut transport, &mut queue, from, to).is_some());
+
+        window.library.apply(&Update::AddFailed {
+            playlist: "playlist:B".to_owned(),
+        });
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+
+        assert!(text_in(&frame, "Playlist · 3 tracks", sidebar_rect(&window)).is_some());
+        assert!(
+            text_in(
+                &frame,
+                "Could not add that track. Try again.",
+                sidebar_rect(&window)
+            )
+            .is_some(),
+            "the list says what could not be done"
+        );
+    }
+
+    #[test]
+    fn a_track_over_a_playlist_row_draws_the_fill_and_no_rule() {
+        let tokens = Tokens::DARK;
+        let mut transport = playing(cover("abc"));
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        page_of_tracks(&mut window, &[TRACK_A]);
+        sidebar_playlists(
+            &mut window,
+            &[("A", Some(2)), ("B", Some(3))],
+            Some(rootlist_access(true)),
+        );
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let from = row_line(&frame, view_rect(&window), TRACK_A);
+        let row = sidebar_row_rect(&window, &frame, "B", "Playlist · 3 tracks");
+        let to = row.center();
+
+        let (_, frame) = window.hold_drag(&mut transport, &mut queue, from, to);
+
+        assert!(
+            frame
+                .shapes
+                .iter()
+                .any(|clipped| matches!(&clipped.shape, egui::Shape::Rect(shape)
+                if shape.fill == tokens.palette.row_selected
+                    && (shape.rect.top() - row.top()).abs() < 1.0)),
+            "the row under the pointer takes the fill"
+        );
+        assert!(marker(&frame).is_none(), "an add draws no rule");
+    }
+
+    #[test]
+    fn a_track_over_a_row_that_cannot_take_it_draws_nothing() {
+        let tokens = Tokens::DARK;
+        let cases: Vec<(&str, Option<usize>, Option<PlaylistAccess>, &str)> = vec![
+            (
+                "not editable",
+                Some(3),
+                Some(rootlist_access(false)),
+                "Playlist",
+            ),
+            ("no count", None, Some(rootlist_access(true)), "Playlist"),
+            ("no revision", Some(3), None, "Playlist"),
+        ];
+        for (why, tracks, access, kind) in cases {
+            let mut transport = playing(cover("abc"));
+            let mut queue = Queue::default();
+            let mut window = Window::new(Vec2::new(1400.0, 900.0));
+            page_of_tracks(&mut window, &[TRACK_A]);
+            window.library.playlists = Load::Ready(vec![PlaylistEntry {
+                uri: "playlist:B".to_owned(),
+                name: "B".to_owned(),
+                named: true,
+                cover: None,
+                description: None,
+                owner: None,
+                tracks,
+                access: access.clone(),
+            }]);
+            if let Some(access) = access {
+                window.library.apply(&Update::RootlistAccess(access));
+            }
+            let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+            let from = row_line(&frame, view_rect(&window), TRACK_A);
+            let to = sidebar_row_rect(&window, &frame, "B", kind).center();
+
+            let (_, frame) = window.hold_drag(&mut transport, &mut queue, from, to);
+            assert!(
+                !frame.shapes.iter().any(
+                    |clipped| matches!(&clipped.shape, egui::Shape::Rect(shape)
+                    if shape.fill == tokens.palette.row_selected
+                        && sidebar_rect(&window).contains_rect(shape.rect))
+                ),
+                "{why}: no fill"
+            );
+            assert!(marker(&frame).is_none(), "{why}: no rule");
+
+            let (command, _) = window.frame(&mut transport, &mut queue, vec![window.release(to)]);
+            assert_eq!(command, None, "{why}: nothing is written");
+        }
+    }
+
+    #[test]
+    fn dropping_on_the_open_playlists_own_row_adds_nothing() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        page_of_tracks(&mut window, &[TRACK_A]);
+        sidebar_playlists(&mut window, &[("A", Some(2))], Some(rootlist_access(true)));
+        // The sidebar's row is the page's own playlist, by its own URI.
+        if let Load::Ready(rows) = &mut window.library.playlists {
+            rows[0].uri = PLAYLIST.to_owned();
+        }
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let from = row_line(&frame, view_rect(&window), TRACK_A);
+        let to = sidebar_row_rect(&window, &frame, "A", "Playlist · 2 tracks").center();
+
+        assert_eq!(window.drag(&mut transport, &mut queue, from, to), None);
+    }
+
+    #[test]
+    fn an_episode_dropped_on_a_row_is_refused() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        page_of_tracks(&mut window, &["spotify:episode:1"]);
+        sidebar_playlists(&mut window, &[("A", Some(2))], Some(rootlist_access(true)));
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let from = row_line(&frame, view_rect(&window), "spotify:episode:1");
+        let to = sidebar_row_rect(&window, &frame, "A", "Playlist · 2 tracks").center();
+
+        assert_eq!(window.drag(&mut transport, &mut queue, from, to), None);
+    }
+
+    #[test]
+    fn a_track_from_the_queue_can_be_added() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of_tracks(&[TRACK_A, TRACK_B], &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_playlists(&mut window, &[("A", Some(2))], Some(rootlist_access(true)));
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let from = row_line(&frame, pane_rect(&window), TRACK_B);
+        let to = sidebar_row_rect(&window, &frame, "A", "Playlist · 2 tracks").center();
+
+        assert_eq!(
+            window.drag(&mut transport, &mut queue, from, to),
+            Some(Command::AddTrack {
+                playlist: "playlist:A".to_owned(),
+                revision: revision("root-1"),
+                from_index: 2,
+                track: TRACK_B.to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn a_block_of_two_rows_is_never_added() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of_tracks(&[TRACK_A, TRACK_B, TRACK_A, TRACK_B], &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_playlists(&mut window, &[("A", Some(2))], Some(rootlist_access(true)));
+        // Rows 1 and 2 are one picked block: the first entry is playing, so it
+        // is never lifted.
+        queue.press(1, Press::Replace);
+        queue.press(2, Press::Toggle);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let pane = pane_rect(&window);
+        let from = row_line(&frame, pane, TRACK_B);
+        let to = sidebar_row_rect(&window, &frame, "A", "Playlist · 2 tracks").center();
+
+        assert_eq!(
+            window.drag(&mut transport, &mut queue, from, to),
+            None,
+            "two rows are one block, and a block is never added"
+        );
+    }
+
+    #[test]
+    fn a_track_between_two_rows_is_not_a_reorder() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        page_of_tracks(&mut window, &[TRACK_A]);
+        sidebar_playlists(
+            &mut window,
+            &[("A", Some(2)), ("B", Some(3))],
+            Some(rootlist_access(true)),
+        );
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let from = row_line(&frame, view_rect(&window), TRACK_A);
+        // The hairline between two rows: a row above it, a row below it.
+        let row = sidebar_row_rect(&window, &frame, "A", "Playlist · 2 tracks");
+        let to = egui::pos2(row.center().x, row.bottom() + space::PX / 2.0);
+
+        let command = window.drag(&mut transport, &mut queue, from, to);
+
+        assert_eq!(
+            command,
+            Some(Command::AddTrack {
+                playlist: "playlist:A".to_owned(),
+                revision: revision("root-1"),
+                from_index: 2,
+                track: TRACK_A.to_owned(),
+            }),
+            "the gap belongs to the row above, so it is an add and no reorder"
+        );
+        assert_eq!(sidebar_order(&window), ["A", "B"], "the list did not move");
+    }
+
+    #[test]
+    fn one_pointer_position_never_draws_a_rule_and_a_fill() {
+        let tokens = Tokens::DARK;
+        let mut transport = playing(cover("abc"));
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        page_of_tracks(&mut window, &[TRACK_A]);
+        sidebar_playlists(
+            &mut window,
+            &[("A", Some(2)), ("B", Some(3)), ("C", Some(4))],
+            Some(rootlist_access(true)),
+        );
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let area = sidebar_rect(&window);
+        let pitch = sidebar::ROW_H + space::PX;
+        let at = egui::pos2(
+            area.left() + 100.0,
+            sidebar_row_top(&frame, area, "B", "Playlist · 3 tracks") + pitch,
+        );
+
+        let playlist_from = row_line(&frame, area, "A");
+        let (_, playlist_frame) = window.hold_drag(&mut transport, &mut queue, playlist_from, at);
+        // Let the playlist drag go somewhere it lands nowhere, so the next drag
+        // starts from a clean frame.
+        let nowhere = view_rect(&window).center();
+        let _ = window.frame(&mut transport, &mut queue, vec![window.release(nowhere)]);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let track_from = row_line(&frame, view_rect(&window), TRACK_A);
+        let (_, track_frame) = window.hold_drag(&mut transport, &mut queue, track_from, at);
+
+        for (what, frame) in [("a playlist", &playlist_frame), ("a track", &track_frame)] {
+            let rules = marker(frame).is_some();
+            let filled = frame.shapes.iter().any(|clipped| {
+                matches!(&clipped.shape, egui::Shape::Rect(shape)
+                    if shape.fill == tokens.palette.row_selected
+                        && sidebar_rect(&window).contains_rect(shape.rect))
+            });
+            assert!(
+                rules ^ filled,
+                "{what} must draw exactly one of a rule or a fill"
+            );
+        }
+        assert!(
+            marker(&playlist_frame).is_some(),
+            "a playlist draws the rule"
+        );
+        assert!(
+            !marker(&track_frame).is_some(),
+            "a track draws the fill and no rule"
+        );
+    }
+
+    #[test]
+    fn a_sidebar_drop_outside_the_column_writes_nothing() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_playlists(
+            &mut window,
+            &[("A", None), ("B", None)],
+            Some(rootlist_access(true)),
+        );
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let from = row_line(&frame, sidebar_rect(&window), "A");
+        let to = view_rect(&window).center();
+
+        assert_eq!(window.drag(&mut transport, &mut queue, from, to), None);
+
+        assert_eq!(sidebar_order(&window), ["A", "B"]);
+        assert!(window.library.rootlist_movable());
     }
 
     #[test]

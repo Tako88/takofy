@@ -233,7 +233,7 @@ mod tests {
         assert!(
             fills(&shapes, tokens.palette.surface)
                 .iter()
-                .any(|rect| { (*rect == ghost_box(pos2(20.0, 60.0), carry().size)) }),
+                .any(|rect| *rect == ghost_box(pos2(20.0, 60.0), carry().size)),
             "a refused target draws the card flat"
         );
     }

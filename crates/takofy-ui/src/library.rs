@@ -644,11 +644,15 @@ impl Library {
 
     /// Whether a row may be lifted off the loaded page now.
     ///
-    /// A write in flight holds the page still: a drop would name a revision the
-    /// write is already replacing. A page the user cannot write still lifts,
-    /// because a drop into the queue is not a write to that page.
+    /// A page write in flight holds the page still: a drop would name a revision
+    /// the write is already replacing. A sidebar write does not stop a lift,
+    /// because the queue a page row can land in names no revision; the two
+    /// writes' own methods refuse instead.
+    ///
+    /// A page the user cannot write still lifts, because a drop into the queue
+    /// is not a write to that page.
     pub fn liftable(&self) -> bool {
-        self.pending.is_none() && self.sidebar_pending.is_none()
+        self.pending.is_none()
     }
 
     /// Whether the loaded track page may reorder its rows now.
@@ -657,6 +661,7 @@ impl Library {
     /// second one would name a revision the first is already replacing.
     pub fn movable(&self) -> bool {
         self.liftable()
+            && self.sidebar_pending.is_none()
             && matches!(
                 &self.tracks,
                 Load::Ready(tracks)
@@ -671,6 +676,7 @@ impl Library {
     /// already replacing.
     pub fn rootlist_movable(&self) -> bool {
         self.liftable()
+            && self.sidebar_pending.is_none()
             && matches!(self.playlists, Load::Ready(_))
             && self.rootlist.as_ref().is_some_and(|access| access.editable)
     }
@@ -681,7 +687,7 @@ impl Library {
     /// show the new track, and dropping one of its own rows on it would quietly
     /// duplicate it.
     pub fn addable(&self, row: usize) -> bool {
-        if !self.liftable() {
+        if !self.liftable() || self.sidebar_pending.is_some() {
             return false;
         }
         let Load::Ready(playlists) = &self.playlists else {
@@ -771,7 +777,11 @@ impl Library {
         let Load::Ready(tracks) = &self.tracks else {
             return None;
         };
-        if !self.liftable() || self.selected() != Some(playlist) || tracks.playlist != playlist {
+        if !self.liftable()
+            || self.sidebar_pending.is_some()
+            || self.selected() != Some(playlist)
+            || tracks.playlist != playlist
+        {
             return None;
         }
         let access = tracks.access.clone().filter(|access| access.editable)?;
