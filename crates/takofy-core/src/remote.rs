@@ -20,8 +20,9 @@ use librespot::protocol::metadata::{
 };
 use protobuf::Message as _;
 use takofy_model::{
-    AlbumDetail, ArtistDetail, CoverUrl, Episode, FollowedArtist, FollowedShow, PlaylistAccess,
-    PlaylistEntry, PublishedAt, Revision, SavedAlbum, ShowDetail, TrackEntry, TrackLyrics,
+    AlbumDetail, ArtistDetail, CoverUrl, Episode, FollowedArtist, FollowedShow, Move,
+    PlaylistAccess, PlaylistEntry, PublishedAt, Revision, SavedAlbum, ShowDetail, TrackEntry,
+    TrackLyrics,
 };
 
 use crate::album::{AlbumError, detail, positions};
@@ -353,21 +354,18 @@ async fn write_changes(
     playlist_edit::reply_revision(&bytes).ok_or(playlist_edit::PlaylistError::Reply)
 }
 
-/// Writes one move to a playlist.
+/// Writes `moves` to a playlist, as one delta on one revision.
 pub(crate) async fn write_move(
     session: &Session,
     uri: &str,
     revision: &Revision,
-    from: usize,
-    to: usize,
+    moves: &[Move],
 ) -> Result<Revision, playlist_edit::PlaylistError> {
+    if moves.is_empty() {
+        return Err(playlist_edit::PlaylistError::NoMoves);
+    }
     let endpoint = playlist_edit::changes_endpoint(uri)?;
-    write_changes(
-        session,
-        endpoint,
-        playlist_edit::move_body(revision, from, to),
-    )
-    .await
+    write_changes(session, endpoint, playlist_edit::move_body(revision, moves)).await
 }
 
 /// Writes one move to the user's rootlist.
@@ -378,10 +376,15 @@ pub(crate) async fn write_rootlist_move(
     to: usize,
 ) -> Result<Revision, playlist_edit::PlaylistError> {
     let endpoint = playlist_edit::rootlist_changes_endpoint(&session.username())?;
+    let moves = [Move {
+        from,
+        length: 1,
+        to,
+    }];
     write_changes(
         session,
         endpoint,
-        playlist_edit::move_body(revision, from, to),
+        playlist_edit::move_body(revision, &moves),
     )
     .await
 }

@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 
 use takofy_model::{
-    AlbumDetail, ArtistDetail, CoverUrl, FollowedArtist, FollowedShow, PlaylistAccess,
+    AlbumDetail, ArtistDetail, CoverUrl, FollowedArtist, FollowedShow, Move, PlaylistAccess,
     PlaylistEntry, SavedAlbum, ShowDetail, TrackEntry,
 };
 
@@ -828,8 +828,11 @@ impl Library {
             Command::MoveTrack {
                 playlist: playlist.to_owned(),
                 revision: access.revision,
-                from: step.from,
-                to: step.to,
+                moves: vec![Move {
+                    from: step.from,
+                    length: 1,
+                    to: step.to,
+                }],
             },
             step.landed,
         ))
@@ -4022,8 +4025,11 @@ mod tests {
                 Command::MoveTrack {
                     playlist: "a".to_owned(),
                     revision: revision(0x01),
-                    from: 0,
-                    to: 2,
+                    moves: vec![Move {
+                        from: 0,
+                        length: 1,
+                        to: 2,
+                    }],
                 },
                 1,
             ))
@@ -4164,8 +4170,11 @@ mod tests {
             Some(Command::MoveTrack {
                 playlist: "a".to_owned(),
                 revision: revision(0x02),
-                from: 2,
-                to: 0,
+                moves: vec![Move {
+                    from: 2,
+                    length: 1,
+                    to: 0,
+                }],
             })
         );
     }

@@ -832,7 +832,7 @@ pub(super) fn rule(ui: &Ui, rect: Rect, color: Color32) {
 mod tests {
     use std::time::Instant;
 
-    use takofy_model::{CoverUrl, PlaylistAccess, PlaylistEntry, Revision, TrackEntry};
+    use takofy_model::{CoverUrl, Move, PlaylistAccess, PlaylistEntry, Revision, TrackEntry};
 
     use super::*;
     use crate::cover::Art;
@@ -4352,8 +4352,11 @@ mod tests {
             Some(Command::MoveTrack {
                 playlist: PLAYLIST.to_owned(),
                 revision: revision("rev-1"),
-                from: 0,
-                to: 2,
+                moves: vec![Move {
+                    from: 0,
+                    length: 1,
+                    to: 2,
+                }],
             }),
             "the page asks for one write on the revision it was read at"
         );
@@ -4386,8 +4389,11 @@ mod tests {
             Some(Command::MoveTrack {
                 playlist: PLAYLIST.to_owned(),
                 revision: revision("rev-1"),
-                from: 2,
-                to: 0,
+                moves: vec![Move {
+                    from: 2,
+                    length: 1,
+                    to: 0,
+                }],
             })
         );
         assert_eq!(page_rows(&window), ["list:p2", "list:p0", "list:p1"]);
@@ -4661,8 +4667,11 @@ mod tests {
             Some(Command::MoveTrack {
                 playlist: PLAYLIST.to_owned(),
                 revision: revision("rev-2"),
-                from: 2,
-                to: 0,
+                moves: vec![Move {
+                    from: 2,
+                    length: 1,
+                    to: 0,
+                }],
             }),
             "the second move is based on the reply's revision"
         );

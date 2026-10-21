@@ -11,8 +11,8 @@ use takofy_core::credentials::AccessToken;
 use takofy_core::engine::{Engine, EngineError, RootlistRead};
 use takofy_core::playback::{Playback, PlaybackError, PlaybackEvent};
 use takofy_model::{
-    AlbumDetail, ArtistDetail, CoverUrl, FollowedArtist, FollowedShow, PlaylistAccess, Revision,
-    SavedAlbum, ShowDetail, TrackEntry, TrackLyrics,
+    AlbumDetail, ArtistDetail, CoverUrl, FollowedArtist, FollowedShow, Move, PlaylistAccess,
+    Revision, SavedAlbum, ShowDetail, TrackEntry, TrackLyrics,
 };
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::oneshot::Receiver;
@@ -115,8 +115,7 @@ pub(crate) trait SessionHost: Send + 'static {
         &self,
         playlist: &str,
         revision: &Revision,
-        from: usize,
-        to: usize,
+        moves: &[Move],
     ) -> impl Future<Output = Result<Revision, SessionError>> + Send;
 
     fn album(&self, album: &str) -> impl Future<Output = Result<AlbumDetail, SessionError>> + Send;
@@ -286,12 +285,11 @@ impl SessionHost for LiveSession {
         &self,
         playlist: &str,
         revision: &Revision,
-        from: usize,
-        to: usize,
+        moves: &[Move],
     ) -> Result<Revision, SessionError> {
         match &self.engine {
             Some(engine) => engine
-                .move_track(playlist, revision, from, to)
+                .move_track(playlist, revision, moves)
                 .await
                 .map_err(SessionError::Engine),
             None => Err(SessionError::NotConnected),

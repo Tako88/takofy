@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use takofy_core::credentials::{AccessToken, CredentialStore};
 use takofy_core::login::{AuthError, SourceErrorKind, TokenSource, authorize, resume};
 use takofy_core::playback::{PlaybackError, PlaybackEvent};
-use takofy_model::{CoverUrl, Revision};
+use takofy_model::{CoverUrl, Move, Revision};
 use takofy_ui::message::{Command, Failure, TransportUpdate, Update};
 use tokio::runtime::{Handle, Runtime};
 use tokio::sync::Semaphore;
@@ -366,8 +366,7 @@ pub(crate) fn start<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                 Event::Command(Some(Command::MoveTrack {
                     playlist,
                     revision,
-                    from,
-                    to,
+                    moves,
                 })) => {
                     let step = move_track(
                         &mut host,
@@ -375,8 +374,7 @@ pub(crate) fn start<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                         &task_notifier,
                         &playlist,
                         &revision,
-                        from,
-                        to,
+                        &moves,
                     )
                     .await;
                     if step.stopped() {
@@ -867,10 +865,9 @@ async fn move_track<H: SessionHost>(
     notifier: &Notifier,
     playlist: &str,
     revision: &Revision,
-    from: usize,
-    to: usize,
+    moves: &[Move],
 ) -> Step {
-    match stop_or(stop, host.move_track(playlist, revision, from, to)).await {
+    match stop_or(stop, host.move_track(playlist, revision, moves)).await {
         None => Step::Stopped,
         Some(Ok(revision)) => {
             notifier.send(Update::TrackMoved {
@@ -1139,7 +1136,7 @@ mod tests {
     use takofy_core::login::{SourceError, SourceErrorKind, TokenSet, TokenSource};
     use takofy_model::{
         AlbumDetail, ArtistDetail, CoverImage, CoverUrl, Episode, FollowedArtist, FollowedShow,
-        LyricLine, PlaylistAccess, PlaylistEntry, SavedAlbum, Show, ShowDetail, TrackEntry,
+        LyricLine, Move, PlaylistAccess, PlaylistEntry, SavedAlbum, Show, ShowDetail, TrackEntry,
         TrackLyrics,
     };
     use takofy_ui::signin::failure_message;
@@ -1600,7 +1597,7 @@ mod tests {
         show_started: Mutex<Option<Sender<()>>>,
 
         last_follow: Mutex<Option<(String, bool)>>,
-        last_move: Mutex<Option<(String, Revision, usize, usize)>>,
+        last_move: Mutex<Option<(String, Revision, Vec<Move>)>>,
         last_root_move: Mutex<Option<(Revision, usize, usize)>>,
         last_add: Mutex<Option<(String, Revision, usize, String)>>,
         move_started: Mutex<Option<Sender<()>>>,
@@ -1958,12 +1955,11 @@ mod tests {
             &self,
             playlist: &str,
             revision: &Revision,
-            from: usize,
-            to: usize,
+            moves: &[Move],
         ) -> impl Future<Output = Result<Revision, SessionError>> + Send {
             self.shared.move_writes.fetch_add(1, Ordering::SeqCst);
             *self.shared.last_move.lock().expect("lock") =
-                Some((playlist.to_owned(), revision.clone(), from, to));
+                Some((playlist.to_owned(), revision.clone(), moves.to_vec()));
             if let Some(tx) = self.shared.move_started.lock().expect("lock").take() {
                 let _ = tx.send(());
             }
@@ -2910,7 +2906,14 @@ mod tests {
         let base = revision(1);
         let write = |len: usize, from: usize, boundary: usize| {
             let found = takofy_ui::reorder::step(len, from, boundary).expect("a move");
-            takofy_core::playlist_edit::move_body(&base, found.from, found.to)
+            takofy_core::playlist_edit::move_body(
+                &base,
+                &[Move {
+                    from: found.from,
+                    length: 1,
+                    to: found.to,
+                }],
+            )
         };
 
         // The rootlist reads `to` the same way a playlist does: the gap in the
@@ -2926,7 +2929,14 @@ mod tests {
         // MOV 0, length 1, to 2 swaps entries 0 and 1 on the live account.
         let found = takofy_ui::reorder::step(23, 0, 2).expect("a move");
         assert_eq!((found.from, found.to, found.landed), (0, 2, 1));
-        let body = takofy_core::playlist_edit::move_body(&revision(1), found.from, found.to);
+        let body = takofy_core::playlist_edit::move_body(
+            &revision(1),
+            &[Move {
+                from: found.from,
+                length: 1,
+                to: found.to,
+            }],
+        );
         assert!(body.ends_with(&[0x08, 0x00, 0x10, 0x01, 0x18, 0x02]));
     }
 
@@ -4577,8 +4587,11 @@ mod tests {
                 .send(Command::MoveTrack {
                     playlist: "spotify:playlist:a".to_owned(),
                     revision: base.clone(),
-                    from: 1,
-                    to: 4,
+                    moves: vec![Move {
+                        from: 1,
+                        length: 1,
+                        to: 4,
+                    }],
                 })
                 .expect("move");
             ui_end.updates.recv().expect("moved")
@@ -4594,7 +4607,15 @@ mod tests {
         assert_eq!(shared.move_writes.load(Ordering::SeqCst), 1);
         assert_eq!(
             shared.last_move.lock().expect("lock").clone(),
-            Some(("spotify:playlist:a".to_owned(), base, 1, 4)),
+            Some((
+                "spotify:playlist:a".to_owned(),
+                base,
+                vec![Move {
+                    from: 1,
+                    length: 1,
+                    to: 4,
+                }],
+            )),
             "the write is sent with the revision and the indices that were asked for"
         );
     }
@@ -4604,7 +4625,14 @@ mod tests {
         let base = revision(1);
         let write = |len: usize, from: usize, boundary: usize| {
             let found = takofy_ui::reorder::step(len, from, boundary).expect("a move");
-            takofy_core::playlist_edit::move_body(&base, found.from, found.to)
+            takofy_core::playlist_edit::move_body(
+                &base,
+                &[Move {
+                    from: found.from,
+                    length: 1,
+                    to: found.to,
+                }],
+            )
         };
 
         // The server reads `to` as a gap in the list before the move: moving down
@@ -4632,8 +4660,11 @@ mod tests {
                 .send(Command::MoveTrack {
                     playlist: "spotify:playlist:a".to_owned(),
                     revision: revision(1),
-                    from: 0,
-                    to: 1,
+                    moves: vec![Move {
+                        from: 0,
+                        length: 1,
+                        to: 1,
+                    }],
                 })
                 .expect("move");
             ui_end.updates.recv().expect("move failed")
@@ -4667,8 +4698,11 @@ mod tests {
                 .send(Command::MoveTrack {
                     playlist: "spotify:playlist:a".to_owned(),
                     revision: revision(1),
-                    from: 0,
-                    to: 1,
+                    moves: vec![Move {
+                        from: 0,
+                        length: 1,
+                        to: 1,
+                    }],
                 })
                 .expect("move");
             ui_end.updates.recv().expect("move failed")
@@ -4709,8 +4743,11 @@ mod tests {
                 .send(Command::MoveTrack {
                     playlist: "spotify:playlist:a".to_owned(),
                     revision: revision(1),
-                    from: 0,
-                    to: 1,
+                    moves: vec![Move {
+                        from: 0,
+                        length: 1,
+                        to: 1,
+                    }],
                 })
                 .expect("move");
             started_rx.recv().expect("move started");
@@ -4747,8 +4784,11 @@ mod tests {
                 let move_command = Command::MoveTrack {
                     playlist: "spotify:playlist:a".to_owned(),
                     revision: revision(1),
-                    from: 0,
-                    to: 1,
+                    moves: vec![Move {
+                        from: 0,
+                        length: 1,
+                        to: 1,
+                    }],
                 };
                 let load_command = Command::LoadTracks {
                     playlist: "spotify:playlist:a".to_owned(),
