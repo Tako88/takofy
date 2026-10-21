@@ -338,11 +338,23 @@ impl Search {
         if self.open && self.menu.key.is_some() && self.menu.load == Load::Idle {
             return Some(Target::Menu);
         }
+        self.due_page(page)
+    }
+
+    /// The page's read alone, without the menu's claim on the wire.
+    ///
+    /// [`Self::request_page`] is the one caller: a page control must be able to
+    /// ask for the page's query while the menu is open and due.
+    fn due_page(&self, page: Option<&str>) -> Option<Target> {
+        if self.inflight.is_some() {
+            return None;
+        }
         let page = page?;
         if self.page.key.as_deref() == Some(page) && self.page.load == Load::Idle {
-            return Some(Target::Page);
+            Some(Target::Page)
+        } else {
+            None
         }
-        None
     }
 
     /// The search read this frame wants, if one is due (called from `logic`).
@@ -351,6 +363,23 @@ impl Search {
     /// this state never has to know what a page is.
     pub fn request(&mut self, page: Option<&str>) -> Option<Command> {
         let target = self.due(page)?;
+        self.send(target)
+    }
+
+    /// The page's read, asked for even while the menu is the one `request`
+    /// would take.
+    ///
+    /// Retry is the page's own control, so it asks for the page's query rather
+    /// than whatever is due first; the page would otherwise stay `Idle` until a
+    /// later frame. The wire and the sibling rule are the same as `request`'s.
+    pub fn request_page(&mut self, page: Option<&str>) -> Option<Command> {
+        let target = self.due_page(page)?;
+        self.send(target)
+    }
+
+    /// Puts `target`'s read on the wire, unless its sibling already loads that
+    /// key.
+    fn send(&mut self, target: Target) -> Option<Command> {
         let (this, other) = match target {
             Target::Menu => (&mut self.menu, &self.page),
             Target::Page => (&mut self.page, &self.menu),
@@ -370,9 +399,9 @@ impl Search {
     /// Whether [`Self::request`] would send something, without changing
     /// anything.
     ///
-    /// The shell asks after a frame's edits and requests a repaint on true:
-    /// `logic` runs before `ui`, so a read armed by the last keystroke would
-    /// otherwise wait for the next input event.
+    /// The window asks after a frame's edits and requests a repaint on true:
+    /// `logic` runs before `ui`, so a read armed by that frame would otherwise
+    /// wait for the next input event.
     pub fn wants(&self, page: Option<&str>) -> bool {
         let Some(target) = self.due(page) else {
             return false;
@@ -416,6 +445,20 @@ impl Search {
             };
             return;
         }
+        self.page = Read {
+            key: Some(query.to_owned()),
+            load: Load::Idle,
+        };
+    }
+
+    /// Points the results page at `query` and drops whatever it held, for the
+    /// page's own Retry.
+    ///
+    /// Unlike [`Self::open_results`] it never seeds from the menu: Retry is
+    /// pressed on a failure, and the menu may hold a stale answer for the same
+    /// key that must not be drawn again. The read is left `Idle`, so the next
+    /// [`Self::request_page`] asks exactly once.
+    pub fn retry_page(&mut self, query: &str) {
         self.page = Read {
             key: Some(query.to_owned()),
             load: Load::Idle,
@@ -753,6 +796,36 @@ mod tests {
         assert_eq!(state.inflight, None, "nothing was sent");
     }
 
+    /// A page control asks for the page's query even while the menu is open and
+    /// due: `request` would take the menu's read first, leaving the page idle.
+    #[test]
+    fn request_page_asks_for_the_page_even_when_the_menu_is_due() {
+        let mut state = typed("abc");
+        state.open_results("page");
+        assert!(state.is_open(), "the menu is open on the typed key");
+
+        assert_eq!(state.request_page(Some("page")), Some(search("page")));
+        assert_eq!(state.page.load, Load::Loading);
+        assert_eq!(state.menu.load, Load::Idle, "the menu was not the one sent");
+        assert_eq!(state.request_page(Some("page")), None, "one read at a time");
+    }
+
+    /// The page-only path keeps the sibling rule: a menu already loading the
+    /// page's key is waited on, not asked twice.
+    #[test]
+    fn request_page_waits_for_a_sibling_loading_its_key() {
+        let mut state = typed("abc");
+        state.open_results("abc");
+        state.menu = Read {
+            key: Some("abc".to_owned()),
+            load: Load::Loading,
+        };
+
+        assert_eq!(state.request_page(Some("abc")), None);
+        assert_eq!(state.page.load, Load::Loading, "the page waits with it");
+        assert_eq!(state.inflight, None, "nothing was sent");
+    }
+
     #[test]
     fn a_failure_is_not_retried_until_the_key_changes() {
         let mut state = typed("abc");
@@ -834,6 +907,30 @@ mod tests {
         state.open_results("abcd");
         assert_eq!(state.page_answer("abcd"), Some(&Load::Idle));
         assert_eq!(state.request(Some("abcd")), Some(search("abcd")));
+    }
+
+    #[test]
+    fn retry_page_never_seeds_from_the_menu() {
+        let mut state = typed("abc");
+        assert_eq!(state.request(None), Some(search("abc")));
+        state.apply(&reply("abc", &["spotify:track:a"]));
+        // The menu still holds this key's answer while the page has failed.
+        state.open_results("abc");
+        state.retry_page("abc");
+        assert_eq!(state.request(Some("abc")), Some(search("abc")));
+        state.apply(&failed("abc"));
+        assert_eq!(
+            state.page_answer("abc"),
+            Some(&Load::Failed(Failure::Search))
+        );
+
+        state.retry_page("abc");
+        assert_eq!(
+            state.page_answer("abc"),
+            Some(&Load::Idle),
+            "a retry on a failure must not draw the menu's old answer"
+        );
+        assert_eq!(state.request(Some("abc")), Some(search("abc")));
     }
 
     #[test]

@@ -60,6 +60,19 @@ impl TakofyApp {
         }
     }
 
+    /// Asks for the frame that sends the read the draw just armed.
+    ///
+    /// `logic` runs before `ui`, so a read armed during the draw — Back or
+    /// Forward onto a page that has to ask again — would otherwise wait for the
+    /// next input event. The page's query is copied out for the same reason
+    /// [`Self::request_search`] copies it.
+    fn wake_search(&self, ctx: &egui::Context) {
+        let page = self.library.page_search_query().map(str::to_owned);
+        if self.library.search.wants(page.as_deref()) {
+            ctx.request_repaint();
+        }
+    }
+
     /// Installs the theme and takes ownership of the window's end.
     pub(crate) fn new(cc: &eframe::CreationContext<'_>, ui_end: UiEnd) -> Self {
         let tokens = Tokens::DARK;
@@ -164,6 +177,9 @@ impl eframe::App for TakofyApp {
         if let Some(command) = command {
             let _ = self.ui_end.commands.send(command);
         }
+        // After the draw, because only the draw arms the read: a navigation
+        // that leaves the page idle asks for the frame that sends it.
+        self.wake_search(ui.ctx());
         // After the draw, because only the draw knows what was wanted this frame.
         // A label want is not a command returned by the view: the shell may keep
         // only one of those, so the wants are drained from their own store.
@@ -246,6 +262,7 @@ mod tests {
     use takofy_model::{CoverImage, CoverUrl, TrackEntry};
     use takofy_ui::library::Load;
     use takofy_ui::message::{Command, Failure, TransportUpdate};
+    use takofy_ui::route::Page;
 
     use super::*;
 
@@ -862,6 +879,100 @@ mod tests {
         assert!(
             received.try_recv().is_err(),
             "an empty query fetches nothing (R6)"
+        );
+    }
+
+    /// An open results page is a read the `logic` pass asks for, keyed by the
+    /// page's own query. It is the seam the route and the page meet at: the
+    /// field is not involved at all.
+    #[test]
+    fn logic_asks_for_the_open_results_page_once() {
+        let (mut app, mut received) = test_window();
+        let _ = app
+            .library
+            .open(takofy_ui::route::Page::Search("never gonna".to_owned()));
+
+        logic_frame(&mut app);
+        assert_eq!(
+            received.try_recv().expect("the page's read"),
+            Command::Search {
+                query: "never gonna".to_owned()
+            }
+        );
+        logic_frame(&mut app);
+        assert!(
+            received.try_recv().is_err(),
+            "one read on the wire at a time"
+        );
+    }
+
+    /// A window's context, set up the way `TakofyApp::new` sets one up.
+    fn window_context() -> egui::Context {
+        let tokens = Tokens::DARK;
+        let ctx = egui::Context::default();
+        ctx.set_fonts(fonts::definitions());
+        ctx.set_global_style(style(&tokens));
+        ctx
+    }
+
+    /// One draw pass, as eframe runs it between two `logic` passes.
+    fn ui_frame(app: &mut TakofyApp, ctx: &egui::Context) -> egui::FullOutput {
+        let mut frame = eframe::Frame::_new_kittest();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(layout::WINDOW_DEFAULT[0], layout::WINDOW_DEFAULT[1]),
+            )),
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| app.ui(ui, &mut frame));
+        output.textures_delta.clear();
+        output
+    }
+
+    /// A dropped results page is asked for after the draw, but `logic` has
+    /// already run this frame: the draw must ask for the next one, or the page
+    /// sits on its skeleton until the user moves the mouse.
+    #[test]
+    fn back_onto_a_dropped_search_page_asks_for_the_frame_that_sends_it() {
+        let (mut app, mut received) = test_window();
+        app.state = SignIn::SignedIn;
+        let _ = app.library.open(Page::Search("never gonna".to_owned()));
+        app.library.apply(&Update::Search {
+            query: "never gonna".to_owned(),
+            tracks: vec![track("spotify:track:a")],
+        });
+        let _ = app.library.open(Page::Album("spotify:album:a".to_owned()));
+        // A second query drops the first page's answer.
+        let _ = app.library.open(Page::Search("give you up".to_owned()));
+        // Back onto the album, then onto the dropped page, as the topbar does.
+        let _ = app.library.back();
+        assert_eq!(app.library.back(), None);
+        assert_eq!(app.library.page_search_query(), Some("never gonna"));
+
+        let ctx = window_context();
+        // Warm up, so egui's own first-pass work is not read as this draw's.
+        for _ in 0..2 {
+            let mut warm = ctx.run_ui(egui::RawInput::default(), |_ui| {});
+            warm.textures_delta.clear();
+        }
+        let _ = ui_frame(&mut app, &ctx);
+        // egui reports a pass's repaint causes on the pass after it, which is
+        // the frame this test is about: the one that sends the read.
+        let mut wake = ctx.run_ui(egui::RawInput::default(), |_ui| {});
+        wake.textures_delta.clear();
+        let causes = ctx.repaint_causes();
+        assert!(
+            causes.iter().any(|cause| cause.file.ends_with("app.rs")),
+            "the draw armed a read, so it must ask for the frame that sends it: {causes:?}"
+        );
+
+        app.logic(&ctx, &mut eframe::Frame::_new_kittest());
+        assert_eq!(
+            received.try_recv().expect("the read the draw armed"),
+            Command::Search {
+                query: "never gonna".to_owned()
+            }
         );
     }
 }
