@@ -80,12 +80,16 @@ Labels branch on URI kind: a track and an episode resolve through their own
 batch, and an episode is a label like a track with its show as its credit.
 
 A playlist reorder is the second write, and it is applied locally first: the
-rows take their new order as the drop lands, and then one `MOV` goes out through
-librespot's spclient on the revision that read named. That request is made in a
-single attempt — `TryTimes(1)` for the one POST, the default strategy restored
-after it — because a `MOV` is not idempotent: a retry after a 5xx or a lost reply
-can move the row twice on a server that has already applied it, so the one
-request that might have landed is not repeated. While a write is in flight no
+rows take their new order as the drop lands, and then the moves go out through
+librespot's spclient on the revision that read named. A block of rows is still
+one POST: contiguous picks are one `MOV` of their own length, and gapped picks
+are a sequence of `MOV`s in one delta, each naming indices in the list the
+previous move left, so the order on screen is the replay of the moves that were
+written. That request is made in a single attempt — `TryTimes(1)` for the one
+POST, the default strategy restored after it — because a `MOV` is not
+idempotent: a retry after a 5xx or a lost reply can move the row twice on a
+server that has already applied it, so the one request that might have landed is
+not repeated. While a write is in flight no
 read's order is adopted; a probe recorded the server answering a write with the
 new revision and the old order, so adopting on revision equality would undo the
 drag, and the worker answers in the order its commands were sent, which is what
