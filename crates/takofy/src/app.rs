@@ -7,6 +7,7 @@ use eframe::egui;
 use takofy_ui::cover::Art;
 use takofy_ui::drawer::Drawer;
 use takofy_ui::library::Library;
+use takofy_ui::menu::Menu;
 use takofy_ui::message::{Command, Update};
 use takofy_ui::player::{REDRAW, Transport, TransportState};
 use takofy_ui::queue::Queue;
@@ -38,6 +39,7 @@ pub(crate) struct TakofyApp {
     transport: Transport,
     queue: Queue,
     drawer: Drawer,
+    menu: Menu,
     ui_end: UiEnd,
     tokens: Tokens,
     /// The decoded covers, the uploads and the fetches in flight.
@@ -89,6 +91,7 @@ impl TakofyApp {
             transport: Transport::default(),
             queue: Queue::default(),
             drawer: Drawer::default(),
+            menu: Menu::default(),
             ui_end,
             tokens,
             art: Art::new(),
@@ -167,6 +170,7 @@ impl eframe::App for TakofyApp {
                 transport: &mut self.transport,
                 queue: &mut self.queue,
                 drawer: &mut self.drawer,
+                menu: &mut self.menu,
                 position_ms,
                 art: &mut self.art,
                 now,
@@ -776,6 +780,7 @@ mod tests {
             transport: Transport::default(),
             queue: Queue::default(),
             drawer: Drawer::default(),
+            menu: Menu::default(),
             ui_end: UiEnd { updates, commands },
             tokens: Tokens::DARK,
             art: Art::new(),

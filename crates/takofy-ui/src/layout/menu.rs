@@ -26,9 +26,12 @@ pub struct RowWidth {
     pub chevron: bool,
 }
 
+/// The rows tile down from the menu's top at the shared `extent::ROW_H`.
+pub use super::search_menu::row_rect;
+
 /// The height of a menu of `rows` rows.
 pub fn rows_height(rows: usize) -> f32 {
-    rows as f32 * extent::ROW_H
+    super::search_menu::rows_height(rows, false)
 }
 
 /// The box a menu wants: its longest row, within the sheet's floor and cap.

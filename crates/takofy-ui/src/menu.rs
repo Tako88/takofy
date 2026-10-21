@@ -259,9 +259,18 @@ impl Menu {
         None
     }
 
-    /// Whether this is the first frame the menu is drawn, and clears the flag.
-    pub fn just_opened(&mut self) -> bool {
-        std::mem::take(&mut self.fresh)
+    /// Whether the menu has not yet drawn a frame that could take the keyboard.
+    ///
+    /// The flag is settled by [`Self::settle_opened`] rather than read and
+    /// cleared at once: an `Area`'s first frame is a sizing pass, which paints
+    /// nothing and cannot take focus, so that frame is not the menu's opening.
+    pub fn just_opened(&self) -> bool {
+        self.fresh
+    }
+
+    /// Marks the menu's opening frame as drawn.
+    pub fn settle_opened(&mut self) {
+        self.fresh = false;
     }
 
     pub fn is_open(&self) -> bool {

@@ -109,17 +109,32 @@ fn item(verb: Verb, label: String) -> Item {
     }
 }
 
+/// What a menu about these rows is called, for the one place a menu states its
+/// subject rather than its commands: the accessibility tree.
+pub fn menu_label(targets: &[TrackEntry]) -> String {
+    match targets {
+        [] => "Commands".to_owned(),
+        [one] => one.title.clone(),
+        many => format!("{} {}", many.len(), noun(many)),
+    }
+}
+
 /// The queue command's label, which carries the pick's count and its noun.
 fn queue_label(targets: &[TrackEntry]) -> String {
     if targets.len() == 1 {
         return "Add to queue".to_owned();
     }
-    let noun = if targets.iter().all(TrackEntry::is_track) {
+    format!("Add {} {} to queue", targets.len(), noun(targets))
+}
+
+/// The noun a count-bearing label uses: a playlist can hold episodes and local
+/// files, so only a pick of nothing but tracks says tracks.
+fn noun(targets: &[TrackEntry]) -> &'static str {
+    if targets.iter().all(TrackEntry::is_track) {
         "tracks"
     } else {
         "items"
-    };
-    format!("Add {} {noun} to queue", targets.len())
+    }
 }
 
 /// The value every target agrees on, or `None` when one is missing or differs.
