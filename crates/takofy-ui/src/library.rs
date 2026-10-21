@@ -174,6 +174,11 @@ pub struct Library {
     pending: Option<reorder::Pending>,
     /// The rootlist's revision, and whether the sidebar's rows are its indices.
     rootlist: Option<PlaylistAccess>,
+    /// Whether the last playlists read was dropped while a write was pending.
+    ///
+    /// Its access has to be dropped with it: the access follows the list it
+    /// belongs to, and a revision only means something beside that order.
+    rootlist_dropped: bool,
     /// The sidebar write in flight. It excludes the page's write and itself.
     sidebar_pending: Option<SidebarPending>,
     /// Why the last sidebar write failed, until a gesture or a read clears it.
@@ -226,8 +231,11 @@ impl Library {
             }
             // A read's order is never adopted while a sidebar write is pending:
             // it may have been taken before the write reached the server, or
-            // after, and the confirmation cannot tell the two apart.
-            Update::Playlists(_) if self.sidebar_pending.is_some() => {}
+            // after, and the confirmation cannot tell the two apart. Its access
+            // goes with it, for the same reason.
+            Update::Playlists(_) if self.sidebar_pending.is_some() => {
+                self.rootlist_dropped = true;
+            }
             Update::Playlists(playlists) => {
                 let mut playlists = playlists.clone();
                 for entry in &mut playlists {
@@ -268,13 +276,21 @@ impl Library {
                 // A list is not movable until its own access arrives, so a read
                 // can never be reordered on the previous read's revision.
                 self.rootlist = None;
+                self.rootlist_dropped = false;
                 self.sidebar_notice = None;
             }
             Update::PlaylistFailed(failure) => {
                 self.playlists = Load::Failed(*failure);
             }
+            // An access is safe to adopt while an add is pending, because an add
+            // writes a playlist and not the rootlist; a reorder is the one write
+            // that replaces the revision its read named, so its access waits
+            // for the reply.
             Update::RootlistAccess(access) => {
-                if self.sidebar_pending.is_some() {
+                if std::mem::take(&mut self.rootlist_dropped) {
+                    return;
+                }
+                if matches!(self.sidebar_pending, Some(SidebarPending::Reorder { .. })) {
                     return;
                 }
                 self.rootlist = Some(access.clone());
@@ -3862,6 +3878,67 @@ mod tests {
         });
 
         assert!(!library.addable(0), "the write for b is still in flight");
+    }
+
+    #[test]
+    fn an_access_that_arrives_mid_add_is_not_lost() {
+        let mut library = sidebar_library(&["a", "b"], 0x07, true, Some(3));
+        // A read that lands just before the add drops the held access with the
+        // order it brought, so the column is only movable again once its own
+        // access arrives.
+        library.apply(&Update::Playlists(vec![
+            with_access(playlist("a", "a"), 0x07, true, Some(3)),
+            with_access(playlist("b", "b"), 0x07, true, Some(3)),
+        ]));
+        assert!(!library.rootlist_movable(), "no access yet");
+        assert!(library.add_track(1, &track("spotify:track:x")).is_some());
+
+        library.apply(&Update::RootlistAccess(rootlist_access(0x09, true)));
+        library.apply(&Update::TrackAdded {
+            playlist: "b".to_owned(),
+            revision: revision(0x08),
+        });
+
+        assert!(library.rootlist_movable(), "the access was kept");
+        assert_eq!(
+            library.move_playlist(0, 2, "a"),
+            Some(Command::MovePlaylist {
+                revision: revision(0x09),
+                from: 0,
+                to: 2,
+            })
+        );
+    }
+
+    #[test]
+    fn an_access_whose_read_was_refused_is_refused_with_it() {
+        let mut library = sidebar_library(&["a", "b"], 0x07, true, Some(3));
+        // A read that drops the held access waits for its own to arrive.
+        library.apply(&Update::Playlists(vec![
+            with_access(playlist("a", "a"), 0x07, true, Some(3)),
+            with_access(playlist("b", "b"), 0x07, true, Some(3)),
+        ]));
+        assert!(library.add_track(1, &track("spotify:track:x")).is_some());
+
+        library.apply(&Update::Playlists(vec![
+            with_access(playlist("b", "b"), 0x0a, true, Some(3)),
+            with_access(playlist("a", "a"), 0x0a, true, Some(3)),
+        ]));
+        library.apply(&Update::RootlistAccess(rootlist_access(0x0a, true)));
+        library.apply(&Update::TrackAdded {
+            playlist: "b".to_owned(),
+            revision: revision(0x08),
+        });
+
+        assert_eq!(
+            sidebar_order(&library),
+            names(&["a", "b"]),
+            "the read's order was refused"
+        );
+        assert!(
+            !library.rootlist_movable(),
+            "and its revision is no use beside this one"
+        );
     }
 
     #[test]
