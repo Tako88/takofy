@@ -891,9 +891,6 @@ async fn move_track<H: SessionHost>(
 }
 
 /// Writes one move to the sidebar's playlists and announces the reply revision.
-///
-/// A failure is `Save`, not `Load`, because the user asked for this and it did
-/// not stick.
 async fn move_playlist<H: SessionHost>(
     host: &mut H,
     stop: &mut StopReceiver<()>,
