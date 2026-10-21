@@ -52,10 +52,6 @@ impl Row<'_> {
     ///
     /// An episode has no cover anywhere in its row, so its ghost carries the
     /// missing-cover slot rather than a picture the page never fetched.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the list that lifts an episode builds this ghost")
-    )]
     pub fn lifted(&self) -> queue_row::Lifted {
         queue_row::Lifted::new(
             self.title.to_owned(),

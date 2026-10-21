@@ -12,7 +12,7 @@
 
 use std::time::Instant;
 
-use egui::{Sense, Ui};
+use egui::{Id, Sense, Ui};
 
 use crate::cover::{Art, Cover};
 use crate::format::{album_meta, format_position, total_duration_ms};
@@ -22,11 +22,12 @@ use crate::message::Command;
 use crate::player::Transport;
 use crate::queue::Queue;
 use crate::route::Page;
+use crate::scroll;
 use crate::theme::{Tokens, extent};
 use crate::view::text as recipe;
 
+use super::carry::{self, Ghost};
 use super::hero;
-use super::rows::Look;
 use super::skeleton;
 use super::track_list::{head, list_rect};
 use super::track_row::{self, Click, Row, TitleCell, state_of};
@@ -67,6 +68,7 @@ pub fn album_view(
     egui::ScrollArea::vertical()
         .id_salt(uri.as_str())
         .show(ui, |ui| {
+            scroll::follow_drag(ui);
             match &library.album {
                 Load::Idle => {}
                 Load::Loading => {
@@ -137,8 +139,11 @@ pub fn album_view(
                         let list = list_rect(ui, count);
                         ui.allocate_rect(list, Sense::hover());
                         let visible = ui.clip_rect();
-                        // Nothing is picked yet, so every row of this list stands at rest.
-                        let look = Look::default();
+                        let mut selection = carry::List::open(
+                            ui.ctx(),
+                            Id::unique(("album-tracks", album.uri.as_str())),
+                            count,
+                        );
 
                         for (index, entry) in album.tracks.iter().enumerate() {
                             let rect = table_layout::row_rect(list, index, extent::ROW_H);
@@ -165,7 +170,7 @@ pub fn album_view(
                                 state: state_of(&entry.uri, transport),
                                 // The band already holds the record's one picture.
                                 cover: Cover::Missing,
-                                look,
+                                look: selection.look(index),
                             };
                             // A row plays; its artist subline, when the album named
                             // a resolvable artist, opens that artist's page.
@@ -174,11 +179,17 @@ pub fn album_view(
                                     command = queue.start(&album.tracks, index, transport);
                                 }
                                 Some(Click::Open(page)) => open = Some(page),
-                                // A press and a lift belong to the list's selection, which is not wired yet.
-                                Some(Click::Select(_) | Click::Lift) => {}
+                                Some(Click::Select(press)) => selection.press(index, press),
+                                Some(Click::Lift) => selection.lift(
+                                    index,
+                                    entry.clone(),
+                                    rect.size(),
+                                    Ghost::Table(row.lifted(columns)),
+                                ),
                                 None => {}
                             }
                         }
+                        selection.finish(ui.ctx());
                     });
                 }
             }
@@ -407,6 +418,113 @@ mod tests {
             }
         }
         last
+    }
+
+    /// Whether `album`'s own list holds `index` as part of its selection.
+    fn picked(ctx: &Context, album: &str, index: usize) -> bool {
+        crate::view::carry::List::open(ctx, egui::Id::unique(("album-tracks", album)), 2)
+            .look(index)
+            .selected
+    }
+
+    #[test]
+    fn a_single_click_selects_and_a_double_click_plays_it() {
+        let tracks = || {
+            vec![
+                track("spotify:track:a", "One", "Band", 222_000),
+                track("spotify:track:b", "Two", "Band", 198_000),
+            ]
+        };
+        let ctx = context();
+        let mut library = library_with(detail(tracks()));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let rect = row_rect_for(&ctx, 1, 2);
+        let command = click(
+            &ctx,
+            rect.center(),
+            1,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+
+        assert_eq!(command, None, "a single click plays nothing");
+        assert!(transport.now_playing.is_none(), "and starts nothing");
+        assert!(picked(&ctx, ALBUM, 1), "the row under the click is picked");
+        assert!(!picked(&ctx, ALBUM, 0), "and only that row");
+
+        // A fresh page for the double click: a third click inside the window is
+        // a triple click, and that plays nothing.
+        let ctx = context();
+        let mut library = library_with(detail(tracks()));
+        let mut transport = Transport::default();
+        let command = click(
+            &ctx,
+            rect.center(),
+            2,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+
+        assert_eq!(
+            command,
+            Some(Command::Play {
+                uri: "spotify:track:b".to_owned()
+            }),
+            "a double click starts the track"
+        );
+    }
+
+    #[test]
+    fn a_selection_stays_on_the_album_it_was_made_on() {
+        let tracks = || {
+            vec![
+                track("spotify:track:a", "One", "Band", 222_000),
+                track("spotify:track:b", "Two", "Band", 198_000),
+            ]
+        };
+        let ctx = context();
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+        let mut first = library_with(detail(tracks()));
+        let rect = row_rect_for(&ctx, 1, 2);
+        let _ = click(
+            &ctx,
+            rect.center(),
+            1,
+            &mut first,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+
+        let mut second = Library::default();
+        let _ = second.open(Page::Album(OTHER_ALBUM.to_owned()));
+        second.apply(&Update::Album(AlbumDetail {
+            uri: OTHER_ALBUM.to_owned(),
+            ..detail(tracks())
+        }));
+        let _ = frame(
+            &ctx,
+            Vec::new(),
+            &mut second,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+
+        assert!(picked(&ctx, ALBUM, 1), "the first album keeps its pick");
+        assert!(
+            !picked(&ctx, OTHER_ALBUM, 1),
+            "the second album does not show it against the same index"
+        );
     }
 
     #[test]

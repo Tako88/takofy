@@ -126,13 +126,6 @@ pub struct Row<'a> {
     pub look: Look,
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the drag layer owns the carried block, and it is what paints this snapshot"
-    )
-)]
 impl Row<'_> {
     /// The row as it is drawn in flight: owned, and free of interaction.
     pub fn lifted(&self, columns: Columns) -> Lifted {

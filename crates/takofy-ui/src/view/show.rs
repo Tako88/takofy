@@ -13,7 +13,7 @@
 
 use std::time::Instant;
 
-use egui::{Sense, Ui};
+use egui::{Id, Sense, Ui};
 use takofy_model::Episode;
 
 use crate::cover::Art;
@@ -24,11 +24,12 @@ use crate::message::Command;
 use crate::player::Transport;
 use crate::queue::Queue;
 use crate::route::Page;
+use crate::scroll;
 use crate::theme::Tokens;
 
+use super::carry::{self, Ghost};
 use super::episode_row;
 use super::hero;
-use super::rows::Look;
 use super::section;
 use super::skeleton;
 use super::text as recipe;
@@ -65,6 +66,7 @@ pub fn show_view(
     egui::ScrollArea::vertical()
         .id_salt(("show", uri.as_str()))
         .show(ui, |ui| {
+            scroll::follow_drag(ui);
             match &library.show {
                 Load::Idle => {}
                 Load::Loading => {
@@ -127,6 +129,11 @@ pub fn show_view(
                         let list = list_rect_with(ui, count, episode_layout::ROW_H);
                         ui.allocate_rect(list, Sense::hover());
                         let visible = ui.clip_rect();
+                        let mut selection = carry::List::open(
+                            ui.ctx(),
+                            Id::unique(("show-episodes", detail.show.uri.as_str())),
+                            count,
+                        );
 
                         for (index, episode) in detail.episodes.iter().enumerate() {
                             let rect = table_layout::row_rect(list, index, episode_layout::ROW_H);
@@ -146,13 +153,24 @@ pub fn show_view(
                                 meta: &meta,
                                 duration: duration.as_deref(),
                                 state: state_of(&episode.uri, transport),
-                                look: Look::default(),
+                                look: selection.look(index),
                                 refocus: false,
                             };
-                            if episode_row::show(ui, rect, &row, tokens) == Some(Click::Play) {
-                                command = queue.start(&entries(detail), index, transport);
+                            match episode_row::show(ui, rect, &row, tokens) {
+                                Some(Click::Play) => {
+                                    command = queue.start(&entries(detail), index, transport);
+                                }
+                                Some(Click::Select(press)) => selection.press(index, press),
+                                Some(Click::Lift) => selection.lift(
+                                    index,
+                                    episode.entry(),
+                                    rect.size(),
+                                    Ghost::Queue(row.lifted()),
+                                ),
+                                Some(Click::Open(_)) | None => {}
                             }
                         }
+                        selection.finish(ui.ctx());
                     });
                 }
             }
@@ -523,6 +541,77 @@ mod tests {
                 uri: "spotify:episode:2".to_owned()
             }),
             "the toggle under the click is what plays"
+        );
+    }
+
+    #[test]
+    fn a_single_click_selects_and_a_double_click_plays_it() {
+        let ctx = context();
+        let mut library = library_with(detail(vec![episode(1), episode(2)]));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let (_, output) = frame(
+            &ctx,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let row = text_rect(&output, "Episode 2").expect("the row's title");
+
+        let command = click(
+            &ctx,
+            row.center(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+
+        assert_eq!(command, None, "a single click plays nothing");
+        assert!(transport.now_playing.is_none(), "and starts nothing");
+        assert!(
+            crate::view::carry::List::open(&ctx, egui::Id::unique(("show-episodes", SHOW)), 2)
+                .look(1)
+                .selected,
+            "the row under the click is picked"
+        );
+        assert!(
+            !crate::view::carry::List::open(&ctx, egui::Id::unique(("show-episodes", SHOW)), 2)
+                .look(0)
+                .selected,
+            "and only that row"
+        );
+
+        let mut command = None;
+        // A fresh page for the double click: a third click inside the window is
+        // a triple click, and that plays nothing.
+        let ctx = context();
+        let mut library = library_with(detail(vec![episode(1), episode(2)]));
+        let mut transport = Transport::default();
+        for _ in 0..2 {
+            for event in click_events(row.center()) {
+                command = frame(
+                    &ctx,
+                    vec![event],
+                    &mut library,
+                    &mut transport,
+                    &mut queue,
+                    &mut art,
+                )
+                .0;
+            }
+        }
+
+        assert_eq!(
+            command,
+            Some(Command::Play {
+                uri: "spotify:episode:2".to_owned()
+            }),
+            "a double click plays the episode"
         );
     }
 
