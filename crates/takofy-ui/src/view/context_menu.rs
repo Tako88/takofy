@@ -12,7 +12,8 @@
 //! page and the user never has to find their way back.
 
 use egui::{
-    Event, EventFilter, FontId, Id, Key, Modifiers, Order, Rect, Sense, Ui, WidgetInfo, pos2, vec2,
+    Event, EventFilter, FontId, Id, Key, Modifiers, Order, Rect, Sense, Stroke, StrokeKind, Ui,
+    WidgetInfo, pos2, vec2,
 };
 
 use crate::icon::{self, Icon};
@@ -21,10 +22,11 @@ use crate::menu::{
     Anchor, Closed, Cut, Device, Door, Item, Kind, Menu, Reason, Request, Step, Tier,
 };
 use crate::theme::icon::Size;
-use crate::theme::{MonoWeight, Tokens, fonts, radius, stroke, text, tracking};
+use crate::theme::{MonoWeight, Tokens, Weight, fonts, radius, space, stroke, text, tracking};
 use crate::verbs;
 
 use super::controls::Slot;
+use super::keys;
 use super::menu_box::{self, Card, clicked_on, paint_highlight, paint_marker, row_corners};
 use super::text as recipe;
 
@@ -198,7 +200,6 @@ pub fn show(ui: &mut Ui, frame: Frame<'_>) -> Option<Closed> {
 
     let area_id = ui.make_persistent_id("context-menu");
     let surface_id = area_id.with("surface");
-
     // The pointer reached a row, so the pointer owns the tier from this frame on.
     // A pointer merely resting where the menu opens is not the last device: a
     // keyboard open would otherwise lose its lit row to a pointer that never moved.
@@ -206,8 +207,26 @@ pub fn show(ui: &mut Ui, frame: Frame<'_>) -> Option<Closed> {
     if ui.input(|input| input.pointer.is_moving()) {
         menu.pointer_over(hovered);
     }
+    // A submenu follows the pointer along the rows: a row that opens a list
+    // opens it, and any other row closes the one already up. This one is not
+    // gated on the pointer moving, because entering the window has no delta and
+    // the pointer would then have to wiggle before the list appeared.
+    if let Some(row) = hovered {
+        if menu.items().get(row).is_some_and(|item| item.submenu) {
+            menu.open_submenu(row);
+        } else if menu.submenu().is_some_and(|open| open != row) {
+            menu.close_submenu();
+        }
+    }
+
+    // Enter is consumed before anything draws, so the submenu's field never sees
+    // a singleline edit's Enter and never gives up the keyboard on the key that
+    // chooses a list. A repeat reaches neither the `⋯` nor the drawer, and only
+    // a fresh press chooses.
+    let enter = ui.input_mut(consume_enter);
 
     let mut chosen = None;
+    let mut target = None;
     let mut sizing = false;
     let area = egui::Area::new(area_id)
         .order(Order::Foreground)
@@ -225,7 +244,14 @@ pub fn show(ui: &mut Ui, frame: Frame<'_>) -> Option<Closed> {
                 // on every frame that can hold it: a context menu is modal until
                 // it is dismissed, and a focus taken elsewhere must not leave it
                 // drawing keys nobody will read.
-                ui.memory_mut(|memory| memory.request_focus(surface_id));
+                // The submenu's field is the keyboard's home while a list is
+                // open, so the user types the moment it appears; otherwise the
+                // card holds it.
+                let focus = match menu.submenu() {
+                    Some(row) => area_id.with(("submenu", row)).with("field"),
+                    None => surface_id,
+                };
+                ui.memory_mut(|memory| memory.request_focus(focus));
             }
             let card = Card {
                 rect,
@@ -234,27 +260,38 @@ pub fn show(ui: &mut Ui, frame: Frame<'_>) -> Option<Closed> {
                 sense: Sense::click(),
                 tokens,
             };
+            // The card clips to its own rect, so the clip is saved before it and
+            // restored for the submenu: a card drawn after it would otherwise be
+            // cut to the card's box.
+            let clip = ui.clip_rect();
             let (surface, clicked) =
                 menu_box::card(ui, card, |ui| draw_rows(ui, menu, rect, area_id, tokens));
             surface.widget_info(|| {
                 WidgetInfo::labeled(egui::Role::Menu, true, verbs::menu_label(menu.targets()))
             });
             chosen = clicked;
+            if !sizing {
+                ui.set_clip_rect(clip);
+                target = draw_submenu(ui, menu, rect, area_id, tokens);
+            }
         });
 
     if !sizing {
         menu.mark_drawn(now);
     }
 
-    // Enter is consumed on every frame, so a repeat reaches neither the `⋯` nor
-    // the drawer, and only a fresh press chooses.
-    let enter = ui.input_mut(consume_enter);
+    // A list chosen in the submenu closes the whole menu, so it is reported
+    // before the parent's own rows are read.
+    if let Some(closed) = target {
+        focus_back(ui, closed);
+        return Some(closed);
+    }
 
     if !fresh {
         // Escape is read and consumed before anything else, so the focus path
         // below never sees it and the drawer - which reads it without consuming
         // - never gets one the menu closed on.
-        let (escape, tab, down, up, first, last) = ui.input_mut(|input| {
+        let (escape, tab, down, up, first, last, left) = ui.input_mut(|input| {
             (
                 input.consume_key(Modifiers::NONE, Key::Escape),
                 input.consume_key(Modifiers::NONE, Key::Tab),
@@ -262,25 +299,43 @@ pub fn show(ui: &mut Ui, frame: Frame<'_>) -> Option<Closed> {
                 input.consume_key(Modifiers::NONE, Key::ArrowUp),
                 input.consume_key(Modifiers::NONE, Key::Home),
                 input.consume_key(Modifiers::NONE, Key::End),
+                input.consume_key(Modifiers::NONE, Key::ArrowLeft),
             )
         });
+        // The submenu takes the keys while it is up: Escape and Left step back to
+        // the parent rather than closing the whole menu, and the arrows walk its
+        // own rows. Tab still closes everything, as it does above.
+        let submenu = menu.submenu().is_some();
         if escape {
-            return close(ui, menu, Reason::Escape);
+            if submenu {
+                menu.close_submenu();
+            } else {
+                return close(ui, menu, Reason::Escape);
+            }
         }
         if tab {
             return close(ui, menu, Reason::Tab);
         }
-        if down {
-            menu.step(Step::Down);
+        if left && submenu {
+            menu.close_submenu();
         }
-        if up {
-            menu.step(Step::Up);
-        }
-        if first {
-            menu.step(Step::First);
-        }
-        if last {
-            menu.step(Step::Last);
+        let step = if down {
+            Some(Step::Down)
+        } else if up {
+            Some(Step::Up)
+        } else if first {
+            Some(Step::First)
+        } else if last {
+            Some(Step::Last)
+        } else {
+            None
+        };
+        if let Some(step) = step {
+            if submenu {
+                menu.step_submenu(step);
+            } else {
+                menu.step(step);
+            }
         }
         // Del is the destructive row's key, so the hint tells the truth while
         // the menu is open: a menu without one takes the key and does nothing.
@@ -293,7 +348,7 @@ pub fn show(ui: &mut Ui, frame: Frame<'_>) -> Option<Closed> {
         }
         if enter
             && free
-            && let Some(closed) = menu.choose_lit()
+            && let Some(closed) = choose(menu)
         {
             focus_back(ui, closed);
             return Some(closed);
@@ -327,6 +382,24 @@ pub fn show(ui: &mut Ui, frame: Frame<'_>) -> Option<Closed> {
         return Some(closed);
     }
     None
+}
+
+/// Chooses what Enter would fire: the submenu's lit list when one is up, the
+/// parent's lit row otherwise.
+fn choose(menu: &mut Menu) -> Option<Closed> {
+    if menu.submenu().is_some() {
+        return menu.choose_submenu_lit();
+    }
+    // Enter on the row that opens a list opens the list: the list is what Enter
+    // would fire if it fired anything, and a row that did nothing under Enter
+    // would be the one row of a menu the keyboard could not reach.
+    if let Some(row) = menu.lit()
+        && menu.items().get(row).is_some_and(|item| item.submenu)
+    {
+        menu.open_submenu(row);
+        return None;
+    }
+    menu.choose_lit()
 }
 
 /// Consumes this frame's Enter presses and reports whether one was a fresh press.
@@ -453,6 +526,185 @@ fn draw_rows(ui: &mut Ui, menu: &Menu, rect: Rect, id: Id, tokens: &Tokens) -> O
         }
     }
     clicked
+}
+
+/// The submenu a row opens: a field to find a list by, and the lists that match.
+///
+/// It is the same card as the menu it hangs off, beside it at that row's top and
+/// flipped to the other side when the window's right edge would cut it. The
+/// sheet shows eight rows: more lists than that are found by typing, so the card
+/// never scrolls and the field is never decorative.
+///
+/// Returns the close a list took, which ends the whole menu.
+fn draw_submenu(
+    ui: &mut Ui,
+    menu: &mut Menu,
+    parent: Rect,
+    area_id: Id,
+    tokens: &Tokens,
+) -> Option<Closed> {
+    let row = menu.submenu()?;
+    let names: Vec<String> = menu
+        .shown()
+        .into_iter()
+        .map(|index| menu.playlists()[index].name.clone())
+        .collect();
+    let widths: Vec<geometry::RowWidth> = names
+        .iter()
+        .map(|name| geometry::RowWidth {
+            label: measure(ui, name, recipe::track_secondary(), tokens),
+            key: None,
+            chevron: false,
+        })
+        .collect();
+    let size = geometry::submenu_size(names.len().max(1), geometry::submenu_width(&widths));
+    let rect = geometry::submenu_place(
+        parent,
+        geometry::row_rect(parent, row),
+        size,
+        ui.ctx().content_rect(),
+    );
+    ui.expand_to_include_rect(rect);
+
+    let id = area_id.with(("submenu", row));
+    let field_rect = geometry::submenu_field(rect);
+    let field_id = id.with("field");
+    let mut chosen = None;
+
+    let card = Card {
+        rect,
+        id,
+        // The field is the submenu's one focus stop, not the card.
+        sense: Sense::CLICK,
+        tokens,
+    };
+    menu_box::card(ui, card, |ui| {
+        ui.painter()
+            .rect_filled(field_rect, radius::SM, tokens.palette.surface);
+        let focused = draw_filter(ui, menu, field_rect, field_id, tokens);
+        ui.painter().rect_stroke(
+            field_rect,
+            radius::SM,
+            Stroke::new(
+                stroke::HAIRLINE,
+                if focused {
+                    tokens.palette.text
+                } else {
+                    tokens.palette.border
+                },
+            ),
+            StrokeKind::Inside,
+        );
+        ui.painter().rect_filled(
+            geometry::submenu_rule(rect),
+            radius::NONE,
+            tokens.palette.border,
+        );
+
+        if names.is_empty() {
+            // An empty result is one muted line, on the same rhythm as a row:
+            // the card is never a hole with a field on top of it.
+            let row = geometry::submenu_row(rect, 0);
+            let parts = geometry::command_parts(row, None, false);
+            let galley = recipe::line(
+                ui,
+                "No playlists match.",
+                recipe::track_secondary(),
+                tokens.palette.text_muted,
+                0.0,
+                parts.label.width(),
+            );
+            ui.painter().galley(
+                pos2(parts.label.left(), row.center().y - galley.size().y / 2.0),
+                galley,
+                tokens.palette.text_muted,
+            );
+            return;
+        }
+
+        let hovered = pointer_row_in(ui, rect, names.len());
+        if ui.input(|input| input.pointer.is_moving()) {
+            menu.submenu_pointer(hovered);
+        }
+        for (position, name) in names.iter().enumerate() {
+            let row = geometry::submenu_row(rect, position);
+            let hit = ui.interact(row, id.with(("list", position)), Sense::CLICK);
+            hit.widget_info(|| WidgetInfo::labeled(egui::Role::MenuItem, true, name.clone()));
+
+            let corners = row_corners(position == 0, position + 1 == names.len());
+            let tier = menu.submenu_tier(position, hovered);
+            paint_highlight(ui, tokens, row, corners, tier);
+            if tier == Tier::Keyboard {
+                paint_marker(ui, row, corners, tokens.palette.text);
+            }
+
+            let parts = geometry::command_parts(row, None, false);
+            let color = if tier == Tier::None {
+                tokens.palette.text_muted
+            } else {
+                tokens.palette.text
+            };
+            let galley = recipe::line(
+                ui,
+                name,
+                recipe::track_secondary(),
+                color,
+                0.0,
+                parts.label.width(),
+            );
+            ui.painter().galley(
+                pos2(parts.label.left(), row.center().y - galley.size().y / 2.0),
+                galley,
+                color,
+            );
+
+            if hit.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+            if clicked_on(ui, &hit, row) {
+                let list = menu.shown()[position];
+                chosen = menu.choose_target(list);
+            }
+        }
+    });
+    chosen
+}
+
+/// The submenu's find field, and whether it holds the keyboard.
+fn draw_filter(ui: &mut Ui, menu: &mut Menu, rect: Rect, id: Id, tokens: &Tokens) -> bool {
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .id_salt(id.with("text"))
+            .max_rect(rect)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    child.set_clip_rect(rect);
+    // The hint is the palette's subtle tier, as the search field's is: egui's own
+    // hint colour is a step too bright for a placeholder.
+    child.visuals_mut().weak_text_color = Some(tokens.palette.text_subtle);
+    child.visuals_mut().text_cursor.stroke = Stroke::new(stroke::HAIRLINE, tokens.palette.text);
+
+    let output = egui::TextEdit::singleline(menu.filter_edit())
+        .id(id)
+        .frame(
+            egui::Frame::NONE
+                .inner_margin(egui::Margin::symmetric(space::S2 as i8, space::S1 as i8)),
+        )
+        .min_size(rect.size())
+        .desired_width(rect.width())
+        .align(egui::Align2::LEFT_CENTER)
+        .font(FontId::new(text::SM, fonts::sans(Weight::Regular)))
+        .text_color(tokens.palette.text)
+        .event_filter(keys::FIELD_FILTER)
+        .hint_text(egui::RichText::new("Find a playlist"))
+        .show(&mut child);
+    output.response.has_focus()
+}
+
+/// The submenu row the pointer is on, if it is on one.
+fn pointer_row_in(ui: &Ui, card: Rect, rows: usize) -> Option<usize> {
+    let pos = ui.ctx().pointer_hover_pos()?;
+    (0..rows).find(|row| geometry::submenu_row(card, *row).contains(pos))
 }
 
 /// One command row's text and trailing slot.
@@ -729,6 +981,200 @@ mod tests {
             .filter(|(_, fill)| *fill == color)
             .map(|(rect, _)| rect)
             .collect()
+    }
+
+    /// The raised cards one frame painted, in paint order: the menu first, the
+    /// submenu beside it.
+    fn cards(output: &egui::FullOutput) -> Vec<Rect> {
+        fills_of(output, Tokens::DARK.palette.surface_raised)
+    }
+
+    /// A menu of a submenu row, two verbs and two lists to offer.
+    fn with_lists(device: Device) -> Menu {
+        let mut request = request(device, items());
+        request.playlists = vec![
+            crate::menu::AddTarget {
+                uri: "spotify:playlist:a".to_owned(),
+                name: "Night Drive".to_owned(),
+                revision: takofy_model::Revision::from_wire(&[0x07]).expect("a revision"),
+                length: 3,
+            },
+            crate::menu::AddTarget {
+                uri: "spotify:playlist:b".to_owned(),
+                name: "Piano".to_owned(),
+                revision: takofy_model::Revision::from_wire(&[0x08]).expect("a revision"),
+                length: 5,
+            },
+        ];
+        request.items.insert(
+            0,
+            Item {
+                label: "Add to playlist".to_owned(),
+                kind: Kind::Plain,
+                key: None,
+                submenu: true,
+                verb: Verb::AddToPlaylist,
+            },
+        );
+        let mut menu = Menu::default();
+        assert!(menu.open(request, Gate::default()));
+        menu
+    }
+
+    #[test]
+    fn a_pointer_on_the_submenu_row_opens_the_list_and_the_frame_draws_its_card() {
+        let ctx = context();
+        let mut menu = with_lists(Device::Keyboard);
+        warm(&ctx, &mut menu);
+        // The menu's card first, so the row's own rect is known.
+        let (first, _) = draw(&ctx, &mut menu, true, Vec::new(), |_, _| ());
+        let card = card(&first.output);
+        let row = row_rect(card, 0);
+        let at = row.center();
+
+        let (second, _) = draw(
+            &ctx,
+            &mut menu,
+            true,
+            vec![Event::PointerMoved(at)],
+            |_, _| (),
+        );
+        assert_eq!(menu.submenu(), Some(0), "the pointer did not open the list");
+        let cards = cards(&second.output);
+        assert_eq!(cards.len(), 2, "the submenu's own card was not drawn");
+        // This menu is right-aligned near the window's edge, so there is no room
+        // beside it and the card takes the sheet's other side.
+        assert!(
+            cards[1].right() <= cards[0].left(),
+            "the submenu at {:?} is neither beside nor left of {:?}",
+            cards[1],
+            cards[0]
+        );
+        assert_eq!(
+            cards[1].top(),
+            row.top(),
+            "the card is not at the row's top"
+        );
+    }
+
+    #[test]
+    fn enter_on_the_submenu_row_opens_its_list_without_closing_the_menu() {
+        let ctx = context();
+        let mut menu = with_lists(Device::Keyboard);
+        warm(&ctx, &mut menu);
+        // The keyboard lit the first row: the one that opens the list.
+        assert_eq!(menu.lit(), Some(0));
+
+        let (drawn, _) = draw(
+            &ctx,
+            &mut menu,
+            true,
+            vec![key_event(Key::Enter, Modifiers::NONE)],
+            |_, _| (),
+        );
+        assert!(
+            drawn.closed.is_none(),
+            "Enter chose a row that opens a list"
+        );
+        assert!(menu.is_open());
+        assert_eq!(menu.submenu(), Some(0));
+    }
+
+    #[test]
+    fn a_click_on_a_list_closes_the_menu_on_that_add() {
+        let ctx = context();
+        let mut menu = with_lists(Device::Pointer);
+        warm(&ctx, &mut menu);
+        assert!(menu.open_submenu(0));
+        let (first, _) = draw(&ctx, &mut menu, true, Vec::new(), |_, _| ());
+        let submenu = *cards(&first.output).last().expect("two cards");
+        let row = geometry::submenu_row(submenu, 1);
+        let at = row.center();
+
+        let (closed, _) = draw(&ctx, &mut menu, true, click_events(at).to_vec(), |_, _| ());
+        let closed = closed.closed.expect("the click closed the menu");
+        assert_eq!(closed.chose, Some(Verb::AddToPlaylist));
+        assert_eq!(
+            menu.chosen_target().map(|target| target.uri.as_str()),
+            Some("spotify:playlist:b"),
+            "the second list is the one under the pointer"
+        );
+    }
+
+    #[test]
+    fn escape_steps_back_out_of_the_submenu_before_it_closes_the_menu() {
+        let ctx = context();
+        let mut menu = with_lists(Device::Keyboard);
+        warm(&ctx, &mut menu);
+        assert!(menu.open_submenu(0));
+
+        let escape = Event::Key {
+            key: Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        };
+        let (first, _) = draw(&ctx, &mut menu, true, vec![escape.clone()], |_, _| ());
+        assert!(first.closed.is_none(), "Escape closed the whole menu");
+        assert!(menu.is_open());
+        assert_eq!(menu.submenu(), None, "Escape left the submenu up");
+
+        let (second, _) = draw(&ctx, &mut menu, true, vec![escape], |_, _| ());
+        assert!(
+            second
+                .closed
+                .expect("the second Escape closes")
+                .chose
+                .is_none()
+        );
+        assert!(!menu.is_open());
+    }
+
+    #[test]
+    fn the_submenu_hides_its_field_behind_a_hairline_and_paints_its_lists() {
+        let ctx = context();
+        let mut menu = with_lists(Device::Pointer);
+        warm(&ctx, &mut menu);
+        assert!(menu.open_submenu(0));
+        let (drawn, _) = draw(&ctx, &mut menu, true, Vec::new(), |_, _| ());
+        let submenu = *cards(&drawn.output).last().expect("two cards");
+
+        let labels = texts(&drawn.output);
+        assert!(
+            labels.iter().any(|(text, _)| text == "Night Drive"),
+            "the first list was not drawn: {labels:?}"
+        );
+        assert!(labels.iter().any(|(text, _)| text == "Piano"));
+        assert!(
+            labels.iter().any(|(text, _)| text == "Find a playlist"),
+            "the field's hint is missing: {labels:?}"
+        );
+
+        // The rule between the field and the lists.
+        let rule = geometry::submenu_rule(submenu);
+        assert!(
+            fills_of(&drawn.output, Tokens::DARK.palette.border)
+                .iter()
+                .any(|rect| rect.contains_rect(rule)),
+            "no hairline separates the field from the lists"
+        );
+    }
+
+    #[test]
+    fn a_field_that_matches_nothing_says_so_in_one_muted_line() {
+        let ctx = context();
+        let mut menu = with_lists(Device::Pointer);
+        warm(&ctx, &mut menu);
+        assert!(menu.open_submenu(0));
+        menu.filter_edit().push_str("zzz");
+        let (drawn, _) = draw(&ctx, &mut menu, true, Vec::new(), |_, _| ());
+        let labels = texts(&drawn.output);
+        assert!(
+            labels.iter().any(|(text, _)| text == "No playlists match."),
+            "{labels:?}"
+        );
+        assert!(!labels.iter().any(|(text, _)| text == "Night Drive"));
     }
 
     /// Whether a glyph, and not a line of text, was painted into `rect`.

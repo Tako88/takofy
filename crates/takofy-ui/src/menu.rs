@@ -13,6 +13,7 @@ use egui::{Id, Pos2, Rect};
 use takofy_model::{Revision, TrackEntry};
 
 use crate::route::Page;
+use crate::theme::extent;
 
 /// Where a menu is drawn from.
 ///
@@ -235,6 +236,11 @@ pub struct Menu {
     playlists: Vec<AddTarget>,
     /// The row whose submenu is open, while it is.
     submenu: Option<usize>,
+    /// The list row the submenu's keyboard is on, as a position in [`Menu::shown`].
+    submenu_lit: Option<usize>,
+    /// What the submenu's field holds. The lists are found by typing, because a
+    /// user with thirty playlists does not scan a list eight rows long.
+    filter: String,
     /// The list the submenu's last choice named. It survives the close, as the
     /// removal's snapshot does.
     chosen: Option<usize>,
@@ -281,12 +287,19 @@ impl Menu {
     }
 
     /// Opens `row`'s submenu, when it has one and there is something to offer.
+    ///
+    /// A different row's submenu starts with an empty field: a filter typed for
+    /// one list must not hide the next list's rows.
     pub fn open_submenu(&mut self, row: usize) -> bool {
         if !self.open || self.playlists.is_empty() {
             return false;
         }
         if !self.items.get(row).is_some_and(|item| item.submenu) {
             return false;
+        }
+        if self.submenu != Some(row) {
+            self.submenu_lit = None;
+            self.filter.clear();
         }
         self.submenu = Some(row);
         true
@@ -295,6 +308,8 @@ impl Menu {
     /// Closes the open submenu, leaving the menu itself up.
     pub fn close_submenu(&mut self) {
         self.submenu = None;
+        self.submenu_lit = None;
+        self.filter.clear();
     }
 
     /// The row whose submenu is open, while it is.
@@ -305,6 +320,83 @@ impl Menu {
     /// The lists the add submenu offers.
     pub fn playlists(&self) -> &[AddTarget] {
         &self.playlists
+    }
+
+    /// What the submenu's field holds.
+    pub fn filter(&self) -> &str {
+        &self.filter
+    }
+
+    /// The submenu's field, for it to edit.
+    pub fn filter_edit(&mut self) -> &mut String {
+        &mut self.filter
+    }
+
+    /// The playlists the submenu shows: those whose name holds the typed text,
+    /// in the sidebar's order, capped at the sheet's eight rows.
+    ///
+    /// The rows are indices into [`Menu::playlists`], so a choice names the list
+    /// the filter did not have to be undone to reach.
+    pub fn shown(&self) -> Vec<usize> {
+        self.playlists
+            .iter()
+            .enumerate()
+            .filter(|(_, target)| matches(&target.name, &self.filter))
+            .map(|(index, _)| index)
+            .take(extent::SUBMENU_ROWS)
+            .collect()
+    }
+
+    /// Moves the submenu's lit row one step, clamping at the ends.
+    pub fn step_submenu(&mut self, step: Step) {
+        let last = match self.shown().len() {
+            0 => return,
+            count => count - 1,
+        };
+        self.device = Device::Keyboard;
+        self.submenu_lit = Some(match step {
+            Step::Down => self.submenu_lit.map_or(0, |row| (row + 1).min(last)),
+            Step::Up => self.submenu_lit.map_or(last, |row| row.saturating_sub(1)),
+            Step::First => 0,
+            Step::Last => last,
+        });
+    }
+
+    /// The submenu row the keyboard lit, as a position in [`Menu::shown`].
+    ///
+    /// A filter that shortened the list leaves the cursor past its end, which
+    /// lights nothing until the keyboard moves again: a row that vanished must
+    /// not fire because a different one took its place.
+    pub fn submenu_lit(&self) -> Option<usize> {
+        self.submenu_lit.filter(|row| *row < self.shown().len())
+    }
+
+    /// The pointer reached a submenu row, so the pointer owns that tier.
+    pub fn submenu_pointer(&mut self, row: Option<usize>) {
+        if !self.open || row.is_none() {
+            return;
+        }
+        self.device = Device::Pointer;
+        self.submenu_lit = row;
+    }
+
+    /// The tier one submenu row is drawn in.
+    pub fn submenu_tier(&self, row: usize, hovered: Option<usize>) -> Tier {
+        if !self.open || self.submenu.is_none() {
+            return Tier::None;
+        }
+        match self.device {
+            Device::Keyboard if self.submenu_lit() == Some(row) => Tier::Keyboard,
+            Device::Pointer if hovered == Some(row) => Tier::Pointer,
+            _ => Tier::None,
+        }
+    }
+
+    /// Chooses the submenu row the keyboard lit.
+    pub fn choose_submenu_lit(&mut self) -> Option<Closed> {
+        let shown = self.shown();
+        let target = *shown.get(self.submenu_lit()?)?;
+        self.choose_target(target)
     }
 
     /// Chooses `index` of the open submenu's lists, and closes the menu.
@@ -373,6 +465,13 @@ impl Menu {
             return None;
         }
         self.close_with(Some(item.verb))
+    }
+
+    /// The row the keyboard lit, when the keyboard owns the tier.
+    ///
+    /// A pointer-opened menu has no current item, so nothing is lit for Enter.
+    pub fn lit(&self) -> Option<usize> {
+        self.lit.filter(|_| self.device == Device::Keyboard)
     }
 
     /// Chooses the row the keyboard lit, and closes. Enter fires nothing the user
@@ -462,10 +561,6 @@ impl Menu {
         })
     }
 
-    pub fn lit(&self) -> Option<usize> {
-        self.lit
-    }
-
     pub fn device(&self) -> Device {
         self.device
     }
@@ -485,11 +580,23 @@ impl Menu {
         self.open = false;
         self.lit = None;
         self.submenu = None;
+        self.submenu_lit = None;
+        self.filter.clear();
         Some(Closed {
             opener: self.opener,
             chose,
         })
     }
+}
+
+/// Whether a list's name answers the submenu's field.
+///
+/// Case-insensitive and unanchored: typing `n` finds `Night Drive` and `Piano`.
+/// An empty field matches every list, because a filter nobody typed filters
+/// nothing.
+pub fn matches(name: &str, filter: &str) -> bool {
+    let filter = filter.trim();
+    filter.is_empty() || name.to_lowercase().contains(&filter.to_lowercase())
 }
 
 #[cfg(test)]
@@ -1001,6 +1108,148 @@ mod tests {
 
         assert_eq!(menu.chosen_target(), None, "the last menu's choice leaked");
         assert_eq!(menu.submenu(), None);
+    }
+
+    #[test]
+    fn the_field_finds_a_list_by_any_part_of_its_name() {
+        assert!(matches("Night Drive", ""));
+        assert!(matches("Night Drive", "   "));
+        assert!(matches("Night Drive", "night"));
+        assert!(matches("Night Drive", "DRIVE"));
+        assert!(matches("Night Drive", "ht dr"));
+        assert!(!matches("Night Drive", "mix"));
+        assert!(!matches("Night Drive", "night drive 2"));
+        // Trimmed at both ends, so a stray space does not empty the list.
+        assert!(matches("Night Drive", " drive "));
+    }
+
+    #[test]
+    fn the_submenu_shows_what_the_field_matches_in_the_sidebar_order() {
+        let mut menu = Menu::default();
+        let mut request = request(Device::Pointer, 1);
+        request.items = vec![add_item()];
+        request.playlists = vec![
+            target("spotify:playlist:a", "Night Drive", 0x07, 3),
+            target("spotify:playlist:b", "Piano", 0x08, 5),
+            target("spotify:playlist:c", "Night Shift", 0x09, 1),
+        ];
+        assert!(menu.open(request, Gate::default()));
+        assert!(menu.open_submenu(0));
+        assert_eq!(menu.shown(), vec![0, 1, 2], "an empty field hid a list");
+
+        menu.filter_edit().push_str("night");
+        assert_eq!(menu.shown(), vec![0, 2]);
+
+        menu.filter_edit().clear();
+        menu.filter_edit().push_str("zzz");
+        assert_eq!(menu.shown(), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn the_submenu_stops_at_the_sheets_eight_rows() {
+        let mut menu = Menu::default();
+        let mut request = request(Device::Pointer, 1);
+        request.items = vec![add_item()];
+        request.playlists = (0..12)
+            .map(|index| {
+                target(
+                    &format!("spotify:playlist:{index}"),
+                    &format!("List {index}"),
+                    0x07,
+                    index,
+                )
+            })
+            .collect();
+        assert!(menu.open(request, Gate::default()));
+        assert!(menu.open_submenu(0));
+
+        let shown = menu.shown();
+        assert_eq!(shown.len(), extent::SUBMENU_ROWS);
+        assert_eq!(shown.first(), Some(&0));
+        assert_eq!(shown.last(), Some(&(extent::SUBMENU_ROWS - 1)));
+
+        // A filter that names the twelfth list finds it, even though the empty
+        // field's eight rows never reached it.
+        menu.filter_edit().push_str("List 11");
+        assert_eq!(menu.shown(), vec![11]);
+    }
+
+    #[test]
+    fn the_submenu_cursor_walks_the_shown_rows_and_chooses_the_list_it_names() {
+        let playlists = vec![
+            target("spotify:playlist:a", "A", 0x07, 3),
+            target("spotify:playlist:b", "B", 0x08, 5),
+        ];
+        let mut menu = Menu::default();
+        let mut request = request(Device::Pointer, 1);
+        request.items = vec![add_item()];
+        request.playlists = playlists.clone();
+        assert!(menu.open(request, Gate::default()));
+        assert!(menu.open_submenu(0));
+
+        assert_eq!(menu.submenu_lit(), None, "a pointer opened with a lit row");
+        menu.step_submenu(Step::Down);
+        assert_eq!(menu.submenu_lit(), Some(0));
+        menu.step_submenu(Step::Last);
+        assert_eq!(menu.submenu_lit(), Some(1));
+        menu.step_submenu(Step::Down);
+        assert_eq!(
+            menu.submenu_lit(),
+            Some(1),
+            "the cursor wrapped past the end"
+        );
+        assert_eq!(menu.submenu_tier(1, None), Tier::Keyboard);
+
+        let closed = menu.choose_submenu_lit().expect("a choice");
+        assert_eq!(closed.chose, Some(Verb::AddToPlaylist));
+        assert_eq!(menu.chosen_target(), Some(&playlists[1]));
+    }
+
+    #[test]
+    fn a_filter_that_shortens_the_list_unlights_a_row_that_moved() {
+        let playlists = vec![
+            target("spotify:playlist:a", "A", 0x07, 3),
+            target("spotify:playlist:b", "B", 0x08, 5),
+        ];
+        let mut menu = Menu::default();
+        let mut request = request(Device::Keyboard, 1);
+        request.items = vec![add_item()];
+        request.playlists = playlists;
+        assert!(menu.open(request, Gate::default()));
+        assert!(menu.open_submenu(0));
+        menu.step_submenu(Step::Last);
+        assert_eq!(menu.submenu_lit(), Some(1));
+
+        menu.filter_edit().push('A');
+        assert_eq!(menu.shown(), vec![0]);
+        assert_eq!(
+            menu.submenu_lit(),
+            None,
+            "Enter would have fired a row the keyboard never lit"
+        );
+        assert_eq!(menu.choose_submenu_lit(), None);
+    }
+
+    #[test]
+    fn another_rows_submenu_starts_with_an_empty_field() {
+        let mut menu = Menu::default();
+        let mut request = request(Device::Pointer, 3);
+        request.items = vec![add_item(), item(1), add_item()];
+        request.playlists = vec![target("spotify:playlist:a", "Night Drive", 0x07, 3)];
+        assert!(menu.open(request, Gate::default()));
+
+        assert!(menu.open_submenu(0));
+        menu.filter_edit().push_str("night");
+        menu.step_submenu(Step::Down);
+
+        assert!(menu.open_submenu(2));
+        assert_eq!(menu.filter(), "", "the last submenu's field leaked");
+        assert_eq!(menu.submenu_lit(), None);
+        assert_eq!(menu.shown(), vec![0]);
+
+        menu.filter_edit().push_str("night");
+        menu.close_submenu();
+        assert_eq!(menu.filter(), "");
     }
 
     #[test]

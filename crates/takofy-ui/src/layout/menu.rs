@@ -14,7 +14,7 @@ use egui::{Rect, Vec2, pos2, vec2};
 
 use super::search_menu::{is_sane, sane};
 use crate::menu::Anchor;
-use crate::theme::{extent, icon, space};
+use crate::theme::{extent, icon, space, stroke};
 
 /// One row's measured parts, in points, as the view measured them.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -154,6 +154,78 @@ pub fn command_parts(row: Rect, key: Option<f32>, chevron: bool) -> CommandParts
     }
 }
 
+/// The box a submenu wants: its longest list row, within the sheet's floor and
+/// cap. A list name is measured like any label.
+pub fn submenu_width(labels: &[RowWidth]) -> f32 {
+    width(labels)
+}
+
+/// The card a submenu takes: its field's row plus one row per list shown.
+///
+/// The card is the field and the list, nothing else: a submenu that reserved
+/// room for an empty result would be a card with a hole in it.
+pub fn submenu_size(rows: usize, width: f32) -> Vec2 {
+    vec2(width, extent::SEARCH_H + rows_height(rows))
+}
+
+/// Where a submenu lands: beside the parent card at the row's top, flipped to
+/// the parent's left when the window's right edge would cut it, then clamped
+/// into the window in both axes.
+///
+/// Flipping is the sheet's own rule for a menu that would hang off an edge: the
+/// submenu goes the other way and the pointer lands outside it, which is the
+/// same behaviour a right-click menu has.
+pub fn submenu_place(parent: Rect, row: Rect, size: Vec2, window: Rect) -> Rect {
+    let height = room(size.y);
+    if !is_sane(parent) || !is_sane(row) || !is_sane(window) || !size.x.is_finite() {
+        return Rect::from_min_size(pos2(0.0, extent::MENU_GAP), vec2(0.0, height));
+    }
+
+    let window = sane(window);
+    let width = room(size.x).min(window.width());
+    let beside = parent.right() + extent::MENU_GAP;
+    let left = if beside + width <= window.right() {
+        beside
+    } else {
+        parent.left() - extent::MENU_GAP - width
+    };
+
+    let top = row
+        .top()
+        .clamp(window.top(), (window.bottom() - height).max(window.top()));
+    let left = left.clamp(window.left(), (window.right() - width).max(window.left()));
+    let rect = Rect::from_min_size(pos2(left, top), vec2(width, height));
+    Rect::from_min_max(rect.min.round_ui(), rect.max.round_ui())
+}
+
+/// The submenu's field, inset in the card's top strip.
+pub fn submenu_field(card: Rect) -> Rect {
+    let card = sane(card);
+    let left = (card.left() + space::S2).min(card.right());
+    let right = (card.right() - space::S2).max(left).min(card.right());
+    let top = (card.top() + space::S1).min(card.bottom());
+    let bottom = (card.top() + extent::SEARCH_H - space::S1)
+        .max(top)
+        .min(card.bottom());
+    Rect::from_min_max(pos2(left, top), pos2(right, bottom))
+}
+
+/// The rect one list row of a submenu takes, below the field's strip.
+pub fn submenu_row(card: Rect, index: usize) -> Rect {
+    let card = sane(card);
+    let top = card.top() + extent::SEARCH_H + index as f32 * extent::ROW_H;
+    Rect::from_min_size(pos2(card.left(), top), vec2(card.width(), extent::ROW_H))
+}
+
+/// The hairline that separates the field from the list it filters.
+pub fn submenu_rule(card: Rect) -> Rect {
+    let card = sane(card);
+    Rect::from_min_size(
+        pos2(card.left(), card.top() + extent::SEARCH_H),
+        vec2(card.width(), stroke::HAIRLINE),
+    )
+}
+
 /// The row's content box: the row less its own `space-3`/`space-1` padding.
 fn inner_rect(row: Rect) -> Rect {
     let left = (row.left() + space::S3).min(row.right());
@@ -250,6 +322,83 @@ mod tests {
         );
         assert_eq!(menu.bottom(), button.top() - extent::MENU_GAP);
         assert!(menu.top() >= window().top() - 0.01, "{menu:?}");
+    }
+
+    #[test]
+    fn a_submenu_lands_beside_the_menu_at_its_rows_top() {
+        let parent = Rect::from_min_size(pos2(400.0, 300.0), vec2(240.0, 200.0));
+        let row = row_rect(parent, 2);
+        let size = submenu_size(3, 220.0);
+        let sub = submenu_place(parent, row, size, window());
+
+        assert_eq!(sub.left(), parent.right() + extent::MENU_GAP);
+        assert_eq!(sub.top(), row.top());
+        assert_eq!(sub.size(), size);
+        assert_eq!(
+            sub.height(),
+            extent::SEARCH_H + 3.0 * extent::ROW_H,
+            "the card is the field and its rows"
+        );
+    }
+
+    #[test]
+    fn a_submenu_flips_to_the_menus_left_when_the_window_would_cut_it() {
+        // A menu right-aligned to a button near the right edge, so there is no
+        // room for a card beside it.
+        let parent = Rect::from_min_size(pos2(1100.0, 300.0), vec2(320.0, 200.0));
+        let row = row_rect(parent, 1);
+        let sub = submenu_place(parent, row, submenu_size(3, 220.0), window());
+
+        assert_eq!(
+            sub.right(),
+            parent.left() - extent::MENU_GAP,
+            "the card did not flip to the menu's left"
+        );
+        assert!(sub.left() >= window().left(), "{sub:?}");
+    }
+
+    #[test]
+    fn a_submenu_lower_than_the_window_pins_into_it() {
+        let parent = Rect::from_min_size(pos2(400.0, 700.0), vec2(240.0, 20.0));
+        let row = row_rect(parent, 0);
+        let sub = submenu_place(parent, row, submenu_size(8, 220.0), window());
+        assert_eq!(sub.bottom(), window().bottom());
+        assert_eq!(sub.height(), extent::SEARCH_H + 8.0 * extent::ROW_H);
+    }
+
+    #[test]
+    fn a_submenu_from_a_bad_parent_draws_the_documented_rect() {
+        let bad = Rect::from_min_size(pos2(f32::NAN, 0.0), vec2(240.0, 200.0));
+        let sub = submenu_place(bad, bad, submenu_size(2, 220.0), window());
+        assert_eq!(sub.min, pos2(0.0, extent::MENU_GAP));
+        assert_eq!(sub.width(), 0.0);
+    }
+
+    #[test]
+    fn a_submenus_field_and_rows_tile_from_its_top_and_never_invert() {
+        let card = Rect::from_min_size(pos2(100.0, 200.0), vec2(220.0, 300.0));
+        let field = submenu_field(card);
+        assert_eq!(field.left(), card.left() + space::S2);
+        assert_eq!(field.right(), card.right() - space::S2);
+        assert!(field.top() > card.top(), "the field is flush with the card");
+        assert!(field.bottom() <= card.top() + extent::SEARCH_H);
+
+        let first = submenu_row(card, 0);
+        assert_eq!(first.top(), card.top() + extent::SEARCH_H);
+        assert_eq!(first.height(), extent::ROW_H);
+        assert_eq!(first.width(), card.width());
+        assert_eq!(
+            submenu_row(card, 2).top(),
+            first.top() + 2.0 * extent::ROW_H
+        );
+
+        assert_eq!(submenu_rule(card).top(), card.top() + extent::SEARCH_H);
+
+        // A card narrower than its own padding yields an empty field, not a
+        // mirrored one.
+        let tiny = Rect::from_min_size(pos2(0.0, 0.0), vec2(4.0, 4.0));
+        let field = submenu_field(tiny);
+        assert!(field.width() >= 0.0 && field.height() >= 0.0, "{field:?}");
     }
 
     #[test]
