@@ -441,23 +441,28 @@ pub(crate) async fn write_rootlist_add(
 ) -> Result<Revision, playlist_edit::PlaylistError> {
     playlist_edit::require_playlist(uri)?;
     let endpoint = playlist_edit::rootlist_changes_endpoint(&session.username())?;
-    write_changes(session, endpoint, playlist_edit::add_body(revision, 0, uri)).await
+    write_changes(
+        session,
+        endpoint,
+        playlist_edit::add_body(revision, 0, &[uri.to_owned()]),
+    )
+    .await
 }
 
-/// Appends one track to a playlist.
+/// Appends tracks to a playlist as one change set.
 pub(crate) async fn write_add(
     session: &Session,
     uri: &str,
     revision: &Revision,
     from_index: usize,
-    track: &str,
+    tracks: &[String],
 ) -> Result<Revision, playlist_edit::PlaylistError> {
-    playlist_edit::require_track(track)?;
+    playlist_edit::require_tracks(tracks)?;
     let endpoint = playlist_edit::changes_endpoint(uri)?;
     write_changes(
         session,
         endpoint,
-        playlist_edit::add_body(revision, from_index, track),
+        playlist_edit::add_body(revision, from_index, tracks),
     )
     .await
 }

@@ -195,15 +195,22 @@ impl Engine {
         playlist_edit::listing_access(state.revision.as_bytes(), state.can_edit)
     }
 
-    /// Appends one track to a playlist, answering the revision to hold next.
-    pub async fn add_track(
+    /// Appends tracks to a playlist, answering the revision to hold next.
+    pub async fn add_tracks(
         &self,
         playlist_uri: &str,
         revision: &Revision,
         from_index: usize,
-        track_uri: &str,
+        track_uris: &[String],
     ) -> Result<Revision, EngineError> {
-        Ok(write_add(&self.session, playlist_uri, revision, from_index, track_uri).await?)
+        Ok(write_add(
+            &self.session,
+            playlist_uri,
+            revision,
+            from_index,
+            track_uris,
+        )
+        .await?)
     }
 
     /// The tracks one search query answers, labelled, in the wire's own order.

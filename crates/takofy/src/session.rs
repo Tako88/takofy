@@ -296,7 +296,7 @@ impl SessionHost for LiveSession {
     ) -> Result<Revision, SessionError> {
         match &self.engine {
             Some(engine) => engine
-                .add_track(playlist, revision, from_index, track)
+                .add_tracks(playlist, revision, from_index, &[track.to_owned()])
                 .await
                 .map_err(SessionError::Engine),
             None => Err(SessionError::NotConnected),

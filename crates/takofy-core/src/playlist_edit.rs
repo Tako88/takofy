@@ -31,6 +31,9 @@ pub enum PlaylistError {
     /// The write asked for no removals, so there is nothing to send.
     #[error("no rows to remove")]
     NoRemovals,
+    /// The write asked for no tracks, so there is nothing to send.
+    #[error("no tracks to add")]
+    NoTracks,
     /// The removals do not name a chain the wire can apply in sequence.
     #[error("the removals do not form a descending, non-overlapping chain")]
     BadRemovals,
@@ -122,18 +125,20 @@ pub fn move_body(revision: &Revision, moves: &[Move]) -> Vec<u8> {
     changes(revision, &ops)
 }
 
-/// The change set that appends one item at `from_index`, based on `revision`.
+/// The change set that appends `uris` at `from_index`, based on `revision`.
 ///
 /// An append to a list the client holds in full names the list's length as its
-/// index, which is where the item goes; any other index inserts before the item
-/// the client counted there, so the caller's index is the wire's.
-pub fn add_body(revision: &Revision, from_index: usize, uri: &str) -> Vec<u8> {
-    let mut item = Vec::new();
-    put_bytes(1, uri.as_bytes(), &mut item);
-
+/// index, which is where the first item goes; the items follow in the order
+/// given, so one `Add` carries the whole block. Any other index inserts before
+/// the item the client counted there, so the caller's index is the wire's.
+pub fn add_body(revision: &Revision, from_index: usize, uris: &[String]) -> Vec<u8> {
     let mut add = Vec::new();
     put_varint_field(1, from_index as u64, &mut add);
-    put_message(2, &item, &mut add);
+    for uri in uris {
+        let mut item = Vec::new();
+        put_bytes(1, uri.as_bytes(), &mut item);
+        put_message(2, &item, &mut add);
+    }
     changes(revision, &[op(ADD, 2, &add)])
 }
 
@@ -281,12 +286,21 @@ pub fn listing_access(revision: &[u8], can_edit: bool) -> Option<PlaylistAccess>
     })
 }
 
-/// Whether `uri` names a track a playlist can hold.
-pub fn require_track(uri: &str) -> Result<(), PlaylistError> {
-    match SpotifyUri::from_uri(uri) {
-        Ok(SpotifyUri::Track { .. }) => Ok(()),
-        _ => Err(PlaylistError::NotATrack),
+/// Whether every URI names a track a playlist can hold.
+///
+/// One refusal refuses the whole write: a block that would drop its episode
+/// halfway is not a block the user asked for.
+pub fn require_tracks(uris: &[String]) -> Result<(), PlaylistError> {
+    if uris.is_empty() {
+        return Err(PlaylistError::NoTracks);
     }
+    for uri in uris {
+        match SpotifyUri::from_uri(uri) {
+            Ok(SpotifyUri::Track { .. }) => {}
+            _ => return Err(PlaylistError::NotATrack),
+        }
+    }
+    Ok(())
 }
 
 /// Whether `uri` names a playlist.
@@ -339,7 +353,7 @@ mod tests {
     use super::{
         PlaylistError, access, add_body, changes_endpoint, create_body, created_uri,
         listing_access, move_body, owned, removals_body, remove_body, reply_revision,
-        require_moves, require_name, require_playlist, require_removals, require_track,
+        require_moves, require_name, require_playlist, require_removals, require_tracks,
         rootlist_changes_endpoint, varint,
     };
     use takofy_model::{Move, PLAYLIST_NAME_MAX, PlaylistAccess, Removal, Revision};
@@ -352,6 +366,11 @@ mod tests {
 
     /// The track the probe appended, 36 bytes of URI.
     const PROBE_TRACK: &str = "spotify:track:4uLU6hMCjMI75M1A2tKUQC";
+
+    /// Two more tracks, the same 36 bytes, so a block's arithmetic is only
+    /// about its length and its order.
+    const SECOND_TRACK: &str = "spotify:track:4uLU6hMCjMI75M1A2tKUQD";
+    const THIRD_TRACK: &str = "spotify:track:4uLU6hMCjMI75M1A2tKUQE";
 
     /// A created playlist's URI, the 39 bytes the probe measured.
     const NEW_PLAYLIST: &str = "spotify:playlist:0JQ5DAqbMKFEC4WFtoNRpw";
@@ -534,7 +553,7 @@ mod tests {
 
     #[test]
     fn an_add_body_is_102_bytes_for_a_24_byte_revision() {
-        let body = add_body(&probe(), 23, PROBE_TRACK);
+        let body = add_body(&probe(), 23, &strings(&[PROBE_TRACK]));
         let mut expected = vec![
             0x0a, 0x18, // ListChanges.base_revision: 24 bytes
         ];
@@ -565,7 +584,7 @@ mod tests {
 
     #[test]
     fn an_add_at_a_far_index_widens_every_length() {
-        let body = add_body(&probe(), 200, PROBE_TRACK);
+        let body = add_body(&probe(), 200, &strings(&[PROBE_TRACK]));
         // 200 is two varint bytes, so the add is one longer at every level.
         assert!(
             body.windows(6)
@@ -581,7 +600,7 @@ mod tests {
     #[test]
     fn an_add_on_a_20_byte_revision_writes_94_bytes() {
         let revision = Revision::from_wire(&[0xa5; 20]).expect("a revision");
-        let body = add_body(&revision, 23, PROBE_TRACK);
+        let body = add_body(&revision, 23, &strings(&[PROBE_TRACK]));
         // ListChanges base: 2 + 20 = 22. Delta: 22 + (2 + 46) = 70, which is 0x46.
         assert_eq!(body[1], 0x14, "20 bytes");
         assert_eq!(body[22], 0x12, "the deltas field starts here");
@@ -591,7 +610,7 @@ mod tests {
 
     #[test]
     fn an_add_parses_back_as_one_add_of_one_item() {
-        let read = page(&add_body(&probe(), 23, PROBE_TRACK));
+        let read = page(&add_body(&probe(), 23, &strings(&[PROBE_TRACK])));
         assert_eq!(read.base_revision(), &PROBE_REV[..]);
         assert_eq!(read.deltas.len(), 1);
         assert_eq!(read.deltas[0].base_version(), &PROBE_REV[..]);
@@ -644,7 +663,7 @@ mod tests {
 
     #[test]
     fn an_add_and_its_remove_name_the_same_index() {
-        let added = page(&add_body(&probe(), 9, PROBE_TRACK));
+        let added = page(&add_body(&probe(), 9, &strings(&[PROBE_TRACK])));
         let removed = page(&remove_body(&probe(), 9, 1));
         let add = added.deltas[0].ops[0].add.as_ref().expect("an add");
         let rem = removed.deltas[0].ops[0].rem.as_ref().expect("a remove");
@@ -806,7 +825,7 @@ mod tests {
 
     #[test]
     fn only_a_track_uri_may_be_added() {
-        assert_eq!(require_track(PROBE_TRACK), Ok(()));
+        assert_eq!(require_tracks(&strings(&[PROBE_TRACK])), Ok(()));
         for uri in [
             "spotify:episode:1",
             "spotify:album:4uLU6hMCjMI75M1A2tKUQC",
@@ -816,11 +835,32 @@ mod tests {
             "spotify:track:not-base62!",
         ] {
             assert_eq!(
-                require_track(uri),
+                require_tracks(&[uri.to_owned()]),
                 Err(PlaylistError::NotATrack),
                 "must refuse {uri:?}"
             );
         }
+    }
+
+    #[test]
+    fn an_empty_track_slice_is_no_write() {
+        assert_eq!(require_tracks(&[]), Err(PlaylistError::NoTracks));
+    }
+
+    #[test]
+    fn one_episode_refuses_the_whole_slice() {
+        assert_eq!(
+            require_tracks(&strings(&[PROBE_TRACK, "spotify:episode:1"])),
+            Err(PlaylistError::NotATrack)
+        );
+        assert_eq!(
+            require_tracks(&strings(&["spotify:episode:1", PROBE_TRACK])),
+            Err(PlaylistError::NotATrack)
+        );
+        assert_eq!(
+            require_tracks(&strings(&[PROBE_TRACK, SECOND_TRACK, THIRD_TRACK])),
+            Ok(())
+        );
     }
 
     #[test]
@@ -1083,8 +1123,68 @@ mod tests {
     }
 
     #[test]
+    fn three_items_are_one_add_in_the_order_sent() {
+        let tracks = strings(&[PROBE_TRACK, SECOND_TRACK, THIRD_TRACK]);
+        let body = add_body(&probe(), 23, &tracks);
+        let mut expected = vec![
+            0x0a, 0x18, // ListChanges.base_revision: 24 bytes
+        ];
+        expected.extend_from_slice(&PROBE_REV);
+        expected.extend_from_slice(&[
+            0x12, 0x9a, 0x01, // ListChanges.deltas[0]: 154 bytes, two varint bytes
+            0x0a, 0x18, // Delta.base_version: 24 bytes
+        ]);
+        expected.extend_from_slice(&PROBE_REV);
+        expected.extend_from_slice(&[
+            0x12, 0x7e, // Delta.ops[0]: 126 bytes
+            0x08, 0x02, // Op.kind = ADD
+            0x12, 0x7a, // Op.add: 122 bytes
+            0x08, 0x17, // Add.from_index = 23
+        ]);
+        for track in &tracks {
+            expected.extend_from_slice(&[
+                0x12, 0x26, // Add.items[i]: 38 bytes
+                0x0a, 0x24, // Item.uri: 36 bytes
+            ]);
+            expected.extend_from_slice(track.as_bytes());
+        }
+
+        // Item = 2 + 36 = 38; three of them under one Add is 3 * 40 = 120.
+        // Add = 2 + 120 = 122; Op = 2 + (2 + 122) = 126.
+        // Delta = (2 + 24) + (2 + 126) = 154, so its own length is two bytes.
+        // ListChanges = 26 + (1 + 2 + 154) = 183.
+        assert_eq!(body, expected);
+        assert_eq!(body.len(), 183);
+    }
+
+    #[test]
+    fn a_three_item_add_at_the_varint_boundary_is_one_byte_longer() {
+        let tracks = strings(&[PROBE_TRACK, SECOND_TRACK, THIRD_TRACK]);
+        // `from_index` 128 costs one more varint byte, and that byte crosses the
+        // 128-byte delta boundary, so both the delta and the change set grow.
+        assert_eq!(add_body(&probe(), 128, &tracks).len(), 184);
+        assert_eq!(add_body(&probe(), 127, &tracks).len(), 183);
+    }
+
+    #[test]
+    fn a_three_item_add_parses_back_as_one_add_in_order() {
+        let tracks = strings(&[PROBE_TRACK, SECOND_TRACK, THIRD_TRACK]);
+        let read = page(&add_body(&probe(), 23, &tracks));
+        assert_eq!(read.deltas.len(), 1);
+        assert_eq!(read.deltas[0].ops.len(), 1, "one op carries the block");
+        let found = &read.deltas[0].ops[0];
+        assert_eq!(found.kind(), op::Kind::ADD);
+        let add = found.add.as_ref().expect("an add");
+        assert_eq!(add.from_index(), 23);
+        let uris: Vec<&str> = add.items.iter().map(|item| item.uri()).collect();
+        assert_eq!(uris, [PROBE_TRACK, SECOND_TRACK, THIRD_TRACK]);
+        assert!(found.rem.is_none(), "an add is not a remove");
+        assert!(found.mov.is_none(), "an add is not a move");
+    }
+
+    #[test]
     fn a_rootlist_add_at_zero_pins_its_bytes() {
-        let body = add_body(&probe(), 0, NEW_PLAYLIST);
+        let body = add_body(&probe(), 0, &strings(&[NEW_PLAYLIST]));
         let mut expected = vec![
             0x0a, 0x18, // ListChanges.base_revision: 24 bytes
         ];
@@ -1112,7 +1212,7 @@ mod tests {
 
     #[test]
     fn a_rootlist_add_at_zero_parses_back_as_one_add_at_index_zero() {
-        let read = page(&add_body(&probe(), 0, NEW_PLAYLIST));
+        let read = page(&add_body(&probe(), 0, &strings(&[NEW_PLAYLIST])));
         assert_eq!(read.deltas.len(), 1);
         assert_eq!(read.deltas[0].ops.len(), 1);
         let found = &read.deltas[0].ops[0];
