@@ -3622,6 +3622,38 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_like_reverts_and_the_healing_read_clears_the_sentence() {
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(Vec::new()));
+        assert_eq!(library.likes_request(), Some(Command::LoadLikedTracks));
+        library.apply(&Update::LikedTracks(Vec::new()));
+
+        let command = library
+            .set_liked(vec!["spotify:track:a".to_owned()], true)
+            .expect("a write");
+        assert_eq!(
+            command,
+            Command::SetLiked {
+                tracks: vec!["spotify:track:a".to_owned()],
+                liked: true,
+            }
+        );
+        assert_eq!(library.likes.state("spotify:track:a"), Some(true));
+        assert!(!library.write_in_flight(), "a like is not a playlist write");
+
+        library.apply(&Update::LikeFailed {
+            tracks: vec!["spotify:track:a".to_owned()],
+            failure: Failure::Save,
+        });
+        assert_eq!(library.likes.state("spotify:track:a"), Some(false));
+        assert_eq!(library.likes.notice(), Some(Failure::Save));
+        assert_eq!(library.likes_request(), Some(Command::LoadLikedTracks));
+
+        library.apply(&Update::LikedTracks(Vec::new()));
+        assert_eq!(library.likes.notice(), None);
+    }
+
+    #[test]
     fn a_loading_list_refuses_a_move() {
         let mut library = Library::default();
         library.apply(&Update::RootlistAccess(rootlist_access(0x07, true)));

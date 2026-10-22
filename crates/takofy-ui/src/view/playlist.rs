@@ -176,6 +176,15 @@ pub fn tracks_view(
                             tokens,
                         ));
                     }
+                    // A failed like shares this slot: the page is where the user
+                    // was when they clicked, and there is no second surface for
+                    // it.
+                    if let Some(failure) = library.likes.notice() {
+                        ui.label(recipe::muted(
+                            crate::signin::failure_message(failure),
+                            tokens,
+                        ));
+                    }
                     let count = tracks.tracks.len();
                     // The whole list is reserved at once, so the scrollbar is right,
                     // and only the rows the viewport can show are laid out and given
@@ -1999,6 +2008,45 @@ mod tests {
             );
             assert!(!ask.liked, "row {index} did not know the track was liked");
         }
+    }
+
+    #[test]
+    fn a_failed_like_draws_its_sentence_in_the_pages_slot() {
+        let ctx = context();
+        let tracks = vec![track("spotify:track:a", "t0")];
+        let mut library = library_with(tracks);
+        liked(&mut library, &[]);
+        let change = library
+            .likes
+            .set(&["spotify:track:a".to_owned()], true)
+            .expect("a change");
+        library.likes.apply(&crate::likes::Event::Failed {
+            tracks: change.tracks,
+            failure: Failure::Save,
+        });
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let tokens = Tokens::DARK;
+
+        let output = run(&ctx, input(Vec::new()), |ui| {
+            let _ = tracks_view(
+                ui,
+                Table::Full,
+                &mut library,
+                &mut transport,
+                &mut queue,
+                &mut Art::default(),
+                Instant::now(),
+                NOW_MS,
+                &tokens,
+            );
+        });
+
+        assert!(
+            drawn_texts(&output).contains(&"Could not save that change. Try again."),
+            "the failed like drew no sentence: {:?}",
+            drawn_texts(&output)
+        );
     }
 
     #[test]
