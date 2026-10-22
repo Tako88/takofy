@@ -272,36 +272,7 @@ impl Library {
                 self.context_covers
                     .retain(|uri, _| playlists.iter().any(|entry| entry.uri == *uri));
                 let present = |uri: &str| playlists.iter().any(|entry| entry.uri == uri);
-                // Only playlist pages can be pruned; album, artist, show and
-                // search pages are not in the list and must survive it. A
-                // search's query may spell a playlist URI, so the variant is
-                // what decides, never the payload.
-                let page = self.history.current().cloned();
-                self.history.retain(|page| match page {
-                    Page::Playlist(uri) => present(uri),
-                    Page::Album(_) | Page::Artist(_) | Page::Show(_) | Page::Search(_) => true,
-                });
-                if self.history.current().cloned() != page {
-                    self.left_page();
-                }
-                if self
-                    .wanted
-                    .as_deref()
-                    .is_some_and(|wanted| !present(wanted))
-                {
-                    self.wanted = None;
-                    self.tracks = Load::Idle;
-                }
-                // A ready list names its playlist, so it is kept only while
-                // that playlist exists. The root can leave one behind, with no
-                // wanted load to prune it by.
-                let ready = match &self.tracks {
-                    Load::Ready(tracks) => Some(tracks.playlist.clone()),
-                    Load::Idle | Load::Loading | Load::Failed(_) => None,
-                };
-                if ready.is_some_and(|playlist| !present(&playlist)) {
-                    self.tracks = Load::Idle;
-                }
+                self.prune_playlist_pages(&present);
                 self.playlists = Load::Ready(playlists);
                 // A list is not movable until its own access arrives, so a read
                 // can never be reordered on the previous read's revision.
@@ -675,6 +646,40 @@ impl Library {
             | Update::Transport(_)
             | Update::Cover { .. }
             | Update::CoverFailed { .. } => {}
+        }
+    }
+
+    /// Drops every page and read for a playlist `present` no longer lists.
+    ///
+    /// Only playlist pages can be pruned; album, artist, show and search pages
+    /// are not in the list and must survive it. A search's query may spell a
+    /// playlist URI, so the variant is what decides, never the payload.
+    fn prune_playlist_pages(&mut self, present: &dyn Fn(&str) -> bool) {
+        let page = self.history.current().cloned();
+        self.history.retain(|page| match page {
+            Page::Playlist(uri) => present(uri),
+            Page::Album(_) | Page::Artist(_) | Page::Show(_) | Page::Search(_) => true,
+        });
+        if self.history.current().cloned() != page {
+            self.left_page();
+        }
+        if self
+            .wanted
+            .as_deref()
+            .is_some_and(|wanted| !present(wanted))
+        {
+            self.wanted = None;
+            self.tracks = Load::Idle;
+        }
+        // A ready list names its playlist, so it is kept only while that
+        // playlist exists. The root can leave one behind, with no wanted load to
+        // prune it by.
+        let ready = match &self.tracks {
+            Load::Ready(tracks) => Some(tracks.playlist.clone()),
+            Load::Idle | Load::Loading | Load::Failed(_) => None,
+        };
+        if ready.is_some_and(|playlist| !present(&playlist)) {
+            self.tracks = Load::Idle;
         }
     }
 
