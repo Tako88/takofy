@@ -15,6 +15,21 @@ pub enum NameError {
     TooLong,
 }
 
+/// The name the text spells, trimmed, or why it is not one.
+///
+/// Trimming keeps the inner spaces: a name is what the user typed, minus what
+/// they did not mean.
+pub fn check_name(text: &str) -> Result<String, NameError> {
+    let name = text.trim();
+    if name.is_empty() {
+        return Err(NameError::Empty);
+    }
+    if name.chars().count() > PLAYLIST_NAME_MAX {
+        return Err(NameError::TooLong);
+    }
+    Ok(name.to_owned())
+}
+
 /// The library head's name field.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Naming {
@@ -99,14 +114,7 @@ impl Naming {
     /// Trimming keeps the inner spaces: a name is what the user typed, minus
     /// what they did not mean.
     pub fn name(&self) -> Result<String, NameError> {
-        let name = self.text.trim();
-        if name.is_empty() {
-            return Err(NameError::Empty);
-        }
-        if name.chars().count() > PLAYLIST_NAME_MAX {
-            return Err(NameError::TooLong);
-        }
-        Ok(name.to_owned())
+        check_name(&self.text)
     }
 
     /// Starts a create for the typed name, answering what to send.
@@ -152,6 +160,164 @@ impl Naming {
         self.writing = false;
         self.text.clear();
         self.pick.clear();
+        self.wants_focus = false;
+    }
+}
+
+/// Where an open rename field draws.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Surface {
+    /// In a sidebar row's own name slot.
+    #[default]
+    Row,
+    /// In place of a playlist band's title.
+    Band,
+}
+
+/// A rename of one existing playlist, in whichever surface opened it.
+///
+/// The name rules are the create field's, so the field and the core refuse the
+/// same text. A rename in flight is the one moment the target may not change.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Renaming {
+    uri: String,
+    surface: Surface,
+    text: String,
+    writing: bool,
+    wants_focus: bool,
+    wants_return: bool,
+}
+
+impl Renaming {
+    /// Opens the field on `uri`, prefilled with the name it goes by now.
+    pub fn open(&mut self, uri: &str, current: &str, surface: Surface) {
+        if self.writing {
+            return;
+        }
+        self.uri = uri.to_owned();
+        self.surface = surface;
+        self.text = current.to_owned();
+        self.wants_focus = true;
+        self.wants_return = false;
+    }
+
+    /// Whether a field is drawn.
+    pub fn is_open(&self) -> bool {
+        !self.uri.is_empty()
+    }
+
+    /// The playlist the field would rename.
+    pub fn uri(&self) -> &str {
+        &self.uri
+    }
+
+    /// Where the field draws.
+    pub fn surface(&self) -> Surface {
+        self.surface
+    }
+
+    /// Whether the field is open on exactly this playlist and surface.
+    pub fn is_open_on(&self, uri: &str, surface: Surface) -> bool {
+        self.is_open() && self.uri == uri && self.surface == surface
+    }
+
+    /// The text as typed.
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    /// The text, for the field to edit.
+    pub fn edit(&mut self) -> &mut String {
+        &mut self.text
+    }
+
+    /// Whether a rename for this text is in flight.
+    pub fn writing(&self) -> bool {
+        self.writing
+    }
+
+    /// Whether the field should take the keyboard this frame.
+    pub fn wants_focus(&self) -> bool {
+        self.wants_focus
+    }
+
+    /// The field has the keyboard, so it need not ask again.
+    pub fn focus_taken(&mut self) {
+        self.wants_focus = false;
+    }
+
+    /// Whether the surface that opened the field should take the keyboard back.
+    pub fn wants_return(&self) -> bool {
+        self.wants_return
+    }
+
+    /// The surface has taken the keyboard back.
+    pub fn return_taken(&mut self) {
+        self.wants_return = false;
+    }
+
+    /// The name the text spells, trimmed, or why it is not one.
+    pub fn name(&self) -> Result<String, NameError> {
+        check_name(&self.text)
+    }
+
+    /// Starts the rename for the typed name, answering what to send.
+    ///
+    /// Refused while closed, while a write is in flight, and for text that is
+    /// not a name. A refusal changes nothing, so a held Enter cannot send twice.
+    pub fn begin_write(&mut self) -> Option<String> {
+        if !self.is_open() || self.writing {
+            return None;
+        }
+        let name = self.name().ok()?;
+        self.writing = true;
+        self.wants_focus = false;
+        Some(name)
+    }
+
+    /// Closes the field and hands the keyboard back to the surface.
+    ///
+    /// A write in flight is the one moment this is refused: its reply still
+    /// needs somewhere to land.
+    pub fn cancel(&mut self) {
+        if self.writing {
+            return;
+        }
+        self.close();
+        self.wants_return = true;
+    }
+
+    /// Closes the field without a return: a blur or a page change takes the
+    /// surface away.
+    pub fn dismiss(&mut self) {
+        if self.writing {
+            return;
+        }
+        self.close();
+    }
+
+    /// The rename failed, so the text stays for a retry.
+    pub fn failed(&mut self) {
+        self.writing = false;
+        self.wants_focus = true;
+    }
+
+    /// The rename is over, so nothing is left to edit.
+    pub fn finished(&mut self) {
+        self.close();
+        self.wants_return = true;
+    }
+
+    /// Closes the field because its playlist is gone.
+    pub fn force_close(&mut self) {
+        self.close();
+        self.wants_return = false;
+    }
+
+    fn close(&mut self) {
+        self.uri.clear();
+        self.text.clear();
+        self.writing = false;
         self.wants_focus = false;
     }
 }
@@ -341,5 +507,163 @@ mod tests {
         assert!(!naming.writing());
         assert_eq!(naming.text(), "");
         assert!(naming.wants_button());
+    }
+}
+
+#[cfg(test)]
+mod renaming_tests {
+    use super::{NameError, Renaming, Surface};
+    use takofy_model::PLAYLIST_NAME_MAX;
+
+    const URI: &str = "spotify:playlist:a";
+
+    fn typing(text: &str) -> Renaming {
+        let mut renaming = Renaming::default();
+        renaming.open(URI, "Old Name", Surface::Row);
+        *renaming.edit() = text.to_owned();
+        renaming
+    }
+
+    #[test]
+    fn a_new_rename_is_closed_and_empty() {
+        let renaming = Renaming::default();
+        assert!(!renaming.is_open());
+        assert_eq!(renaming.uri(), "");
+        assert_eq!(renaming.text(), "");
+        assert!(!renaming.writing());
+        assert!(!renaming.wants_focus());
+        assert!(!renaming.wants_return());
+        assert_eq!(renaming.name(), Err(NameError::Empty));
+    }
+
+    #[test]
+    fn open_prefills_the_current_name_and_asks_for_focus() {
+        let mut renaming = Renaming::default();
+        renaming.open(URI, "Night Drive", Surface::Band);
+        assert!(renaming.is_open());
+        assert_eq!(renaming.uri(), URI);
+        assert_eq!(renaming.surface(), Surface::Band);
+        assert_eq!(renaming.text(), "Night Drive");
+        assert!(renaming.wants_focus());
+        assert!(!renaming.wants_return());
+        assert!(renaming.is_open_on(URI, Surface::Band));
+        assert!(!renaming.is_open_on(URI, Surface::Row));
+        assert!(!renaming.is_open_on("spotify:playlist:b", Surface::Band));
+    }
+
+    #[test]
+    fn open_is_refused_while_writing() {
+        let mut renaming = typing("Mix");
+        assert!(renaming.begin_write().is_some());
+        renaming.open("spotify:playlist:b", "Other", Surface::Band);
+        assert_eq!(renaming.uri(), URI);
+        assert_eq!(renaming.text(), "Mix");
+        assert!(renaming.writing());
+    }
+
+    #[test]
+    fn name_uses_the_same_rules_as_the_create() {
+        assert_eq!(
+            typing("  Night  Drive \t").name(),
+            Ok("Night  Drive".to_owned())
+        );
+        for blank in ["", " ", "\t\n"] {
+            assert_eq!(typing(blank).name(), Err(NameError::Empty), "{blank:?}");
+        }
+        let mut long = typing(&"a".repeat(PLAYLIST_NAME_MAX));
+        assert!(long.name().is_ok());
+        long.edit().push('a');
+        assert_eq!(long.name(), Err(NameError::TooLong));
+    }
+
+    #[test]
+    fn begin_write_requires_open_and_a_valid_name_and_runs_once() {
+        let mut closed = Renaming::default();
+        closed.edit().push_str("Mix");
+        assert_eq!(closed.begin_write(), None);
+
+        let mut blank = typing("   ");
+        assert_eq!(blank.begin_write(), None);
+        assert!(!blank.writing());
+
+        let mut renaming = typing(" Mix ");
+        assert_eq!(renaming.begin_write(), Some("Mix".to_owned()));
+        assert!(renaming.writing());
+        assert!(!renaming.wants_focus());
+        assert_eq!(renaming.begin_write(), None, "a second write for one name");
+    }
+
+    #[test]
+    fn cancel_closes_and_returns_the_keyboard_but_not_while_writing() {
+        let mut renaming = typing("Mix");
+        renaming.cancel();
+        assert!(!renaming.is_open());
+        assert_eq!(renaming.text(), "");
+        assert!(renaming.wants_return());
+
+        let mut writing = typing("Mix");
+        assert!(writing.begin_write().is_some());
+        writing.cancel();
+        assert!(writing.is_open(), "a cancel closed a field mid-write");
+        assert_eq!(writing.text(), "Mix");
+        assert!(!writing.wants_return());
+    }
+
+    #[test]
+    fn dismiss_closes_without_returning_the_keyboard_and_is_refused_while_writing() {
+        let mut renaming = typing("Mix");
+        renaming.dismiss();
+        assert!(!renaming.is_open());
+        assert_eq!(renaming.text(), "");
+        assert!(!renaming.wants_return());
+
+        let mut writing = typing("Mix");
+        assert!(writing.begin_write().is_some());
+        writing.dismiss();
+        assert!(writing.is_open(), "a dismiss closed a field mid-write");
+    }
+
+    #[test]
+    fn failed_keeps_the_text_and_asks_for_focus_again() {
+        let mut renaming = typing("Night Drive");
+        assert!(renaming.begin_write().is_some());
+        renaming.failed();
+        assert!(!renaming.writing());
+        assert!(renaming.is_open());
+        assert!(renaming.wants_focus());
+        assert_eq!(renaming.text(), "Night Drive");
+    }
+
+    #[test]
+    fn finished_closes_clears_and_returns_the_keyboard() {
+        let mut renaming = typing("Night Drive");
+        assert!(renaming.begin_write().is_some());
+        renaming.finished();
+        assert!(!renaming.is_open());
+        assert!(!renaming.writing());
+        assert_eq!(renaming.text(), "");
+        assert!(renaming.wants_return());
+    }
+
+    #[test]
+    fn focus_and_return_are_taken_once() {
+        let mut renaming = typing("Mix");
+        assert!(renaming.wants_focus());
+        renaming.focus_taken();
+        assert!(!renaming.wants_focus());
+
+        renaming.cancel();
+        assert!(renaming.wants_return());
+        renaming.return_taken();
+        assert!(!renaming.wants_return());
+    }
+
+    #[test]
+    fn force_close_forgets_the_target_and_returns_nothing() {
+        let mut renaming = typing("Mix");
+        renaming.force_close();
+        assert!(!renaming.is_open());
+        assert_eq!(renaming.uri(), "");
+        assert!(!renaming.wants_return());
     }
 }

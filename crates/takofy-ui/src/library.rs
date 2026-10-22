@@ -19,7 +19,7 @@ use crate::likes::{self, Likes};
 use crate::lyrics::LyricsPanel;
 use crate::menu::{AddTarget, LibraryItem};
 use crate::message::{Command, Failure, Update};
-use crate::naming::Naming;
+use crate::naming::{Naming, Renaming};
 use crate::releases::Releases;
 use crate::removal;
 use crate::reorder;
@@ -197,6 +197,8 @@ pub struct Library {
     pub sidebar_notice: Option<SidebarWrite>,
     /// The library head's new-playlist field.
     pub naming: Naming,
+    /// The in-place rename field, on a sidebar row or a playlist band.
+    pub renaming: Renaming,
     /// Whether the sidebar list should show its first row once.
     pub reveal_top: bool,
 }
