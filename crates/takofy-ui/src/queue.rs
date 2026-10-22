@@ -8,11 +8,22 @@
 //! events that follow it; a restart by `Seek` never sets it, because no load
 //! ever follows.
 //!
+//! Where a finished track goes is the repeat mode's business, and the Next
+//! button asks the same table, so the end of a track and a click cannot disagree
+//! about what follows. A loop plays nothing new, so it counts against the skip
+//! cap exactly as an unavailable row does.
+//!
+//! Shuffle permutes the rows that are coming and remembers the order it found
+//! them in. Turning it on leaves the rows before the current one alone; turning
+//! it off restores the whole list, history included, and re-seats `index` on the
+//! entry it was already on.
+//!
 //! The queue also edits its own order and keeps the selection over its rows,
-//! because both are indices into it. One rule holds them apart: an edit never
-//! touches `index`, `awaiting_start` or `skips`. The rows an edit may move all
-//! sit after the current entry, so the playing entry keeps its place and a load
-//! in flight keeps its guard.
+//! because both are indices into it. One rule holds edits apart from the
+//! playing entry: an edit never touches `index`, `awaiting_start` or `skips`; a
+//! mode switch may re-seat `index` but never changes which entry is current.
+//! The rows an edit may move all sit after the current entry, so the playing
+//! entry keeps its place and a load in flight keeps its guard.
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -22,7 +33,9 @@ use takofy_model::TrackEntry;
 use crate::message::{Command, TransportUpdate, Update};
 use crate::player::{RESTART_AFTER_MS, Transport, TransportState};
 use crate::reorder;
+use crate::repeat::{self, Cause, Hop, Repeat};
 use crate::selection::{Press, Selection};
+use crate::shuffle;
 
 /// How many tracks an unplayable run may skip before the queue stops and shows
 /// the failure. A free account fails every track, and an uncapped run would
@@ -46,17 +59,38 @@ pub struct Queue {
     /// Set when a `Play` is in flight; `Ended`/`Unavailable` before the load's
     /// first event are the previous track's and must be ignored.
     awaiting_start: bool,
-    /// Consecutive auto-advances from `Unavailable`. A user move or a playing
-    /// position clears it.
+    /// Consecutive auto-advances that played nothing new: an unavailable row or
+    /// a repeat loop. A user move, a playing position or a known duration clears
+    /// it.
     skips: u32,
     /// The upcoming rows the pointer has picked.
     selection: Selection,
     /// The row the keyboard hands focus to once this frame's rows are drawn.
     refocus: Option<usize>,
+    /// Where a finished track goes.
+    repeat: Repeat,
+    /// Whether the coming rows are in a drawn order rather than the list's.
+    shuffle: bool,
+    /// Every row's uri in the order the list had when shuffle turned on.
+    snapshot: Vec<String>,
+    /// The generator's state, advanced once per draw.
+    rng: u64,
 }
 
 impl Queue {
+    /// A queue whose shuffle draws come from `seed`.
+    pub fn seeded(seed: u64) -> Self {
+        Self {
+            rng: seed,
+            ..Self::default()
+        }
+    }
+
     /// Replaces the queue with `tracks` and starts on `index`.
+    ///
+    /// The modes survive: with shuffle on, the clicked row plays first and the
+    /// rest are drawn again, and the list's own order is what turning shuffle off
+    /// puts back.
     pub fn start(
         &mut self,
         tracks: &[TrackEntry],
@@ -70,14 +104,27 @@ impl Queue {
         self.skips = 0;
         self.selection.clear();
         self.refocus = None;
-        self.goto(index, transport)
+        self.index = None;
+        let first = self.start_shuffled(index);
+        self.goto(first, transport)
+    }
+
+    /// The row a new list starts on, with the rest of it drawn if shuffle is on.
+    fn start_shuffled(&mut self, index: usize) -> usize {
+        if !self.shuffle {
+            return index;
+        }
+        self.snapshot = self.uris();
+        self.tracks.swap(0, index);
+        self.draw_after(1);
+        0
     }
 
     /// Steps forward one entry, if there is one.
     pub fn next(&mut self, transport: &mut Transport) -> Option<Command> {
-        let index = self.index.filter(|index| index + 1 < self.tracks.len())?;
+        let hop = self.hop(Cause::Manual)?;
         self.skips = 0;
-        self.goto(index + 1, transport)
+        self.follow(hop, transport)
     }
 
     /// Restarts the current entry when it is past the threshold or is the
@@ -125,8 +172,15 @@ impl Queue {
             return None;
         };
         match update {
-            TransportUpdate::Loading | TransportUpdate::Duration { .. } => {
+            TransportUpdate::Loading => {
                 self.awaiting_start = false;
+                None
+            }
+            // A duration proves the track loaded, so it ends a run of advances
+            // that never did.
+            TransportUpdate::Duration { .. } => {
+                self.awaiting_start = false;
+                self.skips = 0;
                 None
             }
             TransportUpdate::Position { paused, .. } => {
@@ -144,25 +198,21 @@ impl Queue {
                 if self.awaiting_start {
                     return None;
                 }
-                self.goto_next(transport)
+                self.move_on(Cause::Ended, transport)
             }
             TransportUpdate::Unavailable => {
                 if self.awaiting_start {
                     return None;
                 }
-                self.skips = self.skips.saturating_add(1);
-                if self.skips > MAX_CONSECUTIVE_SKIPS {
-                    return None;
-                }
-                self.goto_next(transport)
+                self.move_on(Cause::Unavailable, transport)
             }
             TransportUpdate::Seeked { .. } | TransportUpdate::Stopped => None,
         }
     }
 
-    /// Whether there is an entry after the current one.
+    /// Whether Next would move: the same answer `next` gives, without playing.
     pub fn can_next(&self) -> bool {
-        matches!(self.index, Some(index) if index + 1 < self.tracks.len())
+        self.hop(Cause::Manual).is_some()
     }
 
     /// Whether the queue has a current entry, and so something to step back
@@ -184,8 +234,10 @@ impl Queue {
 
     /// Every entry after the current one, with its absolute index in the queue.
     ///
-    /// The index is the position in the list `start` was given, so it stays the
-    /// row's identity across advances: advancing only moves the current index.
+    /// The index is the position in the list `start` was given. Advancing alone
+    /// only moves the current index, so the rows keep their positions; a draw,
+    /// from turning shuffle on or a wrap, rebuilds the rows after the current
+    /// one, so an upcoming index names a row only until the next draw.
     pub fn upcoming(&self) -> impl ExactSizeIterator<Item = (usize, &TrackEntry)> + '_ {
         let first = self.first_upcoming();
         self.tracks.iter().enumerate().skip(first)
@@ -414,9 +466,127 @@ impl Queue {
         !self.tracks.is_empty()
     }
 
-    fn goto_next(&mut self, transport: &mut Transport) -> Option<Command> {
-        let next = self.index? + 1;
-        self.goto(next, transport)
+    /// The repeat mode.
+    pub fn repeat(&self) -> Repeat {
+        self.repeat
+    }
+
+    /// Steps to the repeat mode after this one.
+    pub fn cycle_repeat(&mut self) {
+        self.repeat = self.repeat.next();
+    }
+
+    /// Whether shuffle is on.
+    pub fn shuffle(&self) -> bool {
+        self.shuffle
+    }
+
+    /// Turns shuffle on or off.
+    ///
+    /// On, the coming rows are permuted and the list's order is remembered. Off,
+    /// that order comes back and `index` is re-seated on the entry it was already
+    /// on. Either way the pick is cleared: it names rows, and the rows now hold
+    /// other tracks.
+    pub fn toggle_shuffle(&mut self) {
+        if self.shuffle {
+            self.shuffle_off();
+        } else {
+            self.shuffle_on();
+        }
+        self.selection.clear();
+        self.refocus = None;
+    }
+
+    /// Where the queue goes for `cause`.
+    fn hop(&self, cause: Cause) -> Option<Hop> {
+        repeat::advance(self.repeat, self.index, self.tracks.len(), cause)
+    }
+
+    /// Permutes the coming rows and remembers the order they had.
+    fn shuffle_on(&mut self) {
+        self.snapshot = self.uris();
+        self.draw_after(self.first_upcoming());
+        self.shuffle = true;
+    }
+
+    /// Puts the list back in the order it had, with `index` on the same entry.
+    fn shuffle_off(&mut self) {
+        let order = shuffle::restore(&self.snapshot, &self.uris());
+        self.reorder_tail(0, &order);
+        self.snapshot.clear();
+        self.shuffle = false;
+    }
+
+    /// Every row's uri, in the order the list has them.
+    fn uris(&self) -> Vec<String> {
+        self.tracks.iter().map(|entry| entry.uri.clone()).collect()
+    }
+
+    /// Rebuilds the rows from `from` on in `order`, a permutation of their
+    /// indices, carrying `index` onto the row it was on.
+    fn reorder_tail(&mut self, from: usize, order: &[usize]) {
+        let current = self.index.filter(|index| *index >= from);
+        let mut slots: Vec<Option<TrackEntry>> =
+            self.tracks.split_off(from).into_iter().map(Some).collect();
+        // A caller passing a short order would silently leave rows behind.
+        debug_assert_eq!(order.len(), slots.len());
+        let mut index = None;
+        for old in order {
+            let Some(entry) = slots.get_mut(*old).and_then(Option::take) else {
+                continue;
+            };
+            if current == Some(from + *old) {
+                index = Some(self.tracks.len());
+            }
+            self.tracks.push(entry);
+        }
+        if current.is_some() {
+            self.index = index;
+        }
+    }
+
+    /// Steps the queue for `cause`, counting a lap that played nothing.
+    ///
+    /// A failed run and a repeat loop are the same hazard: a load per lap with
+    /// nothing playing between them.
+    fn move_on(&mut self, cause: Cause, transport: &mut Transport) -> Option<Command> {
+        let hop = self.hop(cause)?;
+        if cause == Cause::Unavailable || matches!(hop, Hop::Wrap | Hop::Replay) {
+            self.skips = self.skips.saturating_add(1);
+            if self.skips > MAX_CONSECUTIVE_SKIPS {
+                return None;
+            }
+        }
+        self.follow(hop, transport)
+    }
+
+    /// Plays what `hop` names. A wrap starts a new lap, so the rows after it are
+    /// drawn again.
+    fn follow(&mut self, hop: Hop, transport: &mut Transport) -> Option<Command> {
+        let index = match hop {
+            Hop::Next => self.index? + 1,
+            Hop::Wrap => 0,
+            Hop::Replay => self.index?,
+        };
+        let command = self.goto(index, transport);
+        if hop == Hop::Wrap {
+            self.reshuffle_tail();
+        }
+        command
+    }
+
+    /// Draws a new order for the rows after the current one.
+    fn reshuffle_tail(&mut self) {
+        if self.shuffle {
+            self.draw_after(self.first_upcoming());
+        }
+    }
+
+    /// Draws a new order for the rows from `first` on.
+    fn draw_after(&mut self, first: usize) {
+        let seed = shuffle::splitmix(&mut self.rng);
+        let order = shuffle::order(self.tracks.len() - first, seed);
+        self.reorder_tail(first, &order);
     }
 
     /// Whether `row` is in the editable region: after the current entry.
@@ -839,6 +1009,732 @@ mod tests {
             );
         }
         assert_eq!(skip(&mut queue, &mut transport), None);
+    }
+
+    /// The number of repeat clicks that reach `repeat` from Off.
+    fn clicks(repeat: Repeat) -> usize {
+        match repeat {
+            Repeat::Off => 0,
+            Repeat::All => 1,
+            Repeat::One => 2,
+        }
+    }
+
+    /// A queue started on `count` tracks at `index`, in `repeat` mode.
+    fn started_in(count: usize, index: usize, repeat: Repeat) -> Queue {
+        let mut queue = started(count, index);
+        for _ in 0..clicks(repeat) {
+            queue.cycle_repeat();
+        }
+        queue
+    }
+
+    #[test]
+    fn repeat_all_wraps_to_row_zero_on_a_natural_end() {
+        let mut queue = started_in(3, 2, Repeat::All);
+        let mut transport = Transport::default();
+        clear_guard(&mut queue, &mut transport);
+
+        assert_eq!(end(&mut queue, &mut transport), Some(play("t0")));
+        assert_eq!(
+            queue.index,
+            Some(0),
+            "a wrap leaves the current row at zero"
+        );
+    }
+
+    #[test]
+    fn repeat_all_manual_next_wraps_and_can_next_is_true_on_the_last_row() {
+        let mut queue = started_in(3, 2, Repeat::All);
+        let mut transport = Transport::default();
+
+        assert!(queue.can_next(), "All always has somewhere to go");
+        assert_eq!(queue.next(&mut transport), Some(play("t0")));
+    }
+
+    #[test]
+    fn can_next_agrees_with_next_for_every_state() {
+        let mut transport = Transport::default();
+        for repeat in [Repeat::Off, Repeat::All, Repeat::One] {
+            for count in 0..=4 {
+                for index in 0..count {
+                    let mut queue = started_in(count, index, repeat);
+                    let can = queue.can_next();
+                    assert_eq!(
+                        queue.next(&mut transport).is_some(),
+                        can,
+                        "{repeat:?} on {count} rows at {index}"
+                    );
+                }
+            }
+            let mut armed = armed(3);
+            for _ in 0..clicks(repeat) {
+                armed.cycle_repeat();
+            }
+            assert!(!armed.can_next(), "{repeat:?} on an armed queue");
+            assert_eq!(armed.next(&mut transport), None, "{repeat:?} armed");
+        }
+    }
+
+    #[test]
+    fn repeat_one_replays_the_current_row_and_arms_the_guard() {
+        let mut queue = started_in(3, 1, Repeat::One);
+        let mut transport = Transport::default();
+        clear_guard(&mut queue, &mut transport);
+
+        assert_eq!(end(&mut queue, &mut transport), Some(play("t1")));
+        assert_eq!(queue.index, Some(1));
+        assert!(queue.awaiting_start, "a replay is a fresh play");
+    }
+
+    #[test]
+    fn a_stale_ended_after_a_replay_is_ignored() {
+        let mut queue = started_in(3, 1, Repeat::One);
+        let mut transport = Transport::default();
+        clear_guard(&mut queue, &mut transport);
+
+        assert_eq!(end(&mut queue, &mut transport), Some(play("t1")));
+        assert_eq!(
+            end(&mut queue, &mut transport),
+            None,
+            "the end that follows a replay belongs to the load before it"
+        );
+        clear_guard(&mut queue, &mut transport);
+        assert_eq!(end(&mut queue, &mut transport), Some(play("t1")));
+    }
+
+    #[test]
+    fn repeat_one_manual_next_advances_and_stops_at_the_end() {
+        let mut queue = started_in(2, 0, Repeat::One);
+        let mut transport = Transport::default();
+
+        assert_eq!(queue.next(&mut transport), Some(play("t1")));
+        assert!(!queue.can_next(), "One governs the end, not the button");
+        assert_eq!(queue.next(&mut transport), None);
+    }
+
+    #[test]
+    fn repeat_one_unavailable_moves_on_like_off() {
+        let mut queue = started_in(3, 0, Repeat::One);
+        let mut transport = Transport::default();
+        assert_eq!(skip(&mut queue, &mut transport), Some(play("t1")));
+
+        let mut last = started_in(2, 1, Repeat::One);
+        assert_eq!(
+            skip(&mut last, &mut transport),
+            None,
+            "an unplayable last row stops even under One"
+        );
+    }
+
+    #[test]
+    fn repeat_one_that_ends_without_a_position_stops_at_the_cap() {
+        let mut queue = started_in(1, 0, Repeat::One);
+        let mut transport = Transport::default();
+
+        for lap in 1..=MAX_CONSECUTIVE_SKIPS {
+            clear_guard(&mut queue, &mut transport);
+            assert_eq!(
+                end(&mut queue, &mut transport),
+                Some(play("t0")),
+                "replay {lap}"
+            );
+        }
+        clear_guard(&mut queue, &mut transport);
+        assert_eq!(
+            end(&mut queue, &mut transport),
+            None,
+            "a loop that never reports a position must stop at the cap"
+        );
+    }
+
+    #[test]
+    fn a_healthy_repeat_one_loop_never_hits_the_cap() {
+        let mut queue = started_in(1, 0, Repeat::One);
+        let mut transport = Transport::default();
+
+        for lap in 0..30 {
+            clear_guard(&mut queue, &mut transport);
+            feed(
+                &mut queue,
+                &mut transport,
+                TransportUpdate::Position {
+                    position_ms: 1_000,
+                    paused: false,
+                },
+            );
+            assert_eq!(
+                end(&mut queue, &mut transport),
+                Some(play("t0")),
+                "lap {lap}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_duration_resets_the_skip_run() {
+        let mut queue = started_in(1, 0, Repeat::One);
+        let mut transport = Transport::default();
+
+        for lap in 0..30 {
+            clear_guard(&mut queue, &mut transport);
+            feed(
+                &mut queue,
+                &mut transport,
+                TransportUpdate::Duration {
+                    duration_ms: 222_000,
+                },
+            );
+            assert_eq!(
+                end(&mut queue, &mut transport),
+                Some(play("t0")),
+                "lap {lap}"
+            );
+            assert_eq!(queue.skips, 1, "a known duration must reset the streak");
+        }
+    }
+
+    #[test]
+    fn repeat_all_over_a_failing_queue_stops_at_the_cap() {
+        let mut queue = started_in(3, 0, Repeat::All);
+        let mut transport = Transport::default();
+
+        for (lap, uri) in ["t1", "t2", "t0", "t1", "t2"].into_iter().enumerate() {
+            assert_eq!(
+                skip(&mut queue, &mut transport),
+                Some(play(uri)),
+                "lap {lap}"
+            );
+        }
+        assert_eq!(
+            skip(&mut queue, &mut transport),
+            None,
+            "a failing queue that wraps must still stop at the cap"
+        );
+    }
+
+    #[test]
+    fn a_silent_wrap_on_one_row_counts_toward_the_cap() {
+        let mut queue = started_in(1, 0, Repeat::All);
+        let mut transport = Transport::default();
+
+        for lap in 1..=MAX_CONSECUTIVE_SKIPS {
+            clear_guard(&mut queue, &mut transport);
+            assert_eq!(
+                end(&mut queue, &mut transport),
+                Some(play("t0")),
+                "wrap {lap}"
+            );
+        }
+        clear_guard(&mut queue, &mut transport);
+        assert_eq!(end(&mut queue, &mut transport), None, "capped");
+    }
+
+    #[test]
+    fn repeat_one_on_an_armed_queue_ignores_ended_and_toggle_starts_row_zero() {
+        let mut queue = Queue::default();
+        let mut transport = Transport::default();
+        assert_eq!(queue.append(tracks(3)), Some(0..3));
+        queue.cycle_repeat();
+        queue.cycle_repeat();
+        assert_eq!(queue.repeat(), Repeat::One);
+
+        assert_eq!(end(&mut queue, &mut transport), None);
+        assert!(queue.armed(), "nothing was playing, so nothing repeats");
+        assert_eq!(queue.toggle(&mut transport), Some(play("t0")));
+    }
+
+    #[test]
+    fn changing_repeat_never_touches_index_guard_or_skips() {
+        let mut queue = started(6, 1);
+        let mut transport = Transport::default();
+        clear_guard(&mut queue, &mut transport);
+        assert_eq!(
+            feed(&mut queue, &mut transport, TransportUpdate::Unavailable),
+            Some(play("t2"))
+        );
+        let before = (queue.index, queue.awaiting_start, queue.skips);
+
+        for _ in 0..3 {
+            queue.cycle_repeat();
+            assert_eq!((queue.index, queue.awaiting_start, queue.skips), before);
+        }
+        assert_eq!(queue.repeat(), Repeat::Off);
+    }
+
+    /// A queue of `count` tracks started at `index`, shuffled from `seed`.
+    fn shuffled_at(count: usize, index: usize, seed: u64) -> Queue {
+        let tracks = tracks(count);
+        let mut queue = Queue::seeded(seed);
+        let mut transport = Transport::default();
+        queue.start(&tracks, index, &mut transport);
+        queue.toggle_shuffle();
+        queue
+    }
+
+    /// Whether the queue holds rows `t0..count`, in some order.
+    fn holds_exactly(queue: &Queue, count: usize) -> bool {
+        let mut held = order(queue);
+        held.sort();
+        let mut expected: Vec<String> = (0..count).map(|row| format!("t{row}")).collect();
+        expected.sort();
+        held == expected
+    }
+
+    #[test]
+    fn shuffle_on_permutes_only_the_coming_rows() {
+        let mut queue = started(5, 2);
+        let before = order(&queue);
+        queue.toggle_shuffle();
+
+        assert_eq!(
+            &order(&queue)[..2],
+            &uris(&["t0", "t1"]),
+            "the rows before the current one are history"
+        );
+        assert_eq!(order(&queue)[2], "t2", "the current entry keeps its row");
+        assert_ne!(order(&queue), before);
+        assert_eq!(queue.index, Some(2));
+        assert!(holds_exactly(&queue, 5));
+    }
+
+    #[test]
+    fn shuffle_on_an_armed_queue_permutes_every_row_and_stays_armed() {
+        let mut queue = Queue::seeded(7);
+        queue.append(tracks(5));
+        let before = order(&queue);
+
+        queue.toggle_shuffle();
+
+        assert!(queue.armed(), "a permutation is not a play");
+        assert_eq!(queue.first_upcoming(), 0);
+        assert_ne!(order(&queue), before);
+        assert!(holds_exactly(&queue, 5));
+    }
+
+    #[test]
+    fn shuffle_on_and_off_never_alter_awaiting_start_or_skips() {
+        let mut queue = started(6, 1);
+        let mut transport = Transport::default();
+        clear_guard(&mut queue, &mut transport);
+        assert_eq!(
+            feed(&mut queue, &mut transport, TransportUpdate::Unavailable),
+            Some(play("t2"))
+        );
+        let before = (queue.index, queue.awaiting_start, queue.skips);
+
+        queue.toggle_shuffle();
+        assert_eq!((queue.index, queue.awaiting_start, queue.skips), before);
+        queue.toggle_shuffle();
+        assert_eq!(
+            (queue.index, queue.awaiting_start, queue.skips),
+            before,
+            "the entry is the same one, so the guard is still its load's"
+        );
+    }
+
+    #[test]
+    fn a_stale_ended_after_the_toggle_is_still_ignored() {
+        let mut queue = started(5, 0);
+        let mut transport = Transport::default();
+        queue.toggle_shuffle();
+
+        assert_eq!(
+            end(&mut queue, &mut transport),
+            None,
+            "a toggle is no play, so the load in flight is still in flight"
+        );
+    }
+
+    #[test]
+    fn what_plays_next_is_what_the_pane_lists_first() {
+        let mut queue = shuffled_at(6, 1, 4);
+        let mut transport = Transport::default();
+        let listed: Vec<String> = upcoming(&queue).into_iter().map(|(_, uri)| uri).collect();
+        clear_guard(&mut queue, &mut transport);
+
+        assert_eq!(end(&mut queue, &mut transport), Some(play(&listed[0])));
+        assert_eq!(queue.index, Some(2));
+        let rest: Vec<String> = upcoming(&queue).into_iter().map(|(_, uri)| uri).collect();
+        assert_eq!(rest, listed[1..], "the pane still reads in play order");
+    }
+
+    #[test]
+    fn a_shuffled_run_plays_every_row_once_and_is_not_the_lists_order() {
+        for count in 3..=6 {
+            for seed in 0..50 {
+                let list = tracks(count);
+                let mut queue = Queue::seeded(seed);
+                let mut transport = Transport::default();
+                queue.start(&list, 0, &mut transport);
+                queue.toggle_shuffle();
+
+                let mut played = Vec::new();
+                loop {
+                    played.push(
+                        queue
+                            .current()
+                            .map(|entry| entry.uri.clone())
+                            .expect("a current row"),
+                    );
+                    if queue.next(&mut transport).is_none() {
+                        break;
+                    }
+                }
+
+                let mut once = played.clone();
+                once.sort();
+                let mut listed: Vec<String> = list.iter().map(|entry| entry.uri.clone()).collect();
+                listed.sort();
+                assert_eq!(once, listed, "{count} rows, seed {seed}");
+                assert_ne!(
+                    played, listed,
+                    "{count} rows, seed {seed}: the run repeated the list's order"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn shuffle_on_clears_the_pick_and_the_refocus() {
+        let mut queue = started(5, 0);
+        queue.press(1, Press::Replace);
+        queue.press(3, Press::Toggle);
+        queue.refocus_at(3);
+        assert_eq!(picked(&queue), vec![1, 3]);
+
+        queue.toggle_shuffle();
+        assert!(
+            picked(&queue).is_empty(),
+            "a pick cannot survive other rows"
+        );
+        assert_eq!(queue.refocus(), None);
+
+        queue.press(1, Press::Replace);
+        queue.toggle_shuffle();
+        assert!(
+            picked(&queue).is_empty(),
+            "and turning it off clears it too"
+        );
+    }
+
+    #[test]
+    fn shuffle_off_restores_the_original_order_and_keeps_the_current_entry() {
+        for count in 1..=7 {
+            for index in 0..count {
+                for seed in 0..20 {
+                    let mut queue = shuffled_at(count, index, seed);
+                    assert!(holds_exactly(&queue, count), "{count} {index} {seed}");
+                    let current = queue.current().map(|entry| entry.uri.clone());
+                    assert!(current.is_some(), "{count} {index} {seed}");
+
+                    queue.toggle_shuffle();
+
+                    let expected: Vec<String> = (0..count).map(|row| format!("t{row}")).collect();
+                    assert_eq!(order(&queue), expected, "{count} {index} {seed}");
+                    assert_eq!(
+                        queue.current().map(|entry| entry.uri.clone()),
+                        current,
+                        "{count} {index} {seed}: the current entry changed"
+                    );
+                    assert_eq!(
+                        queue.index,
+                        Some(index),
+                        "{count} {index} {seed}: the entry is back on its own row"
+                    );
+                }
+            }
+        }
+
+        let mut empty = Queue::default();
+        empty.toggle_shuffle();
+        empty.toggle_shuffle();
+        assert_eq!(order(&empty), Vec::<String>::new());
+        assert!(!empty.armed(), "an empty queue is not armed");
+    }
+
+    #[test]
+    fn shuffle_off_after_advancing_keeps_the_current_entry() {
+        let mut transport = Transport::default();
+        for seed in 0..20 {
+            for advances in 0..6 {
+                let mut queue = shuffled_at(6, 0, seed);
+                for _ in 0..advances {
+                    assert!(queue.next(&mut transport).is_some());
+                }
+                let current = queue.current().map(|entry| entry.uri.clone());
+
+                queue.toggle_shuffle();
+
+                assert_eq!(
+                    queue.current().map(|entry| entry.uri.clone()),
+                    current,
+                    "seed {seed} advances {advances}"
+                );
+                assert_eq!(
+                    order(&queue),
+                    (0..6).map(|row| format!("t{row}")).collect::<Vec<_>>(),
+                    "seed {seed} advances {advances}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn shuffle_off_restores_history_too() {
+        let mut queue = started(5, 0);
+        let mut transport = Transport::default();
+        queue.toggle_shuffle();
+
+        let held = order(&queue);
+        let t3 = held
+            .iter()
+            .position(|uri| uri == "t3")
+            .expect("t3 is queued");
+        let t1 = held
+            .iter()
+            .position(|uri| uri == "t1")
+            .expect("t1 is queued");
+        queue.jump(t3, &mut transport);
+        queue.jump(t1, &mut transport);
+        assert_eq!(queue.current().map(|entry| entry.uri.as_str()), Some("t1"));
+
+        queue.toggle_shuffle();
+
+        assert_eq!(order(&queue), uris(&["t0", "t1", "t2", "t3", "t4"]));
+        assert_eq!(queue.index, Some(1), "the entry is back on its own row");
+        assert_eq!(
+            order(&queue)[3],
+            "t3",
+            "a row that already played is ahead of the current one"
+        );
+        assert_eq!(queue.previous(0, &mut transport), Some(play("t0")));
+    }
+
+    #[test]
+    fn shuffle_off_with_duplicate_uris_keeps_every_row_and_the_entry() {
+        let list = vec![
+            track_by("a", "1"),
+            track_by("b", "2"),
+            track_by("a", "3"),
+            track_by("b", "4"),
+            track_by("a", "5"),
+        ];
+        let mut transport = Transport::default();
+        let mut expected: Vec<String> = list.iter().map(|entry| entry.artists.clone()).collect();
+        expected.sort();
+        for seed in 0..20 {
+            for index in 0..list.len() {
+                let mut queue = Queue::seeded(seed);
+                queue.start(&list, index, &mut transport);
+                let current = queue.current().map(|entry| entry.artists.clone());
+
+                queue.toggle_shuffle();
+                queue.toggle_shuffle();
+
+                assert_eq!(
+                    order(&queue),
+                    uris(&["a", "b", "a", "b", "a"]),
+                    "seed {seed} index {index}"
+                );
+                let mut held = artists(&queue);
+                held.sort();
+                assert_eq!(
+                    held, expected,
+                    "seed {seed} index {index}: a row went missing"
+                );
+                assert_eq!(
+                    queue.current().map(|entry| entry.artists.clone()),
+                    current,
+                    "seed {seed} index {index}: the current entry changed"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn shuffle_off_honours_a_removal_puts_an_append_last_and_discards_a_move() {
+        let mut queue = shuffled_at(5, 0, 3);
+        let row = order(&queue)
+            .iter()
+            .position(|uri| uri == "t3")
+            .expect("t3 is queued");
+        assert_ne!(row, 0, "the current row is never editable");
+        assert_eq!(
+            queue.remove_rows(&[row], &queue.entries_at(&[row])),
+            Some(1)
+        );
+        assert!(queue.append(vec![track("x")]).is_some());
+        let last = order(&queue).len();
+        assert!(
+            queue.move_rows(&[1], last).is_some(),
+            "a move the restore has to discard"
+        );
+
+        queue.toggle_shuffle();
+
+        assert_eq!(order(&queue), uris(&["t0", "t1", "t2", "t4", "x"]));
+        assert_eq!(queue.current().map(|entry| entry.uri.as_str()), Some("t0"));
+    }
+
+    #[test]
+    fn shuffle_off_on_an_armed_queue() {
+        let mut queue = Queue::seeded(5);
+        queue.append(tracks(5));
+        let before = order(&queue);
+
+        queue.toggle_shuffle();
+        assert!(queue.armed());
+        queue.toggle_shuffle();
+
+        assert_eq!(order(&queue), before);
+        assert!(
+            queue.armed(),
+            "nothing was playing, so nothing became current"
+        );
+        assert_eq!(queue.first_upcoming(), 0);
+    }
+
+    #[test]
+    fn shuffle_off_with_a_load_in_flight_keeps_the_guard_and_the_entry() {
+        let mut queue = started(5, 1);
+        let mut transport = Transport::default();
+
+        queue.toggle_shuffle();
+        queue.toggle_shuffle();
+
+        assert!(queue.awaiting_start, "a mode switch is no play");
+        assert_eq!(queue.current().map(|entry| entry.uri.as_str()), Some("t1"));
+        assert_eq!(
+            end(&mut queue, &mut transport),
+            None,
+            "the load in flight is still ignored"
+        );
+    }
+
+    #[test]
+    fn the_same_seed_gives_the_same_queue_and_two_seeds_differ() {
+        let first = shuffled_at(6, 0, 1);
+        let second = shuffled_at(6, 0, 1);
+        let other = shuffled_at(6, 0, 2);
+
+        assert_eq!(order(&first), order(&second));
+        assert_ne!(order(&first), order(&other));
+    }
+
+    #[test]
+    fn start_with_shuffle_on_plays_the_chosen_row_first_and_shuffles_the_rest() {
+        let mut queue = Queue::seeded(13);
+        queue.append(tracks(2));
+        queue.toggle_shuffle();
+        let mut transport = Transport::default();
+        let list = tracks(6);
+
+        assert_eq!(queue.start(&list, 3, &mut transport), Some(play("t3")));
+
+        assert_eq!(queue.index, Some(0), "the clicked row is what plays");
+        assert_eq!(order(&queue)[0], "t3");
+        assert!(holds_exactly(&queue, 6));
+        assert_ne!(
+            &order(&queue)[1..],
+            &uris(&["t0", "t1", "t2", "t4", "t5"]),
+            "the rest kept the list's order"
+        );
+    }
+
+    #[test]
+    fn shuffle_and_repeat_survive_a_new_start() {
+        let mut queue = started(3, 0);
+        let mut transport = Transport::default();
+        queue.cycle_repeat();
+        queue.toggle_shuffle();
+
+        let list = tracks(2);
+        assert_eq!(queue.start(&list, 1, &mut transport), Some(play("t1")));
+
+        assert!(queue.shuffle());
+        assert_eq!(queue.repeat(), Repeat::All);
+    }
+
+    #[test]
+    fn a_second_start_replaces_the_snapshot() {
+        let mut queue = Queue::seeded(3);
+        let mut transport = Transport::default();
+        queue.toggle_shuffle();
+        queue.start(&tracks(4), 0, &mut transport);
+
+        let second = vec![track("x"), track("y"), track("z")];
+        assert_eq!(queue.start(&second, 1, &mut transport), Some(play("y")));
+        queue.toggle_shuffle();
+
+        assert_eq!(
+            order(&queue),
+            uris(&["x", "y", "z"]),
+            "the second list's order, not the first list's"
+        );
+        assert_eq!(queue.current().map(|entry| entry.uri.as_str()), Some("y"));
+    }
+
+    #[test]
+    fn a_bad_index_start_changes_nothing_with_shuffle_on() {
+        let mut queue = shuffled_at(4, 1, 6);
+        let mut transport = Transport::default();
+        let before = (
+            order(&queue),
+            queue.index,
+            queue.awaiting_start,
+            queue.skips,
+            queue.snapshot.clone(),
+        );
+
+        assert_eq!(queue.start(&tracks(2), 5, &mut transport), None);
+        assert_eq!(queue.start(&[], 0, &mut transport), None);
+
+        assert_eq!(
+            (
+                order(&queue),
+                queue.index,
+                queue.awaiting_start,
+                queue.skips,
+                queue.snapshot.clone(),
+            ),
+            before,
+            "a refused start must not draw, disarm or reseed anything"
+        );
+    }
+
+    #[test]
+    fn wrapping_under_shuffle_reshuffles_the_tail_and_keeps_row_zero() {
+        let mut queue = seeded_started(6, 0, 21);
+        let mut transport = Transport::default();
+        queue.cycle_repeat();
+        queue.toggle_shuffle();
+        for _ in 0..5 {
+            assert!(queue.next(&mut transport).is_some());
+        }
+        assert_eq!(queue.index, Some(5), "the lap is at its last row");
+        let row_zero = order(&queue)[0].clone();
+        let tail = order(&queue)[1..].to_vec();
+
+        assert_eq!(queue.next(&mut transport), Some(play(&row_zero)));
+
+        assert_eq!(queue.index, Some(0));
+        assert_eq!(order(&queue)[0], row_zero, "a wrap must not move row zero");
+        assert_ne!(
+            order(&queue)[1..],
+            tail[..],
+            "lap two replayed lap one's order"
+        );
+        assert!(holds_exactly(&queue, 6));
+    }
+
+    /// A queue of `count` tracks started at `index` from `seed`, not yet shuffled.
+    fn seeded_started(count: usize, index: usize, seed: u64) -> Queue {
+        let list = tracks(count);
+        let mut queue = Queue::seeded(seed);
+        let mut transport = Transport::default();
+        queue.start(&list, index, &mut transport);
+        queue
     }
 
     #[test]

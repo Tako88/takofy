@@ -89,7 +89,7 @@ impl TakofyApp {
             state: SignIn::default(),
             library: Library::default(),
             transport: Transport::default(),
-            queue: Queue::default(),
+            queue: Queue::seeded(wall_clock_ms()),
             drawer: Drawer::default(),
             menu: Menu::default(),
             ui_end,

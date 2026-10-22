@@ -4633,6 +4633,47 @@ mod tests {
     }
 
     #[test]
+    fn the_pick_a_carry_held_before_the_toggle_is_refused_after_it() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = Queue::seeded(9);
+        let tracks: Vec<TrackEntry> = (0..5).map(|index| track(index, None)).collect();
+        queue.start(&tracks, 0, &mut transport);
+        queue.press(1, Press::Replace);
+        for row in 2..5 {
+            queue.press(row, Press::Toggle);
+        }
+        let rows = queue.lift(1).expect("the coming rows are editable");
+        let carry = Carry {
+            source: Source::Queue,
+            rows: rows.clone(),
+            entries: queue.entries_at(&rows),
+            ..carried_rows(egui::Id::unique("queue"), rows)
+        };
+        queue.toggle_shuffle();
+        assert_ne!(
+            queue.entries_at(&carry.rows),
+            carry.entries,
+            "the premise: the shuffle moved the carried rows"
+        );
+        let before = entries(&queue);
+
+        land(
+            &mut queue,
+            &carry,
+            Target::At(Landing {
+                boundary: 2,
+                marker: Rect::ZERO,
+            }),
+        );
+
+        assert_eq!(
+            entries(&queue),
+            before,
+            "a pick held across a toggle must not move other tracks"
+        );
+    }
+
+    #[test]
     fn a_drag_that_starts_inside_a_pick_carries_the_whole_block() {
         let mut transport = playing(cover("abc"));
         let mut queue = queue_of(4, &mut transport);

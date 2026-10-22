@@ -172,10 +172,10 @@ pub fn availability(control: Control) -> Availability {
         Control::Seek => Availability::Ready,      // #13
 
         // Playbar chrome with no separate issue yet.
-        Control::Like => Availability::Ready, // #35
+        Control::Like => Availability::Ready,    // #35
+        Control::Shuffle => Availability::Ready, // #35
+        Control::Repeat => Availability::Ready,  // #35
         Control::Miniplayer => Availability::Waiting,
-        Control::Shuffle => Availability::Waiting,
-        Control::Repeat => Availability::Waiting,
         Control::Queue => Availability::Waiting,
         Control::Devices => Availability::Waiting,
         Control::Mute => Availability::Waiting,
@@ -244,6 +244,8 @@ mod tests {
                     | Control::PlayPause
                     | Control::Next
                     | Control::Seek
+                    | Control::Shuffle
+                    | Control::Repeat
                     | Control::HeroPlay
                     | Control::Follow
                     | Control::DiscographyFilter
