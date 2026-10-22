@@ -375,6 +375,7 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
     let page = screen.library.page();
     let _ = screen.menu.follow_page(page);
     if let Some(mut request) = request {
+        request.allow_add(screen.library.add_targets());
         request.allow_create(regions.sidebar == Sidebar::Full && screen.library.creatable());
         let gate = door_gate(ui.ctx(), screen, &request.listing);
         let _ = screen.menu.open(request, gate);
@@ -510,7 +511,11 @@ fn apply_verb(ui: &Ui, screen: &mut Screen<'_>, verb: Verb) -> Option<Command> {
             cut.and_then(|cut| apply_cut(ui, screen, cut))
         }
         verbs::Outcome::Like { tracks, liked } => apply_like(ui, screen, tracks, liked),
-        verbs::Outcome::NewPlaylist => apply_new_playlist(ui, screen),
+        verbs::Outcome::NewPlaylist { pick } => apply_new_playlist(ui, screen, pick),
+        verbs::Outcome::AddToPlaylist { tracks } => {
+            let uri = screen.menu.chosen_target()?.uri.clone();
+            screen.library.add_pick(&uri, &tracks)
+        }
     }
 }
 
@@ -519,11 +524,11 @@ fn apply_verb(ui: &Ui, screen: &mut Screen<'_>, verb: Verb) -> Option<Command> {
 /// The field is the sidebar's, so the drawer and a carried block both drop the
 /// choice: a field nobody can see, or one opened over a list about to move, is
 /// worse than nothing.
-fn apply_new_playlist(ui: &Ui, screen: &mut Screen<'_>) -> Option<Command> {
+fn apply_new_playlist(ui: &Ui, screen: &mut Screen<'_>, pick: Vec<String>) -> Option<Command> {
     if *screen.drawer == Drawer::Open || carry::carrying(ui.ctx()) {
         return None;
     }
-    screen.library.naming.open();
+    screen.library.naming.open_with(pick);
     None
 }
 
@@ -684,8 +689,8 @@ fn rootlist_target(
     Some(Target::Rootlist(at))
 }
 
-/// Where a carried track adds itself: the playlist row under the pointer, when
-/// that row may take it.
+/// Where a carried block adds itself: the playlist row under the pointer, when
+/// that row may take the whole pick.
 fn add_target(
     carry: &Carry,
     column: Option<&ColumnOffer>,
@@ -693,7 +698,9 @@ fn add_target(
     pointer: Option<Pos2>,
 ) -> Option<Target> {
     let column = column?;
-    carry.track()?;
+    if !carry.addable() {
+        return None;
+    }
     let slot = landing::slot_at(pointer, Some(&column.zone), column.drawn)?;
     library.addable(slot.row).then_some(Target::Add(slot))
 }
@@ -711,12 +718,12 @@ fn rearrange(screen: &mut Screen<'_>, carry: &Carry, at: Landing, free: bool) ->
         .move_playlist(row, at.boundary, carry.playlist.as_deref()?)
 }
 
-/// Adds the carried track to the row it was dropped on, and asks for one write.
+/// Adds the carried tracks to the row they were dropped on, and asks for one write.
 fn add(screen: &mut Screen<'_>, carry: &Carry, slot: landing::Slot, free: bool) -> Option<Command> {
     if !free {
         return None;
     }
-    screen.library.add_track(slot.row, carry.track()?)
+    screen.library.add_tracks(slot.row, &carry.pick()?)
 }
 
 /// Moves the dropped rows in their own list and picks where they landed.
@@ -5661,11 +5668,11 @@ mod tests {
 
         assert_eq!(
             window.drag(&mut transport, &mut queue, from, to),
-            Some(Command::AddTrack {
+            Some(Command::AddTracks {
                 playlist: "playlist:B".to_owned(),
                 revision: revision("root-1"),
                 from_index: 3,
-                track: TRACK_A.to_owned(),
+                tracks: vec![TRACK_A.to_owned()],
             }),
             "the length is the index an append names"
         );
@@ -5734,7 +5741,7 @@ mod tests {
         assert!(
             text_in(
                 &frame,
-                "Could not add that track. Try again.",
+                "Could not add those tracks. Try again.",
                 sidebar_rect(&window)
             )
             .is_some(),
@@ -5816,11 +5823,11 @@ mod tests {
         let (command, _) = window.frame(&mut transport, &mut queue, vec![window.release(to)]);
         assert_eq!(
             command,
-            Some(Command::AddTrack {
+            Some(Command::AddTracks {
                 playlist: "playlist:B".to_owned(),
                 revision: revision("root-1"),
                 from_index: 3,
-                track: TRACK_A.to_owned(),
+                tracks: vec![TRACK_A.to_owned()],
             }),
             "a row that can take the track takes it"
         );
@@ -5941,25 +5948,29 @@ mod tests {
 
         assert_eq!(
             window.drag(&mut transport, &mut queue, from, to),
-            Some(Command::AddTrack {
+            Some(Command::AddTracks {
                 playlist: "playlist:A".to_owned(),
                 revision: revision("root-1"),
                 from_index: 2,
-                track: TRACK_B.to_owned(),
+                tracks: vec![TRACK_B.to_owned()],
             })
         );
     }
 
     #[test]
-    fn a_block_of_two_rows_is_never_added() {
+    fn a_block_of_three_rows_is_one_add_in_row_order() {
         let mut transport = playing(cover("abc"));
-        let mut queue = queue_of_tracks(&[TRACK_A, TRACK_B, TRACK_A, TRACK_B], &mut transport);
+        let mut queue = queue_of_tracks(
+            &[TRACK_A, TRACK_B, "spotify:track:c", TRACK_A, TRACK_B],
+            &mut transport,
+        );
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
         sidebar_playlists(&mut window, &[("A", Some(2))], Some(rootlist_access(true)));
-        // Rows 1 and 2 are one picked block: the first entry is playing, so it
-        // is never lifted.
+        // Rows 1, 2 and 3 are one picked block: the first entry is playing, so
+        // it is never lifted.
         queue.press(1, Press::Replace);
         queue.press(2, Press::Toggle);
+        queue.press(3, Press::Toggle);
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
         let pane = pane_rect_when_shown(&window);
         let from = row_line(&frame, pane, TRACK_B);
@@ -5967,8 +5978,37 @@ mod tests {
 
         assert_eq!(
             window.drag(&mut transport, &mut queue, from, to),
+            Some(Command::AddTracks {
+                playlist: "playlist:A".to_owned(),
+                revision: revision("root-1"),
+                from_index: 2,
+                tracks: vec![
+                    TRACK_B.to_owned(),
+                    "spotify:track:c".to_owned(),
+                    TRACK_A.to_owned(),
+                ],
+            }),
+            "one command, and the pick in the order the rows were taken"
+        );
+    }
+
+    #[test]
+    fn a_pick_with_one_episode_marks_no_target_and_sends_nothing() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of_tracks(&[TRACK_A, "spotify:episode:1", TRACK_B], &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_playlists(&mut window, &[("A", Some(2))], Some(rootlist_access(true)));
+        queue.press(1, Press::Replace);
+        queue.press(2, Press::Toggle);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let pane = pane_rect_when_shown(&window);
+        let from = row_line(&frame, pane, "spotify:episode:1");
+        let to = sidebar_row_rect(&window, &frame, "A", "Playlist · 2 tracks").center();
+
+        assert_eq!(
+            window.drag(&mut transport, &mut queue, from, to),
             None,
-            "two rows are one block, and a block is never added"
+            "a mixed pick is refused whole, so nothing is offered"
         );
     }
 
@@ -5993,11 +6033,11 @@ mod tests {
 
         assert_eq!(
             command,
-            Some(Command::AddTrack {
+            Some(Command::AddTracks {
                 playlist: "playlist:A".to_owned(),
                 revision: revision("root-1"),
                 from_index: 2,
-                track: TRACK_A.to_owned(),
+                tracks: vec![TRACK_A.to_owned()],
             }),
             "the gap belongs to the row above, so it is an add and no reorder"
         );
@@ -7610,6 +7650,7 @@ mod tests {
                 opener: egui::Id::unique("row-more"),
                 device: crate::menu::Device::Keyboard,
             },
+            playlists: Vec::new(),
             items,
             targets,
             rows,
@@ -7712,6 +7753,7 @@ mod tests {
                 &playlist_listing(),
                 crate::likes::Standing::Unknown,
             ),
+            playlists: Vec::new(),
             targets,
             rows: rows.to_vec(),
             listing: playlist_listing(),
@@ -9098,6 +9140,7 @@ mod tests {
             Some(Command::CreatePlaylist {
                 name: "Night  Drive".to_owned(),
                 revision: revision("root-1"),
+                tracks: Vec::new(),
             })
         );
         assert!(window.library.write_in_flight());
@@ -9780,6 +9823,47 @@ mod tests {
             "the row opened no naming field"
         );
         assert!(!window.library.write_in_flight(), "the row started a write");
+    }
+
+    #[test]
+    fn a_created_list_takes_the_pick_the_menu_held() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        page_of_tracks(&mut window, &[TRACK_A]);
+        sidebar_playlists(&mut window, &[("a", Some(0))], Some(rootlist_access(true)));
+        let offered = open_row_menu(&mut window, &mut transport, &mut queue, TRACK_A);
+        assert!(offered.contains(&Verb::NewPlaylist), "{offered:?}");
+
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let at = painted_at(&frame, "New playlist…").expect("the row is painted");
+        let _ = window.click(
+            &mut transport,
+            &mut queue,
+            egui::pos2(at.x + 20.0, at.y + 6.0),
+        );
+        assert!(
+            window.library.naming.is_open(),
+            "the row opened no naming field"
+        );
+        assert_eq!(
+            window.library.naming.pick().to_vec(),
+            vec![TRACK_A.to_owned()],
+            "the field did not take the pick the menu held"
+        );
+
+        type_text(&mut window, &mut transport, &mut queue, "Night Drive");
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Enter);
+
+        assert_eq!(
+            command,
+            Some(Command::CreatePlaylist {
+                name: "Night Drive".to_owned(),
+                revision: revision("root-1"),
+                tracks: vec![TRACK_A.to_owned()],
+            }),
+            "the pick rides the create"
+        );
     }
 
     #[test]

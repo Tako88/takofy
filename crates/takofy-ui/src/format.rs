@@ -316,9 +316,10 @@ pub fn playlist_detail(entry: &PlaylistEntry) -> Option<String> {
 pub fn sidebar_notice(write: SidebarWrite) -> &'static str {
     match write {
         SidebarWrite::Reorder => "Could not move that playlist. Try again.",
-        SidebarWrite::Add => "Could not add that track. Try again.",
+        SidebarWrite::Add => "Could not add those tracks. Try again.",
         SidebarWrite::Create => "Could not create that playlist. Try again.",
         SidebarWrite::Link => "Created it, but could not add it to your list.",
+        SidebarWrite::Unfilled => "Created it, but could not add the tracks.",
     }
 }
 
@@ -523,7 +524,11 @@ mod tests {
         );
         assert_eq!(
             sidebar_notice(SidebarWrite::Add),
-            "Could not add that track. Try again."
+            "Could not add those tracks. Try again."
+        );
+        assert_eq!(
+            sidebar_notice(SidebarWrite::Unfilled),
+            "Created it, but could not add the tracks."
         );
     }
 

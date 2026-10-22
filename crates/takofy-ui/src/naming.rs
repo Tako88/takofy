@@ -20,6 +20,8 @@ pub enum NameError {
 pub struct Naming {
     open: bool,
     text: String,
+    /// The tracks the create would land in the list it makes.
+    pick: Vec<String>,
     writing: bool,
     /// The field should take the keyboard on the next frame it is drawn.
     wants_focus: bool,
@@ -28,17 +30,28 @@ pub struct Naming {
 }
 
 impl Naming {
-    /// Opens the field and asks it for the keyboard.
+    /// Opens the field with nothing to carry, dropping any pick a menu left.
+    pub fn open(&mut self) {
+        self.open_with(Vec::new());
+    }
+
+    /// Opens the field holding `pick`, so the create lands those tracks too.
     ///
     /// A create in flight is the one moment this is refused: the field is
     /// read-only then, so opening it would offer an edit nobody can make.
-    pub fn open(&mut self) {
+    pub fn open_with(&mut self, pick: Vec<String>) {
         if self.writing {
             return;
         }
         self.open = true;
         self.wants_focus = true;
         self.wants_button = false;
+        self.pick = pick;
+    }
+
+    /// The tracks the create would land in the new list.
+    pub fn pick(&self) -> &[String] {
+        &self.pick
     }
 
     /// Whether the field is drawn in place of the count.
@@ -138,6 +151,7 @@ impl Naming {
         self.open = false;
         self.writing = false;
         self.text.clear();
+        self.pick.clear();
         self.wants_focus = false;
     }
 }
@@ -255,6 +269,65 @@ mod tests {
         assert!(naming.is_open(), "a failed create closed the field");
         assert!(naming.wants_focus(), "a failed create left no keyboard");
         assert_eq!(naming.text(), "Night Drive");
+    }
+
+    fn held() -> Vec<String> {
+        vec!["spotify:track:a".to_owned(), "spotify:track:b".to_owned()]
+    }
+
+    #[test]
+    fn open_with_keeps_the_pick_and_pick_reads_it() {
+        let mut naming = Naming::default();
+        naming.open_with(held());
+        assert_eq!(naming.pick(), held());
+        assert!(naming.is_open());
+        assert!(naming.wants_focus());
+    }
+
+    #[test]
+    fn a_plain_open_drops_a_held_pick() {
+        let mut naming = Naming::default();
+        naming.open_with(held());
+        naming.open();
+        assert!(naming.pick().is_empty(), "a plain open kept the last pick");
+    }
+
+    #[test]
+    fn finished_and_cancel_drop_the_pick_but_failed_keeps_it() {
+        let mut finished = Naming::default();
+        finished.open_with(held());
+        finished.edit().push_str("Mix");
+        assert!(finished.begin_write().is_some());
+        finished.finished();
+        assert!(finished.pick().is_empty(), "a made list keeps no pick");
+
+        let mut cancelled = Naming::default();
+        cancelled.open_with(held());
+        cancelled.cancel();
+        assert!(
+            cancelled.pick().is_empty(),
+            "a cancelled field keeps no pick"
+        );
+
+        let mut failed = Naming::default();
+        failed.open_with(held());
+        failed.edit().push_str("Mix");
+        assert!(failed.begin_write().is_some());
+        failed.failed();
+        assert_eq!(failed.pick(), held(), "a retry lands the same pick");
+    }
+
+    #[test]
+    fn an_open_with_while_writing_leaves_it_empty() {
+        let mut naming = typing("Mix");
+        assert!(naming.begin_write().is_some());
+        naming.open_with(held());
+        assert!(
+            naming.pick().is_empty(),
+            "a write in flight took a new pick"
+        );
+        assert!(naming.writing());
+        assert!(!naming.wants_focus());
     }
 
     #[test]
