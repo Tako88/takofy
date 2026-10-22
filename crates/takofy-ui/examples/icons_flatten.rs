@@ -50,6 +50,7 @@ const SCOPE: &[(&str, &str)] = &[
     ("i-arrow-right", "ArrowRight"),
     ("i-chevron-right", "ChevronRight"),
     ("i-heart", "Heart"),
+    ("i-heart-filled", "HeartFilled"),
     ("i-more", "More"),
     ("i-close", "Close"),
     ("i-plus", "Plus"),
@@ -180,6 +181,7 @@ fn flatten(variant: &'static str, id: &'static str, source: &str) -> GlyphOut {
     match id {
         "i-logo" => fills = logo_fills(),
         "i-home" => fills = home_fills(),
+        "i-heart-filled" => fills = heart_fills(),
         "i-volume" | "i-volume-low" | "i-volume-mute" => fills = speaker_fills(),
         _ => {}
     }
@@ -600,6 +602,46 @@ fn home_fills() -> Vec<Vec<P>> {
         left,
         right,
     ]
+}
+
+/// The filled heart, cut at its centre line into two convex halves.
+///
+/// The path is concave at the notch, so one fill piece would fail the
+/// convexity guard. A 2.0 overlap is impossible here: a half that crossed the
+/// centre line would pick up the notch and turn reflex, so the halves share the
+/// cut exactly and the tessellator's feather closes it.
+fn heart_fills() -> Vec<Vec<P>> {
+    let mut left = vec![P(12.0, 7.2), P(10.7, 5.9)];
+    left.extend(arc_points(
+        P(10.7, 5.9),
+        5.05,
+        5.05,
+        true,
+        false,
+        P(3.6, 13.1),
+    ));
+    left.push(P(12.0, 21.5));
+
+    let mut right = vec![P(12.0, 7.2), P(13.3, 5.9)];
+    right.extend(arc_points(
+        P(13.3, 5.9),
+        5.05,
+        5.05,
+        false,
+        true,
+        P(20.4, 5.9),
+    ));
+    right.extend(arc_points(
+        P(20.4, 5.9),
+        5.05,
+        5.05,
+        false,
+        true,
+        P(20.4, 13.1),
+    ));
+    right.push(P(12.0, 21.5));
+
+    vec![left, right]
 }
 
 fn fnv1a(bytes: &[u8]) -> u64 {

@@ -59,6 +59,7 @@ pub enum Icon {
     ArrowRight,
     ChevronRight,
     Heart,
+    HeartFilled,
     More,
     Close,
     Plus,
@@ -76,7 +77,7 @@ pub enum Icon {
 }
 
 impl Icon {
-    pub const ALL: [Self; 28] = [
+    pub const ALL: [Self; 29] = [
         Self::Play,
         Self::Pause,
         Self::Previous,
@@ -91,6 +92,7 @@ impl Icon {
         Self::ArrowRight,
         Self::ChevronRight,
         Self::Heart,
+        Self::HeartFilled,
         Self::More,
         Self::Close,
         Self::Plus,
@@ -493,6 +495,51 @@ mod tests {
                 assert!(is_convex(piece), "{icon:?} has a concave or twisted fill");
             }
         }
+    }
+
+    #[test]
+    fn the_filled_heart_is_fill_only_and_has_pieces() {
+        let filled = Icon::HeartFilled.glyph();
+        assert!(
+            filled.lines.is_empty(),
+            "a filled heart drawn with a stroke would show a seam"
+        );
+        assert!(!filled.fills.is_empty(), "the filled heart draws nothing");
+        assert!(
+            filled.fills.iter().all(|piece| piece.len() >= 3),
+            "a fill piece has fewer than three points"
+        );
+    }
+
+    #[test]
+    fn the_filled_heart_covers_the_outlines_extent() {
+        fn bounds(points: &[Point]) -> (f32, f32, f32, f32) {
+            points.iter().fold(
+                (
+                    f32::INFINITY,
+                    f32::INFINITY,
+                    f32::NEG_INFINITY,
+                    f32::NEG_INFINITY,
+                ),
+                |(x0, y0, x1, y1), &(x, y)| (x0.min(x), y0.min(y), x1.max(x), y1.max(y)),
+            )
+        }
+        let outline = Icon::Heart.glyph();
+        let filled = Icon::HeartFilled.glyph();
+        let mut outline_points = Vec::new();
+        for line in outline.lines {
+            outline_points.extend_from_slice(line.points);
+        }
+        let mut filled_points = Vec::new();
+        for piece in filled.fills {
+            filled_points.extend_from_slice(piece);
+        }
+        let (ox, oy, ox1, oy1) = bounds(&outline_points);
+        let (fx, fy, fx1, fy1) = bounds(&filled_points);
+        assert!(
+            fx <= ox + 0.01 && fy <= oy + 0.01 && fx1 >= ox1 - 0.01 && fy1 >= oy1 - 0.01,
+            "the fill {fx},{fy}..{fx1},{fy1} does not cover the outline {ox},{oy}..{ox1},{oy1}"
+        );
     }
 
     #[test]
