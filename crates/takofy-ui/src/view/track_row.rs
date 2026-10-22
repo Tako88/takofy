@@ -977,35 +977,9 @@ fn more(
         node.set_expanded(open);
         node.set_has_popup(egui::accesskit::HasPopup::Menu);
     });
-    // egui does not focus a widget on a click; the row's body asks for it by hand
-    // and the more does the same, so Enter and the focus ring land where the
-    // pointer last was.
-    let clicked = slot.response.clicked();
-    if clicked {
-        slot.response.request_focus();
-    }
-
-    // A press on a focused `⋯` is also Enter or Space, which egui reports as a
-    // click without a pointer, so the device decides what the sheet's tiers mean.
-    let pointer = ui.input(|input| input.pointer.button_clicked(egui::PointerButton::Primary));
-    let device = if pointer {
-        Device::Pointer
-    } else {
-        Device::Keyboard
-    };
-    // The `⋯` whose own menu is up closes it through the outside click rather
-    // than posting a fresh request over it, and a held key's repeats are not
-    // presses of the user's.
-    let toggle = clicked && pointer && opener == Some(id);
-    let held = clicked && !pointer && context_menu::held_repeat(ui);
-    let door = (clicked && !toggle && !held).then_some(Door {
-        anchor: Anchor::Button(rect),
-        opener: id,
-        device,
-    });
     More {
         hovered: under_pointer(&slot),
-        door,
+        door: context_menu::button_door(ui, &slot, rect, id),
         id,
         focused: slot.response.has_focus(),
     }

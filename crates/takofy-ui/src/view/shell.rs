@@ -153,6 +153,13 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
     if reply.retry {
         screen.library.lyrics.retry();
     }
+    if let Some(door) = reply.menu {
+        let gate = Gate {
+            carrying: carry::carrying(ui.ctx()),
+            writing: screen.library.write_in_flight(),
+        };
+        carry::current_menu(screen.queue, ui.ctx(), door, gate, screen.library.page());
+    }
 
     // The pane reports what the pointer and the keyboard asked of the queue; it
     // never moves the queue itself, because its row loop is still reading it.
@@ -7020,6 +7027,16 @@ mod tests {
         }
     }
 
+    /// The Now Playing head's more button, solved the way the panel solves it.
+    fn now_playing_more(window: &Window) -> egui::Pos2 {
+        let pane = pane_rect(window);
+        let head = Rect::from_min_size(
+            pane.min + Vec2::splat(space::S3),
+            Vec2::new(pane.width() - 2.0 * space::S3, extent::BUTTON),
+        );
+        egui::Pos2::new(head.right() - extent::BUTTON / 2.0, head.center().y)
+    }
+
     /// A cut the page would post for `rows`, built from the page's own entries.
     fn page_cut(window: &Window, rows: &[usize]) -> Cut {
         Cut {
@@ -7939,5 +7956,80 @@ mod tests {
         );
         let _ = press(&mut window, &mut transport, &mut queue, egui::Key::Escape);
         assert!(!window.menu.is_open());
+    }
+    #[test]
+    fn a_click_on_now_playings_more_opens_a_current_menu() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        queue.start(&[menu_track(0)], 0, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+
+        let at = now_playing_more(&window);
+        let _ = window.click(&mut transport, &mut queue, at);
+        settle_menu(&mut window, &mut transport, &mut queue);
+
+        assert!(window.menu.is_open(), "the more button opened no menu");
+        assert!(
+            window
+                .menu
+                .items()
+                .iter()
+                .all(|item| { item.verb != Verb::AddToQueue && item.verb != Verb::Remove }),
+            "Now Playing offered a list command"
+        );
+        assert_eq!(window.menu.cut(), None, "the entry was removable");
+        assert_eq!(
+            window
+                .menu
+                .items()
+                .iter()
+                .map(|item| item.verb)
+                .collect::<Vec<_>>(),
+            [Verb::GoToAlbum, Verb::GoToArtist, Verb::CopyLink]
+        );
+    }
+
+    #[test]
+    fn now_playings_more_opens_from_the_keyboard_after_a_click() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        queue.start(&[menu_track(0)], 0, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        let at = now_playing_more(&window);
+
+        // The press opens the menu and leaves the keyboard on the button; the
+        // Escape hands it back there, so the key door has something to work from.
+        let _ = window.click(&mut transport, &mut queue, at);
+        settle_menu(&mut window, &mut transport, &mut queue);
+        let _ = press(&mut window, &mut transport, &mut queue, egui::Key::Escape);
+        assert!(!window.menu.is_open());
+
+        let _ = chord(
+            &mut window,
+            &mut transport,
+            &mut queue,
+            egui::Key::F10,
+            egui::Modifiers::SHIFT,
+        );
+
+        assert!(window.menu.is_open(), "Shift+F10 opened no menu");
+    }
+
+    #[test]
+    fn now_playings_more_waits_without_a_current_entry() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+
+        let at = now_playing_more(&window);
+        let _ = window.click(&mut transport, &mut queue, at);
+
+        assert!(
+            !window.menu.is_open(),
+            "a waiting more button opened a menu"
+        );
     }
 }

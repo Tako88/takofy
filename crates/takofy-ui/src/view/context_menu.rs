@@ -17,11 +17,14 @@ use egui::{
 
 use crate::icon::{self, Icon};
 use crate::layout::menu as geometry;
-use crate::menu::{Closed, Cut, Item, Kind, Menu, Reason, Request, Step, Tier};
+use crate::menu::{
+    Anchor, Closed, Cut, Device, Door, Item, Kind, Menu, Reason, Request, Step, Tier,
+};
 use crate::theme::icon::Size;
 use crate::theme::{MonoWeight, Tokens, fonts, radius, stroke, text, tracking};
 use crate::verbs;
 
+use super::controls::Slot;
 use super::menu_box::{self, Card, clicked_on, paint_highlight, paint_marker, row_corners};
 use super::text as recipe;
 
@@ -358,6 +361,33 @@ pub fn menu_key_pressed(ui: &Ui) -> bool {
         // Shift is required for F10, so a plain F10 is not this door.
         input.consume_key(Modifiers::SHIFT, Key::F10)
             || input.consume_key(Modifiers::NONE, Key::Menu)
+    })
+}
+
+/// The door a press on `slot` opens, or `None` when the press is not one.
+///
+/// A press on the `⋯` whose own menu is up closes it rather than posting a fresh
+/// request, and a held key's repeats are not presses of the user's. A press also
+/// takes the keyboard, so Enter and the focus ring stay on the button.
+pub fn button_door(ui: &Ui, slot: &Slot, rect: Rect, id: Id) -> Option<Door> {
+    let clicked = slot.response.clicked();
+    if clicked {
+        slot.response.request_focus();
+    }
+    // A press on a focused `⋯` is also Enter or Space, which egui reports as a
+    // click without a pointer, so the device decides what the tiers mean.
+    let pointer = ui.input(|input| input.pointer.button_clicked(egui::PointerButton::Primary));
+    let device = if pointer {
+        Device::Pointer
+    } else {
+        Device::Keyboard
+    };
+    let toggle = clicked && pointer && open_opener(ui.ctx()) == Some(id);
+    let held = clicked && !pointer && held_repeat(ui);
+    (clicked && !toggle && !held).then_some(Door {
+        anchor: Anchor::Button(rect),
+        opener: id,
+        device,
     })
 }
 

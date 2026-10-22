@@ -163,7 +163,7 @@ pub fn availability(control: Control) -> Availability {
         Control::FilterPodcasts => Availability::Ready, // #3
         Control::SearchField => Availability::Ready,
         Control::TrailHome => Availability::Waiting, // #17
-        Control::NowPlayingMore => Availability::Waiting, // #16
+        Control::NowPlayingMore => Availability::Ready, // #16
 
         // Transport and seek are their own issue.
         Control::Previous => Availability::Ready,  // #13
@@ -251,6 +251,7 @@ mod tests {
                     | Control::ReleasePlay
                     | Control::EpisodeToggle
                     | Control::TrackMore
+                    | Control::NowPlayingMore
                     | Control::NowPlayingQueueTab
                     | Control::NowPlayingLyricsTab
                     | Control::Authorize

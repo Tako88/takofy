@@ -273,6 +273,34 @@ pub fn queue_cut(queue: &mut Queue, ctx: &Context, row: usize, gate: Gate) {
     );
 }
 
+/// Opens Now Playing's menu on the entry it is playing.
+///
+/// The current entry is the queue's, and it is never removable: the menu lists
+/// what can be done with the track, not with a list it sits in.
+pub fn current_menu(queue: &Queue, ctx: &Context, door: Door, gate: Gate, here: Option<&Page>) {
+    if !gate.allows() {
+        return;
+    }
+    let Some(entry) = queue.current().cloned() else {
+        return;
+    };
+    let items = verbs::track_items(std::slice::from_ref(&entry), here, &Listing::Current);
+    if items.is_empty() {
+        return;
+    }
+    context_menu::post(
+        ctx,
+        Request {
+            door,
+            items,
+            targets: vec![entry],
+            rows: vec![0],
+            listing: Listing::Current,
+            page: here.cloned(),
+        },
+    );
+}
+
 /// One list's selection and its drag, for the frame that draws it.
 #[must_use]
 pub struct List {
@@ -1280,5 +1308,81 @@ mod tests {
 
         assert_eq!(context_menu::take_cut(&ctx), None);
         assert_eq!(queue.acting_rows(None), vec![1], "the pick changed");
+    }
+    /// A track with a page to open and a link to copy, which is an entry the
+    /// menu has verbs for.
+    fn named_entry(uri: &str) -> TrackEntry {
+        TrackEntry {
+            uri: uri.to_owned(),
+            album_uri: Some("spotify:album:a".to_owned()),
+            artist_uris: vec!["spotify:artist:b".to_owned()],
+            ..entry("named")
+        }
+    }
+
+    #[test]
+    fn current_menu_posts_the_playing_entry_with_no_removal() {
+        let ctx = context();
+        let mut transport = Transport::default();
+        let named = named_entry("spotify:track:a");
+        let mut queue = Queue::default();
+        queue.start(std::slice::from_ref(&named), 0, &mut transport);
+
+        current_menu(&queue, &ctx, door(), Gate::default(), None);
+
+        let request = context_menu::take_request(&ctx).expect("a request was posted");
+        assert_eq!(request.listing, Listing::Current);
+        assert_eq!(request.targets, vec![named]);
+        assert_eq!(request.rows.len(), request.targets.len(), "not parallel");
+        assert!(
+            request.items.iter().all(|item| {
+                item.verb != crate::menu::Verb::AddToQueue && item.verb != crate::menu::Verb::Remove
+            }),
+            "the current entry offered a list command"
+        );
+        assert!(
+            request
+                .items
+                .iter()
+                .any(|item| item.verb == crate::menu::Verb::GoToAlbum)
+        );
+    }
+
+    #[test]
+    fn current_menu_with_no_current_entry_or_no_verbs_posts_nothing() {
+        let ctx = context();
+        current_menu(&Queue::default(), &ctx, door(), Gate::default(), None);
+        assert_eq!(context_menu::take_request(&ctx), None, "an empty queue");
+
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        queue.start(&[entry("0")], 0, &mut transport);
+        current_menu(&queue, &ctx, door(), Gate::default(), None);
+        assert_eq!(
+            context_menu::take_request(&ctx),
+            None,
+            "an entry with no verbs"
+        );
+    }
+
+    #[test]
+    fn current_menu_is_refused_by_the_gate() {
+        let ctx = context();
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        queue.start(&[named_entry("spotify:track:a")], 0, &mut transport);
+
+        current_menu(
+            &queue,
+            &ctx,
+            door(),
+            Gate {
+                carrying: true,
+                writing: false,
+            },
+            None,
+        );
+
+        assert_eq!(context_menu::take_request(&ctx), None);
     }
 }
