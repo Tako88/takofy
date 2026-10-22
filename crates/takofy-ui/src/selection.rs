@@ -140,6 +140,26 @@ impl Selection {
             self.anchor = Some(anchor + by);
         }
     }
+
+    /// Drops `rows` and moves every row below them down, the inverse of
+    /// [`Selection::open_gap`].
+    pub fn without(&mut self, rows: &[usize]) {
+        let dropped: BTreeSet<usize> = rows.iter().copied().collect();
+        if dropped.is_empty() {
+            return;
+        }
+        let shift = |row: usize| row - dropped.range(..row).count();
+        self.rows = self
+            .rows
+            .iter()
+            .filter(|row| !dropped.contains(row))
+            .map(|row| shift(*row))
+            .collect();
+        self.anchor = self
+            .anchor
+            .filter(|anchor| !dropped.contains(anchor))
+            .map(shift);
+    }
 }
 
 /// Every list's selection on the page in view, kept in the frame's temp memory.
@@ -279,6 +299,49 @@ mod tests {
         selection.press(2, Press::Toggle);
         selection.press(4, Press::Extend);
         assert_eq!(rows(&selection), vec![2, 3, 4]);
+    }
+
+    #[test]
+    fn without_drops_the_rows_and_shifts_the_later_ones_down() {
+        let mut selection = picked([1, 3, 4, 6]);
+        selection.without(&[3, 4]);
+        assert_eq!(rows(&selection), vec![1, 4]);
+        assert_eq!(selection.anchor, Some(1));
+    }
+
+    #[test]
+    fn without_moves_the_anchor_with_its_row() {
+        let mut selection = picked([2, 4]);
+        selection.press(4, Press::Replace);
+        selection.without(&[2]);
+        assert_eq!(rows(&selection), vec![3]);
+        assert_eq!(selection.anchor, Some(3));
+    }
+
+    #[test]
+    fn without_the_anchor_row_clears_the_anchor() {
+        let mut selection = picked([2, 5]);
+        selection.without(&[2]);
+        assert_eq!(rows(&selection), vec![4]);
+        assert_eq!(selection.anchor, None);
+    }
+
+    #[test]
+    fn without_every_row_leaves_it_empty() {
+        let mut selection = picked([0, 1]);
+        selection.without(&[0, 1]);
+        assert!(selection.is_empty());
+        assert_eq!(selection.anchor, None);
+    }
+
+    #[test]
+    fn without_is_the_inverse_of_open_gap() {
+        let mut selection = picked([1, 4, 8]);
+        selection.press(6, Press::Toggle);
+        let before = selection.clone();
+        selection.open_gap(3, 2);
+        selection.without(&[3, 4]);
+        assert_eq!(selection, before);
     }
 
     #[test]
