@@ -198,6 +198,15 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
         }
     });
 
+    let like = screen
+        .transport
+        .now_playing
+        .as_ref()
+        .and_then(|now| screen.library.likes.state(&now.uri));
+    let bar_state = playbar::Bar {
+        queue_claimed: matches!(target, Some(Target::End)),
+        like,
+    };
     command = command.or(region(ui, "playbar", grid.playbar, bar_rect, |ui| {
         playbar::show(
             ui,
@@ -205,7 +214,7 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
             screen.queue,
             screen.position_ms,
             regions.playbar,
-            matches!(target, Some(Target::End)),
+            bar_state,
             bar_rect,
             now_playing_cover,
             tokens,
