@@ -420,20 +420,20 @@ pub(crate) fn start<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                         break;
                     }
                 }
-                Event::Command(Some(Command::AddTrack {
+                Event::Command(Some(Command::AddTracks {
                     playlist,
                     revision,
                     from_index,
-                    track,
+                    tracks,
                 })) => {
-                    let step = add_track(
+                    let step = add_tracks(
                         &mut host,
                         &mut stop_rx,
                         &task_notifier,
                         &playlist,
                         &revision,
                         from_index,
-                        &track,
+                        &tracks,
                     )
                     .await;
                     if step.stopped() {
@@ -1030,17 +1030,22 @@ async fn move_playlist<H: SessionHost>(
     }
 }
 
-/// Appends one track to a playlist and announces the reply revision.
-async fn add_track<H: SessionHost>(
+/// Appends tracks to a playlist and announces the reply revision.
+async fn add_tracks<H: SessionHost>(
     host: &mut H,
     stop: &mut StopReceiver<()>,
     notifier: &Notifier,
     playlist: &str,
     revision: &Revision,
     from_index: usize,
-    track: &str,
+    tracks: &[String],
 ) -> Step {
-    match stop_or(stop, host.add_track(playlist, revision, from_index, track)).await {
+    match stop_or(
+        stop,
+        host.add_tracks(playlist, revision, from_index, tracks),
+    )
+    .await
+    {
         None => Step::Stopped,
         Some(Ok(revision)) => {
             notifier.send(Update::TrackAdded {
@@ -1798,6 +1803,9 @@ mod tests {
         Pending,
     }
 
+    /// One add the fake host was asked for: its target and everything it holds.
+    type AddWrite = (String, Revision, usize, Vec<String>);
+
     #[derive(Default)]
     struct FakeState {
         connect_scripts: Mutex<Vec<ConnectScript>>,
@@ -1857,7 +1865,7 @@ mod tests {
         last_move: Mutex<Option<(String, Revision, Vec<Move>)>>,
         last_remove: Mutex<Option<(String, Revision, Vec<Removal>)>>,
         last_root_move: Mutex<Option<(Revision, usize, usize)>>,
-        last_add: Mutex<Option<(String, Revision, usize, String)>>,
+        last_add: Mutex<Option<AddWrite>>,
         last_create: Mutex<Option<String>>,
         last_link: Mutex<Option<(Revision, String)>>,
         last_like: Mutex<Option<(Vec<String>, bool)>>,
@@ -2342,19 +2350,19 @@ mod tests {
             }
         }
 
-        fn add_track(
+        fn add_tracks(
             &self,
             playlist: &str,
             revision: &Revision,
             from_index: usize,
-            track: &str,
+            tracks: &[String],
         ) -> impl Future<Output = Result<Revision, SessionError>> + Send {
             self.shared.add_writes.fetch_add(1, Ordering::SeqCst);
             *self.shared.last_add.lock().expect("lock") = Some((
                 playlist.to_owned(),
                 revision.clone(),
                 from_index,
-                track.to_owned(),
+                tracks.to_vec(),
             ));
             if let Some(tx) = self.shared.add_started.lock().expect("lock").take() {
                 let _ = tx.send(());
@@ -3156,18 +3164,22 @@ mod tests {
         let base = revision(1);
         let reply = revision(2);
         *shared.add_script.lock().expect("lock") = AddScript::Ready(reply.clone());
-        let track = "spotify:track:4uLU6hMCjMI75M1A2tKUQC";
+        let tracks = vec![
+            "spotify:track:4uLU6hMCjMI75M1A2tKUQC".to_owned(),
+            "spotify:track:4uLU6hMCjMI75M1A2tKUQD".to_owned(),
+            "spotify:track:4uLU6hMCjMI75M1A2tKUQE".to_owned(),
+        ];
 
         let update = run_window(runtime(), host, store, source, |ui_end, slot| {
             slot.install(Arc::new(RecordingWaker::default()));
             let _ = expect_updates(&ui_end, 2);
             ui_end
                 .commands
-                .send(Command::AddTrack {
+                .send(Command::AddTracks {
                     playlist: "spotify:playlist:a".to_owned(),
                     revision: base.clone(),
                     from_index: 7,
-                    track: track.to_owned(),
+                    tracks: tracks.clone(),
                 })
                 .expect("add");
             ui_end.updates.recv().expect("added")
@@ -3180,11 +3192,11 @@ mod tests {
                 revision: reply,
             }
         );
-        assert_eq!(shared.add_writes.load(Ordering::SeqCst), 1);
+        assert_eq!(shared.add_writes.load(Ordering::SeqCst), 1, "one write");
         assert_eq!(
             shared.last_add.lock().expect("lock").clone(),
-            Some(("spotify:playlist:a".to_owned(), base, 7, track.to_owned())),
-            "the write names the playlist, the revision, the index and the track"
+            Some(("spotify:playlist:a".to_owned(), base, 7, tracks)),
+            "the write names the playlist, the revision, the index and the whole pick"
         );
     }
 
@@ -3201,11 +3213,11 @@ mod tests {
             let _ = expect_updates(&ui_end, 2);
             ui_end
                 .commands
-                .send(Command::AddTrack {
+                .send(Command::AddTracks {
                     playlist: "spotify:playlist:a".to_owned(),
                     revision: revision(1),
                     from_index: 0,
-                    track: "spotify:track:x".to_owned(),
+                    tracks: vec!["spotify:track:x".to_owned()],
                 })
                 .expect("add");
             ui_end.updates.recv().expect("add failed")
@@ -3235,11 +3247,11 @@ mod tests {
             );
             ui_end
                 .commands
-                .send(Command::AddTrack {
+                .send(Command::AddTracks {
                     playlist: "spotify:playlist:a".to_owned(),
                     revision: revision(1),
                     from_index: 0,
-                    track: "spotify:track:x".to_owned(),
+                    tracks: vec!["spotify:track:x".to_owned()],
                 })
                 .expect("add");
             ui_end.updates.recv().expect("add failed")
@@ -3275,11 +3287,11 @@ mod tests {
             }
             ui_end
                 .commands
-                .send(Command::AddTrack {
+                .send(Command::AddTracks {
                     playlist: "spotify:playlist:a".to_owned(),
                     revision: revision(1),
                     from_index: 0,
-                    track: "spotify:track:x".to_owned(),
+                    tracks: vec!["spotify:track:x".to_owned()],
                 })
                 .expect("add");
             started_rx.recv().expect("add started");

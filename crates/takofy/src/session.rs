@@ -96,13 +96,14 @@ pub(crate) trait SessionHost: Send + 'static {
         to: usize,
     ) -> impl Future<Output = Result<Revision, SessionError>> + Send;
 
-    /// Appends one track to a playlist, answering the revision to hold next.
-    fn add_track(
+    /// Appends tracks to a playlist as one write, answering the revision to
+    /// hold next.
+    fn add_tracks(
         &self,
         playlist: &str,
         revision: &Revision,
         from_index: usize,
-        track: &str,
+        tracks: &[String],
     ) -> impl Future<Output = Result<Revision, SessionError>> + Send;
 
     /// Creates a playlist called `name`, answering its URI.
@@ -287,16 +288,16 @@ impl SessionHost for LiveSession {
         }
     }
 
-    async fn add_track(
+    async fn add_tracks(
         &self,
         playlist: &str,
         revision: &Revision,
         from_index: usize,
-        track: &str,
+        tracks: &[String],
     ) -> Result<Revision, SessionError> {
         match &self.engine {
             Some(engine) => engine
-                .add_tracks(playlist, revision, from_index, &[track.to_owned()])
+                .add_tracks(playlist, revision, from_index, tracks)
                 .await
                 .map_err(SessionError::Engine),
             None => Err(SessionError::NotConnected),

@@ -37,12 +37,12 @@ pub enum Command {
         from: usize,
         to: usize,
     },
-    /// Append one track to a playlist, based on `revision`.
-    AddTrack {
+    /// Append tracks to a playlist, in the order given, based on `revision`.
+    AddTracks {
         playlist: String,
         revision: Revision,
         from_index: usize,
-        track: String,
+        tracks: Vec<String>,
     },
     /// Create a playlist called `name` and put it at the front of the user's
     /// rootlist, based on the rootlist's `revision`.

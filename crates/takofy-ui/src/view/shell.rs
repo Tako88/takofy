@@ -711,12 +711,14 @@ fn rearrange(screen: &mut Screen<'_>, carry: &Carry, at: Landing, free: bool) ->
         .move_playlist(row, at.boundary, carry.playlist.as_deref()?)
 }
 
-/// Adds the carried track to the row it was dropped on, and asks for one write.
+/// Adds the carried tracks to the row they were dropped on, and asks for one write.
 fn add(screen: &mut Screen<'_>, carry: &Carry, slot: landing::Slot, free: bool) -> Option<Command> {
     if !free {
         return None;
     }
-    screen.library.add_track(slot.row, carry.track()?)
+    screen
+        .library
+        .add_tracks(slot.row, &[carry.track()?.uri.clone()])
 }
 
 /// Moves the dropped rows in their own list and picks where they landed.
@@ -5661,11 +5663,11 @@ mod tests {
 
         assert_eq!(
             window.drag(&mut transport, &mut queue, from, to),
-            Some(Command::AddTrack {
+            Some(Command::AddTracks {
                 playlist: "playlist:B".to_owned(),
                 revision: revision("root-1"),
                 from_index: 3,
-                track: TRACK_A.to_owned(),
+                tracks: vec![TRACK_A.to_owned()],
             }),
             "the length is the index an append names"
         );
@@ -5734,7 +5736,7 @@ mod tests {
         assert!(
             text_in(
                 &frame,
-                "Could not add that track. Try again.",
+                "Could not add those tracks. Try again.",
                 sidebar_rect(&window)
             )
             .is_some(),
@@ -5816,11 +5818,11 @@ mod tests {
         let (command, _) = window.frame(&mut transport, &mut queue, vec![window.release(to)]);
         assert_eq!(
             command,
-            Some(Command::AddTrack {
+            Some(Command::AddTracks {
                 playlist: "playlist:B".to_owned(),
                 revision: revision("root-1"),
                 from_index: 3,
-                track: TRACK_A.to_owned(),
+                tracks: vec![TRACK_A.to_owned()],
             }),
             "a row that can take the track takes it"
         );
@@ -5941,11 +5943,11 @@ mod tests {
 
         assert_eq!(
             window.drag(&mut transport, &mut queue, from, to),
-            Some(Command::AddTrack {
+            Some(Command::AddTracks {
                 playlist: "playlist:A".to_owned(),
                 revision: revision("root-1"),
                 from_index: 2,
-                track: TRACK_B.to_owned(),
+                tracks: vec![TRACK_B.to_owned()],
             })
         );
     }
@@ -5993,11 +5995,11 @@ mod tests {
 
         assert_eq!(
             command,
-            Some(Command::AddTrack {
+            Some(Command::AddTracks {
                 playlist: "playlist:A".to_owned(),
                 revision: revision("root-1"),
                 from_index: 2,
-                track: TRACK_A.to_owned(),
+                tracks: vec![TRACK_A.to_owned()],
             }),
             "the gap belongs to the row above, so it is an add and no reorder"
         );
