@@ -30,10 +30,7 @@ pub struct Naming {
 }
 
 impl Naming {
-    /// Opens the field and asks it for the keyboard, with nothing to carry.
-    ///
-    /// A plain open drops a pick the last menu left: the list made from here is
-    /// the one the user named, not the one a menu they have left was about.
+    /// Opens the field with nothing to carry, dropping any pick a menu left.
     pub fn open(&mut self) {
         self.open_with(Vec::new());
     }
