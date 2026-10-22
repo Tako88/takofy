@@ -845,6 +845,9 @@ impl Library {
     /// are not in the list and must survive it. A search's query may spell a
     /// playlist URI, so the variant is what decides, never the payload.
     fn prune_playlist_pages(&mut self, present: &dyn Fn(&str) -> bool) {
+        if self.renaming.is_open() && !present(self.renaming.uri()) {
+            self.renaming.force_close();
+        }
         let page = self.history.current().cloned();
         self.history.retain(|page| match page {
             Page::Playlist(uri) => present(uri),
@@ -989,6 +992,9 @@ impl Library {
     /// made on.
     fn left_page(&mut self) {
         self.likes.clear_notice();
+        if self.renaming.surface() == Surface::Band {
+            self.renaming.dismiss();
+        }
     }
 
     /// Moves to the playlists grid.
@@ -1249,6 +1255,73 @@ impl Library {
         !self.write_in_flight()
             && matches!(self.playlists, Load::Ready(_))
             && self.rootlist.is_some()
+    }
+
+    /// Whether `uri` may have its name rewritten now.
+    ///
+    /// The row's own access says the user may write the list; no rootlist
+    /// revision is involved, because a rename names the playlist's own.
+    pub fn can_rename(&self, uri: &str) -> bool {
+        if self.write_in_flight() {
+            return false;
+        }
+        let Load::Ready(playlists) = &self.playlists else {
+            return false;
+        };
+        playlists
+            .iter()
+            .find(|entry| entry.uri == uri)
+            .is_some_and(|entry| entry.access.as_ref().is_some_and(|access| access.editable))
+    }
+
+    /// Opens the rename field on `uri`, prefilled with its current name.
+    pub fn begin_rename(&mut self, uri: &str, surface: Surface) -> bool {
+        if !self.can_rename(uri) || self.renaming.writing() {
+            return false;
+        }
+        let Load::Ready(playlists) = &self.playlists else {
+            return false;
+        };
+        let Some(entry) = playlists.iter().find(|entry| entry.uri == uri) else {
+            return false;
+        };
+        self.renaming.open(uri, &entry.name, surface);
+        true
+    }
+
+    /// Starts a rename for the name in the field, and asks for one write.
+    ///
+    /// A name that did not change closes the field and sends nothing, so the
+    /// wire never sees a no-op write. A refusal changes nothing, so a held Enter
+    /// sends once.
+    pub fn rename_playlist(&mut self) -> Option<Command> {
+        if !self.renaming.is_open() || self.renaming.writing() {
+            return None;
+        }
+        let uri = self.renaming.uri().to_owned();
+        if !self.can_rename(&uri) {
+            return None;
+        }
+        let Load::Ready(playlists) = &self.playlists else {
+            return None;
+        };
+        let current = playlists
+            .iter()
+            .find(|entry| entry.uri == uri)
+            .map(|entry| entry.name.clone())?;
+        let name = self.renaming.begin_write()?;
+        if name == current {
+            self.renaming.finished();
+            return None;
+        }
+        self.sidebar_pending = Some(SidebarPending::Rename {
+            playlist: uri.clone(),
+        });
+        self.sidebar_notice = None;
+        Some(Command::RenamePlaylist {
+            playlist: uri,
+            name,
+        })
     }
 
     /// Starts a create for the name in the head's field, and asks for one write.
@@ -8058,6 +8131,134 @@ mod tests {
             Some(revision(0x09)),
             "another page's read replaced this page's base"
         );
+    }
+
+    #[test]
+    fn can_rename_needs_a_ready_editable_list_and_no_write() {
+        assert!(sidebar_library(&["a"], 0x07, true, None).can_rename("a"));
+
+        assert!(
+            !sidebar_library(&["a"], 0x07, false, None).can_rename("a"),
+            "a list the user cannot write offered a rename"
+        );
+        assert!(
+            !sidebar_library(&["a"], 0x07, true, None).can_rename("b"),
+            "a row the list does not hold offered a rename"
+        );
+        let mut no_access = Library::default();
+        no_access.apply(&Update::Playlists(vec![playlist("a", "A")]));
+        assert!(
+            !no_access.can_rename("a"),
+            "a row with no access offered a rename"
+        );
+        let mut writing = sidebar_library(&["a", "b"], 0x07, true, None);
+        assert!(writing.move_playlist(0, 2, "a").is_some());
+        assert!(
+            !writing.can_rename("a"),
+            "a second write went out beside the first"
+        );
+        let mut loading = sidebar_library(&["a"], 0x07, true, None);
+        loading.playlists = Load::Loading;
+        assert!(!loading.can_rename("a"), "a list that is not ready");
+    }
+
+    #[test]
+    fn begin_rename_fills_the_field_with_the_current_name() {
+        let mut library = sidebar_library(&["a"], 0x07, true, None);
+
+        assert!(library.begin_rename("a", crate::naming::Surface::Row));
+
+        assert!(library.renaming.is_open_on("a", crate::naming::Surface::Row));
+        assert_eq!(library.renaming.text(), "a");
+        assert!(library.renaming.wants_focus());
+        assert!(!library.write_in_flight());
+    }
+
+    #[test]
+    fn a_refused_rename_start_changes_nothing() {
+        let mut library = sidebar_library(&["a", "b"], 0x07, true, None);
+        assert!(library.move_playlist(0, 2, "a").is_some());
+
+        assert!(!library.begin_rename("a", crate::naming::Surface::Row));
+        assert!(!library.renaming.is_open());
+    }
+
+    #[test]
+    fn rename_issues_one_command_with_the_trimmed_name() {
+        let mut library = sidebar_library(&["a"], 0x07, true, None);
+        assert!(library.begin_rename("a", crate::naming::Surface::Row));
+        *library.renaming.edit() = "  Night  Drive ".to_owned();
+
+        assert_eq!(
+            library.rename_playlist(),
+            Some(Command::RenamePlaylist {
+                playlist: "a".to_owned(),
+                name: "Night  Drive".to_owned(),
+            })
+        );
+        assert!(library.renaming.writing());
+        assert!(library.write_in_flight());
+        assert_eq!(
+            library.sidebar_pending,
+            Some(SidebarPending::Rename {
+                playlist: "a".to_owned(),
+            })
+        );
+        assert_eq!(library.rename_playlist(), None, "a second write");
+    }
+
+    #[test]
+    fn a_rename_to_the_same_name_sends_nothing_and_closes() {
+        let mut library = sidebar_library(&["a"], 0x07, true, None);
+        assert!(library.begin_rename("a", crate::naming::Surface::Band));
+        *library.renaming.edit() = "  a  ".to_owned();
+
+        assert_eq!(library.rename_playlist(), None);
+        assert!(!library.renaming.is_open());
+        assert!(!library.write_in_flight());
+        assert!(library.renaming.wants_return());
+    }
+
+    #[test]
+    fn a_rename_after_a_changed_name_sends_once() {
+        let mut library = sidebar_library(&["a"], 0x07, true, None);
+        assert!(library.begin_rename("a", crate::naming::Surface::Row));
+        *library.renaming.edit() = "New".to_owned();
+
+        assert!(library.rename_playlist().is_some());
+        assert_eq!(library.rename_playlist(), None);
+        assert!(library.renaming.writing());
+    }
+
+    #[test]
+    fn a_page_change_closes_a_band_field_but_not_a_row_field_or_a_writing_one() {
+        let mut band = renaming_library();
+        assert!(band.begin_rename("a", crate::naming::Surface::Band));
+        band.to_playlists();
+        assert!(!band.renaming.is_open(), "a band field outlived its page");
+
+        let mut row = renaming_library();
+        assert!(row.begin_rename("a", crate::naming::Surface::Row));
+        row.to_playlists();
+        assert!(row.renaming.is_open(), "a row field outlived its page");
+
+        let mut writing = renaming_library();
+        assert!(writing.begin_rename("a", crate::naming::Surface::Band));
+        *writing.renaming.edit() = "New".to_owned();
+        assert!(writing.rename_playlist().is_some());
+        writing.to_playlists();
+        assert!(writing.renaming.is_open(), "a write in flight lost its field");
+    }
+
+    #[test]
+    fn a_removed_playlist_closes_its_rename_field() {
+        let mut library = renaming_library();
+        assert!(library.begin_rename("a", crate::naming::Surface::Row));
+
+        library.apply(&Update::Playlists(Vec::new()));
+
+        assert!(!library.renaming.is_open());
+        assert!(!library.renaming.wants_return());
     }
 
 }
