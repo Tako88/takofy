@@ -619,7 +619,12 @@ mod tests {
 
     /// The four verbs one track gets on a page, in the sheet's order.
     fn items() -> Vec<Item> {
-        verbs::track_items(&[track()], None, &Listing::Page)
+        verbs::track_items(
+            &[track()],
+            None,
+            &Listing::Page,
+            crate::likes::Standing::Unknown,
+        )
     }
 
     fn request(device: Device, items: Vec<Item>) -> Request {

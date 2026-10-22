@@ -106,6 +106,8 @@ pub struct ArtistPage<'a> {
     pub releases: &'a mut Releases,
     /// The artists this one is heard with, once they are named.
     pub related: &'a Load<Vec<FollowedArtist>>,
+    /// The liked-songs set, so a row's menu knows its library row.
+    pub likes: &'a Likes,
 }
 
 /// The sidebar's playlists and the tracks the current page has loaded.
@@ -1308,6 +1310,7 @@ impl Library {
             filter,
             releases,
             related,
+            likes,
             history,
             ..
         } = self;
@@ -1325,6 +1328,7 @@ impl Library {
             filter,
             releases,
             related,
+            likes,
         }
     }
 

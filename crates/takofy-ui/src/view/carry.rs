@@ -21,6 +21,7 @@ use egui::{Context, DragAndDrop, Id, Vec2};
 use takofy_model::TrackEntry;
 
 use crate::landing::Zone;
+use crate::likes::{Likes, Standing};
 pub use crate::menu::Listing;
 use crate::menu::{Cut, Door, Gate, Request};
 use crate::queue::Queue;
@@ -182,11 +183,19 @@ pub fn follow_page(ctx: &Context, page: Option<&Page>) {
     });
 }
 
-/// What a list posts a request with: the list it is, and the page it is on.
+/// What a list posts a request with: the list it is, the page it is on, and the
+/// set its library row reads.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Open<'a> {
     pub listing: Listing,
     pub here: Option<&'a Page>,
+    pub likes: &'a Likes,
+}
+
+/// What these targets have in common, as the library row reads it.
+fn standing_of(likes: &Likes, targets: &[TrackEntry]) -> Standing {
+    let uris: Vec<&str> = targets.iter().map(|entry| entry.uri.as_str()).collect();
+    likes.standing(&uris)
 }
 
 /// Forgets `rows` from `list`'s selection, the shift a removal leaves behind.
@@ -228,6 +237,7 @@ pub fn queue_menu(
     door: Door,
     row: usize,
     gate: Gate,
+    likes: &Likes,
     here: Option<&Page>,
 ) {
     if !gate.allows() {
@@ -238,11 +248,17 @@ pub fn queue_menu(
     if rows.is_empty() || rows.len() != entries.len() {
         return;
     }
+    let items = verbs::track_items(
+        &entries,
+        here,
+        &Listing::Queue,
+        standing_of(likes, &entries),
+    );
     context_menu::post(
         ctx,
         Request {
             door,
-            items: verbs::track_items(&entries, here, &Listing::Queue),
+            items,
             targets: entries,
             rows,
             listing: Listing::Queue,
@@ -277,14 +293,27 @@ pub fn queue_cut(queue: &mut Queue, ctx: &Context, row: usize, gate: Gate) {
 ///
 /// The current entry is the queue's, and it is never removable: the menu lists
 /// what can be done with the track, not with a list it sits in.
-pub fn current_menu(queue: &Queue, ctx: &Context, door: Door, gate: Gate, here: Option<&Page>) {
+pub fn current_menu(
+    queue: &Queue,
+    ctx: &Context,
+    door: Door,
+    gate: Gate,
+    likes: &Likes,
+    here: Option<&Page>,
+) {
     if !gate.allows() {
         return;
     }
     let Some(entry) = queue.current().cloned() else {
         return;
     };
-    let items = verbs::track_items(std::slice::from_ref(&entry), here, &Listing::Current);
+    let targets = std::slice::from_ref(&entry);
+    let items = verbs::track_items(
+        targets,
+        here,
+        &Listing::Current,
+        standing_of(likes, targets),
+    );
     if items.is_empty() {
         return;
     }
@@ -425,7 +454,12 @@ impl List {
         };
         self.selection = selection;
         self.changed = true;
-        let items = verbs::track_items(&targets, open.here, &open.listing);
+        let items = verbs::track_items(
+            &targets,
+            open.here,
+            &open.listing,
+            standing_of(open.likes, &targets),
+        );
         context_menu::post(
             ctx,
             Request {
@@ -557,10 +591,11 @@ mod tests {
         Some(entry(&row.to_string()))
     }
 
-    fn opened() -> Open<'static> {
+    fn opened(likes: &Likes) -> Open<'_> {
         Open {
             listing: Listing::Page,
             here: None,
+            likes,
         }
     }
 
@@ -579,7 +614,14 @@ mod tests {
         let mut list = List::open(&ctx, id, 4);
         list.press(1, Press::Replace);
         list.press(3, Press::Toggle);
-        list.menu(&ctx, door(), 3, Gate::default(), opened(), entry_at);
+        list.menu(
+            &ctx,
+            door(),
+            3,
+            Gate::default(),
+            opened(&Likes::default()),
+            entry_at,
+        );
         list.finish(&ctx);
 
         let request = context_menu::take_request(&ctx).expect("a request was posted");
@@ -602,7 +644,14 @@ mod tests {
         let mut list = List::open(&ctx, id, 4);
         list.press(1, Press::Replace);
         list.press(3, Press::Toggle);
-        list.menu(&ctx, door(), 2, Gate::default(), opened(), entry_at);
+        list.menu(
+            &ctx,
+            door(),
+            2,
+            Gate::default(),
+            opened(&Likes::default()),
+            entry_at,
+        );
         list.finish(&ctx);
 
         let request = context_menu::take_request(&ctx).expect("a request was posted");
@@ -628,7 +677,7 @@ mod tests {
             let id = Id::unique("list");
             let mut list = List::open(&ctx, id, 4);
             list.press(1, Press::Replace);
-            list.menu(&ctx, door(), 3, gate, opened(), entry_at);
+            list.menu(&ctx, door(), 3, gate, opened(&Likes::default()), entry_at);
             list.finish(&ctx);
 
             assert_eq!(context_menu::take_request(&ctx), None, "{gate:?}");
@@ -648,9 +697,14 @@ mod tests {
         let mut list = List::open(&ctx, id, 4);
         list.press(1, Press::Replace);
         list.press(3, Press::Toggle);
-        list.menu(&ctx, door(), 3, Gate::default(), opened(), |row| {
-            (row != 3).then(|| entry(&row.to_string()))
-        });
+        list.menu(
+            &ctx,
+            door(),
+            3,
+            Gate::default(),
+            opened(&Likes::default()),
+            |row| (row != 3).then(|| entry(&row.to_string())),
+        );
         list.finish(&ctx);
 
         assert_eq!(context_menu::take_request(&ctx), None);
@@ -666,7 +720,12 @@ mod tests {
         let ctx = context();
         let request = Request {
             door: door(),
-            items: crate::verbs::track_items(&[entry("0")], None, &Listing::Page),
+            items: crate::verbs::track_items(
+                &[entry("0")],
+                None,
+                &Listing::Page,
+                Standing::Unknown,
+            ),
             targets: vec![entry("0")],
             rows: vec![0],
             listing: Listing::Page,
@@ -1181,6 +1240,7 @@ mod tests {
             Open {
                 listing: Listing::Queue,
                 here: None,
+                likes: &Likes::default(),
             },
             entry_at,
         );
@@ -1218,7 +1278,15 @@ mod tests {
         queue.press(2, Press::Replace);
         queue.press(4, Press::Toggle);
 
-        queue_menu(&mut queue, &ctx, door(), 2, Gate::default(), None);
+        queue_menu(
+            &mut queue,
+            &ctx,
+            door(),
+            2,
+            Gate::default(),
+            &Likes::default(),
+            None,
+        );
 
         let request = context_menu::take_request(&ctx).expect("a request was posted");
         assert_eq!(request.rows, vec![2, 4]);
@@ -1258,7 +1326,7 @@ mod tests {
             let mut queue = queue_of(6, 0);
             queue.press(2, Press::Replace);
 
-            queue_menu(&mut queue, &ctx, door(), 4, gate, None);
+            queue_menu(&mut queue, &ctx, door(), 4, gate, &Likes::default(), None);
 
             assert_eq!(context_menu::take_request(&ctx), None, "{gate:?}");
             assert_eq!(queue.acting_rows(None), vec![2], "{gate:?}");
@@ -1270,7 +1338,15 @@ mod tests {
         let ctx = context();
         let mut queue = queue_of(4, 1);
 
-        queue_menu(&mut queue, &ctx, door(), 1, Gate::default(), None);
+        queue_menu(
+            &mut queue,
+            &ctx,
+            door(),
+            1,
+            Gate::default(),
+            &Likes::default(),
+            None,
+        );
 
         assert_eq!(context_menu::take_request(&ctx), None);
     }
@@ -1282,7 +1358,15 @@ mod tests {
         queue.press(2, Press::Replace);
         let _ = queue.next(&mut Transport::default());
 
-        queue_menu(&mut queue, &ctx, door(), 2, Gate::default(), None);
+        queue_menu(
+            &mut queue,
+            &ctx,
+            door(),
+            2,
+            Gate::default(),
+            &Likes::default(),
+            None,
+        );
 
         assert_eq!(
             context_menu::take_request(&ctx),
@@ -1344,7 +1428,14 @@ mod tests {
         let mut queue = Queue::default();
         queue.start(std::slice::from_ref(&named), 0, &mut transport);
 
-        current_menu(&queue, &ctx, door(), Gate::default(), None);
+        current_menu(
+            &queue,
+            &ctx,
+            door(),
+            Gate::default(),
+            &Likes::default(),
+            None,
+        );
 
         let request = context_menu::take_request(&ctx).expect("a request was posted");
         assert_eq!(request.listing, Listing::Current);
@@ -1367,13 +1458,27 @@ mod tests {
     #[test]
     fn current_menu_with_no_current_entry_or_no_verbs_posts_nothing() {
         let ctx = context();
-        current_menu(&Queue::default(), &ctx, door(), Gate::default(), None);
+        current_menu(
+            &Queue::default(),
+            &ctx,
+            door(),
+            Gate::default(),
+            &Likes::default(),
+            None,
+        );
         assert_eq!(context_menu::take_request(&ctx), None, "an empty queue");
 
         let mut transport = Transport::default();
         let mut queue = Queue::default();
         queue.start(&[entry("0")], 0, &mut transport);
-        current_menu(&queue, &ctx, door(), Gate::default(), None);
+        current_menu(
+            &queue,
+            &ctx,
+            door(),
+            Gate::default(),
+            &Likes::default(),
+            None,
+        );
         assert_eq!(
             context_menu::take_request(&ctx),
             None,
@@ -1396,6 +1501,7 @@ mod tests {
                 carrying: true,
                 writing: false,
             },
+            &Likes::default(),
             None,
         );
 

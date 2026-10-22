@@ -180,6 +180,7 @@ pub fn search_view(
                                     carry::Open {
                                         listing: carry::Listing::Page,
                                         here: Some(&here),
+                                        likes: &library.likes,
                                     },
                                     |row| tracks.get(row).cloned(),
                                 ),

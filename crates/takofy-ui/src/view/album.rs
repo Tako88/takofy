@@ -194,6 +194,7 @@ pub fn album_view(
                                     carry::Open {
                                         listing: carry::Listing::Page,
                                         here: Some(&here),
+                                        likes: &library.likes,
                                     },
                                     |row| album.tracks.get(row).cloned(),
                                 ),

@@ -18,6 +18,7 @@ use crate::cover::Cover;
 use crate::format::{format_position, release_meta, total_duration_ms};
 use crate::icon::Icon;
 use crate::layout::{Table, table as table_layout};
+use crate::likes::Likes;
 use crate::player::Transport;
 use crate::releases::Labels;
 use crate::theme::icon::Size;
@@ -47,6 +48,8 @@ pub struct Block<'a> {
     pub here: Option<&'a crate::route::Page>,
     /// Whether a write is holding the library still, which shuts the menu's gate.
     pub writing: bool,
+    /// The liked-songs set, so a row's menu knows its library row.
+    pub likes: &'a Likes,
 }
 
 /// The height a block occupies: its hairline, the head, the gap under it, one
@@ -276,6 +279,7 @@ fn body(
                         carry::Open {
                             listing: carry::Listing::Page,
                             here: block.here,
+                            likes: block.likes,
                         },
                         |row| tracks.get(row).cloned(),
                     ),
@@ -332,6 +336,7 @@ mod tests {
         let tokens = Tokens::DARK;
         let transport = Transport::default();
         let release = release(count);
+        let likes = Likes::default();
         let block = Block {
             release: &release,
             labels: Labels::Idle,
@@ -340,6 +345,7 @@ mod tests {
             playable: false,
             here: None,
             writing: false,
+            likes: &likes,
         };
 
         let mut measured = None;
@@ -391,6 +397,7 @@ mod tests {
     ) -> (Clicked, egui::FullOutput) {
         let tokens = Tokens::DARK;
         let transport = Transport::default();
+        let likes = Likes::default();
         let block = Block {
             release,
             labels: Labels::Ready(tracks),
@@ -399,6 +406,7 @@ mod tests {
             playable: true,
             here: None,
             writing: false,
+            likes: &likes,
         };
         let input = RawInput {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 800.0))),
@@ -437,6 +445,7 @@ mod tests {
         let here = crate::route::Page::Artist("spotify:artist:a".to_owned());
         let tokens = Tokens::DARK;
         let transport = Transport::default();
+        let likes = crate::likes::Likes::default();
         let (_, output) = painted(&ctx, &release, &tracks, Vec::new());
         let at = text_rect(&output, "Second")
             .expect("the second row is painted")
@@ -452,6 +461,7 @@ mod tests {
                 playable: true,
                 here: Some(&here),
                 writing: false,
+                likes: &likes,
             };
             let mut drawn = ctx.run_ui(
                 RawInput {

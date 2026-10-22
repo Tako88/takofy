@@ -245,6 +245,7 @@ pub fn tracks_view(
                                 carry::Open {
                                     listing: listing.clone(),
                                     here: library.page(),
+                                    likes: &library.likes,
                                 },
                                 |row| tracks.tracks.get(row).cloned(),
                             ),

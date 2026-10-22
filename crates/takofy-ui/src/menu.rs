@@ -60,6 +60,8 @@ pub enum Kind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verb {
     AddToQueue,
+    Save,
+    Unsave,
     GoToAlbum,
     GoToArtist,
     CopyLink,

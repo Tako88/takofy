@@ -137,6 +137,7 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
                 screen.transport,
                 screen.queue,
                 &screen.library.lyrics,
+                &screen.library.likes,
                 screen.position_ms,
                 &mut now_playing::Frame {
                     art: screen.art,
@@ -155,7 +156,14 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
     }
     if let Some(door) = reply.menu {
         let gate = door_gate(ui.ctx(), screen, &Listing::Current);
-        carry::current_menu(screen.queue, ui.ctx(), door, gate, screen.library.page());
+        carry::current_menu(
+            screen.queue,
+            ui.ctx(),
+            door,
+            gate,
+            &screen.library.likes,
+            screen.library.page(),
+        );
     }
 
     // The pane reports what the pointer and the keyboard asked of the queue; it
@@ -452,7 +460,25 @@ fn apply_verb(ui: &Ui, screen: &mut Screen<'_>, verb: Verb) -> Option<Command> {
             let cut = screen.menu.cut();
             cut.and_then(|cut| apply_cut(ui, screen, cut))
         }
+        verbs::Outcome::Like { tracks, liked } => apply_like(ui, screen, tracks, liked),
     }
+}
+
+/// Applies a save or a remove-from-your-library the menu chose.
+///
+/// The frame's gates are checked again here, as a removal's are: an intent made
+/// while a field is typing, the drawer is open, a block is carried or another
+/// region took the command is dropped rather than applied.
+fn apply_like(
+    ui: &Ui,
+    screen: &mut Screen<'_>,
+    tracks: Vec<String>,
+    liked: bool,
+) -> Option<Command> {
+    if *screen.drawer == Drawer::Open || carry::carrying(ui.ctx()) || ui.ctx().text_edit_focused() {
+        return None;
+    }
+    screen.library.set_liked(tracks, liked)
 }
 
 /// The gate a menu on `listing` opens under.
@@ -518,6 +544,7 @@ fn apply_queue_reply(ui: &Ui, screen: &mut Screen<'_>, reply: &mut queue_pane::R
             door,
             row,
             gate,
+            &screen.library.likes,
             screen.library.page(),
         );
     }
@@ -6950,7 +6977,9 @@ mod tests {
         listing: Listing,
         rows: Vec<usize>,
     ) {
-        let items: Vec<_> = crate::verbs::track_items(&targets, None, &listing)
+        let uris: Vec<&str> = targets.iter().map(|entry| entry.uri.as_str()).collect();
+        let standing = window.library.likes.standing(&uris);
+        let items: Vec<_> = crate::verbs::track_items(&targets, None, &listing, standing)
             .into_iter()
             .filter(|item| item.verb == verb)
             .collect();
@@ -7060,7 +7089,12 @@ mod tests {
                 opener: egui::Id::unique("row-more"),
                 device: crate::menu::Device::Keyboard,
             },
-            items: crate::verbs::track_items(&targets, None, &playlist_listing()),
+            items: crate::verbs::track_items(
+                &targets,
+                None,
+                &playlist_listing(),
+                crate::likes::Standing::Unknown,
+            ),
             targets,
             rows: rows.to_vec(),
             listing: playlist_listing(),
@@ -7379,6 +7413,158 @@ mod tests {
         );
         assert!(command.is_some(), "the page's read was not asked for");
         assert!(!window.menu.is_open());
+    }
+
+    /// Makes the window's liked set these tracks, as a landed read would.
+    fn liked(window: &mut Window, tracks: &[&str]) {
+        assert!(window.library.likes.request(true));
+        window.library.apply(&Update::LikedTracks(
+            tracks.iter().map(|uri| (*uri).to_owned()).collect(),
+        ));
+    }
+
+    #[test]
+    fn choosing_save_issues_one_command_for_the_pick_and_flips_every_effective_row() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        liked(&mut window, &[]);
+        open_menu(
+            &mut window,
+            Verb::Save,
+            vec![menu_track(0), menu_track(1)],
+            Listing::Page,
+            vec![0, 1],
+        );
+        settle_menu(&mut window, &mut transport, &mut queue);
+
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Enter);
+
+        assert_eq!(
+            command,
+            Some(Command::SetLiked {
+                tracks: vec!["spotify:track:0".to_owned(), "spotify:track:1".to_owned()],
+                liked: true,
+            })
+        );
+        assert_eq!(window.library.likes.state("spotify:track:0"), Some(true));
+        assert_eq!(window.library.likes.state("spotify:track:1"), Some(true));
+        assert!(!window.menu.is_open());
+    }
+
+    #[test]
+    fn choosing_remove_from_your_library_unlikes() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        liked(&mut window, &["spotify:track:0"]);
+        open_menu(
+            &mut window,
+            Verb::Unsave,
+            vec![menu_track(0)],
+            Listing::Page,
+            vec![0],
+        );
+        settle_menu(&mut window, &mut transport, &mut queue);
+
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Enter);
+
+        assert_eq!(
+            command,
+            Some(Command::SetLiked {
+                tracks: vec!["spotify:track:0".to_owned()],
+                liked: false,
+            })
+        );
+        assert_eq!(window.library.likes.state("spotify:track:0"), Some(false));
+    }
+
+    #[test]
+    fn a_save_chosen_while_a_like_is_pending_is_dropped() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        liked(&mut window, &[]);
+        assert!(
+            window
+                .library
+                .set_liked(vec!["spotify:track:9".to_owned()], true)
+                .is_some()
+        );
+        open_menu(
+            &mut window,
+            Verb::Save,
+            vec![menu_track(1)],
+            Listing::Page,
+            vec![0],
+        );
+        settle_menu(&mut window, &mut transport, &mut queue);
+
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Enter);
+
+        assert_eq!(command, None, "a dropped save sent a command");
+        assert_eq!(window.library.likes.state("spotify:track:1"), Some(false));
+    }
+
+    #[test]
+    fn a_pending_like_does_not_hold_a_menu_shut() {
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        liked(&mut window, &[]);
+        assert!(
+            window
+                .library
+                .set_liked(vec!["spotify:track:9".to_owned()], true)
+                .is_some()
+        );
+        assert!(
+            !window.library.write_in_flight(),
+            "a like is not a playlist write"
+        );
+        open_menu(
+            &mut window,
+            Verb::Save,
+            vec![menu_track(1)],
+            Listing::Page,
+            vec![0],
+        );
+        assert!(window.menu.is_open(), "a like held the menu shut");
+    }
+
+    #[test]
+    fn a_playlist_write_does_not_stop_a_like() {
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1"]);
+        liked(&mut window, &[]);
+        let carried = page_entries(&window, &[0]);
+        assert!(
+            window
+                .library
+                .remove_tracks(PLAYLIST, &[0], &carried)
+                .is_some()
+        );
+        assert!(
+            window
+                .library
+                .set_liked(vec!["spotify:track:0".to_owned()], true)
+                .is_some(),
+            "a playlist write stopped a like"
+        );
+    }
+
+    #[test]
+    fn a_menu_opened_before_the_set_is_ready_has_no_library_row() {
+        let window = Window::new(Vec2::new(1400.0, 900.0));
+        let targets = vec![menu_track(0)];
+        let uris: Vec<&str> = targets.iter().map(|entry| entry.uri.as_str()).collect();
+        let standing = window.library.likes.standing(&uris);
+        assert_eq!(standing, crate::likes::Standing::Unknown);
+        let items = crate::verbs::track_items(&targets, None, &Listing::Page, standing);
+        assert!(
+            items
+                .iter()
+                .all(|item| !matches!(item.verb, Verb::Save | Verb::Unsave)),
+            "a set nobody has read offered a library row"
+        );
     }
 
     #[test]

@@ -16,6 +16,7 @@ use crate::availability::Control;
 use crate::cover::{Art, Cover};
 use crate::icon::Icon;
 use crate::layout::panel::{self, Stack};
+use crate::likes::Likes;
 use crate::player::Transport;
 use crate::queue::Queue;
 use crate::theme::icon::Size;
@@ -69,6 +70,7 @@ pub fn show(
     transport: &Transport,
     queue: &Queue,
     lyrics: &LyricsPanel,
+    likes: &Likes,
     position_ms: u32,
     frame: &mut Frame<'_>,
 ) -> Reply {
@@ -78,7 +80,7 @@ pub fn show(
     let tabs_h = tabs_height(ui, tokens);
     let stack = panel::stack_for(band, meta_h, tabs_h);
 
-    let menu = head(ui, stack, queue, tokens);
+    let menu = head(ui, stack, queue, likes, tokens);
     art::tile(
         ui.painter(),
         stack.art,
@@ -122,7 +124,7 @@ pub fn show(
 /// The button is live only when there is a current entry with something to do:
 /// a queue with no current row, a local file and an entry with nothing to open
 /// all leave it waiting.
-fn head(ui: &mut Ui, stack: Stack, queue: &Queue, tokens: &Tokens) -> Option<Door> {
+fn head(ui: &mut Ui, stack: Stack, queue: &Queue, likes: &Likes, tokens: &Tokens) -> Option<Door> {
     let caption = recipe::caption(ui, "Now playing", tokens);
     ui.painter().galley(
         Pos2::new(
@@ -141,7 +143,13 @@ fn head(ui: &mut Ui, stack: Stack, queue: &Queue, tokens: &Tokens) -> Option<Doo
         Vec2::splat(extent::BUTTON),
     );
     let live = queue.current().is_some_and(|entry| {
-        !verbs::track_items(std::slice::from_ref(entry), None, &Listing::Current).is_empty()
+        !verbs::track_items(
+            std::slice::from_ref(entry),
+            None,
+            &Listing::Current,
+            likes.standing(&[entry.uri.as_str()]),
+        )
+        .is_empty()
     });
     let id = controls::slot_id(ui, Control::NowPlayingMore, ());
     let open = context_menu::open_opener(ui.ctx()) == Some(id);
@@ -378,6 +386,7 @@ mod tests {
         art: Art,
         now: Instant,
         lyrics: crate::lyrics::LyricsPanel,
+        likes: crate::likes::Likes,
     }
 
     impl Panel {
@@ -388,6 +397,7 @@ mod tests {
                 art: Art::default(),
                 now: Instant::now(),
                 lyrics: crate::lyrics::LyricsPanel::default(),
+                likes: crate::likes::Likes::default(),
             }
         }
 
@@ -420,6 +430,7 @@ mod tests {
                 queue,
                 art,
                 lyrics,
+                likes,
                 ..
             } = self;
             let position_ms = transport.position_ms;
@@ -429,6 +440,7 @@ mod tests {
                     transport,
                     queue,
                     lyrics,
+                    likes,
                     position_ms,
                     &mut Frame {
                         art,
@@ -451,6 +463,7 @@ mod tests {
                     &self.transport,
                     &self.queue,
                     &self.lyrics,
+                    &self.likes,
                     self.transport.position_ms,
                     &mut Frame {
                         art: &mut self.art,
@@ -477,6 +490,7 @@ mod tests {
                     &self.transport,
                     &self.queue,
                     &self.lyrics,
+                    &self.likes,
                     self.transport.position_ms,
                     &mut Frame {
                         art: &mut self.art,
@@ -543,6 +557,7 @@ mod tests {
                 &transport,
                 &queue,
                 &crate::lyrics::LyricsPanel::default(),
+                &crate::likes::Likes::default(),
                 transport.position_ms,
                 &mut Frame {
                     art: &mut art,
@@ -784,6 +799,7 @@ mod tests {
                     &panel.transport,
                     &panel.queue,
                     &panel.lyrics,
+                    &panel.likes,
                     panel.transport.position_ms,
                     &mut Frame {
                         art: &mut panel.art,
