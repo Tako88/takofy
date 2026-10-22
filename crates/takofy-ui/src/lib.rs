@@ -13,6 +13,7 @@ pub mod landing;
 pub mod layout;
 pub mod library;
 pub mod library_filter;
+pub mod likes;
 pub mod lyrics;
 pub mod menu;
 pub mod message;

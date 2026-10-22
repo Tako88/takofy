@@ -15,6 +15,7 @@ use takofy_model::{
 use crate::discography::Filter;
 use crate::follow::Follow;
 use crate::library_filter::{RootFilter, RootKind};
+use crate::likes::Likes;
 use crate::lyrics::LyricsPanel;
 use crate::message::{Command, Failure, Update};
 use crate::releases::Releases;
@@ -119,6 +120,8 @@ pub struct Library {
     pub followed_artists: Load<Vec<FollowedArtist>>,
     /// The albums the user saved, as the library root draws them.
     pub saved_albums: Load<Vec<SavedAlbum>>,
+    /// The liked-songs set, and the one write in flight against it.
+    pub likes: Likes,
     /// The artists the open artist page is heard with, once they are named.
     pub related: Load<Vec<FollowedArtist>>,
     /// The artist the likeness list belongs to, so a stale reply is told apart.
@@ -1080,6 +1083,7 @@ impl Library {
         self.followed = Load::Idle;
         self.followed_artists = Load::Idle;
         self.saved_albums = Load::Idle;
+        self.likes.reload();
         Command::ReloadLibrary
     }
 
