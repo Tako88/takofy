@@ -17,7 +17,7 @@ use crate::follow::Follow;
 use crate::library_filter::{RootFilter, RootKind};
 use crate::likes::{self, Likes};
 use crate::lyrics::LyricsPanel;
-use crate::menu::AddTarget;
+use crate::menu::{AddTarget, LibraryItem};
 use crate::message::{Command, Failure, Update};
 use crate::naming::Naming;
 use crate::releases::Releases;
@@ -210,6 +210,20 @@ enum SidebarPending {
     Add { playlist: String, count: usize },
     /// A playlist being created and linked, which names no list yet.
     Create,
+    /// One playlist being unlinked from the rootlist.
+    Remove { playlist: String },
+    /// One saved album, show or artist being written out of its set.
+    RemoveSaved { uri: String },
+}
+
+impl SidebarPending {
+    /// Whether a playlists read taken now could disagree with this write.
+    ///
+    /// A collection removal writes no rootlist order, so a read may land beside
+    /// it; every other write names the rootlist either way.
+    fn holds_rootlist(&self) -> bool {
+        !matches!(self, Self::RemoveSaved { .. })
+    }
 }
 
 /// Why a sidebar write failed, as the row's list says it.
@@ -227,6 +241,13 @@ pub enum SidebarWrite {
     Unfilled,
     /// A playlist was created but the rename that names it did not land.
     Unnamed,
+    /// A thing could not be removed from the library.
+    Remove,
+}
+
+/// Whether a ready list of the library holds `uri`.
+fn listed<T>(load: &Load<Vec<T>>, uri: &str, of: impl Fn(&T) -> &str) -> bool {
+    matches!(load, Load::Ready(items) if items.iter().any(|item| of(item) == uri))
 }
 
 /// Whether a chip naming artists is the one the user is looking at.
@@ -255,12 +276,18 @@ impl Library {
                     self.playlists = Load::Loading;
                 }
             }
-            // A read's order is never adopted while a sidebar write is pending:
+            // A read's order is never adopted while a rootlist write is pending:
             // it may have been taken before the write reached the server, or
             // after, and the confirmation cannot tell the two apart. Its access
-            // goes with it, for the same reason.
-            Update::Playlists(_) if self.sidebar_pending.is_some() => {
+            // goes with it, and the dropped read owes a fresh one.
+            Update::Playlists(_)
+                if self
+                    .sidebar_pending
+                    .as_ref()
+                    .is_some_and(SidebarPending::holds_rootlist) =>
+            {
                 self.rootlist_dropped = true;
+                self.rootlist_stale = true;
             }
             Update::Playlists(playlists) => {
                 let mut playlists = playlists.clone();
@@ -289,9 +316,14 @@ impl Library {
             // movable.
             Update::RootlistAccess(access) => {
                 if std::mem::take(&mut self.rootlist_dropped) {
+                    self.rootlist_stale = true;
                     return;
                 }
-                if self.sidebar_pending.is_some() {
+                if self
+                    .sidebar_pending
+                    .as_ref()
+                    .is_some_and(SidebarPending::holds_rootlist)
+                {
                     self.rootlist_stale = true;
                     return;
                 }
@@ -319,6 +351,61 @@ impl Library {
                 };
                 self.playlists = Load::Ready(before);
                 self.sidebar_notice = Some(SidebarWrite::Reorder);
+            }
+            // A confirmed unlink drops the row and hands the next write its
+            // revision.
+            Update::PlaylistRemoved { playlist, revision } => {
+                let Some(SidebarPending::Remove { playlist: pending }) = &self.sidebar_pending
+                else {
+                    return;
+                };
+                if pending != playlist {
+                    return;
+                }
+                self.sidebar_pending = None;
+                self.sidebar_notice = None;
+                if let Some(access) = &mut self.rootlist {
+                    access.revision = revision.clone();
+                }
+                if let Load::Ready(playlists) = &mut self.playlists {
+                    playlists.retain(|entry| entry.uri != *playlist);
+                }
+                self.context_covers.remove(playlist);
+                // The removed playlist may be the page on screen; the rule a
+                // playlists read applies is the one that takes it home.
+                let remaining: Vec<String> = match &self.playlists {
+                    Load::Ready(playlists) => {
+                        playlists.iter().map(|entry| entry.uri.clone()).collect()
+                    }
+                    Load::Idle | Load::Loading | Load::Failed(_) => Vec::new(),
+                };
+                self.prune_playlist_pages(&|uri| remaining.iter().any(|listed| listed == uri));
+            }
+            // The row stays and the held revision goes: the write may have
+            // landed with only its reply lost, so the next read is what heals
+            // it.
+            Update::PlaylistRemoveFailed { playlist } => {
+                let Some(SidebarPending::Remove { playlist: pending }) = &self.sidebar_pending
+                else {
+                    return;
+                };
+                if pending != playlist {
+                    return;
+                }
+                self.sidebar_pending = None;
+                self.sidebar_notice = Some(SidebarWrite::Remove);
+                self.rootlist = None;
+                self.rootlist_stale = true;
+            }
+            // The collection reply carries no body, so this echo is the whole
+            // confirmation.
+            Update::SavedRemoved { uri } => self.end_saved_removal(uri),
+            Update::SavedRemoveFailed { uri } => {
+                if !self.saved_removal_pending(uri) {
+                    return;
+                }
+                self.sidebar_pending = None;
+                self.sidebar_notice = Some(SidebarWrite::Remove);
             }
             // Length and revision always move together, so an add never names a
             // revision whose length it has already counted.
@@ -628,8 +715,22 @@ impl Library {
             Update::ReleaseTracks { .. } | Update::ReleaseTracksFailed { .. } => {
                 self.releases.apply(update);
             }
-            Update::Followed { .. } | Update::FollowFailed { .. } => {
+            // An artist's removal rides the same unfollow the page's button
+            // sends, so the reply is what takes its row out.
+            Update::Followed {
+                artist, followed, ..
+            } => {
                 self.follow.apply(update);
+                if !followed {
+                    self.end_saved_removal(artist);
+                }
+            }
+            Update::FollowFailed { artist, .. } => {
+                self.follow.apply(update);
+                if self.saved_removal_pending(artist) {
+                    self.sidebar_pending = None;
+                    self.sidebar_notice = Some(SidebarWrite::Remove);
+                }
             }
             // A lyrics reply is about a track, not a page, so it is forwarded
             // whatever page is on screen; the panel keeps its own guard.
@@ -680,6 +781,30 @@ impl Library {
         };
         if ready.is_some_and(|playlist| !present(&playlist)) {
             self.tracks = Load::Idle;
+        }
+    }
+
+    /// Whether a sidebar write of `uri`'s saved removal is in flight.
+    fn saved_removal_pending(&self, uri: &str) -> bool {
+        matches!(&self.sidebar_pending, Some(SidebarPending::RemoveSaved { uri: pending }) if pending == uri)
+    }
+
+    /// Ends a saved removal, dropping the row it named from whichever list holds
+    /// it.
+    fn end_saved_removal(&mut self, uri: &str) {
+        if !self.saved_removal_pending(uri) {
+            return;
+        }
+        self.sidebar_pending = None;
+        self.sidebar_notice = None;
+        if let Load::Ready(albums) = &mut self.saved_albums {
+            albums.retain(|album| album.uri != uri);
+        }
+        if let Load::Ready(shows) = &mut self.followed {
+            shows.retain(|show| show.uri != uri);
+        }
+        if let Load::Ready(artists) = &mut self.followed_artists {
+            artists.retain(|artist| artist.uri != uri);
         }
     }
 
@@ -897,6 +1022,105 @@ impl Library {
             && self.sidebar_pending.is_none()
             && matches!(self.playlists, Load::Ready(_))
             && self.rootlist.as_ref().is_some_and(|access| access.editable)
+    }
+
+    /// Whether a playlist row may be unlinked now.
+    ///
+    /// The unlink names the row's own wire index, so it needs what a move needs.
+    pub fn rootlist_removable(&self) -> bool {
+        self.rootlist_movable()
+    }
+
+    /// Whether a sidebar row of `kind` may be removed now.
+    ///
+    /// The library's state decides, not the row's: a playlist needs the editable
+    /// rootlist its index names, a saved thing needs a ready list, and neither
+    /// waits on a write already in flight.
+    pub fn can_remove(&self, kind: SidebarKind) -> bool {
+        if self.write_in_flight() {
+            return false;
+        }
+        match kind {
+            SidebarKind::Playlists => self.rootlist_removable(),
+            SidebarKind::Albums => matches!(self.saved_albums, Load::Ready(_)),
+            SidebarKind::Artists => matches!(self.followed_artists, Load::Ready(_)),
+            SidebarKind::Podcasts => matches!(self.followed, Load::Ready(_)),
+        }
+    }
+
+    /// Removes `item` from the library, and asks for the one write that does it.
+    ///
+    /// Nothing leaves the sidebar here: the row goes when the reply confirms,
+    /// because a removal that never landed has to come back.
+    pub fn remove_from_library(&mut self, item: &LibraryItem) -> Option<Command> {
+        if !self.can_remove(item.kind) {
+            return None;
+        }
+        let command = match item.kind {
+            SidebarKind::Playlists => {
+                let Load::Ready(playlists) = &self.playlists else {
+                    return None;
+                };
+                let index = playlists.iter().position(|entry| entry.uri == item.uri)?;
+                Command::RemovePlaylist {
+                    playlist: item.uri.clone(),
+                    revision: self.rootlist.as_ref()?.revision.clone(),
+                    index,
+                }
+            }
+            SidebarKind::Albums => {
+                if !listed(&self.saved_albums, &item.uri, |album| &album.uri) {
+                    return None;
+                }
+                Command::RemoveSaved {
+                    uri: item.uri.clone(),
+                }
+            }
+            SidebarKind::Podcasts => {
+                if !listed(&self.followed, &item.uri, |show| &show.uri) {
+                    return None;
+                }
+                Command::RemoveSaved {
+                    uri: item.uri.clone(),
+                }
+            }
+            SidebarKind::Artists => {
+                if !listed(&self.followed_artists, &item.uri, |artist| &artist.uri) {
+                    return None;
+                }
+                // A page's own follow write is already in flight; a second one
+                // for the same artist would race it.
+                if self.follow.artist() == Some(item.uri.as_str()) && self.follow.pending() {
+                    return None;
+                }
+                Command::SetFollow {
+                    artist: item.uri.clone(),
+                    followed: false,
+                }
+            }
+        };
+        self.sidebar_pending = match item.kind {
+            SidebarKind::Playlists => Some(SidebarPending::Remove {
+                playlist: item.uri.clone(),
+            }),
+            SidebarKind::Albums | SidebarKind::Artists | SidebarKind::Podcasts => {
+                Some(SidebarPending::RemoveSaved {
+                    uri: item.uri.clone(),
+                })
+            }
+        };
+        self.sidebar_notice = None;
+        Some(command)
+    }
+
+    /// Presses a sidebar chip, and clears the sentence a failed write left.
+    pub fn choose_kind(&mut self, kind: SidebarKind) -> bool {
+        let moved = self.sidebar_kind.chosen() != kind;
+        let chose = self.sidebar_kind.choose(kind);
+        if chose && moved {
+            self.sidebar_notice = None;
+        }
+        chose
     }
 
     /// Whether `row` of the sidebar may take a track now.
@@ -6924,5 +7148,476 @@ mod tests {
         });
 
         assert!(!library.addable(0), "a row with no access took a track");
+    }
+
+    /// A sidebar row as a menu opened on it describes it.
+    fn item(kind: SidebarKind, uri: &str) -> LibraryItem {
+        LibraryItem {
+            kind,
+            uri: uri.to_owned(),
+            name: uri.to_owned(),
+        }
+    }
+
+    /// A library whose four lists are ready and hold one thing each.
+    fn saved_library() -> Library {
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(Vec::new()));
+        library.apply(&Update::FollowedShows(vec![followed_show(
+            "spotify:show:s",
+        )]));
+        library.apply(&Update::FollowedArtists(vec![followed_artist(
+            "spotify:artist:a",
+        )]));
+        library.apply(&Update::SavedAlbums(vec![saved_album("spotify:album:r")]));
+        library
+    }
+
+    #[test]
+    fn a_playlist_removal_names_the_row_and_the_rootlist_revision() {
+        let mut library = sidebar_library(&["a", "b"], 0x07, true, None);
+
+        let command = library.remove_from_library(&item(SidebarKind::Playlists, "b"));
+
+        assert_eq!(
+            command,
+            Some(Command::RemovePlaylist {
+                playlist: "b".to_owned(),
+                revision: revision(0x07),
+                index: 1,
+            })
+        );
+        assert_eq!(
+            library.sidebar_pending,
+            Some(SidebarPending::Remove {
+                playlist: "b".to_owned()
+            })
+        );
+    }
+
+    #[test]
+    fn a_playlist_removal_is_refused_without_leaving_a_pending() {
+        let mut no_access = Library::default();
+        no_access.apply(&Update::Playlists(vec![playlist("a", "A")]));
+        assert_eq!(
+            no_access.remove_from_library(&item(SidebarKind::Playlists, "a")),
+            None,
+            "a read with no revision offered a write"
+        );
+        assert!(!no_access.write_in_flight());
+
+        let mut not_editable = sidebar_library(&["a"], 0x07, false, None);
+        assert_eq!(
+            not_editable.remove_from_library(&item(SidebarKind::Playlists, "a")),
+            None,
+            "a list the user cannot write offered a write"
+        );
+        assert!(!not_editable.write_in_flight());
+
+        let mut writing = sidebar_library(&["a", "b"], 0x07, true, None);
+        assert!(writing.move_playlist(0, 2, "a").is_some());
+        assert_eq!(
+            writing.remove_from_library(&item(SidebarKind::Playlists, "a")),
+            None,
+            "a second write went out beside the first"
+        );
+
+        let mut gone = sidebar_library(&["b"], 0x07, true, None);
+        assert_eq!(
+            gone.remove_from_library(&item(SidebarKind::Playlists, "a")),
+            None,
+            "a row the list does not hold was removed"
+        );
+        assert!(!gone.write_in_flight());
+
+        let mut loading = sidebar_library(&["a"], 0x07, true, None);
+        loading.playlists = Load::Loading;
+        assert_eq!(
+            loading.remove_from_library(&item(SidebarKind::Playlists, "a")),
+            None,
+            "a list that is not ready offered a write"
+        );
+        assert!(!loading.write_in_flight());
+    }
+
+    #[test]
+    fn a_saved_removal_is_refused_until_its_own_list_is_ready() {
+        for (kind, uri) in [
+            (SidebarKind::Albums, "spotify:album:r"),
+            (SidebarKind::Artists, "spotify:artist:a"),
+            (SidebarKind::Podcasts, "spotify:show:s"),
+        ] {
+            let mut library = saved_library();
+            assert!(
+                library.remove_from_library(&item(kind, uri)).is_some(),
+                "{kind:?} was not removed at all"
+            );
+            assert_eq!(
+                library.remove_from_library(&item(kind, uri)),
+                None,
+                "{kind:?} sent a second write beside the first"
+            );
+        }
+
+        let mut library = saved_library();
+        library.saved_albums = Load::Idle;
+        assert_eq!(
+            library.remove_from_library(&item(SidebarKind::Albums, "spotify:album:r")),
+            None
+        );
+        library.followed_artists = Load::Failed(Failure::FollowedArtists);
+        assert_eq!(
+            library.remove_from_library(&item(SidebarKind::Artists, "spotify:artist:a")),
+            None
+        );
+        library.followed = Load::Loading;
+        assert_eq!(
+            library.remove_from_library(&item(SidebarKind::Podcasts, "spotify:show:s")),
+            None
+        );
+        assert!(!library.write_in_flight());
+    }
+
+    #[test]
+    fn an_artist_removal_is_refused_while_its_pages_follow_write_is_pending() {
+        let mut library = saved_library();
+        library.open(Page::Artist("spotify:artist:a".to_owned()));
+        library.apply(&Update::Artist(artist_detail("spotify:artist:a")));
+        library.apply(&Update::Followed {
+            artist: "spotify:artist:a".to_owned(),
+            followed: false,
+        });
+        assert_eq!(
+            library.follow.pressed(),
+            Some(Command::SetFollow {
+                artist: "spotify:artist:a".to_owned(),
+                followed: true,
+            })
+        );
+
+        assert_eq!(
+            library.remove_from_library(&item(SidebarKind::Artists, "spotify:artist:a")),
+            None,
+            "the removal raced the page's own follow write"
+        );
+        assert!(!library.write_in_flight());
+    }
+
+    #[test]
+    fn a_confirmed_playlist_removal_drops_the_row_and_holds_the_reply_revision() {
+        let mut library = sidebar_library(&["a", "b"], 0x07, true, None);
+        assert!(
+            library
+                .remove_from_library(&item(SidebarKind::Playlists, "a"))
+                .is_some()
+        );
+        assert_eq!(
+            sidebar_order(&library),
+            names(&["a", "b"]),
+            "the row left before the write was confirmed"
+        );
+
+        library.apply(&Update::PlaylistRemoved {
+            playlist: "a".to_owned(),
+            revision: revision(0x09),
+        });
+
+        assert_eq!(sidebar_order(&library), names(&["b"]));
+        assert!(!library.write_in_flight());
+        assert_eq!(
+            library.rootlist.as_ref().map(|held| held.revision.clone()),
+            Some(revision(0x09)),
+            "the next write must name the reply's revision"
+        );
+    }
+
+    #[test]
+    fn a_follow_up_removal_names_the_shifted_index() {
+        let mut library = sidebar_library(&["a", "b", "c"], 0x07, true, None);
+        assert!(
+            library
+                .remove_from_library(&item(SidebarKind::Playlists, "a"))
+                .is_some()
+        );
+        library.apply(&Update::PlaylistRemoved {
+            playlist: "a".to_owned(),
+            revision: revision(0x09),
+        });
+
+        assert_eq!(
+            library.remove_from_library(&item(SidebarKind::Playlists, "b")),
+            Some(Command::RemovePlaylist {
+                playlist: "b".to_owned(),
+                revision: revision(0x09),
+                index: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn removing_the_open_playlist_goes_home_while_an_album_page_survives() {
+        let mut library = sidebar_library(&["a", "b"], 0x07, true, None);
+        library.open(album("spotify:album:r"));
+        library.select("a");
+        assert_eq!(library.page(), Some(&Page::Playlist("a".to_owned())));
+
+        assert!(
+            library
+                .remove_from_library(&item(SidebarKind::Playlists, "a"))
+                .is_some()
+        );
+        library.apply(&Update::PlaylistRemoved {
+            playlist: "a".to_owned(),
+            revision: revision(0x09),
+        });
+
+        assert_eq!(library.page(), None, "the removed page stayed open");
+        assert!(library.can_back());
+        assert!(library.back().is_some() || library.page().is_some());
+        assert_eq!(
+            library.page(),
+            Some(&Page::Album("spotify:album:r".to_owned())),
+            "the album behind it was pruned with it"
+        );
+    }
+
+    #[test]
+    fn a_failed_playlist_removal_keeps_the_row_and_asks_for_a_read() {
+        let mut library = sidebar_library(&["a", "b"], 0x07, true, None);
+        assert!(
+            library
+                .remove_from_library(&item(SidebarKind::Playlists, "a"))
+                .is_some()
+        );
+
+        library.apply(&Update::PlaylistRemoveFailed {
+            playlist: "a".to_owned(),
+        });
+
+        assert_eq!(sidebar_order(&library), names(&["a", "b"]));
+        assert_eq!(library.sidebar_notice, Some(SidebarWrite::Remove));
+        assert!(!library.write_in_flight());
+        assert!(library.rootlist.is_none(), "the held revision was kept");
+        assert_eq!(library.rootlist_request(), Some(Command::ReloadLibrary));
+    }
+
+    #[test]
+    fn a_stale_removal_reply_is_ignored() {
+        let mut library = sidebar_library(&["a", "b"], 0x07, true, None);
+        assert!(
+            library
+                .remove_from_library(&item(SidebarKind::Playlists, "a"))
+                .is_some()
+        );
+
+        library.apply(&Update::PlaylistRemoved {
+            playlist: "b".to_owned(),
+            revision: revision(0x09),
+        });
+        assert_eq!(sidebar_order(&library), names(&["a", "b"]));
+        assert!(
+            library.write_in_flight(),
+            "another row's reply ended the write"
+        );
+
+        let mut idle = sidebar_library(&["a"], 0x07, true, None);
+        idle.apply(&Update::PlaylistRemoved {
+            playlist: "a".to_owned(),
+            revision: revision(0x09),
+        });
+        assert_eq!(sidebar_order(&idle), names(&["a"]));
+    }
+
+    #[test]
+    fn an_album_or_a_show_removal_is_confirmed_by_its_reply() {
+        for (kind, uri, dropped) in [
+            (SidebarKind::Albums, "spotify:album:r", 0),
+            (SidebarKind::Podcasts, "spotify:show:s", 2),
+        ] {
+            let mut library = saved_library();
+            assert_eq!(
+                library.remove_from_library(&item(kind, uri)),
+                Some(Command::RemoveSaved {
+                    uri: uri.to_owned()
+                }),
+                "{kind:?}"
+            );
+            assert_eq!(
+                sidebar_order(&library),
+                names(&[]),
+                "{kind:?} changed its list before the write was confirmed"
+            );
+
+            library.apply(&Update::SavedRemoved {
+                uri: uri.to_owned(),
+            });
+
+            let left = match dropped {
+                0 => match &library.saved_albums {
+                    Load::Ready(albums) => albums.len(),
+                    _ => usize::MAX,
+                },
+                _ => match &library.followed {
+                    Load::Ready(shows) => shows.len(),
+                    _ => usize::MAX,
+                },
+            };
+            assert_eq!(left, 0, "{kind:?} kept its row");
+            assert!(!library.write_in_flight());
+            assert_eq!(library.sidebar_notice, None);
+        }
+    }
+
+    #[test]
+    fn a_failed_saved_removal_keeps_the_row_and_says_so() {
+        let mut library = saved_library();
+        assert!(
+            library
+                .remove_from_library(&item(SidebarKind::Albums, "spotify:album:r"))
+                .is_some()
+        );
+        library.apply(&Update::SavedRemoveFailed {
+            uri: "spotify:album:r".to_owned(),
+        });
+
+        match &library.saved_albums {
+            Load::Ready(albums) => assert_eq!(albums.len(), 1),
+            other => panic!("the list was dropped: {other:?}"),
+        }
+        assert_eq!(library.sidebar_notice, Some(SidebarWrite::Remove));
+        assert!(!library.write_in_flight());
+    }
+
+    #[test]
+    fn an_artist_removal_rides_the_unfollow_and_resets_the_pages_label() {
+        let mut library = saved_library();
+        library.open(Page::Artist("spotify:artist:a".to_owned()));
+        library.apply(&Update::Artist(artist_detail("spotify:artist:a")));
+        library.apply(&Update::Followed {
+            artist: "spotify:artist:a".to_owned(),
+            followed: true,
+        });
+        assert_eq!(library.follow.label(), "Following");
+
+        assert_eq!(
+            library.remove_from_library(&item(SidebarKind::Artists, "spotify:artist:a")),
+            Some(Command::SetFollow {
+                artist: "spotify:artist:a".to_owned(),
+                followed: false,
+            })
+        );
+        library.apply(&Update::Followed {
+            artist: "spotify:artist:a".to_owned(),
+            followed: false,
+        });
+
+        match &library.followed_artists {
+            Load::Ready(artists) => assert!(artists.is_empty(), "the row stayed"),
+            other => panic!("the list was dropped: {other:?}"),
+        }
+        assert_eq!(library.follow.label(), "Follow");
+        assert!(!library.write_in_flight());
+    }
+
+    #[test]
+    fn a_failed_artist_removal_keeps_the_row_and_says_so() {
+        let mut library = saved_library();
+        assert!(
+            library
+                .remove_from_library(&item(SidebarKind::Artists, "spotify:artist:a"))
+                .is_some()
+        );
+        library.apply(&Update::FollowFailed {
+            artist: "spotify:artist:a".to_owned(),
+            failure: Failure::Save,
+        });
+
+        match &library.followed_artists {
+            Load::Ready(artists) => assert_eq!(artists.len(), 1),
+            other => panic!("the list was dropped: {other:?}"),
+        }
+        assert_eq!(library.sidebar_notice, Some(SidebarWrite::Remove));
+        assert!(!library.write_in_flight());
+    }
+
+    #[test]
+    fn removing_the_last_row_leaves_an_empty_ready_list() {
+        let mut library = sidebar_library(&["a"], 0x07, true, None);
+        assert!(
+            library
+                .remove_from_library(&item(SidebarKind::Playlists, "a"))
+                .is_some()
+        );
+        library.apply(&Update::PlaylistRemoved {
+            playlist: "a".to_owned(),
+            revision: revision(0x09),
+        });
+
+        assert_eq!(library.playlists, Load::Ready(Vec::new()));
+    }
+
+    #[test]
+    fn a_playlists_read_lands_during_a_saved_removal_but_not_a_playlist_one() {
+        let mut saved = saved_library();
+        assert!(
+            saved
+                .remove_from_library(&item(SidebarKind::Albums, "spotify:album:r"))
+                .is_some()
+        );
+        saved.apply(&Update::Playlists(vec![playlist("x", "X")]));
+        assert_eq!(
+            sidebar_order(&saved),
+            names(&["x"]),
+            "a collection removal dropped a playlists read"
+        );
+
+        let mut unlinking = sidebar_library(&["a"], 0x07, true, None);
+        assert!(
+            unlinking
+                .remove_from_library(&item(SidebarKind::Playlists, "a"))
+                .is_some()
+        );
+        unlinking.apply(&Update::Playlists(vec![playlist("x", "X")]));
+        assert_eq!(sidebar_order(&unlinking), names(&["a"]));
+        assert!(
+            unlinking.rootlist_stale,
+            "the dropped read owed a fresh one"
+        );
+    }
+
+    #[test]
+    fn can_remove_is_the_librarys_state_per_kind() {
+        let library = saved_library();
+        assert!(
+            !library.can_remove(SidebarKind::Playlists),
+            "a rootlist with no revision offered an unlink"
+        );
+        for kind in [
+            SidebarKind::Albums,
+            SidebarKind::Artists,
+            SidebarKind::Podcasts,
+        ] {
+            assert!(library.can_remove(kind), "{kind:?} is ready and idle");
+        }
+
+        let editable = sidebar_library(&["a"], 0x07, true, None);
+        assert!(editable.can_remove(SidebarKind::Playlists));
+        assert!(!editable.can_remove(SidebarKind::Albums));
+
+        let mut writing = sidebar_library(&["a", "b"], 0x07, true, None);
+        assert!(writing.move_playlist(0, 2, "a").is_some());
+        for kind in crate::sidebar_kind::ROW {
+            assert!(!writing.can_remove(kind), "{kind:?} during a write");
+        }
+    }
+
+    #[test]
+    fn a_chip_change_clears_the_remove_sentence() {
+        let mut library = sidebar_library(&["a"], 0x07, true, None);
+        library.sidebar_notice = Some(SidebarWrite::Remove);
+
+        assert!(library.choose_kind(SidebarKind::Podcasts));
+
+        assert_eq!(library.sidebar_notice, None);
     }
 }

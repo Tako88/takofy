@@ -117,7 +117,7 @@ fn filters(ui: &mut Ui, library: &mut Library, tokens: &Tokens, band: Rect) -> f
         }
     }
     if let Some(kind) = pressed {
-        library.sidebar_kind.choose(kind);
+        library.choose_kind(kind);
     }
 
     origin.y + placed.height + space::S3

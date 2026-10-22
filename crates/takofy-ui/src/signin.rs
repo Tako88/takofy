@@ -46,6 +46,10 @@ impl SignIn {
                 | Update::RootlistAccess(_)
                 | Update::PlaylistMoved { .. }
                 | Update::PlaylistMoveFailed
+                | Update::PlaylistRemoved { .. }
+                | Update::PlaylistRemoveFailed { .. }
+                | Update::SavedRemoved { .. }
+                | Update::SavedRemoveFailed { .. }
                 | Update::TrackAdded { .. }
                 | Update::AddFailed { .. }
                 | Update::PlaylistCreated { .. }

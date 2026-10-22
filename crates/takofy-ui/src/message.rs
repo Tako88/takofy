@@ -37,6 +37,19 @@ pub enum Command {
         from: usize,
         to: usize,
     },
+    /// Unlink one row of the sidebar's playlists, based on `revision`.
+    ///
+    /// The rootlist unlinks only, so the playlist survives the write.
+    RemovePlaylist {
+        playlist: String,
+        revision: Revision,
+        index: usize,
+    },
+    /// Write one saved album or show out of the library.
+    ///
+    /// An artist is not removed this way: it is unfollowed, through
+    /// [`Command::SetFollow`].
+    RemoveSaved { uri: String },
     /// Append tracks to a playlist, in the order given, based on `revision`.
     AddTracks {
         playlist: String,
@@ -173,6 +186,19 @@ pub enum Update {
     PlaylistMoved { revision: Revision },
     /// A sidebar move did not stick.
     PlaylistMoveFailed,
+    /// A playlist left the rootlist, and this is the revision the next write
+    /// must name.
+    PlaylistRemoved {
+        playlist: String,
+        revision: Revision,
+    },
+    /// The playlist could not be unlinked, so it stays in the sidebar.
+    PlaylistRemoveFailed { playlist: String },
+    /// A saved album or show left the library. The reply carried no body, so
+    /// this is the write's own echo.
+    SavedRemoved { uri: String },
+    /// The saved album or show could not be written out, so it stays.
+    SavedRemoveFailed { uri: String },
     /// A track was appended to a playlist, and this is the revision the next
     /// write must name.
     TrackAdded {

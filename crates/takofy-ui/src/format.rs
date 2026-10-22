@@ -321,6 +321,7 @@ pub fn sidebar_notice(write: SidebarWrite) -> &'static str {
         SidebarWrite::Link => "Created it, but could not add it to your list.",
         SidebarWrite::Unfilled => "Created it, but could not add the tracks.",
         SidebarWrite::Unnamed => "Created it, but could not keep its name.",
+        SidebarWrite::Remove => "Could not remove that from your library. Try again.",
     }
 }
 

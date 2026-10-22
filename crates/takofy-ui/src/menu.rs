@@ -13,6 +13,7 @@ use egui::{Id, Pos2, Rect};
 use takofy_model::{Revision, TrackEntry};
 
 use crate::route::Page;
+use crate::sidebar_kind::SidebarKind;
 use crate::theme::extent;
 
 /// Where a menu is drawn from.
@@ -91,6 +92,18 @@ impl Listing {
     pub fn removable(&self) -> bool {
         matches!(self, Listing::Playlist { .. } | Listing::Queue)
     }
+}
+
+/// One row of the sidebar, as a menu opened on it describes it.
+///
+/// A sidebar row is not a track: its identity is the kind it belongs to and the
+/// URI that kind is listed by, and the list it lives in is read from the library
+/// when a verb is applied.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LibraryItem {
+    pub kind: SidebarKind,
+    pub uri: String,
+    pub name: String,
 }
 
 /// A removal a list asked for by key: which list, the rows, and what they held.
