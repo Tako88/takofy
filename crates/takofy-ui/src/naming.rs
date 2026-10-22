@@ -180,6 +180,7 @@ pub enum Surface {
 /// same text. A rename in flight is the one moment the target may not change.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Renaming {
+    open: bool,
     uri: String,
     surface: Surface,
     text: String,
@@ -194,6 +195,7 @@ impl Renaming {
         if self.writing {
             return;
         }
+        self.open = true;
         self.uri = uri.to_owned();
         self.surface = surface;
         self.text = current.to_owned();
@@ -203,7 +205,7 @@ impl Renaming {
 
     /// Whether a field is drawn.
     pub fn is_open(&self) -> bool {
-        !self.uri.is_empty()
+        self.open
     }
 
     /// The playlist the field would rename.
@@ -254,6 +256,14 @@ impl Renaming {
     /// The surface has taken the keyboard back.
     pub fn return_taken(&mut self) {
         self.wants_return = false;
+        self.uri.clear();
+    }
+
+    /// The field is open but its row is not on screen; ask again when it is.
+    pub fn ask_focus(&mut self) {
+        if self.is_open() {
+            self.wants_focus = true;
+        }
     }
 
     /// The name the text spells, trimmed, or why it is not one.
@@ -294,6 +304,8 @@ impl Renaming {
             return;
         }
         self.close();
+        self.uri.clear();
+        self.wants_return = false;
     }
 
     /// The rename failed, so the text stays for a retry.
@@ -311,11 +323,14 @@ impl Renaming {
     /// Closes the field because its playlist is gone.
     pub fn force_close(&mut self) {
         self.close();
+        self.uri.clear();
         self.wants_return = false;
     }
 
+    /// Closes the field but keeps its target, so a cancel or a success can hand
+    /// the keyboard back to the row or title that opened it.
     fn close(&mut self) {
-        self.uri.clear();
+        self.open = false;
         self.text.clear();
         self.writing = false;
         self.wants_focus = false;
@@ -666,4 +681,20 @@ mod renaming_tests {
         assert_eq!(renaming.uri(), "");
         assert!(!renaming.wants_return());
     }
+    #[test]
+    fn a_return_keeps_the_target_until_the_keyboard_is_back() {
+        let mut cancelled = typing("Mix");
+        cancelled.cancel();
+        assert_eq!(cancelled.uri(), URI, "a cancel forgot where to return to");
+        cancelled.return_taken();
+        assert_eq!(cancelled.uri(), "");
+
+        let mut finished = typing("Mix");
+        assert!(finished.begin_write().is_some());
+        finished.finished();
+        assert_eq!(finished.uri(), URI, "a success forgot where to return to");
+        finished.return_taken();
+        assert_eq!(finished.uri(), "");
+    }
+
 }

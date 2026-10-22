@@ -17,6 +17,7 @@ use crate::icon::Icon;
 use crate::landing::Zone;
 use crate::layout::chips;
 use crate::library::{Library, Load};
+use crate::naming::{Renaming, Surface};
 use crate::menu::{Door, LibraryItem};
 use crate::message::{Command, Failure};
 use crate::route::Page;
@@ -294,6 +295,20 @@ fn submit_id() -> egui::Id {
     egui::Id::unique("library-name-submit")
 }
 
+fn rename_submit_id() -> egui::Id {
+    egui::Id::unique("library-rename-submit")
+}
+
+/// Posts a row field's submit for the shell to apply this frame.
+fn post_rename_submit(ctx: &egui::Context) {
+    ctx.data_mut(|data| data.insert_temp(rename_submit_id(), true));
+}
+
+/// The row's submit posted this frame, read once so it cannot outlive it.
+pub(crate) fn take_rename_submit(ctx: &egui::Context) -> bool {
+    ctx.data_mut(|data| data.remove_temp::<bool>(rename_submit_id()).unwrap_or(false))
+}
+
 /// Posts the head's submit for the shell to apply this frame.
 fn post_submit(ctx: &egui::Context) {
     ctx.data_mut(|data| data.insert_temp(submit_id(), true));
@@ -489,6 +504,8 @@ struct Draw<'a> {
     ///
     /// Taken once, so scrolling stays the user's on every other frame.
     reveal: bool,
+    /// The open rename field, taken from the library for this frame's list.
+    renaming: Renaming,
 }
 
 /// What a press in a list asks the window to do.
@@ -536,6 +553,7 @@ fn list_rows<T: ListItem + Clone>(
             // The first drawn row and the index it holds, so the offer describes
             // the rows wherever the scroll put them.
             let mut origin: Option<(usize, Rect)> = None;
+            let mut edit_drawn = false;
             let lifted = match carry::carried(ui.ctx()) {
                 Some(carried) if carried.source == Source::Playlist => carried.rows.clone(),
                 _ => Vec::new(),
@@ -567,15 +585,35 @@ fn list_rows<T: ListItem + Clone>(
                                 origin = Some((start, place));
                             }
                             let kind = item.kind();
+                            let edit = draw.drag
+                                && draw.renaming.is_open_on(item.uri(), Surface::Row);
+                            edit_drawn |= edit;
+                            let cover = draw.art.look(item.cover(), draw.now);
                             let row = LibraryRow {
                                 id: ids.id(ui, item.uri()),
                                 name: item.name(),
                                 kind: &kind,
-                                cover: draw.art.look(item.cover(), draw.now),
+                                cover,
                                 selected: current == Some(item.uri()),
                                 lifted: lifted.contains(&index),
+                                edit,
                             };
-                            let drawn = one(ui, place, row, draw.tokens, draw.drag, menu);
+                            let drawn = one(
+                                ui,
+                                place,
+                                row,
+                                draw.tokens,
+                                if edit { false } else { draw.drag },
+                                menu,
+                                edit.then_some(&mut draw.renaming),
+                            );
+                            if draw.renaming.wants_return()
+                                && draw.renaming.surface() == Surface::Row
+                                && draw.renaming.uri() == item.uri()
+                            {
+                                drawn.response.request_focus();
+                                draw.renaming.return_taken();
+                            }
                             if drawn.clicked {
                                 pressed = Some(item.uri().to_owned());
                             }
@@ -608,6 +646,13 @@ fn list_rows<T: ListItem + Clone>(
                     });
                 },
             );
+            if !edit_drawn
+                && draw.renaming.is_open()
+                && draw.renaming.surface() == Surface::Row
+                && !draw.renaming.writing()
+            {
+                draw.renaming.ask_focus();
+            }
             if let Some(carry) = lifted_carry {
                 carry::lift(ui.ctx(), carry);
             }
@@ -792,6 +837,11 @@ fn rows(
     if rect.height() < ROW_H {
         return None;
     }
+    // The drawer draws the same column with no drag and no menu; a row field
+    // there has no row to return to.
+    if !drag && library.renaming.surface() == Surface::Row {
+        library.renaming.dismiss();
+    }
 
     // The failure line sits at the foot of every list, and the rows make room
     // for it rather than drawing over it.
@@ -815,6 +865,7 @@ fn rows(
     let chosen = library.sidebar_kind.chosen();
     let renamable =
         drag && !library.write_in_flight() && matches!(library.playlists, Load::Ready(_));
+    let renaming = std::mem::take(&mut library.renaming);
     let mut draw = Draw {
         art,
         now,
@@ -827,6 +878,7 @@ fn rows(
         lift: drag && library.rootlist_movable(),
         offer: drag,
         reveal: std::mem::take(&mut library.reveal_top),
+        renaming,
     };
     let (action, open) = match library.sidebar_kind.chosen() {
         SidebarKind::Playlists => (
@@ -911,6 +963,7 @@ fn rows(
         ),
     };
 
+    library.renaming = draw.renaming;
     if let (Some(foot), Some(notice)) = (foot, notice) {
         ui.painter().text(
             Pos2::new(foot.left(), foot.center().y),
@@ -989,6 +1042,8 @@ struct LibraryRow<'a> {
     selected: bool,
     /// Whether the carried block names this row.
     lifted: bool,
+    /// Whether this row's name is the open rename field.
+    edit: bool,
 }
 
 /// What drawing one row reported.
@@ -998,6 +1053,7 @@ struct Drawn {
     lift: bool,
     /// The door a right-click or the context-menu key opened, if one did.
     door: Option<Door>,
+    response: egui::Response,
 }
 
 /// One library row: a placeholder tile, the name and the kind.
@@ -1010,6 +1066,7 @@ fn one(
     tokens: &Tokens,
     drag: bool,
     menu: bool,
+    renaming: Option<&mut Renaming>,
 ) -> Drawn {
     let LibraryRow {
         id,
@@ -1018,6 +1075,7 @@ fn one(
         cover,
         selected,
         lifted,
+        edit,
     } = row;
     let look = Look {
         selected,
@@ -1025,7 +1083,7 @@ fn one(
         carrying: carry::carrying(ui.ctx()),
     };
     let before = rows::dim(ui, look);
-    let response = row_chrome(ui, rect, id, name, look, tokens, drag);
+    let response = row_chrome(ui, rect, id, name, look, tokens, drag && !edit);
     let door = menu
         .then(|| pointer_door(ui, rect, id).or_else(|| key_door(ui, &response, rect)))
         .flatten();
@@ -1072,11 +1130,76 @@ fn one(
         name_width,
     );
     let top = rect.center().y - (name_line.size().y + kind_line.size().y) / 2.0;
-    ui.painter().galley(
+    let field = Rect::from_min_size(
         Pos2::new(name_x, top),
-        name_line.clone(),
-        tokens.palette.text,
+        Vec2::new(name_width, name_line.size().y),
     );
+    if edit {
+        ui.painter()
+            .rect_filled(field, radius::SM, tokens.palette.surface_raised);
+        if let Some(renaming) = renaming {
+            let writing = renaming.writing();
+            let wants_focus = renaming.wants_focus();
+            let id = id.with("rename");
+            let out = {
+                let text = renaming.edit();
+                name_field::edit(
+                    ui,
+                    name_field::Spec {
+                        id,
+                        rect: field,
+                        text,
+                        writing,
+                        wants_focus,
+                        font: egui::FontId::new(text::SM, fonts::sans(Weight::Medium)),
+                        hint: "",
+                        inset: egui::Margin {
+                            left: space::S1 as i8,
+                            right: space::S1 as i8,
+                            top: 0,
+                            bottom: 0,
+                        },
+                        text_color: tokens.palette.text,
+                        weak_color: tokens.palette.text_subtle,
+                        cursor: Stroke::new(stroke::HAIRLINE, tokens.palette.text),
+                        align: egui::Align2::LEFT_CENTER,
+                    },
+                )
+            };
+            if out.focused {
+                renaming.focus_taken();
+            }
+            if out.lost_focus && renaming.text().trim().is_empty() {
+                renaming.dismiss();
+            }
+            if out.enter {
+                post_rename_submit(ui.ctx());
+            }
+            if out.escape {
+                renaming.cancel();
+            }
+            let border = if out.focused {
+                tokens.palette.text
+            } else {
+                tokens.palette.border
+            };
+            ui.painter().rect_stroke(
+                field,
+                radius::SM,
+                Stroke::new(stroke::HAIRLINE, border),
+                StrokeKind::Inside,
+            );
+        } else {
+            ui.painter()
+                .galley(Pos2::new(name_x, top), name_line.clone(), tokens.palette.text);
+        }
+    } else {
+        ui.painter().galley(
+            Pos2::new(name_x, top),
+            name_line.clone(),
+            tokens.palette.text,
+        );
+    }
     ui.painter().galley(
         Pos2::new(name_x, top + name_line.size().y),
         kind_line,
@@ -1086,8 +1209,9 @@ fn one(
 
     Drawn {
         clicked: response.clicked(),
-        lift: response.drag_started_by(egui::PointerButton::Primary),
+        lift: !edit && response.drag_started_by(egui::PointerButton::Primary),
         door,
+        response,
     }
 }
 
@@ -1610,8 +1734,9 @@ mod tests {
                     cover: Cover::Missing,
                     selected: false,
                     lifted: false,
+                    edit: false,
                 };
-                one(ui, rect, row, &tokens, false, false);
+                one(ui, rect, row, &tokens, false, false, None);
             },
         );
         output.textures_delta.clear();
@@ -1645,8 +1770,9 @@ mod tests {
                     cover: Cover::Missing,
                     selected: true,
                     lifted: false,
+                    edit: false,
                 };
-                one(ui, rect, row, &tokens, false, false);
+                one(ui, rect, row, &tokens, false, false, None);
                 announced = ui
                     .ctx()
                     .accesskit_node_builder(id, |node| node.is_selected())

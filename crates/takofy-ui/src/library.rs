@@ -1221,6 +1221,9 @@ impl Library {
         let chose = self.sidebar_kind.choose(kind);
         if chose && moved {
             self.sidebar_notice = None;
+            if self.renaming.surface() == Surface::Row {
+                self.renaming.dismiss();
+            }
         }
         chose
     }
