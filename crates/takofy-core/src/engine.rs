@@ -16,7 +16,7 @@ use crate::remote::{
     read_artist, read_followed_artists, read_followed_shows, read_liked_tracks, read_lyrics,
     read_playlist_state, read_related, read_release_tracks, read_saved_albums, read_show,
     write_add, write_create, write_follow, write_like, write_move, write_remove, write_rename,
-    write_rootlist_add, write_rootlist_move,
+    write_rootlist_add, write_rootlist_move, write_rootlist_remove, write_saved_removal,
 };
 use crate::rootlist::{RootlistError, fetch_all};
 use crate::search::search_uri;
@@ -176,6 +176,23 @@ impl Engine {
         to: usize,
     ) -> Result<Revision, EngineError> {
         Ok(write_rootlist_move(&self.session, revision, from, to).await?)
+    }
+
+    /// Removes one playlist from the user's rootlist, answering the revision the
+    /// next write must name.
+    ///
+    /// The rootlist unlinks only: the playlist itself survives.
+    pub async fn remove_playlist(
+        &self,
+        revision: &Revision,
+        index: usize,
+    ) -> Result<Revision, EngineError> {
+        Ok(write_rootlist_remove(&self.session, revision, index).await?)
+    }
+
+    /// Writes one saved album or show out of the library.
+    pub async fn remove_saved(&self, uri: &str) -> Result<(), EngineError> {
+        Ok(write_saved_removal(&self.session, uri).await?)
     }
 
     /// Creates a playlist called `name`, answering its URI.

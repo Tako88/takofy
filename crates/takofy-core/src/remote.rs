@@ -469,6 +469,48 @@ pub(crate) async fn write_rootlist_add(
     .await
 }
 
+/// Removes one row from the user's rootlist, based on `revision`.
+///
+/// The rootlist unlinks only: the playlist itself survives and another client
+/// can put it back.
+pub(crate) async fn write_rootlist_remove(
+    session: &Session,
+    revision: &Revision,
+    index: usize,
+) -> Result<Revision, playlist_edit::PlaylistError> {
+    let endpoint = playlist_edit::rootlist_changes_endpoint(&session.username())?;
+    write_changes(
+        session,
+        endpoint,
+        playlist_edit::remove_body(revision, index, 1),
+    )
+    .await
+}
+
+/// Writes one saved album or show out of its set.
+///
+/// The reply is empty, so silence is not proof: the caller's confirmation is the
+/// next read. The write is idempotent, so it keeps the client's retry budget.
+pub(crate) async fn write_saved_removal(session: &Session, uri: &str) -> Result<(), FollowedError> {
+    let set = collection::saved_set(uri)?;
+    let headers = collection_headers().ok_or_else(|| {
+        FollowedError::Source("the collection media type is not a valid header".to_owned())
+    })?;
+    let username = session.username();
+    let body = collection::items_body(&username, set, &[uri], None, true, &client_update_id());
+    session
+        .spclient()
+        .request(
+            &Method::POST,
+            "/collection/v2/write",
+            Some(headers),
+            Some(&body),
+        )
+        .await
+        .map(|_| ())
+        .map_err(|error| FollowedError::Source(error.to_string()))
+}
+
 /// Appends tracks to a playlist as one change set.
 pub(crate) async fn write_add(
     session: &Session,
