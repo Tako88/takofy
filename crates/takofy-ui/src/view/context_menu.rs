@@ -267,7 +267,11 @@ pub fn show(ui: &mut Ui, frame: Frame<'_>) -> Option<Closed> {
             let (surface, clicked) =
                 menu_box::card(ui, card, |ui| draw_rows(ui, menu, rect, area_id, tokens));
             surface.widget_info(|| {
-                WidgetInfo::labeled(egui::Role::Menu, true, verbs::menu_label(menu.targets()))
+                WidgetInfo::labeled(
+                    egui::Role::Menu,
+                    true,
+                    verbs::menu_label(menu.targets(), menu.listing()),
+                )
             });
             chosen = clicked;
             if !sizing {
@@ -422,6 +426,29 @@ fn consume_enter(input: &mut egui::InputState) -> bool {
         false
     });
     fresh
+}
+
+/// The door a right-click on `rect` opens, or `None` when it is not one.
+///
+/// The pointer is read rather than the widget's own `secondary_clicked()`,
+/// because some rows interact later and win the hit test: a right-click over a
+/// link cell is still the row's. The rect test is the layer and clip test, so a
+/// right-click under another layer, or outside the scroll's clip, opens nothing.
+pub fn pointer_door(ui: &Ui, rect: Rect, opener: Id, anchor: Rect) -> Option<Door> {
+    let secondary = ui.input(|input| input.pointer.secondary_clicked());
+    let over = ui
+        .ctx()
+        .rect_contains_pointer(ui.layer_id(), rect.intersect(ui.clip_rect()));
+    // At the cursor, not at the `⋯`: the click named a place. Falls back to the
+    // `⋯` when the pointer has already gone.
+    let at = ui
+        .input(|input| input.pointer.interact_pos())
+        .map_or(Anchor::Button(anchor), Anchor::Pointer);
+    (secondary && over).then_some(Door {
+        anchor: at,
+        opener,
+        device: Device::Pointer,
+    })
 }
 
 /// Takes this frame's context-menu key, the menu key or Shift+F10, and says
@@ -2217,5 +2244,81 @@ mod tests {
             !seen_before_the_draw(&ctx, &mut menu),
             "the frame after the close still reported an open menu"
         );
+    }
+
+    #[test]
+    fn a_pointer_door_is_the_rect_the_layer_and_the_pointer() {
+        let ctx = context();
+        let rect = Rect::from_min_size(pos2(100.0, 100.0), vec2(200.0, 40.0));
+        let opener = Id::unique("row");
+        let anchor = Rect::from_min_size(pos2(260.0, 100.0), vec2(28.0, 28.0));
+        let inside = pos2(160.0, 120.0);
+        let outside = pos2(400.0, 300.0);
+
+        for (point, expected) in [(inside, true), (outside, false)] {
+            let mut found = None;
+            for event in crate::view::test_support::secondary_click_events(point) {
+                let mut output = ctx.run_ui(input(vec![event]), |ui| {
+                    let _ = ui.interact(rect, opener, Sense::click());
+                    found = pointer_door(ui, rect, opener, anchor);
+                });
+                output.textures_delta.clear();
+            }
+
+            match found {
+                Some(door) => {
+                    assert!(expected, "a right-click at {point:?} opened a door");
+                    assert_eq!(door.opener, opener);
+                    assert_eq!(door.device, Device::Pointer);
+                    let Anchor::Pointer(at) = door.anchor else {
+                        panic!("a pointer door anchored to the button");
+                    };
+                    assert!(
+                        (at - point).length() < 0.01,
+                        "a right-click at {point:?} opened at {at:?}"
+                    );
+                }
+                None => assert!(!expected, "a right-click at {point:?} opened nothing"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_pointer_door_under_another_layer_is_none() {
+        let ctx = context();
+        let rect = Rect::from_min_size(pos2(100.0, 100.0), vec2(200.0, 40.0));
+        let opener = Id::unique("row");
+        let anchor = Rect::from_min_size(pos2(260.0, 100.0), vec2(28.0, 28.0));
+        let point = pos2(160.0, 120.0);
+        let cover = Rect::from_min_size(point - vec2(40.0, 20.0), vec2(200.0, 40.0));
+
+        let answer = |events: Vec<Event>| {
+            let mut found = None;
+            let mut output = ctx.run_ui(input(events), |ui| {
+                egui::Area::new(Id::unique("cover"))
+                    .order(Order::Middle)
+                    .fixed_pos(cover.min)
+                    .show(ui.ctx(), |ui| {
+                        ui.expand_to_include_rect(cover);
+                        ui.painter()
+                            .rect_filled(cover, 0.0, Tokens::DARK.palette.surface);
+                    });
+                let _ = ui.interact(rect, opener, Sense::click());
+                found = pointer_door(ui, rect, opener, anchor);
+            });
+            output.textures_delta.clear();
+            found
+        };
+
+        // Two frames, so the cover's own rect is known to the layer test.
+        let _ = answer(Vec::new());
+        let _ = answer(Vec::new());
+        for event in crate::view::test_support::secondary_click_events(point) {
+            assert_eq!(
+                answer(vec![event]),
+                None,
+                "a right-click under another layer opened a door"
+            );
+        }
     }
 }

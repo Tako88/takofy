@@ -70,6 +70,9 @@ pub fn artist_view(
     // holding the library still.
     let here = Page::Artist(uri.clone());
     let writing = library.write_in_flight();
+    // The sidebar's removal of this artist is already in flight; a follow write
+    // now would land in order with it and leave the row and the label apart.
+    let removal_pending = library.saved_removal_pending(&uri);
 
     let mut command = None;
     let mut retry = false;
@@ -117,11 +120,11 @@ pub fn artist_view(
                         portrait: art.look(artist.portrait.as_ref(), now),
                         playable: !artist.top_tracks.is_empty(),
                         follow: page.follow.label(),
-                        follow_live: page.follow.pressable(),
+                        follow_live: page.follow.pressable() && !removal_pending,
                         follow_failed: page.follow.failed(),
                     };
                     let pressed = artist_hero::show(ui, &hero, tokens);
-                    if pressed.followed {
+                    if pressed.followed && !removal_pending {
                         command = page.follow.pressed();
                     }
                     if pressed.played {
@@ -1207,6 +1210,60 @@ mod tests {
                 artist: ARTIST.to_owned(),
                 followed: false,
             })
+        );
+    }
+
+    #[test]
+    fn the_follow_press_writes_nothing_while_the_sidebar_removes_that_artist() {
+        let ctx = context();
+        let size = Vec2::new(900.0, 800.0);
+        let mut library = library_with(detail(Vec::new(), Vec::new()));
+        library.apply(&Update::FollowedArtists(vec![FollowedArtist {
+            uri: ARTIST.to_owned(),
+            name: "Vela Moreno".to_owned(),
+            named: true,
+            portrait: None,
+            releases: None,
+        }]));
+        library.apply(&Update::Followed {
+            artist: ARTIST.to_owned(),
+            followed: true,
+        });
+        assert!(
+            library
+                .remove_from_library(&crate::menu::LibraryItem {
+                    kind: crate::sidebar_kind::SidebarKind::Artists,
+                    uri: ARTIST.to_owned(),
+                    name: "Vela Moreno".to_owned(),
+                })
+                .is_some(),
+            "the sidebar removal never started"
+        );
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let (_, follow) = hero_rects(&ctx, size);
+        let command = click(
+            &ctx,
+            size,
+            follow.center(),
+            1,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+
+        assert_eq!(command, None, "a follow write raced the sidebar's removal");
+        assert!(
+            !library.follow.pending(),
+            "the page armed a write the sidebar already sent"
+        );
+        assert_eq!(
+            library.follow.label(),
+            "Following",
+            "the label moved before the removal answered"
         );
     }
 

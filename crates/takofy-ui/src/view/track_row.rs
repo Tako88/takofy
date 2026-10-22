@@ -485,7 +485,7 @@ pub fn show(
         && let Some(door) = more
             .door
             .or_else(|| key_door(ui, response, &more, columns.actions))
-            .or_else(|| pointer_door(ui, rect, response.id, columns.actions))
+            .or_else(|| context_menu::pointer_door(ui, rect, response.id, columns.actions))
     {
         return Some(Click::Menu(door));
     }
@@ -1083,30 +1083,6 @@ fn key_door(ui: &Ui, row: &egui::Response, more: &More, anchor: Rect) -> Option<
         anchor: Anchor::Button(anchor),
         opener: if more_focused { more.id } else { row.id },
         device: Device::Keyboard,
-    })
-}
-
-/// The pointer's door: a right-click on the row.
-///
-/// The pointer is read rather than the row's own `secondary_clicked()`, because
-/// the link cells are interacted after the row and win the hit test: a
-/// right-click over the album or the artist is still the row's. The rect test is
-/// the layer and clip test, so a right-click under another layer, or outside the
-/// scroll's clip, opens nothing.
-pub(super) fn pointer_door(ui: &Ui, rect: Rect, opener: egui::Id, anchor: Rect) -> Option<Door> {
-    let secondary = ui.input(|input| input.pointer.secondary_clicked());
-    let over = ui
-        .ctx()
-        .rect_contains_pointer(ui.layer_id(), rect.intersect(ui.clip_rect()));
-    // At the cursor, not at the `⋯`: the click named a place. Falls back to the
-    // `⋯` when the pointer has already gone.
-    let at = ui
-        .input(|input| input.pointer.interact_pos())
-        .map_or(Anchor::Button(anchor), Anchor::Pointer);
-    (secondary && over).then_some(Door {
-        anchor: at,
-        opener,
-        device: Device::Pointer,
     })
 }
 

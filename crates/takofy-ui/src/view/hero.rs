@@ -2,8 +2,7 @@
 //!
 //! The band says what you are looking at: which kind of context it is, its name in
 //! the largest type in the window, and what it holds. Under it is the row of
-//! actions that act on the whole context rather than on one track — of which only
-//! play can act today.
+//! actions that act on the whole context rather than on one track.
 //!
 //! The playlist's description sits under its title in the reference's own byline
 //! style — mono, muted, tracked apart — and its owner rides the meta line as
@@ -14,18 +13,20 @@
 //! What the reference puts here and this does not: the four-cover mosaic, and the
 //! artist form of the band with a photograph behind it.
 
-use egui::{FontId, Pos2, Rect, Sense, Ui, Vec2, vec2};
+use egui::{FontId, Id, Margin, Pos2, Rect, Sense, Ui, Vec2, WidgetInfo, vec2};
 
 use crate::availability::Control;
 use crate::cover::Cover;
 use crate::icon::Icon;
 use crate::layout::hero::title_size;
+use crate::menu::Door;
+use crate::naming::Renaming;
 use crate::theme::icon::Size;
 use crate::theme::{
     MonoWeight, Tokens, Weight, extent, fonts, hero, radius, space, stroke, text, tracking,
 };
 
-use super::{art, controls, text as recipe};
+use super::{art, context_menu, controls, name_field, text as recipe};
 
 /// What a band says about the context it heads.
 pub struct Band<'a> {
@@ -48,6 +49,38 @@ pub struct Band<'a> {
     pub cover: Cover,
 }
 
+/// What the title can do this frame.
+pub enum Title<'a> {
+    Plain,
+    Clickable,
+    Editing(&'a mut Renaming),
+}
+
+/// The band's optional tools.
+pub struct Tools<'a> {
+    pub title: Title<'a>,
+    /// Whether the "…" can act. `None` keeps it present and inert.
+    pub more: Option<bool>,
+}
+
+impl Tools<'_> {
+    pub fn none() -> Tools<'static> {
+        Tools {
+            title: Title::Plain,
+            more: None,
+        }
+    }
+}
+
+/// What drawing the band reported.
+pub struct Reply {
+    pub played: bool,
+    pub rename_clicked: bool,
+    pub more_door: Option<Door>,
+    /// The title's id, so a finished rename hands the keyboard back to it.
+    pub title_id: Option<Id>,
+}
+
 /// Draws the band and its action row, and reports a request to play the context.
 ///
 /// The band takes the width it is given and starts at the cursor, so the caller
@@ -55,15 +88,27 @@ pub struct Band<'a> {
 /// words is stacked up from the band's floor, so a title that changes size with
 /// the window does not move where the band ends.
 pub fn show(ui: &mut Ui, band: &Band<'_>, tokens: &Tokens) -> bool {
+    show_with(ui, band, tokens, Tools::none()).played
+}
+
+/// Draws the band with the tools the page has, and reports what they did.
+pub fn show_with(ui: &mut Ui, band: &Band<'_>, tokens: &Tokens, tools: Tools<'_>) -> Reply {
+    let Tools { title, more } = tools;
     let width = ui.available_width();
     // The art is taller than the band's own minimum, and the padding sits inside
     // the band, so the art plus that padding is what the band comes to.
     let height = (hero::ART + 2.0 * space::S5).max(hero::MIN_H);
     let (rect, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
     wash(ui, rect, tokens);
-    inner(ui, rect, band, tokens);
+    let title = inner(ui, rect, band, tokens, title);
+    let (played, more_door) = actions(ui, band, tokens, more);
 
-    actions(ui, band, tokens)
+    Reply {
+        played,
+        rename_clicked: title.activated,
+        more_door,
+        title_id: title.id,
+    }
 }
 
 /// The tint and the hairline that close the band off from the tracks.
@@ -80,8 +125,19 @@ fn wash(ui: &Ui, rect: Rect, tokens: &Tokens) {
     );
 }
 
+struct TitleDrawn {
+    id: Option<Id>,
+    activated: bool,
+}
+
 /// The art and the words, both standing on the band's floor.
-fn inner(ui: &Ui, rect: Rect, band: &Band<'_>, tokens: &Tokens) {
+fn inner(
+    ui: &mut Ui,
+    rect: Rect,
+    band: &Band<'_>,
+    tokens: &Tokens,
+    title_tool: Title<'_>,
+) -> TitleDrawn {
     let floor = rect.bottom() - space::S5;
     let art = Rect::from_min_size(
         Pos2::new(rect.left() + space::GUTTER, floor - hero::ART),
@@ -99,7 +155,10 @@ fn inner(ui: &Ui, rect: Rect, band: &Band<'_>, tokens: &Tokens) {
     let left = art.right() + space::S5;
     let width = (rect.right() - space::GUTTER - left).max(0.0);
     if width <= 0.0 {
-        return;
+        return TitleDrawn {
+            id: None,
+            activated: false,
+        };
     }
 
     let mut bottom = floor;
@@ -143,17 +202,80 @@ fn inner(ui: &Ui, rect: Rect, band: &Band<'_>, tokens: &Tokens) {
     // The reference's 4.5 vw is a share of the *window*, not of the column this
     // band happens to be drawn in, so the panel's own width is the wrong input.
     let size = title_size(ui.ctx().content_rect().width());
+    let font = FontId::new(size, fonts::sans(Weight::Black));
     let title = recipe::line(
         ui,
         band.title,
-        FontId::new(size, fonts::sans(Weight::Black)),
+        font.clone(),
         tokens.palette.text,
         recipe::tracking_pts(size, tracking::TIGHT),
         width,
     );
     bottom -= title.size().y;
-    ui.painter()
-        .galley(Pos2::new(left, bottom), title, tokens.palette.text);
+    // The edit and click target is the column, never the galley's text width: a
+    // short name must still offer a field wide enough to type in.
+    let title_rect = Rect::from_min_size(Pos2::new(left, bottom), vec2(width, title.size().y));
+    let mut drawn = TitleDrawn {
+        id: None,
+        activated: false,
+    };
+    match title_tool {
+        Title::Plain => {
+            ui.painter()
+                .galley(Pos2::new(left, bottom), title, tokens.palette.text);
+        }
+        Title::Clickable => {
+            ui.painter()
+                .galley(Pos2::new(left, bottom), title, tokens.palette.text);
+            let id = ui.scope_id().with("band-title");
+            let response = ui.interact(title_rect, id, Sense::click());
+            response
+                .widget_info(|| WidgetInfo::labeled(egui::Role::Button, true, "Rename playlist"));
+            if response.clicked() {
+                response.request_focus();
+            }
+            drawn.id = Some(id);
+            drawn.activated = response.clicked() && !context_menu::held_repeat(ui);
+        }
+        Title::Editing(renaming) => {
+            let id = ui.scope_id().with("band-title");
+            drawn.id = Some(id);
+            let writing = renaming.writing();
+            let wants_focus = renaming.wants_focus();
+            let out = {
+                let text = renaming.edit();
+                name_field::edit(
+                    ui,
+                    name_field::Spec {
+                        id,
+                        rect: title_rect,
+                        text,
+                        writing,
+                        wants_focus,
+                        font,
+                        hint: "",
+                        inset: Margin::same(0),
+                        text_color: tokens.palette.text,
+                        weak_color: tokens.palette.text_muted,
+                        cursor: egui::Stroke::new(stroke::HAIRLINE, tokens.palette.text),
+                        align: egui::Align2::LEFT_CENTER,
+                    },
+                )
+            };
+            if out.focused {
+                renaming.focus_taken();
+            }
+            if out.lost_focus && renaming.text().trim().is_empty() {
+                renaming.dismiss();
+            }
+            if out.enter {
+                name_field::post_submit(ui.ctx());
+            }
+            if out.escape {
+                renaming.cancel();
+            }
+        }
+    }
     bottom -= space::S2;
 
     // The eyebrow is the reference's small caps tier: monospace, tracked apart,
@@ -168,13 +290,19 @@ fn inner(ui: &Ui, rect: Rect, band: &Band<'_>, tokens: &Tokens) {
     bottom -= eyebrow.size().y;
     ui.painter()
         .galley(Pos2::new(left, bottom), eyebrow, tokens.palette.text_muted);
+    drawn
 }
 
-/// The row under the band: play, and the tools that cannot act yet.
+/// The row under the band: play, and the tools that act on the context.
 ///
 /// A playlist's row holds three of them, an album's two: the shuffle is the one
 /// the flag drops.
-fn actions(ui: &mut Ui, band: &Band<'_>, tokens: &Tokens) -> bool {
+fn actions(
+    ui: &mut Ui,
+    band: &Band<'_>,
+    tokens: &Tokens,
+    more: Option<bool>,
+) -> (bool, Option<Door>) {
     let width = ui.available_width();
     let height = hero::PLAY + 2.0 * space::S4;
     let (row, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
@@ -194,23 +322,29 @@ fn actions(ui: &mut Ui, band: &Band<'_>, tokens: &Tokens) -> bool {
     );
     let played = slot.response.clicked();
 
-    // The tools hug the right edge, in the reference's order. None of them can act
-    // yet: shuffle and a save need the Web API, and the menu is a later phase.
+    // The tools hug the right edge, in the reference's order. Only the menu can
+    // act on a playlist; the other two wait for the writes behind them.
     let mut tools = Vec::with_capacity(3);
     if band.shuffle {
         tools.push((Control::HeroShuffle, Icon::Shuffle, "Shuffle"));
     }
     tools.push((Control::HeroLike, Icon::Heart, "Save to your library"));
     tools.push((Control::HeroMore, Icon::More, "More options"));
+    let more_live = more.unwrap_or(false);
     let mut right = row.right() - space::GUTTER;
+    let mut door = None;
     for (control, icon, label) in tools.into_iter().rev() {
         let rect = Rect::from_min_size(
             Pos2::new(right - extent::BUTTON_LG, centre - extent::BUTTON_LG / 2.0),
             Vec2::splat(extent::BUTTON_LG),
         );
-        controls::icon_button(ui, tokens, control, rect, icon, Size::MD, label, false);
+        let live = control == Control::HeroMore && more_live;
+        let slot = controls::icon_button(ui, tokens, control, rect, icon, Size::MD, label, live);
+        if control == Control::HeroMore {
+            door = context_menu::button_door(ui, &slot, rect, slot.response.id);
+        }
         right = rect.left() - space::S2;
     }
 
-    played
+    (played, door)
 }

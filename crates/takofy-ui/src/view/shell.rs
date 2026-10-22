@@ -14,7 +14,7 @@ use crate::drawer::{Drawer, Input};
 use crate::landing::{self, Area, Landing, Target};
 use crate::layout::{self, Grid, NowPlaying, Playbar, Sidebar};
 use crate::library::Library;
-use crate::menu::{Cut, Gate, Listing, Verb};
+use crate::menu::{Cut, Gate, LibraryItem, Listing, Verb};
 use crate::message::Command;
 use crate::queue::{Queue, Step};
 use crate::reorder;
@@ -47,6 +47,12 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
     // made is read here on the next frame; nothing caches a request.
     let fullscreen = ui.input(|input| input.viewport().fullscreen);
     let regions = layout::regions_with(content.width(), *screen.pane);
+    // A row's rename field is drawn by the column. The rail draws the same
+    // sidebar only in the drawer, so a closed drawer leaves the field with no
+    // row to sit in and no row to hand the keyboard back to.
+    if regions.sidebar != Sidebar::Full {
+        screen.library.dismiss_row_rename();
+    }
     let shell = layout::shell_for(&regions);
     let grid = layout::grid_for(content, &shell);
 
@@ -412,6 +418,10 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
     if command.is_none() && submit && !carry::carrying(ui.ctx()) {
         command = screen.library.create_playlist();
     }
+    let rename_submit = crate::view::name_field::take_submit(ui.ctx());
+    if command.is_none() && rename_submit && !carry::carrying(ui.ctx()) {
+        command = screen.library.rename_playlist();
+    }
 
     // A heart posts its one-frame intent. It is taken whether or not it can be
     // applied, so a dropped click leaves nothing behind for the next frame.
@@ -478,6 +488,11 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
         ui.ctx().request_repaint();
     }
 
+    // A field the user closed takes the sentence its failed write left with it:
+    // the notice named a field that is no longer on screen, so nothing is left
+    // asking for the retry it described.
+    screen.library.settle_rename();
+
     // Only a refocus this frame's rows drew is settled: one set after they drew —
     // a held Alt+↓ sets one every frame — waits for the frame that draws it.
     if screen.queue.refocus() == pending {
@@ -492,6 +507,27 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
 /// The snapshot the menu took is what the verb acts on, so a list that reloaded
 /// under the menu cannot change what it does.
 fn apply_verb(ui: &Ui, screen: &mut Screen<'_>, verb: Verb) -> Option<Command> {
+    // A library menu's rows act on the one item it named, and it carries no
+    // targets: the listing is what decides, before the pick is read.
+    if let Some(item) = screen.menu.library_item().cloned()
+        && let Some(outcome) = verbs::library_outcome(verb, &item)
+    {
+        return match outcome {
+            verbs::Outcome::Copy(text) => {
+                ui.ctx().copy_text(text);
+                None
+            }
+            verbs::Outcome::Unlink(item) => apply_remove_from_library(ui, screen, &item),
+            verbs::Outcome::Rename(item) => {
+                let surface = match screen.menu.listing() {
+                    Listing::Band(_) => crate::naming::Surface::Band,
+                    _ => crate::naming::Surface::Row,
+                };
+                apply_rename(ui, screen, &item, surface)
+            }
+            _ => None,
+        };
+    }
     let targets = screen.menu.targets().to_vec();
     match verbs::outcome(verb, &targets)? {
         verbs::Outcome::Queue(entries) => {
@@ -516,6 +552,9 @@ fn apply_verb(ui: &Ui, screen: &mut Screen<'_>, verb: Verb) -> Option<Command> {
             let uri = screen.menu.chosen_target()?.uri.clone();
             screen.library.add_pick(&uri, &tracks)
         }
+        // A library row's verbs are the listing branch above; a track pick has
+        // no such verb.
+        verbs::Outcome::Unlink(_) | verbs::Outcome::Rename(_) => None,
     }
 }
 
@@ -529,6 +568,23 @@ fn apply_new_playlist(ui: &Ui, screen: &mut Screen<'_>, pick: Vec<String>) -> Op
         return None;
     }
     screen.library.naming.open_with(pick);
+    None
+}
+
+/// Opens the rename field the menu's Rename row chose.
+///
+/// The field lives in a surface the drawer or a carried block can hide, so both
+/// drop the choice; a typed field takes the keys instead.
+fn apply_rename(
+    ui: &Ui,
+    screen: &mut Screen<'_>,
+    item: &LibraryItem,
+    surface: crate::naming::Surface,
+) -> Option<Command> {
+    if *screen.drawer == Drawer::Open || carry::carrying(ui.ctx()) || ui.ctx().text_edit_focused() {
+        return None;
+    }
+    screen.library.begin_rename(&item.uri, surface);
     None
 }
 
@@ -547,6 +603,23 @@ fn apply_like(
         return None;
     }
     screen.library.set_liked(tracks, liked)
+}
+
+/// Applies the removal a sidebar row's menu chose.
+///
+/// The frame's gates are checked again here, as a page removal's are: an intent
+/// made while a field is typing, the drawer is open, a block is carried or a
+/// write is already in flight is dropped rather than applied.
+fn apply_remove_from_library(
+    ui: &Ui,
+    screen: &mut Screen<'_>,
+    item: &LibraryItem,
+) -> Option<Command> {
+    let gate = door_gate(ui.ctx(), screen, &Listing::Library(item.clone()));
+    if !gate.allows() || *screen.drawer == Drawer::Open || ui.ctx().text_edit_focused() {
+        return None;
+    }
+    screen.library.remove_from_library(item)
 }
 
 /// The gate a menu on `listing` opens under.
@@ -589,7 +662,9 @@ fn apply_cut(ui: &Ui, screen: &mut Screen<'_>, cut: Cut) -> Option<Command> {
             let _ = screen.queue.remove_rows(&cut.rows, &cut.entries);
             None
         }
-        Listing::Page | Listing::Current => None,
+        // A library row's removal is applied by the menu's own verb, because it
+        // names no rows to cut.
+        Listing::Page | Listing::Current | Listing::Library(_) | Listing::Band(_) => None,
     }
 }
 
@@ -1051,18 +1126,21 @@ mod tests {
     use std::time::Instant;
 
     use takofy_model::{
-        CoverUrl, Move, PlaylistAccess, PlaylistEntry, Removal, Revision, TrackEntry,
+        CoverUrl, FollowedArtist, FollowedShow, Move, PlaylistAccess, PlaylistEntry, Removal,
+        Revision, SavedAlbum, TrackEntry,
     };
 
     use super::*;
     use crate::cover::Art;
     use crate::library::{Library, Load};
+    use crate::menu::LibraryItem;
     use crate::message::{Failure, Update};
     use crate::player::{NowPlaying, Transport, TransportState};
     use crate::queue::Queue;
     use crate::route::Page;
     use crate::search::Device;
     use crate::selection::Press;
+    use crate::sidebar_kind::SidebarKind;
     use crate::signin::SignIn;
     use crate::theme::{extent, fonts, icon, space, style};
 
@@ -9986,6 +10064,1461 @@ mod tests {
             window.library.naming.text(),
             "Night Drive",
             "a dropped submit lost the name"
+        );
+    }
+
+    /// A window whose sidebar holds one row the user may unlink.
+    fn sidebar_row(window: &mut Window, uri: &str, name: &str) {
+        window.library.apply(&Update::Playlists(vec![PlaylistEntry {
+            uri: uri.to_owned(),
+            name: name.to_owned(),
+            named: true,
+            cover: None,
+            description: None,
+            owner: None,
+            tracks: None,
+            access: page_access(true),
+        }]));
+        window
+            .library
+            .apply(&Update::RootlistAccess(PlaylistAccess {
+                revision: revision("rev-1"),
+                editable: true,
+            }));
+    }
+
+    /// Opens the menu a sidebar row's door posts, without a pointer.
+    fn open_library_menu(window: &mut Window, row: LibraryItem, removable: bool) {
+        let request = crate::menu::Request {
+            door: crate::menu::Door {
+                anchor: crate::menu::Anchor::Button(Rect::from_min_size(
+                    egui::Pos2::new(60.0, 300.0),
+                    Vec2::new(28.0, 28.0),
+                )),
+                opener: egui::Id::unique("library-row"),
+                device: crate::menu::Device::Keyboard,
+            },
+            playlists: Vec::new(),
+            items: crate::verbs::library_items(
+                &row,
+                crate::verbs::LibraryRights {
+                    renamable: false,
+                    removable,
+                },
+            ),
+            targets: Vec::new(),
+            rows: Vec::new(),
+            listing: Listing::Library(row),
+            page: window.library.page().cloned(),
+        };
+        assert!(
+            window.menu.open(request, Gate::default()),
+            "the menu opened"
+        );
+    }
+
+    fn library_row(kind: SidebarKind, uri: &str, name: &str) -> LibraryItem {
+        LibraryItem {
+            kind,
+            uri: uri.to_owned(),
+            name: name.to_owned(),
+        }
+    }
+
+    #[test]
+    fn copy_link_on_a_library_row_writes_its_url() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let uri = "spotify:playlist:4uLU6hMCjMI75M1A2tKUQC";
+        sidebar_row(&mut window, uri, "Deep Focus");
+        open_library_menu(
+            &mut window,
+            library_row(SidebarKind::Playlists, uri, "Deep Focus"),
+            true,
+        );
+        settle_menu(&mut window, &mut transport, &mut queue);
+
+        let (_, frame) = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![key(egui::Key::Enter, true)],
+        );
+        let copied = frame
+            .platform_output
+            .commands
+            .iter()
+            .find_map(|command| match command {
+                egui::OutputCommand::CopyText(text) => Some(text.as_str()),
+                _ => None,
+            });
+        assert_eq!(
+            copied,
+            Some("https://open.spotify.com/playlist/4uLU6hMCjMI75M1A2tKUQC"),
+            "an empty target list is not what decides a library menu's verb"
+        );
+    }
+
+    #[test]
+    fn a_library_rows_removal_issues_its_one_command() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let uri = "spotify:playlist:4uLU6hMCjMI75M1A2tKUQC";
+        sidebar_row(&mut window, uri, "Deep Focus");
+        open_library_menu(
+            &mut window,
+            library_row(SidebarKind::Playlists, uri, "Deep Focus"),
+            true,
+        );
+        settle_menu(&mut window, &mut transport, &mut queue);
+
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Delete);
+
+        assert_eq!(
+            command,
+            Some(Command::RemovePlaylist {
+                playlist: uri.to_owned(),
+                revision: revision("rev-1"),
+                index: 0,
+            })
+        );
+        assert!(window.library.write_in_flight());
+    }
+
+    #[test]
+    fn a_library_rows_removal_is_dropped_while_a_gate_holds() {
+        let uri = "spotify:album:4uLU6hMCjMI75M1A2tKUQC";
+
+        // The drawer covers the window.
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let row = library_row(SidebarKind::Albums, uri, "A Record");
+        window.library.apply(&Update::SavedAlbums(vec![SavedAlbum {
+            uri: uri.to_owned(),
+            name: "A Record".to_owned(),
+            named: true,
+            artists: String::new(),
+            year: None,
+            cover: None,
+            tracks: None,
+        }]));
+        open_library_menu(&mut window, row.clone(), true);
+        settle_menu(&mut window, &mut transport, &mut queue);
+        window.drawer = Drawer::Open;
+        assert_eq!(
+            press(&mut window, &mut transport, &mut queue, egui::Key::Delete),
+            None,
+            "a removal was applied under the drawer"
+        );
+        assert!(!window.library.write_in_flight());
+
+        // A block is carried.
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        window.library.apply(&Update::SavedAlbums(vec![SavedAlbum {
+            uri: uri.to_owned(),
+            name: "A Record".to_owned(),
+            named: true,
+            artists: String::new(),
+            year: None,
+            cover: None,
+            tracks: None,
+        }]));
+        open_library_menu(&mut window, row, true);
+        settle_menu(&mut window, &mut transport, &mut queue);
+        egui::DragAndDrop::set_payload(&window.ctx, ());
+        assert_eq!(
+            press(&mut window, &mut transport, &mut queue, egui::Key::Delete),
+            None,
+            "a removal was applied while a block was carried"
+        );
+        assert!(!window.library.write_in_flight());
+    }
+
+    #[test]
+    fn a_library_rows_removal_is_dropped_while_a_field_holds_the_keyboard() {
+        let ctx = egui::Context::default();
+        ctx.set_fonts(fonts::definitions());
+        ctx.set_global_style(style(&Tokens::DARK));
+        let uri = "spotify:album:4uLU6hMCjMI75M1A2tKUQC";
+        let mut library = Library::default();
+        library.apply(&Update::SavedAlbums(vec![SavedAlbum {
+            uri: uri.to_owned(),
+            name: "A Record".to_owned(),
+            named: true,
+            artists: String::new(),
+            year: None,
+            cover: None,
+            tracks: None,
+        }]));
+        let row = library_row(SidebarKind::Albums, uri, "A Record");
+        let mut state = SignIn::SignedIn;
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut drawer = Drawer::default();
+        let mut menu = crate::menu::Menu::default();
+        let mut art = Art::default();
+        let mut pane = layout::PanePref::default();
+        let mut typed = String::new();
+        let mut command = None;
+
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    Vec2::new(1400.0, 900.0),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                let id = egui::Id::unique("field");
+                egui::TextEdit::singleline(&mut typed).id(id).show(ui);
+                ui.memory_mut(|memory| memory.request_focus(id));
+                assert!(ui.ctx().text_edit_focused(), "the field holds the key");
+                let mut screen = Screen {
+                    state: &mut state,
+                    library: &mut library,
+                    transport: &mut transport,
+                    queue: &mut queue,
+                    drawer: &mut drawer,
+                    menu: &mut menu,
+                    position_ms: 0,
+                    art: &mut art,
+                    now: Instant::now(),
+                    now_ms: 0,
+                    pane: &mut pane,
+                };
+                command = apply_remove_from_library(ui, &mut screen, &row);
+            },
+        );
+
+        output.textures_delta.clear();
+
+        assert_eq!(command, None, "a removal was applied over a typing field");
+        assert!(!library.write_in_flight());
+    }
+
+    /// A point inside the sidebar row painted as `name`.
+    fn sidebar_line(output: &egui::FullOutput, window: &Window, name: &str) -> egui::Pos2 {
+        let rect = text_in(output, name, sidebar_rect(window))
+            .unwrap_or_else(|| panic!("{name:?} is painted in the sidebar"));
+        egui::Pos2::new(rect.left() + 4.0, rect.center().y)
+    }
+
+    /// Right-clicks the sidebar row painted as `name`, the way a mouse does.
+    fn right_click_sidebar_row(
+        window: &mut Window,
+        transport: &mut Transport,
+        queue: &mut Queue,
+        name: &str,
+    ) {
+        let (_, frame) = window.frame(transport, queue, Vec::new());
+        let at = sidebar_line(&frame, window, name);
+        for event in [
+            egui::Event::PointerMoved(at),
+            side(at, egui::PointerButton::Secondary, true),
+            side(at, egui::PointerButton::Secondary, false),
+        ] {
+            let _ = window.frame(transport, queue, vec![event]);
+        }
+    }
+
+    /// A sidebar holding one row of each kind, each one the user may remove.
+    fn removable_rows(window: &mut Window) {
+        sidebar_playlists(
+            window,
+            &[("Night Drive", None)],
+            Some(rootlist_access(true)),
+        );
+        window
+            .library
+            .apply(&Update::FollowedShows(vec![FollowedShow {
+                uri: "spotify:show:s".to_owned(),
+                name: "Field Notes".to_owned(),
+                named: true,
+                publisher: None,
+                cover: None,
+                episodes: None,
+            }]));
+        window
+            .library
+            .apply(&Update::FollowedArtists(vec![FollowedArtist {
+                uri: "spotify:artist:a".to_owned(),
+                name: "Vela Moreno".to_owned(),
+                named: true,
+                portrait: None,
+                releases: None,
+            }]));
+        window.library.apply(&Update::SavedAlbums(vec![SavedAlbum {
+            uri: "spotify:album:r".to_owned(),
+            name: "A Record".to_owned(),
+            named: true,
+            artists: String::new(),
+            year: None,
+            cover: None,
+            tracks: None,
+        }]));
+    }
+
+    #[test]
+    fn a_sidebar_rows_removal_asks_for_its_kinds_own_write() {
+        for (kind, name) in [
+            (SidebarKind::Playlists, "Night Drive"),
+            (SidebarKind::Albums, "A Record"),
+            (SidebarKind::Artists, "Vela Moreno"),
+            (SidebarKind::Podcasts, "Field Notes"),
+        ] {
+            let mut transport = Transport::default();
+            let mut queue = Queue::default();
+            let mut window = Window::new(Vec2::new(1400.0, 900.0));
+            removable_rows(&mut window);
+            assert!(window.library.choose_kind(kind));
+
+            right_click_sidebar_row(&mut window, &mut transport, &mut queue, name);
+            assert!(window.menu.is_open(), "{kind:?} opened no menu");
+            settle_menu(&mut window, &mut transport, &mut queue);
+
+            let command = press(&mut window, &mut transport, &mut queue, egui::Key::Delete);
+
+            let expected = match kind {
+                SidebarKind::Playlists => Command::RemovePlaylist {
+                    playlist: "playlist:Night Drive".to_owned(),
+                    revision: revision("root-1"),
+                    index: 0,
+                },
+                SidebarKind::Albums => Command::RemoveSaved {
+                    uri: "spotify:album:r".to_owned(),
+                },
+                SidebarKind::Artists => Command::SetFollow {
+                    artist: "spotify:artist:a".to_owned(),
+                    followed: false,
+                },
+                SidebarKind::Podcasts => Command::RemoveSaved {
+                    uri: "spotify:show:s".to_owned(),
+                },
+            };
+            assert_eq!(command, Some(expected), "{kind:?}");
+            assert!(window.library.write_in_flight(), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn a_confirmed_removal_drops_the_row_and_its_open_page_goes_home() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_playlists(
+            &mut window,
+            &[("Night Drive", None), ("Deep Focus", None)],
+            Some(rootlist_access(true)),
+        );
+        let _ = window.library.select("playlist:Night Drive");
+        assert!(window.library.page().is_some());
+
+        right_click_sidebar_row(&mut window, &mut transport, &mut queue, "Night Drive");
+        settle_menu(&mut window, &mut transport, &mut queue);
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Delete);
+        assert!(
+            matches!(command, Some(Command::RemovePlaylist { .. })),
+            "{command:?}"
+        );
+
+        window.library.apply(&Update::PlaylistRemoved {
+            playlist: "playlist:Night Drive".to_owned(),
+            revision: revision("root-2"),
+        });
+
+        assert_eq!(window.library.page(), None, "the removed page stayed open");
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            painted_at(&frame, "Deep Focus").is_some(),
+            "the other row went with it"
+        );
+        assert!(
+            painted_at(&frame, "Night Drive").is_none(),
+            "the removed row stayed in the sidebar"
+        );
+    }
+
+    #[test]
+    fn a_confirmed_removal_lands_while_the_drawer_covers_the_column() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_playlists(
+            &mut window,
+            &[("Night Drive", None), ("Deep Focus", None)],
+            Some(rootlist_access(true)),
+        );
+        let _ = window.library.select("playlist:Night Drive");
+
+        right_click_sidebar_row(&mut window, &mut transport, &mut queue, "Night Drive");
+        settle_menu(&mut window, &mut transport, &mut queue);
+        assert!(
+            matches!(
+                press(&mut window, &mut transport, &mut queue, egui::Key::Delete),
+                Some(Command::RemovePlaylist { .. })
+            ),
+            "the removal never went out"
+        );
+
+        window.drawer = Drawer::Open;
+        window.library.apply(&Update::PlaylistRemoved {
+            playlist: "playlist:Night Drive".to_owned(),
+            revision: revision("root-2"),
+        });
+
+        assert_eq!(
+            window.library.page(),
+            None,
+            "the drawer dropped the removed page's way home"
+        );
+        match &window.library.playlists {
+            Load::Ready(playlists) => assert!(
+                playlists
+                    .iter()
+                    .all(|entry| entry.uri != "playlist:Night Drive"),
+                "the removed row stayed in the list"
+            ),
+            other => panic!("the list was dropped: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn del_on_a_bare_focused_row_removes_nothing() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_playlists(
+            &mut window,
+            &[("Night Drive", None)],
+            Some(rootlist_access(true)),
+        );
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let at = sidebar_line(&frame, &window, "Night Drive");
+        for pressed in [true, false] {
+            let _ = window.frame(
+                &mut transport,
+                &mut queue,
+                vec![side(at, egui::PointerButton::Primary, pressed)],
+            );
+        }
+        assert!(
+            window.ctx.memory(|memory| memory.focused()).is_some(),
+            "the click left the row without the keyboard"
+        );
+
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Delete);
+
+        assert_eq!(command, None, "a bare row unlinked a playlist");
+        assert!(!window.library.write_in_flight());
+    }
+
+    #[test]
+    fn a_sidebar_row_opens_no_menu_while_a_write_is_in_flight() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_playlists(
+            &mut window,
+            &[("Night Drive", None), ("Deep Focus", None)],
+            Some(rootlist_access(true)),
+        );
+        assert!(
+            window
+                .library
+                .move_playlist(0, 2, "playlist:Night Drive")
+                .is_some()
+        );
+
+        right_click_sidebar_row(&mut window, &mut transport, &mut queue, "Deep Focus");
+
+        assert!(!window.menu.is_open(), "a menu opened over a write");
+    }
+
+    #[test]
+    fn escape_closes_a_sidebar_rows_menu_back_to_its_row() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_playlists(
+            &mut window,
+            &[("Night Drive", None)],
+            Some(rootlist_access(true)),
+        );
+        right_click_sidebar_row(&mut window, &mut transport, &mut queue, "Night Drive");
+        assert!(window.menu.is_open());
+        let opener = window.menu.opener().expect("a door names its opener");
+        settle_menu(&mut window, &mut transport, &mut queue);
+
+        let _ = press(&mut window, &mut transport, &mut queue, egui::Key::Escape);
+
+        assert!(!window.menu.is_open());
+        assert_eq!(
+            window.ctx.memory(|memory| memory.focused()),
+            Some(opener),
+            "the keyboard went somewhere other than the row"
+        );
+    }
+    /// Applies a rename the way the menu's Rename row would.
+    fn try_rename(
+        window: &mut Window,
+        uri: &str,
+        surface: crate::naming::Surface,
+    ) -> Option<Command> {
+        let ctx = window.ctx.clone();
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let item = library_row(SidebarKind::Playlists, uri, uri);
+        let mut command = None;
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, window.size)),
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| {
+            let mut screen = Screen {
+                state: &mut window.state,
+                library: &mut window.library,
+                transport: &mut transport,
+                queue: &mut queue,
+                drawer: &mut window.drawer,
+                menu: &mut window.menu,
+                position_ms: 0,
+                art: &mut window.art,
+                now: window.now,
+                now_ms: 0,
+                pane: &mut window.pane,
+            };
+            command = apply_rename(ui, &mut screen, &item, surface);
+        });
+        output.textures_delta.clear();
+        command
+    }
+
+    #[test]
+    fn apply_rename_opens_the_field_on_the_row_or_the_band() {
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_row(&mut window, "spotify:playlist:a", "A");
+
+        assert_eq!(
+            try_rename(
+                &mut window,
+                "spotify:playlist:a",
+                crate::naming::Surface::Row
+            ),
+            None
+        );
+        assert!(
+            window
+                .library
+                .renaming
+                .is_open_on("spotify:playlist:a", crate::naming::Surface::Row)
+        );
+
+        window.library.renaming.force_close();
+        assert_eq!(
+            try_rename(
+                &mut window,
+                "spotify:playlist:a",
+                crate::naming::Surface::Band
+            ),
+            None
+        );
+        assert!(
+            window
+                .library
+                .renaming
+                .is_open_on("spotify:playlist:a", crate::naming::Surface::Band)
+        );
+    }
+
+    #[test]
+    fn apply_rename_drops_the_intent_when_the_field_cannot_be_seen() {
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_row(&mut window, "spotify:playlist:a", "A");
+
+        window.drawer = Drawer::Open;
+        assert_eq!(
+            try_rename(
+                &mut window,
+                "spotify:playlist:a",
+                crate::naming::Surface::Row
+            ),
+            None
+        );
+        assert!(
+            !window.library.renaming.is_open(),
+            "the drawer hid the field"
+        );
+        window.drawer = Drawer::Closed;
+
+        carry::lift(&window.ctx, carried_rows(egui::Id::unique("list"), vec![0]));
+        assert_eq!(
+            try_rename(
+                &mut window,
+                "spotify:playlist:a",
+                crate::naming::Surface::Row
+            ),
+            None
+        );
+        assert!(
+            !window.library.renaming.is_open(),
+            "a carried block held the field shut"
+        );
+        egui::DragAndDrop::clear_payload(&window.ctx);
+    }
+
+    #[test]
+    fn apply_rename_leaves_a_typed_field_alone() {
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        creatable_sidebar(&mut window);
+        open_naming(&mut window, &mut transport, &mut queue);
+        assert!(window.ctx.text_edit_focused());
+
+        assert_eq!(
+            try_rename(&mut window, "playlist:a", crate::naming::Surface::Row),
+            None
+        );
+        assert!(
+            !window.library.renaming.is_open(),
+            "a typed field was replaced"
+        );
+    }
+
+    /// Opens a sidebar row's menu with Rename on it.
+    fn open_rename_menu(window: &mut Window, row: LibraryItem) {
+        let request = crate::menu::Request {
+            door: crate::menu::Door {
+                anchor: crate::menu::Anchor::Button(Rect::from_min_size(
+                    egui::Pos2::new(60.0, 300.0),
+                    Vec2::new(28.0, 28.0),
+                )),
+                opener: egui::Id::unique("library-row"),
+                device: crate::menu::Device::Keyboard,
+            },
+            playlists: Vec::new(),
+            items: crate::verbs::library_items(
+                &row,
+                crate::verbs::LibraryRights {
+                    renamable: true,
+                    removable: true,
+                },
+            ),
+            targets: Vec::new(),
+            rows: Vec::new(),
+            listing: Listing::Library(row),
+            page: window.library.page().cloned(),
+        };
+        assert!(
+            window.menu.open(request, Gate::default()),
+            "the menu opened"
+        );
+    }
+
+    /// Opens a row's rename field from its menu and waits for the keyboard.
+    fn open_row_rename(
+        window: &mut Window,
+        transport: &mut Transport,
+        queue: &mut Queue,
+        uri: &str,
+        name: &str,
+    ) {
+        open_rename_menu(window, library_row(SidebarKind::Playlists, uri, name));
+        settle_menu(window, transport, queue);
+        let _ = press(window, transport, queue, egui::Key::Enter);
+        let _ = window.frame(transport, queue, Vec::new());
+        let _ = window.frame(transport, queue, Vec::new());
+        assert!(
+            window
+                .library
+                .renaming
+                .is_open_on(uri, crate::naming::Surface::Row),
+            "the Rename row opened no field"
+        );
+        assert!(
+            window.ctx.text_edit_focused(),
+            "the keyboard did not follow the field"
+        );
+    }
+
+    #[test]
+    fn a_row_menu_rename_opens_the_field_with_the_current_name() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_row(&mut window, "spotify:playlist:a", "A");
+
+        open_row_rename(
+            &mut window,
+            &mut transport,
+            &mut queue,
+            "spotify:playlist:a",
+            "A",
+        );
+
+        assert_eq!(window.library.renaming.text(), "A");
+        assert!(!window.library.write_in_flight());
+    }
+
+    #[test]
+    fn typing_and_enter_sends_the_trimmed_name() {
+        for (typed, expected) in [
+            ("  Night É  ".to_owned(), "Night É".to_owned()),
+            ("é".repeat(100), "é".repeat(100)),
+        ] {
+            let mut transport = Transport::default();
+            let mut queue = Queue::default();
+            let mut window = Window::new(Vec2::new(1400.0, 900.0));
+            sidebar_row(&mut window, "spotify:playlist:a", "A");
+            open_row_rename(
+                &mut window,
+                &mut transport,
+                &mut queue,
+                "spotify:playlist:a",
+                "A",
+            );
+
+            window.library.renaming.edit().clear();
+            type_text(&mut window, &mut transport, &mut queue, &typed);
+            let command = press(&mut window, &mut transport, &mut queue, egui::Key::Enter);
+
+            assert_eq!(
+                command,
+                Some(Command::RenamePlaylist {
+                    playlist: "spotify:playlist:a".to_owned(),
+                    name: expected,
+                })
+            );
+            assert!(window.library.renaming.writing());
+        }
+    }
+
+    #[test]
+    fn escape_closes_the_row_field_and_sends_nothing() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_row(&mut window, "spotify:playlist:a", "A");
+        open_row_rename(
+            &mut window,
+            &mut transport,
+            &mut queue,
+            "spotify:playlist:a",
+            "A",
+        );
+
+        window.library.renaming.edit().clear();
+        type_text(&mut window, &mut transport, &mut queue, "New");
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Escape);
+
+        assert_eq!(command, None);
+        assert!(!window.library.renaming.is_open());
+        assert!(!window.library.write_in_flight());
+    }
+
+    #[test]
+    fn a_blank_blur_cancels_but_a_named_blur_stays_open() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_row(&mut window, "spotify:playlist:a", "A");
+        open_row_rename(
+            &mut window,
+            &mut transport,
+            &mut queue,
+            "spotify:playlist:a",
+            "A",
+        );
+
+        window.library.renaming.edit().clear();
+        let id = window
+            .ctx
+            .memory(|memory| memory.focused())
+            .expect("a focus");
+        window.ctx.memory_mut(|memory| memory.surrender_focus(id));
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(!window.library.renaming.is_open(), "a blank blur stayed");
+
+        sidebar_row(&mut window, "spotify:playlist:a", "A");
+        open_row_rename(
+            &mut window,
+            &mut transport,
+            &mut queue,
+            "spotify:playlist:a",
+            "A",
+        );
+        let id = window
+            .ctx
+            .memory(|memory| memory.focused())
+            .expect("a focus");
+        window.ctx.memory_mut(|memory| memory.surrender_focus(id));
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            window.library.renaming.is_open(),
+            "a named blur lost the name"
+        );
+        assert_eq!(window.library.renaming.text(), "A");
+    }
+
+    #[test]
+    fn delete_inside_the_row_field_edits_text_and_removes_nothing() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_row(&mut window, "spotify:playlist:a", "A");
+        open_row_rename(
+            &mut window,
+            &mut transport,
+            &mut queue,
+            "spotify:playlist:a",
+            "A",
+        );
+
+        type_text(&mut window, &mut transport, &mut queue, "B");
+        let _ = press(&mut window, &mut transport, &mut queue, egui::Key::Home);
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Delete);
+
+        assert_eq!(command, None, "Del started a removal");
+        assert_eq!(window.library.renaming.text(), "B", "Del left the text");
+        assert_eq!(sidebar_order(&window), ["A"], "Del removed the row");
+        assert!(!window.library.write_in_flight());
+    }
+
+    #[test]
+    fn a_drag_from_the_open_row_begins_no_carry() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_row(&mut window, "spotify:playlist:a", "A");
+        open_row_rename(
+            &mut window,
+            &mut transport,
+            &mut queue,
+            "spotify:playlist:a",
+            "A",
+        );
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let from = sidebar_line(&frame, &window, "A");
+        let to = from + Vec2::new(0.0, sidebar::ROW_H + 8.0);
+
+        let command = window.drag(&mut transport, &mut queue, from, to);
+
+        assert_eq!(command, None);
+        assert!(
+            !carry::carrying(&window.ctx),
+            "a drag out of the field began a carry"
+        );
+        assert!(window.library.renaming.is_open());
+    }
+
+    #[test]
+    fn no_menu_opens_on_another_row_while_the_rename_writes() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_playlists(
+            &mut window,
+            &[("A", Some(0)), ("B", Some(0))],
+            Some(rootlist_access(true)),
+        );
+        open_row_rename(&mut window, &mut transport, &mut queue, "playlist:A", "A");
+        type_text(&mut window, &mut transport, &mut queue, "New");
+        assert!(press(&mut window, &mut transport, &mut queue, egui::Key::Enter).is_some());
+        assert!(window.library.write_in_flight());
+
+        right_click_sidebar_row(&mut window, &mut transport, &mut queue, "B");
+
+        assert_eq!(
+            crate::view::context_menu::take_request(&window.ctx),
+            None,
+            "a menu opened over a rename in flight"
+        );
+    }
+
+    #[test]
+    fn a_confirmed_row_rename_paints_the_new_name() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_row(&mut window, "spotify:playlist:a", "A");
+        open_row_rename(
+            &mut window,
+            &mut transport,
+            &mut queue,
+            "spotify:playlist:a",
+            "A",
+        );
+        type_text(&mut window, &mut transport, &mut queue, "New Name");
+        assert!(press(&mut window, &mut transport, &mut queue, egui::Key::Enter).is_some());
+
+        window.library.apply(&Update::PlaylistRenamed {
+            playlist: "spotify:playlist:a".to_owned(),
+            name: "New Name".to_owned(),
+            revision: revision("rev-2"),
+        });
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+
+        assert!(
+            text_in(&frame, "New Name", sidebar_rect(&window)).is_some(),
+            "the row still paints its old name"
+        );
+        assert!(!window.library.renaming.is_open());
+    }
+
+    #[test]
+    fn a_failed_row_rename_keeps_the_field_and_shows_the_foot_sentence() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_row(&mut window, "spotify:playlist:a", "A");
+        open_row_rename(
+            &mut window,
+            &mut transport,
+            &mut queue,
+            "spotify:playlist:a",
+            "A",
+        );
+        window.library.renaming.edit().clear();
+        type_text(&mut window, &mut transport, &mut queue, "New");
+        assert!(press(&mut window, &mut transport, &mut queue, egui::Key::Enter).is_some());
+
+        window.library.apply(&Update::PlaylistRenameFailed {
+            playlist: "spotify:playlist:a".to_owned(),
+        });
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+
+        assert!(window.library.renaming.is_open());
+        assert_eq!(window.library.renaming.text(), "New");
+        assert!(
+            text_in(
+                &frame,
+                crate::signin::failure_message(Failure::Rename),
+                sidebar_rect(&window)
+            )
+            .is_some(),
+            "the foot did not say why the field stayed"
+        );
+    }
+
+    /// The row's own widget id, taken from a press on it: a press on the row
+    /// takes the keyboard, which is the place Tab continues from.
+    fn press_sidebar_row(
+        window: &mut Window,
+        transport: &mut Transport,
+        queue: &mut Queue,
+        name: &str,
+    ) -> egui::Id {
+        let (_, frame) = window.frame(transport, queue, Vec::new());
+        let at = sidebar_line(&frame, window, name);
+        for event in crate::view::test_support::click_events(at) {
+            let _ = window.frame(transport, queue, vec![event]);
+        }
+        window
+            .ctx
+            .memory(|memory| memory.focused())
+            .expect("the row took no keyboard")
+    }
+
+    /// The band title's widget id, taken from the press that opens its field:
+    /// a press on the title takes the keyboard before the field draws.
+    fn press_band_title(
+        window: &mut Window,
+        transport: &mut Transport,
+        queue: &mut Queue,
+        name: &str,
+    ) -> egui::Id {
+        let (_, frame) = window.frame(transport, queue, Vec::new());
+        let at = text_in(&frame, name, view_rect(window))
+            .unwrap_or_else(|| panic!("{name:?} is painted in the band"))
+            .center();
+        for event in crate::view::test_support::click_events(at) {
+            let _ = window.frame(transport, queue, vec![event]);
+        }
+        assert!(
+            window
+                .library
+                .renaming
+                .is_open_on("playlist:Mix", crate::naming::Surface::Band),
+            "the title opened no field"
+        );
+        window
+            .ctx
+            .memory(|memory| memory.focused())
+            .expect("the title took no keyboard")
+    }
+
+    #[test]
+    fn escape_on_the_row_field_hands_the_keyboard_back_to_its_row() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_row(&mut window, "spotify:playlist:a", "A");
+        let row = press_sidebar_row(&mut window, &mut transport, &mut queue, "A");
+
+        open_row_rename(
+            &mut window,
+            &mut transport,
+            &mut queue,
+            "spotify:playlist:a",
+            "A",
+        );
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Escape);
+
+        assert_eq!(command, None);
+        assert!(!window.library.renaming.is_open());
+        assert!(
+            window.ctx.memory(|memory| memory.has_focus(row)),
+            "Escape left the keyboard nowhere"
+        );
+    }
+
+    #[test]
+    fn a_confirmed_row_rename_hands_the_keyboard_back_to_its_row() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_row(&mut window, "spotify:playlist:a", "A");
+        let row = press_sidebar_row(&mut window, &mut transport, &mut queue, "A");
+
+        open_row_rename(
+            &mut window,
+            &mut transport,
+            &mut queue,
+            "spotify:playlist:a",
+            "A",
+        );
+        type_text(&mut window, &mut transport, &mut queue, "New");
+        assert!(
+            press(&mut window, &mut transport, &mut queue, egui::Key::Enter).is_some(),
+            "Enter sent nothing"
+        );
+        window.library.apply(&Update::PlaylistRenamed {
+            playlist: "spotify:playlist:a".to_owned(),
+            name: "New".to_owned(),
+            revision: revision("rev-2"),
+        });
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+
+        assert!(!window.library.renaming.is_open());
+        assert!(
+            window.ctx.memory(|memory| memory.has_focus(row)),
+            "a confirmed rename left the keyboard nowhere"
+        );
+    }
+
+    #[test]
+    fn escape_on_the_band_field_hands_the_keyboard_back_to_the_title() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        band_page(&mut window);
+        let title = press_band_title(&mut window, &mut transport, &mut queue, "Mix");
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            window.ctx.text_edit_focused(),
+            "the band field has no keyboard"
+        );
+
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Escape);
+
+        assert_eq!(command, None);
+        assert!(!window.library.renaming.is_open());
+        assert!(
+            window.ctx.memory(|memory| memory.has_focus(title)),
+            "Escape left the keyboard nowhere"
+        );
+    }
+
+    #[test]
+    fn a_confirmed_band_rename_hands_the_keyboard_back_to_the_title() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        band_page(&mut window);
+        let title = press_band_title(&mut window, &mut transport, &mut queue, "Mix");
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        type_text(&mut window, &mut transport, &mut queue, "New");
+        assert!(
+            press(&mut window, &mut transport, &mut queue, egui::Key::Enter).is_some(),
+            "Enter sent nothing"
+        );
+        window.library.apply(&Update::PlaylistRenamed {
+            playlist: "playlist:Mix".to_owned(),
+            name: "New".to_owned(),
+            revision: revision("rev-2"),
+        });
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+
+        assert!(!window.library.renaming.is_open());
+        assert!(
+            window.ctx.memory(|memory| memory.has_focus(title)),
+            "a confirmed rename left the keyboard nowhere"
+        );
+    }
+
+    #[test]
+    fn a_row_field_closes_when_the_sidebar_leaves_the_column() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_row(&mut window, "spotify:playlist:a", "A");
+        open_row_rename(
+            &mut window,
+            &mut transport,
+            &mut queue,
+            "spotify:playlist:a",
+            "A",
+        );
+
+        // Below the rail width the column is gone: the drawer is the sidebar,
+        // and it is closed.
+        window.size = Vec2::new(900.0, 900.0);
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+
+        assert!(
+            !window.library.renaming.is_open(),
+            "the rail kept a field no row draws"
+        );
+    }
+
+    #[test]
+    fn escape_after_a_failed_row_rename_takes_the_sentence_with_it() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_row(&mut window, "spotify:playlist:a", "A");
+        open_row_rename(
+            &mut window,
+            &mut transport,
+            &mut queue,
+            "spotify:playlist:a",
+            "A",
+        );
+        window.library.renaming.edit().clear();
+        type_text(&mut window, &mut transport, &mut queue, "New");
+        assert!(press(&mut window, &mut transport, &mut queue, egui::Key::Enter).is_some());
+        window.library.apply(&Update::PlaylistRenameFailed {
+            playlist: "spotify:playlist:a".to_owned(),
+        });
+        // The reply asks for the keyboard back. The field owns the Escape
+        // after that, even though egui stores a filter only for a widget that
+        // had focus last frame.
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert_eq!(
+            window.library.sidebar_notice,
+            Some(crate::library::SidebarWrite::Rename)
+        );
+        assert!(
+            text_in(
+                &frame,
+                crate::signin::failure_message(Failure::Rename),
+                sidebar_rect(&window)
+            )
+            .is_some(),
+            "the foot never said why"
+        );
+
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Escape);
+
+        assert_eq!(command, None);
+        assert!(!window.library.renaming.is_open());
+        assert_eq!(
+            window.library.sidebar_notice, None,
+            "the failed rename's sentence outlived its field"
+        );
+    }
+
+    #[test]
+    fn escape_after_a_failed_band_rename_takes_both_sentences_with_it() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        band_page(&mut window);
+        let _ = press_band_title(&mut window, &mut transport, &mut queue, "Mix");
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        type_text(&mut window, &mut transport, &mut queue, "New");
+        assert!(press(&mut window, &mut transport, &mut queue, egui::Key::Enter).is_some());
+        window.library.apply(&Update::PlaylistRenameFailed {
+            playlist: "playlist:Mix".to_owned(),
+        });
+        // The reply asks for the keyboard back, and the field owns the Escape
+        // after that.
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        assert_eq!(
+            window.library.sidebar_notice,
+            Some(crate::library::SidebarWrite::Rename)
+        );
+        assert_eq!(page_notice(&window), Some(Failure::Rename));
+
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Escape);
+
+        assert_eq!(command, None);
+        assert!(!window.library.renaming.is_open());
+        assert_eq!(
+            window.library.sidebar_notice, None,
+            "the foot's sentence outlived the field"
+        );
+        assert_eq!(
+            page_notice(&window),
+            None,
+            "the page's sentence outlived the field"
+        );
+    }
+
+    /// A failed rename asks for the keyboard back in the reply's own frame.
+    /// The first Escape after that must close the field: a second press is not
+    /// the user's first answer, and the field may not have one coming.
+    #[test]
+    fn one_escape_closes_a_row_field_after_a_failed_rename() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_row(&mut window, "spotify:playlist:a", "A");
+        open_row_rename(
+            &mut window,
+            &mut transport,
+            &mut queue,
+            "spotify:playlist:a",
+            "A",
+        );
+        window.library.renaming.edit().clear();
+        type_text(&mut window, &mut transport, &mut queue, "New");
+        assert!(press(&mut window, &mut transport, &mut queue, egui::Key::Enter).is_some());
+        window.library.apply(&Update::PlaylistRenameFailed {
+            playlist: "spotify:playlist:a".to_owned(),
+        });
+        // The reply's frame is the one that asks for the keyboard back.
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            window.ctx.text_edit_focused(),
+            "the failed rename left the field without the keyboard"
+        );
+
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Escape);
+
+        assert_eq!(command, None);
+        assert!(
+            !window.library.renaming.is_open(),
+            "one Escape after the failure was swallowed"
+        );
+    }
+
+    /// The band field's half of the same claim: the failed reply hands the
+    /// keyboard back, and the very next Escape is the one that closes it.
+    #[test]
+    fn one_escape_closes_a_band_field_after_a_failed_rename() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        band_page(&mut window);
+        let _ = press_band_title(&mut window, &mut transport, &mut queue, "Mix");
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        type_text(&mut window, &mut transport, &mut queue, "New");
+        assert!(press(&mut window, &mut transport, &mut queue, egui::Key::Enter).is_some());
+        window.library.apply(&Update::PlaylistRenameFailed {
+            playlist: "playlist:Mix".to_owned(),
+        });
+        // The reply's frame is the one that asks for the keyboard back.
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            window.ctx.text_edit_focused(),
+            "the failed rename left the band field without the keyboard"
+        );
+
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Escape);
+
+        assert_eq!(command, None);
+        assert!(
+            !window.library.renaming.is_open(),
+            "one Escape after the failure was swallowed"
+        );
+    }
+
+    #[test]
+    fn a_dismissed_row_field_takes_the_failed_rename_sentence_with_it() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_row(&mut window, "spotify:playlist:a", "A");
+        open_row_rename(
+            &mut window,
+            &mut transport,
+            &mut queue,
+            "spotify:playlist:a",
+            "A",
+        );
+        window.library.renaming.edit().clear();
+        type_text(&mut window, &mut transport, &mut queue, "New");
+        assert!(press(&mut window, &mut transport, &mut queue, egui::Key::Enter).is_some());
+        window.library.apply(&Update::PlaylistRenameFailed {
+            playlist: "spotify:playlist:a".to_owned(),
+        });
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        assert_eq!(
+            window.library.sidebar_notice,
+            Some(crate::library::SidebarWrite::Rename)
+        );
+
+        // A chip change dismisses the row's field rather than cancelling it.
+        assert!(window.library.choose_kind(SidebarKind::Podcasts));
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+
+        assert!(!window.library.renaming.is_open());
+        assert_eq!(
+            window.library.sidebar_notice, None,
+            "a dismissed field kept the sentence it explained"
+        );
+    }
+
+    /// The sentence a playlist page carries, when it carries one.
+    fn page_notice(window: &Window) -> Option<Failure> {
+        match &window.library.tracks {
+            Load::Ready(tracks) => tracks.notice,
+            Load::Idle | Load::Loading | Load::Failed(_) => None,
+        }
+    }
+
+    #[test]
+    fn a_chip_change_dismisses_an_open_row_field() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_row(&mut window, "spotify:playlist:a", "A");
+        open_row_rename(
+            &mut window,
+            &mut transport,
+            &mut queue,
+            "spotify:playlist:a",
+            "A",
+        );
+
+        assert!(window.library.choose_kind(SidebarKind::Podcasts));
+
+        assert!(!window.library.renaming.is_open());
+    }
+
+    /// Posts a band menu the way the band's "…" does.
+    fn open_band_menu(window: &mut Window, row: LibraryItem, rights: crate::verbs::LibraryRights) {
+        let request = crate::menu::Request {
+            door: crate::menu::Door {
+                anchor: crate::menu::Anchor::Button(Rect::from_min_size(
+                    egui::Pos2::new(60.0, 300.0),
+                    Vec2::new(28.0, 28.0),
+                )),
+                opener: egui::Id::unique("band-more"),
+                device: crate::menu::Device::Keyboard,
+            },
+            playlists: Vec::new(),
+            items: crate::verbs::library_items(&row, rights),
+            targets: Vec::new(),
+            rows: Vec::new(),
+            listing: Listing::Band(row),
+            page: window.library.page().cloned(),
+        };
+        assert!(
+            window.menu.open(request, Gate::default()),
+            "the menu opened"
+        );
+    }
+
+    /// A playlist page whose sidebar row is the same playlist.
+    fn band_page(window: &mut Window) {
+        sidebar_playlists(window, &[("Mix", Some(0))], Some(rootlist_access(true)));
+        window.library.select("playlist:Mix");
+        window.library.apply(&Update::Tracks {
+            playlist: "playlist:Mix".to_owned(),
+            tracks: vec![TrackEntry {
+                uri: "list:p0".to_owned(),
+                title: "p0".to_owned(),
+                ..track(0, None)
+            }],
+            cover: None,
+            access: page_access(true),
+        });
+    }
+
+    #[test]
+    fn removing_from_the_band_menu_unlinks_and_takes_the_page_home() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        band_page(&mut window);
+        let row = library_row(SidebarKind::Playlists, "playlist:Mix", "Mix");
+        open_band_menu(
+            &mut window,
+            row,
+            crate::verbs::LibraryRights {
+                renamable: true,
+                removable: true,
+            },
+        );
+        settle_menu(&mut window, &mut transport, &mut queue);
+
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Delete);
+
+        assert_eq!(
+            command,
+            Some(Command::RemovePlaylist {
+                playlist: "playlist:Mix".to_owned(),
+                revision: revision("root-1"),
+                index: 0,
+            })
+        );
+        window.library.apply(&Update::PlaylistRemoved {
+            playlist: "playlist:Mix".to_owned(),
+            revision: revision("root-2"),
+        });
+        assert!(
+            window.library.page().is_none(),
+            "the page stayed after its list left"
+        );
+    }
+
+    #[test]
+    fn copy_link_on_the_band_menu_writes_the_playlist_url() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let uri = "spotify:playlist:4uLU6hMCjMI75M1A2tKUQC";
+        sidebar_row(&mut window, uri, "Deep Focus");
+        window.library.select(uri);
+        let row = library_row(SidebarKind::Playlists, uri, "Deep Focus");
+        open_band_menu(
+            &mut window,
+            row,
+            crate::verbs::LibraryRights {
+                renamable: false,
+                removable: false,
+            },
+        );
+        settle_menu(&mut window, &mut transport, &mut queue);
+
+        let (_, frame) = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![key(egui::Key::Enter, true)],
+        );
+        let copied = frame
+            .platform_output
+            .commands
+            .iter()
+            .find_map(|command| match command {
+                egui::OutputCommand::CopyText(text) => Some(text.as_str()),
+                _ => None,
+            });
+        assert_eq!(
+            copied,
+            Some("https://open.spotify.com/playlist/4uLU6hMCjMI75M1A2tKUQC")
         );
     }
 }

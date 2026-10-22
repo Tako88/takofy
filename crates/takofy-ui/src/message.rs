@@ -37,6 +37,19 @@ pub enum Command {
         from: usize,
         to: usize,
     },
+    /// Unlink one row of the sidebar's playlists, based on `revision`.
+    ///
+    /// The rootlist unlinks only, so the playlist survives the write.
+    RemovePlaylist {
+        playlist: String,
+        revision: Revision,
+        index: usize,
+    },
+    /// Write one saved album or show out of the library.
+    ///
+    /// An artist is not removed this way: it is unfollowed, through
+    /// [`Command::SetFollow`].
+    RemoveSaved { uri: String },
     /// Append tracks to a playlist, in the order given, based on `revision`.
     AddTracks {
         playlist: String,
@@ -44,6 +57,8 @@ pub enum Command {
         from_index: usize,
         tracks: Vec<String>,
     },
+    /// Rename one playlist, based on the revision its own state read answers.
+    RenamePlaylist { playlist: String, name: String },
     /// Create a playlist called `name` and put it at the front of the user's
     /// rootlist, based on the rootlist's `revision`, with `tracks` to land in
     /// it once it exists.
@@ -112,6 +127,8 @@ pub enum Failure {
     Load,
     /// A write the user asked for did not stick.
     Save,
+    /// A playlist rename did not stick, and the field stays open.
+    Rename,
     /// The shows the user follows could not be loaded.
     Followed,
     /// The artists the user follows could not be loaded.
@@ -173,6 +190,19 @@ pub enum Update {
     PlaylistMoved { revision: Revision },
     /// A sidebar move did not stick.
     PlaylistMoveFailed,
+    /// A playlist left the rootlist, and this is the revision the next write
+    /// must name.
+    PlaylistRemoved {
+        playlist: String,
+        revision: Revision,
+    },
+    /// The playlist could not be unlinked, so it stays in the sidebar.
+    PlaylistRemoveFailed { playlist: String },
+    /// A saved album or show left the library. The reply carried no body, so
+    /// this is the write's own echo.
+    SavedRemoved { uri: String },
+    /// The saved album or show could not be written out, so it stays.
+    SavedRemoveFailed { uri: String },
     /// A track was appended to a playlist, and this is the revision the next
     /// write must name.
     TrackAdded {
@@ -183,6 +213,17 @@ pub enum Update {
     AddFailed { playlist: String },
     /// A playlist exists but the pick it was created for did not land in it.
     PlaylistUnfilled { playlist: String },
+    /// A playlist exists but the rename that gives it a name did not land, so it
+    /// keeps the typed name for this session only.
+    PlaylistUnnamed { playlist: String },
+    /// A playlist was renamed, and this is the revision the next write names.
+    PlaylistRenamed {
+        playlist: String,
+        name: String,
+        revision: Revision,
+    },
+    /// A playlist rename did not stick, so the field stays open with its text.
+    PlaylistRenameFailed { playlist: String },
     /// A playlist was created and linked, and this is the row to draw first.
     ///
     /// The revision is the link reply's, so the next rootlist write names the

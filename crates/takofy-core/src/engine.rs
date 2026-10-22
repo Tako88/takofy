@@ -15,8 +15,8 @@ use crate::remote::{
     ROOTLIST_WIRE, RemoteContext, RemoteRootlist, label_playlists, label_tracks, read_album,
     read_artist, read_followed_artists, read_followed_shows, read_liked_tracks, read_lyrics,
     read_playlist_state, read_related, read_release_tracks, read_saved_albums, read_show,
-    write_add, write_create, write_follow, write_like, write_move, write_remove,
-    write_rootlist_add, write_rootlist_move,
+    write_add, write_create, write_follow, write_like, write_move, write_remove, write_rename,
+    write_rootlist_add, write_rootlist_move, write_rootlist_remove, write_saved_removal,
 };
 use crate::rootlist::{RootlistError, fetch_all};
 use crate::search::search_uri;
@@ -75,6 +75,16 @@ impl Engine {
             entries: label_playlists(&self.session, walked.playlists).await,
             access: walked.access,
         })
+    }
+
+    /// One playlist as the sidebar draws it: its name, cover and counts.
+    ///
+    /// A created list has none of these in the write's replies, so this is the
+    /// read that fills them in without waiting for the next rootlist reload.
+    pub async fn playlist_entry(&self, playlist_uri: &str) -> Option<PlaylistEntry> {
+        label_playlists(&self.session, vec![playlist_uri.to_owned()])
+            .await
+            .pop()
     }
 
     /// Starts a player over this session.
@@ -168,6 +178,23 @@ impl Engine {
         Ok(write_rootlist_move(&self.session, revision, from, to).await?)
     }
 
+    /// Removes one playlist from the user's rootlist, answering the revision the
+    /// next write must name.
+    ///
+    /// The rootlist unlinks only: the playlist itself survives.
+    pub async fn remove_playlist(
+        &self,
+        revision: &Revision,
+        index: usize,
+    ) -> Result<Revision, EngineError> {
+        Ok(write_rootlist_remove(&self.session, revision, index).await?)
+    }
+
+    /// Writes one saved album or show out of the library.
+    pub async fn remove_saved(&self, uri: &str) -> Result<(), EngineError> {
+        Ok(write_saved_removal(&self.session, uri).await?)
+    }
+
     /// Creates a playlist called `name`, answering its URI.
     ///
     /// The playlist is not on the rootlist until [`Self::link_playlist`] puts it
@@ -193,6 +220,16 @@ impl Engine {
     pub async fn playlist_state(&self, playlist_uri: &str) -> Option<PlaylistAccess> {
         let state = read_playlist_state(&self.session, playlist_uri).await?;
         playlist_edit::listing_access(state.revision.as_bytes(), state.can_edit)
+    }
+
+    /// Renames a playlist, answering the revision to hold next.
+    pub async fn rename_playlist(
+        &self,
+        playlist_uri: &str,
+        revision: &Revision,
+        name: &str,
+    ) -> Result<Revision, EngineError> {
+        Ok(write_rename(&self.session, playlist_uri, revision, name).await?)
     }
 
     /// Appends tracks to a playlist, answering the revision to hold next.

@@ -12,7 +12,7 @@ use takofy_core::engine::{Engine, EngineError, RootlistRead};
 use takofy_core::playback::{Playback, PlaybackError, PlaybackEvent};
 use takofy_model::{
     AlbumDetail, ArtistDetail, CoverUrl, FollowedArtist, FollowedShow, Move, PlaylistAccess,
-    Removal, Revision, SavedAlbum, ShowDetail, TrackEntry, TrackLyrics,
+    PlaylistEntry, Removal, Revision, SavedAlbum, ShowDetail, TrackEntry, TrackLyrics,
 };
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::oneshot::Receiver;
@@ -87,6 +87,10 @@ pub(crate) trait SessionHost: Send + 'static {
 
     fn rootlist(&self) -> impl Future<Output = Result<RootlistRead, SessionError>> + Send;
 
+    /// One playlist as the sidebar draws it, or `None` when the read does not
+    /// answer.
+    fn playlist_entry(&self, playlist: &str) -> impl Future<Output = Option<PlaylistEntry>> + Send;
+
     /// Writes one move to the sidebar's playlists, answering the revision to
     /// hold next.
     fn move_playlist(
@@ -95,6 +99,17 @@ pub(crate) trait SessionHost: Send + 'static {
         from: usize,
         to: usize,
     ) -> impl Future<Output = Result<Revision, SessionError>> + Send;
+
+    /// Unlinks one row of the sidebar's playlists, answering the revision to
+    /// hold next.
+    fn remove_playlist(
+        &self,
+        revision: &Revision,
+        index: usize,
+    ) -> impl Future<Output = Result<Revision, SessionError>> + Send;
+
+    /// Writes one saved album or show out of the library.
+    fn remove_saved(&self, uri: &str) -> impl Future<Output = Result<(), SessionError>> + Send;
 
     /// Appends tracks to a playlist as one write, answering the revision to
     /// hold next.
@@ -111,6 +126,14 @@ pub(crate) trait SessionHost: Send + 'static {
         &self,
         name: &str,
     ) -> impl Future<Output = Result<String, SessionError>> + Send;
+
+    /// Renames `playlist`, answering the revision to hold next.
+    fn rename_playlist(
+        &self,
+        playlist: &str,
+        revision: &Revision,
+        name: &str,
+    ) -> impl Future<Output = Result<Revision, SessionError>> + Send;
 
     /// Puts `playlist` at the front of the user's rootlist, answering the
     /// revision to hold next.
@@ -273,6 +296,13 @@ impl SessionHost for LiveSession {
         }
     }
 
+    async fn playlist_entry(&self, playlist: &str) -> Option<PlaylistEntry> {
+        match &self.engine {
+            Some(engine) => engine.playlist_entry(playlist).await,
+            None => None,
+        }
+    }
+
     async fn move_playlist(
         &self,
         revision: &Revision,
@@ -284,6 +314,27 @@ impl SessionHost for LiveSession {
                 .move_playlist(revision, from, to)
                 .await
                 .map_err(SessionError::Engine),
+            None => Err(SessionError::NotConnected),
+        }
+    }
+
+    async fn remove_playlist(
+        &self,
+        revision: &Revision,
+        index: usize,
+    ) -> Result<Revision, SessionError> {
+        match &self.engine {
+            Some(engine) => engine
+                .remove_playlist(revision, index)
+                .await
+                .map_err(SessionError::Engine),
+            None => Err(SessionError::NotConnected),
+        }
+    }
+
+    async fn remove_saved(&self, uri: &str) -> Result<(), SessionError> {
+        match &self.engine {
+            Some(engine) => engine.remove_saved(uri).await.map_err(SessionError::Engine),
             None => Err(SessionError::NotConnected),
         }
     }
@@ -308,6 +359,21 @@ impl SessionHost for LiveSession {
         match &self.engine {
             Some(engine) => engine
                 .make_playlist(name)
+                .await
+                .map_err(SessionError::Engine),
+            None => Err(SessionError::NotConnected),
+        }
+    }
+
+    async fn rename_playlist(
+        &self,
+        playlist: &str,
+        revision: &Revision,
+        name: &str,
+    ) -> Result<Revision, SessionError> {
+        match &self.engine {
+            Some(engine) => engine
+                .rename_playlist(playlist, revision, name)
                 .await
                 .map_err(SessionError::Engine),
             None => Err(SessionError::NotConnected),

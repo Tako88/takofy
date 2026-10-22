@@ -63,6 +63,11 @@ impl Follow {
         self.artist.is_some() && self.pending.is_none()
     }
 
+    /// Whether a write of the button's is in flight.
+    pub fn pending(&self) -> bool {
+        self.pending.is_some()
+    }
+
     /// The failure the button's hint shows, if the last write failed.
     pub fn failed(&self) -> Option<Failure> {
         self.failed

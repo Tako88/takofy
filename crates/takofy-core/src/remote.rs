@@ -395,6 +395,26 @@ pub(crate) async fn write_move(
     write_changes(session, endpoint, playlist_edit::move_body(revision, moves)).await
 }
 
+/// Renames a playlist to `name`, as one delta on one revision.
+///
+/// A create cannot name a list, so this is what gives a fresh playlist its
+/// title; it takes the revision the read gave and answers the next one.
+pub(crate) async fn write_rename(
+    session: &Session,
+    uri: &str,
+    revision: &Revision,
+    name: &str,
+) -> Result<Revision, playlist_edit::PlaylistError> {
+    playlist_edit::require_name(name)?;
+    let endpoint = playlist_edit::changes_endpoint(uri)?;
+    write_changes(
+        session,
+        endpoint,
+        playlist_edit::rename_body(revision, name),
+    )
+    .await
+}
+
 /// Removes `removals` from a playlist, as one delta on one revision.
 pub(crate) async fn write_remove(
     session: &Session,
@@ -447,6 +467,48 @@ pub(crate) async fn write_rootlist_add(
         playlist_edit::add_body(revision, 0, &[uri.to_owned()]),
     )
     .await
+}
+
+/// Removes one row from the user's rootlist, based on `revision`.
+///
+/// The rootlist unlinks only: the playlist itself survives and another client
+/// can put it back.
+pub(crate) async fn write_rootlist_remove(
+    session: &Session,
+    revision: &Revision,
+    index: usize,
+) -> Result<Revision, playlist_edit::PlaylistError> {
+    let endpoint = playlist_edit::rootlist_changes_endpoint(&session.username())?;
+    write_changes(
+        session,
+        endpoint,
+        playlist_edit::remove_body(revision, index, 1),
+    )
+    .await
+}
+
+/// Writes one saved album or show out of its set.
+///
+/// The reply is empty, so silence is not proof: the caller's confirmation is the
+/// next read. The write is idempotent, so it keeps the client's retry budget.
+pub(crate) async fn write_saved_removal(session: &Session, uri: &str) -> Result<(), FollowedError> {
+    let set = collection::saved_set(uri)?;
+    let headers = collection_headers().ok_or_else(|| {
+        FollowedError::Source("the collection media type is not a valid header".to_owned())
+    })?;
+    let username = session.username();
+    let body = collection::items_body(&username, set, &[uri], None, true, &client_update_id());
+    session
+        .spclient()
+        .request(
+            &Method::POST,
+            "/collection/v2/write",
+            Some(headers),
+            Some(&body),
+        )
+        .await
+        .map(|_| ())
+        .map_err(|error| FollowedError::Source(error.to_string()))
 }
 
 /// Appends tracks to a playlist as one change set.
@@ -737,8 +799,9 @@ pub(crate) async fn write_like(
         .map_or(0, |since| since.as_secs() as i64);
     let refs: Vec<&str> = uris.iter().map(String::as_str).collect();
     for batch in collection::like_batches(&refs, LIKE_BATCH) {
-        let body = collection::like_body(
+        let body = collection::items_body(
             &username,
+            collection::COLLECTION_SET,
             batch,
             liked.then_some(now),
             !liked,

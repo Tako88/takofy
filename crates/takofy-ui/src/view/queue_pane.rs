@@ -160,7 +160,7 @@ pub fn show(
                             // A queue row draws no `⋯`, so a right-click and the
                             // context-menu key are its only two doors, and both
                             // win over the row's own click.
-                            let door = super::track_row::pointer_door(
+                            let door = super::context_menu::pointer_door(
                                 ui,
                                 rect,
                                 queue_row::id(ui, index),
