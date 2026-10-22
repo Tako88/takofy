@@ -5,10 +5,8 @@
 
 use std::time::Instant;
 
-use egui::{Align, Layout, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Ui, UiBuilder, Vec2};
-use takofy_model::{
-    CoverUrl, FollowedArtist, FollowedShow, PLAYLIST_NAME_MAX, PlaylistEntry, SavedAlbum,
-};
+use egui::{Layout, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Ui, UiBuilder, Vec2};
+use takofy_model::{CoverUrl, FollowedArtist, FollowedShow, PlaylistEntry, SavedAlbum};
 
 use crate::availability::Control;
 use crate::cover::{Art, Cover};
@@ -33,7 +31,7 @@ use super::art;
 use super::carry::{self, Carry, ColumnOffer, Ghost, Source};
 use super::context_menu;
 use super::controls;
-use super::keys::{FIELD_FILTER, pressed_once};
+use super::name_field;
 use super::queue_row;
 use super::rows::{self, Look};
 use super::shell::rule;
@@ -234,100 +232,52 @@ fn name_field(ui: &mut Ui, rect: Rect, library: &mut Library, tokens: &Tokens) {
         .rect_filled(rect, radius::SM, tokens.palette.surface_raised);
 
     let writing = library.naming.writing();
+    let wants_focus = library.naming.wants_focus();
     let id = ui.scope_id().with((Control::LibraryCreate, "name"));
-    let focused_before = ui.memory(|memory| memory.has_focus(id));
-    let (enter, escape) = if focused_before && !writing {
-        ui.input(|input| {
-            (
-                pressed_once(input, egui::Key::Enter),
-                pressed_once(input, egui::Key::Escape),
-            )
-        })
-    } else {
-        (false, false)
+    let out = {
+        let text = library.naming.edit();
+        name_field::edit(
+            ui,
+            name_field::Spec {
+                id,
+                rect,
+                text,
+                writing,
+                wants_focus,
+                font: egui::FontId::new(text::SM, fonts::sans(Weight::Regular)),
+                hint: "New playlist name",
+                inset: egui::Margin {
+                    left: space::S2 as i8,
+                    right: space::S2 as i8,
+                    top: 0,
+                    bottom: 0,
+                },
+                text_color: tokens.palette.text,
+                weak_color: tokens.palette.text_subtle,
+                cursor: Stroke::new(stroke::HAIRLINE, tokens.palette.text),
+                align: egui::Align2::LEFT_CENTER,
+            },
+        )
     };
-    if focused_before {
-        ui.input_mut(|input| {
-            if enter {
-                input.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
-            }
-            if escape {
-                input.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
-            }
-        });
+    if out.focused {
+        library.naming.focus_taken();
     }
-    if library.naming.wants_focus() {
-        ui.memory_mut(|memory| memory.request_focus(id));
-    }
-    if focused_before {
-        // egui stores a filter only for a widget that had focus last frame, so
-        // this takes effect on the frame after the field first holds the
-        // keyboard. Without it the field would lose Escape to egui's own
-        // focus handling, and `request_focus` stores a default filter.
-        ui.memory_mut(|memory| memory.set_focus_lock_filter(id, FIELD_FILTER));
+    // A blank field left behind says nothing, so it goes; text does not, so a
+    // click elsewhere never loses a name.
+    if out.lost_focus && library.naming.text().trim().is_empty() {
+        library.naming.cancel();
     }
 
-    let mut focused = focused_before;
-    if writing {
-        // The reply decides what the row is called, so an edit now would be lost
-        // with the field.
-        ui.painter().text(
-            Pos2::new(rect.left() + space::S2, rect.center().y),
-            egui::Align2::LEFT_CENTER,
-            library.naming.text(),
-            egui::FontId::new(text::SM, fonts::sans(Weight::Regular)),
-            tokens.palette.text_disabled,
-        );
-    } else {
-        let inset = egui::Margin {
-            left: space::S2 as i8,
-            right: space::S2 as i8,
-            top: 0,
-            bottom: 0,
-        };
-        let mut child = ui.new_child(
-            UiBuilder::new()
-                .id_salt("library-name-text")
-                .max_rect(rect)
-                .layout(Layout::left_to_right(Align::Center)),
-        );
-        child.set_clip_rect(rect);
-        child.visuals_mut().weak_text_color = Some(tokens.palette.text_subtle);
-        child.visuals_mut().text_cursor.stroke = Stroke::new(stroke::HAIRLINE, tokens.palette.text);
-
-        let output = egui::TextEdit::singleline(library.naming.edit())
-            .id(id)
-            .frame(egui::Frame::NONE.inner_margin(inset))
-            .min_size(rect.size())
-            .desired_width(rect.width())
-            .align(egui::Align2::LEFT_CENTER)
-            .font(egui::FontId::new(text::SM, fonts::sans(Weight::Regular)))
-            .text_color(tokens.palette.text)
-            .event_filter(FIELD_FILTER)
-            .hint_text(RichText::new("New playlist name"))
-            .char_limit(PLAYLIST_NAME_MAX)
-            .show(&mut child);
-        focused = output.response.has_focus();
-        if focused {
-            library.naming.focus_taken();
-        }
-        // A blank field left behind says nothing, so it goes; text does not, so a
-        // click elsewhere never loses a name.
-        if output.response.lost_focus() && library.naming.text().trim().is_empty() {
-            library.naming.cancel();
-        }
-    }
-
-    if enter {
+    if out.enter {
         post_submit(ui.ctx());
     }
-    if escape {
+    if out.escape {
         library.naming.cancel();
     }
 
     // Border only: no glow, no glyph, and no width change, because the field's
     // own width is the row's.
-    let border = if focused {
+    let border = if out.focused {
         tokens.palette.text
     } else {
         tokens.palette.border
