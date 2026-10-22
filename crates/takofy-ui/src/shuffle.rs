@@ -5,6 +5,8 @@
 //! that maps a remembered order back onto the rows that are here now. Nothing
 //! here touches the queue; the queue asks for a plan and applies it.
 
+use std::collections::{HashMap, VecDeque};
+
 /// Advances `state` and returns one value.
 ///
 /// splitmix64, the same shape as the published algorithm: a caller that wants a
@@ -42,22 +44,23 @@ pub fn order(len: usize, seed: u64) -> Vec<usize> {
 /// never saw keep their current order after them. A row that has since gone is
 /// simply missing.
 pub fn restore(snapshot: &[String], now: &[String]) -> Vec<usize> {
-    let mut taken = vec![false; now.len()];
+    // A row index per uri, earliest first, so each lookup is one hash instead
+    // of a rescan of every row for every snapshot entry.
+    let mut rows: HashMap<&str, VecDeque<usize>> = HashMap::with_capacity(now.len());
+    for (row, uri) in now.iter().enumerate() {
+        rows.entry(uri.as_str()).or_default().push_back(row);
+    }
+
     let mut order = Vec::with_capacity(now.len());
     for uri in snapshot {
-        for (row, here) in now.iter().enumerate() {
-            if !taken[row] && here == uri {
-                taken[row] = true;
-                order.push(row);
-                break;
-            }
-        }
-    }
-    for (row, used) in taken.iter().enumerate() {
-        if !used {
+        if let Some(row) = rows.get_mut(uri.as_str()).and_then(VecDeque::pop_front) {
             order.push(row);
         }
     }
+
+    let mut unseen: Vec<usize> = rows.into_values().flatten().collect();
+    unseen.sort_unstable();
+    order.extend(unseen);
     order
 }
 
@@ -218,6 +221,19 @@ mod tests {
         let back = restore(&snapshot, &now);
         assert_eq!(back, vec![1, 2, 0]);
         assert_eq!(drawn(&now, &back), snapshot);
+    }
+
+    #[test]
+    fn a_thousand_rows_restore_to_a_permutation() {
+        let snapshot: Vec<String> = (0..1000)
+            .map(|row| format!("spotify:track:{row}"))
+            .collect();
+        for seed in 0..4 {
+            let shuffled = drawn(&snapshot, &order(snapshot.len(), seed));
+            let back = restore(&snapshot, &shuffled);
+            assert_eq!(sorted(&back), (0..snapshot.len()).collect::<Vec<_>>());
+            assert_eq!(drawn(&shuffled, &back), snapshot, "seed {seed}");
+        }
     }
 
     #[test]

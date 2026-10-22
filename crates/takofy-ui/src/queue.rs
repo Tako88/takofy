@@ -14,9 +14,9 @@
 //! cap exactly as an unavailable row does.
 //!
 //! Shuffle permutes the rows that are coming and remembers the order it found
-//! them in, so turning it off puts the user's list back and re-seats `index` on
-//! the entry it was already on. Rows before the current one are history and
-//! never move.
+//! them in. Turning it on leaves the rows before the current one alone; turning
+//! it off restores the whole list, history included, and re-seats `index` on the
+//! entry it was already on.
 //!
 //! The queue also edits its own order and keeps the selection over its rows,
 //! because both are indices into it. One rule holds edits apart from the
@@ -234,8 +234,10 @@ impl Queue {
 
     /// Every entry after the current one, with its absolute index in the queue.
     ///
-    /// The index is the position in the list `start` was given, so it stays the
-    /// row's identity across advances: advancing only moves the current index.
+    /// The index is the position in the list `start` was given. Advancing alone
+    /// only moves the current index, so the rows keep their positions; a draw,
+    /// from turning shuffle on or a wrap, rebuilds the rows after the current
+    /// one, so an upcoming index names a row only until the next draw.
     pub fn upcoming(&self) -> impl ExactSizeIterator<Item = (usize, &TrackEntry)> + '_ {
         let first = self.first_upcoming();
         self.tracks.iter().enumerate().skip(first)
@@ -526,6 +528,8 @@ impl Queue {
         let current = self.index.filter(|index| *index >= from);
         let mut slots: Vec<Option<TrackEntry>> =
             self.tracks.split_off(from).into_iter().map(Some).collect();
+        // A caller passing a short order would silently leave rows behind.
+        debug_assert_eq!(order.len(), slots.len());
         let mut index = None;
         for old in order {
             let Some(entry) = slots.get_mut(*old).and_then(Option::take) else {
@@ -1451,20 +1455,101 @@ mod tests {
 
     #[test]
     fn shuffle_off_after_advancing_keeps_the_current_entry() {
-        let mut queue = shuffled_at(6, 0, 11);
         let mut transport = Transport::default();
-        for _ in 0..2 {
-            assert!(queue.next(&mut transport).is_some());
+        for seed in 0..20 {
+            for advances in 0..6 {
+                let mut queue = shuffled_at(6, 0, seed);
+                for _ in 0..advances {
+                    assert!(queue.next(&mut transport).is_some());
+                }
+                let current = queue.current().map(|entry| entry.uri.clone());
+
+                queue.toggle_shuffle();
+
+                assert_eq!(
+                    queue.current().map(|entry| entry.uri.clone()),
+                    current,
+                    "seed {seed} advances {advances}"
+                );
+                assert_eq!(
+                    order(&queue),
+                    (0..6).map(|row| format!("t{row}")).collect::<Vec<_>>(),
+                    "seed {seed} advances {advances}"
+                );
+            }
         }
-        let current = queue.current().map(|entry| entry.uri.clone());
+    }
+
+    #[test]
+    fn shuffle_off_restores_history_too() {
+        let mut queue = started(5, 0);
+        let mut transport = Transport::default();
+        queue.toggle_shuffle();
+
+        let held = order(&queue);
+        let t3 = held
+            .iter()
+            .position(|uri| uri == "t3")
+            .expect("t3 is queued");
+        let t1 = held
+            .iter()
+            .position(|uri| uri == "t1")
+            .expect("t1 is queued");
+        queue.jump(t3, &mut transport);
+        queue.jump(t1, &mut transport);
+        assert_eq!(queue.current().map(|entry| entry.uri.as_str()), Some("t1"));
 
         queue.toggle_shuffle();
 
-        assert_eq!(queue.current().map(|entry| entry.uri.clone()), current);
+        assert_eq!(order(&queue), uris(&["t0", "t1", "t2", "t3", "t4"]));
+        assert_eq!(queue.index, Some(1), "the entry is back on its own row");
         assert_eq!(
-            order(&queue),
-            (0..6).map(|row| format!("t{row}")).collect::<Vec<_>>()
+            order(&queue)[3],
+            "t3",
+            "a row that already played is ahead of the current one"
         );
+        assert_eq!(queue.previous(0, &mut transport), Some(play("t0")));
+    }
+
+    #[test]
+    fn shuffle_off_with_duplicate_uris_keeps_every_row_and_the_entry() {
+        let list = vec![
+            track_by("a", "1"),
+            track_by("b", "2"),
+            track_by("a", "3"),
+            track_by("b", "4"),
+            track_by("a", "5"),
+        ];
+        let mut transport = Transport::default();
+        let mut expected: Vec<String> = list.iter().map(|entry| entry.artists.clone()).collect();
+        expected.sort();
+        for seed in 0..20 {
+            for index in 0..list.len() {
+                let mut queue = Queue::seeded(seed);
+                queue.start(&list, index, &mut transport);
+                let current = queue.current().map(|entry| entry.artists.clone());
+
+                queue.toggle_shuffle();
+                queue.toggle_shuffle();
+
+                assert_eq!(
+                    order(&queue),
+                    uris(&["a", "b", "a", "b", "a"]),
+                    "seed {seed} index {index}"
+                );
+                let mut held = artists(&queue);
+                held.sort();
+                assert_eq!(
+                    held, expected,
+                    "seed {seed} index {index}: a row went missing"
+                );
+                assert_eq!(
+                    queue.current().map(|entry| entry.artists.clone()),
+                    current,
+                    "seed {seed} index {index}: the current entry changed"
+                );
+            }
+        }
     }
 
     #[test]
