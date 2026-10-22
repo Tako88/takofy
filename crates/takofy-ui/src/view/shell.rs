@@ -1330,9 +1330,10 @@ mod tests {
     }
 
     /// The topbar's rect, solved the same way the shell solves it.
+    /// The bar spans the main column, which the pane widens; `sidebar_rect` is width-only.
     fn topbar_rect(window: &Window) -> Rect {
         let content = Rect::from_min_size(egui::Pos2::ZERO, window.size);
-        let regions = layout::regions_for(content.width());
+        let regions = layout::regions_with(content.width(), window.pane);
         let shell = layout::shell_for(&regions);
         layout::grid_for(content, &shell).topbar
     }
@@ -1345,6 +1346,23 @@ mod tests {
         let regions = layout::regions_with(content.width(), window.pane);
         let shell = layout::shell_for(&regions);
         layout::grid_for(content, &shell).view
+    }
+
+    /// The bottom rule the topbar paints, which spells out the width it drew at.
+    fn topbar_rule(frame: &egui::FullOutput, bar: Rect) -> Rect {
+        frame
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(shape)
+                    if shape.stroke.width == 0.0
+                        && (shape.rect.top() - bar.bottom()).abs() < 0.01 =>
+                {
+                    Some(shape.rect)
+                }
+                _ => None,
+            })
+            .expect("the topbar paints its bottom rule")
     }
 
     /// One press or release of `key` with no modifiers.
@@ -1570,6 +1588,37 @@ mod tests {
             (field.center().y - bar).abs() < 0.01,
             "the search field at {:?} is not on the bar's centre {bar}",
             field.center()
+        );
+    }
+
+    #[test]
+    fn the_topbar_widens_when_the_pane_is_hidden() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        ready_playlist(&mut window);
+
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let shown = topbar_rect(&window);
+        let shown_rule = topbar_rule(&frame, shown);
+        assert!(
+            (shown_rule.width() - (shown.width() - 2.0 * stroke::HAIRLINE)).abs() < 0.01,
+            "the topbar drew {shown_rule:?}, not the region it solved {shown:?}"
+        );
+
+        window.pane = layout::PanePref::Hidden;
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let hidden = topbar_rect(&window);
+        let hidden_rule = topbar_rule(&frame, hidden);
+
+        assert!(
+            hidden_rule.width() > shown_rule.width(),
+            "the hidden pane left the topbar at the width it had beside it: \
+             {hidden_rule:?} against {shown_rule:?}"
+        );
+        assert!(
+            (hidden_rule.width() - (hidden.width() - 2.0 * stroke::HAIRLINE)).abs() < 0.01,
+            "the topbar region {hidden:?} disagrees with the bar it drew {hidden_rule:?}"
         );
     }
 
@@ -6907,13 +6956,28 @@ mod tests {
         // the ones the click's own pass recorded.
         let _ = window.frame(&mut transport, &mut queue, Vec::new());
         let causes = window.ctx.repaint_causes();
-
+        let toggle = pane_toggle_repaint_line();
         assert!(
-            causes
-                .iter()
-                .any(|cause| cause.file.ends_with("view/shell.rs")),
+            causes.iter().any(|cause| {
+                cause.file.ends_with("view/shell.rs") && Some(cause.line as usize) == toggle
+            }),
             "the toggle did not ask for the frame that shows it: {causes:?}"
         );
+    }
+
+    /// The line of the `request_repaint` the pane-toggle branch calls, found in
+    /// the source so an edit that moves the branch keeps the test honest.
+    fn pane_toggle_repaint_line() -> Option<usize> {
+        let lines: Vec<&str> = include_str!("shell.rs").lines().collect();
+        let start = lines
+            .iter()
+            .position(|line| line.contains("if playbar_reply.pane"))
+            .expect("the pane-toggle branch is in this file");
+        lines[start + 1..]
+            .iter()
+            .take_while(|line| !line.trim_start().starts_with('}'))
+            .position(|line| line.contains("request_repaint"))
+            .map(|offset| start + offset + 2)
     }
 
     #[test]
