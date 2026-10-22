@@ -19,6 +19,7 @@ use crate::icon::Icon;
 use crate::landing::Zone;
 use crate::layout::chips;
 use crate::library::{Library, Load};
+use crate::menu::{Door, LibraryItem, Listing, Request};
 use crate::message::{Command, Failure};
 use crate::route::Page;
 use crate::sidebar_kind::{self, SidebarKind};
@@ -30,12 +31,14 @@ use crate::theme::{
 
 use super::art;
 use super::carry::{self, Carry, ColumnOffer, Ghost, Source};
+use super::context_menu;
 use super::controls;
 use super::keys::{FIELD_FILTER, pressed_once};
 use super::queue_row;
 use super::rows::{self, Look};
 use super::shell::rule;
 use super::text as recipe;
+use crate::verbs;
 
 /// A library row: the art tile plus the padding above and below it.
 pub(super) const ROW_H: f32 = extent::LIBRARY_ART + 2.0 * space::S2;
@@ -473,6 +476,8 @@ pub fn albums_view(library: &Library) -> ListView<'_, SavedAlbum> {
 struct Ids {
     scope: &'static str,
     kind: &'static str,
+    /// The row's kind, which its menu carries.
+    shelf: SidebarKind,
     /// Whether this kind is a list a drag can lift a row out of.
     lifts: bool,
 }
@@ -513,6 +518,12 @@ struct Draw<'a> {
     art: &'a mut Art,
     now: Instant,
     tokens: &'a Tokens,
+    /// Whether a row may open its menu. The drawer's form posts nothing.
+    menu: bool,
+    /// Whether this kind's rows may be removed from the library.
+    removable: bool,
+    /// The page the menu records, so a page change closes it.
+    here: Option<Page>,
     /// Whether a row may be dragged out of the column.
     drag: bool,
     /// Whether the column may lift a playlist row now.
@@ -569,6 +580,7 @@ fn list_rows<T: ListItem + Clone>(
             let mut pressed: Option<String> = None;
             let entries = items.to_vec();
             let mut lifted_carry: Option<Carry> = None;
+            let mut opened: Option<(LibraryItem, Door)> = None;
             // The first drawn row and the index it holds, so the offer describes
             // the rows wherever the scroll put them.
             let mut origin: Option<(usize, Rect)> = None;
@@ -576,6 +588,8 @@ fn list_rows<T: ListItem + Clone>(
                 Some(carried) if carried.source == Source::Playlist => carried.rows.clone(),
                 _ => Vec::new(),
             };
+            // A held block moves rows under the menu, so it opens none.
+            let menu = draw.menu && !carry::carrying(ui.ctx());
             ui.scope_builder(
                 UiBuilder::new()
                     .id_salt(ids.scope)
@@ -609,9 +623,12 @@ fn list_rows<T: ListItem + Clone>(
                                 selected: current == Some(item.uri()),
                                 lifted: lifted.contains(&index),
                             };
-                            let drawn = one(ui, place, row, draw.tokens, draw.drag);
+                            let drawn = one(ui, place, row, draw.tokens, draw.drag, menu);
                             if drawn.clicked {
                                 pressed = Some(item.uri().to_owned());
+                            }
+                            if let Some(door) = drawn.door {
+                                opened = Some((item.menu_item(ids.shelf), door));
                             }
                             // Only the playlists are a column a drag can lift;
                             // every other kind draws exactly as it always did.
@@ -637,6 +654,9 @@ fn list_rows<T: ListItem + Clone>(
             );
             if let Some(carry) = lifted_carry {
                 carry::lift(ui.ctx(), carry);
+            }
+            if let Some((item, door)) = opened {
+                open_menu(ui.ctx(), item, door, draw.removable, draw.here.clone());
             }
             if ids.lifts
                 && draw.offer
@@ -676,6 +696,14 @@ trait ListItem {
     /// alone when the wire named nobody.
     fn kind(&self) -> String;
     fn cover(&self) -> Option<&CoverUrl>;
+    /// The row as a menu opened on it describes it.
+    fn menu_item(&self, kind: SidebarKind) -> LibraryItem {
+        LibraryItem {
+            kind,
+            uri: self.uri().to_owned(),
+            name: self.name().to_owned(),
+        }
+    }
 }
 
 impl ListItem for PlaylistEntry {
@@ -790,12 +818,9 @@ fn rows(
         return None;
     }
 
-    // The failure line sits at the foot of the playlist list, and the rows make
-    // room for it rather than drawing over it.
-    let notice = match library.sidebar_kind.chosen() {
-        SidebarKind::Playlists => library.sidebar_notice.map(sidebar_notice),
-        SidebarKind::Podcasts | SidebarKind::Artists | SidebarKind::Albums => None,
-    };
+    // The failure line sits at the foot of every list, and the rows make room
+    // for it rather than drawing over it.
+    let notice = library.sidebar_notice.map(sidebar_notice);
     let line = egui::FontId::new(text::XXS, fonts::mono(MonoWeight::Regular));
     let foot = notice.map(|_| ui.fonts_mut(|fonts| fonts.row_height(&line)));
     let (rect, foot) = match foot {
@@ -812,10 +837,14 @@ fn rows(
         None => (rect, None),
     };
 
+    let chosen = library.sidebar_kind.chosen();
     let mut draw = Draw {
         art,
         now,
         tokens,
+        menu: drag,
+        removable: drag && library.can_remove(chosen),
+        here: library.page().cloned(),
         drag,
         lift: drag && library.rootlist_movable(),
         offer: drag,
@@ -831,6 +860,7 @@ fn rows(
                 Ids {
                     scope: "library-list",
                     kind: "library-row",
+                    shelf: SidebarKind::Playlists,
                     lifts: true,
                 },
                 Words {
@@ -850,6 +880,7 @@ fn rows(
                 Ids {
                     scope: "library-shows",
                     kind: "library-show",
+                    shelf: SidebarKind::Podcasts,
                     lifts: false,
                 },
                 Words {
@@ -869,6 +900,7 @@ fn rows(
                 Ids {
                     scope: "library-artists",
                     kind: "library-artist",
+                    shelf: SidebarKind::Artists,
                     lifts: false,
                 },
                 Words {
@@ -888,6 +920,7 @@ fn rows(
                 Ids {
                     scope: "library-albums",
                     kind: "library-album",
+                    shelf: SidebarKind::Albums,
                     lifts: false,
                 },
                 Words {
@@ -985,12 +1018,21 @@ struct Drawn {
     clicked: bool,
     /// Whether this frame began a drag out of the row.
     lift: bool,
+    /// The door a right-click or the context-menu key opened, if one did.
+    door: Option<Door>,
 }
 
 /// One library row: a placeholder tile, the name and the kind.
 ///
 /// The tile stands in until covers are fetched.
-fn one(ui: &mut Ui, rect: Rect, row: LibraryRow<'_>, tokens: &Tokens, drag: bool) -> Drawn {
+fn one(
+    ui: &mut Ui,
+    rect: Rect,
+    row: LibraryRow<'_>,
+    tokens: &Tokens,
+    drag: bool,
+    menu: bool,
+) -> Drawn {
     let LibraryRow {
         id,
         name,
@@ -1006,6 +1048,16 @@ fn one(ui: &mut Ui, rect: Rect, row: LibraryRow<'_>, tokens: &Tokens, drag: bool
     };
     let before = rows::dim(ui, look);
     let response = row_chrome(ui, rect, id, name, look, tokens, drag);
+    let door = menu
+        .then(|| pointer_door(ui, rect, id).or_else(|| key_door(ui, &response, rect)))
+        .flatten();
+    if menu {
+        let open = context_menu::open_opener(ui.ctx()) == Some(id);
+        let _ = ui.ctx().accesskit_node_builder(id, |node| {
+            node.set_has_popup(egui::accesskit::HasPopup::Menu);
+            node.set_expanded(open);
+        });
+    }
 
     let tile = Rect::from_min_size(
         Pos2::new(
@@ -1057,7 +1109,53 @@ fn one(ui: &mut Ui, rect: Rect, row: LibraryRow<'_>, tokens: &Tokens, drag: bool
     Drawn {
         clicked: response.clicked(),
         lift: response.drag_started_by(egui::PointerButton::Primary),
+        door,
     }
+}
+
+/// The pointer's door: a right-click anywhere on the row.
+fn pointer_door(ui: &Ui, rect: Rect, id: egui::Id) -> Option<Door> {
+    context_menu::pointer_door(ui, rect, id, rect)
+}
+
+/// The keyboard's door: the context-menu key or Shift+F10 on the focused row.
+///
+/// The row is the opener the keyboard goes back to, because a row opened this
+/// way has no button of its own.
+fn key_door(ui: &Ui, response: &egui::Response, rect: Rect) -> Option<Door> {
+    if !response.has_focus() {
+        return None;
+    }
+    context_menu::menu_key_pressed(ui).then_some(Door {
+        anchor: crate::menu::Anchor::Button(rect),
+        opener: response.id,
+        device: crate::menu::Device::Keyboard,
+    })
+}
+
+/// Posts the menu a sidebar row's door opened.
+///
+/// A library row is one thing rather than a pick, so the request carries no
+/// targets and no rows: the listing names the row.
+fn open_menu(
+    ctx: &egui::Context,
+    item: LibraryItem,
+    door: Door,
+    removable: bool,
+    page: Option<Page>,
+) {
+    context_menu::post(
+        ctx,
+        Request {
+            door,
+            items: verbs::library_items(&item, removable),
+            playlists: Vec::new(),
+            targets: Vec::new(),
+            rows: Vec::new(),
+            listing: Listing::Library(item),
+            page,
+        },
+    );
 }
 
 /// A line of text where a list would be, for the empty and failed states.
@@ -1080,8 +1178,10 @@ mod tests {
     use egui::{Color32, Event, Pos2, Vec2};
     use takofy_model::{FollowedShow, PlaylistEntry};
 
+    use crate::menu::{Anchor, Device, LibraryItem, Listing};
     use crate::message::{Failure, Update};
     use crate::theme::{fonts, style};
+    use crate::view::context_menu;
     use crate::view::test_support::click_events;
 
     /// The chip rect and label rect the real sidebar paints, per label.
@@ -1291,11 +1391,13 @@ mod tests {
     const PLAYLIST_IDS: Ids = Ids {
         scope: "library-list",
         kind: "library-row",
+        shelf: SidebarKind::Playlists,
         lifts: true,
     };
     const SHOW_IDS: Ids = Ids {
         scope: "library-shows",
         kind: "library-show",
+        shelf: SidebarKind::Podcasts,
         lifts: false,
     };
 
@@ -1539,7 +1641,7 @@ mod tests {
                     selected: false,
                     lifted: false,
                 };
-                one(ui, rect, row, &tokens, false);
+                one(ui, rect, row, &tokens, false, false);
             },
         );
         output.textures_delta.clear();
@@ -1574,7 +1676,7 @@ mod tests {
                     selected: true,
                     lifted: false,
                 };
-                one(ui, rect, row, &tokens, false);
+                one(ui, rect, row, &tokens, false, false);
                 announced = ui
                     .ctx()
                     .accesskit_node_builder(id, |node| node.is_selected())
@@ -2277,5 +2379,231 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    /// A library holding one row of each kind, with an editable rootlist.
+    fn four_kinds() -> Library {
+        let mut library = movable_playlists(&["A"], 7, true, None);
+        library.apply(&Update::FollowedShows(vec![followed_show(
+            "spotify:show:s",
+            "A show",
+        )]));
+        library.apply(&Update::FollowedArtists(vec![followed_artist(
+            "spotify:artist:a",
+            "An artist",
+        )]));
+        library.apply(&Update::SavedAlbums(vec![saved_album(
+            "spotify:album:r",
+            "An album",
+            "Vela",
+        )]));
+        library
+    }
+
+    /// One press of the context-menu key.
+    fn menu_key() -> Event {
+        Event::Key {
+            key: egui::Key::Menu,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    /// Right-clicks `at` in the column form, one pass per event.
+    fn right_click(
+        ctx: &egui::Context,
+        at: Pos2,
+        library: &mut Library,
+        art: &mut Art,
+    ) -> Option<Command> {
+        let mut command = None;
+        for event in crate::view::test_support::secondary_click_events(at) {
+            let (_, next) = run_column(ctx, vec![event], library, art);
+            if next.is_some() {
+                command = next;
+            }
+        }
+        command
+    }
+
+    #[test]
+    fn a_right_click_on_each_kind_posts_its_library_request() {
+        let cases = [
+            (SidebarKind::Playlists, "A", "spotify:playlist:A", "A"),
+            (SidebarKind::Podcasts, "A show", "spotify:show:s", "A show"),
+            (
+                SidebarKind::Artists,
+                "An artist",
+                "spotify:artist:a",
+                "An artist",
+            ),
+            (
+                SidebarKind::Albums,
+                "An album",
+                "spotify:album:r",
+                "An album",
+            ),
+        ];
+        for (kind, label, uri, name) in cases {
+            let ctx = context();
+            let mut library = four_kinds();
+            assert!(library.choose_kind(kind));
+            let mut art = Art::default();
+            let (output, _) = run_column(&ctx, Vec::new(), &mut library, &mut art);
+            let at = name_line(&output, label);
+
+            let command = right_click(&ctx, at, &mut library, &mut art);
+
+            let request = context_menu::take_request(&ctx)
+                .unwrap_or_else(|| panic!("{kind:?} posted no menu"));
+            assert_eq!(
+                request.listing,
+                Listing::Library(LibraryItem {
+                    kind,
+                    uri: uri.to_owned(),
+                    name: name.to_owned(),
+                })
+            );
+            assert_eq!(
+                request
+                    .items
+                    .iter()
+                    .map(|item| item.label.as_str())
+                    .collect::<Vec<_>>(),
+                ["Copy link", "Remove from library"],
+                "{kind:?}"
+            );
+            assert!(
+                matches!(request.door.anchor, Anchor::Pointer(_)),
+                "{kind:?}"
+            );
+            assert_eq!(request.door.device, Device::Pointer, "{kind:?}");
+            assert!(request.targets.is_empty(), "{kind:?}");
+            assert!(request.rows.is_empty(), "{kind:?}");
+            assert_eq!(request.page, None, "{kind:?}");
+
+            assert_eq!(command, None, "{kind:?} opened its page");
+            assert!(carry::carried(&ctx).is_none(), "{kind:?} lifted its row");
+        }
+    }
+
+    #[test]
+    fn the_two_rows_of_one_list_are_two_openers() {
+        let ctx = context();
+        let mut library = movable_playlists(&["A", "B"], 7, true, None);
+        let mut art = Art::default();
+        let mut openers = Vec::new();
+        for label in ["A", "B"] {
+            let (output, _) = run_column(&ctx, Vec::new(), &mut library, &mut art);
+            let at = name_line(&output, label);
+            let _ = right_click(&ctx, at, &mut library, &mut art);
+            let request = context_menu::take_request(&ctx).expect("a menu");
+            openers.push(request.door.opener);
+        }
+
+        assert_ne!(openers[0], openers[1], "both rows opened the same widget");
+    }
+
+    #[test]
+    fn the_context_menu_key_opens_on_a_focused_row_only() {
+        let ctx = context();
+        let mut library = movable_playlists(&["A", "B"], 7, true, None);
+        let mut art = Art::default();
+        let (output, _) = run_column(&ctx, Vec::new(), &mut library, &mut art);
+        let at = name_line(&output, "A");
+
+        let _ = run_column(&ctx, vec![menu_key()], &mut library, &mut art);
+        assert!(
+            context_menu::take_request(&ctx).is_none(),
+            "a key with no focused row opened a menu"
+        );
+
+        for event in click_events(at) {
+            let _ = run_column(&ctx, vec![event], &mut library, &mut art);
+        }
+        let _ = run_column(&ctx, vec![menu_key()], &mut library, &mut art);
+
+        let request = context_menu::take_request(&ctx).expect("the focused row opened its menu");
+        assert!(matches!(request.door.anchor, Anchor::Button(_)));
+        assert_eq!(request.door.device, Device::Keyboard);
+        assert_eq!(
+            request.listing,
+            Listing::Library(LibraryItem {
+                kind: SidebarKind::Playlists,
+                uri: "spotify:playlist:A".to_owned(),
+                name: "A".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn a_carry_or_the_drawer_form_posts_no_menu() {
+        // A block is held.
+        let ctx = context();
+        let mut library = movable_playlists(&["A"], 7, true, None);
+        let mut art = Art::default();
+        let (output, _) = run_column(&ctx, Vec::new(), &mut library, &mut art);
+        let at = name_line(&output, "A");
+        egui::DragAndDrop::set_payload(&ctx, ());
+        let _ = right_click(&ctx, at, &mut library, &mut art);
+        assert!(
+            context_menu::take_request(&ctx).is_none(),
+            "a held block opened a menu"
+        );
+
+        // The drawer's form discards its command, so it posts nothing.
+        let ctx = context();
+        let mut library = movable_playlists(&["A"], 7, true, None);
+        let (output, _) = run_with(&ctx, Vec::new(), &mut library, &mut art, false);
+        let at = name_line(&output, "A");
+        for event in crate::view::test_support::secondary_click_events(at) {
+            let _ = run_with(&ctx, vec![event], &mut library, &mut art, false);
+        }
+        assert!(context_menu::take_request(&ctx).is_none());
+    }
+
+    #[test]
+    fn a_playlist_row_that_cannot_be_unlinked_offers_only_its_link() {
+        let ctx = context();
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(vec![playlist(
+            "spotify:playlist:A",
+            "A",
+        )]));
+        assert!(!library.rootlist_removable());
+        let mut art = Art::default();
+        let (output, _) = run_column(&ctx, Vec::new(), &mut library, &mut art);
+        let at = name_line(&output, "A");
+
+        let _ = right_click(&ctx, at, &mut library, &mut art);
+
+        let request = context_menu::take_request(&ctx).expect("a menu");
+        assert_eq!(
+            request
+                .items
+                .iter()
+                .map(|item| item.label.as_str())
+                .collect::<Vec<_>>(),
+            ["Copy link"],
+            "a row the library cannot write offered a removal"
+        );
+    }
+
+    #[test]
+    fn the_failure_notice_draws_on_every_tab() {
+        let line = "Could not remove that from your library. Try again.";
+        for kind in sidebar_kind::ROW {
+            let ctx = context();
+            let mut library = four_kinds();
+            assert!(library.choose_kind(kind));
+            library.sidebar_notice = Some(crate::library::SidebarWrite::Remove);
+            let mut art = Art::default();
+
+            let (output, _) = run_column(&ctx, Vec::new(), &mut library, &mut art);
+
+            assert!(painted(&output, line), "{kind:?} drew no notice");
+        }
     }
 }
