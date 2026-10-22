@@ -6,6 +6,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use eframe::egui;
 use takofy_ui::cover::Art;
 use takofy_ui::drawer::Drawer;
+use takofy_ui::layout::PanePref;
 use takofy_ui::library::Library;
 use takofy_ui::menu::Menu;
 use takofy_ui::message::{Command, Update};
@@ -39,6 +40,9 @@ pub(crate) struct TakofyApp {
     transport: Transport,
     queue: Queue,
     drawer: Drawer,
+    /// What the user asked of the Now Playing column. Nothing persists it, so it
+    /// starts at the width rule every launch.
+    pane: PanePref,
     menu: Menu,
     ui_end: UiEnd,
     tokens: Tokens,
@@ -91,6 +95,7 @@ impl TakofyApp {
             transport: Transport::default(),
             queue: Queue::seeded(wall_clock_ms()),
             drawer: Drawer::default(),
+            pane: PanePref::default(),
             menu: Menu::default(),
             ui_end,
             tokens,
@@ -181,6 +186,7 @@ impl eframe::App for TakofyApp {
                 transport: &mut self.transport,
                 queue: &mut self.queue,
                 drawer: &mut self.drawer,
+                pane: &mut self.pane,
                 menu: &mut self.menu,
                 position_ms,
                 art: &mut self.art,
@@ -308,6 +314,19 @@ mod tests {
             "read {reading} against the system's {system}"
         );
         assert!(reading > 1_704_067_200_000, "a 2024 floor, read {reading}");
+    }
+
+    #[test]
+    fn a_new_window_starts_with_the_width_rule_alone() {
+        let (app, _) = test_window();
+        assert_eq!(app.pane, PanePref::Auto, "a launch hid the pane");
+        for width in [layout::WINDOW_DEFAULT[0], 1440.0] {
+            assert_eq!(
+                layout::regions_with(width, app.pane),
+                layout::regions_for(width),
+                "{width}"
+            );
+        }
     }
 
     #[test]
@@ -791,6 +810,7 @@ mod tests {
             transport: Transport::default(),
             queue: Queue::default(),
             drawer: Drawer::default(),
+            pane: PanePref::default(),
             menu: Menu::default(),
             ui_end: UiEnd { updates, commands },
             tokens: Tokens::DARK,
