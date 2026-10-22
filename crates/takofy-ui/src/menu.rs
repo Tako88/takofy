@@ -217,7 +217,8 @@ pub enum Step {
     Last,
 }
 
-/// An open menu, or a closed one that still remembers nothing worth keeping.
+/// An open menu, or a closed one that still remembers the snapshot and the list
+/// its submenu chose.
 #[derive(Debug, Clone, Default)]
 pub struct Menu {
     open: bool,
