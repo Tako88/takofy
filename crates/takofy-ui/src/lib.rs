@@ -17,6 +17,7 @@ pub mod likes;
 pub mod lyrics;
 pub mod menu;
 pub mod message;
+pub mod naming;
 pub mod player;
 pub mod queue;
 pub mod releases;

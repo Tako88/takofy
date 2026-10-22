@@ -353,7 +353,8 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
     let request = context_menu::take_request(ui.ctx());
     let page = screen.library.page();
     let _ = screen.menu.follow_page(page);
-    if let Some(request) = request {
+    if let Some(mut request) = request {
+        request.allow_create(regions.sidebar == Sidebar::Full && screen.library.creatable());
         let gate = door_gate(ui.ctx(), screen, &request.listing);
         let _ = screen.menu.open(request, gate);
     }
@@ -380,6 +381,14 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
         && let Some(cut) = cut
     {
         command = apply_cut(ui, screen, cut);
+    }
+
+    // The head's submit posts an intent too. Applying it here is what keeps a
+    // dropped submit from leaving the sidebar waiting on a command nobody sent:
+    // the field keeps its text and the press is spent.
+    let submit = sidebar::take_submit(ui.ctx());
+    if command.is_none() && submit && !carry::carrying(ui.ctx()) {
+        command = screen.library.create_playlist();
     }
 
     // A heart posts its one-frame intent. It is taken whether or not it can be
@@ -480,7 +489,21 @@ fn apply_verb(ui: &Ui, screen: &mut Screen<'_>, verb: Verb) -> Option<Command> {
             cut.and_then(|cut| apply_cut(ui, screen, cut))
         }
         verbs::Outcome::Like { tracks, liked } => apply_like(ui, screen, tracks, liked),
+        verbs::Outcome::NewPlaylist => apply_new_playlist(ui, screen),
     }
+}
+
+/// Opens the sidebar's name field for the menu's new-playlist row.
+///
+/// The field is the sidebar's, so the drawer and a carried block both drop the
+/// choice: a field nobody can see, or one opened over a list about to move, is
+/// worse than nothing.
+fn apply_new_playlist(ui: &Ui, screen: &mut Screen<'_>) -> Option<Command> {
+    if *screen.drawer == Drawer::Open || carry::carrying(ui.ctx()) {
+        return None;
+    }
+    screen.library.naming.open();
+    None
 }
 
 /// Applies a save or a remove-from-your-library the menu chose.
@@ -8386,6 +8409,924 @@ mod tests {
         assert!(
             !window.menu.is_open(),
             "a waiting more button opened a menu"
+        );
+    }
+
+    // ---- the library head's new-playlist field ----
+
+    /// The head's button centre, from the band the sidebar solves.
+    ///
+    /// The chips are a 2x2 grid of `extent::BUTTON` cells with `space::S1`
+    /// between them, under `space::S4` of padding, and the head row is `space::S2`
+    /// below them.
+    fn head_plus(band: Rect) -> egui::Pos2 {
+        let chips = 2.0 * extent::BUTTON + space::S1;
+        let row = Rect::from_min_size(
+            egui::pos2(
+                band.left() + space::S4,
+                band.top() + space::S4 + chips + space::S3 + space::S2,
+            ),
+            Vec2::new(band.width() - 2.0 * space::S4, extent::BUTTON),
+        );
+        egui::pos2(row.right() - extent::BUTTON / 2.0, row.center().y)
+    }
+
+    fn sidebar_plus(window: &Window) -> egui::Pos2 {
+        head_plus(sidebar_rect(window))
+    }
+
+    /// A sidebar whose playlists and rootlist are ready to create one.
+    fn creatable_sidebar(window: &mut Window) {
+        sidebar_playlists(
+            window,
+            &[("a", Some(0)), ("b", Some(0))],
+            Some(rootlist_access(true)),
+        );
+    }
+
+    /// Opens the head's field with the `+`, and waits for the keyboard to follow.
+    fn open_naming(window: &mut Window, transport: &mut Transport, queue: &mut Queue) {
+        let _ = window.click(transport, queue, sidebar_plus(window));
+        assert!(window.library.naming.is_open(), "the `+` opened no field");
+        // The field is drawn on the frame after the press, and takes the keyboard
+        // on that frame.
+        let _ = window.frame(transport, queue, Vec::new());
+        assert!(
+            window.ctx.text_edit_focused(),
+            "the keyboard did not follow the field"
+        );
+        // One more frame, so the field's own key filter is the stored one: egui
+        // stores a filter only for a widget that had focus last frame.
+        let _ = window.frame(transport, queue, Vec::new());
+    }
+
+    /// Types into whatever holds the keyboard.
+    fn type_text(window: &mut Window, transport: &mut Transport, queue: &mut Queue, text: &str) {
+        let _ = window.frame(transport, queue, vec![egui::Event::Text(text.to_owned())]);
+    }
+
+    /// The row a create's reply hands the sidebar.
+    fn new_playlist(name: &str, access: Option<PlaylistAccess>) -> PlaylistEntry {
+        PlaylistEntry {
+            uri: "spotify:playlist:new".to_owned(),
+            name: name.to_owned(),
+            named: true,
+            cover: None,
+            description: None,
+            tracks: Some(0),
+            owner: None,
+            access,
+        }
+    }
+
+    /// Submits the open field with `name` typed into it, and answers the frame.
+    fn submit_name(
+        window: &mut Window,
+        transport: &mut Transport,
+        queue: &mut Queue,
+        name: &str,
+    ) -> Option<Command> {
+        open_naming(window, transport, queue);
+        type_text(window, transport, queue, name);
+        window
+            .frame(transport, queue, vec![key(egui::Key::Enter, true)])
+            .0
+    }
+
+    #[test]
+    fn plus_opens_the_field_and_the_keyboard_follows_next_frame() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        creatable_sidebar(&mut window);
+
+        let _ = window.click(&mut transport, &mut queue, sidebar_plus(&window));
+        assert!(window.library.naming.is_open());
+        assert!(
+            !window.ctx.text_edit_focused(),
+            "the field took the keyboard on the frame it opened"
+        );
+
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(window.ctx.text_edit_focused());
+    }
+
+    #[test]
+    fn enter_submits_the_trimmed_name_once() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        creatable_sidebar(&mut window);
+
+        assert_eq!(
+            submit_name(&mut window, &mut transport, &mut queue, "  Night  Drive "),
+            Some(Command::CreatePlaylist {
+                name: "Night  Drive".to_owned(),
+                revision: revision("root-1"),
+            })
+        );
+        assert!(window.library.write_in_flight());
+        assert!(window.library.naming.writing());
+
+        let _ = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![key(egui::Key::Enter, false)],
+        );
+        assert_eq!(
+            window
+                .frame(
+                    &mut transport,
+                    &mut queue,
+                    vec![key(egui::Key::Enter, true)]
+                )
+                .0,
+            None,
+            "a second Enter sent a second create"
+        );
+    }
+
+    #[test]
+    fn a_held_enter_submits_once() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        creatable_sidebar(&mut window);
+
+        assert!(submit_name(&mut window, &mut transport, &mut queue, "Mix").is_some());
+        assert_eq!(
+            window
+                .frame(
+                    &mut transport,
+                    &mut queue,
+                    vec![key_repeat(egui::Key::Enter)]
+                )
+                .0,
+            None,
+            "a held Enter replayed the submit"
+        );
+    }
+
+    #[test]
+    fn enter_on_blank_text_sends_nothing_and_keeps_the_field() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        creatable_sidebar(&mut window);
+
+        assert_eq!(
+            submit_name(&mut window, &mut transport, &mut queue, "   "),
+            None
+        );
+        assert!(window.library.naming.is_open(), "a blank submit closed it");
+        assert!(
+            window.ctx.text_edit_focused(),
+            "a blank submit dropped the keyboard"
+        );
+        assert!(!window.library.write_in_flight());
+        assert_eq!(window.library.sidebar_notice, None, "a blank submit spoke");
+    }
+
+    #[test]
+    fn typing_beyond_the_cap_is_truncated() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        creatable_sidebar(&mut window);
+        open_naming(&mut window, &mut transport, &mut queue);
+
+        type_text(&mut window, &mut transport, &mut queue, &"a".repeat(140));
+
+        assert_eq!(
+            window.library.naming.text().chars().count(),
+            takofy_model::PLAYLIST_NAME_MAX,
+            "the field took more than a name"
+        );
+    }
+
+    #[test]
+    fn blur_with_blank_text_cancels_and_blur_with_text_stays() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        creatable_sidebar(&mut window);
+
+        open_naming(&mut window, &mut transport, &mut queue);
+        let _ = window.click(&mut transport, &mut queue, view_rect(&window).center());
+        assert!(
+            !window.library.naming.is_open(),
+            "a blank field stayed open after a click elsewhere"
+        );
+
+        open_naming(&mut window, &mut transport, &mut queue);
+        type_text(&mut window, &mut transport, &mut queue, "Night Drive");
+        let _ = window.click(&mut transport, &mut queue, view_rect(&window).center());
+        assert!(
+            window.library.naming.is_open(),
+            "a click elsewhere threw a typed name away"
+        );
+        assert_eq!(window.library.naming.text(), "Night Drive");
+        assert!(
+            !window.ctx.text_edit_focused(),
+            "the field kept the keyboard"
+        );
+    }
+
+    #[test]
+    fn the_close_button_cancels() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        creatable_sidebar(&mut window);
+        open_naming(&mut window, &mut transport, &mut queue);
+        type_text(&mut window, &mut transport, &mut queue, "Night Drive");
+
+        let _ = window.click(&mut transport, &mut queue, sidebar_plus(&window));
+
+        assert!(!window.library.naming.is_open(), "the × did not close it");
+        assert_eq!(window.library.naming.text(), "");
+        assert!(!window.library.write_in_flight());
+    }
+
+    #[test]
+    fn while_writing_the_field_is_read_only_and_cancel_is_inert() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        creatable_sidebar(&mut window);
+
+        assert!(submit_name(&mut window, &mut transport, &mut queue, "Night Drive").is_some());
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            !window.ctx.text_edit_focused(),
+            "a field mid-write still took the keyboard"
+        );
+
+        let _ = window.click(&mut transport, &mut queue, sidebar_plus(&window));
+        assert!(
+            window.library.naming.is_open(),
+            "a cancel ended a create in flight"
+        );
+        assert!(window.library.naming.writing());
+
+        type_text(&mut window, &mut transport, &mut queue, "x");
+        assert_eq!(
+            window.library.naming.text(),
+            "Night Drive",
+            "a read-only field took a keystroke"
+        );
+    }
+
+    #[test]
+    fn a_make_failure_refocuses_the_field() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        creatable_sidebar(&mut window);
+
+        assert!(submit_name(&mut window, &mut transport, &mut queue, "Night Drive").is_some());
+        window.library.apply(&Update::PlaylistCreateFailed);
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+
+        assert!(window.library.naming.is_open());
+        assert_eq!(window.library.naming.text(), "Night Drive");
+        assert!(
+            window.ctx.text_edit_focused(),
+            "the retry had no keyboard in the field"
+        );
+        assert_eq!(
+            window.library.sidebar_notice,
+            Some(crate::library::SidebarWrite::Create)
+        );
+    }
+
+    #[test]
+    fn space_del_and_hearts_do_nothing_while_the_field_has_the_keyboard() {
+        let mut transport = playing(cover("a"));
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1"]);
+        sidebar_playlists(&mut window, &[("a", Some(0))], Some(rootlist_access(true)));
+        liked(&mut window, &[]);
+        let _ = click_page_row(&mut window, &mut transport, &mut queue, "p0");
+        open_naming(&mut window, &mut transport, &mut queue);
+        type_text(&mut window, &mut transport, &mut queue, "Mix");
+
+        assert_eq!(
+            window
+                .frame(
+                    &mut transport,
+                    &mut queue,
+                    vec![key(egui::Key::Space, true)]
+                )
+                .0,
+            None,
+            "a space reached the transport through the field"
+        );
+        assert_eq!(
+            window
+                .frame(
+                    &mut transport,
+                    &mut queue,
+                    vec![key(egui::Key::Delete, true)]
+                )
+                .0,
+            None,
+            "Del cut a row while the field had the keyboard"
+        );
+        crate::view::heart::post(
+            &window.ctx,
+            crate::view::heart::Ask {
+                tracks: vec!["spotify:track:a".to_owned()],
+                liked: true,
+            },
+        );
+        assert_eq!(
+            window.frame(&mut transport, &mut queue, Vec::new()).0,
+            None,
+            "a heart wrote while the field had the keyboard"
+        );
+        assert_eq!(window.library.likes.state("spotify:track:a"), Some(false));
+        assert_eq!(page_rows(&window), vec!["list:p0", "list:p1"]);
+    }
+
+    #[test]
+    fn the_count_label_returns_when_naming_closes() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        creatable_sidebar(&mut window);
+
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(painted_at(&frame, "2 saved").is_some());
+
+        open_naming(&mut window, &mut transport, &mut queue);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            painted_at(&frame, "2 saved").is_none(),
+            "the count stayed beside the field"
+        );
+
+        let _ = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![key(egui::Key::Escape, true)],
+        );
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            painted_at(&frame, "2 saved").is_some(),
+            "the count did not come back"
+        );
+    }
+
+    // ---- the head drawn alone, where its own widget ids are nameable ----
+
+    /// One frame of the sidebar alone, so a test can name the head's ids.
+    struct Column {
+        command: Option<Command>,
+        slot: egui::Id,
+        field: egui::Id,
+    }
+
+    /// Draws one frame of the sidebar at the column's own width.
+    fn column_frame(
+        ctx: &egui::Context,
+        library: &mut Library,
+        art: &mut Art,
+        events: Vec<egui::Event>,
+        drag: bool,
+    ) -> Column {
+        let tokens = Tokens::DARK;
+        let band = Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(254.0, 800.0));
+        let input = egui::RawInput {
+            screen_rect: Some(band),
+            events,
+            ..Default::default()
+        };
+        let mut slot = egui::Id::NULL;
+        let mut field = egui::Id::NULL;
+        let mut command = None;
+        art.begin_frame();
+        let mut output = ctx.run_ui(input, |ui| {
+            let control = crate::availability::Control::LibraryCreate;
+            slot = ui.scope_id().with((control, ()));
+            field = ui.scope_id().with((control, "name"));
+            command = if drag {
+                sidebar::column(ui, library, art, Instant::now(), &tokens)
+            } else {
+                sidebar::show(ui, library, art, Instant::now(), &tokens)
+            };
+        });
+        output.textures_delta.clear();
+        Column {
+            command,
+            slot,
+            field,
+        }
+    }
+
+    /// A styled context for the sidebar's own frames.
+    fn column_context() -> egui::Context {
+        let ctx = egui::Context::default();
+        ctx.set_fonts(fonts::definitions());
+        ctx.set_global_style(style(&Tokens::DARK));
+        ctx
+    }
+
+    /// Clicks `at` over the passes egui's hit test needs.
+    fn column_click(
+        ctx: &egui::Context,
+        library: &mut Library,
+        art: &mut Art,
+        drag: bool,
+        at: egui::Pos2,
+    ) -> Column {
+        let _ = column_frame(ctx, library, art, Vec::new(), drag);
+        let mut last = column_frame(ctx, library, art, Vec::new(), drag);
+        for event in crate::view::test_support::click_events(at) {
+            last = column_frame(ctx, library, art, vec![event], drag);
+        }
+        last
+    }
+
+    /// A library whose sidebar holds `names`, with a rootlist revision.
+    fn column_library(names: &[&str], rootlist: bool) -> Library {
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(
+            names
+                .iter()
+                .map(|name| PlaylistEntry {
+                    uri: format!("playlist:{name}"),
+                    name: (*name).to_owned(),
+                    named: true,
+                    cover: None,
+                    description: None,
+                    owner: None,
+                    tracks: None,
+                    access: None,
+                })
+                .collect(),
+        ));
+        if rootlist {
+            library.apply(&Update::RootlistAccess(rootlist_access(true)));
+        }
+        library
+    }
+
+    #[test]
+    fn escape_on_the_frame_the_field_opens() {
+        let ctx = column_context();
+        let mut art = Art::default();
+        let mut library = column_library(&["a"], true);
+        library.naming.open();
+        library.naming.edit().push_str("Night Drive");
+
+        // The field's key filter is stored only on the frame after it first
+        // holds the keyboard, so this Escape belongs to nobody: the frame opens
+        // the field and the key is dropped rather than closing it.
+        let opened = column_frame(
+            &ctx,
+            &mut library,
+            &mut art,
+            vec![key(egui::Key::Escape, true)],
+            true,
+        );
+
+        assert!(
+            library.naming.is_open(),
+            "the opening frame's Escape closed the field"
+        );
+        assert_eq!(library.naming.text(), "Night Drive");
+        assert!(
+            ctx.memory(|memory| memory.has_focus(opened.field)),
+            "the opening frame's Escape took the keyboard off the field"
+        );
+        assert_eq!(opened.command, None);
+    }
+
+    #[test]
+    fn escape_cancels_and_returns_focus_to_plus() {
+        let ctx = column_context();
+        let mut art = Art::default();
+        let mut library = column_library(&["a"], true);
+        library.naming.open();
+        library.naming.edit().push_str("Night Drive");
+
+        let opened = column_frame(&ctx, &mut library, &mut art, Vec::new(), true);
+        assert!(
+            ctx.memory(|memory| memory.has_focus(opened.field)),
+            "the field never took the keyboard"
+        );
+        // One frame for the field's own key filter to be the stored one.
+        let _ = column_frame(&ctx, &mut library, &mut art, Vec::new(), true);
+
+        let escaped = column_frame(
+            &ctx,
+            &mut library,
+            &mut art,
+            vec![key(egui::Key::Escape, true)],
+            true,
+        );
+        assert!(!library.naming.is_open(), "Escape did not close the field");
+        assert_eq!(library.naming.text(), "");
+        assert!(
+            ctx.memory(|memory| memory.has_focus(escaped.slot)),
+            "the keyboard did not go back to the +"
+        );
+    }
+
+    #[test]
+    fn escape_does_nothing_when_the_field_is_closed() {
+        let ctx = column_context();
+        let mut art = Art::default();
+        let mut library = column_library(&["a"], true);
+
+        let closed = column_frame(
+            &ctx,
+            &mut library,
+            &mut art,
+            vec![key(egui::Key::Escape, true)],
+            true,
+        );
+
+        assert!(!library.naming.is_open());
+        assert_eq!(closed.command, None);
+        assert_eq!(library.naming.text(), "");
+    }
+
+    #[test]
+    fn tab_leaves_the_field() {
+        let ctx = column_context();
+        let mut art = Art::default();
+        let mut library = column_library(&["a"], true);
+        library.naming.open();
+        library.naming.edit().push_str("Night Drive");
+        let opened = column_frame(&ctx, &mut library, &mut art, Vec::new(), true);
+        assert!(ctx.memory(|memory| memory.has_focus(opened.field)));
+        // One frame for the field's own key filter to be the stored one.
+        let _ = column_frame(&ctx, &mut library, &mut art, Vec::new(), true);
+
+        let _ = column_frame(
+            &ctx,
+            &mut library,
+            &mut art,
+            vec![key(egui::Key::Tab, true)],
+            true,
+        );
+        let after = column_frame(&ctx, &mut library, &mut art, Vec::new(), true);
+
+        assert!(
+            !ctx.memory(|memory| memory.has_focus(after.field)),
+            "Tab left the keyboard in the field"
+        );
+        assert!(library.naming.is_open(), "Tab closed the field");
+        assert_eq!(library.naming.text(), "Night Drive");
+    }
+
+    #[test]
+    fn the_plus_is_inert_in_the_drawer_form() {
+        let ctx = column_context();
+        let mut art = Art::default();
+        let mut library = column_library(&["a"], true);
+        let band = Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(254.0, 800.0));
+
+        let _ = column_click(&ctx, &mut library, &mut art, false, head_plus(band));
+
+        assert!(
+            !library.naming.is_open(),
+            "the drawer's + opened a field whose command is discarded"
+        );
+    }
+
+    #[test]
+    fn the_plus_is_inert_when_creatable_is_false() {
+        let ctx = column_context();
+        let mut art = Art::default();
+        let mut library = column_library(&["a"], false);
+        let band = Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(254.0, 800.0));
+
+        let _ = column_click(&ctx, &mut library, &mut art, true, head_plus(band));
+
+        assert!(!library.creatable());
+        assert!(
+            !library.naming.is_open(),
+            "a + with no rootlist to link against opened a field"
+        );
+    }
+
+    // ---- the created row in the sidebar's list ----
+
+    #[test]
+    fn a_created_row_is_drawn_first() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        creatable_sidebar(&mut window);
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        let area = sidebar_rect(&window);
+
+        window.library.naming.open();
+        window.library.naming.edit().push_str("Night Drive");
+        assert!(window.library.create_playlist().is_some());
+        window.library.apply(&Update::PlaylistCreated {
+            entry: new_playlist("Night Drive", page_access(true)),
+            revision: revision("root-2"),
+        });
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+
+        let created = text_in(&frame, "Night Drive", area).expect("the new row is painted");
+        let first = text_in(&frame, "a", area).expect("the old first row is painted");
+        assert!(
+            created.top() < first.top(),
+            "the created row is not the first one drawn"
+        );
+    }
+
+    #[test]
+    fn the_reveal_scrolls_to_the_top_once() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let names: Vec<String> = (0..30).map(|index| format!("r{index}")).collect();
+        let rows: Vec<(&str, Option<usize>)> =
+            names.iter().map(|name| (name.as_str(), Some(0))).collect();
+        sidebar_playlists(&mut window, &rows, Some(rootlist_access(true)));
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        let area = sidebar_rect(&window);
+
+        // The pointer has to be over the list for the wheel to reach it.
+        let _ = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![egui::Event::PointerMoved(egui::pos2(
+                area.center().x,
+                area.bottom() - 40.0,
+            ))],
+        );
+        let wheel = egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -600.0),
+            phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Wheel,
+            modifiers: egui::Modifiers::NONE,
+        };
+        for _ in 0..3 {
+            let _ = window.frame(&mut transport, &mut queue, vec![wheel.clone()]);
+        }
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            text_in(&frame, "r0", area).is_none(),
+            "the list never scrolled away from its first row"
+        );
+
+        window.library.naming.open();
+        window.library.naming.edit().push_str("Night Drive");
+        assert!(window.library.create_playlist().is_some());
+        window.library.apply(&Update::PlaylistCreated {
+            entry: new_playlist("Night Drive", page_access(true)),
+            revision: revision("root-2"),
+        });
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            text_in(&frame, "Night Drive", area).is_some(),
+            "the created row is not on screen"
+        );
+
+        // The reveal is one frame's: the wheel still moves the list afterwards.
+        for _ in 0..3 {
+            let _ = window.frame(&mut transport, &mut queue, vec![wheel.clone()]);
+        }
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            text_in(&frame, "Night Drive", area).is_none(),
+            "the list was forced back to the top on every frame"
+        );
+    }
+
+    #[test]
+    fn a_create_is_refused_while_a_block_is_carried() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        creatable_sidebar(&mut window);
+        open_naming(&mut window, &mut transport, &mut queue);
+        type_text(&mut window, &mut transport, &mut queue, "Night Drive");
+        // Any payload says a block is held; the gate reads no more than that.
+        egui::DragAndDrop::set_payload(&window.ctx, ());
+
+        assert_eq!(
+            window
+                .frame(
+                    &mut transport,
+                    &mut queue,
+                    vec![key(egui::Key::Enter, true)]
+                )
+                .0,
+            None,
+            "a create went out while a block was carried"
+        );
+        assert!(!window.library.write_in_flight());
+        assert_eq!(
+            window.library.naming.text(),
+            "Night Drive",
+            "the dropped submit lost the name"
+        );
+    }
+
+    #[test]
+    fn the_row_count_updates() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        creatable_sidebar(&mut window);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(painted_at(&frame, "2 saved").is_some());
+
+        window.library.naming.open();
+        window.library.naming.edit().push_str("Night Drive");
+        assert!(window.library.create_playlist().is_some());
+        window.library.apply(&Update::PlaylistCreated {
+            entry: new_playlist("Night Drive", page_access(true)),
+            revision: revision("root-2"),
+        });
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+
+        assert!(
+            painted_at(&frame, "3 saved").is_some(),
+            "the head did not count the new row"
+        );
+    }
+
+    // ---- the menu's new-playlist row ----
+
+    /// Opens the `⋯` menu of the page row titled `title`, and answers the verbs
+    /// it offers.
+    fn open_row_menu(
+        window: &mut Window,
+        transport: &mut Transport,
+        queue: &mut Queue,
+        title: &str,
+    ) -> Vec<Verb> {
+        let (_, frame) = window.frame(transport, queue, Vec::new());
+        let more = more_button(&frame, view_rect(window), title);
+        let _ = window.click(transport, queue, more);
+        settle_menu(window, transport, queue);
+        assert!(window.menu.is_open(), "the `⋯` opened no menu");
+        window.menu.items().iter().map(|item| item.verb).collect()
+    }
+
+    #[test]
+    fn the_menu_row_opens_the_field_and_sends_no_command() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1"]);
+        sidebar_playlists(&mut window, &[("a", Some(0))], Some(rootlist_access(true)));
+
+        let offered = open_row_menu(&mut window, &mut transport, &mut queue, "p0");
+        assert!(
+            offered.contains(&Verb::NewPlaylist),
+            "the row was stripped from a menu that could offer it: {offered:?}"
+        );
+        // The pointer opened the menu, so it lit nothing: the row is clicked where
+        // it is painted.
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let at = painted_at(&frame, "New playlist…").expect("the row is painted");
+        let command = window.click(
+            &mut transport,
+            &mut queue,
+            egui::pos2(at.x + 20.0, at.y + 6.0),
+        );
+
+        assert_eq!(command, None, "the new-playlist row sent a command");
+        assert!(!window.menu.is_open(), "the menu stayed open");
+        assert!(
+            window.library.naming.is_open(),
+            "the row opened no naming field"
+        );
+        assert!(!window.library.write_in_flight(), "the row started a write");
+    }
+
+    #[test]
+    fn the_menu_row_is_absent_in_the_rail_layout() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(800.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1"]);
+        sidebar_playlists(&mut window, &[("a", Some(0))], Some(rootlist_access(true)));
+        assert!(window.library.creatable());
+
+        let offered = open_row_menu(&mut window, &mut transport, &mut queue, "p0");
+
+        assert!(
+            !offered.contains(&Verb::NewPlaylist),
+            "the rail offered a field it has no column for: {offered:?}"
+        );
+    }
+
+    #[test]
+    fn the_menu_row_is_absent_while_the_playlists_load() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1"]);
+        window.library.playlists = Load::Loading;
+        assert!(!window.library.creatable());
+
+        let offered = open_row_menu(&mut window, &mut transport, &mut queue, "p0");
+
+        assert!(
+            !offered.contains(&Verb::NewPlaylist),
+            "a list that is still loading offered a create: {offered:?}"
+        );
+    }
+
+    #[test]
+    fn a_chosen_row_is_dropped_while_the_drawer_is_open_or_a_block_is_carried() {
+        // The keyboard door, because a press that reaches a menu row closes the
+        // drawer first: this is the only way to make the choice the gate guards.
+        for drawer_open in [true, false] {
+            let mut transport = Transport::default();
+            let mut queue = Queue::default();
+            let mut window = Window::new(Vec2::new(1400.0, 900.0));
+            playlist_page(&mut window, &["p0", "p1"]);
+            sidebar_playlists(&mut window, &[("a", Some(0))], Some(rootlist_access(true)));
+            let _ = click_page_row(&mut window, &mut transport, &mut queue, "p0");
+            let _ = chord(
+                &mut window,
+                &mut transport,
+                &mut queue,
+                egui::Key::F10,
+                egui::Modifiers::SHIFT,
+            );
+            assert!(window.menu.is_open(), "the keyboard opened no menu");
+            let offered: Vec<Verb> = window.menu.items().iter().map(|item| item.verb).collect();
+            let row = offered
+                .iter()
+                .position(|verb| *verb == Verb::NewPlaylist)
+                .expect("the row");
+            for _ in 0..row {
+                let _ = press(
+                    &mut window,
+                    &mut transport,
+                    &mut queue,
+                    egui::Key::ArrowDown,
+                );
+            }
+            if drawer_open {
+                window.drawer = Drawer::Open;
+            } else {
+                // Any payload says a block is held; the gate reads no more.
+                egui::DragAndDrop::set_payload(&window.ctx, ());
+            }
+
+            let _ = press(&mut window, &mut transport, &mut queue, egui::Key::Enter);
+
+            assert!(
+                !window.library.naming.is_open(),
+                "a chosen row opened the field (drawer open: {drawer_open})"
+            );
+        }
+    }
+
+    #[test]
+    fn a_submit_is_dropped_when_another_region_took_the_command() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0"]);
+        sidebar_playlists(&mut window, &[("a", Some(0))], Some(rootlist_access(true)));
+        // An album on top, so Back returns to a playlist whose page was dropped
+        // and has to be asked for again.
+        window.library.open(Page::Album(ALBUM.to_owned()));
+        window.library.tracks = Load::Idle;
+        open_naming(&mut window, &mut transport, &mut queue);
+        type_text(&mut window, &mut transport, &mut queue, "Night Drive");
+
+        let command = window
+            .frame(
+                &mut transport,
+                &mut queue,
+                vec![
+                    key(egui::Key::Enter, true),
+                    key(egui::Key::BrowserBack, true),
+                ],
+            )
+            .0;
+
+        assert!(
+            matches!(command, Some(Command::LoadTracks { .. })),
+            "the frame's one command is the nav's: {command:?}"
+        );
+        assert!(
+            !window.library.naming.writing(),
+            "a dropped submit started a write"
+        );
+        assert!(!window.library.write_in_flight());
+        assert_eq!(
+            window.library.naming.text(),
+            "Night Drive",
+            "a dropped submit lost the name"
         );
     }
 }

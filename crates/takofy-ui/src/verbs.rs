@@ -24,6 +24,8 @@ pub enum Outcome {
     Remove,
     /// These tracks join the liked set, or leave it.
     Like { tracks: Vec<String>, liked: bool },
+    /// The sidebar's name field opens; nothing is sent and nothing else moves.
+    NewPlaylist,
 }
 
 /// The web address a row's URI stands for, or `None` when it has none.
@@ -101,6 +103,13 @@ pub fn track_items(
         items.push(item(Verb::CopyLink, label));
     }
 
+    // The sheet's new-playlist row follows the link and sits above the band: the
+    // one action a menu can always offer must not be buried. It acts on nothing
+    // the menu holds, so a menu with no other row keeps none of its own.
+    if !items.is_empty() {
+        items.push(item(Verb::NewPlaylist, "New playlist…".to_owned()));
+    }
+
     if let Some(label) = remove_label(targets, listing) {
         items.push(Item {
             label,
@@ -135,6 +144,7 @@ pub fn outcome(verb: Verb, targets: &[TrackEntry]) -> Option<Outcome> {
             })?;
             Some(Outcome::Open(Page::credit(uri)))
         }
+        Verb::NewPlaylist => Some(Outcome::NewPlaylist),
         Verb::Remove => (!targets.is_empty()).then_some(Outcome::Remove),
         Verb::Save => like_outcome(targets, true),
         Verb::Unsave => like_outcome(targets, false),
@@ -265,7 +275,7 @@ fn links(targets: &[TrackEntry]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::menu::{Item, Kind, Listing, Verb};
+    use crate::menu::{Anchor, Device, Door, Item, Kind, Listing, Request, Verb};
     use crate::route::Page;
     use takofy_model::TrackEntry;
 
@@ -319,7 +329,7 @@ mod tests {
     }
 
     #[test]
-    fn one_track_gets_the_sheets_four_verbs_in_order() {
+    fn one_track_gets_the_sheets_five_verbs_in_order() {
         let items = track_items(
             &[entry("spotify:track:a")],
             None,
@@ -328,7 +338,13 @@ mod tests {
         );
         assert_eq!(
             labels(&items),
-            ["Add to queue", "Go to album", "Go to artist", "Copy link"]
+            [
+                "Add to queue",
+                "Go to album",
+                "Go to artist",
+                "Copy link",
+                "New playlist…"
+            ]
         );
         assert_eq!(
             verbs(&items),
@@ -337,6 +353,7 @@ mod tests {
                 Verb::GoToAlbum,
                 Verb::GoToArtist,
                 Verb::CopyLink,
+                Verb::NewPlaylist,
             ]
         );
         assert!(items.iter().all(|item| item.kind == Kind::Plain));
@@ -385,7 +402,10 @@ mod tests {
         bare.album_uri = None;
         bare.artist_uris = Vec::new();
         let items = track_items(&[bare], None, &Listing::Page, Standing::Unknown);
-        assert_eq!(labels(&items), ["Add to queue", "Copy link"]);
+        assert_eq!(
+            labels(&items),
+            ["Add to queue", "Copy link", "New playlist…"]
+        );
     }
 
     #[test]
@@ -435,7 +455,7 @@ mod tests {
         local.album_uri = None;
         local.artist_uris = Vec::new();
         let items = track_items(&[local], None, &Listing::Page, Standing::Unknown);
-        assert_eq!(labels(&items), ["Add to queue"]);
+        assert_eq!(labels(&items), ["Add to queue", "New playlist…"]);
     }
 
     #[test]
@@ -513,6 +533,7 @@ mod tests {
                 "Go to album",
                 "Go to artist",
                 "Copy link",
+                "New playlist…",
                 "Remove from this playlist",
             ]
         );
@@ -544,6 +565,7 @@ mod tests {
                 "Go to album",
                 "Go to artist",
                 "Copy link",
+                "New playlist…",
                 "Remove from the queue"
             ]
         );
@@ -554,7 +576,7 @@ mod tests {
             entry("spotify:track:c"),
         ];
         let items = track_items(&three, None, &Listing::Queue, Standing::Unknown);
-        assert_eq!(labels(&items)[3], "Remove 3 from the queue");
+        assert_eq!(labels(&items)[4], "Remove 3 from the queue");
     }
 
     #[test]
@@ -600,7 +622,12 @@ mod tests {
         );
         assert_eq!(
             verbs(&items),
-            [Verb::GoToAlbum, Verb::GoToArtist, Verb::CopyLink]
+            [
+                Verb::GoToAlbum,
+                Verb::GoToArtist,
+                Verb::CopyLink,
+                Verb::NewPlaylist
+            ]
         );
     }
 
@@ -702,7 +729,8 @@ mod tests {
                 "Save to your library",
                 "Go to album",
                 "Go to artist",
-                "Copy link"
+                "Copy link",
+                "New playlist…"
             ]
         );
         assert_eq!(
@@ -712,7 +740,8 @@ mod tests {
                 Verb::Save,
                 Verb::GoToAlbum,
                 Verb::GoToArtist,
-                Verb::CopyLink
+                Verb::CopyLink,
+                Verb::NewPlaylist
             ]
         );
     }
@@ -898,5 +927,126 @@ mod tests {
             None
         );
         assert_eq!(outcome(Verb::Save, &[]), None);
+    }
+
+    #[test]
+    fn new_playlist_follows_copy_link_and_precedes_the_band() {
+        let items = track_items(
+            &tracks(&["spotify:track:a"]),
+            None,
+            &playlist_listing(),
+            Standing::Unknown,
+        );
+        let order = verbs(&items);
+        let at = |verb: Verb| {
+            order
+                .iter()
+                .position(|found| *found == verb)
+                .unwrap_or_else(|| panic!("{verb:?} is offered"))
+        };
+        assert_eq!(at(Verb::NewPlaylist), at(Verb::CopyLink) + 1);
+        assert_eq!(at(Verb::Remove), at(Verb::NewPlaylist) + 1);
+    }
+
+    #[test]
+    fn new_playlist_is_offered_on_all_four_listings() {
+        for listing in [
+            Listing::Page,
+            Listing::Queue,
+            Listing::Current,
+            playlist_listing(),
+        ] {
+            let items = track_items(
+                &tracks(&["spotify:track:a"]),
+                None,
+                &listing,
+                Standing::Unknown,
+            );
+            assert!(
+                verbs(&items).contains(&Verb::NewPlaylist),
+                "{listing:?} has no new-playlist row"
+            );
+        }
+    }
+
+    #[test]
+    fn a_menu_with_no_other_item_gets_no_new_playlist_row() {
+        let mut local = entry("spotify:local:A:B:C:1000");
+        local.album_uri = None;
+        local.artist_uris = Vec::new();
+        let items = track_items(&[local], None, &Listing::Current, Standing::Unknown);
+        assert!(
+            items.is_empty(),
+            "a row that acts on nothing got a menu of its own: {:?}",
+            labels(&items)
+        );
+    }
+
+    #[test]
+    fn new_playlist_is_plain_with_no_key_and_no_chevron() {
+        let items = track_items(
+            &tracks(&["spotify:track:a"]),
+            None,
+            &Listing::Page,
+            Standing::Unknown,
+        );
+        let row = items
+            .iter()
+            .find(|item| item.verb == Verb::NewPlaylist)
+            .expect("a new-playlist row");
+        assert_eq!(row.label, "New playlist…");
+        assert_eq!(row.kind, Kind::Plain);
+        assert_eq!(row.key, None);
+        assert!(!row.submenu);
+    }
+
+    #[test]
+    fn outcome_new_playlist_is_a_unit_with_no_command() {
+        assert_eq!(outcome(Verb::NewPlaylist, &[]), Some(Outcome::NewPlaylist));
+        assert_eq!(
+            outcome(Verb::NewPlaylist, &tracks(&["spotify:track:a"])),
+            Some(Outcome::NewPlaylist),
+            "the row acts on nothing the menu holds"
+        );
+    }
+
+    #[test]
+    fn request_allow_create_false_strips_only_that_row() {
+        let targets = tracks(&["spotify:track:a"]);
+        let items = track_items(&targets, None, &Listing::Page, Standing::Unknown);
+        let offered = items.len();
+        let mut request = Request {
+            door: Door {
+                anchor: Anchor::Pointer(egui::Pos2::ZERO),
+                opener: egui::Id::unique("row-more"),
+                device: Device::Keyboard,
+            },
+            items,
+            targets,
+            rows: vec![0],
+            listing: Listing::Page,
+            page: None,
+        };
+
+        request.allow_create(false);
+
+        assert_eq!(request.items.len(), offered - 1);
+        assert!(
+            request
+                .items
+                .iter()
+                .all(|item| item.verb != Verb::NewPlaylist)
+        );
+        assert!(
+            request.items.iter().any(|item| item.verb == Verb::CopyLink),
+            "the strip took another row with it"
+        );
+
+        request.allow_create(true);
+        assert_eq!(
+            request.items.len(),
+            offered - 1,
+            "allowing a stripped row put it back"
+        );
     }
 }

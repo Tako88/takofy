@@ -16,6 +16,7 @@ mod filter_row;
 mod ghost;
 mod heart;
 mod hero;
+pub(crate) mod keys;
 pub mod lyrics_pane;
 pub mod media;
 mod menu_box;

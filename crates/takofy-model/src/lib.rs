@@ -97,6 +97,12 @@ impl CoverImage {
     }
 }
 
+/// The longest playlist name the server accepts, in characters.
+///
+/// Counted in characters rather than bytes, because a name is what the user
+/// typed and a multi-byte character is still one of them.
+pub const PLAYLIST_NAME_MAX: usize = 100;
+
 /// A playlist as listed in the rootlist.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlaylistEntry {

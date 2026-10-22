@@ -116,6 +116,12 @@ impl eframe::App for TakofyApp {
         for command in commands {
             let _ = self.ui_end.commands.send(command);
         }
+        // A lost link reply leaves the held rootlist revision naming a list that
+        // may already carry the new playlist, so the read that names both again
+        // is asked for once the failed write is out of the way.
+        if let Some(command) = self.library.rootlist_request() {
+            let _ = self.ui_end.commands.send(command);
+        }
         // The followed list is want-driven: it is asked for after the drain, so
         // a playlists reply that just landed is what arms it. The worker never
         // chains it onto the rootlist.

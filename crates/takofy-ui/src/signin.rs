@@ -48,6 +48,9 @@ impl SignIn {
                 | Update::PlaylistMoveFailed
                 | Update::TrackAdded { .. }
                 | Update::AddFailed { .. }
+                | Update::PlaylistCreated { .. }
+                | Update::PlaylistCreateFailed
+                | Update::PlaylistUnlinked
                 | Update::Tracks { .. }
                 | Update::TrackMoved { .. }
                 | Update::MoveFailed { .. }

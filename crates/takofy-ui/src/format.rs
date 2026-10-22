@@ -317,6 +317,8 @@ pub fn sidebar_notice(write: SidebarWrite) -> &'static str {
     match write {
         SidebarWrite::Reorder => "Could not move that playlist. Try again.",
         SidebarWrite::Add => "Could not add that track. Try again.",
+        SidebarWrite::Create => "Could not create that playlist. Try again.",
+        SidebarWrite::Link => "Created it, but could not add it to your list.",
     }
 }
 
@@ -514,7 +516,7 @@ mod tests {
     }
 
     #[test]
-    fn the_two_notices_name_what_could_not_be_done() {
+    fn the_notices_name_what_could_not_be_done() {
         assert_eq!(
             sidebar_notice(SidebarWrite::Reorder),
             "Could not move that playlist. Try again."
@@ -522,6 +524,24 @@ mod tests {
         assert_eq!(
             sidebar_notice(SidebarWrite::Add),
             "Could not add that track. Try again."
+        );
+    }
+
+    #[test]
+    fn sidebar_notice_words_for_create_and_link() {
+        assert_eq!(
+            sidebar_notice(SidebarWrite::Create),
+            "Could not create that playlist. Try again."
+        );
+        assert_eq!(
+            sidebar_notice(SidebarWrite::Link),
+            "Created it, but could not add it to your list.",
+            "the playlist exists, so the sentence says what is missing"
+        );
+        assert_ne!(
+            sidebar_notice(SidebarWrite::Create),
+            sidebar_notice(SidebarWrite::Link),
+            "the two failures are not the same failure"
         );
     }
 

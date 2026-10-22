@@ -275,8 +275,9 @@ pub(crate) async fn read_playlist_state(session: &Session, uri: &str) -> Option<
     };
     let playlist = match Playlist::get(session, &id).await {
         Ok(playlist) => playlist,
-        Err(error) => {
-            log::warn!("playlist state could not be read: {error}");
+        Err(_) => {
+            // The error is not formatted: it can embed a response body.
+            log::warn!("playlist state could not be read");
             return None;
         }
     };
@@ -329,16 +330,29 @@ impl Drop for Restore<'_> {
 
 /// Writes one change set, in exactly one attempt.
 ///
-/// None of these writes is idempotent: a retry after a reply was lost would
-/// apply the change twice, so the shared client is held to one attempt for this
-/// call and put back on every exit path, cancellation included.
-///
-/// The one attempt is session-wide while in force: the worker runs one command at a time.
+/// The reply's revision is what the next write names, so a reply that names
+/// none leaves the caller with nothing to base the next one on.
 async fn write_changes(
     session: &Session,
     endpoint: String,
     body: Vec<u8>,
 ) -> Result<Revision, playlist_edit::PlaylistError> {
+    let bytes = post_protobuf(session, endpoint, body).await?;
+    playlist_edit::reply_revision(&bytes).ok_or(playlist_edit::PlaylistError::Reply)
+}
+
+/// Posts one protobuf body, in exactly one attempt.
+///
+/// None of these writes is idempotent: a retry after a reply was lost would
+/// apply the change twice, so the shared client is held to one attempt for this
+/// call and put back on every exit path, cancellation included.
+///
+/// The one attempt is session-wide while in force: the worker runs one command at a time.
+async fn post_protobuf(
+    session: &Session,
+    endpoint: String,
+    body: Vec<u8>,
+) -> Result<Vec<u8>, playlist_edit::PlaylistError> {
     let headers = playlist_headers().ok_or_else(|| {
         playlist_edit::PlaylistError::Source(
             "the playlist media type is not a valid header".to_owned(),
@@ -347,12 +361,26 @@ async fn write_changes(
     let client = session.spclient();
     client.set_strategy(RequestStrategy::TryTimes(1));
     let _restore = Restore(client);
-    let answer = client
+    let bytes = client
         .request(&Method::POST, &endpoint, Some(headers), Some(&body))
-        .await;
-    let bytes =
-        answer.map_err(|error| playlist_edit::PlaylistError::Source(error.kind.to_string()))?;
-    playlist_edit::reply_revision(&bytes).ok_or(playlist_edit::PlaylistError::Reply)
+        .await
+        .map_err(|error| playlist_edit::PlaylistError::Source(error.kind.to_string()))?;
+    Ok(bytes.to_vec())
+}
+
+/// Creates a playlist called `name`, answering the URI the reply names.
+pub(crate) async fn write_create(
+    session: &Session,
+    name: &str,
+) -> Result<String, playlist_edit::PlaylistError> {
+    playlist_edit::require_name(name)?;
+    let bytes = post_protobuf(
+        session,
+        playlist_edit::CREATE_ENDPOINT.to_owned(),
+        playlist_edit::create_body(name),
+    )
+    .await?;
+    playlist_edit::created_uri(&bytes).ok_or(playlist_edit::PlaylistError::Reply)
 }
 
 /// Writes `moves` to a playlist, as one delta on one revision.
@@ -403,6 +431,17 @@ pub(crate) async fn write_rootlist_move(
         playlist_edit::move_body(revision, &moves),
     )
     .await
+}
+
+/// Puts `uri` at the front of the user's rootlist, based on `revision`.
+pub(crate) async fn write_rootlist_add(
+    session: &Session,
+    revision: &Revision,
+    uri: &str,
+) -> Result<Revision, playlist_edit::PlaylistError> {
+    playlist_edit::require_playlist(uri)?;
+    let endpoint = playlist_edit::rootlist_changes_endpoint(&session.username())?;
+    write_changes(session, endpoint, playlist_edit::add_body(revision, 0, uri)).await
 }
 
 /// Appends one track to a playlist.

@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use takofy_core::credentials::{AccessToken, CredentialStore};
 use takofy_core::login::{AuthError, SourceErrorKind, TokenSource, authorize, resume};
 use takofy_core::playback::{PlaybackError, PlaybackEvent};
-use takofy_model::{CoverUrl, Move, Removal, Revision};
+use takofy_model::{CoverUrl, Move, PlaylistEntry, Removal, Revision};
 use takofy_ui::message::{Command, Failure, TransportUpdate, Update};
 use tokio::runtime::{Handle, Runtime};
 use tokio::sync::Semaphore;
@@ -436,6 +436,14 @@ pub(crate) fn start<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                         &track,
                     )
                     .await;
+                    if step.stopped() {
+                        break;
+                    }
+                }
+                Event::Command(Some(Command::CreatePlaylist { name, revision })) => {
+                    let step =
+                        create_playlist(&mut host, &mut stop_rx, &task_notifier, &name, &revision)
+                            .await;
                     if step.stopped() {
                         break;
                     }
@@ -1049,6 +1057,60 @@ async fn add_track<H: SessionHost>(
             Step::Done
         }
     }
+}
+
+/// Creates a playlist, links it, and announces the row it should draw first.
+///
+/// One command, three host calls, and the first failure ends it: a create that
+/// failed created nothing, so there is nothing to link, and a link that failed
+/// leaves a real playlist the account holds and this app cannot see. Neither is
+/// retried here, because no playlist write is idempotent.
+async fn create_playlist<H: SessionHost>(
+    host: &mut H,
+    stop: &mut StopReceiver<()>,
+    notifier: &Notifier,
+    name: &str,
+    revision: &Revision,
+) -> Step {
+    let Some(created) = stop_or(stop, host.make_playlist(name)).await else {
+        return Step::Stopped;
+    };
+    let uri = match created {
+        Ok(uri) => uri,
+        Err(error) => {
+            log::warn!("playlist create failed: {}", error.kind());
+            notifier.send(Update::PlaylistCreateFailed);
+            return Step::Done;
+        }
+    };
+    let Some(linked) = stop_or(stop, host.link_playlist(revision, &uri)).await else {
+        return Step::Stopped;
+    };
+    let revision = match linked {
+        Ok(revision) => revision,
+        Err(error) => {
+            log::warn!("playlist link failed: {}", error.kind());
+            notifier.send(Update::PlaylistUnlinked);
+            return Step::Done;
+        }
+    };
+    let Some(access) = stop_or(stop, host.playlist_state(&uri)).await else {
+        return Step::Stopped;
+    };
+    notifier.send(Update::PlaylistCreated {
+        entry: PlaylistEntry {
+            uri,
+            name: name.to_owned(),
+            named: true,
+            cover: None,
+            description: None,
+            tracks: Some(0),
+            owner: None,
+            access,
+        },
+        revision,
+    });
+    Step::Done
 }
 
 /// Starts the player if needed and hands the one drain thread its events.
@@ -1694,6 +1756,48 @@ mod tests {
         }
     }
 
+    /// The playlist a scripted create makes.
+    const CREATED: &str = "spotify:playlist:0JQ5DAqbMKFEC4WFtoNRpw";
+
+    /// A scripted create; the default makes [`CREATED`].
+    #[derive(Clone)]
+    enum CreateScript {
+        Ready(String),
+        Fail,
+        Pending,
+    }
+
+    impl Default for CreateScript {
+        fn default() -> Self {
+            Self::Ready(CREATED.to_owned())
+        }
+    }
+
+    /// A scripted rootlist link; the default names a revision the window has
+    /// not seen.
+    #[derive(Clone)]
+    enum LinkScript {
+        Ready(Revision),
+        Fail,
+        Pending,
+    }
+
+    impl Default for LinkScript {
+        fn default() -> Self {
+            Self::Ready(Revision::from_wire(&[4]).expect("a revision"))
+        }
+    }
+
+    /// A scripted playlist-state read. The default answers nothing, the way a
+    /// list the session cannot see yet does.
+    #[derive(Clone, Default)]
+    enum StateScript {
+        #[default]
+        Missing,
+        Ready(PlaylistAccess),
+        Pending,
+    }
+
     #[derive(Default)]
     struct FakeState {
         connect_scripts: Mutex<Vec<ConnectScript>>,
@@ -1716,6 +1820,9 @@ mod tests {
         remove_script: Mutex<MoveScript>,
         rootlist_move_script: Mutex<RootlistMoveScript>,
         add_script: Mutex<AddScript>,
+        create_script: Mutex<CreateScript>,
+        link_script: Mutex<LinkScript>,
+        state_script: Mutex<StateScript>,
         connected: AtomicBool,
         connects: AtomicUsize,
         rootlists: AtomicUsize,
@@ -1738,6 +1845,9 @@ mod tests {
         remove_writes: AtomicUsize,
         rootlist_move_writes: AtomicUsize,
         add_writes: AtomicUsize,
+        create_writes: AtomicUsize,
+        link_writes: AtomicUsize,
+        state_reads: AtomicUsize,
         artist_started: Mutex<Option<Sender<()>>>,
         lyrics_started: Mutex<Option<Sender<()>>>,
         search_started: Mutex<Option<Sender<()>>>,
@@ -1748,10 +1858,15 @@ mod tests {
         last_remove: Mutex<Option<(String, Revision, Vec<Removal>)>>,
         last_root_move: Mutex<Option<(Revision, usize, usize)>>,
         last_add: Mutex<Option<(String, Revision, usize, String)>>,
+        last_create: Mutex<Option<String>>,
+        last_link: Mutex<Option<(Revision, String)>>,
         last_like: Mutex<Option<(Vec<String>, bool)>>,
         move_started: Mutex<Option<Sender<()>>>,
         rootlist_move_started: Mutex<Option<Sender<()>>>,
         add_started: Mutex<Option<Sender<()>>>,
+        create_started: Mutex<Option<Sender<()>>>,
+        link_started: Mutex<Option<Sender<()>>>,
+        state_started: Mutex<Option<Sender<()>>>,
         like_started: Mutex<Option<Sender<()>>>,
         plays: AtomicUsize,
         pauses: AtomicUsize,
@@ -2254,6 +2369,76 @@ mod tests {
                     AddScript::Ready(revision) => Ok(revision),
                     AddScript::Fail => Err(SessionError::NotConnected),
                     AddScript::Pending => std::future::pending().await,
+                }
+            }
+        }
+
+        fn make_playlist(
+            &self,
+            name: &str,
+        ) -> impl Future<Output = Result<String, SessionError>> + Send {
+            self.shared.create_writes.fetch_add(1, Ordering::SeqCst);
+            *self.shared.last_create.lock().expect("lock") = Some(name.to_owned());
+            if let Some(tx) = self.shared.create_started.lock().expect("lock").take() {
+                let _ = tx.send(());
+            }
+            let connected = self.shared.connected.load(Ordering::SeqCst);
+            let script = self.shared.create_script.lock().expect("lock").clone();
+            async move {
+                if !connected {
+                    return Err(SessionError::NotConnected);
+                }
+                match script {
+                    CreateScript::Ready(uri) => Ok(uri),
+                    CreateScript::Fail => Err(SessionError::NotConnected),
+                    CreateScript::Pending => std::future::pending().await,
+                }
+            }
+        }
+
+        fn link_playlist(
+            &self,
+            revision: &Revision,
+            playlist: &str,
+        ) -> impl Future<Output = Result<Revision, SessionError>> + Send {
+            self.shared.link_writes.fetch_add(1, Ordering::SeqCst);
+            *self.shared.last_link.lock().expect("lock") =
+                Some((revision.clone(), playlist.to_owned()));
+            if let Some(tx) = self.shared.link_started.lock().expect("lock").take() {
+                let _ = tx.send(());
+            }
+            let connected = self.shared.connected.load(Ordering::SeqCst);
+            let script = self.shared.link_script.lock().expect("lock").clone();
+            async move {
+                if !connected {
+                    return Err(SessionError::NotConnected);
+                }
+                match script {
+                    LinkScript::Ready(revision) => Ok(revision),
+                    LinkScript::Fail => Err(SessionError::NotConnected),
+                    LinkScript::Pending => std::future::pending().await,
+                }
+            }
+        }
+
+        fn playlist_state(
+            &self,
+            _playlist: &str,
+        ) -> impl Future<Output = Option<PlaylistAccess>> + Send {
+            self.shared.state_reads.fetch_add(1, Ordering::SeqCst);
+            if let Some(tx) = self.shared.state_started.lock().expect("lock").take() {
+                let _ = tx.send(());
+            }
+            let connected = self.shared.connected.load(Ordering::SeqCst);
+            let script = self.shared.state_script.lock().expect("lock").clone();
+            async move {
+                if !connected {
+                    return None;
+                }
+                match script {
+                    StateScript::Missing => None,
+                    StateScript::Ready(access) => Some(access),
+                    StateScript::Pending => std::future::pending().await,
                 }
             }
         }
@@ -3111,6 +3296,272 @@ mod tests {
         };
 
         run_ordered(runtime, window, teardown);
+    }
+
+    #[test]
+    fn a_create_makes_links_reads_state_and_announces_the_entry() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+        let access = PlaylistAccess {
+            revision: revision(9),
+            editable: true,
+        };
+        *shared.state_script.lock().expect("lock") = StateScript::Ready(access.clone());
+
+        let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::CreatePlaylist {
+                    name: "Night Drive".to_owned(),
+                    revision: revision(1),
+                })
+                .expect("create");
+            ui_end.updates.recv().expect("created")
+        });
+
+        assert_eq!(
+            update,
+            Update::PlaylistCreated {
+                entry: PlaylistEntry {
+                    uri: CREATED.to_owned(),
+                    name: "Night Drive".to_owned(),
+                    named: true,
+                    cover: None,
+                    description: None,
+                    tracks: Some(0),
+                    owner: None,
+                    access: Some(access),
+                },
+                revision: revision(4),
+            }
+        );
+        assert_eq!(shared.create_writes.load(Ordering::SeqCst), 1);
+        assert_eq!(shared.link_writes.load(Ordering::SeqCst), 1);
+        assert_eq!(shared.state_reads.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn the_link_uses_the_revision_the_command_named_and_the_uri_step_one_returned() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+        let base = revision(7);
+        *shared.create_script.lock().expect("lock") =
+            CreateScript::Ready("spotify:playlist:another".to_owned());
+
+        let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::CreatePlaylist {
+                    name: "Night Drive".to_owned(),
+                    revision: base.clone(),
+                })
+                .expect("create");
+            ui_end.updates.recv().expect("created")
+        });
+
+        assert_eq!(
+            shared.last_create.lock().expect("lock").clone(),
+            Some("Night Drive".to_owned())
+        );
+        assert_eq!(
+            shared.last_link.lock().expect("lock").clone(),
+            Some((base, "spotify:playlist:another".to_owned())),
+            "the link names the rootlist revision and the created URI"
+        );
+        assert!(matches!(
+            update,
+            Update::PlaylistCreated { entry, .. } if entry.uri == "spotify:playlist:another"
+        ));
+    }
+
+    #[test]
+    fn a_make_failure_announces_create_failed_and_never_links() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+        *shared.create_script.lock().expect("lock") = CreateScript::Fail;
+
+        let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::CreatePlaylist {
+                    name: "Night Drive".to_owned(),
+                    revision: revision(1),
+                })
+                .expect("create");
+            ui_end.updates.recv().expect("create failed")
+        });
+
+        assert_eq!(update, Update::PlaylistCreateFailed);
+        assert_eq!(shared.create_writes.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            shared.link_writes.load(Ordering::SeqCst),
+            0,
+            "a create that made nothing linked nothing"
+        );
+        assert_eq!(shared.state_reads.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_link_failure_announces_unlinked_and_never_reads_state() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+        *shared.link_script.lock().expect("lock") = LinkScript::Fail;
+
+        let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::CreatePlaylist {
+                    name: "Night Drive".to_owned(),
+                    revision: revision(1),
+                })
+                .expect("create");
+            ui_end.updates.recv().expect("unlinked")
+        });
+
+        assert_eq!(update, Update::PlaylistUnlinked);
+        assert_eq!(shared.link_writes.load(Ordering::SeqCst), 1);
+        assert_eq!(shared.state_reads.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_failed_state_read_still_announces_created_with_no_access() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+
+        let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::CreatePlaylist {
+                    name: "Night Drive".to_owned(),
+                    revision: revision(1),
+                })
+                .expect("create");
+            ui_end.updates.recv().expect("created")
+        });
+
+        assert_eq!(
+            update,
+            Update::PlaylistCreated {
+                entry: PlaylistEntry {
+                    uri: CREATED.to_owned(),
+                    name: "Night Drive".to_owned(),
+                    named: true,
+                    cover: None,
+                    description: None,
+                    tracks: Some(0),
+                    owner: None,
+                    access: None,
+                },
+                revision: revision(4),
+            },
+            "a list that could not be read is still a list to draw"
+        );
+        assert_eq!(shared.state_reads.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_create_before_connect_is_announced_as_a_failure() {
+        let store = Arc::new(MemoryStore::default());
+        let source = Arc::new(FixedSource::default());
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::default());
+        let shared = Arc::clone(&host.shared);
+
+        let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            assert_eq!(
+                ui_end.updates.recv().expect("resume update"),
+                Update::NeedsAuthorization
+            );
+            ui_end
+                .commands
+                .send(Command::CreatePlaylist {
+                    name: "Night Drive".to_owned(),
+                    revision: revision(1),
+                })
+                .expect("create");
+            ui_end.updates.recv().expect("create failed")
+        });
+
+        assert_eq!(update, Update::PlaylistCreateFailed);
+        assert_eq!(shared.link_writes.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_stop_during_each_step_ends_the_task() {
+        for step in ["make", "link", "state"] {
+            let store = Arc::new(MemoryStore::seeded("stored"));
+            let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+            let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+            let shared = Arc::clone(&host.shared);
+            let (started_tx, started_rx) = channel();
+            match step {
+                "make" => {
+                    *shared.create_script.lock().expect("lock") = CreateScript::Pending;
+                    *shared.create_started.lock().expect("lock") = Some(started_tx);
+                }
+                "link" => {
+                    *shared.link_script.lock().expect("lock") = LinkScript::Pending;
+                    *shared.link_started.lock().expect("lock") = Some(started_tx);
+                }
+                _ => {
+                    *shared.state_script.lock().expect("lock") = StateScript::Pending;
+                    *shared.state_started.lock().expect("lock") = Some(started_tx);
+                }
+            }
+
+            let runtime = runtime();
+            let (ui_end, _slot, worker) = start(runtime.handle(), host, store, source);
+
+            let window = move || {
+                loop {
+                    if matches!(ui_end.updates.recv().expect("update"), Update::Playlists(_)) {
+                        break;
+                    }
+                }
+                ui_end
+                    .commands
+                    .send(Command::CreatePlaylist {
+                        name: "Night Drive".to_owned(),
+                        revision: revision(1),
+                    })
+                    .expect("create");
+                started_rx.recv().expect("the step started");
+            };
+            let teardown = move || async move {
+                tokio::time::timeout(Duration::from_secs(1), worker.finish())
+                    .await
+                    .unwrap_or_else(|_| {
+                        panic!("finish must resolve when the stop interrupts {step}")
+                    });
+                assert_eq!(
+                    shared.shutdowns.load(Ordering::SeqCst),
+                    1,
+                    "the shutdown must run when the stop interrupts {step}"
+                );
+            };
+
+            run_ordered(runtime, window, teardown);
+        }
     }
 
     #[test]

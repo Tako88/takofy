@@ -105,6 +105,25 @@ pub(crate) trait SessionHost: Send + 'static {
         track: &str,
     ) -> impl Future<Output = Result<Revision, SessionError>> + Send;
 
+    /// Creates a playlist called `name`, answering its URI.
+    fn make_playlist(
+        &self,
+        name: &str,
+    ) -> impl Future<Output = Result<String, SessionError>> + Send;
+
+    /// Puts `playlist` at the front of the user's rootlist, answering the
+    /// revision to hold next.
+    fn link_playlist(
+        &self,
+        revision: &Revision,
+        playlist: &str,
+    ) -> impl Future<Output = Result<Revision, SessionError>> + Send;
+
+    /// What a playlist read says about writing to it; `None` when it cannot be
+    /// read.
+    fn playlist_state(&self, playlist: &str)
+    -> impl Future<Output = Option<PlaylistAccess>> + Send;
+
     fn tracks(
         &mut self,
         playlist: &str,
@@ -281,6 +300,37 @@ impl SessionHost for LiveSession {
                 .await
                 .map_err(SessionError::Engine),
             None => Err(SessionError::NotConnected),
+        }
+    }
+
+    async fn make_playlist(&self, name: &str) -> Result<String, SessionError> {
+        match &self.engine {
+            Some(engine) => engine
+                .make_playlist(name)
+                .await
+                .map_err(SessionError::Engine),
+            None => Err(SessionError::NotConnected),
+        }
+    }
+
+    async fn link_playlist(
+        &self,
+        revision: &Revision,
+        playlist: &str,
+    ) -> Result<Revision, SessionError> {
+        match &self.engine {
+            Some(engine) => engine
+                .link_playlist(revision, playlist)
+                .await
+                .map_err(SessionError::Engine),
+            None => Err(SessionError::NotConnected),
+        }
+    }
+
+    async fn playlist_state(&self, playlist: &str) -> Option<PlaylistAccess> {
+        match &self.engine {
+            Some(engine) => engine.playlist_state(playlist).await,
+            None => None,
         }
     }
 
