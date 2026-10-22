@@ -588,7 +588,7 @@ fn draw_submenu(
             Stroke::new(
                 stroke::HAIRLINE,
                 if focused {
-                    tokens.palette.text
+                    tokens.palette.border_strong
                 } else {
                     tokens.palette.border
                 },
@@ -696,7 +696,7 @@ fn draw_filter(ui: &mut Ui, menu: &mut Menu, rect: Rect, id: Id, tokens: &Tokens
         .font(FontId::new(text::SM, fonts::sans(Weight::Regular)))
         .text_color(tokens.palette.text)
         .event_filter(keys::FIELD_FILTER)
-        .hint_text(egui::RichText::new("Find a playlist"))
+        .hint_text(egui::RichText::new("Find a playlist").color(tokens.palette.text_subtle))
         .show(&mut child);
     output.response.has_focus()
 }
