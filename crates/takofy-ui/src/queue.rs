@@ -221,11 +221,16 @@ impl Queue {
     /// The rows a command opened on `row` acts on: the whole pick when `row` is
     /// in it, otherwise `row` alone. The rows a queue will not edit act on
     /// nothing.
+    ///
+    /// The pick may hold rows the queue has since passed, so the cut is filtered
+    /// to the editable region: a stale row never travels into a removal that
+    /// would then be refused whole.
     pub fn act_on(&mut self, row: usize) -> Vec<usize> {
         if !self.editable(row) {
             return Vec::new();
         }
-        self.selection.act_on(row)
+        let rows = self.selection.act_on(row);
+        self.editable_rows(&rows)
     }
 
     /// Takes `rows` out of the queue, and says how many went.
@@ -1930,12 +1935,61 @@ mod tests {
     }
 
     #[test]
+    fn act_on_drops_a_picked_row_the_queue_has_passed() {
+        let mut queue = started(6, 1);
+        let mut transport = Transport::default();
+        queue.press(2, Press::Replace);
+        queue.press(3, Press::Toggle);
+        clear_guard(&mut queue, &mut transport);
+        assert_eq!(end(&mut queue, &mut transport), Some(play("t2")));
+
+        assert_eq!(
+            queue.act_on(3),
+            vec![3],
+            "the row that became current went into the cut"
+        );
+    }
+
+    #[test]
+    fn act_on_a_pick_the_queue_has_passed_is_empty() {
+        let mut queue = started(6, 1);
+        let mut transport = Transport::default();
+        queue.press(2, Press::Replace);
+        clear_guard(&mut queue, &mut transport);
+        assert_eq!(end(&mut queue, &mut transport), Some(play("t2")));
+
+        assert!(
+            queue.act_on(2).is_empty(),
+            "a pick the queue has passed was offered"
+        );
+    }
+
+    #[test]
     fn remove_rows_takes_the_rows_and_keeps_the_rest_in_order() {
         let mut queue = started(6, 0);
         let expect = queue.entries_at(&[1, 3, 4]);
 
         assert_eq!(queue.remove_rows(&[1, 3, 4], &expect), Some(3));
         assert_eq!(order(&queue), uris(&["t0", "t2", "t5"]));
+    }
+
+    #[test]
+    fn a_queue_holding_the_same_entry_twice_removes_the_one_picked() {
+        let tracks = vec![track("t0"), track("t1"), track("t1"), track("t2")];
+        let mut queue = Queue::default();
+        queue.start(&tracks, 0, &mut Transport::default());
+        queue.press(2, Press::Replace);
+
+        let rows = queue.act_on(2);
+        let expect = queue.entries_at(&rows);
+
+        assert_eq!(rows, vec![2], "the pick did not name the second copy");
+        assert_eq!(
+            queue.remove_rows(&rows, &expect),
+            Some(1),
+            "the identical neighbour was taken too"
+        );
+        assert_eq!(order(&queue), uris(&["t0", "t1", "t2"]));
     }
 
     #[test]

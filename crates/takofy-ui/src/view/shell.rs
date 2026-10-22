@@ -154,10 +154,7 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
         screen.library.lyrics.retry();
     }
     if let Some(door) = reply.menu {
-        let gate = Gate {
-            carrying: carry::carrying(ui.ctx()),
-            writing: screen.library.write_in_flight(),
-        };
+        let gate = door_gate(ui.ctx(), screen, &Listing::Current);
         carry::current_menu(screen.queue, ui.ctx(), door, gate, screen.library.page());
     }
 
@@ -339,10 +336,7 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
     let page = screen.library.page();
     let _ = screen.menu.follow_page(page);
     if let Some(request) = request {
-        let gate = Gate {
-            carrying: carry::carrying(ui.ctx()),
-            writing: screen.library.write_in_flight(),
-        };
+        let gate = door_gate(ui.ctx(), screen, &request.listing);
         let _ = screen.menu.open(request, gate);
     }
     let frame = context_menu::Frame {
@@ -461,16 +455,25 @@ fn apply_verb(ui: &Ui, screen: &mut Screen<'_>, verb: Verb) -> Option<Command> {
     }
 }
 
+/// The gate a menu on `listing` opens under.
+///
+/// A queue or Now Playing menu touches no revision, so a playlist write in
+/// flight must not hold it shut; every other list still waits for it.
+fn door_gate(ctx: &egui::Context, screen: &Screen<'_>, listing: &Listing) -> Gate {
+    Gate {
+        carrying: carry::carrying(ctx),
+        writing: !matches!(listing, Listing::Queue | Listing::Current)
+            && screen.library.write_in_flight(),
+    }
+}
+
 /// Applies a removal a menu chose, or a list's `Del` posted.
 ///
 /// The frame's gates are checked again here: an intent made while a field is
-/// typing, the drawer is open, a block is carried, a write is in flight or
-/// another region took the command is dropped rather than applied.
+/// typing, the drawer is open, a block is carried, a write the list waits on is
+/// in flight or another region took the command is dropped rather than applied.
 fn apply_cut(ui: &Ui, screen: &mut Screen<'_>, cut: Cut) -> Option<Command> {
-    let gate = Gate {
-        carrying: carry::carrying(ui.ctx()),
-        writing: screen.library.write_in_flight(),
-    };
+    let gate = door_gate(ui.ctx(), screen, &cut.listing);
     if !gate.allows()
         || screen.menu.is_open()
         || *screen.drawer == Drawer::Open
@@ -487,6 +490,8 @@ fn apply_cut(ui: &Ui, screen: &mut Screen<'_>, cut: Cut) -> Option<Command> {
             Some(command)
         }
         Listing::Queue => {
+            // A refusal is silent: the removal touched no wire, so there is
+            // nothing to report and nothing to retry.
             let _ = screen.queue.remove_rows(&cut.rows, &cut.entries);
             None
         }
@@ -505,10 +510,7 @@ fn apply_queue_reply(ui: &Ui, screen: &mut Screen<'_>, reply: &mut queue_pane::R
     {
         carry::lift(ui.ctx(), carry);
     }
-    let gate = Gate {
-        carrying: carry::carrying(ui.ctx()),
-        writing: screen.library.write_in_flight(),
-    };
+    let gate = door_gate(ui.ctx(), screen, &Listing::Queue);
     if let Some((row, door)) = reply.menu.take() {
         carry::queue_menu(
             screen.queue,
@@ -7482,6 +7484,100 @@ mod tests {
 
         assert!(!window.menu.is_open(), "Del left the menu open");
         assert_eq!(entries(&queue), vec!["t0", "t2"]);
+    }
+
+    #[test]
+    fn a_stale_queue_cut_removes_nothing_and_leaves_the_rows() {
+        let mut transport = Transport::default();
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let targets = queue.entries_at(&[1]);
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        // The cut was made while row 1 was upcoming, and the queue moved on.
+        let _ = queue.next(&mut transport);
+        context_menu::post_cut(
+            &window.ctx,
+            Cut {
+                listing: Listing::Queue,
+                rows: vec![1],
+                entries: targets,
+            },
+        );
+
+        let (command, _) = window.frame(&mut transport, &mut queue, Vec::new());
+
+        assert_eq!(command, None, "a refused queue cut reported a command");
+        assert_eq!(entries(&queue), vec!["t0", "t1", "t2", "t3"]);
+        assert_eq!(queue.current().map(|entry| entry.uri.as_str()), Some("t1"));
+        assert!(!window.menu.is_open());
+    }
+
+    #[test]
+    fn a_queue_removal_is_not_blocked_by_a_playlist_write() {
+        let mut transport = Transport::default();
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1"]);
+        let carried = page_entries(&window, &[0]);
+        assert!(
+            window
+                .library
+                .remove_tracks(PLAYLIST, &[0], &carried)
+                .is_some(),
+            "the page started no write"
+        );
+        assert!(window.library.write_in_flight());
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let at = row_line(&frame, pane_rect(&window), "t2");
+        for event in [
+            egui::Event::PointerMoved(at),
+            side(at, egui::PointerButton::Secondary, true),
+            side(at, egui::PointerButton::Secondary, false),
+        ] {
+            let _ = window.frame(&mut transport, &mut queue, vec![event]);
+        }
+        settle_menu(&mut window, &mut transport, &mut queue);
+
+        assert!(
+            window.menu.is_open(),
+            "a playlist write refused the queue's menu"
+        );
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Delete);
+
+        assert_eq!(command, None);
+        assert_eq!(entries(&queue), vec!["t0", "t1", "t3"]);
+        assert!(
+            window.library.write_in_flight(),
+            "the queue's removal settled the playlist write"
+        );
+    }
+
+    #[test]
+    fn a_queue_delete_while_a_playlist_write_is_pending_still_removes() {
+        let mut transport = Transport::default();
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1"]);
+        let carried = page_entries(&window, &[0]);
+        assert!(
+            window
+                .library
+                .remove_tracks(PLAYLIST, &[0], &carried)
+                .is_some(),
+            "the page started no write"
+        );
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let at = row_line(&frame, pane_rect(&window), "t2");
+        let _ = window.click(&mut transport, &mut queue, at);
+
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Delete);
+
+        assert_eq!(command, None, "the queue's Del reported a command");
+        assert_eq!(entries(&queue), vec!["t0", "t1", "t3"]);
+        assert!(
+            window.library.write_in_flight(),
+            "the queue's Del settled the playlist write"
+        );
     }
 
     #[test]

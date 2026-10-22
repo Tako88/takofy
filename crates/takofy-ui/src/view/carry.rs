@@ -1276,6 +1276,22 @@ mod tests {
     }
 
     #[test]
+    fn queue_menu_on_a_pick_the_queue_has_passed_posts_nothing() {
+        let ctx = context();
+        let mut queue = queue_of(6, 1);
+        queue.press(2, Press::Replace);
+        let _ = queue.next(&mut Transport::default());
+
+        queue_menu(&mut queue, &ctx, door(), 2, Gate::default(), None);
+
+        assert_eq!(
+            context_menu::take_request(&ctx),
+            None,
+            "a pick the queue has passed was offered"
+        );
+    }
+
+    #[test]
     fn queue_cut_posts_the_pick_for_the_queue() {
         let ctx = context();
         let mut queue = queue_of(5, 0);
