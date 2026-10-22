@@ -348,6 +348,19 @@ fn consume_enter(input: &mut egui::InputState) -> bool {
     fresh
 }
 
+/// Takes this frame's context-menu key, the menu key or Shift+F10, and says
+/// whether it was pressed.
+///
+/// The caller decides whether a row holds the keyboard, because only it knows
+/// which id the keyboard is on.
+pub fn menu_key_pressed(ui: &Ui) -> bool {
+    ui.input_mut(|input| {
+        // Shift is required for F10, so a plain F10 is not this door.
+        input.consume_key(Modifiers::SHIFT, Key::F10)
+            || input.consume_key(Modifiers::NONE, Key::Menu)
+    })
+}
+
 /// Consumes this frame's Enter and Space repeats and says whether they were all
 /// a held key's.
 ///

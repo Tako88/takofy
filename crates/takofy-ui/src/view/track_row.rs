@@ -1018,12 +1018,7 @@ fn key_door(ui: &Ui, row: &egui::Response, more: &More, anchor: Rect) -> Option<
     if !row_focused && !more_focused {
         return None;
     }
-    let pressed = ui.input_mut(|input| {
-        // Shift is required for F10, so a plain F10 is not this door.
-        input.consume_key(egui::Modifiers::SHIFT, egui::Key::F10)
-            || input.consume_key(egui::Modifiers::NONE, egui::Key::Menu)
-    });
-    pressed.then_some(Door {
+    context_menu::menu_key_pressed(ui).then_some(Door {
         anchor: Anchor::Button(anchor),
         opener: if more_focused { more.id } else { row.id },
         device: Device::Keyboard,
@@ -1037,7 +1032,7 @@ fn key_door(ui: &Ui, row: &egui::Response, more: &More, anchor: Rect) -> Option<
 /// right-click over the album or the artist is still the row's. The rect test is
 /// the layer and clip test, so a right-click under another layer, or outside the
 /// scroll's clip, opens nothing.
-fn pointer_door(ui: &Ui, rect: Rect, opener: egui::Id, anchor: Rect) -> Option<Door> {
+pub(super) fn pointer_door(ui: &Ui, rect: Rect, opener: egui::Id, anchor: Rect) -> Option<Door> {
     let secondary = ui.input(|input| input.pointer.secondary_clicked());
     let over = ui
         .ctx()

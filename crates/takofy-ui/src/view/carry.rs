@@ -22,7 +22,7 @@ use takofy_model::TrackEntry;
 
 use crate::landing::Zone;
 pub use crate::menu::Listing;
-use crate::menu::{Door, Gate, Request};
+use crate::menu::{Cut, Door, Gate, Request};
 use crate::queue::Queue;
 use crate::route::Page;
 use crate::selection::{Picks, Press, Selection};
@@ -216,6 +216,61 @@ pub fn from_queue(queue: &mut Queue, lift: Lift) -> Option<Carry> {
         ghost: Ghost::Queue(lift.ghost),
         playlist: None,
     })
+}
+
+/// Opens the queue's menu on `row`, acting on the whole pick it sits in.
+///
+/// The gate is checked before the pick changes, so a refused open leaves the
+/// queue exactly as it was, and a row the queue will not edit opens nothing.
+pub fn queue_menu(
+    queue: &mut Queue,
+    ctx: &Context,
+    door: Door,
+    row: usize,
+    gate: Gate,
+    here: Option<&Page>,
+) {
+    if !gate.allows() {
+        return;
+    }
+    let rows = queue.act_on(row);
+    let entries = queue.entries_at(&rows);
+    if rows.is_empty() || rows.len() != entries.len() {
+        return;
+    }
+    context_menu::post(
+        ctx,
+        Request {
+            door,
+            items: verbs::track_items(&entries, here, &Listing::Queue),
+            targets: entries,
+            rows,
+            listing: Listing::Queue,
+            page: here.cloned(),
+        },
+    );
+}
+
+/// Posts the cut a queue `Del` makes on `row`, acting on the pick it sits in.
+///
+/// A refused gate leaves the pick alone, so a dropped intent changes nothing.
+pub fn queue_cut(queue: &mut Queue, ctx: &Context, row: usize, gate: Gate) {
+    if !gate.allows() {
+        return;
+    }
+    let rows = queue.act_on(row);
+    let entries = queue.entries_at(&rows);
+    if rows.is_empty() || rows.len() != entries.len() {
+        return;
+    }
+    context_menu::post_cut(
+        ctx,
+        Cut {
+            listing: Listing::Queue,
+            rows,
+            entries,
+        },
+    );
 }
 
 /// One list's selection and its drag, for the frame that draws it.
@@ -1127,5 +1182,103 @@ mod tests {
             "the row below the pick did not shift"
         );
         assert!(!list.look(1).selected && !list.look(5).selected);
+    }
+    #[test]
+    fn queue_menu_posts_a_queue_request_and_keeps_the_pick() {
+        let ctx = context();
+        let mut queue = queue_of(6, 0);
+        queue.press(2, Press::Replace);
+        queue.press(4, Press::Toggle);
+
+        queue_menu(&mut queue, &ctx, door(), 2, Gate::default(), None);
+
+        let request = context_menu::take_request(&ctx).expect("a request was posted");
+        assert_eq!(request.rows, vec![2, 4]);
+        assert_eq!(uris(&request), vec!["u2", "u4"]);
+        assert_eq!(request.listing, Listing::Queue);
+        assert_eq!(
+            request.items.last().map(|item| item.verb),
+            Some(crate::menu::Verb::Remove)
+        );
+        assert!(
+            request
+                .items
+                .iter()
+                .all(|item| item.verb != crate::menu::Verb::AddToQueue),
+            "the queue offered to add what is already there"
+        );
+        assert_eq!(
+            queue.acting_rows(None),
+            vec![2, 4],
+            "the pick was collapsed"
+        );
+    }
+
+    #[test]
+    fn queue_menu_is_refused_by_the_gate_and_changes_no_pick() {
+        for gate in [
+            Gate {
+                carrying: true,
+                writing: false,
+            },
+            Gate {
+                carrying: false,
+                writing: true,
+            },
+        ] {
+            let ctx = context();
+            let mut queue = queue_of(6, 0);
+            queue.press(2, Press::Replace);
+
+            queue_menu(&mut queue, &ctx, door(), 4, gate, None);
+
+            assert_eq!(context_menu::take_request(&ctx), None, "{gate:?}");
+            assert_eq!(queue.acting_rows(None), vec![2], "{gate:?}");
+        }
+    }
+
+    #[test]
+    fn queue_menu_on_the_current_entry_posts_nothing() {
+        let ctx = context();
+        let mut queue = queue_of(4, 1);
+
+        queue_menu(&mut queue, &ctx, door(), 1, Gate::default(), None);
+
+        assert_eq!(context_menu::take_request(&ctx), None);
+    }
+
+    #[test]
+    fn queue_cut_posts_the_pick_for_the_queue() {
+        let ctx = context();
+        let mut queue = queue_of(5, 0);
+        queue.press(1, Press::Replace);
+        queue.press(3, Press::Toggle);
+
+        queue_cut(&mut queue, &ctx, 3, Gate::default());
+
+        let cut = context_menu::take_cut(&ctx).expect("a cut was posted");
+        assert_eq!(cut.listing, Listing::Queue);
+        assert_eq!(cut.rows, vec![1, 3]);
+        assert_eq!(cut.entries.len(), 2);
+    }
+
+    #[test]
+    fn queue_cut_is_refused_by_the_gate() {
+        let ctx = context();
+        let mut queue = queue_of(4, 0);
+        queue.press(1, Press::Replace);
+
+        queue_cut(
+            &mut queue,
+            &ctx,
+            2,
+            Gate {
+                carrying: false,
+                writing: true,
+            },
+        );
+
+        assert_eq!(context_menu::take_cut(&ctx), None);
+        assert_eq!(queue.acting_rows(None), vec![1], "the pick changed");
     }
 }

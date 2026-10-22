@@ -498,6 +498,23 @@ fn apply_queue_reply(ui: &Ui, screen: &mut Screen<'_>, reply: &mut queue_pane::R
     {
         carry::lift(ui.ctx(), carry);
     }
+    let gate = Gate {
+        carrying: carry::carrying(ui.ctx()),
+        writing: screen.library.write_in_flight(),
+    };
+    if let Some((row, door)) = reply.menu.take() {
+        carry::queue_menu(
+            screen.queue,
+            ui.ctx(),
+            door,
+            row,
+            gate,
+            screen.library.page(),
+        );
+    }
+    if let Some(row) = reply.remove.take() {
+        carry::queue_cut(screen.queue, ui.ctx(), row, gate);
+    }
     // A row just lifted is on its way somewhere and must not also step.
     if !carry::carrying(ui.ctx()) {
         alt_step(ui, screen, reply.focused);
@@ -7857,5 +7874,70 @@ mod tests {
         );
         assert_eq!(page_rows(&window), vec!["list:p0", "list:p1"]);
         assert!(!window.library.write_in_flight());
+    }
+    #[test]
+    fn a_right_click_on_a_queue_row_opens_the_queue_menu_and_removes_it() {
+        let mut transport = Transport::default();
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let at = row_line(&frame, pane_rect(&window), "t2");
+
+        for event in [
+            egui::Event::PointerMoved(at),
+            side(at, egui::PointerButton::Secondary, true),
+            side(at, egui::PointerButton::Secondary, false),
+        ] {
+            let _ = window.frame(&mut transport, &mut queue, vec![event]);
+        }
+
+        settle_menu(&mut window, &mut transport, &mut queue);
+        assert!(window.menu.is_open(), "the right-click opened no menu");
+        assert!(
+            window
+                .menu
+                .items()
+                .iter()
+                .all(|item| item.verb != Verb::AddToQueue),
+            "the queue offered to add what is already there"
+        );
+        let last = window.menu.items().last().expect("a command");
+        assert_eq!(last.verb, Verb::Remove);
+        assert_eq!(last.label, "Remove from the queue");
+
+        // A pointer-opened menu lights nothing, so Enter is not its to fire;
+        // Del is the destructive row's key.
+        let _ = press(&mut window, &mut transport, &mut queue, egui::Key::Delete);
+
+        assert_eq!(entries(&queue), vec!["t0", "t1", "t3"]);
+        assert!(!window.menu.is_open(), "the menu outlived its choice");
+    }
+
+    #[test]
+    fn shift_f10_on_a_focused_queue_row_opens_the_queue_menu() {
+        let mut transport = Transport::default();
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let at = row_line(&frame, pane_rect(&window), "t2");
+        let _ = window.click(&mut transport, &mut queue, at);
+        assert!(!window.menu.is_open(), "a plain click opened a menu");
+
+        let _ = chord(
+            &mut window,
+            &mut transport,
+            &mut queue,
+            egui::Key::F10,
+            egui::Modifiers::SHIFT,
+        );
+
+        assert!(window.menu.is_open(), "Shift+F10 opened no menu");
+        assert_eq!(
+            window.menu.cut().map(|cut| cut.rows),
+            Some(vec![2]),
+            "the menu is not about the focused row"
+        );
+        let _ = press(&mut window, &mut transport, &mut queue, egui::Key::Escape);
+        assert!(!window.menu.is_open());
     }
 }
