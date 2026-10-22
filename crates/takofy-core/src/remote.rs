@@ -3,6 +3,7 @@
 //! The only file in this crate that performs librespot I/O.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use futures_util::StreamExt;
 use http::header::{ACCEPT, CONTENT_TYPE};
@@ -606,8 +607,18 @@ pub(crate) async fn write_follow(
         .map_err(|error| ArtistError::Source(error.to_string()))
 }
 
+/// How many URIs one like write names.
+///
+/// The write window is many seconds wide on a busy connection, so a large pick
+/// is cut into a few requests rather than one long one; a failure stops the
+/// rest and the confirming read is what heals the part that landed.
+const LIKE_BATCH: usize = 100;
+
 /// One collection set, paged through the collection endpoint until an answer
 /// carries no next token.
+///
+/// It is the one place a collection sweep picks its cap, so a read of the
+/// collection set is never cut short by the followed lists' smaller cap.
 ///
 /// A page that cannot be read fails the whole read rather than drawing a short
 /// list as if it were complete. The most answers the read accepts is the pager's.
@@ -644,6 +655,79 @@ async fn read_set(
         }
     }
     Ok(items)
+}
+
+/// The whole collection set, paged with the collection cap.
+async fn read_collection(session: &Session) -> Result<Vec<Item>, FollowedError> {
+    read_set(
+        session,
+        collection::COLLECTION_SET,
+        followed::Pager::with_cap(followed::COLLECTION_MAX_PAGES),
+    )
+    .await
+}
+
+/// The liked tracks' URIs, newest save first.
+///
+/// The set holds saved albums and episodes too, so only track items are kept.
+pub(crate) async fn read_liked_tracks(session: &Session) -> Result<Vec<String>, FollowedError> {
+    Ok(collected::track_order(read_collection(session).await?))
+}
+
+/// Writes one pick into the liked-songs set, or out of it.
+///
+/// A pick is cut into batches of [`LIKE_BATCH`] URIs and written in order; the
+/// first failure ends the rest. A non-track URI is refused before any request.
+pub(crate) async fn write_like(
+    session: &Session,
+    uris: Vec<String>,
+    liked: bool,
+) -> Result<(), FollowedError> {
+    collection::require_tracks(&uris)?;
+    let headers = collection_headers().ok_or_else(|| {
+        FollowedError::Source("the collection media type is not a valid header".to_owned())
+    })?;
+    let username = session.username();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs() as i64);
+    let refs: Vec<&str> = uris.iter().map(String::as_str).collect();
+    for batch in collection::like_batches(&refs, LIKE_BATCH) {
+        let body = collection::like_body(
+            &username,
+            batch,
+            liked.then_some(now),
+            !liked,
+            &client_update_id(),
+        );
+        session
+            .spclient()
+            .request(
+                &Method::POST,
+                "/collection/v2/write",
+                Some(headers.clone()),
+                Some(&body),
+            )
+            .await
+            .map_err(|error| FollowedError::Source(error.to_string()))?;
+    }
+    Ok(())
+}
+
+/// A label no other write of this run carries, so the endpoint does not treat a
+/// second like as the first one repeated.
+fn client_update_id() -> String {
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_millis());
+    update_id(millis, SEQ.fetch_add(1, Ordering::Relaxed))
+}
+
+/// The label's shape: the millisecond orders it in a log and the counter makes
+/// it unique, because a write's batches are sent within one millisecond.
+fn update_id(millis: u128, seq: u64) -> String {
+    format!("takofy-{millis}-{seq}")
 }
 
 /// The shows the user follows, newest follow first, each as its card draws it.
@@ -784,12 +868,7 @@ pub(crate) async fn read_related(
 /// An empty set asks for no metadata at all. A chunk whose request fails costs
 /// only its albums, which stay in the list unnamed.
 pub(crate) async fn read_saved_albums(session: &Session) -> Result<Vec<SavedAlbum>, FollowedError> {
-    let items = read_set(
-        session,
-        collection::COLLECTION_SET,
-        followed::Pager::with_cap(followed::COLLECTION_MAX_PAGES),
-    )
-    .await?;
+    let items = read_collection(session).await?;
     let order = collected::album_order(items);
     if !needs_labels(&order) {
         return Ok(Vec::new());
@@ -1331,11 +1410,12 @@ mod tests {
     use crate::show::ShowError;
 
     use super::{
-        Labels, PlaylistMeta, TrackLabel, context_cover, distinct_uris, duration_ms, episode_from,
-        episode_labels, episode_of, expand_episodes, expand_labels, first_track_uri, item_uris,
-        label_from_episode, label_of, merge_labels, needs_labels, non_blank, parse_show_uri,
-        partition_by_kind, playlist_cover, playlist_headers, playlist_label, playlist_length,
-        playlist_owner, published_at, show_card, track_label_from,
+        Labels, PlaylistMeta, TrackLabel, client_update_id, context_cover, distinct_uris,
+        duration_ms, episode_from, episode_labels, episode_of, expand_episodes, expand_labels,
+        first_track_uri, item_uris, label_from_episode, label_of, merge_labels, needs_labels,
+        non_blank, parse_show_uri, partition_by_kind, playlist_cover, playlist_headers,
+        playlist_label, playlist_length, playlist_owner, published_at, show_card, track_label_from,
+        update_id,
     };
 
     const TRACK_ID: &str = "4uLU6hMCjMI75M1A2tKUQC";
@@ -2589,5 +2669,23 @@ mod tests {
     #[test]
     fn needs_labels_is_true_for_any_show() {
         assert!(needs_labels(&owned(&[&show_uri(1)])));
+    }
+
+    #[test]
+    fn an_update_id_carries_the_millisecond_and_a_counter() {
+        assert_eq!(update_id(1_700_000_000_123, 0), "takofy-1700000000123-0");
+        assert_ne!(
+            update_id(1_700_000_000_123, 0),
+            update_id(1_700_000_000_123, 1),
+            "batches within one millisecond must still differ"
+        );
+    }
+
+    #[test]
+    fn every_client_update_id_of_a_run_is_different() {
+        let first = client_update_id();
+        let second = client_update_id();
+        assert_ne!(first, second);
+        assert!(first.starts_with("takofy-"), "{first}");
     }
 }

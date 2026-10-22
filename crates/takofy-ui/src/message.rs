@@ -67,6 +67,10 @@ pub enum Command {
     LoadRelated { artist: String, uris: Vec<String> },
     /// Load the albums the user saved, as the library root draws them.
     LoadSavedAlbums,
+    /// Load the tracks the user has liked, newest save first.
+    LoadLikedTracks,
+    /// Write these tracks into the liked-songs set, or out of it.
+    SetLiked { tracks: Vec<String>, liked: bool },
     /// The tracks one search query answers.
     Search { query: String },
     /// Start playing a track.
@@ -225,6 +229,17 @@ pub enum Update {
     SavedAlbums(Vec<SavedAlbum>),
     /// The saved albums could not be loaded.
     SavedAlbumsFailed(Failure),
+    /// The tracks the user has liked, newest save first.
+    LikedTracks(Vec<String>),
+    /// The liked tracks could not be loaded; a set already read is kept.
+    LikedTracksFailed(Failure),
+    /// The liked write landed for these tracks, with this value.
+    Liked { tracks: Vec<String>, liked: bool },
+    /// The liked write did not stick.
+    LikeFailed {
+        tracks: Vec<String>,
+        failure: Failure,
+    },
     /// One release's labelled tracks, in the release's own order.
     ReleaseTracks {
         release: String,

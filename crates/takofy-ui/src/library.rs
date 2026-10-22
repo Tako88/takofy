@@ -15,6 +15,7 @@ use takofy_model::{
 use crate::discography::Filter;
 use crate::follow::Follow;
 use crate::library_filter::{RootFilter, RootKind};
+use crate::likes::{self, Likes};
 use crate::lyrics::LyricsPanel;
 use crate::message::{Command, Failure, Update};
 use crate::releases::Releases;
@@ -105,6 +106,8 @@ pub struct ArtistPage<'a> {
     pub releases: &'a mut Releases,
     /// The artists this one is heard with, once they are named.
     pub related: &'a Load<Vec<FollowedArtist>>,
+    /// The liked-songs set, so a row's menu knows its library row.
+    pub likes: &'a Likes,
 }
 
 /// The sidebar's playlists and the tracks the current page has loaded.
@@ -119,6 +122,8 @@ pub struct Library {
     pub followed_artists: Load<Vec<FollowedArtist>>,
     /// The albums the user saved, as the library root draws them.
     pub saved_albums: Load<Vec<SavedAlbum>>,
+    /// The liked-songs set, and the one write in flight against it.
+    pub likes: Likes,
     /// The artists the open artist page is heard with, once they are named.
     pub related: Load<Vec<FollowedArtist>>,
     /// The artist the likeness list belongs to, so a stale reply is told apart.
@@ -252,10 +257,14 @@ impl Library {
                 // search pages are not in the list and must survive it. A
                 // search's query may spell a playlist URI, so the variant is
                 // what decides, never the payload.
+                let page = self.history.current().cloned();
                 self.history.retain(|page| match page {
                     Page::Playlist(uri) => present(uri),
                     Page::Album(_) | Page::Artist(_) | Page::Show(_) | Page::Search(_) => true,
                 });
+                if self.history.current().cloned() != page {
+                    self.left_page();
+                }
                 if self
                     .wanted
                     .as_deref()
@@ -511,6 +520,26 @@ impl Library {
             Update::SavedAlbumsFailed(failure) => {
                 self.saved_albums = Load::Failed(*failure);
             }
+            // The liked set is a whole set, not keyed by URI: the state keeps its
+            // own epoch guard so a read that predates a flip is dropped.
+            Update::LikedTracks(tracks) => {
+                self.likes.apply(&likes::Event::Set(tracks.clone()));
+            }
+            Update::LikedTracksFailed(failure) => {
+                self.likes.apply(&likes::Event::SetFailed(*failure));
+            }
+            Update::Liked { tracks, liked } => {
+                self.likes.apply(&likes::Event::Confirmed {
+                    tracks: tracks.clone(),
+                    liked: *liked,
+                });
+            }
+            Update::LikeFailed { tracks, failure } => {
+                self.likes.apply(&likes::Event::Failed {
+                    tracks: tracks.clone(),
+                    failure: *failure,
+                });
+            }
             // The likeness cards are keyed by the artist they belong to: the
             // page's own detail can be replaced while they are in flight.
             Update::Related { artist, cards } => {
@@ -622,14 +651,24 @@ impl Library {
     /// Re-selecting the page already on screen reloads it without growing the
     /// history.
     pub fn select(&mut self, playlist: &str) -> Command {
-        self.history.go(Some(Page::Playlist(playlist.to_owned())));
+        if self.history.go(Some(Page::Playlist(playlist.to_owned()))) {
+            self.left_page();
+        }
         self.load(playlist)
     }
 
     /// Moves to any page and returns the command that settles it.
     pub fn open(&mut self, page: Page) -> Option<Command> {
-        self.history.go(Some(page));
+        if self.history.go(Some(page)) {
+            self.left_page();
+        }
         self.settle()
+    }
+
+    /// A page change ends the like sentence: it names the page the click was
+    /// made on.
+    fn left_page(&mut self) {
+        self.likes.clear_notice();
     }
 
     /// Moves to the playlists grid.
@@ -639,7 +678,9 @@ impl Library {
     /// an in-flight or failed one is dropped, because nothing will ever settle
     /// it and the root must not sit on a spinner.
     pub fn to_playlists(&mut self) {
-        self.history.go(None);
+        if self.history.go(None) {
+            self.left_page();
+        }
         self.wanted = None;
         self.wanted_album = None;
         self.wanted_artist = None;
@@ -667,6 +708,7 @@ impl Library {
         if !self.history.back() {
             return None;
         }
+        self.left_page();
         self.settle()
     }
 
@@ -678,6 +720,7 @@ impl Library {
         if !self.history.forward() {
             return None;
         }
+        self.left_page();
         self.settle()
     }
 
@@ -1080,6 +1123,7 @@ impl Library {
         self.followed = Load::Idle;
         self.followed_artists = Load::Idle;
         self.saved_albums = Load::Idle;
+        self.likes.reload();
         Command::ReloadLibrary
     }
 
@@ -1207,6 +1251,28 @@ impl Library {
         }
     }
 
+    /// The command that starts the liked-songs read, if one is due.
+    ///
+    /// It waits for the playlists, because a signed-out window has no set to
+    /// read and no heart to draw; every later sweep is the set's own to ask for.
+    pub fn likes_request(&mut self) -> Option<Command> {
+        self.likes
+            .request(matches!(self.playlists, Load::Ready(_)))
+            .then_some(Command::LoadLikedTracks)
+    }
+
+    /// Flips the liked set and asks for the write, or changes nothing.
+    ///
+    /// The set mutates only when it has a change to send, so a refused or empty
+    /// flip never leaves a write pending with nothing on the wire.
+    pub fn set_liked(&mut self, tracks: Vec<String>, liked: bool) -> Option<Command> {
+        let change = self.likes.set(&tracks, liked)?;
+        Some(Command::SetLiked {
+            tracks: change.tracks,
+            liked: change.liked,
+        })
+    }
+
     /// The album the album page draws, once it is loaded and named by that page.
     ///
     /// The URI check is not decoration: a ready detail from an earlier page must
@@ -1262,6 +1328,7 @@ impl Library {
             filter,
             releases,
             related,
+            likes,
             history,
             ..
         } = self;
@@ -1279,6 +1346,7 @@ impl Library {
             filter,
             releases,
             related,
+            likes,
         }
     }
 
@@ -3569,6 +3637,80 @@ mod tests {
         let mut sidebar = sidebar_library(&["a", "b", "c"], 0x07, true, None);
         assert!(sidebar.move_playlist(0, 2, "a").is_some());
         assert!(sidebar.write_in_flight(), "a sidebar write is a write");
+    }
+
+    #[test]
+    fn a_failed_like_reverts_and_the_healing_read_clears_the_sentence() {
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(Vec::new()));
+        assert_eq!(library.likes_request(), Some(Command::LoadLikedTracks));
+        library.apply(&Update::LikedTracks(Vec::new()));
+
+        let command = library
+            .set_liked(vec!["spotify:track:a".to_owned()], true)
+            .expect("a write");
+        assert_eq!(
+            command,
+            Command::SetLiked {
+                tracks: vec!["spotify:track:a".to_owned()],
+                liked: true,
+            }
+        );
+        assert_eq!(library.likes.state("spotify:track:a"), Some(true));
+        assert!(!library.write_in_flight(), "a like is not a playlist write");
+
+        library.apply(&Update::LikeFailed {
+            tracks: vec!["spotify:track:a".to_owned()],
+            failure: Failure::Save,
+        });
+        assert_eq!(library.likes.state("spotify:track:a"), Some(false));
+        assert_eq!(library.likes.notice(), Some(Failure::Save));
+        assert_eq!(library.likes_request(), Some(Command::LoadLikedTracks));
+
+        library.apply(&Update::LikedTracks(Vec::new()));
+        assert_eq!(library.likes.notice(), None);
+    }
+
+    #[test]
+    fn a_failure_sentence_does_not_survive_a_page_change() {
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(Vec::new()));
+        assert_eq!(library.likes_request(), Some(Command::LoadLikedTracks));
+        library.apply(&Update::LikedTracks(Vec::new()));
+        assert!(
+            library
+                .set_liked(vec!["spotify:track:a".to_owned()], true)
+                .is_some()
+        );
+        library.apply(&Update::LikeFailed {
+            tracks: vec!["spotify:track:a".to_owned()],
+            failure: Failure::Save,
+        });
+        assert_eq!(library.likes.notice(), Some(Failure::Save));
+
+        let _ = library.open(Page::Album("spotify:album:b".to_owned()));
+        assert_eq!(
+            library.likes.notice(),
+            None,
+            "the sentence names a page no longer on screen"
+        );
+
+        assert!(
+            library
+                .set_liked(vec!["spotify:track:a".to_owned()], true)
+                .is_some()
+        );
+        library.apply(&Update::LikeFailed {
+            tracks: vec!["spotify:track:a".to_owned()],
+            failure: Failure::Save,
+        });
+        assert_eq!(library.likes.notice(), Some(Failure::Save));
+        library.to_playlists();
+        assert_eq!(
+            library.likes.notice(),
+            None,
+            "the grid is not the page the like came from"
+        );
     }
 
     #[test]

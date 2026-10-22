@@ -20,7 +20,9 @@ use crate::theme::icon::Size;
 use crate::theme::{MonoWeight, Tokens, Weight, extent, fonts, radius, space, text, tracking};
 
 use super::art;
+use super::context_menu;
 use super::controls;
+use super::heart;
 use super::shell::{row_centre, row_centred};
 use super::skeleton;
 use super::text as recipe;
@@ -28,61 +30,121 @@ use super::text as recipe;
 /// The one control in each column that is not an icon button.
 const VOLUME: Control = Control::Volume;
 
+/// One control in a run: what it is, what it draws, and what it is called.
+///
+/// The element carries its own glyph and label because the run is not always
+/// static: the playbar's heart is filled and named by the track's state, and a
+/// `(Control, Icon)` pair has nowhere to put either.
+#[derive(Clone, Copy)]
+struct Run {
+    control: Control,
+    icon: Icon,
+    label: &'static str,
+    /// Whether the glyph is the control's own state, painted in the accent.
+    lit: bool,
+}
+
+impl Run {
+    /// A control that draws the same glyph whatever the frame says.
+    const fn plain(control: Control, icon: Icon) -> Self {
+        Self {
+            control,
+            icon,
+            label: "",
+            lit: false,
+        }
+    }
+}
+
 /// The controls each column holds, with the glyph each draws.
 ///
 /// The layout reserves the extras' width from the same shape, and a test here
 /// pins the two together so a control added to one cannot drift from the other.
-const NOW_FULL: [(Control, Icon); 2] = [
-    (Control::Like, Icon::Heart),
-    (Control::Miniplayer, Icon::Screen),
+const NOW_FULL: [Run; 2] = [
+    Run::plain(Control::Like, Icon::Heart),
+    Run::plain(Control::Miniplayer, Icon::Screen),
 ];
-const NOW_REDUCED: [(Control, Icon); 1] = [(Control::Like, Icon::Heart)];
-const EXTRAS_FULL: [(Control, Icon); 5] = [
-    (Control::Queue, Icon::Queue),
-    (Control::Devices, Icon::Devices),
-    (Control::Mute, Icon::VolumeMute),
-    (VOLUME, Icon::Volume),
-    (Control::Fullscreen, Icon::Expand),
+const NOW_REDUCED: [Run; 1] = [Run::plain(Control::Like, Icon::Heart)];
+const EXTRAS_FULL: [Run; 5] = [
+    Run::plain(Control::Queue, Icon::Queue),
+    Run::plain(Control::Devices, Icon::Devices),
+    Run::plain(Control::Mute, Icon::VolumeMute),
+    Run::plain(VOLUME, Icon::Volume),
+    Run::plain(Control::Fullscreen, Icon::Expand),
 ];
-const EXTRAS_REDUCED: [(Control, Icon); 3] = [
-    (Control::Mute, Icon::VolumeMute),
-    (VOLUME, Icon::Volume),
-    (Control::Fullscreen, Icon::Expand),
+const EXTRAS_REDUCED: [Run; 3] = [
+    Run::plain(Control::Mute, Icon::VolumeMute),
+    Run::plain(VOLUME, Icon::Volume),
+    Run::plain(Control::Fullscreen, Icon::Expand),
 ];
 
-const DOWN: [(Control, Icon); 2] = [
-    (Control::Shuffle, Icon::Shuffle),
-    (Control::Previous, Icon::Previous),
+const DOWN: [Run; 2] = [
+    Run::plain(Control::Shuffle, Icon::Shuffle),
+    Run::plain(Control::Previous, Icon::Previous),
 ];
-const UP_FULL: [(Control, Icon); 2] =
-    [(Control::Next, Icon::Next), (Control::Repeat, Icon::Repeat)];
+const UP_FULL: [Run; 2] = [
+    Run::plain(Control::Next, Icon::Next),
+    Run::plain(Control::Repeat, Icon::Repeat),
+];
 /// Below 1000px the extras shed the queue, so it joins the transport after
 /// repeat. Play stays centred: the row centres on `DOWN`.
-const UP_REDUCED: [(Control, Icon); 3] = [
-    (Control::Next, Icon::Next),
-    (Control::Repeat, Icon::Repeat),
-    (Control::Queue, Icon::Queue),
+const UP_REDUCED: [Run; 3] = [
+    Run::plain(Control::Next, Icon::Next),
+    Run::plain(Control::Repeat, Icon::Repeat),
+    Run::plain(Control::Queue, Icon::Queue),
 ];
 
-fn up_controls(form: Playbar) -> &'static [(Control, Icon)] {
+fn up_controls(form: Playbar) -> &'static [Run] {
     match form {
         Playbar::Full => &UP_FULL,
         Playbar::Reduced => &UP_REDUCED,
     }
 }
 
-fn now_controls(form: Playbar) -> &'static [(Control, Icon)] {
+fn now_controls(form: Playbar) -> &'static [Run] {
     match form {
         Playbar::Full => &NOW_FULL,
         Playbar::Reduced => &NOW_REDUCED,
     }
 }
 
-fn extras_controls(form: Playbar) -> &'static [(Control, Icon)] {
+/// The now column's runs with the heart the track's state asks for.
+///
+/// The table is the width's, because a filled heart is the same size; only the
+/// glyph, the label and the tone change.
+fn now_runs(form: Playbar, liked: Option<bool>) -> Vec<Run> {
+    let liked_now = liked == Some(true);
+    let heart = Run {
+        control: Control::Like,
+        icon: if liked_now {
+            Icon::HeartFilled
+        } else {
+            Icon::Heart
+        },
+        label: crate::verbs::heart_label(liked_now),
+        lit: liked_now,
+    };
+    let mut runs = now_controls(form).to_vec();
+    if let Some(first) = runs.first_mut() {
+        *first = heart;
+    }
+    runs
+}
+
+fn extras_controls(form: Playbar) -> &'static [Run] {
     match form {
         Playbar::Full => &EXTRAS_FULL,
         Playbar::Reduced => &EXTRAS_REDUCED,
     }
+}
+
+/// What the bar needs from the frame beyond its own data.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Bar {
+    /// Whether the queue's own button is the drop target this frame.
+    pub queue_claimed: bool,
+    /// The playing track's liked state, or `None` while the set cannot say.
+    pub like: Option<bool>,
 }
 
 /// Draws the bar's three columns inside `rect` and returns the command a
@@ -97,18 +159,29 @@ pub fn show(
     queue: &mut Queue,
     position_ms: u32,
     form: Playbar,
-    queue_claimed: bool,
+    bar: Bar,
     rect: Rect,
     cover: Cover,
     tokens: &Tokens,
 ) -> Option<Command> {
     let cols = layout::playbar_for(rect, form);
     let [now, centre, extras] = cols.columns(rect);
-    let claimed = queue_claimed.then_some(Control::Queue);
+    let claimed = bar.queue_claimed.then_some(Control::Queue);
 
-    row_centred(ui, "playbar-now", now, |ui| {
-        now_column(ui, transport, cover, tokens, form);
+    let like = row_centred(ui, "playbar-now", now, |ui| {
+        now_column(ui, transport, cover, tokens, form, bar.like)
     });
+    if let Some(liked) = like
+        && let Some(now) = transport.now_playing.as_ref()
+    {
+        heart::post(
+            ui.ctx(),
+            heart::Ask {
+                tracks: vec![now.uri.clone()],
+                liked,
+            },
+        );
+    }
     let command = row_centred(ui, "playbar-centre", centre, |ui| {
         centre_column(ui, transport, queue, position_ms, form, claimed, tokens)
     });
@@ -141,13 +214,13 @@ fn seek_fraction(transport: &Transport, position_ms: u32) -> Option<f32> {
 
 /// The width one run of controls occupies, margins and gaps included. The view
 /// draws it and the layout reserves it, and both read this.
-fn run_width(controls: &[(Control, Icon)]) -> f32 {
+fn run_width(controls: &[Run]) -> f32 {
     let mut width = 0.0;
-    for (index, (control, _)) in controls.iter().enumerate() {
+    for (index, run) in controls.iter().enumerate() {
         if index > 0 {
             width += space::S1;
         }
-        width += if *control == VOLUME {
+        width += if run.control == VOLUME {
             extent::VOLUME_W + 2.0 * space::S2
         } else {
             extent::BUTTON
@@ -157,7 +230,14 @@ fn run_width(controls: &[(Control, Icon)]) -> f32 {
 }
 
 /// The art tile, the title, the state, and the buttons beside them.
-fn now_column(ui: &mut Ui, transport: &Transport, cover: Cover, tokens: &Tokens, form: Playbar) {
+fn now_column(
+    ui: &mut Ui,
+    transport: &Transport,
+    cover: Cover,
+    tokens: &Tokens,
+    form: Playbar,
+    liked: Option<bool>,
+) -> Option<bool> {
     let art_rect = Rect::from_min_size(
         Pos2::new(
             ui.cursor().min.x,
@@ -218,15 +298,22 @@ fn now_column(ui: &mut Ui, transport: &Transport, cover: Cover, tokens: &Tokens,
     }
 
     let mut x = ui.max_rect().right() - controls;
-    draw_run(
+    let clicked = draw_run(
         ui,
         tokens,
-        now_controls(form),
+        &now_runs(form, liked),
         None,
         &mut x,
         art_rect.center().y,
-        &|_| true,
+        // A heart with no state to act on is inert, as a row's is.
+        &|control| control != Control::Like || liked.is_some(),
     );
+    let like = clicked.filter(|control| *control == Control::Like);
+    // egui reports a focused button's Enter or Space as a click, repeats too, so
+    // only a fresh press is the user's, as on a row.
+    let pointer = ui.input(|input| input.pointer.button_clicked(egui::PointerButton::Primary));
+    let held = like.is_some() && !pointer && context_menu::held_repeat(ui);
+    like.filter(|_| !held).map(|_| liked != Some(true))
 }
 
 /// The transport row and the progress row beneath it. The command is applied
@@ -441,12 +528,12 @@ fn square(x: f32, centre_y: f32) -> Rect {
 /// is built around it, so it is computed from the same tables the draw walks.
 pub fn queue_button(rect: Rect, form: Playbar) -> Rect {
     debug_assert_eq!(
-        EXTRAS_FULL.first().map(|(control, _)| *control),
+        EXTRAS_FULL.first().map(|run| run.control),
         Some(Control::Queue),
         "the full bar's queue button is the first of its extras"
     );
     debug_assert_eq!(
-        UP_REDUCED.last().map(|(control, _)| *control),
+        UP_REDUCED.last().map(|run| run.control),
         Some(Control::Queue),
         "the reduced bar's queue button is the last of the transport"
     );
@@ -472,26 +559,26 @@ pub fn queue_button(rect: Rect, form: Playbar) -> Rect {
 fn draw_run(
     ui: &mut Ui,
     tokens: &Tokens,
-    controls: &[(Control, Icon)],
+    controls: &[Run],
     claimed: Option<Control>,
     x: &mut f32,
     centre_y: f32,
     can_act: &dyn Fn(Control) -> bool,
 ) -> Option<Control> {
     let mut clicked = None;
-    for (index, (control, glyph)) in controls.iter().enumerate() {
+    for (index, run) in controls.iter().enumerate() {
         if index > 0 {
             *x += space::S1;
         }
-        if *control == VOLUME {
+        if run.control == VOLUME {
             *x += space::S2;
             let rect = Rect::from_min_size(
                 Pos2::new(*x, centre_y - extent::SLIDER_H / 2.0),
                 Vec2::new(extent::VOLUME_W, extent::SLIDER_H),
             );
-            let slot = controls::slider(ui, tokens, *control, rect, Some(0.7), "Volume", true);
+            let slot = controls::slider(ui, tokens, run.control, rect, Some(0.7), "Volume", true);
             if slot.response.clicked() {
-                clicked = Some(*control);
+                clicked = Some(run.control);
             }
             *x += extent::VOLUME_W + space::S2;
         } else {
@@ -499,15 +586,46 @@ fn draw_run(
                 Pos2::new(*x, centre_y - extent::BUTTON / 2.0),
                 Vec2::splat(extent::BUTTON),
             );
-            let slot = if claimed == Some(*control) {
+            let slot = if claimed == Some(run.control) {
                 // A claimed control is inert, so the moment is not consulted.
-                controls::icon_button_claimed(ui, tokens, *control, rect, *glyph, Size::MD, "")
+                controls::icon_button_claimed(
+                    ui,
+                    tokens,
+                    run.control,
+                    rect,
+                    run.icon,
+                    Size::MD,
+                    run.label,
+                )
             } else {
-                let live = can_act(*control);
-                controls::icon_button(ui, tokens, *control, rect, *glyph, Size::MD, "", live)
+                let live = can_act(run.control);
+                if run.lit {
+                    controls::icon_button_liked(
+                        ui,
+                        tokens,
+                        run.control,
+                        (),
+                        rect,
+                        run.icon,
+                        Size::MD,
+                        run.label,
+                        live,
+                    )
+                } else {
+                    controls::icon_button(
+                        ui,
+                        tokens,
+                        run.control,
+                        rect,
+                        run.icon,
+                        Size::MD,
+                        run.label,
+                        live,
+                    )
+                }
             };
             if slot.response.clicked() {
-                clicked = Some(*control);
+                clicked = Some(run.control);
             }
             *x += extent::BUTTON;
         }
@@ -805,7 +923,7 @@ mod tests {
                     &mut queue,
                     0,
                     Playbar::Full,
-                    false,
+                    Bar::default(),
                     bar,
                     Cover::Missing,
                     &tokens,
@@ -858,7 +976,7 @@ mod tests {
                     &mut queue,
                     0,
                     Playbar::Full,
-                    false,
+                    Bar::default(),
                     bar,
                     Cover::Missing,
                     &tokens,
@@ -941,18 +1059,22 @@ mod tests {
     fn the_reduced_bar_sheds_the_two_buttons_the_reference_sheds() {
         let full: Vec<Control> = extras_controls(Playbar::Full)
             .iter()
-            .map(|(control, _)| *control)
+            .map(|run| run.control)
             .collect();
         let reduced: Vec<Control> = extras_controls(Playbar::Reduced)
             .iter()
-            .map(|(control, _)| *control)
+            .map(|run| run.control)
             .collect();
         assert!(!reduced.contains(&Control::Queue));
         assert!(!reduced.contains(&Control::Devices));
         assert!(full.contains(&Control::Queue));
         assert!(full.contains(&Control::Devices));
         // Shed from the extras, carried by the transport.
-        assert!(up_controls(Playbar::Reduced).contains(&(Control::Queue, Icon::Queue)));
+        assert!(
+            up_controls(Playbar::Reduced)
+                .iter()
+                .any(|run| run.control == Control::Queue)
+        );
     }
 
     #[test]
@@ -967,7 +1089,7 @@ mod tests {
             let count = runs
                 .iter()
                 .flat_map(|run| run.iter())
-                .filter(|(control, _)| *control == Control::Queue)
+                .filter(|run| run.control == Control::Queue)
                 .count();
             assert_eq!(count, 1, "{form:?}: the queue must be drawn once");
         }
@@ -976,15 +1098,13 @@ mod tests {
     #[test]
     fn the_reduced_transport_ends_with_the_queue_and_the_full_one_does_not() {
         assert_eq!(
-            up_controls(Playbar::Reduced)
-                .last()
-                .map(|(control, _)| *control),
+            up_controls(Playbar::Reduced).last().map(|run| run.control),
             Some(Control::Queue)
         );
         assert!(
             !up_controls(Playbar::Full)
                 .iter()
-                .any(|(control, _)| *control == Control::Queue)
+                .any(|run| run.control == Control::Queue)
         );
     }
 
@@ -1044,7 +1164,10 @@ mod tests {
                     &mut queue,
                     0,
                     Playbar::Reduced,
-                    true,
+                    Bar {
+                        queue_claimed: true,
+                        ..Bar::default()
+                    },
                     bar,
                     Cover::Missing,
                     &tokens,
@@ -1064,6 +1187,276 @@ mod tests {
             })
             .collect();
         assert_eq!(claimed, vec![queue_button(bar, Playbar::Reduced)]);
+    }
+
+    /// The bar rect the heart tests draw into: wide enough for the full form.
+    fn heart_bar() -> Rect {
+        Rect::from_min_size(Pos2::new(0.0, 100.0), Vec2::new(1200.0, extent::PLAYBAR_H))
+    }
+
+    /// One frame of the bar, with the playing track named.
+    fn bar_frame(
+        ctx: &egui::Context,
+        tokens: &Tokens,
+        transport: &mut Transport,
+        form: Playbar,
+        like: Option<bool>,
+        events: Vec<Event>,
+    ) -> (egui::FullOutput, [Rect; 3]) {
+        let bar = heart_bar();
+        let cols = layout::playbar_for(bar, form).columns(bar);
+        let mut queue = Queue::default();
+        let mut output = ctx.run_ui(
+            RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 300.0))),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                let _ = show(
+                    ui,
+                    transport,
+                    &mut queue,
+                    0,
+                    form,
+                    Bar {
+                        queue_claimed: false,
+                        like,
+                    },
+                    bar,
+                    Cover::Missing,
+                    tokens,
+                );
+            },
+        );
+        output.textures_delta.clear();
+        (output, cols)
+    }
+
+    /// The accent-filled paths inside `rect`, which is a liked heart and nothing
+    /// else in the now column.
+    fn accent_paths(output: &egui::FullOutput, tokens: &Tokens, rect: Rect) -> Vec<Rect> {
+        output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Path(path) if path.fill == tokens.palette.accent => {
+                    Some(clipped.shape.visual_bounding_rect())
+                }
+                _ => None,
+            })
+            .filter(|found| rect.contains(found.center()))
+            .collect()
+    }
+
+    fn named_playing() -> Transport {
+        let mut transport = playing(0);
+        transport.now_playing = Some(crate::player::NowPlaying {
+            uri: "spotify:track:x".to_owned(),
+            title: "Signal Decay".to_owned(),
+            artists: "Nils Aker".to_owned(),
+            cover: None,
+        });
+        transport
+    }
+
+    #[test]
+    fn the_playbar_heart_reads_the_playing_tracks_state() {
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        let mut transport = named_playing();
+
+        let (liked, cols) = bar_frame(
+            &ctx,
+            &tokens,
+            &mut transport,
+            Playbar::Full,
+            Some(true),
+            Vec::new(),
+        );
+        assert!(
+            !accent_paths(&liked, &tokens, cols[0]).is_empty(),
+            "a liked track's playbar heart is not filled"
+        );
+
+        let (unliked, cols) = bar_frame(
+            &ctx,
+            &tokens,
+            &mut transport,
+            Playbar::Full,
+            Some(false),
+            Vec::new(),
+        );
+        assert!(
+            accent_paths(&unliked, &tokens, cols[0]).is_empty(),
+            "an unliked track's playbar heart took the accent"
+        );
+    }
+
+    #[test]
+    fn a_click_on_the_playbar_heart_posts_the_opposite_for_the_playing_uri() {
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        let mut transport = named_playing();
+
+        let (output, cols) = bar_frame(
+            &ctx,
+            &tokens,
+            &mut transport,
+            Playbar::Full,
+            Some(true),
+            Vec::new(),
+        );
+        let heart = accent_paths(&output, &tokens, cols[0])
+            .first()
+            .copied()
+            .expect("the liked heart is painted");
+        let at = heart.center();
+
+        // A warm frame and a move, so the hit test knows the pointer before the
+        // press.
+        let _ = bar_frame(
+            &ctx,
+            &tokens,
+            &mut transport,
+            Playbar::Full,
+            Some(true),
+            Vec::new(),
+        );
+        let _ = bar_frame(
+            &ctx,
+            &tokens,
+            &mut transport,
+            Playbar::Full,
+            Some(true),
+            vec![Event::PointerMoved(at)],
+        );
+        for event in click_events(at) {
+            let _ = bar_frame(
+                &ctx,
+                &tokens,
+                &mut transport,
+                Playbar::Full,
+                Some(true),
+                vec![event],
+            );
+        }
+
+        assert_eq!(
+            crate::view::heart::take(&ctx),
+            Some(crate::view::heart::Ask {
+                tracks: vec!["spotify:track:x".to_owned()],
+                liked: false,
+            })
+        );
+    }
+
+    #[test]
+    fn a_held_enter_on_the_playbar_heart_toggles_once() {
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        let mut transport = named_playing();
+
+        // A warm pass registers the controls, then Tab takes the keyboard to
+        // the now column's heart, which is the first control drawn.
+        let _ = bar_frame(
+            &ctx,
+            &tokens,
+            &mut transport,
+            Playbar::Full,
+            Some(true),
+            Vec::new(),
+        );
+        let _ = bar_frame(
+            &ctx,
+            &tokens,
+            &mut transport,
+            Playbar::Full,
+            Some(true),
+            vec![key(Key::Tab, Modifiers::NONE)],
+        );
+        let _ = crate::view::heart::take(&ctx);
+
+        let enter = |repeat| Event::Key {
+            key: Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat,
+            modifiers: Modifiers::NONE,
+        };
+        // The set flips after the first ask, as the shell would flip it, so a
+        // repeat that reached the heart would flip it straight back.
+        let mut asks = Vec::new();
+        for repeat in [false, true, true] {
+            let _ = bar_frame(
+                &ctx,
+                &tokens,
+                &mut transport,
+                Playbar::Full,
+                Some(!repeat),
+                vec![enter(repeat)],
+            );
+            asks.push(crate::view::heart::take(&ctx));
+        }
+
+        assert_eq!(
+            asks,
+            vec![
+                Some(crate::view::heart::Ask {
+                    tracks: vec!["spotify:track:x".to_owned()],
+                    liked: false,
+                }),
+                None,
+                None,
+            ],
+            "a held Enter posted more than one ask: {asks:?}"
+        );
+    }
+
+    #[test]
+    fn the_playbar_and_a_row_of_the_same_track_agree() {
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        let mut likes = crate::likes::Likes::default();
+        assert!(likes.request(true));
+        likes.apply(&crate::likes::Event::Set(vec![
+            "spotify:track:x".to_owned(),
+        ]));
+        let state = likes.state("spotify:track:x");
+        assert_eq!(state, Some(true), "the set did not answer");
+
+        let mut transport = named_playing();
+        let (output, cols) = bar_frame(
+            &ctx,
+            &tokens,
+            &mut transport,
+            Playbar::Full,
+            state,
+            Vec::new(),
+        );
+        assert!(
+            !accent_paths(&output, &tokens, cols[0]).is_empty(),
+            "the playbar disagreed with the row's own answer"
+        );
+    }
+
+    #[test]
+    fn the_reduced_bar_keeps_the_heart() {
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        let mut transport = named_playing();
+        let (output, cols) = bar_frame(
+            &ctx,
+            &tokens,
+            &mut transport,
+            Playbar::Reduced,
+            Some(true),
+            Vec::new(),
+        );
+        assert!(
+            !accent_paths(&output, &tokens, cols[0]).is_empty(),
+            "the reduced bar shed its heart"
+        );
     }
 
     #[test]

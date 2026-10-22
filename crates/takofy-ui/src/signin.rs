@@ -66,6 +66,10 @@ impl SignIn {
                 | Update::FollowedArtistsFailed(_)
                 | Update::SavedAlbums(_)
                 | Update::SavedAlbumsFailed(_)
+                | Update::LikedTracks(_)
+                | Update::LikedTracksFailed(_)
+                | Update::Liked { .. }
+                | Update::LikeFailed { .. }
                 | Update::Related { .. }
                 | Update::RelatedFailed { .. }
                 | Update::ReleaseTracks { .. }

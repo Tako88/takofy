@@ -30,6 +30,7 @@ use crate::theme::{Tokens, extent, space};
 use super::carry::{self, Ghost};
 use super::context_menu;
 use super::filter_row;
+use super::heart;
 use super::hero;
 use super::media;
 use super::skeleton;
@@ -175,6 +176,16 @@ pub fn tracks_view(
                             tokens,
                         ));
                     }
+                    // A failed like is drawn here and nowhere else, so a flip
+                    // started on an album, artist, search or release-block
+                    // heart reverts without a word; a page change clears what
+                    // is left.
+                    if let Some(failure) = library.likes.notice() {
+                        ui.label(recipe::muted(
+                            crate::signin::failure_message(failure),
+                            tokens,
+                        ));
+                    }
                     let count = tracks.tracks.len();
                     // The whole list is reserved at once, so the scrollbar is right,
                     // and only the rows the viewport can show are laid out and given
@@ -230,6 +241,7 @@ pub fn tracks_view(
                             cover: art.look(entry.cover.as_ref(), now),
                             look: selection.look(index),
                             menu: gate.allows(),
+                            liked: library.likes.state(&entry.uri),
                         };
                         match track_row::show(ui, rect, columns, &row, tokens) {
                             Some(Click::Play) => {
@@ -237,6 +249,15 @@ pub fn tracks_view(
                             }
                             Some(Click::Open(page)) => open = Some(page),
                             Some(Click::Select(press)) => selection.press(index, press),
+                            Some(Click::Like(liked)) => {
+                                heart::post(
+                                    ui.ctx(),
+                                    heart::Ask {
+                                        tracks: vec![entry.uri.clone()],
+                                        liked,
+                                    },
+                                );
+                            }
                             Some(Click::Menu(door)) => selection.menu(
                                 ui.ctx(),
                                 door,
@@ -245,6 +266,7 @@ pub fn tracks_view(
                                 carry::Open {
                                     listing: listing.clone(),
                                     here: library.page(),
+                                    likes: &library.likes,
                                 },
                                 |row| tracks.tracks.get(row).cloned(),
                             ),
@@ -1402,6 +1424,36 @@ mod tests {
         found.expect("the header and the list lay out")
     }
 
+    /// Makes the library's liked set these tracks, as a landed read would.
+    fn liked(library: &mut Library, uris: &[&str]) {
+        assert!(library.likes.request(true));
+        library.likes.apply(&crate::likes::Event::Set(
+            uris.iter().map(|uri| (*uri).to_owned()).collect(),
+        ));
+    }
+
+    /// The centre of the like column of the `index`-th row, solved the way the
+    /// view solves its columns.
+    fn heart_point_for(ctx: &Context, count: usize, index: usize) -> Pos2 {
+        let tokens = Tokens::DARK;
+        let table = Table::Full;
+        let mut found = None;
+        run(ctx, input(Vec::new()), |ui| {
+            ui.add_space(space::S3);
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                crate::view::inner(ui, |ui| {
+                    let width = ui.available_width();
+                    let columns = table_layout::columns(width, table.columns());
+                    head(ui, columns, &tokens);
+                    let list = list_rect(ui, count);
+                    let row = table_layout::row_rect(list, index, extent::ROW_H);
+                    found = Some(columns.at(row.min).like.center());
+                });
+            });
+        });
+        found.expect("the heart's column lays out")
+    }
+
     /// The rect `tracks_view` draws the `index`-th row's `cell` into, solved the
     /// way the painter solves it: the row's own rect, then the columns at its
     /// origin.
@@ -1884,6 +1936,121 @@ mod tests {
     }
 
     #[test]
+    fn a_heart_click_posts_one_ask_with_the_rows_uri() {
+        let ctx = context();
+        let tracks = vec![
+            track("spotify:track:a", "t0"),
+            track("spotify:track:b", "t1"),
+        ];
+        let mut library = library_with(tracks);
+        liked(&mut library, &[]);
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let point = heart_point_for(&ctx, 2, 1);
+
+        let command = click(&ctx, point, &mut library, &mut transport, &mut queue);
+
+        assert_eq!(command, None, "a heart is not a command of its own");
+        let ask = crate::view::heart::take(&ctx).expect("an ask was posted");
+        assert_eq!(ask.tracks, vec!["spotify:track:b".to_owned()]);
+        assert!(ask.liked, "an unsaved row asks to be saved");
+    }
+
+    #[test]
+    fn a_heart_click_inside_a_pick_acts_on_that_row_only_and_keeps_the_pick() {
+        let ctx = context();
+        let tracks = vec![
+            track("spotify:track:a", "t0"),
+            track("spotify:track:b", "t1"),
+        ];
+        let mut library = library_with(tracks);
+        liked(&mut library, &[]);
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let list = egui::Id::unique(("playlist-tracks", "spotify:playlist:a"));
+        crate::view::carry::select_rows(&ctx, list, 0..2);
+        let point = heart_point_for(&ctx, 2, 1);
+
+        let _ = click(&ctx, point, &mut library, &mut transport, &mut queue);
+
+        let ask = crate::view::heart::take(&ctx).expect("an ask was posted");
+        assert_eq!(
+            ask.tracks,
+            vec!["spotify:track:b".to_owned()],
+            "the pick is the menu's, not the heart's"
+        );
+        let kept = crate::view::carry::List::open(&ctx, list, 2);
+        assert!(
+            kept.look(0).selected && kept.look(1).selected,
+            "the heart changed the pick"
+        );
+    }
+
+    #[test]
+    fn a_track_listed_twice_shows_one_state_on_both_rows() {
+        let ctx = context();
+        let tracks = vec![
+            track("spotify:track:a", "t0"),
+            track("spotify:track:a", "t0 again"),
+        ];
+        let mut library = library_with(tracks);
+        liked(&mut library, &["spotify:track:a"]);
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+
+        for index in 0..2 {
+            let point = heart_point_for(&ctx, 2, index);
+            let _ = click(&ctx, point, &mut library, &mut transport, &mut queue);
+            let ask = crate::view::heart::take(&ctx).expect("an ask was posted");
+            assert_eq!(
+                ask.tracks,
+                vec!["spotify:track:a".to_owned()],
+                "row {index}"
+            );
+            assert!(!ask.liked, "row {index} did not know the track was liked");
+        }
+    }
+
+    #[test]
+    fn a_failed_like_draws_its_sentence_in_the_pages_slot() {
+        let ctx = context();
+        let tracks = vec![track("spotify:track:a", "t0")];
+        let mut library = library_with(tracks);
+        liked(&mut library, &[]);
+        let change = library
+            .likes
+            .set(&["spotify:track:a".to_owned()], true)
+            .expect("a change");
+        library.likes.apply(&crate::likes::Event::Failed {
+            tracks: change.tracks,
+            failure: Failure::Save,
+        });
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let tokens = Tokens::DARK;
+
+        let output = run(&ctx, input(Vec::new()), |ui| {
+            let _ = tracks_view(
+                ui,
+                Table::Full,
+                &mut library,
+                &mut transport,
+                &mut queue,
+                &mut Art::default(),
+                Instant::now(),
+                NOW_MS,
+                &tokens,
+            );
+        });
+
+        assert!(
+            drawn_texts(&output).contains(&"Could not save that change. Try again."),
+            "the failed like drew no sentence: {:?}",
+            drawn_texts(&output)
+        );
+    }
+
+    #[test]
     fn a_right_click_posts_the_menu_its_row_asked_for() {
         let ctx = context();
         let tracks = vec![track("a", "t0"), linkable("b")];
@@ -2097,6 +2264,7 @@ mod tests {
             cover: Cover::Missing,
             look: Look::default(),
             menu: false,
+            liked: None,
         };
 
         run(&ctx, input(Vec::new()), |ui| {
@@ -2146,6 +2314,7 @@ mod tests {
             cover: Cover::Missing,
             look: Look::default(),
             menu: false,
+            liked: None,
         };
 
         let mut output = ctx.run_ui(input(Vec::new()), |ui| {
@@ -2550,6 +2719,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             cover: Cover::Missing,
             look: Look::default(),
             menu: false,
+            liked: None,
         };
 
         let mut output = ctx.run_ui(input(Vec::new()), |ui| {

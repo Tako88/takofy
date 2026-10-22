@@ -145,6 +145,16 @@ pub(crate) trait SessionHost: Send + 'static {
     /// The albums the user saved, newest save first, each as its card draws it.
     fn saved_albums(&self) -> impl Future<Output = Result<Vec<SavedAlbum>, SessionError>> + Send;
 
+    /// The tracks the user has liked, newest save first.
+    fn liked_tracks(&self) -> impl Future<Output = Result<Vec<String>, SessionError>> + Send;
+
+    /// Writes these tracks into the liked-songs set, or out of it.
+    fn set_liked(
+        &self,
+        tracks: Vec<String>,
+        liked: bool,
+    ) -> impl Future<Output = Result<(), SessionError>> + Send;
+
     fn artist(&self, artist: &str)
     -> impl Future<Output = Result<ArtistPage, SessionError>> + Send;
 
@@ -353,6 +363,23 @@ impl SessionHost for LiveSession {
     async fn saved_albums(&self) -> Result<Vec<SavedAlbum>, SessionError> {
         match &self.engine {
             Some(engine) => engine.saved_albums().await.map_err(SessionError::Engine),
+            None => Err(SessionError::NotConnected),
+        }
+    }
+
+    async fn liked_tracks(&self) -> Result<Vec<String>, SessionError> {
+        match &self.engine {
+            Some(engine) => engine.liked_tracks().await.map_err(SessionError::Engine),
+            None => Err(SessionError::NotConnected),
+        }
+    }
+
+    async fn set_liked(&self, tracks: Vec<String>, liked: bool) -> Result<(), SessionError> {
+        match &self.engine {
+            Some(engine) => engine
+                .set_liked(tracks, liked)
+                .await
+                .map_err(SessionError::Engine),
             None => Err(SessionError::NotConnected),
         }
     }

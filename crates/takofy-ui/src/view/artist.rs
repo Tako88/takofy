@@ -24,6 +24,7 @@ use crate::cover::{Art, Cover};
 use crate::format::{discography_meta, format_position};
 use crate::layout::{Table, cards, table as table_layout};
 use crate::library::{Library, Load};
+use crate::likes::Likes;
 use crate::message::Command;
 use crate::player::Transport;
 use crate::queue::Queue;
@@ -36,6 +37,7 @@ use crate::view::text as recipe;
 use super::artist_hero::{self, ArtistHero};
 use super::carry::{self, Ghost};
 use super::filter_row;
+use super::heart;
 use super::media;
 use super::release_block::{self, Block};
 use super::section;
@@ -138,6 +140,7 @@ pub fn artist_view(
                             tokens,
                             &mut command,
                             writing,
+                            page.likes,
                         );
 
                         let tracks: usize = artist
@@ -181,6 +184,7 @@ pub fn artist_view(
                                         playable: false,
                                         here: Some(&here),
                                         writing,
+                                        likes: page.likes,
                                     };
                                     let _ =
                                         release_block::show(ui, table, &block, transport, tokens);
@@ -196,6 +200,7 @@ pub fn artist_view(
                                     playable: matches!(labels, Labels::Ready(_)),
                                     here: Some(&here),
                                     writing,
+                                    likes: page.likes,
                                 };
                                 let clicked =
                                     release_block::show(ui, table, &block, transport, tokens);
@@ -304,6 +309,7 @@ fn popular(
     tokens: &Tokens,
     command: &mut Option<Command>,
     writing: bool,
+    likes: &Likes,
 ) {
     // The section's rows are on this artist's page, so a menu opened on one of
     // them knows which page it is about.
@@ -349,12 +355,22 @@ fn popular(
             cover: Cover::Missing,
             look: selection.look(index),
             menu: gate.allows(),
+            liked: likes.state(&entry.uri),
         };
         match track_row::show(ui, rect, columns, &row, tokens) {
             Some(Click::Play) => {
                 *command = queue.start(&artist.top_tracks, index, transport);
             }
             Some(Click::Select(press)) => selection.press(index, press),
+            Some(Click::Like(liked)) => {
+                heart::post(
+                    ui.ctx(),
+                    heart::Ask {
+                        tracks: vec![entry.uri.clone()],
+                        liked,
+                    },
+                );
+            }
             Some(Click::Menu(door)) => selection.menu(
                 ui.ctx(),
                 door,
@@ -363,6 +379,7 @@ fn popular(
                 carry::Open {
                     listing: carry::Listing::Page,
                     here: Some(&here),
+                    likes,
                 },
                 |row| artist.top_tracks.get(row).cloned(),
             ),
@@ -1395,6 +1412,7 @@ mod tests {
         ];
         let mut transport = Transport::default();
         let mut clicked = None;
+        let likes = crate::likes::Likes::default();
 
         // The second row's rect inside a block drawn at the top of the pane.
         let mut row_rect = None;
@@ -1420,6 +1438,7 @@ mod tests {
                         playable: true,
                         here: None,
                         writing: false,
+                        likes: &likes,
                     };
                     let out =
                         super::release_block::show(ui, Table::Full, &block, &transport, &tokens);

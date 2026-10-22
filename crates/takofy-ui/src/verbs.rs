@@ -3,8 +3,11 @@
 //! Pure: a verb's label, its presence and its outcome are all decided from the
 //! snapshot the menu took when it opened. Nothing here fetches, writes or draws.
 
+use std::collections::HashSet;
+
 use takofy_model::TrackEntry;
 
+use crate::likes::Standing;
 use crate::menu::{Item, Kind, Listing, Verb};
 use crate::route::Page;
 
@@ -19,6 +22,8 @@ pub enum Outcome {
     Open(Page),
     /// The list's rows leave it. Which list, and which rows, is the menu's cut.
     Remove,
+    /// These tracks join the liked set, or leave it.
+    Like { tracks: Vec<String>, liked: bool },
 }
 
 /// The web address a row's URI stands for, or `None` when it has none.
@@ -38,11 +43,28 @@ pub fn spotify_link(uri: &str) -> Option<String> {
     Some(format!("https://open.spotify.com/{kind}/{id}"))
 }
 
-/// The rows' commands, in the sheet's order: queue, album, artist, link, remove.
+/// The heart's label and the menu row's, which say the action the state implies.
+pub fn heart_label(liked: bool) -> &'static str {
+    if liked {
+        "Remove from your library"
+    } else {
+        "Save to your library"
+    }
+}
+
+/// The rows' commands, in the sheet's order: queue, library, album, artist,
+/// link, remove.
 ///
 /// A verb that cannot apply is absent rather than greyed, and a pick only keeps
-/// the verbs that are single-valued across it.
-pub fn track_items(targets: &[TrackEntry], here: Option<&Page>, listing: &Listing) -> Vec<Item> {
+/// the verbs that are single-valued across it. The library row is the pick's
+/// standing made into a verb: a mixed pick offers only the constructive one,
+/// because the destructive one would not apply to every row.
+pub fn track_items(
+    targets: &[TrackEntry],
+    here: Option<&Page>,
+    listing: &Listing,
+    standing: Standing,
+) -> Vec<Item> {
     let mut items = Vec::new();
     if targets.is_empty() {
         return items;
@@ -50,6 +72,10 @@ pub fn track_items(targets: &[TrackEntry], here: Option<&Page>, listing: &Listin
 
     if matches!(listing, Listing::Page | Listing::Playlist { .. }) {
         items.push(item(Verb::AddToQueue, queue_label(targets)));
+    }
+
+    if let Some(item) = library_item(targets, standing) {
+        items.push(item);
     }
 
     if let Some(uri) = single(targets, |entry| entry.album_uri.as_deref())
@@ -110,7 +136,43 @@ pub fn outcome(verb: Verb, targets: &[TrackEntry]) -> Option<Outcome> {
             Some(Outcome::Open(Page::credit(uri)))
         }
         Verb::Remove => (!targets.is_empty()).then_some(Outcome::Remove),
+        Verb::Save => like_outcome(targets, true),
+        Verb::Unsave => like_outcome(targets, false),
     }
+}
+
+/// The library row a pick's standing offers, or `None` when it offers none.
+///
+/// A mixed pick offers only Save: the count is the whole pick, but the write
+/// filters to the rows it would change.
+fn library_item(targets: &[TrackEntry], standing: Standing) -> Option<Item> {
+    let verb = match standing {
+        Standing::Unknown => return None,
+        Standing::Unsaved | Standing::Mixed => Verb::Save,
+        Standing::Saved => Verb::Unsave,
+    };
+    let label = match (targets.len(), verb) {
+        (1, Verb::Save) => heart_label(false).to_owned(),
+        (1, Verb::Unsave) => heart_label(true).to_owned(),
+        (n, Verb::Save) => format!("Save {n} tracks to your library"),
+        (n, Verb::Unsave) => format!("Remove {n} tracks from your library"),
+        _ => return None,
+    };
+    Some(item(verb, label))
+}
+
+/// The write a save or an unsave asks for, naming every picked track once.
+fn like_outcome(targets: &[TrackEntry], liked: bool) -> Option<Outcome> {
+    if targets.is_empty() || !targets.iter().all(TrackEntry::is_track) {
+        return None;
+    }
+    let mut seen = HashSet::new();
+    let tracks: Vec<String> = targets
+        .iter()
+        .filter(|entry| seen.insert(entry.uri.clone()))
+        .map(|entry| entry.uri.clone())
+        .collect();
+    Some(Outcome::Like { tracks, liked })
 }
 
 /// One plain command row.
@@ -258,7 +320,12 @@ mod tests {
 
     #[test]
     fn one_track_gets_the_sheets_four_verbs_in_order() {
-        let items = track_items(&[entry("spotify:track:a")], None, &Listing::Page);
+        let items = track_items(
+            &[entry("spotify:track:a")],
+            None,
+            &Listing::Page,
+            Standing::Unknown,
+        );
         assert_eq!(
             labels(&items),
             ["Add to queue", "Go to album", "Go to artist", "Copy link"]
@@ -282,7 +349,7 @@ mod tests {
             entry("spotify:track:b"),
             entry("spotify:track:c"),
         ];
-        let items = track_items(&targets, None, &Listing::Page);
+        let items = track_items(&targets, None, &Listing::Page, Standing::Unknown);
         let labels = labels(&items);
         assert_eq!(labels[0], "Add 3 tracks to queue");
         assert_eq!(labels[2], "Go to artist", "a go-to never carries a count");
@@ -297,6 +364,7 @@ mod tests {
             &[entry("spotify:track:a"), other_album],
             None,
             &Listing::Page,
+            Standing::Unknown,
         );
         assert!(!labels(&items).contains(&"Go to album"));
 
@@ -306,6 +374,7 @@ mod tests {
             &[entry("spotify:track:a"), other_artist],
             None,
             &Listing::Page,
+            Standing::Unknown,
         );
         assert!(!labels(&items).contains(&"Go to artist"));
     }
@@ -315,7 +384,7 @@ mod tests {
         let mut bare = entry("spotify:track:a");
         bare.album_uri = None;
         bare.artist_uris = Vec::new();
-        let items = track_items(&[bare], None, &Listing::Page);
+        let items = track_items(&[bare], None, &Listing::Page, Standing::Unknown);
         assert_eq!(labels(&items), ["Add to queue", "Copy link"]);
     }
 
@@ -326,6 +395,7 @@ mod tests {
             &targets,
             Some(&Page::Album("spotify:album:a".to_owned())),
             &Listing::Page,
+            Standing::Unknown,
         );
         assert!(!labels(&album).contains(&"Go to album"));
         assert!(labels(&album).contains(&"Go to artist"));
@@ -334,6 +404,7 @@ mod tests {
             &targets,
             Some(&Page::credit("spotify:artist:b")),
             &Listing::Page,
+            Standing::Unknown,
         );
         assert!(!labels(&artist).contains(&"Go to artist"));
         assert!(labels(&artist).contains(&"Go to album"));
@@ -345,7 +416,7 @@ mod tests {
         local.album_uri = None;
         local.artist_uris = Vec::new();
         let targets = [entry("spotify:track:a"), local];
-        let items = track_items(&targets, None, &Listing::Page);
+        let items = track_items(&targets, None, &Listing::Page, Standing::Unknown);
         let copy = items
             .iter()
             .find(|item| item.verb == Verb::CopyLink)
@@ -363,14 +434,19 @@ mod tests {
         let mut local = entry("spotify:local:A:B:C:1000");
         local.album_uri = None;
         local.artist_uris = Vec::new();
-        let items = track_items(&[local], None, &Listing::Page);
+        let items = track_items(&[local], None, &Listing::Page, Standing::Unknown);
         assert_eq!(labels(&items), ["Add to queue"]);
     }
 
     #[test]
     fn an_episode_pick_says_items() {
         let episode = entry("spotify:episode:e");
-        let items = track_items(&[episode.clone(), episode], None, &Listing::Page);
+        let items = track_items(
+            &[episode.clone(), episode],
+            None,
+            &Listing::Page,
+            Standing::Unknown,
+        );
         assert_eq!(labels(&items)[0], "Add 2 items to queue");
     }
 
@@ -424,7 +500,12 @@ mod tests {
 
     #[test]
     fn a_playlist_pick_labels_the_count() {
-        let one = track_items(&[entry("spotify:track:a")], None, &playlist_listing());
+        let one = track_items(
+            &[entry("spotify:track:a")],
+            None,
+            &playlist_listing(),
+            Standing::Unknown,
+        );
         assert_eq!(
             labels(&one),
             [
@@ -441,7 +522,7 @@ mod tests {
             entry("spotify:track:b"),
             entry("spotify:track:c"),
         ];
-        let items = track_items(&three, None, &playlist_listing());
+        let items = track_items(&three, None, &playlist_listing(), Standing::Unknown);
         assert!(
             labels(&items).contains(&"Remove 3 tracks from this playlist"),
             "{:?}",
@@ -451,7 +532,12 @@ mod tests {
 
     #[test]
     fn a_queue_pick_labels_the_count_without_a_noun() {
-        let one = track_items(&[entry("spotify:track:a")], None, &Listing::Queue);
+        let one = track_items(
+            &[entry("spotify:track:a")],
+            None,
+            &Listing::Queue,
+            Standing::Unknown,
+        );
         assert_eq!(
             labels(&one),
             [
@@ -467,13 +553,18 @@ mod tests {
             entry("spotify:track:b"),
             entry("spotify:track:c"),
         ];
-        let items = track_items(&three, None, &Listing::Queue);
+        let items = track_items(&three, None, &Listing::Queue, Standing::Unknown);
         assert_eq!(labels(&items)[3], "Remove 3 from the queue");
     }
 
     #[test]
     fn the_remove_row_is_last_destructive_and_carries_del() {
-        let items = track_items(&[entry("spotify:track:a")], None, &playlist_listing());
+        let items = track_items(
+            &[entry("spotify:track:a")],
+            None,
+            &playlist_listing(),
+            Standing::Unknown,
+        );
         let last = items.last().expect("a command");
         assert_eq!(last.verb, Verb::Remove);
         assert_eq!(last.kind, Kind::Destructive);
@@ -489,14 +580,24 @@ mod tests {
 
     #[test]
     fn a_page_listing_has_no_remove_row() {
-        let items = track_items(&[entry("spotify:track:a")], None, &Listing::Page);
+        let items = track_items(
+            &[entry("spotify:track:a")],
+            None,
+            &Listing::Page,
+            Standing::Unknown,
+        );
         assert!(!verbs(&items).contains(&Verb::Remove));
         assert!(verbs(&items).contains(&Verb::AddToQueue));
     }
 
     #[test]
     fn the_current_listing_has_neither_add_nor_remove() {
-        let items = track_items(&[entry("spotify:track:a")], None, &Listing::Current);
+        let items = track_items(
+            &[entry("spotify:track:a")],
+            None,
+            &Listing::Current,
+            Standing::Unknown,
+        );
         assert_eq!(
             verbs(&items),
             [Verb::GoToAlbum, Verb::GoToArtist, Verb::CopyLink]
@@ -505,7 +606,12 @@ mod tests {
 
     #[test]
     fn the_queue_listing_has_no_add_to_queue() {
-        let items = track_items(&[entry("spotify:track:a")], None, &Listing::Queue);
+        let items = track_items(
+            &[entry("spotify:track:a")],
+            None,
+            &Listing::Queue,
+            Standing::Unknown,
+        );
         assert!(!verbs(&items).contains(&Verb::AddToQueue));
         assert_eq!(verbs(&items).last(), Some(&Verb::Remove));
     }
@@ -519,7 +625,7 @@ mod tests {
             Listing::Current,
             playlist_listing(),
         ] {
-            for item in track_items(&targets, None, &listing) {
+            for item in track_items(&targets, None, &listing, Standing::Unknown) {
                 if item.verb == Verb::Remove {
                     assert_eq!(item.key, Some("Del"), "{}", item.label);
                 } else {
@@ -535,7 +641,7 @@ mod tests {
         let mut local = entry("spotify:local:A:B:C:1000");
         local.album_uri = None;
         local.artist_uris = Vec::new();
-        assert!(track_items(&[local], None, &Listing::Current).is_empty());
+        assert!(track_items(&[local], None, &Listing::Current, Standing::Unknown).is_empty());
     }
 
     #[test]
@@ -552,7 +658,7 @@ mod tests {
         local.artist_uris = Vec::new();
         let targets = [entry("spotify:track:a"), entry("spotify:episode:e"), local];
 
-        let items = track_items(&targets, None, &playlist_listing());
+        let items = track_items(&targets, None, &playlist_listing(), Standing::Unknown);
         assert!(
             labels(&items).contains(&"Remove 3 items from this playlist"),
             "{:?}",
@@ -563,5 +669,234 @@ mod tests {
             .find(|item| item.verb == Verb::CopyLink)
             .expect("two rows are linkable");
         assert_eq!(copy.label, "Copy 2 links");
+    }
+
+    fn tracks(uris: &[&str]) -> Vec<TrackEntry> {
+        uris.iter().map(|uri| entry(uri)).collect()
+    }
+
+    fn library(items: &[Item]) -> Option<&Item> {
+        items
+            .iter()
+            .find(|item| matches!(item.verb, Verb::Save | Verb::Unsave))
+    }
+
+    #[test]
+    fn heart_label_names_the_action() {
+        assert_eq!(heart_label(false), "Save to your library");
+        assert_eq!(heart_label(true), "Remove from your library");
+    }
+
+    #[test]
+    fn an_unsaved_track_gets_save_after_add_to_queue() {
+        let items = track_items(
+            &tracks(&["spotify:track:a"]),
+            None,
+            &Listing::Page,
+            Standing::Unsaved,
+        );
+        assert_eq!(
+            labels(&items),
+            [
+                "Add to queue",
+                "Save to your library",
+                "Go to album",
+                "Go to artist",
+                "Copy link"
+            ]
+        );
+        assert_eq!(
+            verbs(&items),
+            [
+                Verb::AddToQueue,
+                Verb::Save,
+                Verb::GoToAlbum,
+                Verb::GoToArtist,
+                Verb::CopyLink
+            ]
+        );
+    }
+
+    #[test]
+    fn a_saved_track_gets_remove_from_your_library() {
+        let items = track_items(
+            &tracks(&["spotify:track:a"]),
+            None,
+            &Listing::Page,
+            Standing::Saved,
+        );
+        let row = library(&items).expect("a library row");
+        assert_eq!(row.label, "Remove from your library");
+        assert_eq!(row.verb, Verb::Unsave);
+    }
+
+    #[test]
+    fn a_pick_of_unsaved_says_save_n_tracks() {
+        let items = track_items(
+            &tracks(&["spotify:track:a", "spotify:track:b", "spotify:track:c"]),
+            None,
+            &Listing::Page,
+            Standing::Unsaved,
+        );
+        assert_eq!(
+            library(&items).expect("a library row").label,
+            "Save 3 tracks to your library"
+        );
+    }
+
+    #[test]
+    fn a_pick_of_saved_says_remove_n_tracks_from_your_library() {
+        let items = track_items(
+            &tracks(&["spotify:track:a", "spotify:track:b", "spotify:track:c"]),
+            None,
+            &Listing::Page,
+            Standing::Saved,
+        );
+        assert_eq!(
+            library(&items).expect("a library row").label,
+            "Remove 3 tracks from your library"
+        );
+    }
+
+    #[test]
+    fn a_mixed_pick_offers_save_n_tracks_and_never_remove() {
+        let targets = tracks(&["spotify:track:a", "spotify:track:b", "spotify:track:c"]);
+        let items = track_items(&targets, None, &Listing::Page, Standing::Mixed);
+        assert_eq!(
+            library(&items).expect("a library row").label,
+            "Save 3 tracks to your library",
+            "the count is the whole pick, because that is what the sheet draws"
+        );
+        assert!(
+            items.iter().all(|item| item.verb != Verb::Unsave),
+            "a mixed pick has no single remove"
+        );
+    }
+
+    #[test]
+    fn an_unknown_standing_has_no_library_row() {
+        let items = track_items(
+            &tracks(&["spotify:track:a"]),
+            None,
+            &Listing::Page,
+            Standing::Unknown,
+        );
+        assert!(library(&items).is_none());
+    }
+
+    #[test]
+    fn a_pick_with_an_episode_or_a_local_file_has_no_library_row() {
+        for uri in ["spotify:episode:e", "spotify:local:A:B:C:1000"] {
+            let items = track_items(
+                &tracks(&["spotify:track:a", uri]),
+                None,
+                &Listing::Page,
+                Standing::Unknown,
+            );
+            assert!(library(&items).is_none(), "{uri}");
+        }
+    }
+
+    #[test]
+    fn all_four_listings_carry_the_library_row() {
+        let targets = tracks(&["spotify:track:a"]);
+        for listing in [
+            Listing::Page,
+            Listing::Queue,
+            Listing::Current,
+            playlist_listing(),
+        ] {
+            let items = track_items(&targets, None, &listing, Standing::Unsaved);
+            assert!(library(&items).is_some(), "{listing:?} has no library row");
+        }
+    }
+
+    #[test]
+    fn the_queue_listing_has_save_but_no_add_to_queue() {
+        let items = track_items(
+            &tracks(&["spotify:track:a"]),
+            None,
+            &Listing::Queue,
+            Standing::Unsaved,
+        );
+        assert!(library(&items).is_some());
+        assert!(items.iter().all(|item| item.verb != Verb::AddToQueue));
+    }
+
+    #[test]
+    fn the_current_listing_with_a_saveable_track_has_a_non_empty_menu() {
+        let items = track_items(
+            &tracks(&["spotify:track:a"]),
+            None,
+            &Listing::Current,
+            Standing::Unsaved,
+        );
+        assert!(!items.is_empty());
+        assert!(library(&items).is_some());
+    }
+
+    #[test]
+    fn the_library_row_is_plain_and_carries_no_key_hint() {
+        for standing in [Standing::Unsaved, Standing::Saved, Standing::Mixed] {
+            let items = track_items(
+                &tracks(&["spotify:track:a", "spotify:track:b"]),
+                None,
+                &Listing::Page,
+                standing,
+            );
+            let row = library(&items).expect("a library row");
+            assert_eq!(row.kind, Kind::Plain, "{standing:?}");
+            assert_eq!(row.key, None, "{standing:?}");
+            assert!(!row.submenu, "{standing:?}");
+        }
+    }
+
+    #[test]
+    fn outcome_save_lists_every_track_uri_once_in_order() {
+        let targets = tracks(&[
+            "spotify:track:a",
+            "spotify:track:b",
+            "spotify:track:a",
+            "spotify:track:c",
+        ]);
+        assert_eq!(
+            outcome(Verb::Save, &targets),
+            Some(Outcome::Like {
+                tracks: vec![
+                    "spotify:track:a".to_owned(),
+                    "spotify:track:b".to_owned(),
+                    "spotify:track:c".to_owned(),
+                ],
+                liked: true,
+            })
+        );
+    }
+
+    #[test]
+    fn outcome_unsave_is_the_same_with_liked_false() {
+        let targets = tracks(&["spotify:track:a", "spotify:track:b"]);
+        assert_eq!(
+            outcome(Verb::Unsave, &targets),
+            Some(Outcome::Like {
+                tracks: vec!["spotify:track:a".to_owned(), "spotify:track:b".to_owned()],
+                liked: false,
+            })
+        );
+    }
+
+    #[test]
+    fn outcome_save_is_none_for_a_pick_with_a_non_track() {
+        assert_eq!(
+            outcome(
+                Verb::Save,
+                &tracks(&["spotify:track:a", "spotify:episode:e"])
+            ),
+            None
+        );
+        assert_eq!(
+            outcome(Verb::Save, &tracks(&["spotify:local:A:B:C:1000"])),
+            None
+        );
+        assert_eq!(outcome(Verb::Save, &[]), None);
     }
 }
