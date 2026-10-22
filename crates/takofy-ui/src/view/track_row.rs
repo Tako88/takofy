@@ -898,10 +898,6 @@ fn added(ui: &Ui, rect: Rect, label: Option<&str>, tokens: &Tokens, selected: bo
     }
 }
 
-/// The like, which appears under the pointer or on focus.
-///
-/// Returns whether the pointer is on it, so a click here is not taken for a click
-/// on the row.
 /// What the like control reported.
 #[derive(Clone, Copy, Default)]
 struct Heart {
@@ -911,12 +907,14 @@ struct Heart {
     toggled: Option<bool>,
 }
 
-/// The like: a liked heart at rest, every heart on hover or focus within.
+/// The like, which appears under the pointer or on focus; a liked heart is drawn
+/// at rest too.
 ///
 /// Returns the click it reported, if any, so the row does not also take it for
-/// a click on itself. A heart whose state is unknown is still drawn on reveal and
-/// absorbs the click without reporting one: the column is the reference's, and a
-/// click there is not a click on the row. It is inert, so it adds no Tab stop.
+/// a click on itself, and whether the pointer is on it. A heart whose state is
+/// unknown is still drawn on reveal and absorbs the click without reporting one:
+/// the column is the reference's, and a click there is not a click on the row. It
+/// is inert, so it adds no Tab stop.
 fn like(
     ui: &mut Ui,
     rect: Rect,

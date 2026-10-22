@@ -20,6 +20,7 @@ use crate::theme::icon::Size;
 use crate::theme::{MonoWeight, Tokens, Weight, extent, fonts, radius, space, text, tracking};
 
 use super::art;
+use super::context_menu;
 use super::controls;
 use super::heart;
 use super::shell::{row_centre, row_centred};
@@ -307,9 +308,12 @@ fn now_column(
         // A heart with no state to act on is inert, as a row's is.
         &|control| control != Control::Like || liked.is_some(),
     );
-    clicked
-        .filter(|control| *control == Control::Like)
-        .map(|_| liked != Some(true))
+    let like = clicked.filter(|control| *control == Control::Like);
+    // egui reports a focused button's Enter or Space as a click, repeats too, so
+    // only a fresh press is the user's, as on a row.
+    let pointer = ui.input(|input| input.pointer.button_clicked(egui::PointerButton::Primary));
+    let held = like.is_some() && !pointer && context_menu::held_repeat(ui);
+    like.filter(|_| !held).map(|_| liked != Some(true))
 }
 
 /// The transport row and the progress row beneath it. The command is applied
@@ -1344,6 +1348,68 @@ mod tests {
                 tracks: vec!["spotify:track:x".to_owned()],
                 liked: false,
             })
+        );
+    }
+
+    #[test]
+    fn a_held_enter_on_the_playbar_heart_toggles_once() {
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        let mut transport = named_playing();
+
+        // A warm pass registers the controls, then Tab takes the keyboard to
+        // the now column's heart, which is the first control drawn.
+        let _ = bar_frame(
+            &ctx,
+            &tokens,
+            &mut transport,
+            Playbar::Full,
+            Some(true),
+            Vec::new(),
+        );
+        let _ = bar_frame(
+            &ctx,
+            &tokens,
+            &mut transport,
+            Playbar::Full,
+            Some(true),
+            vec![key(Key::Tab, Modifiers::NONE)],
+        );
+        let _ = crate::view::heart::take(&ctx);
+
+        let enter = |repeat| Event::Key {
+            key: Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat,
+            modifiers: Modifiers::NONE,
+        };
+        // The set flips after the first ask, as the shell would flip it, so a
+        // repeat that reached the heart would flip it straight back.
+        let mut asks = Vec::new();
+        for repeat in [false, true, true] {
+            let _ = bar_frame(
+                &ctx,
+                &tokens,
+                &mut transport,
+                Playbar::Full,
+                Some(!repeat),
+                vec![enter(repeat)],
+            );
+            asks.push(crate::view::heart::take(&ctx));
+        }
+
+        assert_eq!(
+            asks,
+            vec![
+                Some(crate::view::heart::Ask {
+                    tracks: vec!["spotify:track:x".to_owned()],
+                    liked: false,
+                }),
+                None,
+                None,
+            ],
+            "a held Enter posted more than one ask: {asks:?}"
         );
     }
 

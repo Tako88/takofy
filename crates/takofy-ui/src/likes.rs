@@ -200,6 +200,12 @@ impl Likes {
         self.notice
     }
 
+    /// Ends the sentence a failed write left behind, without re-arming the read
+    /// that heals it.
+    pub fn clear_notice(&mut self) {
+        self.notice = None;
+    }
+
     fn adopt(&mut self, tracks: Vec<String>) {
         let Some(issued) = self.asking.take() else {
             return;
@@ -222,10 +228,17 @@ impl Likes {
     }
 
     fn fail_read(&mut self, failure: Failure) {
-        if self.asking.take().is_none() {
+        let Some(issued) = self.asking.take() else {
             return;
-        }
-        self.read = Read::Failed(failure);
+        };
+        // A read issued before a later flip is the one a failed write already
+        // asked to heal: its failure must not bury that request. The epoch only
+        // moves on a flip, so a failure at the current epoch still stops.
+        self.read = if issued < self.epoch {
+            Read::Stale
+        } else {
+            Read::Failed(failure)
+        };
     }
 
     fn confirm(&mut self, tracks: &[String], liked: bool) {
@@ -566,6 +579,25 @@ mod tests {
         });
         assert_eq!(likes.notice(), Some(Failure::Save));
         assert!(likes.request(true));
+        likes.apply(&Event::Set(vec![A.to_owned()]));
+        assert_eq!(likes.notice(), None);
+    }
+
+    #[test]
+    fn a_failed_sweep_after_a_failed_write_stays_stale() {
+        let mut likes = likes(&[A]);
+        likes.reload();
+        assert!(likes.request(true), "a refresh is in flight");
+        let change = set(&mut likes, &[B], true).expect("a change");
+        likes.apply(&Event::Failed {
+            tracks: change.tracks,
+            failure: Failure::Save,
+        });
+
+        // The read was issued before the revert, so its failure is not the
+        // healing read's answer: the set stays stale and is read again.
+        likes.apply(&Event::SetFailed(Failure::Load));
+        assert!(likes.request(true), "the healing read was buried");
         likes.apply(&Event::Set(vec![A.to_owned()]));
         assert_eq!(likes.notice(), None);
     }

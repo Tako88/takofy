@@ -176,9 +176,10 @@ pub fn tracks_view(
                             tokens,
                         ));
                     }
-                    // A failed like shares this slot: the page is where the user
-                    // was when they clicked, and there is no second surface for
-                    // it.
+                    // A failed like is drawn here and nowhere else, so a flip
+                    // started on an album, artist, search or release-block
+                    // heart reverts without a word; a page change clears what
+                    // is left.
                     if let Some(failure) = library.likes.notice() {
                         ui.label(recipe::muted(
                             crate::signin::failure_message(failure),

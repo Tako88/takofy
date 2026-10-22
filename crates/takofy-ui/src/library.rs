@@ -257,10 +257,14 @@ impl Library {
                 // search pages are not in the list and must survive it. A
                 // search's query may spell a playlist URI, so the variant is
                 // what decides, never the payload.
+                let page = self.history.current().cloned();
                 self.history.retain(|page| match page {
                     Page::Playlist(uri) => present(uri),
                     Page::Album(_) | Page::Artist(_) | Page::Show(_) | Page::Search(_) => true,
                 });
+                if self.history.current().cloned() != page {
+                    self.left_page();
+                }
                 if self
                     .wanted
                     .as_deref()
@@ -647,14 +651,24 @@ impl Library {
     /// Re-selecting the page already on screen reloads it without growing the
     /// history.
     pub fn select(&mut self, playlist: &str) -> Command {
-        self.history.go(Some(Page::Playlist(playlist.to_owned())));
+        if self.history.go(Some(Page::Playlist(playlist.to_owned()))) {
+            self.left_page();
+        }
         self.load(playlist)
     }
 
     /// Moves to any page and returns the command that settles it.
     pub fn open(&mut self, page: Page) -> Option<Command> {
-        self.history.go(Some(page));
+        if self.history.go(Some(page)) {
+            self.left_page();
+        }
         self.settle()
+    }
+
+    /// A page change ends the like sentence: it names the page the click was
+    /// made on.
+    fn left_page(&mut self) {
+        self.likes.clear_notice();
     }
 
     /// Moves to the playlists grid.
@@ -664,7 +678,9 @@ impl Library {
     /// an in-flight or failed one is dropped, because nothing will ever settle
     /// it and the root must not sit on a spinner.
     pub fn to_playlists(&mut self) {
-        self.history.go(None);
+        if self.history.go(None) {
+            self.left_page();
+        }
         self.wanted = None;
         self.wanted_album = None;
         self.wanted_artist = None;
@@ -692,6 +708,7 @@ impl Library {
         if !self.history.back() {
             return None;
         }
+        self.left_page();
         self.settle()
     }
 
@@ -703,6 +720,7 @@ impl Library {
         if !self.history.forward() {
             return None;
         }
+        self.left_page();
         self.settle()
     }
 
@@ -3651,6 +3669,48 @@ mod tests {
 
         library.apply(&Update::LikedTracks(Vec::new()));
         assert_eq!(library.likes.notice(), None);
+    }
+
+    #[test]
+    fn a_failure_sentence_does_not_survive_a_page_change() {
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(Vec::new()));
+        assert_eq!(library.likes_request(), Some(Command::LoadLikedTracks));
+        library.apply(&Update::LikedTracks(Vec::new()));
+        assert!(
+            library
+                .set_liked(vec!["spotify:track:a".to_owned()], true)
+                .is_some()
+        );
+        library.apply(&Update::LikeFailed {
+            tracks: vec!["spotify:track:a".to_owned()],
+            failure: Failure::Save,
+        });
+        assert_eq!(library.likes.notice(), Some(Failure::Save));
+
+        let _ = library.open(Page::Album("spotify:album:b".to_owned()));
+        assert_eq!(
+            library.likes.notice(),
+            None,
+            "the sentence names a page no longer on screen"
+        );
+
+        assert!(
+            library
+                .set_liked(vec!["spotify:track:a".to_owned()], true)
+                .is_some()
+        );
+        library.apply(&Update::LikeFailed {
+            tracks: vec!["spotify:track:a".to_owned()],
+            failure: Failure::Save,
+        });
+        assert_eq!(library.likes.notice(), Some(Failure::Save));
+        library.to_playlists();
+        assert_eq!(
+            library.likes.notice(),
+            None,
+            "the grid is not the page the like came from"
+        );
     }
 
     #[test]

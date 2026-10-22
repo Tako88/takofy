@@ -3,6 +3,7 @@
 //! The only file in this crate that performs librespot I/O.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use futures_util::StreamExt;
 use http::header::{ACCEPT, CONTENT_TYPE};
@@ -716,10 +717,17 @@ pub(crate) async fn write_like(
 /// A label no other write of this run carries, so the endpoint does not treat a
 /// second like as the first one repeated.
 fn client_update_id() -> String {
+    static SEQ: AtomicU64 = AtomicU64::new(0);
     let millis = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |since| since.as_millis());
-    format!("takofy-{millis}")
+    update_id(millis, SEQ.fetch_add(1, Ordering::Relaxed))
+}
+
+/// The label's shape: the millisecond orders it in a log and the counter makes
+/// it unique, because a write's batches are sent within one millisecond.
+fn update_id(millis: u128, seq: u64) -> String {
+    format!("takofy-{millis}-{seq}")
 }
 
 /// The shows the user follows, newest follow first, each as its card draws it.
@@ -1402,11 +1410,12 @@ mod tests {
     use crate::show::ShowError;
 
     use super::{
-        Labels, PlaylistMeta, TrackLabel, context_cover, distinct_uris, duration_ms, episode_from,
-        episode_labels, episode_of, expand_episodes, expand_labels, first_track_uri, item_uris,
-        label_from_episode, label_of, merge_labels, needs_labels, non_blank, parse_show_uri,
-        partition_by_kind, playlist_cover, playlist_headers, playlist_label, playlist_length,
-        playlist_owner, published_at, show_card, track_label_from,
+        Labels, PlaylistMeta, TrackLabel, client_update_id, context_cover, distinct_uris,
+        duration_ms, episode_from, episode_labels, episode_of, expand_episodes, expand_labels,
+        first_track_uri, item_uris, label_from_episode, label_of, merge_labels, needs_labels,
+        non_blank, parse_show_uri, partition_by_kind, playlist_cover, playlist_headers,
+        playlist_label, playlist_length, playlist_owner, published_at, show_card, track_label_from,
+        update_id,
     };
 
     const TRACK_ID: &str = "4uLU6hMCjMI75M1A2tKUQC";
@@ -2660,5 +2669,23 @@ mod tests {
     #[test]
     fn needs_labels_is_true_for_any_show() {
         assert!(needs_labels(&owned(&[&show_uri(1)])));
+    }
+
+    #[test]
+    fn an_update_id_carries_the_millisecond_and_a_counter() {
+        assert_eq!(update_id(1_700_000_000_123, 0), "takofy-1700000000123-0");
+        assert_ne!(
+            update_id(1_700_000_000_123, 0),
+            update_id(1_700_000_000_123, 1),
+            "batches within one millisecond must still differ"
+        );
+    }
+
+    #[test]
+    fn every_client_update_id_of_a_run_is_different() {
+        let first = client_update_id();
+        let second = client_update_id();
+        assert_ne!(first, second);
+        assert!(first.starts_with("takofy-"), "{first}");
     }
 }
