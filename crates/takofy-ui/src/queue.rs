@@ -177,6 +177,11 @@ impl Queue {
         self.index.is_none() && !self.tracks.is_empty()
     }
 
+    /// The entry that is playing, if one is.
+    pub fn current(&self) -> Option<&TrackEntry> {
+        self.index.and_then(|index| self.tracks.get(index))
+    }
+
     /// Every entry after the current one, with its absolute index in the queue.
     ///
     /// The index is the position in the list `start` was given, so it stays the
@@ -211,6 +216,42 @@ impl Queue {
         }
         self.selection.lift(row);
         Some(self.selected_rows())
+    }
+
+    /// The rows a command opened on `row` acts on: the whole pick when `row` is
+    /// in it, otherwise `row` alone. The rows a queue will not edit act on
+    /// nothing.
+    pub fn act_on(&mut self, row: usize) -> Vec<usize> {
+        if !self.editable(row) {
+            return Vec::new();
+        }
+        self.selection.act_on(row)
+    }
+
+    /// Takes `rows` out of the queue, and says how many went.
+    ///
+    /// The whole removal is refused when any row is not editable or no longer
+    /// holds the entries the command was opened on, so a stale menu changes
+    /// nothing. The current entry, the load's guard and the skip count stay as
+    /// they were.
+    pub fn remove_rows(&mut self, rows: &[usize], expect: &[TrackEntry]) -> Option<usize> {
+        if rows.is_empty() || rows.iter().any(|row| !self.editable(*row)) {
+            return None;
+        }
+        if self.entries_at(rows) != expect {
+            return None;
+        }
+
+        let mut rows = rows.to_vec();
+        rows.sort_unstable();
+        rows.dedup();
+        for row in rows.iter().rev() {
+            self.tracks.remove(*row);
+        }
+        self.selection.without(&rows);
+        let first = rows[0];
+        self.refocus = (first < self.tracks.len()).then_some(first);
+        Some(rows.len())
     }
 
     /// The entries at `rows`, skipping any that have gone.
@@ -1848,5 +1889,211 @@ mod tests {
         assert_eq!(queue.refocus(), Some(3));
         queue.settle_refocus();
         assert_eq!(queue.refocus(), None);
+    }
+
+    #[test]
+    fn current_is_the_entry_at_index_and_none_when_armed_or_empty() {
+        assert_eq!(Queue::default().current(), None);
+        assert_eq!(armed(3).current(), None, "an armed queue has no current");
+        let queue = started(4, 2);
+        assert_eq!(queue.current().map(|entry| entry.uri.as_str()), Some("t2"));
+    }
+
+    #[test]
+    fn act_on_inside_the_pick_returns_it_ascending_and_keeps_it() {
+        let mut queue = started(8, 0);
+        queue.press(5, Press::Replace);
+        queue.press(2, Press::Toggle);
+
+        assert_eq!(queue.act_on(5), vec![2, 5]);
+        assert_eq!(picked(&queue), vec![2, 5], "act_on collapsed the pick");
+    }
+
+    #[test]
+    fn act_on_outside_replaces_the_pick() {
+        let mut queue = started(8, 0);
+        queue.press(5, Press::Replace);
+        queue.press(2, Press::Toggle);
+
+        assert_eq!(queue.act_on(4), vec![4]);
+        assert_eq!(picked(&queue), vec![4]);
+    }
+
+    #[test]
+    fn act_on_the_current_entry_is_empty() {
+        let mut queue = started(8, 3);
+        queue.press(5, Press::Replace);
+
+        assert!(queue.act_on(3).is_empty());
+        assert!(queue.act_on(0).is_empty());
+        assert_eq!(picked(&queue), vec![5], "a refused row touched the pick");
+    }
+
+    #[test]
+    fn remove_rows_takes_the_rows_and_keeps_the_rest_in_order() {
+        let mut queue = started(6, 0);
+        let expect = queue.entries_at(&[1, 3, 4]);
+
+        assert_eq!(queue.remove_rows(&[1, 3, 4], &expect), Some(3));
+        assert_eq!(order(&queue), uris(&["t0", "t2", "t5"]));
+    }
+
+    #[test]
+    fn remove_rows_never_moves_index_awaiting_start_or_skips() {
+        for len in 1..=6 {
+            for index in 0..len {
+                for rows in subsets(len).into_iter().filter(|rows| rows[0] > index) {
+                    let mut queue = started(len, index);
+                    let expect = queue.entries_at(&rows);
+                    let before = (queue.index, queue.awaiting_start, queue.skips);
+
+                    assert_eq!(
+                        queue.remove_rows(&rows, &expect),
+                        Some(rows.len()),
+                        "len {len} at {index}, rows {rows:?}"
+                    );
+                    assert_eq!(
+                        (queue.index, queue.awaiting_start, queue.skips),
+                        before,
+                        "len {len} at {index}, rows {rows:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn an_armed_queue_stays_armed_or_empties() {
+        let mut queue = armed(4);
+        let expect = queue.entries_at(&[1]);
+        assert_eq!(queue.remove_rows(&[1], &expect), Some(1));
+        assert!(queue.armed());
+        assert_eq!(order(&queue), uris(&["t0", "t2", "t3"]));
+
+        let expect = queue.entries_at(&[0, 1, 2]);
+        assert_eq!(queue.remove_rows(&[0, 1, 2], &expect), Some(3));
+        assert!(!queue.armed(), "an emptied queue is not armed");
+        assert!(order(&queue).is_empty());
+    }
+
+    #[test]
+    fn emptying_the_upcoming_region_leaves_the_current_entry_and_no_next() {
+        let mut queue = started(4, 1);
+        let expect = queue.entries_at(&[2, 3]);
+
+        assert_eq!(queue.remove_rows(&[2, 3], &expect), Some(2));
+        assert_eq!(order(&queue), uris(&["t0", "t1"]));
+        assert_eq!(queue.current().map(|entry| entry.uri.as_str()), Some("t1"));
+        assert!(!queue.can_next());
+        assert_eq!(queue.refocus(), None);
+    }
+
+    #[test]
+    fn a_non_upcoming_row_refuses_the_whole_removal() {
+        let mut queue = started(6, 2);
+        let expect = queue.entries_at(&[2, 3]);
+        assert_eq!(queue.remove_rows(&[2, 3], &expect), None, "the current row");
+
+        let expect = queue.entries_at(&[1, 3]);
+        assert_eq!(queue.remove_rows(&[1, 3], &expect), None, "a row before it");
+
+        let expect = queue.entries_at(&[3, 9]);
+        assert_eq!(
+            queue.remove_rows(&[3, 9], &expect),
+            None,
+            "a row past the end"
+        );
+
+        assert_eq!(
+            order(&queue),
+            uris(&["t0", "t1", "t2", "t3", "t4", "t5"]),
+            "a refused removal changed the list"
+        );
+    }
+
+    #[test]
+    fn a_stale_entry_refuses_it() {
+        let mut queue = started(6, 0);
+        let mut other = track("t1");
+        other.artists = "another band".to_owned();
+
+        assert_eq!(
+            queue.remove_rows(&[1, 2], &[other, track("t2")]),
+            None,
+            "identical neighbours would pass a comparison of uris alone"
+        );
+        assert_eq!(order(&queue), uris(&["t0", "t1", "t2", "t3", "t4", "t5"]));
+        assert!(picked(&queue).is_empty());
+    }
+
+    #[test]
+    fn the_selection_shifts_and_is_empty_after_a_whole_pick_goes() {
+        let mut queue = started(8, 0);
+        queue.press(2, Press::Replace);
+        queue.press(5, Press::Toggle);
+        queue.press(6, Press::Toggle);
+
+        let expect = queue.entries_at(&[2, 3]);
+        assert_eq!(queue.remove_rows(&[2, 3], &expect), Some(2));
+        assert_eq!(picked(&queue), vec![3, 4]);
+
+        let rest = queue.acting_rows(None);
+        let expect = queue.entries_at(&rest);
+        assert_eq!(queue.remove_rows(&rest, &expect), Some(2));
+        assert!(picked(&queue).is_empty());
+    }
+
+    #[test]
+    fn refocus_lands_on_the_row_now_at_the_first_removed_index_or_is_none() {
+        let mut queue = started(6, 0);
+        let expect = queue.entries_at(&[2, 3]);
+        queue.remove_rows(&[2, 3], &expect);
+
+        assert_eq!(queue.refocus(), Some(2));
+        assert_eq!(queue.tracks[2].uri, "t4");
+
+        let mut queue = started(4, 0);
+        let expect = queue.entries_at(&[3]);
+        queue.remove_rows(&[3], &expect);
+        assert_eq!(queue.refocus(), None, "the last row left nothing in place");
+    }
+
+    #[test]
+    fn refocus_is_none_when_nothing_upcoming_remains() {
+        let mut queue = started(4, 1);
+        let expect = queue.entries_at(&[2, 3]);
+        queue.remove_rows(&[2, 3], &expect);
+
+        assert_eq!(queue.refocus(), None);
+        assert_ne!(
+            queue.refocus(),
+            queue.index,
+            "clamped onto the current entry"
+        );
+    }
+
+    #[test]
+    fn a_stale_refocus_is_overwritten() {
+        let mut queue = started(6, 0);
+        queue.refocus_at(5);
+        let expect = queue.entries_at(&[1]);
+        queue.remove_rows(&[1], &expect);
+        assert_eq!(queue.refocus(), Some(1));
+
+        let mut queue = started(4, 1);
+        queue.refocus_at(2);
+        let expect = queue.entries_at(&[2, 3]);
+        queue.remove_rows(&[2, 3], &expect);
+        assert_eq!(queue.refocus(), None);
+    }
+
+    #[test]
+    fn remove_rows_returns_the_count() {
+        let mut queue = started(8, 0);
+        let expect = queue.entries_at(&[5, 1, 2]);
+
+        assert_eq!(queue.remove_rows(&[5, 1, 2], &expect), Some(3));
+        assert_eq!(order(&queue), uris(&["t0", "t3", "t4", "t6", "t7"]));
+        assert_eq!(queue.refocus(), Some(1));
     }
 }
