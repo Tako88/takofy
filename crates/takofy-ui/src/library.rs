@@ -220,7 +220,8 @@ impl SidebarPending {
     /// Whether a playlists read taken now could disagree with this write.
     ///
     /// A collection removal writes no rootlist order, so a read may land beside
-    /// it; every other write names the rootlist either way.
+    /// it. Every other write either names the rootlist or is answered with the
+    /// revision the read's access would replace, so both wait for it.
     fn holds_rootlist(&self) -> bool {
         !matches!(self, Self::RemoveSaved { .. })
     }
