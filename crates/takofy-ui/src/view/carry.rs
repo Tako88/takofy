@@ -356,6 +356,13 @@ impl List {
         );
     }
 
+    /// The rows a key acts on: the whole pick when `row` sits in it, otherwise
+    /// `row` alone, which the pick then becomes.
+    pub fn acting_rows(&mut self, row: usize) -> Vec<usize> {
+        self.changed = true;
+        self.selection.act_on(row)
+    }
+
     /// Offers this list's rows to the shell as a target a reorder can land in.
     pub fn offer(&mut self, playlist: &str, zone: Zone) {
         self.offer = Some(Offer {

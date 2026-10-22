@@ -357,6 +357,15 @@ struct Link {
     page: Option<Page>,
 }
 
+/// The widget id of the body of the row at `number` in `uri`'s list.
+///
+/// The position is part of the key, because a playlist may hold the same track
+/// twice: keyed by the track alone, two rows would share one focus node. The
+/// number is one-based, as the row is drawn.
+pub(super) fn id(ui: &Ui, uri: &str, number: usize) -> egui::Id {
+    ui.scope_id().with(("track-row", (uri, number)))
+}
+
 /// Draws one row into `rect`, and reports what a click on it asked for.
 ///
 /// `rect` is `layout::table::row_rect` for this row and `columns` is what
@@ -375,7 +384,7 @@ pub fn show(
     // twice: keyed by the track alone, two rows would share one hover, one focus
     // node and one click, and the wrong occurrence would play.
     let key = (row.uri, row.number);
-    let body = rows::body(ui, rect, ui.scope_id().with(("track-row", key)), row.look);
+    let body = rows::body(ui, rect, id(ui, row.uri, row.number), row.look);
     let response = &body.response;
     response.widget_info(|| {
         egui::WidgetInfo::labeled(

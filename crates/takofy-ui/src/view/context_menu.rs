@@ -64,6 +64,18 @@ pub fn post(ctx: &egui::Context, request: Request) {
     ctx.data_mut(|data| data.insert_temp(request_id(), request));
 }
 
+/// Whether the open menu holds the keyboard, which a region reads before it
+/// takes `Del`: a consumed event is gone, and the menu's own `Del` would never
+/// fire.
+pub fn is_open(ctx: &egui::Context) -> bool {
+    open_opener(ctx).is_some()
+}
+
+/// Posts the cut a list read on `Del` for the shell to apply this frame.
+pub fn post_cut(ctx: &egui::Context, cut: Cut) {
+    ctx.data_mut(|data| data.insert_temp(cut_id(), cut));
+}
+
 /// The cut a list posted for this frame, read once so it cannot outlive it.
 pub fn take_cut(ctx: &egui::Context) -> Option<Cut> {
     ctx.data_mut(|data| {
@@ -1659,5 +1671,55 @@ mod tests {
         assert_eq!(drawn.closed, None, "a held Del chose twice");
         assert!(menu.is_open(), "a held Del closed the menu");
         assert_eq!(left, 0, "a held Del leaked past the menu");
+    }
+    #[test]
+    fn a_posted_cut_is_taken_once() {
+        let ctx = context();
+        let cut = Cut {
+            listing: Listing::Queue,
+            rows: vec![1],
+            entries: vec![track()],
+        };
+        post_cut(&ctx, cut.clone());
+        assert_eq!(take_cut(&ctx), Some(cut));
+        assert_eq!(take_cut(&ctx), None, "a cut is read once");
+    }
+
+    /// One frame that reads `is_open` before it draws the menu, the order the
+    /// shell runs in.
+    fn seen_before_the_draw(ctx: &egui::Context, menu: &mut Menu) -> bool {
+        let tokens = Tokens::DARK;
+        let mut seen = false;
+        let mut drawn = ctx.run_ui(input(Vec::new()), |ui| {
+            seen = is_open(ui.ctx());
+            let _ = show(
+                ui,
+                Frame {
+                    menu,
+                    free: true,
+                    tokens: &tokens,
+                },
+            );
+        });
+        drawn.textures_delta.clear();
+        seen
+    }
+
+    #[test]
+    fn an_open_menu_says_so_before_it_draws() {
+        let ctx = context();
+        let mut menu = opened(Device::Pointer);
+        warm(&ctx, &mut menu);
+        assert!(
+            seen_before_the_draw(&ctx, &mut menu),
+            "a page drew behind an open menu it could not see"
+        );
+
+        let _ = menu.close(Reason::Escape);
+        let _ = seen_before_the_draw(&ctx, &mut menu);
+        assert!(
+            !seen_before_the_draw(&ctx, &mut menu),
+            "the frame after the close still reported an open menu"
+        );
     }
 }

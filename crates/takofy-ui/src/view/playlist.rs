@@ -19,6 +19,7 @@ use crate::landing::Zone;
 use crate::layout::{Table, cards, table as table_layout};
 use crate::library::{BandCover, Library, Load, MediaLayout, band_cover};
 use crate::library_filter::{self, Item, RootKind};
+use crate::menu::Cut;
 use crate::message::{Command, Failure};
 use crate::player::Transport;
 use crate::queue::Queue;
@@ -27,6 +28,7 @@ use crate::scroll;
 use crate::theme::{Tokens, extent, space};
 
 use super::carry::{self, Ghost};
+use super::context_menu;
 use super::filter_row;
 use super::hero;
 use super::media;
@@ -182,19 +184,34 @@ pub fn tracks_view(
                     ui.allocate_rect(list, Sense::hover());
                     let visible = ui.clip_rect();
                     // The page is in the id: a selection belongs to a page, not to a row index.
-                    let mut selection = carry::List::open(
-                        ui.ctx(),
-                        Id::unique(("playlist-tracks", tracks.playlist.as_str())),
-                        count,
-                    );
+                    let list_id = Id::unique(("playlist-tracks", tracks.playlist.as_str()));
+                    // Only a page that may be written offers the destructive
+                    // verb and the key; a list that is not ours has neither.
+                    let listing = if movable {
+                        carry::Listing::Playlist {
+                            uri: tracks.playlist.clone(),
+                            list: list_id,
+                        }
+                    } else {
+                        carry::Listing::Page
+                    };
+                    let mut selection = carry::List::open(ui.ctx(), list_id, count);
                     // The menu's gate is the list's: a carried block or a write in
                     // flight holds the rows still, so no menu opens over them.
                     let gate = selection.gate(writing);
+
+                    // The id the rows draw under, so a focused row is read from
+                    // the same `Ui` that drew them.
+                    let focused_now = ui.memory(|memory| memory.focused());
+                    let mut focused = None;
 
                     for (index, entry) in tracks.tracks.iter().enumerate() {
                         let rect = table_layout::row_rect(list, index, extent::ROW_H);
                         if !visible.intersects(rect) {
                             continue;
+                        }
+                        if focused_now == Some(track_row::id(ui, &entry.uri, index + 1)) {
+                            focused = Some(index);
                         }
                         let duration = entry.duration_ms.map(format_position);
                         let added = entry.added_at.and_then(|added| added_label(added, now_ms));
@@ -226,7 +243,7 @@ pub fn tracks_view(
                                 index,
                                 gate,
                                 carry::Open {
-                                    listing: carry::Listing::Page,
+                                    listing: listing.clone(),
                                     here: library.page(),
                                 },
                                 |row| tracks.tracks.get(row).cloned(),
@@ -241,6 +258,32 @@ pub fn tracks_view(
                             }
                             Some(Click::Lift) => {}
                             None => {}
+                        }
+                    }
+                    // Del belongs to a focused row of a page that may be
+                    // written, and only while the menu is not holding the key:
+                    // a consumed event is gone, so the menu's own Del would
+                    // starve behind it.
+                    if movable
+                        && gate.allows()
+                        && !context_menu::is_open(ui.ctx())
+                        && let Some(row) = focused
+                        && context_menu::take_delete(ui)
+                    {
+                        let rows = selection.acting_rows(row);
+                        let entries: Vec<takofy_model::TrackEntry> = rows
+                            .iter()
+                            .filter_map(|row| tracks.tracks.get(*row).cloned())
+                            .collect();
+                        if rows.len() == entries.len() {
+                            context_menu::post_cut(
+                                ui.ctx(),
+                                Cut {
+                                    listing: listing.clone(),
+                                    rows,
+                                    entries,
+                                },
+                            );
                         }
                     }
                     // Only a page that may take the write says where its own
