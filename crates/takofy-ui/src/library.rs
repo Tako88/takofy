@@ -225,6 +225,8 @@ pub enum SidebarWrite {
     Link,
     /// A playlist was created but the pick it was made for did not land.
     Unfilled,
+    /// A playlist was created but the rename that names it did not land.
+    Unnamed,
 }
 
 /// Whether a chip naming artists is the one the user is looking at.
@@ -451,6 +453,16 @@ impl Library {
                 };
                 entry.tracks = Some(0);
                 self.sidebar_notice = Some(SidebarWrite::Unfilled);
+            }
+            // The name the row shows is the typed one either way; the notice
+            // says the server did not take it, so a reload is not a surprise.
+            Update::PlaylistUnnamed { playlist } => {
+                let Load::Ready(playlists) = &mut self.playlists else {
+                    return;
+                };
+                if playlists.iter_mut().any(|entry| entry.uri == *playlist) {
+                    self.sidebar_notice = Some(SidebarWrite::Unnamed);
+                }
             }
             Update::Tracks {
                 playlist,
@@ -6541,6 +6553,38 @@ mod tests {
         assert_eq!(library.sidebar_notice, Some(SidebarWrite::Unfilled));
         assert!(!library.naming.is_open(), "the field is spent");
         assert!(!library.write_in_flight());
+    }
+
+    #[test]
+    fn a_created_list_that_lost_its_name_says_so() {
+        let mut library = naming_library(&["a"], "Mix");
+        assert!(library.create_playlist().is_some());
+        library.apply(&Update::PlaylistCreated {
+            entry: PlaylistEntry {
+                // The rename never landed, so the row does not claim a name.
+                named: false,
+                ..created("spotify:playlist:new", "Mix", access(0x09, true))
+            },
+            revision: revision(0x08),
+        });
+
+        library.apply(&Update::PlaylistUnnamed {
+            playlist: "spotify:playlist:new".to_owned(),
+        });
+
+        assert_eq!(library.sidebar_notice, Some(SidebarWrite::Unnamed));
+        let entry = sidebar_entry(&library, "spotify:playlist:new").expect("the new row");
+        assert_eq!(entry.name, "Mix", "the typed name stays for this session");
+        assert!(!library.write_in_flight());
+    }
+
+    #[test]
+    fn an_unnamed_notice_for_a_list_not_held_is_ignored() {
+        let mut library = sidebar_library(&["a"], 0x07, true, Some(3));
+        library.apply(&Update::PlaylistUnnamed {
+            playlist: "spotify:playlist:absent".to_owned(),
+        });
+        assert_eq!(library.sidebar_notice, None);
     }
 
     #[test]

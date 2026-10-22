@@ -320,6 +320,7 @@ pub fn sidebar_notice(write: SidebarWrite) -> &'static str {
         SidebarWrite::Create => "Could not create that playlist. Try again.",
         SidebarWrite::Link => "Created it, but could not add it to your list.",
         SidebarWrite::Unfilled => "Created it, but could not add the tracks.",
+        SidebarWrite::Unnamed => "Created it, but could not keep its name.",
     }
 }
 
@@ -529,6 +530,10 @@ mod tests {
         assert_eq!(
             sidebar_notice(SidebarWrite::Unfilled),
             "Created it, but could not add the tracks."
+        );
+        assert_eq!(
+            sidebar_notice(SidebarWrite::Unnamed),
+            "Created it, but could not keep its name."
         );
     }
 

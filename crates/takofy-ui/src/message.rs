@@ -183,6 +183,9 @@ pub enum Update {
     AddFailed { playlist: String },
     /// A playlist exists but the pick it was created for did not land in it.
     PlaylistUnfilled { playlist: String },
+    /// A playlist exists but the rename that gives it a name did not land, so it
+    /// keeps the typed name for this session only.
+    PlaylistUnnamed { playlist: String },
     /// A playlist was created and linked, and this is the row to draw first.
     ///
     /// The revision is the link reply's, so the next rootlist write names the

@@ -142,6 +142,34 @@ pub fn add_body(revision: &Revision, from_index: usize, uris: &[String]) -> Vec<
     changes(revision, &[op(ADD, 2, &add)])
 }
 
+/// `Op.kind` for updating a list's attributes in the playlist schema.
+const UPDATE_LIST_ATTRIBUTES: u32 = 6;
+
+/// The field `Op` carries the attribute update in, which is the kind itself.
+const UPDATE_FIELD: u32 = 6;
+
+/// The change set that renames the list to `name`, based on `revision`.
+///
+/// The schema's update carries the new attributes through two wrappers, so the
+/// name sits three messages deep. A create cannot name a list - the name travels
+/// in the create body and the server ignores it - so this is what gives a made
+/// playlist its title.
+pub fn rename_body(revision: &Revision, name: &str) -> Vec<u8> {
+    let mut attributes = Vec::new();
+    put_str(1, name, &mut attributes);
+
+    let mut values = Vec::new();
+    put_message(1, &attributes, &mut values);
+
+    let mut update = Vec::new();
+    put_message(1, &values, &mut update);
+
+    changes(
+        revision,
+        &[op(UPDATE_LIST_ATTRIBUTES, UPDATE_FIELD, &update)],
+    )
+}
+
 /// The change set that applies `removals`, based on `revision`.
 ///
 /// The ops apply in sequence, so a gapped pick is one change set of several
@@ -352,7 +380,7 @@ mod tests {
 
     use super::{
         PlaylistError, access, add_body, changes_endpoint, create_body, created_uri,
-        listing_access, move_body, owned, removals_body, remove_body, reply_revision,
+        listing_access, move_body, owned, removals_body, remove_body, rename_body, reply_revision,
         require_moves, require_name, require_playlist, require_removals, require_tracks,
         rootlist_changes_endpoint, varint,
     };
@@ -1024,6 +1052,60 @@ mod tests {
         assert_eq!(found[0], (4, b"Mix".to_vec()));
         assert_eq!(found[1], (5, 1u64.to_le_bytes().to_vec()));
         assert_eq!(found[2], (12, 1u64.to_le_bytes().to_vec()));
+    }
+
+    #[test]
+    fn a_rename_body_is_69_bytes_for_a_24_byte_revision() {
+        let body = rename_body(&probe(), "Mix");
+        let mut expected = vec![
+            0x0a, 0x18, // ListChanges.base_revision: 24 bytes
+        ];
+        expected.extend_from_slice(&PROBE_REV);
+        expected.extend_from_slice(&[
+            0x12, 0x29, // ListChanges.deltas[0]: 41 bytes
+            0x0a, 0x18, // Delta.base_version: 24 bytes
+        ]);
+        expected.extend_from_slice(&PROBE_REV);
+        expected.extend_from_slice(&[
+            0x12, 0x0d, // Delta.ops[0]: 13 bytes
+            0x08, 0x06, // Op.kind = UPDATE_LIST_ATTRIBUTES
+            0x32, 0x09, // Op.update_list_attributes: 9 bytes
+            0x0a, 0x07, // UpdateListAttributes.new_attributes: 7 bytes
+            0x0a, 0x05, // ListPartial.values: 5 bytes
+            0x0a, 0x03, // ListAttributes.name: 3 bytes
+        ]);
+        expected.extend_from_slice(b"Mix");
+        assert_eq!(body, expected);
+        assert_eq!(body.len(), 69);
+    }
+
+    #[test]
+    fn a_rename_parses_back_as_one_update_of_the_name() {
+        let changes = page(&rename_body(&probe(), "Night Drive"));
+        assert_eq!(changes.deltas.len(), 1);
+        let delta = &changes.deltas[0];
+        assert_eq!(delta.base_version, Some(PROBE_REV.to_vec()));
+        assert_eq!(delta.ops.len(), 1, "a rename is one op");
+        let op = &delta.ops[0];
+        assert_eq!(op.kind(), op::Kind::UPDATE_LIST_ATTRIBUTES);
+        let update = op.update_list_attributes.as_ref().expect("an update");
+        let name = update
+            .new_attributes
+            .as_ref()
+            .and_then(|partial| partial.values.as_ref())
+            .and_then(|attributes| attributes.name.as_ref());
+        assert_eq!(name.map(String::as_str), Some("Night Drive"));
+    }
+
+    #[test]
+    fn a_rename_and_the_add_that_follows_name_the_same_revision() {
+        // What the create chain does: the rename answers the revision the add
+        // is based on, so both changes name the version they follow.
+        let next = Revision::from_wire(&PROBE_REV).expect("a revision");
+        let rename = page(&rename_body(&probe(), "Mix"));
+        let add = page(&add_body(&next, 0, &[PROBE_TRACK.to_owned()]));
+        assert_eq!(rename.base_revision, Some(PROBE_REV.to_vec()));
+        assert_eq!(add.base_revision, Some(PROBE_REV.to_vec()));
     }
 
     #[test]

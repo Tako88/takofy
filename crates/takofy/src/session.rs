@@ -112,6 +112,14 @@ pub(crate) trait SessionHost: Send + 'static {
         name: &str,
     ) -> impl Future<Output = Result<String, SessionError>> + Send;
 
+    /// Renames `playlist`, answering the revision to hold next.
+    fn rename_playlist(
+        &self,
+        playlist: &str,
+        revision: &Revision,
+        name: &str,
+    ) -> impl Future<Output = Result<Revision, SessionError>> + Send;
+
     /// Puts `playlist` at the front of the user's rootlist, answering the
     /// revision to hold next.
     fn link_playlist(
@@ -308,6 +316,21 @@ impl SessionHost for LiveSession {
         match &self.engine {
             Some(engine) => engine
                 .make_playlist(name)
+                .await
+                .map_err(SessionError::Engine),
+            None => Err(SessionError::NotConnected),
+        }
+    }
+
+    async fn rename_playlist(
+        &self,
+        playlist: &str,
+        revision: &Revision,
+        name: &str,
+    ) -> Result<Revision, SessionError> {
+        match &self.engine {
+            Some(engine) => engine
+                .rename_playlist(playlist, revision, name)
                 .await
                 .map_err(SessionError::Engine),
             None => Err(SessionError::NotConnected),

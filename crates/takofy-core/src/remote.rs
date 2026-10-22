@@ -395,6 +395,26 @@ pub(crate) async fn write_move(
     write_changes(session, endpoint, playlist_edit::move_body(revision, moves)).await
 }
 
+/// Renames a playlist to `name`, as one delta on one revision.
+///
+/// A create cannot name a list, so this is what gives a fresh playlist its
+/// title; it takes the revision the read gave and answers the next one.
+pub(crate) async fn write_rename(
+    session: &Session,
+    uri: &str,
+    revision: &Revision,
+    name: &str,
+) -> Result<Revision, playlist_edit::PlaylistError> {
+    playlist_edit::require_name(name)?;
+    let endpoint = playlist_edit::changes_endpoint(uri)?;
+    write_changes(
+        session,
+        endpoint,
+        playlist_edit::rename_body(revision, name),
+    )
+    .await
+}
+
 /// Removes `removals` from a playlist, as one delta on one revision.
 pub(crate) async fn write_remove(
     session: &Session,

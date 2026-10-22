@@ -15,7 +15,7 @@ use crate::remote::{
     ROOTLIST_WIRE, RemoteContext, RemoteRootlist, label_playlists, label_tracks, read_album,
     read_artist, read_followed_artists, read_followed_shows, read_liked_tracks, read_lyrics,
     read_playlist_state, read_related, read_release_tracks, read_saved_albums, read_show,
-    write_add, write_create, write_follow, write_like, write_move, write_remove,
+    write_add, write_create, write_follow, write_like, write_move, write_remove, write_rename,
     write_rootlist_add, write_rootlist_move,
 };
 use crate::rootlist::{RootlistError, fetch_all};
@@ -193,6 +193,16 @@ impl Engine {
     pub async fn playlist_state(&self, playlist_uri: &str) -> Option<PlaylistAccess> {
         let state = read_playlist_state(&self.session, playlist_uri).await?;
         playlist_edit::listing_access(state.revision.as_bytes(), state.can_edit)
+    }
+
+    /// Renames a playlist, answering the revision to hold next.
+    pub async fn rename_playlist(
+        &self,
+        playlist_uri: &str,
+        revision: &Revision,
+        name: &str,
+    ) -> Result<Revision, EngineError> {
+        Ok(write_rename(&self.session, playlist_uri, revision, name).await?)
     }
 
     /// Appends tracks to a playlist, answering the revision to hold next.

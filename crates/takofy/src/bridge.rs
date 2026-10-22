@@ -1118,6 +1118,22 @@ async fn create_playlist<H: SessionHost>(
         return Step::Stopped;
     };
     let mut access = state;
+    // The name is the one thing a create does not carry: the body's name field
+    // is ignored, so a fresh list is nameless until it is renamed. The rename
+    // answers the revision everything after it is based on.
+    let mut named = false;
+    if let Some(revision) = access.as_ref().map(|access| access.revision.clone()) {
+        match stop_or(stop, host.rename_playlist(&uri, &revision, name)).await {
+            None => return Step::Stopped,
+            Some(Ok(reply)) => {
+                named = true;
+                if let Some(access) = &mut access {
+                    access.revision = reply;
+                }
+            }
+            Some(Err(error)) => log::warn!("naming a new playlist failed: {}", error.kind()),
+        }
+    }
     // The list's length is the index its next append names, so a count that did
     // not land would make the next add prepend.
     let mut landed = 0;
@@ -1135,12 +1151,13 @@ async fn create_playlist<H: SessionHost>(
             Some(Err(error)) => log::warn!("add to a new playlist failed: {}", error.kind()),
         }
     }
-    let unfilled = !tracks.is_empty() && landed == 0;
     notifier.send(Update::PlaylistCreated {
         entry: PlaylistEntry {
             uri: uri.clone(),
             name: name.to_owned(),
-            named: true,
+            // A list the rename did not reach keeps the typed name for this
+            // session only, and the notice below says so.
+            named,
             cover: None,
             description: None,
             tracks: Some(landed),
@@ -1149,7 +1166,12 @@ async fn create_playlist<H: SessionHost>(
         },
         revision,
     });
-    if unfilled {
+    if !named {
+        notifier.send(Update::PlaylistUnnamed {
+            playlist: uri.clone(),
+        });
+    }
+    if !tracks.is_empty() && landed == 0 {
         notifier.send(Update::PlaylistUnfilled { playlist: uri });
     }
     Step::Done
@@ -1798,6 +1820,24 @@ mod tests {
         }
     }
 
+    /// A scripted rename; the default names a revision the window has not seen.
+    #[derive(Clone)]
+    enum RenameScript {
+        Ready(Revision),
+        Fail,
+        Pending,
+    }
+
+    impl Default for RenameScript {
+        fn default() -> Self {
+            Self::Ready(Revision::from_wire(&[4]).expect("a revision"))
+        }
+    }
+
+    /// One rename the fake host was asked for: the list, its base revision and
+    /// the name it should carry afterwards.
+    type RenameWrite = (String, Revision, String);
+
     /// The playlist a scripted create makes.
     const CREATED: &str = "spotify:playlist:0JQ5DAqbMKFEC4WFtoNRpw";
 
@@ -1865,6 +1905,7 @@ mod tests {
         remove_script: Mutex<MoveScript>,
         rootlist_move_script: Mutex<RootlistMoveScript>,
         add_script: Mutex<AddScript>,
+        rename_script: Mutex<RenameScript>,
         create_script: Mutex<CreateScript>,
         link_script: Mutex<LinkScript>,
         state_script: Mutex<StateScript>,
@@ -1890,6 +1931,7 @@ mod tests {
         remove_writes: AtomicUsize,
         rootlist_move_writes: AtomicUsize,
         add_writes: AtomicUsize,
+        rename_writes: AtomicUsize,
         create_writes: AtomicUsize,
         link_writes: AtomicUsize,
         state_reads: AtomicUsize,
@@ -1903,12 +1945,14 @@ mod tests {
         last_remove: Mutex<Option<(String, Revision, Vec<Removal>)>>,
         last_root_move: Mutex<Option<(Revision, usize, usize)>>,
         last_add: Mutex<Option<AddWrite>>,
+        last_rename: Mutex<Option<RenameWrite>>,
         last_create: Mutex<Option<String>>,
         last_link: Mutex<Option<(Revision, String)>>,
         last_like: Mutex<Option<(Vec<String>, bool)>>,
         move_started: Mutex<Option<Sender<()>>>,
         rootlist_move_started: Mutex<Option<Sender<()>>>,
         add_started: Mutex<Option<Sender<()>>>,
+        rename_started: Mutex<Option<Sender<()>>>,
         create_started: Mutex<Option<Sender<()>>>,
         link_started: Mutex<Option<Sender<()>>>,
         state_started: Mutex<Option<Sender<()>>>,
@@ -2414,6 +2458,32 @@ mod tests {
                     AddScript::Ready(revision) => Ok(revision),
                     AddScript::Fail => Err(SessionError::NotConnected),
                     AddScript::Pending => std::future::pending().await,
+                }
+            }
+        }
+
+        fn rename_playlist(
+            &self,
+            playlist: &str,
+            revision: &Revision,
+            name: &str,
+        ) -> impl Future<Output = Result<Revision, SessionError>> + Send {
+            self.shared.rename_writes.fetch_add(1, Ordering::SeqCst);
+            *self.shared.last_rename.lock().expect("lock") =
+                Some((playlist.to_owned(), revision.clone(), name.to_owned()));
+            if let Some(tx) = self.shared.rename_started.lock().expect("lock").take() {
+                let _ = tx.send(());
+            }
+            let connected = self.shared.connected.load(Ordering::SeqCst);
+            let script = self.shared.rename_script.lock().expect("lock").clone();
+            async move {
+                if !connected {
+                    return Err(SessionError::NotConnected);
+                }
+                match script {
+                    RenameScript::Ready(revision) => Ok(revision),
+                    RenameScript::Fail => Err(SessionError::NotConnected),
+                    RenameScript::Pending => std::future::pending().await,
                 }
             }
         }
@@ -3348,6 +3418,53 @@ mod tests {
     }
 
     #[test]
+    fn a_stop_with_the_rename_pending_shuts_down() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+        *shared.state_script.lock().expect("lock") = StateScript::Ready(PlaylistAccess {
+            revision: revision(9),
+            editable: true,
+        });
+        *shared.rename_script.lock().expect("lock") = RenameScript::Pending;
+        let (started_tx, started_rx) = channel();
+        *shared.rename_started.lock().expect("lock") = Some(started_tx);
+
+        let runtime = runtime();
+        let (ui_end, _slot, worker) = start(runtime.handle(), host, store, source);
+
+        let window = move || {
+            loop {
+                if matches!(ui_end.updates.recv().expect("update"), Update::Playlists(_)) {
+                    break;
+                }
+            }
+            ui_end
+                .commands
+                .send(Command::CreatePlaylist {
+                    name: "Night Drive".to_owned(),
+                    revision: revision(1),
+                    tracks: Vec::new(),
+                })
+                .expect("create");
+            started_rx.recv().expect("rename started");
+        };
+        let teardown = move || async move {
+            tokio::time::timeout(Duration::from_secs(1), worker.finish())
+                .await
+                .expect("finish must resolve when the stop interrupts the rename");
+            assert_eq!(
+                shared.shutdowns.load(Ordering::SeqCst),
+                1,
+                "the shutdown must run when the stop interrupts the rename"
+            );
+        };
+
+        run_ordered(runtime, window, teardown);
+    }
+
+    #[test]
     fn a_create_makes_links_reads_state_and_announces_the_entry() {
         let store = Arc::new(MemoryStore::seeded("stored"));
         let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
@@ -3384,14 +3501,117 @@ mod tests {
                     description: None,
                     tracks: Some(0),
                     owner: None,
-                    access: Some(access),
+                    access: Some(PlaylistAccess {
+                        revision: revision(4),
+                        editable: true,
+                    }),
                 },
                 revision: revision(4),
-            }
+            },
+            "the row holds the rename's reply, which is what the next write names"
         );
         assert_eq!(shared.create_writes.load(Ordering::SeqCst), 1);
         assert_eq!(shared.link_writes.load(Ordering::SeqCst), 1);
         assert_eq!(shared.state_reads.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            shared.rename_writes.load(Ordering::SeqCst),
+            1,
+            "it was named"
+        );
+        assert_eq!(
+            shared.last_rename.lock().expect("lock").clone(),
+            Some((CREATED.to_owned(), revision(9), "Night Drive".to_owned())),
+            "the rename names the list the create made, on the read's revision"
+        );
+    }
+
+    #[test]
+    fn the_rename_answers_what_the_add_is_based_on() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+        *shared.state_script.lock().expect("lock") = StateScript::Ready(PlaylistAccess {
+            revision: revision(9),
+            editable: true,
+        });
+        *shared.rename_script.lock().expect("lock") = RenameScript::Ready(revision(11));
+        *shared.add_script.lock().expect("lock") = AddScript::Ready(revision(12));
+
+        let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::CreatePlaylist {
+                    name: "Night Drive".to_owned(),
+                    revision: revision(1),
+                    tracks: vec!["spotify:track:a".to_owned()],
+                })
+                .expect("create");
+            ui_end.updates.recv().expect("created")
+        });
+
+        let Update::PlaylistCreated { entry, .. } = update else {
+            panic!("a create announces the row");
+        };
+        assert_eq!(
+            entry.access.map(|access| access.revision),
+            Some(revision(12)),
+            "the row holds the add's reply, not the read's revision"
+        );
+        assert_eq!(
+            shared
+                .last_add
+                .lock()
+                .expect("lock")
+                .clone()
+                .map(|add| add.1),
+            Some(revision(11)),
+            "the add is based on the rename's reply: a stale base would undo it"
+        );
+    }
+
+    #[test]
+    fn a_create_whose_rename_fails_says_so_and_still_takes_the_pick() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+        *shared.state_script.lock().expect("lock") = StateScript::Ready(PlaylistAccess {
+            revision: revision(9),
+            editable: true,
+        });
+        *shared.rename_script.lock().expect("lock") = RenameScript::Fail;
+
+        let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::CreatePlaylist {
+                    name: "Night Drive".to_owned(),
+                    revision: revision(1),
+                    tracks: vec!["spotify:track:a".to_owned()],
+                })
+                .expect("create");
+            expect_updates(&ui_end, 2)
+        });
+
+        let (first, second) = (updates[0].clone(), updates[1].clone());
+        let Update::PlaylistCreated { entry, .. } = first else {
+            panic!("a create announces the row");
+        };
+        assert!(!entry.named, "a row the server did not name claims a name");
+        assert_eq!(entry.tracks, Some(1), "the pick still lands");
+        assert_eq!(
+            second,
+            Update::PlaylistUnnamed {
+                playlist: CREATED.to_owned(),
+            },
+            "the failure is said after the row, because the row clears the notice"
+        );
+        assert_eq!(shared.add_writes.load(Ordering::SeqCst), 1);
     }
 
     #[test]
@@ -3548,8 +3768,8 @@ mod tests {
         assert_eq!(shared.add_writes.load(Ordering::SeqCst), 1, "one add");
         assert_eq!(
             shared.last_add.lock().expect("lock").clone(),
-            Some((CREATED.to_owned(), state.revision, 0, tracks)),
-            "the whole pick lands at index zero in one write"
+            Some((CREATED.to_owned(), revision(4), 0, tracks)),
+            "the whole pick lands at index zero, on the rename's reply"
         );
     }
 
@@ -3577,6 +3797,7 @@ mod tests {
                 })
                 .expect("create");
             let created = ui_end.updates.recv().expect("created");
+            // The rename landed, so the only failure to report is the pick.
             let unfilled = ui_end.updates.recv().expect("unfilled");
             (created, unfilled)
         });
@@ -3584,9 +3805,10 @@ mod tests {
         assert!(
             matches!(
                 &updates.0,
-                Update::PlaylistCreated { entry, .. } if entry.tracks == Some(0)
+                Update::PlaylistCreated { entry, .. }
+                    if entry.tracks == Some(0) && entry.named
             ),
-            "the list exists and counts nothing: {:?}",
+            "the list exists, is named, and counts nothing: {:?}",
             updates.0
         );
         assert_eq!(
@@ -3650,21 +3872,29 @@ mod tests {
                 })
                 .expect("create");
             let created = ui_end.updates.recv().expect("created");
+            let unnamed = ui_end.updates.recv().expect("unnamed");
             let unfilled = ui_end.updates.recv().expect("unfilled");
-            (created, unfilled)
+            (created, unnamed, unfilled)
         });
 
         assert!(
             matches!(
                 &updates.0,
                 Update::PlaylistCreated { entry, .. }
-                    if entry.tracks == Some(0) && entry.access.is_none()
+                    if entry.tracks == Some(0) && entry.access.is_none() && !entry.named
             ),
             "{:?}",
             updates.0
         );
         assert_eq!(
             updates.1,
+            Update::PlaylistUnnamed {
+                playlist: CREATED.to_owned(),
+            },
+            "a list with no revision cannot be renamed either"
+        );
+        assert_eq!(
+            updates.2,
             Update::PlaylistUnfilled {
                 playlist: CREATED.to_owned(),
             }
@@ -3683,7 +3913,7 @@ mod tests {
         let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
         let shared = Arc::clone(&host.shared);
 
-        let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+        let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
             slot.install(Arc::new(RecordingWaker::default()));
             let _ = expect_updates(&ui_end, 2);
             ui_end
@@ -3694,16 +3924,20 @@ mod tests {
                     tracks: Vec::new(),
                 })
                 .expect("create");
-            ui_end.updates.recv().expect("created")
+            let created = ui_end.updates.recv().expect("created");
+            let unnamed = ui_end.updates.recv().expect("unnamed");
+            (created, unnamed)
         });
 
         assert_eq!(
-            update,
+            updates.0,
             Update::PlaylistCreated {
                 entry: PlaylistEntry {
                     uri: CREATED.to_owned(),
                     name: "Night Drive".to_owned(),
-                    named: true,
+                    // Nothing could name it: the read that gives the revision
+                    // the rename needs did not answer.
+                    named: false,
                     cover: None,
                     description: None,
                     tracks: Some(0),
@@ -3713,6 +3947,12 @@ mod tests {
                 revision: revision(4),
             },
             "a list that could not be read is still a list to draw"
+        );
+        assert_eq!(
+            updates.1,
+            Update::PlaylistUnnamed {
+                playlist: CREATED.to_owned(),
+            }
         );
         assert_eq!(shared.state_reads.load(Ordering::SeqCst), 1);
     }
