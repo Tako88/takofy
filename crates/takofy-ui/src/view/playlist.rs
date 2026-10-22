@@ -195,6 +195,18 @@ pub fn tracks_view(
 
         super::inner(ui, |ui| {
             let width = ui.available_width();
+            // A rename can fail on a list with no rows, so its sentence is drawn
+            // above the table arms rather than inside the non-empty one.
+            let notice = match &library.tracks {
+                Load::Ready(tracks) => tracks.notice,
+                Load::Idle | Load::Loading | Load::Failed(_) => None,
+            };
+            if let Some(failure) = notice {
+                ui.label(recipe::muted(
+                    crate::signin::failure_message(failure),
+                    tokens,
+                ));
+            }
             match &library.tracks {
                 Load::Idle => {}
                 Load::Loading => {
@@ -225,12 +237,6 @@ pub fn tracks_view(
                             .for_playlist(table_layout::is_playlist(&tracks.playlist)),
                     );
                     head(ui, columns, tokens);
-                    if let Some(failure) = tracks.notice {
-                        ui.label(recipe::muted(
-                            crate::signin::failure_message(failure),
-                            tokens,
-                        ));
-                    }
                     // A failed like is drawn here and nowhere else, so a flip
                     // started on an album, artist, search or release-block
                     // heart reverts without a word; a page change clears what
@@ -4494,6 +4500,27 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             !library.renaming.is_open(),
             "a held Enter reopened the field it just closed"
         );
+    }
+
+    #[test]
+    fn a_band_rename_failure_on_an_empty_playlist_says_why() {
+        let ctx = context();
+        let mut library = band_library("Night Drive", true, &[]);
+        assert!(library.begin_rename("spotify:playlist:a", Surface::Band));
+        library.renaming.edit().clear();
+        library.renaming.edit().push_str("New");
+        assert!(library.rename_playlist().is_some());
+        library.apply(&Update::PlaylistRenameFailed {
+            playlist: "spotify:playlist:a".to_owned(),
+        });
+
+        let painted = painted_lines(&ctx, Table::Full, &mut library);
+
+        assert!(
+            painted.contains(&crate::signin::failure_message(Failure::Rename).to_owned()),
+            "an empty playlist hid the failure: {painted:?}"
+        );
+        assert!(painted.contains(&"No tracks in this playlist.".to_owned()));
     }
 }
 
