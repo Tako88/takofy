@@ -204,12 +204,16 @@ impl Likes {
         let Some(issued) = self.asking.take() else {
             return;
         };
-        if self.pending.is_some() || issued < self.epoch {
-            self.read = if self.set.is_some() {
-                Read::Current
-            } else {
-                Read::Stale
-            };
+        if self.pending.is_some() {
+            // A write is in flight and its answer is the truth; this read may
+            // predate it. Its own failure would mark the set stale again.
+            self.read = Read::Current;
+            return;
+        }
+        if issued < self.epoch {
+            // The read predates a flip. Ask once more rather than adopting an
+            // older truth; the next reply is issued at the new epoch.
+            self.read = Read::Stale;
             return;
         }
         self.set = Some(tracks.into_iter().collect());
@@ -516,6 +520,30 @@ mod tests {
         // read behind it.
         likes.apply(&Event::Set(vec![]));
         assert_eq!(likes.state(A), Some(true));
+    }
+
+    #[test]
+    fn a_write_failure_during_a_read_heals_after_the_stale_reply() {
+        let mut likes = likes(&[A]);
+        likes.reload();
+        assert!(likes.request(true), "a refresh is in flight");
+        let change = set(&mut likes, &[B], true).expect("a change");
+        likes.apply(&Event::Failed {
+            tracks: change.tracks,
+            failure: Failure::Save,
+        });
+        assert_eq!(likes.notice(), Some(Failure::Save));
+        assert!(
+            !likes.request(true),
+            "a second read must not overlap the one already in flight"
+        );
+
+        // The stale read was issued before the flip: dropping it must ask again,
+        // or the sentence would stay forever.
+        likes.apply(&Event::Set(vec![A.to_owned()]));
+        assert!(likes.request(true), "the stale reply did not ask again");
+        likes.apply(&Event::Set(vec![A.to_owned()]));
+        assert_eq!(likes.notice(), None);
     }
 
     #[test]
