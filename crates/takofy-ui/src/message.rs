@@ -57,6 +57,8 @@ pub enum Command {
         from_index: usize,
         tracks: Vec<String>,
     },
+    /// Rename one playlist, based on the revision its own state read answers.
+    RenamePlaylist { playlist: String, name: String },
     /// Create a playlist called `name` and put it at the front of the user's
     /// rootlist, based on the rootlist's `revision`, with `tracks` to land in
     /// it once it exists.
@@ -125,6 +127,8 @@ pub enum Failure {
     Load,
     /// A write the user asked for did not stick.
     Save,
+    /// A playlist rename did not stick, and the field stays open.
+    Rename,
     /// The shows the user follows could not be loaded.
     Followed,
     /// The artists the user follows could not be loaded.
@@ -212,6 +216,14 @@ pub enum Update {
     /// A playlist exists but the rename that gives it a name did not land, so it
     /// keeps the typed name for this session only.
     PlaylistUnnamed { playlist: String },
+    /// A playlist was renamed, and this is the revision the next write names.
+    PlaylistRenamed {
+        playlist: String,
+        name: String,
+        revision: Revision,
+    },
+    /// A playlist rename did not stick, so the field stays open with its text.
+    PlaylistRenameFailed { playlist: String },
     /// A playlist was created and linked, and this is the row to draw first.
     ///
     /// The revision is the link reply's, so the next rootlist write names the

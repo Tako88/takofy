@@ -57,6 +57,8 @@ impl SignIn {
                 | Update::PlaylistUnlinked
                 | Update::PlaylistUnfilled { .. }
                 | Update::PlaylistUnnamed { .. }
+                | Update::PlaylistRenamed { .. }
+                | Update::PlaylistRenameFailed { .. }
                 | Update::Tracks { .. }
                 | Update::TrackMoved { .. }
                 | Update::MoveFailed { .. }
@@ -123,6 +125,7 @@ pub fn failure_message(failure: Failure) -> &'static str {
         Failure::NoAudioDevice => "No audio output device is available.",
         Failure::Load => "Could not load the library. Check your connection and try again.",
         Failure::Save => "Could not save that change. Try again.",
+        Failure::Rename => "Could not rename that playlist. Try again.",
         Failure::Followed => {
             "Could not load the shows you follow. Check your connection and try again."
         }
@@ -396,7 +399,7 @@ mod tests {
     }
 
     /// Every `Failure` value there is, so a test can sweep them all.
-    fn every_failure() -> [Failure; 12] {
+    fn every_failure() -> [Failure; 13] {
         [
             Failure::PortBusy,
             Failure::Keychain,
@@ -404,6 +407,7 @@ mod tests {
             Failure::NoAudioDevice,
             Failure::Load,
             Failure::Save,
+            Failure::Rename,
             Failure::Followed,
             Failure::FollowedArtists,
             Failure::SavedAlbums,

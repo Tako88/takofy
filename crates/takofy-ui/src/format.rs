@@ -322,6 +322,7 @@ pub fn sidebar_notice(write: SidebarWrite) -> &'static str {
         SidebarWrite::Unfilled => "Created it, but could not add the tracks.",
         SidebarWrite::Unnamed => "Created it, but could not keep its name.",
         SidebarWrite::Remove => "Could not remove that from your library. Try again.",
+        SidebarWrite::Rename => "Could not rename that playlist. Try again.",
     }
 }
 
@@ -535,6 +536,14 @@ mod tests {
         assert_eq!(
             sidebar_notice(SidebarWrite::Unnamed),
             "Created it, but could not keep its name."
+        );
+        assert_eq!(
+            sidebar_notice(SidebarWrite::Rename),
+            "Could not rename that playlist. Try again."
+        );
+        assert_eq!(
+            sidebar_notice(SidebarWrite::Remove),
+            "Could not remove that from your library. Try again."
         );
     }
 

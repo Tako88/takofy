@@ -19,7 +19,7 @@ use crate::likes::{self, Likes};
 use crate::lyrics::LyricsPanel;
 use crate::menu::{AddTarget, LibraryItem};
 use crate::message::{Command, Failure, Update};
-use crate::naming::{Naming, Renaming};
+use crate::naming::{Naming, Renaming, Surface};
 use crate::releases::Releases;
 use crate::removal;
 use crate::reorder;
@@ -216,6 +216,8 @@ enum SidebarPending {
     Remove { playlist: String, index: usize },
     /// One saved album, show or artist being written out of its set.
     RemoveSaved { uri: String },
+    /// One playlist being renamed, which names no rootlist order.
+    Rename { playlist: String },
 }
 
 impl SidebarPending {
@@ -225,7 +227,7 @@ impl SidebarPending {
     /// it. Every other write either names the rootlist or is answered with the
     /// revision the read's access would replace, so both wait for it.
     fn holds_rootlist(&self) -> bool {
-        !matches!(self, Self::RemoveSaved { .. })
+        !matches!(self, Self::RemoveSaved { .. } | Self::Rename { .. })
     }
 }
 
@@ -246,6 +248,8 @@ pub enum SidebarWrite {
     Unnamed,
     /// A thing could not be removed from the library.
     Remove,
+    /// A playlist could not be renamed.
+    Rename,
 }
 
 /// Whether a ready list of the library holds `uri`.
@@ -544,6 +548,67 @@ impl Library {
                 };
                 if playlists.iter_mut().any(|entry| entry.uri == *playlist) {
                     self.sidebar_notice = Some(SidebarWrite::Unnamed);
+                }
+            }
+            // A rename only counts for the row whose write is in flight; the
+            // reply's revision replaces both copies of the holding.
+            Update::PlaylistRenamed {
+                playlist,
+                name,
+                revision,
+            } => {
+                let Some(SidebarPending::Rename { playlist: pending }) = &self.sidebar_pending
+                else {
+                    return;
+                };
+                if pending != playlist {
+                    return;
+                }
+                self.sidebar_pending = None;
+                self.sidebar_notice = None;
+                if let Load::Ready(playlists) = &mut self.playlists
+                    && let Some(entry) = playlists.iter_mut().find(|entry| entry.uri == *playlist)
+                {
+                    entry.name = name.clone();
+                    entry.named = true;
+                    if let Some(access) = &mut entry.access {
+                        access.revision = revision.clone();
+                    }
+                }
+                if let Load::Ready(tracks) = &mut self.tracks
+                    && tracks.playlist == *playlist
+                {
+                    if let Some(access) = &mut tracks.access {
+                        access.revision = revision.clone();
+                    }
+                    if tracks.notice == Some(Failure::Rename) {
+                        tracks.notice = None;
+                    }
+                }
+                if self.renaming.is_open() && self.renaming.uri() == playlist {
+                    self.renaming.finished();
+                }
+            }
+            // The field keeps its text so a retry is one press away, and the
+            // foot says why; a band field also marks the page, because the foot
+            // is invisible with the drawer closed.
+            Update::PlaylistRenameFailed { playlist } => {
+                let Some(SidebarPending::Rename { playlist: pending }) = &self.sidebar_pending
+                else {
+                    return;
+                };
+                if pending != playlist {
+                    return;
+                }
+                self.sidebar_pending = None;
+                self.sidebar_notice = Some(SidebarWrite::Rename);
+                self.renaming.failed();
+                if self.renaming.surface() == Surface::Band
+                    && matches!(&self.tracks, Load::Ready(tracks) if tracks.playlist == *playlist)
+                {
+                    if let Load::Ready(tracks) = &mut self.tracks {
+                        tracks.notice = Some(Failure::Rename);
+                    }
                 }
             }
             Update::Tracks {
@@ -7758,4 +7823,241 @@ mod tests {
 
         assert_eq!(library.sidebar_notice, None);
     }
+    /// A sidebar holding one editable playlist, its page loaded.
+    fn renaming_library() -> Library {
+        let mut library = sidebar_library(&["a"], 0x07, true, None);
+        library.select("a");
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: vec![track("t0")],
+            cover: None,
+            access: access(0x07, true),
+        });
+        library
+    }
+
+    fn rename_pending(library: &mut Library, uri: &str, surface: crate::naming::Surface) {
+        library.renaming.open(uri, uri, surface);
+        library.sidebar_pending = Some(SidebarPending::Rename {
+            playlist: uri.to_owned(),
+        });
+    }
+
+    #[test]
+    fn a_confirmed_rename_sets_the_name_named_and_both_revisions() {
+        let mut library = renaming_library();
+        rename_pending(&mut library, "a", crate::naming::Surface::Row);
+
+        library.apply(&Update::PlaylistRenamed {
+            playlist: "a".to_owned(),
+            name: "New Name".to_owned(),
+            revision: revision(0x09),
+        });
+
+        let entry = sidebar_entry(&library, "a").expect("the row");
+        assert_eq!(entry.name, "New Name");
+        assert!(entry.named);
+        assert_eq!(
+            entry.access.as_ref().map(|held| held.revision.clone()),
+            Some(revision(0x09))
+        );
+        assert_eq!(
+            match &library.tracks {
+                Load::Ready(tracks) => tracks
+                    .access
+                    .as_ref()
+                    .map(|held| held.revision.clone()),
+                Load::Idle | Load::Loading | Load::Failed(_) => None,
+            },
+            Some(revision(0x09)),
+            "the page's next move would name a stale base"
+        );
+        assert!(!library.renaming.is_open());
+        assert!(!library.write_in_flight());
+        assert_eq!(library.sidebar_notice, None);
+    }
+
+    #[test]
+    fn a_named_false_playlist_can_be_renamed_and_the_confirm_names_it() {
+        let mut library = renaming_library();
+        if let Load::Ready(playlists) = &mut library.playlists {
+            playlists[0].named = false;
+        }
+        rename_pending(&mut library, "a", crate::naming::Surface::Row);
+
+        library.apply(&Update::PlaylistRenamed {
+            playlist: "a".to_owned(),
+            name: "Named".to_owned(),
+            revision: revision(0x09),
+        });
+
+        let entry = sidebar_entry(&library, "a").expect("the row");
+        assert_eq!(entry.name, "Named");
+        assert!(entry.named);
+    }
+
+    #[test]
+    fn a_rename_confirm_for_another_uri_changes_nothing() {
+        let mut library = renaming_library();
+        rename_pending(&mut library, "a", crate::naming::Surface::Row);
+
+        library.apply(&Update::PlaylistRenamed {
+            playlist: "b".to_owned(),
+            name: "Other".to_owned(),
+            revision: revision(0x09),
+        });
+
+        let entry = sidebar_entry(&library, "a").expect("the row");
+        assert_eq!(entry.name, "a");
+        assert!(library.renaming.is_open());
+        assert!(library.write_in_flight());
+        assert_eq!(
+            entry.access.as_ref().map(|held| held.revision.clone()),
+            Some(revision(0x07))
+        );
+    }
+
+    #[test]
+    fn a_rename_failure_keeps_the_text_and_says_so() {
+        let mut library = renaming_library();
+        rename_pending(&mut library, "a", crate::naming::Surface::Row);
+        library.renaming.edit().clear();
+        library.renaming.edit().push_str("Night Drive");
+
+        library.apply(&Update::PlaylistRenameFailed {
+            playlist: "a".to_owned(),
+        });
+
+        assert!(library.renaming.is_open());
+        assert_eq!(library.renaming.text(), "Night Drive");
+        assert!(library.renaming.wants_focus());
+        assert!(!library.renaming.writing());
+        assert_eq!(library.sidebar_notice, Some(SidebarWrite::Rename));
+        assert!(!library.write_in_flight());
+    }
+
+    #[test]
+    fn a_band_rename_failure_also_marks_the_loaded_page() {
+        let mut library = renaming_library();
+        rename_pending(&mut library, "a", crate::naming::Surface::Band);
+
+        library.apply(&Update::PlaylistRenameFailed {
+            playlist: "a".to_owned(),
+        });
+
+        assert_eq!(
+            match &library.tracks {
+                Load::Ready(tracks) => tracks.notice,
+                Load::Idle | Load::Loading | Load::Failed(_) => None,
+            },
+            Some(Failure::Rename)
+        );
+        assert_eq!(library.sidebar_notice, Some(SidebarWrite::Rename));
+    }
+
+    #[test]
+    fn a_row_rename_failure_leaves_the_page_notice_alone() {
+        let mut library = renaming_library();
+        rename_pending(&mut library, "a", crate::naming::Surface::Row);
+
+        library.apply(&Update::PlaylistRenameFailed {
+            playlist: "a".to_owned(),
+        });
+
+        assert_eq!(
+            match &library.tracks {
+                Load::Ready(tracks) => tracks.notice,
+                Load::Idle | Load::Loading | Load::Failed(_) => None,
+            },
+            None
+        );
+    }
+
+    #[test]
+    fn a_rename_confirm_clears_only_its_own_page_notice() {
+        let mut library = renaming_library();
+        if let Load::Ready(tracks) = &mut library.tracks {
+            tracks.notice = Some(Failure::Rename);
+        }
+        rename_pending(&mut library, "a", crate::naming::Surface::Band);
+
+        library.apply(&Update::PlaylistRenamed {
+            playlist: "a".to_owned(),
+            name: "New".to_owned(),
+            revision: revision(0x09),
+        });
+        assert_eq!(
+            match &library.tracks {
+                Load::Ready(tracks) => tracks.notice,
+                Load::Idle | Load::Loading | Load::Failed(_) => None,
+            },
+            None
+        );
+
+        if let Load::Ready(tracks) = &mut library.tracks {
+            tracks.notice = Some(Failure::Save);
+        }
+        rename_pending(&mut library, "a", crate::naming::Surface::Band);
+        library.apply(&Update::PlaylistRenamed {
+            playlist: "a".to_owned(),
+            name: "Newer".to_owned(),
+            revision: revision(0x0a),
+        });
+        assert_eq!(
+            match &library.tracks {
+                Load::Ready(tracks) => tracks.notice,
+                Load::Idle | Load::Loading | Load::Failed(_) => None,
+            },
+            Some(Failure::Save),
+            "an unrelated notice was cleared"
+        );
+    }
+
+    #[test]
+    fn a_playlists_read_during_a_rename_is_adopted() {
+        let mut library = renaming_library();
+        rename_pending(&mut library, "a", crate::naming::Surface::Row);
+
+        library.apply(&Update::Playlists(vec![playlist("b", "B")]));
+
+        match &library.playlists {
+            Load::Ready(playlists) => {
+                assert_eq!(playlists.len(), 1);
+                assert_eq!(playlists[0].uri, "b");
+            }
+            other => panic!("the read was not adopted: {other:?}"),
+        }
+        assert!(library.write_in_flight(), "the rename went with it");
+    }
+
+    #[test]
+    fn a_stale_tracks_read_for_another_playlist_leaves_the_revision_alone() {
+        let mut library = renaming_library();
+        rename_pending(&mut library, "a", crate::naming::Surface::Band);
+        library.apply(&Update::PlaylistRenamed {
+            playlist: "a".to_owned(),
+            name: "New".to_owned(),
+            revision: revision(0x09),
+        });
+
+        library.apply(&Update::Tracks {
+            playlist: "b".to_owned(),
+            tracks: vec![track("t1")],
+            cover: None,
+            access: access(0x05, true),
+        });
+
+        assert_eq!(
+            match &library.tracks {
+                Load::Ready(tracks) => tracks
+                    .access
+                    .as_ref()
+                    .map(|held| held.revision.clone()),
+                Load::Idle | Load::Loading | Load::Failed(_) => None,
+            },
+            Some(revision(0x09)),
+            "another page's read replaced this page's base"
+        );
+    }
+
 }
