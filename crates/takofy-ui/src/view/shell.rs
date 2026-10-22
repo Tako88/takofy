@@ -26,7 +26,8 @@ use crate::verbs;
 use super::Screen;
 use super::carry::{self, Carry, ColumnOffer, Offer, Source};
 use super::{
-    context_menu, ghost, now_playing, playbar, playlist, queue_pane, search_menu, sidebar, topbar,
+    context_menu, ghost, heart, now_playing, playbar, playlist, queue_pane, search_menu, sidebar,
+    topbar,
 };
 
 /// The signed-in shell: three columns over a playbar, each panel a hairline box
@@ -370,6 +371,15 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
         && let Some(cut) = cut
     {
         command = apply_cut(ui, screen, cut);
+    }
+
+    // A heart posts its one-frame intent. It is taken whether or not it can be
+    // applied, so a dropped click leaves nothing behind for the next frame.
+    let ask = heart::take(ui.ctx());
+    if command.is_none()
+        && let Some(ask) = ask
+    {
+        command = apply_like(ui, screen, ask.tracks, ask.liked);
     }
 
     // Settled before the drawer, so the Escape that cancels a drag does not also
@@ -7564,6 +7574,61 @@ mod tests {
                 .iter()
                 .all(|item| !matches!(item.verb, Verb::Save | Verb::Unsave)),
             "a set nobody has read offered a library row"
+        );
+    }
+
+    #[test]
+    fn an_applied_ask_issues_set_liked_and_flips_the_row() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        liked(&mut window, &[]);
+        crate::view::heart::post(
+            &window.ctx,
+            crate::view::heart::Ask {
+                tracks: vec!["spotify:track:a".to_owned()],
+                liked: true,
+            },
+        );
+
+        let (command, _) = window.frame(&mut transport, &mut queue, Vec::new());
+
+        assert_eq!(
+            command,
+            Some(Command::SetLiked {
+                tracks: vec!["spotify:track:a".to_owned()],
+                liked: true,
+            })
+        );
+        assert_eq!(window.library.likes.state("spotify:track:a"), Some(true));
+        assert!(
+            crate::view::heart::take(&window.ctx).is_none(),
+            "the ask was not taken"
+        );
+    }
+
+    #[test]
+    fn an_ask_with_the_drawer_open_is_dropped() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        liked(&mut window, &[]);
+        window.drawer = Drawer::Open;
+        crate::view::heart::post(
+            &window.ctx,
+            crate::view::heart::Ask {
+                tracks: vec!["spotify:track:a".to_owned()],
+                liked: true,
+            },
+        );
+
+        let (command, _) = window.frame(&mut transport, &mut queue, Vec::new());
+
+        assert_eq!(command, None, "a dropped ask sent a command");
+        assert_eq!(window.library.likes.state("spotify:track:a"), Some(false));
+        assert!(
+            crate::view::heart::take(&window.ctx).is_none(),
+            "a dropped ask outlived its frame"
         );
     }
 

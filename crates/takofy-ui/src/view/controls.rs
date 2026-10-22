@@ -242,8 +242,67 @@ pub fn icon_button_keyed(
     label: &str,
     live: bool,
 ) -> Slot {
+    icon_button_painted(
+        ui,
+        tokens,
+        control,
+        key,
+        rect,
+        icon,
+        size,
+        label,
+        live,
+        Lit::Rest,
+    )
+}
+
+/// An icon button whose glyph carries a state of its own: a liked heart takes
+/// the accent tone, the one signal colour the palette has.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the same facts as a button, plus the state its glyph carries"
+)]
+pub fn icon_button_liked(
+    ui: &mut Ui,
+    tokens: &Tokens,
+    control: Control,
+    key: impl Hash + std::fmt::Debug,
+    rect: Rect,
+    icon: Icon,
+    size: Size,
+    label: &str,
+    live: bool,
+) -> Slot {
+    icon_button_painted(
+        ui,
+        tokens,
+        control,
+        key,
+        rect,
+        icon,
+        size,
+        label,
+        live,
+        Lit::Liked,
+    )
+}
+
+/// The button behind both, so the two entry points paint one thing.
+#[expect(clippy::too_many_arguments, reason = "six facts about one button")]
+fn icon_button_painted(
+    ui: &mut Ui,
+    tokens: &Tokens,
+    control: Control,
+    key: impl Hash + std::fmt::Debug,
+    rect: Rect,
+    icon: Icon,
+    size: Size,
+    label: &str,
+    live: bool,
+    lit: Lit,
+) -> Slot {
     let slot = slot_keyed(ui, control, key, Role::Button, rect, label, tokens, live);
-    paint_icon_button(ui, tokens, rect, icon, size, &slot, Lit::Rest);
+    paint_icon_button(ui, tokens, rect, icon, size, &slot, lit);
     slot
 }
 
@@ -303,6 +362,8 @@ enum Lit {
     Claimed,
     /// The menu this button opened is still up.
     Open,
+    /// The button's own state is on: a liked heart.
+    Liked,
 }
 
 /// An icon button's body: the wash, or the claim's or the open state's fill, and
@@ -332,6 +393,12 @@ fn paint_icon_button(
                 ui.painter().rect_filled(rect, radius::SM, fill);
             }
             foreground(tokens, slot.live, slot.hover)
+        }
+        Lit::Liked => {
+            if let Some(fill) = wash(ui, tokens, slot.hover) {
+                ui.painter().rect_filled(rect, radius::SM, fill);
+            }
+            tokens.palette.accent
         }
     };
     icon::paint(

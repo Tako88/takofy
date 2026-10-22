@@ -27,6 +27,7 @@ use crate::theme::{Tokens, extent};
 use crate::view::text as recipe;
 
 use super::carry::{self, Ghost};
+use super::heart;
 use super::hero;
 use super::skeleton;
 use super::track_list::{head, list_rect};
@@ -177,6 +178,7 @@ pub fn album_view(
                                 cover: Cover::Missing,
                                 look: selection.look(index),
                                 menu: gate.allows(),
+                                liked: library.likes.state(&entry.uri),
                             };
                             // A row plays; its artist subline, when the album named
                             // a resolvable artist, opens that artist's page.
@@ -186,6 +188,15 @@ pub fn album_view(
                                 }
                                 Some(Click::Open(page)) => open = Some(page),
                                 Some(Click::Select(press)) => selection.press(index, press),
+                                Some(Click::Like(liked)) => {
+                                    heart::post(
+                                        ui.ctx(),
+                                        heart::Ask {
+                                            tracks: vec![entry.uri.clone()],
+                                            liked,
+                                        },
+                                    );
+                                }
                                 Some(Click::Menu(door)) => selection.menu(
                                     ui.ctx(),
                                     door,
@@ -384,6 +395,35 @@ mod tests {
         found.expect("the head and the list lay out")
     }
 
+    /// The centre of the like column of the `index`-th row, solved the way the
+    /// page solves its columns.
+    fn heart_point_for(ctx: &Context, index: usize, count: usize) -> Pos2 {
+        let tokens = Tokens::DARK;
+        let mut found = None;
+        run(ctx, input(Vec::new()), |ui| {
+            ui.add_space(space::S3);
+            let band = hero::Band {
+                eyebrow: "Album",
+                title: "Signal Decay",
+                meta: Vec::new(),
+                description: "",
+                playable: true,
+                shuffle: false,
+                cover: Cover::Missing,
+            };
+            let _ = hero::show(ui, &band, &tokens);
+            crate::view::inner(ui, |ui| {
+                let columns =
+                    table_layout::columns(ui.available_width(), Table::Full.columns().for_album());
+                track_list::head(ui, columns, &tokens);
+                let list = track_list::list_rect(ui, count);
+                let row = table_layout::row_rect(list, index, extent::ROW_H);
+                found = Some(columns.at(row.min).like.center());
+            });
+        });
+        found.expect("the heart's column lays out")
+    }
+
     /// The band's play tile, solved the way the page solves it.
     fn play_tile_rect_for(ctx: &Context) -> Rect {
         let tokens = Tokens::DARK;
@@ -443,6 +483,53 @@ mod tests {
         crate::view::carry::List::open(ctx, egui::Id::unique(("album-tracks", album)), 2)
             .look(index)
             .selected
+    }
+
+    #[test]
+    fn a_heart_click_posts_one_ask_with_the_rows_uri() {
+        let ctx = context();
+        let mut library = library_with(detail(vec![
+            track("spotify:track:a", "One", "Band", 222_000),
+            track("spotify:track:b", "Two", "Band", 198_000),
+        ]));
+        assert!(library.likes.request(true));
+        library.likes.apply(&crate::likes::Event::Set(Vec::new()));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+        let point = heart_point_for(&ctx, 1, 2);
+        // Warm up so the pointer is known to the hit test before the press.
+        let _ = frame(
+            &ctx,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let _ = frame(
+            &ctx,
+            vec![egui::Event::PointerMoved(point)],
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+
+        let command = click(
+            &ctx,
+            point,
+            1,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+
+        assert_eq!(command, None, "a heart is not a command of its own");
+        let ask = heart::take(&ctx).expect("an ask was posted");
+        assert_eq!(ask.tracks, vec!["spotify:track:b".to_owned()]);
+        assert!(ask.liked, "an unsaved row asks to be saved");
     }
 
     #[test]

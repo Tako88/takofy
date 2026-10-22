@@ -27,6 +27,7 @@ use crate::theme::{Tokens, extent};
 use crate::view::text as recipe;
 
 use super::carry::{self, Ghost};
+use super::heart;
 use super::section;
 use super::skeleton;
 use super::track_list::{head, list_rect};
@@ -163,6 +164,7 @@ pub fn search_view(
                                 cover: art.look(entry.cover.as_ref(), now),
                                 look: selection.look(index),
                                 menu: gate.allows(),
+                                liked: library.likes.state(&entry.uri),
                             };
                             // R16: a row plays the whole answer, entered here, so
                             // next and previous walk the results.
@@ -172,6 +174,15 @@ pub fn search_view(
                                 }
                                 Some(Click::Open(page)) => open = Some(page),
                                 Some(Click::Select(press)) => selection.press(index, press),
+                                Some(Click::Like(liked)) => {
+                                    heart::post(
+                                        ui.ctx(),
+                                        heart::Ask {
+                                            tracks: vec![entry.uri.clone()],
+                                            liked,
+                                        },
+                                    );
+                                }
                                 Some(Click::Menu(door)) => selection.menu(
                                     ui.ctx(),
                                     door,

@@ -291,8 +291,9 @@ fn row(
         Some(Click::Play) => Some(Report::Play),
         Some(Click::Select(press)) => Some(Report::Press(press)),
         Some(Click::Lift) => Some(Report::Lift(row.lifted())),
-        // A queue row never asks for a menu: its `⋯` is not drawn.
-        Some(Click::Menu(_)) | Some(Click::Open(_)) | None => None,
+        // A queue row never asks for a menu: its `⋯` is not drawn, and it has no
+        // heart.
+        Some(Click::Menu(_)) | Some(Click::Open(_)) | Some(Click::Like(_)) | None => None,
     }
 }
 

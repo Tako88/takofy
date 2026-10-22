@@ -27,6 +27,7 @@ use crate::theme::{
 };
 
 use super::carry::{self, Ghost};
+use super::heart;
 use super::track_row::{self, Click, Row, TitleCell, state_of};
 use super::{art, controls, text as recipe};
 
@@ -267,10 +268,20 @@ fn body(
                     cover: Cover::Missing,
                     look: selection.look(index),
                     menu: gate.allows(),
+                    liked: block.likes.state(&entry.uri),
                 };
                 match track_row::show(ui, rect, columns, &row, tokens) {
                     Some(Click::Play) => clicked.row = Some(index),
                     Some(Click::Select(press)) => selection.press(index, press),
+                    Some(Click::Like(liked)) => {
+                        heart::post(
+                            ui.ctx(),
+                            heart::Ask {
+                                tracks: vec![entry.uri.clone()],
+                                liked,
+                            },
+                        );
+                    }
                     Some(Click::Menu(door)) => selection.menu(
                         ui.ctx(),
                         door,

@@ -37,6 +37,7 @@ use crate::view::text as recipe;
 use super::artist_hero::{self, ArtistHero};
 use super::carry::{self, Ghost};
 use super::filter_row;
+use super::heart;
 use super::media;
 use super::release_block::{self, Block};
 use super::section;
@@ -354,12 +355,22 @@ fn popular(
             cover: Cover::Missing,
             look: selection.look(index),
             menu: gate.allows(),
+            liked: likes.state(&entry.uri),
         };
         match track_row::show(ui, rect, columns, &row, tokens) {
             Some(Click::Play) => {
                 *command = queue.start(&artist.top_tracks, index, transport);
             }
             Some(Click::Select(press)) => selection.press(index, press),
+            Some(Click::Like(liked)) => {
+                heart::post(
+                    ui.ctx(),
+                    heart::Ask {
+                        tracks: vec![entry.uri.clone()],
+                        liked,
+                    },
+                );
+            }
             Some(Click::Menu(door)) => selection.menu(
                 ui.ctx(),
                 door,

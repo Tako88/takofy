@@ -9,13 +9,14 @@
 //! means to the list's selection belongs to the list, so the row only reports it,
 //! and a carried row is drawn from its own [`Lifted`] snapshot.
 //!
-//! The row is two focus stops: its body, and the `⋯` that opens its menu. The like
-//! is still waiting, so it never joins the tab order, and a list of sixty tracks
-//! is a hundred and twenty stops rather than a hundred and eighty. The album and
-//! artist cells are links that take a single click anywhere on the cell, but their
-//! interaction is deliberately not focusable, so they add no stop of their own:
-//! the cost is that a keyboard can reach neither link yet, while Enter and Space
-//! on the row still play.
+//! The row is up to three focus stops: its body, the like once a read has made
+//! it live, and the `⋯` that opens its menu. The like is skipped while its state
+//! is unknown and while a block is carried, so a list of sixty rows is a hundred
+//! and twenty stops in the common case and a hundred and eighty only once every
+//! heart is live. The album and artist cells are links that take a single click
+//! anywhere on the cell, but their interaction is deliberately not focusable, so
+//! they add no stop of their own: the cost is that a keyboard can reach neither
+//! link yet, while Enter and Space on the row still play.
 //!
 //! The row's menu has three doors — the `⋯`, a right-click anywhere on the row,
 //! and the context-menu key or Shift+F10 while the row or its `⋯` holds the
@@ -23,10 +24,11 @@
 //! `⋯`. The row never opens a menu itself: the page's list turns the click into a
 //! request and the shell opens it.
 //!
-//! A liked state is not drawn here because nothing can produce one yet: the track
-//! model carries no such flag. The like's column is reserved and its control is
-//! drawn waiting, so the row is laid out exactly where the reference puts it, and
-//! the accent tone a liked heart takes arrives with the flag.
+//! The like appears on hover, on focus within the row, and whenever the track is
+//! liked: a liked heart is the row's one piece of state that must be readable at
+//! rest. It reports the opposite of the state it drew and never touches the
+//! pick, because a heart acts on its own row and the menu's save row acts on the
+//! pick.
 
 use egui::emath::GuiRounding;
 use egui::{Color32, FontId, Pos2, Rect, Sense, Ui, vec2};
@@ -135,6 +137,8 @@ pub struct Row<'a> {
     /// Whether this row's menu may open. The page decides, because the gate is
     /// about the list and the moment, not about the row.
     pub menu: bool,
+    /// Whether the track is liked, or `None` while the set cannot say.
+    pub liked: Option<bool>,
 }
 
 impl Row<'_> {
@@ -344,6 +348,8 @@ pub enum Click {
     Lift,
     /// Open this row's menu, from whichever door asked for it.
     Menu(Door),
+    /// Flip this row's heart to the given state.
+    Like(bool),
 }
 
 /// What a link cell's interaction reports to the row.
@@ -406,7 +412,15 @@ pub fn show(
     // for a control.
     let hovered = (response.hovered() || response.contains_pointer()) && !row.look.carrying;
     // A lift hands the row the focus, so the carried row has to shed that too.
-    let revealed = (hovered || response.has_focus()) && !row.look.carrying;
+    // The heart and the `⋯` are interacted after the body, so their focus is read
+    // before they draw: a focused heart would otherwise be hidden the frame after
+    // it took the keyboard, and the focus would fall off the row.
+    let focused = ui.memory(|memory| memory.focused());
+    let focus_within = focused.is_some_and(|id| {
+        id == controls::slot_id(ui, Control::TrackLike, key)
+            || id == controls::slot_id(ui, Control::TrackMore, key)
+    });
+    let revealed = (hovered || response.has_focus() || focus_within) && !row.look.carrying;
     let hover = rows::fade(
         ui,
         ui.scope_id().with(("track-row-hover", key)),
@@ -436,7 +450,7 @@ pub fn show(
     let artist_link = artist(ui, columns.artist, row, key, tokens);
     let album_link = album(ui, columns.album, row, key, tokens);
     added(ui, columns.added, row.added, tokens, row.look.selected);
-    let on_like = like(ui, columns.like, key, revealed, tokens);
+    let on_like = like(ui, columns.like, key, revealed, row, tokens);
     duration(
         ui,
         columns.duration,
@@ -448,9 +462,8 @@ pub fn show(
     let on_more = more.hovered;
 
     // A control inside the row takes the click it is given rather than passing it
-    // on: neither can act yet, so neither reports anything, but a click on one is
-    // not a click on the row.
-    let on_control = on_like || on_more;
+    // on: a click on one is not a click on the row.
+    let on_control = on_like.hovered || on_more;
     let keyboard = response.has_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
 
     // The link cells are interacted after the row, so on a hit-test tie the cell
@@ -475,6 +488,12 @@ pub fn show(
             .or_else(|| pointer_door(ui, rect, response.id, columns.actions))
     {
         return Some(Click::Menu(door));
+    }
+
+    // A heart click is the heart's own, and never the row's: it acts on one row
+    // and reports the opposite of the state it drew.
+    if let Some(want) = on_like.toggled {
+        return Some(Click::Like(want));
     }
 
     // The row's own keyboard activation is answered before the link cells are
@@ -883,24 +902,94 @@ fn added(ui: &Ui, rect: Rect, label: Option<&str>, tokens: &Tokens, selected: bo
 ///
 /// Returns whether the pointer is on it, so a click here is not taken for a click
 /// on the row.
-fn like(ui: &mut Ui, rect: Rect, key: (&str, usize), revealed: bool, tokens: &Tokens) -> bool {
-    if !drawable(rect) || !revealed {
-        return false;
+/// What the like control reported.
+#[derive(Clone, Copy, Default)]
+struct Heart {
+    /// Whether the pointer is on it, so a click here is not a click on the row.
+    hovered: bool,
+    /// The state the click asks for, or `None` when it asked for nothing.
+    toggled: Option<bool>,
+}
+
+/// The like: a liked heart at rest, every heart on hover or focus within.
+///
+/// Returns the click it reported, if any, so the row does not also take it for
+/// a click on itself. A heart whose state is unknown is still drawn on reveal and
+/// absorbs the click without reporting one: the column is the reference's, and a
+/// click there is not a click on the row. It is inert, so it adds no Tab stop.
+fn like(
+    ui: &mut Ui,
+    rect: Rect,
+    key: (&str, usize),
+    revealed: bool,
+    row: &Row<'_>,
+    tokens: &Tokens,
+) -> Heart {
+    let liked = row.liked;
+    if !drawable(rect) || row.look.carrying || !(liked == Some(true) || revealed) {
+        return Heart::default();
     }
-    let response = controls::icon_button_keyed(
-        ui,
-        tokens,
-        Control::TrackLike,
-        key,
-        rect,
-        Icon::Heart,
-        Size::SM,
-        "Save to your library",
-        // Saving a track needs a write to the Web API, which this build never
-        // makes, so the control stands where the reference has it and cannot act.
-        false,
-    );
-    under_pointer(&response)
+    let liked_now = liked == Some(true);
+    let icon = if liked_now {
+        Icon::HeartFilled
+    } else {
+        Icon::Heart
+    };
+    let label = heart_label(liked_now);
+    let live = liked.is_some() && !row.look.carrying;
+    let slot = if liked_now {
+        controls::icon_button_liked(
+            ui,
+            tokens,
+            Control::TrackLike,
+            key,
+            rect,
+            icon,
+            Size::SM,
+            label,
+            live,
+        )
+    } else {
+        controls::icon_button_keyed(
+            ui,
+            tokens,
+            Control::TrackLike,
+            key,
+            rect,
+            icon,
+            Size::SM,
+            label,
+            live,
+        )
+    };
+    if let Some(liked) = liked {
+        let _ = ui.ctx().accesskit_node_builder(slot.response.id, |node| {
+            node.set_toggled(if liked {
+                egui::accesskit::Toggled::True
+            } else {
+                egui::accesskit::Toggled::False
+            });
+        });
+    }
+    // egui reports a focused button's Enter or Space as a click, repeats too, so
+    // a held key would toggle the heart once per frame. Only a fresh press is the
+    // user's. A press takes the keyboard, as the `⋯`'s does, so Enter can toggle
+    // the heart the pointer just clicked.
+    let clicked = slot.response.clicked();
+    if clicked {
+        slot.response.request_focus();
+    }
+    let pointer = ui.input(|input| input.pointer.button_clicked(egui::PointerButton::Primary));
+    let held = clicked && !pointer && context_menu::held_repeat(ui);
+    Heart {
+        hovered: under_pointer(&slot),
+        toggled: (clicked && !held && live).then_some(!liked_now),
+    }
+}
+
+/// The heart's accesskit label, which names the action rather than the state.
+fn heart_label(liked: bool) -> &'static str {
+    crate::verbs::heart_label(liked)
 }
 
 /// The track's length, right-aligned in its column.
@@ -1148,6 +1237,7 @@ mod tests {
             cover: Cover::Missing,
             look: Look::default(),
             menu: false,
+            liked: None,
         }
     }
 
@@ -1386,6 +1476,7 @@ mod tests {
             cover: Cover::Missing,
             look: Look::default(),
             menu: false,
+            liked: None,
         }
     }
 
@@ -1582,6 +1673,379 @@ mod tests {
         assert!(
             answers.iter().flatten().next().is_none(),
             "a click on the like reported {answers:?}"
+        );
+    }
+
+    /// A row whose heart knows its state, or does not.
+    fn hearted(liked: Option<bool>) -> Row<'static> {
+        Row { liked, ..row_of(1) }
+    }
+
+    fn like_rect() -> Rect {
+        columns().at(body_rect().min).like
+    }
+
+    /// One frame of the row, with the shapes it painted.
+    fn frame(ctx: &egui::Context, row: &Row<'_>, events: Vec<Event>) -> egui::FullOutput {
+        let tokens = Tokens::DARK;
+        let mut output = ctx.run_ui(input_with(events), |ui| {
+            let _ = show(ui, body_rect(), columns(), row, &tokens);
+        });
+        output.textures_delta.clear();
+        output
+    }
+
+    /// The sense the heart's slot was registered with this frame, if it drew.
+    fn heart_sense(ctx: &egui::Context, row: &Row<'_>, events: Vec<Event>) -> Option<egui::Sense> {
+        let tokens = Tokens::DARK;
+        let mut output = ctx.run_ui(input_with(Vec::new()), |ui| {
+            let _ = show(ui, body_rect(), columns(), row, &tokens);
+        });
+        output.textures_delta.clear();
+        let mut sense = None;
+        let mut output = ctx.run_ui(input_with(events), |ui| {
+            let _ = show(ui, body_rect(), columns(), row, &tokens);
+            sense = ui
+                .ctx()
+                .read_response(controls::slot_id(
+                    ui,
+                    Control::TrackLike,
+                    (row.uri, row.number),
+                ))
+                .map(|response| response.sense);
+        });
+        output.textures_delta.clear();
+        sense
+    }
+
+    #[test]
+    fn a_liked_row_draws_its_heart_with_no_hover_or_focus() {
+        let ctx = context();
+        let output = frame(&ctx, &hearted(Some(true)), Vec::new());
+        assert!(
+            !glyph_colors(&output, like_rect()).is_empty(),
+            "a liked heart is not visible at rest"
+        );
+    }
+
+    #[test]
+    fn an_unliked_row_draws_no_heart_until_hover_or_focus() {
+        let ctx = context();
+        let output = frame(&ctx, &hearted(Some(false)), Vec::new());
+        assert!(
+            glyph_colors(&output, like_rect()).is_empty(),
+            "an unliked heart was drawn at rest"
+        );
+
+        let output = frame(
+            &ctx,
+            &hearted(Some(false)),
+            vec![Event::PointerMoved(body_point())],
+        );
+        assert!(
+            !glyph_colors(&output, like_rect()).is_empty(),
+            "an unliked heart was not revealed under the pointer"
+        );
+    }
+
+    #[test]
+    fn focus_on_the_more_button_reveals_the_heart() {
+        let ctx = context();
+        let row = Row {
+            menu: true,
+            liked: Some(false),
+            ..row_of(1)
+        };
+        // The click gives the `⋯` the keyboard; the menu it opens is not the
+        // point here.
+        let _ = run(
+            &ctx,
+            &row,
+            &click_events(actions().center()),
+            Modifiers::NONE,
+        );
+        let output = frame(&ctx, &row, vec![Event::PointerMoved(Pos2::new(1.0, 1.0))]);
+        assert!(
+            !glyph_colors(&output, like_rect()).is_empty(),
+            "the heart vanished while the `⋯` held the keyboard"
+        );
+    }
+
+    #[test]
+    fn focus_on_the_heart_keeps_it_drawn_and_focused() {
+        let ctx = context();
+        let row = hearted(Some(false));
+        let point = like_rect().center();
+        let first = run(&ctx, &row, &click_events(point), Modifiers::NONE);
+        assert_eq!(
+            first.iter().flatten().last(),
+            Some(&Click::Like(true)),
+            "the heart did not take the click"
+        );
+
+        // The pointer leaves; the heart must stay drawn because it holds the
+        // keyboard, and it must still answer Enter.
+        let _ = run(
+            &ctx,
+            &row,
+            &[Event::PointerMoved(Pos2::new(1.0, 1.0))],
+            Modifiers::NONE,
+        );
+        let output = frame(&ctx, &row, Vec::new());
+        assert!(
+            !glyph_colors(&output, like_rect()).is_empty(),
+            "the focused heart was hidden the frame after it took the keyboard"
+        );
+        let enter = |pressed| Event::Key {
+            key: Key::Enter,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        };
+        let answers = run(&ctx, &row, &[enter(true), enter(false)], Modifiers::NONE);
+        assert_eq!(
+            answers.iter().flatten().last(),
+            Some(&Click::Like(true)),
+            "the focused heart did not answer Enter"
+        );
+    }
+
+    #[test]
+    fn a_click_on_a_live_heart_reports_like_and_not_select_play_or_open() {
+        let ctx = context();
+        let row = hearted(Some(false));
+        let answers = run(
+            &ctx,
+            &row,
+            &click_events(like_rect().center()),
+            Modifiers::NONE,
+        );
+        assert_eq!(answers.iter().flatten().last(), Some(&Click::Like(true)));
+        assert!(
+            !answers.iter().flatten().any(|click| matches!(
+                click,
+                Click::Select(_) | Click::Play | Click::Open(_) | Click::Lift
+            )),
+            "a heart click did something else too: {answers:?}"
+        );
+    }
+
+    #[test]
+    fn the_click_asks_for_the_opposite_of_the_rows_state() {
+        let ctx = context();
+        let row = hearted(Some(true));
+        let answers = run(
+            &ctx,
+            &row,
+            &click_events(like_rect().center()),
+            Modifiers::NONE,
+        );
+        assert_eq!(answers.iter().flatten().last(), Some(&Click::Like(false)));
+    }
+
+    #[test]
+    fn an_unknown_heart_reports_nothing() {
+        let ctx = context();
+        let row = hearted(None);
+        let answers = run(
+            &ctx,
+            &row,
+            &click_events(like_rect().center()),
+            Modifiers::NONE,
+        );
+        assert!(
+            answers.iter().flatten().next().is_none(),
+            "an unknown heart reported {answers:?}"
+        );
+    }
+
+    #[test]
+    fn a_double_click_on_the_heart_does_not_play() {
+        let ctx = context();
+        let row = hearted(Some(false));
+        let point = like_rect().center();
+        let mut events = click_events(point).to_vec();
+        events.extend(click_events(point));
+        let answers = run(&ctx, &row, &events, Modifiers::NONE);
+        assert!(
+            !answers.iter().flatten().any(|click| *click == Click::Play),
+            "a double click on the heart played the row: {answers:?}"
+        );
+    }
+
+    #[test]
+    fn a_right_click_on_the_heart_still_opens_the_menu() {
+        let ctx = context();
+        let row = Row {
+            menu: true,
+            liked: Some(false),
+            ..row_of(1)
+        };
+        let answers = run(
+            &ctx,
+            &row,
+            &secondary_click_events(like_rect().center()),
+            Modifiers::NONE,
+        );
+        assert_eq!(
+            door(&answers).map(|door| door.device),
+            Some(Device::Pointer),
+            "a right-click on the heart opened no menu: {answers:?}"
+        );
+    }
+
+    #[test]
+    fn enter_on_a_focused_heart_toggles_once() {
+        let ctx = context();
+        let row = hearted(Some(false));
+        let _ = run(
+            &ctx,
+            &row,
+            &click_events(like_rect().center()),
+            Modifiers::NONE,
+        );
+        let enter = |repeat| Event::Key {
+            key: Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat,
+            modifiers: Modifiers::NONE,
+        };
+        let answers = run(&ctx, &row, &[enter(false)], Modifiers::NONE);
+        assert_eq!(answers.iter().flatten().last(), Some(&Click::Like(true)));
+    }
+
+    #[test]
+    fn a_held_enter_on_the_heart_toggles_once() {
+        let ctx = context();
+        let row = hearted(Some(false));
+        let _ = run(
+            &ctx,
+            &row,
+            &click_events(like_rect().center()),
+            Modifiers::NONE,
+        );
+        let enter = |repeat| Event::Key {
+            key: Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat,
+            modifiers: Modifiers::NONE,
+        };
+        let answers = run(
+            &ctx,
+            &row,
+            &[enter(false), enter(true), enter(true)],
+            Modifiers::NONE,
+        );
+        assert_eq!(
+            answers
+                .iter()
+                .flatten()
+                .filter(|click| matches!(click, Click::Like(_)))
+                .count(),
+            1,
+            "a held Enter toggled more than once: {answers:?}"
+        );
+    }
+
+    #[test]
+    fn the_heart_is_a_tab_stop_only_when_live() {
+        let ctx = context();
+        let live = heart_sense(
+            &ctx,
+            &hearted(Some(false)),
+            vec![Event::PointerMoved(body_point())],
+        );
+        assert!(
+            live.is_some_and(|sense| sense.is_focusable()),
+            "a live heart is not a Tab stop"
+        );
+
+        let ctx = context();
+        let unknown = heart_sense(
+            &ctx,
+            &hearted(None),
+            vec![Event::PointerMoved(body_point())],
+        );
+        assert!(
+            unknown.is_some_and(|sense| !sense.is_focusable()),
+            "an unknown heart joined the Tab order"
+        );
+    }
+
+    #[test]
+    fn a_drag_that_starts_on_the_heart_lifts_nothing() {
+        let ctx = context();
+        let row = hearted(Some(false));
+        let answers = run(
+            &ctx,
+            &row,
+            &twitch(like_rect().center(), 7.0),
+            Modifiers::NONE,
+        );
+        assert!(
+            !answers.iter().flatten().any(|click| *click == Click::Lift),
+            "a drag from the heart lifted the row: {answers:?}"
+        );
+    }
+
+    #[test]
+    fn a_drag_elsewhere_on_a_row_with_a_live_heart_still_lifts() {
+        let ctx = context();
+        let row = hearted(Some(false));
+        let answers = run(&ctx, &row, &twitch(body_point(), 7.0), Modifiers::NONE);
+        assert!(
+            answers.iter().flatten().any(|click| *click == Click::Lift),
+            "a live heart stopped the row's own drag: {answers:?}"
+        );
+    }
+
+    #[test]
+    fn a_carried_row_draws_no_heart_even_when_liked() {
+        let ctx = context();
+        let row = Row {
+            liked: Some(true),
+            look: Look {
+                carrying: true,
+                ..Look::default()
+            },
+            ..row_of(1)
+        };
+        let output = frame(&ctx, &row, Vec::new());
+        assert!(
+            glyph_colors(&output, like_rect()).is_empty(),
+            "a carried row drew its heart"
+        );
+    }
+
+    #[test]
+    fn a_heart_stays_live_while_a_playlist_write_is_pending() {
+        let ctx = context();
+        // The page's gate is shut for the menu, but a heart is not the menu.
+        let row = Row {
+            menu: false,
+            liked: Some(true),
+            ..row_of(1)
+        };
+        let answers = run(
+            &ctx,
+            &row,
+            &click_events(like_rect().center()),
+            Modifiers::NONE,
+        );
+        assert_eq!(answers.iter().flatten().last(), Some(&Click::Like(false)));
+    }
+
+    #[test]
+    fn the_liked_heart_is_painted_in_the_accent() {
+        let ctx = context();
+        let output = frame(&ctx, &hearted(Some(true)), Vec::new());
+        let colors = glyph_colors(&output, like_rect());
+        assert!(
+            colors.contains(&Tokens::DARK.palette.accent),
+            "the liked heart was painted {colors:?}"
         );
     }
 

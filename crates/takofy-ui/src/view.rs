@@ -14,6 +14,7 @@ pub mod controls;
 mod episode_row;
 mod filter_row;
 mod ghost;
+mod heart;
 mod hero;
 pub mod lyrics_pane;
 pub mod media;
