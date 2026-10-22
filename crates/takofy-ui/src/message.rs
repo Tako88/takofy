@@ -45,8 +45,13 @@ pub enum Command {
         tracks: Vec<String>,
     },
     /// Create a playlist called `name` and put it at the front of the user's
-    /// rootlist, based on the rootlist's `revision`.
-    CreatePlaylist { name: String, revision: Revision },
+    /// rootlist, based on the rootlist's `revision`, with `tracks` to land in
+    /// it once it exists.
+    CreatePlaylist {
+        name: String,
+        revision: Revision,
+        tracks: Vec<String>,
+    },
     /// Load one album with its tracks.
     LoadAlbum { album: String },
     /// Load one artist, its discography and its followed state.
@@ -176,6 +181,8 @@ pub enum Update {
     },
     /// A track could not be appended to a playlist.
     AddFailed { playlist: String },
+    /// A playlist exists but the pick it was created for did not land in it.
+    PlaylistUnfilled { playlist: String },
     /// A playlist was created and linked, and this is the row to draw first.
     ///
     /// The revision is the link reply's, so the next rootlist write names the

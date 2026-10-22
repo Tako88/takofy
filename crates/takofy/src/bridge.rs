@@ -440,10 +440,20 @@ pub(crate) fn start<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                         break;
                     }
                 }
-                Event::Command(Some(Command::CreatePlaylist { name, revision })) => {
-                    let step =
-                        create_playlist(&mut host, &mut stop_rx, &task_notifier, &name, &revision)
-                            .await;
+                Event::Command(Some(Command::CreatePlaylist {
+                    name,
+                    revision,
+                    tracks,
+                })) => {
+                    let step = create_playlist(
+                        &mut host,
+                        &mut stop_rx,
+                        &task_notifier,
+                        &name,
+                        &revision,
+                        &tracks,
+                    )
+                    .await;
                     if step.stopped() {
                         break;
                     }
@@ -1064,18 +1074,23 @@ async fn add_tracks<H: SessionHost>(
     }
 }
 
-/// Creates a playlist, links it, and announces the row it should draw first.
+/// Creates a playlist, links it, and lands the pick it was made for.
 ///
-/// One command, three host calls, and the first failure ends it: a create that
-/// failed created nothing, so there is nothing to link, and a link that failed
-/// leaves a real playlist the account holds and this app cannot see. Neither is
-/// retried here, because no playlist write is idempotent.
+/// One command, up to four host calls, and the first failure ends it: a create
+/// that failed created nothing, so there is nothing to link, and a link that
+/// failed leaves a real playlist the account holds and this app cannot see.
+/// Neither is retried here, because no playlist write is idempotent.
+///
+/// The add is the one failure that is not fatal: the list exists either way, so
+/// it is announced as a list with nothing in it plus a notice of its own, never
+/// as an add failure, which the sidebar refuses while the create is pending.
 async fn create_playlist<H: SessionHost>(
     host: &mut H,
     stop: &mut StopReceiver<()>,
     notifier: &Notifier,
     name: &str,
     revision: &Revision,
+    tracks: &[String],
 ) -> Step {
     let Some(created) = stop_or(stop, host.make_playlist(name)).await else {
         return Step::Stopped;
@@ -1099,22 +1114,44 @@ async fn create_playlist<H: SessionHost>(
             return Step::Done;
         }
     };
-    let Some(access) = stop_or(stop, host.playlist_state(&uri)).await else {
+    let Some(state) = stop_or(stop, host.playlist_state(&uri)).await else {
         return Step::Stopped;
     };
+    let mut access = state;
+    // The list's length is the index its next append names, so a count that did
+    // not land would make the next add prepend.
+    let mut landed = 0;
+    if let Some(revision) = access.as_ref().map(|access| access.revision.clone())
+        && !tracks.is_empty()
+    {
+        match stop_or(stop, host.add_tracks(&uri, &revision, 0, tracks)).await {
+            None => return Step::Stopped,
+            Some(Ok(reply)) => {
+                landed = tracks.len();
+                if let Some(access) = &mut access {
+                    access.revision = reply;
+                }
+            }
+            Some(Err(error)) => log::warn!("add to a new playlist failed: {}", error.kind()),
+        }
+    }
+    let unfilled = !tracks.is_empty() && landed == 0;
     notifier.send(Update::PlaylistCreated {
         entry: PlaylistEntry {
-            uri,
+            uri: uri.clone(),
             name: name.to_owned(),
             named: true,
             cover: None,
             description: None,
-            tracks: Some(0),
+            tracks: Some(landed),
             owner: None,
             access,
         },
         revision,
     });
+    if unfilled {
+        notifier.send(Update::PlaylistUnfilled { playlist: uri });
+    }
     Step::Done
 }
 
@@ -3330,6 +3367,7 @@ mod tests {
                 .send(Command::CreatePlaylist {
                     name: "Night Drive".to_owned(),
                     revision: revision(1),
+                    tracks: Vec::new(),
                 })
                 .expect("create");
             ui_end.updates.recv().expect("created")
@@ -3374,6 +3412,7 @@ mod tests {
                 .send(Command::CreatePlaylist {
                     name: "Night Drive".to_owned(),
                     revision: base.clone(),
+                    tracks: Vec::new(),
                 })
                 .expect("create");
             ui_end.updates.recv().expect("created")
@@ -3410,6 +3449,7 @@ mod tests {
                 .send(Command::CreatePlaylist {
                     name: "Night Drive".to_owned(),
                     revision: revision(1),
+                    tracks: Vec::new(),
                 })
                 .expect("create");
             ui_end.updates.recv().expect("create failed")
@@ -3441,6 +3481,7 @@ mod tests {
                 .send(Command::CreatePlaylist {
                     name: "Night Drive".to_owned(),
                     revision: revision(1),
+                    tracks: Vec::new(),
                 })
                 .expect("create");
             ui_end.updates.recv().expect("unlinked")
@@ -3449,6 +3490,190 @@ mod tests {
         assert_eq!(update, Update::PlaylistUnlinked);
         assert_eq!(shared.link_writes.load(Ordering::SeqCst), 1);
         assert_eq!(shared.state_reads.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_create_lands_the_pick_in_the_new_list_as_one_add() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+        let state = PlaylistAccess {
+            revision: revision(9),
+            editable: true,
+        };
+        *shared.state_script.lock().expect("lock") = StateScript::Ready(state.clone());
+        *shared.add_script.lock().expect("lock") = AddScript::Ready(revision(10));
+        let tracks = vec![
+            "spotify:track:a".to_owned(),
+            "spotify:track:b".to_owned(),
+            "spotify:track:c".to_owned(),
+        ];
+
+        let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::CreatePlaylist {
+                    name: "Night Drive".to_owned(),
+                    revision: revision(1),
+                    tracks: tracks.clone(),
+                })
+                .expect("create");
+            ui_end.updates.recv().expect("created")
+        });
+
+        assert_eq!(
+            update,
+            Update::PlaylistCreated {
+                entry: PlaylistEntry {
+                    uri: CREATED.to_owned(),
+                    name: "Night Drive".to_owned(),
+                    named: true,
+                    cover: None,
+                    description: None,
+                    tracks: Some(3),
+                    owner: None,
+                    access: Some(PlaylistAccess {
+                        revision: revision(10),
+                        editable: true,
+                    }),
+                },
+                revision: revision(4),
+            },
+            "the landed count is in the row, so the next append names index 3"
+        );
+        assert_eq!(shared.state_reads.load(Ordering::SeqCst), 1);
+        assert_eq!(shared.add_writes.load(Ordering::SeqCst), 1, "one add");
+        assert_eq!(
+            shared.last_add.lock().expect("lock").clone(),
+            Some((CREATED.to_owned(), state.revision, 0, tracks)),
+            "the whole pick lands at index zero in one write"
+        );
+    }
+
+    #[test]
+    fn a_create_that_could_not_add_the_pick_says_so_after_the_create() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+        *shared.state_script.lock().expect("lock") = StateScript::Ready(PlaylistAccess {
+            revision: revision(9),
+            editable: true,
+        });
+        *shared.add_script.lock().expect("lock") = AddScript::Fail;
+
+        let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::CreatePlaylist {
+                    name: "Night Drive".to_owned(),
+                    revision: revision(1),
+                    tracks: vec!["spotify:track:a".to_owned()],
+                })
+                .expect("create");
+            let created = ui_end.updates.recv().expect("created");
+            let unfilled = ui_end.updates.recv().expect("unfilled");
+            (created, unfilled)
+        });
+
+        assert!(
+            matches!(
+                &updates.0,
+                Update::PlaylistCreated { entry, .. } if entry.tracks == Some(0)
+            ),
+            "the list exists and counts nothing: {:?}",
+            updates.0
+        );
+        assert_eq!(
+            updates.1,
+            Update::PlaylistUnfilled {
+                playlist: CREATED.to_owned(),
+            }
+        );
+        assert_eq!(
+            shared.add_writes.load(Ordering::SeqCst),
+            1,
+            "the refusal is spent with the gesture, not retried"
+        );
+    }
+
+    #[test]
+    fn a_create_with_no_pick_makes_no_add_call() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+        *shared.state_script.lock().expect("lock") = StateScript::Ready(PlaylistAccess {
+            revision: revision(9),
+            editable: true,
+        });
+
+        let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::CreatePlaylist {
+                    name: "Night Drive".to_owned(),
+                    revision: revision(1),
+                    tracks: Vec::new(),
+                })
+                .expect("create");
+            ui_end.updates.recv().expect("created")
+        });
+
+        assert!(matches!(update, Update::PlaylistCreated { entry, .. } if entry.tracks == Some(0)));
+        assert_eq!(shared.add_writes.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_create_whose_state_read_names_no_revision_adds_nothing_and_says_so() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+
+        let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::CreatePlaylist {
+                    name: "Night Drive".to_owned(),
+                    revision: revision(1),
+                    tracks: vec!["spotify:track:a".to_owned()],
+                })
+                .expect("create");
+            let created = ui_end.updates.recv().expect("created");
+            let unfilled = ui_end.updates.recv().expect("unfilled");
+            (created, unfilled)
+        });
+
+        assert!(
+            matches!(
+                &updates.0,
+                Update::PlaylistCreated { entry, .. }
+                    if entry.tracks == Some(0) && entry.access.is_none()
+            ),
+            "{:?}",
+            updates.0
+        );
+        assert_eq!(
+            updates.1,
+            Update::PlaylistUnfilled {
+                playlist: CREATED.to_owned(),
+            }
+        );
+        assert_eq!(
+            shared.add_writes.load(Ordering::SeqCst),
+            0,
+            "a list with no revision names no version to add on"
+        );
     }
 
     #[test]
@@ -3466,6 +3691,7 @@ mod tests {
                 .send(Command::CreatePlaylist {
                     name: "Night Drive".to_owned(),
                     revision: revision(1),
+                    tracks: Vec::new(),
                 })
                 .expect("create");
             ui_end.updates.recv().expect("created")
@@ -3509,6 +3735,7 @@ mod tests {
                 .send(Command::CreatePlaylist {
                     name: "Night Drive".to_owned(),
                     revision: revision(1),
+                    tracks: Vec::new(),
                 })
                 .expect("create");
             ui_end.updates.recv().expect("create failed")
@@ -3555,6 +3782,7 @@ mod tests {
                     .send(Command::CreatePlaylist {
                         name: "Night Drive".to_owned(),
                         revision: revision(1),
+                        tracks: Vec::new(),
                     })
                     .expect("create");
                 started_rx.recv().expect("the step started");

@@ -223,6 +223,8 @@ pub enum SidebarWrite {
     Create,
     /// A playlist was created but could not be put on the rootlist.
     Link,
+    /// A playlist was created but the pick it was made for did not land.
+    Unfilled,
 }
 
 /// Whether a chip naming artists is the one the user is looking at.
@@ -308,18 +310,16 @@ impl Library {
             Update::PlaylistFailed(failure) => {
                 self.playlists = Load::Failed(*failure);
             }
-            // An access is safe to adopt while an add is pending, because an add
-            // writes a playlist and not the rootlist; a reorder and a create are
-            // the two writes that replace the revision their read named, so their
-            // access waits for the reply.
+            // Every sidebar write may replace the revision its read named, so an
+            // access waits for the reply; the order it belongs to is held either
+            // way, and a fresh read after the write is what keeps the column
+            // movable.
             Update::RootlistAccess(access) => {
                 if std::mem::take(&mut self.rootlist_dropped) {
                     return;
                 }
-                if matches!(
-                    self.sidebar_pending,
-                    Some(SidebarPending::Reorder { .. } | SidebarPending::Create)
-                ) {
+                if self.sidebar_pending.is_some() {
+                    self.rootlist_stale = true;
                     return;
                 }
                 self.rootlist = Some(access.clone());
@@ -439,6 +439,18 @@ impl Library {
                 // refuses the next create or move until a read names a new one.
                 self.rootlist = None;
                 self.rootlist_stale = true;
+            }
+            // The list exists with nothing in it, and says so. A list the window
+            // does not hold is ignored, as any other stale reply is.
+            Update::PlaylistUnfilled { playlist } => {
+                let Load::Ready(playlists) = &mut self.playlists else {
+                    return;
+                };
+                let Some(entry) = playlists.iter_mut().find(|entry| entry.uri == *playlist) else {
+                    return;
+                };
+                entry.tracks = Some(0);
+                self.sidebar_notice = Some(SidebarWrite::Unfilled);
             }
             Update::Tracks {
                 playlist,
@@ -913,9 +925,14 @@ impl Library {
         }
         let revision = self.rootlist.as_ref()?.revision.clone();
         let name = self.naming.begin_write()?;
+        let tracks = self.naming.pick().to_vec();
         self.sidebar_pending = Some(SidebarPending::Create);
         self.sidebar_notice = None;
-        Some(Command::CreatePlaylist { name, revision })
+        Some(Command::CreatePlaylist {
+            name,
+            revision,
+            tracks,
+        })
     }
 
     /// Moves a dragged playlist row to the gap the pointer is over.
@@ -1279,7 +1296,7 @@ impl Library {
     /// is asked for after the drain, when the failed write is no longer pending
     /// and the read can therefore be adopted.
     pub fn rootlist_request(&mut self) -> Option<Command> {
-        if !std::mem::take(&mut self.rootlist_stale) {
+        if self.write_in_flight() || !std::mem::take(&mut self.rootlist_stale) {
             return None;
         }
         Some(self.reload())
@@ -4435,7 +4452,7 @@ mod tests {
     }
 
     #[test]
-    fn an_access_that_arrives_mid_add_is_not_lost() {
+    fn an_access_that_arrives_mid_add_waits_for_a_fresh_read() {
         let mut library = sidebar_library(&["a", "b"], 0x07, true, Some(3));
         // A read that lands just before the add drops the held access with the
         // order it brought, so the column is only movable again once its own
@@ -4448,20 +4465,28 @@ mod tests {
         assert!(library.add_tracks(1, &pick(&["spotify:track:x"])).is_some());
 
         library.apply(&Update::RootlistAccess(rootlist_access(0x09, true)));
+
+        assert!(
+            library.rootlist.is_none(),
+            "an access adopted while a write is pending names a revision that write may replace"
+        );
+        assert_eq!(
+            library.rootlist_request(),
+            None,
+            "a read asked for while the write it waits on is still in flight"
+        );
+
         library.apply(&Update::TrackAdded {
             playlist: "b".to_owned(),
             revision: revision(0x08),
         });
 
-        assert!(library.rootlist_movable(), "the access was kept");
         assert_eq!(
-            library.move_playlist(0, 2, "a"),
-            Some(Command::MovePlaylist {
-                revision: revision(0x09),
-                from: 0,
-                to: 2,
-            })
+            library.rootlist_request(),
+            Some(Command::ReloadLibrary),
+            "the refused access asks for a read that can be adopted"
         );
+        assert_eq!(library.rootlist_request(), None, "a second read");
     }
 
     #[test]
@@ -6425,6 +6450,7 @@ mod tests {
             Some(Command::CreatePlaylist {
                 name: "Night  Drive".to_owned(),
                 revision: revision(0x07),
+                tracks: Vec::new(),
             })
         );
         assert!(library.naming.writing());
@@ -6451,6 +6477,99 @@ mod tests {
         let mut library = naming_library(&["a", "b"], "Mix");
         assert!(library.add_tracks(1, &pick(&["spotify:track:x"])).is_some());
         assert_eq!(library.create_playlist(), None, "an add was in flight");
+        assert!(!library.naming.writing());
+    }
+
+    #[test]
+    fn a_create_names_the_pick_the_field_holds() {
+        let mut library = naming_library(&["a"], "Mix");
+        let tracks = pick(&["spotify:track:x", "spotify:track:y"]);
+        library.naming.open_with(tracks.clone());
+
+        assert_eq!(
+            library.create_playlist(),
+            Some(Command::CreatePlaylist {
+                name: "Mix".to_owned(),
+                revision: revision(0x07),
+                tracks,
+            })
+        );
+    }
+
+    #[test]
+    fn a_created_list_that_took_the_pick_counts_it() {
+        let mut library = naming_library(&["a"], "Mix");
+        library.naming.open_with(pick(&[
+            "spotify:track:x",
+            "spotify:track:y",
+            "spotify:track:z",
+        ]));
+        assert!(library.create_playlist().is_some());
+        let landed = PlaylistEntry {
+            tracks: Some(3),
+            ..created("spotify:playlist:new", "Mix", access(0x09, true))
+        };
+
+        library.apply(&Update::PlaylistCreated {
+            entry: landed,
+            revision: revision(0x08),
+        });
+
+        let entry = sidebar_entry(&library, "spotify:playlist:new").expect("the new row");
+        assert_eq!(entry.tracks, Some(3), "the row counts what landed");
+        assert_eq!(library.sidebar_notice, None);
+    }
+
+    #[test]
+    fn a_created_list_that_lost_the_pick_says_so() {
+        let mut library = naming_library(&["a"], "Mix");
+        library
+            .naming
+            .open_with(pick(&["spotify:track:x", "spotify:track:y"]));
+        assert!(library.create_playlist().is_some());
+        library.apply(&Update::PlaylistCreated {
+            entry: created("spotify:playlist:new", "Mix", access(0x09, true)),
+            revision: revision(0x08),
+        });
+
+        library.apply(&Update::PlaylistUnfilled {
+            playlist: "spotify:playlist:new".to_owned(),
+        });
+
+        let entry = sidebar_entry(&library, "spotify:playlist:new").expect("the new row");
+        assert_eq!(entry.tracks, Some(0), "the row counts what landed");
+        assert_eq!(library.sidebar_notice, Some(SidebarWrite::Unfilled));
+        assert!(!library.naming.is_open(), "the field is spent");
+        assert!(!library.write_in_flight());
+    }
+
+    #[test]
+    fn an_unfilled_notice_for_a_list_not_held_is_ignored() {
+        let mut library = sidebar_library(&["a"], 0x07, true, Some(3));
+
+        library.apply(&Update::PlaylistUnfilled {
+            playlist: "spotify:playlist:missing".to_owned(),
+        });
+
+        assert_eq!(library.sidebar_notice, None);
+        assert_eq!(
+            sidebar_entry(&library, "a").and_then(|entry| entry.tracks),
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn a_create_failure_keeps_the_pick_and_the_text() {
+        let mut library = naming_library(&["a"], "Mix");
+        let tracks = pick(&["spotify:track:x"]);
+        library.naming.open_with(tracks.clone());
+        assert!(library.create_playlist().is_some());
+
+        library.apply(&Update::PlaylistCreateFailed);
+
+        assert_eq!(library.naming.text(), "Mix");
+        assert_eq!(library.naming.pick(), tracks, "a retry lands the same pick");
+        assert!(library.naming.is_open());
         assert!(!library.naming.writing());
     }
 
@@ -6524,6 +6643,7 @@ mod tests {
             Some(Command::CreatePlaylist {
                 name: "Again".to_owned(),
                 revision: revision(0x08),
+                tracks: Vec::new(),
             }),
             "the second create named the revision the first reply held"
         );

@@ -24,8 +24,8 @@ pub enum Outcome {
     Remove,
     /// These tracks join the liked set, or leave it.
     Like { tracks: Vec<String>, liked: bool },
-    /// The sidebar's name field opens; nothing is sent and nothing else moves.
-    NewPlaylist,
+    /// The sidebar's name field opens, carrying these tracks into the new list.
+    NewPlaylist { pick: Vec<String> },
     /// These tracks go to the playlist the submenu's chosen row names.
     AddToPlaylist { tracks: Vec<String> },
 }
@@ -161,7 +161,9 @@ pub fn outcome(verb: Verb, targets: &[TrackEntry]) -> Option<Outcome> {
             })?;
             Some(Outcome::Open(Page::credit(uri)))
         }
-        Verb::NewPlaylist => Some(Outcome::NewPlaylist),
+        Verb::NewPlaylist => Some(Outcome::NewPlaylist {
+            pick: pick(targets).unwrap_or_default(),
+        }),
         Verb::AddToPlaylist => pick(targets).map(|tracks| Outcome::AddToPlaylist { tracks }),
         Verb::Remove => (!targets.is_empty()).then_some(Outcome::Remove),
         Verb::Save => like_outcome(targets, true),
@@ -1054,12 +1056,24 @@ mod tests {
     }
 
     #[test]
-    fn outcome_new_playlist_is_a_unit_with_no_command() {
-        assert_eq!(outcome(Verb::NewPlaylist, &[]), Some(Outcome::NewPlaylist));
+    fn outcome_new_playlist_carries_the_pick_and_survives_having_none() {
+        assert_eq!(
+            outcome(Verb::NewPlaylist, &[]),
+            Some(Outcome::NewPlaylist { pick: Vec::new() })
+        );
         assert_eq!(
             outcome(Verb::NewPlaylist, &tracks(&["spotify:track:a"])),
-            Some(Outcome::NewPlaylist),
-            "the row acts on nothing the menu holds"
+            Some(Outcome::NewPlaylist {
+                pick: pick_of(&["a"]),
+            })
+        );
+        assert_eq!(
+            outcome(
+                Verb::NewPlaylist,
+                &tracks(&["spotify:track:a", "spotify:episode:e"])
+            ),
+            Some(Outcome::NewPlaylist { pick: Vec::new() }),
+            "a mixed pick makes a list, but lands nothing in it"
         );
     }
 

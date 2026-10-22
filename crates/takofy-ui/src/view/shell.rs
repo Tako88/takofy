@@ -511,7 +511,7 @@ fn apply_verb(ui: &Ui, screen: &mut Screen<'_>, verb: Verb) -> Option<Command> {
             cut.and_then(|cut| apply_cut(ui, screen, cut))
         }
         verbs::Outcome::Like { tracks, liked } => apply_like(ui, screen, tracks, liked),
-        verbs::Outcome::NewPlaylist => apply_new_playlist(ui, screen),
+        verbs::Outcome::NewPlaylist { pick } => apply_new_playlist(ui, screen, pick),
         verbs::Outcome::AddToPlaylist { tracks } => {
             let uri = screen.menu.chosen_target()?.uri.clone();
             screen.library.add_pick(&uri, &tracks)
@@ -524,11 +524,11 @@ fn apply_verb(ui: &Ui, screen: &mut Screen<'_>, verb: Verb) -> Option<Command> {
 /// The field is the sidebar's, so the drawer and a carried block both drop the
 /// choice: a field nobody can see, or one opened over a list about to move, is
 /// worse than nothing.
-fn apply_new_playlist(ui: &Ui, screen: &mut Screen<'_>) -> Option<Command> {
+fn apply_new_playlist(ui: &Ui, screen: &mut Screen<'_>, pick: Vec<String>) -> Option<Command> {
     if *screen.drawer == Drawer::Open || carry::carrying(ui.ctx()) {
         return None;
     }
-    screen.library.naming.open();
+    screen.library.naming.open_with(pick);
     None
 }
 
@@ -9140,6 +9140,7 @@ mod tests {
             Some(Command::CreatePlaylist {
                 name: "Night  Drive".to_owned(),
                 revision: revision("root-1"),
+                tracks: Vec::new(),
             })
         );
         assert!(window.library.write_in_flight());
@@ -9822,6 +9823,47 @@ mod tests {
             "the row opened no naming field"
         );
         assert!(!window.library.write_in_flight(), "the row started a write");
+    }
+
+    #[test]
+    fn a_created_list_takes_the_pick_the_menu_held() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        page_of_tracks(&mut window, &[TRACK_A]);
+        sidebar_playlists(&mut window, &[("a", Some(0))], Some(rootlist_access(true)));
+        let offered = open_row_menu(&mut window, &mut transport, &mut queue, TRACK_A);
+        assert!(offered.contains(&Verb::NewPlaylist), "{offered:?}");
+
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let at = painted_at(&frame, "New playlist…").expect("the row is painted");
+        let _ = window.click(
+            &mut transport,
+            &mut queue,
+            egui::pos2(at.x + 20.0, at.y + 6.0),
+        );
+        assert!(
+            window.library.naming.is_open(),
+            "the row opened no naming field"
+        );
+        assert_eq!(
+            window.library.naming.pick().to_vec(),
+            vec![TRACK_A.to_owned()],
+            "the field did not take the pick the menu held"
+        );
+
+        type_text(&mut window, &mut transport, &mut queue, "Night Drive");
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Enter);
+
+        assert_eq!(
+            command,
+            Some(Command::CreatePlaylist {
+                name: "Night Drive".to_owned(),
+                revision: revision("root-1"),
+                tracks: vec![TRACK_A.to_owned()],
+            }),
+            "the pick rides the create"
+        );
     }
 
     #[test]
