@@ -14,16 +14,20 @@ use crate::drawer::{Drawer, Input};
 use crate::landing::{self, Area, Landing, Target};
 use crate::layout::{self, Grid, NowPlaying, Playbar, Sidebar};
 use crate::library::Library;
+use crate::menu::{Gate, Verb};
 use crate::message::Command;
 use crate::queue::{Queue, Step};
 use crate::reorder;
 use crate::route::Page;
 use crate::search::Act;
 use crate::theme::{Tokens, radius, stroke};
+use crate::verbs;
 
 use super::Screen;
 use super::carry::{self, Carry, ColumnOffer, Offer, Source};
-use super::{ghost, now_playing, playbar, playlist, queue_pane, search_menu, sidebar, topbar};
+use super::{
+    context_menu, ghost, now_playing, playbar, playlist, queue_pane, search_menu, sidebar, topbar,
+};
 
 /// The signed-in shell: three columns over a playbar, each panel a hairline box
 /// on the window background.
@@ -321,6 +325,34 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
         ui.ctx().request_repaint();
     }
 
+    // The context menu draws after the search drop-down, so it hangs over it and
+    // over every region. A page posts at most one request per frame, and a page
+    // that did not draw posts nothing.
+    let request = context_menu::take_request(ui.ctx());
+    let page = screen.library.page();
+    let _ = screen.menu.follow_page(page);
+    if let Some(request) = request {
+        let gate = Gate {
+            carrying: carry::carrying(ui.ctx()),
+            writing: screen.library.write_in_flight(),
+        };
+        let _ = screen.menu.open(request, gate);
+    }
+    let frame = context_menu::Frame {
+        menu: &mut *screen.menu,
+        // A choice is applied only when no region took the frame's command:
+        // `library.open` mutates before it returns, so applying one whose
+        // command would then be dropped leaves state changed for a command
+        // nobody sends. A dropped choice is spent with its press, not retried.
+        free: command.is_none(),
+        tokens,
+    };
+    if let Some(closed) = context_menu::show(ui, frame)
+        && let Some(verb) = closed.chose
+    {
+        command = apply_verb(ui, screen, verb);
+    }
+
     // Settled before the drawer, so the Escape that cancels a drag does not also
     // close it. egui takes that Escape itself, before any region draws.
     let free = command.is_none();
@@ -384,6 +416,28 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
     }
 
     command
+}
+
+/// Applies the verb a context menu closed on.
+///
+/// The snapshot the menu took is what the verb acts on, so a list that reloaded
+/// under the menu cannot change what it does.
+fn apply_verb(ui: &Ui, screen: &mut Screen<'_>, verb: Verb) -> Option<Command> {
+    let targets = screen.menu.targets().to_vec();
+    match verbs::outcome(verb, &targets)? {
+        verbs::Outcome::Queue(entries) => {
+            // An add has no position to choose, so the entries go after the last.
+            let _ = screen.queue.append(entries);
+            None
+        }
+        verbs::Outcome::Copy(text) => {
+            // One URL per line, through egui's own platform output, so the
+            // window crate needs no clipboard dependency.
+            ui.ctx().copy_text(text);
+            None
+        }
+        verbs::Outcome::Open(page) => screen.library.open(page),
+    }
 }
 
 /// Applies what the queue pane reported: the picked row, the lifted block, and
@@ -879,11 +933,14 @@ mod tests {
         state: SignIn,
         library: Library,
         drawer: Drawer,
+        menu: crate::menu::Menu,
         art: Art,
         now: Instant,
         /// The modifiers every frame reports as held. egui has no field for them
         /// on `RawInput`: a frame is told through `Event::ModifiersChanged`.
         held: egui::Modifiers,
+        /// Whether the frame reports the window as holding the OS keyboard.
+        unfocused: bool,
     }
 
     impl Window {
@@ -898,9 +955,11 @@ mod tests {
                 state: SignIn::SignedIn,
                 library: Library::default(),
                 drawer: Drawer::default(),
+                menu: crate::menu::Menu::default(),
                 art: Art::default(),
                 now: Instant::now(),
                 held: egui::Modifiers::NONE,
+                unfocused: false,
             }
         }
 
@@ -918,6 +977,7 @@ mod tests {
             let input = egui::RawInput {
                 screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, self.size)),
                 events,
+                focused: !self.unfocused,
                 ..Default::default()
             };
             self.art.begin_frame();
@@ -928,6 +988,7 @@ mod tests {
                 transport,
                 queue,
                 drawer: &mut self.drawer,
+                menu: &mut self.menu,
                 position_ms: 0,
                 art: &mut self.art,
                 now: self.now,
@@ -6786,6 +6847,365 @@ mod tests {
         assert!(
             !carry::List::open(&window.ctx, id, 3).look(1).selected,
             "a page change forgets every list's pick"
+        );
+    }
+
+    /// A track a menu's verbs can all act on: a real track URI, an album and an
+    /// artist.
+    fn menu_track(index: usize) -> TrackEntry {
+        TrackEntry {
+            uri: format!("spotify:track:{index}"),
+            title: format!("t{index}"),
+            artists: "A Band".to_owned(),
+            album: Some("A Record".to_owned()),
+            album_uri: Some(ALBUM.to_owned()),
+            artist_uris: vec!["spotify:artist:b".to_owned()],
+            added_at: None,
+            duration_ms: None,
+            named: true,
+            cover: None,
+        }
+    }
+
+    /// Opens the context menu on these rows, as a row's door would.
+    fn open_menu(window: &mut Window, verb: Verb, targets: Vec<TrackEntry>) {
+        let items: Vec<_> = crate::verbs::track_items(&targets, None)
+            .into_iter()
+            .filter(|item| item.verb == verb)
+            .collect();
+        assert!(!items.is_empty(), "the verb is offered for these rows");
+        let request = crate::menu::Request {
+            door: crate::menu::Door {
+                anchor: crate::menu::Anchor::Button(Rect::from_min_size(
+                    egui::Pos2::new(600.0, 300.0),
+                    Vec2::new(28.0, 28.0),
+                )),
+                opener: egui::Id::unique("row-more"),
+                device: crate::menu::Device::Keyboard,
+            },
+            items,
+            targets,
+            page: None,
+        };
+        assert!(
+            window.menu.open(request, Gate::default()),
+            "the menu opened"
+        );
+    }
+
+    /// The two frames an `Area` takes to arrive, so the menu's opening frame is
+    /// behind us.
+    fn settle_menu(window: &mut Window, transport: &mut Transport, queue: &mut Queue) {
+        for _ in 0..2 {
+            let _ = window.frame(transport, queue, Vec::new());
+        }
+    }
+
+    /// The `⋯` of the row titled `title`, found as the rightmost glyph on that
+    /// row's line: the like sits left of it, and the band's own `⋯` is a row
+    /// higher.
+    fn more_button(output: &egui::FullOutput, view: Rect, title: &str) -> egui::Pos2 {
+        let line = row_line(output, view, title).y;
+        output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Path(_) => Some(clipped.shape.visual_bounding_rect()),
+                _ => None,
+            })
+            .filter(|rect| {
+                view.contains(rect.center()) && (rect.center().y - line).abs() < extent::ROW_H
+            })
+            .max_by(|left, right| left.center().x.total_cmp(&right.center().x))
+            .map(|rect| rect.center())
+            .expect("the row paints a `⋯`")
+    }
+
+    #[test]
+    fn clicking_the_open_more_closes_its_menu_and_keeps_the_keyboard() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1"]);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let more = more_button(&frame, view_rect(&window), "p0");
+
+        let _ = window.click(&mut transport, &mut queue, more);
+        settle_menu(&mut window, &mut transport, &mut queue);
+        assert!(window.menu.is_open(), "the `⋯` opened no menu");
+
+        // The same `⋯` again closes it instead of resetting it.
+        let _ = window.click(&mut transport, &mut queue, more);
+        assert!(
+            !window.menu.is_open(),
+            "the `⋯` reset its own menu instead of closing it"
+        );
+
+        // And the keyboard is back on the `⋯`, so Enter opens the menu again.
+        let _ = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![key(egui::Key::Enter, true)],
+        );
+        assert!(
+            window.menu.is_open(),
+            "the `⋯` did not take the keyboard back"
+        );
+    }
+
+    #[test]
+    fn a_held_enter_that_opened_the_menu_fires_nothing() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1"]);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let more = more_button(&frame, view_rect(&window), "p0");
+
+        // Open from the `⋯` and close, so the button holds the keyboard.
+        let _ = window.click(&mut transport, &mut queue, more);
+        settle_menu(&mut window, &mut transport, &mut queue);
+        let _ = press(&mut window, &mut transport, &mut queue, egui::Key::Escape);
+        assert!(!window.menu.is_open(), "Escape closed the menu");
+
+        // Enter opens it and is held: no release comes before the repeats.
+        let _ = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![key(egui::Key::Enter, true)],
+        );
+        assert!(window.menu.is_open(), "Enter opened no menu");
+        for _ in 0..3 {
+            let _ = window.frame(
+                &mut transport,
+                &mut queue,
+                vec![key_repeat(egui::Key::Enter)],
+            );
+        }
+
+        assert!(window.menu.is_open(), "a held Enter closed the menu");
+        assert_eq!(window.menu.lit(), Some(0), "a held Enter moved the lit row");
+        assert_eq!(
+            queue.upcoming().count(),
+            0,
+            "a held Enter fired Add to queue"
+        );
+    }
+
+    #[test]
+    fn a_held_enter_after_choosing_does_not_reopen_the_menu() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1"]);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let more = more_button(&frame, view_rect(&window), "p0");
+
+        let _ = window.click(&mut transport, &mut queue, more);
+        settle_menu(&mut window, &mut transport, &mut queue);
+        let _ = press(
+            &mut window,
+            &mut transport,
+            &mut queue,
+            egui::Key::ArrowDown,
+        );
+        assert_eq!(window.menu.lit(), Some(0));
+
+        // Enter chooses, closes and hands the keyboard back to the `⋯`.
+        let chosen = window
+            .frame(
+                &mut transport,
+                &mut queue,
+                vec![key(egui::Key::Enter, true)],
+            )
+            .0;
+        assert_eq!(chosen, None, "adding to the queue asks for no command");
+        assert!(!window.menu.is_open(), "the choice left the menu open");
+        assert_eq!(queue.upcoming().count(), 1, "the choice queued nothing");
+
+        // Held, the repeats land on the `⋯` that now holds the keyboard.
+        for _ in 0..3 {
+            let _ = window.frame(
+                &mut transport,
+                &mut queue,
+                vec![key_repeat(egui::Key::Enter)],
+            );
+        }
+        assert!(
+            !window.menu.is_open(),
+            "a held Enter reopened the menu it chose from"
+        );
+        assert_eq!(
+            queue.upcoming().count(),
+            1,
+            "a held Enter queued the row again"
+        );
+    }
+
+    #[test]
+    fn the_menu_survives_idle_frames() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1"]);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let at = row_line(&frame, view_rect(&window), "p1");
+        for event in crate::view::test_support::secondary_click_events(at) {
+            let _ = window.frame(&mut transport, &mut queue, vec![event]);
+        }
+        assert!(window.menu.is_open(), "the right-click opened no menu");
+        for index in 0..10 {
+            let _ = window.frame(&mut transport, &mut queue, Vec::new());
+            assert!(
+                window.menu.is_open(),
+                "the menu closed on idle frame {index}"
+            );
+        }
+        // The window losing the OS keyboard is not the menu's business until the
+        // user acts.
+        window.unfocused = true;
+        for index in 0..3 {
+            let _ = window.frame(&mut transport, &mut queue, Vec::new());
+            assert!(
+                window.menu.is_open(),
+                "the menu closed on unfocused frame {index}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_right_click_on_a_playlist_row_opens_the_menu_the_shell_draws() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1"]);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let at = row_line(&frame, view_rect(&window), "p1");
+
+        // The row posts a request; the shell opens the menu on it in the same
+        // frame. The area's first frame is its sizing pass, and its second is
+        // the opening frame, which ignores keys.
+        for event in crate::view::test_support::secondary_click_events(at) {
+            let _ = window.frame(&mut transport, &mut queue, vec![event]);
+        }
+        assert!(window.menu.is_open(), "the right-click opened no menu");
+        settle_menu(&mut window, &mut transport, &mut queue);
+
+        // The pointer opened it, so nothing is lit until the keyboard asks.
+        assert_eq!(window.menu.lit(), None);
+        let _ = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![key(egui::Key::ArrowDown, true)],
+        );
+        let _ = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![key(egui::Key::ArrowDown, false)],
+        );
+        assert_eq!(window.menu.lit(), Some(0));
+
+        assert_eq!(
+            press(&mut window, &mut transport, &mut queue, egui::Key::Enter),
+            None,
+            "adding to the queue asks for no command"
+        );
+        assert!(!window.menu.is_open());
+        let queued: Vec<&str> = queue
+            .upcoming()
+            .map(|(_, entry)| entry.uri.as_str())
+            .collect();
+        assert_eq!(queued, vec!["list:p1"], "the row the menu was opened on");
+    }
+
+    #[test]
+    fn a_chosen_add_to_queue_appends_and_closes() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        open_menu(&mut window, Verb::AddToQueue, vec![menu_track(0)]);
+        settle_menu(&mut window, &mut transport, &mut queue);
+
+        assert_eq!(
+            press(&mut window, &mut transport, &mut queue, egui::Key::Enter),
+            None,
+            "adding to the queue asks for no command"
+        );
+        assert!(
+            !window.menu.is_open(),
+            "the menu stayed open after the choice"
+        );
+        let queued: Vec<&str> = queue
+            .upcoming()
+            .map(|(_, entry)| entry.uri.as_str())
+            .collect();
+        assert_eq!(queued, vec!["spotify:track:0"]);
+    }
+
+    #[test]
+    fn a_chosen_copy_link_emits_the_joined_urls() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        open_menu(
+            &mut window,
+            Verb::CopyLink,
+            vec![menu_track(0), menu_track(1)],
+        );
+        settle_menu(&mut window, &mut transport, &mut queue);
+
+        let (_, frame) = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![key(egui::Key::Enter, true)],
+        );
+        let copied = frame
+            .platform_output
+            .commands
+            .iter()
+            .find_map(|command| match command {
+                egui::OutputCommand::CopyText(text) => Some(text.as_str()),
+                _ => None,
+            });
+        assert_eq!(
+            copied,
+            Some("https://open.spotify.com/track/0\nhttps://open.spotify.com/track/1"),
+            "one URL per line"
+        );
+    }
+
+    #[test]
+    fn a_chosen_go_to_opens_the_page() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        open_menu(&mut window, Verb::GoToAlbum, vec![menu_track(0)]);
+        settle_menu(&mut window, &mut transport, &mut queue);
+
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Enter);
+        assert_eq!(
+            window.library.page(),
+            Some(&Page::Album(ALBUM.to_owned())),
+            "the page did not open"
+        );
+        assert!(command.is_some(), "the page's read was not asked for");
+        assert!(!window.menu.is_open());
+    }
+
+    #[test]
+    fn a_page_change_closes_the_menu() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        open_menu(&mut window, Verb::AddToQueue, vec![menu_track(0)]);
+        settle_menu(&mut window, &mut transport, &mut queue);
+        assert!(window.menu.is_open());
+
+        let _ = window.library.open(Page::Playlist(PLAYLIST.to_owned()));
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            !window.menu.is_open(),
+            "the menu outlived the page its rows came from"
         );
     }
 }

@@ -9,6 +9,7 @@ mod artist;
 mod artist_hero;
 pub mod card;
 mod carry;
+mod context_menu;
 pub mod controls;
 mod episode_row;
 mod filter_row;
@@ -16,6 +17,7 @@ mod ghost;
 mod hero;
 pub mod lyrics_pane;
 pub mod media;
+mod menu_box;
 pub mod now_playing;
 pub mod playbar;
 pub mod playlist;
@@ -46,6 +48,7 @@ use egui::Ui;
 use crate::cover::Art;
 use crate::drawer::Drawer;
 use crate::library::Library;
+use crate::menu::Menu;
 use crate::message::Command;
 use crate::player::Transport;
 use crate::queue::Queue;
@@ -59,6 +62,8 @@ pub struct Screen<'a> {
     pub transport: &'a mut Transport,
     pub queue: &'a mut Queue,
     pub drawer: &'a mut Drawer,
+    /// The context menu, owned by the window because it survives frames.
+    pub menu: &'a mut Menu,
     pub position_ms: u32,
     /// The cover store every `look` goes through.
     pub art: &'a mut Art,

@@ -53,6 +53,10 @@ pub fn album_view(
         return None;
     };
     let uri = uri.clone();
+    // The page a row's menu is about, so a verb that leads here is omitted and a
+    // page change can close the menu.
+    let here = Page::Album(uri.clone());
+    let writing = library.write_in_flight();
 
     // No leading gap here: `tracks_view` adds the page's one gap before it
     // dispatches, and a second would start the album a step lower than every
@@ -144,6 +148,7 @@ pub fn album_view(
                             Id::unique(("album-tracks", album.uri.as_str())),
                             count,
                         );
+                        let gate = selection.gate(writing);
 
                         for (index, entry) in album.tracks.iter().enumerate() {
                             let rect = table_layout::row_rect(list, index, extent::ROW_H);
@@ -171,6 +176,7 @@ pub fn album_view(
                                 // The band already holds the record's one picture.
                                 cover: Cover::Missing,
                                 look: selection.look(index),
+                                menu: gate.allows(),
                             };
                             // A row plays; its artist subline, when the album named
                             // a resolvable artist, opens that artist's page.
@@ -180,6 +186,14 @@ pub fn album_view(
                                 }
                                 Some(Click::Open(page)) => open = Some(page),
                                 Some(Click::Select(press)) => selection.press(index, press),
+                                Some(Click::Menu(door)) => selection.menu(
+                                    ui.ctx(),
+                                    door,
+                                    index,
+                                    gate,
+                                    Some(&here),
+                                    |row| album.tracks.get(row).cloned(),
+                                ),
                                 Some(Click::Lift) => {
                                     let ghost = Ghost::Table(row.lifted(columns));
                                     selection.lift(index, rect.size(), ghost, |row| {
@@ -425,6 +439,42 @@ mod tests {
         crate::view::carry::List::open(ctx, egui::Id::unique(("album-tracks", album)), 2)
             .look(index)
             .selected
+    }
+
+    #[test]
+    fn a_right_click_posts_the_albums_menu() {
+        let ctx = context();
+        let mut library = library_with(detail(vec![
+            track("spotify:track:a", "One", "Band", 222_000),
+            track("spotify:track:b", "Two", "Band", 198_000),
+        ]));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+        let rect = row_rect_for(&ctx, 1, 2);
+
+        for event in crate::view::test_support::secondary_click_events(rect.center()) {
+            let _ = frame(
+                &ctx,
+                vec![event],
+                &mut library,
+                &mut transport,
+                &mut queue,
+                &mut art,
+            );
+        }
+        let request = crate::view::context_menu::take_request(&ctx)
+            .expect("a right-click on an album row posted a request");
+        assert_eq!(request.targets.len(), 1);
+        assert_eq!(request.targets[0].uri, "spotify:track:b");
+        assert_eq!(request.page, Some(Page::Album(ALBUM.to_owned())));
+        assert!(
+            !request
+                .items
+                .iter()
+                .any(|item| item.verb == crate::menu::Verb::GoToAlbum),
+            "the album this page already is is not one of its verbs"
+        );
     }
 
     #[test]

@@ -21,10 +21,13 @@ use egui::{Context, DragAndDrop, Id, Vec2};
 use takofy_model::TrackEntry;
 
 use crate::landing::Zone;
+use crate::menu::{Door, Gate, Request};
 use crate::queue::Queue;
 use crate::route::Page;
 use crate::selection::{Picks, Press, Selection};
+use crate::verbs;
 
+use super::context_menu;
 use super::queue_pane::Lift;
 use super::queue_row;
 use super::rows::Look;
@@ -282,6 +285,58 @@ impl List {
         });
     }
 
+    /// The gate a menu on this list's rows opens under.
+    ///
+    /// A carried block is this list's own payload; a write in flight is the
+    /// caller's, because only the library knows about it.
+    pub fn gate(&self, writing: bool) -> Gate {
+        Gate {
+            carrying: self.carry.is_some(),
+            writing,
+        }
+    }
+
+    /// Opens the context menu on `row`, acting on the whole pick it sits in.
+    ///
+    /// A row inside the pick acts on all of it and leaves the pick alone; a row
+    /// outside it is picked first, so a menu about one row never stands over
+    /// another row that looks picked. A refused gate changes nothing, not even
+    /// the pick, and a pick this list cannot answer for is refused whole.
+    pub fn menu(
+        &mut self,
+        ctx: &Context,
+        door: Door,
+        row: usize,
+        gate: Gate,
+        here: Option<&Page>,
+        entry_at: impl Fn(usize) -> Option<TrackEntry>,
+    ) {
+        if !gate.allows() {
+            return;
+        }
+        let mut selection = self.selection.clone();
+        let rows = selection.act_on(row);
+        let Some(targets) = rows
+            .iter()
+            .map(|row| entry_at(*row))
+            .collect::<Option<Vec<TrackEntry>>>()
+        else {
+            return;
+        };
+        self.selection = selection;
+        self.changed = true;
+        let items = verbs::track_items(&targets, here);
+        context_menu::post(
+            ctx,
+            Request {
+                door,
+                items,
+                targets,
+                page: here.cloned(),
+            },
+        );
+    }
+
     /// Offers this list's rows to the shell as a target a reorder can land in.
     pub fn offer(&mut self, playlist: &str, zone: Zone) {
         self.offer = Some(Offer {
@@ -376,6 +431,136 @@ mod tests {
             first: 0,
             count: 4,
         }
+    }
+
+    fn door() -> Door {
+        Door {
+            anchor: crate::menu::Anchor::Button(Rect::from_min_size(
+                pos2(0.0, 0.0),
+                vec2(28.0, 28.0),
+            )),
+            opener: Id::unique("more"),
+            device: crate::menu::Device::Pointer,
+        }
+    }
+
+    fn entry_at(row: usize) -> Option<TrackEntry> {
+        Some(entry(&row.to_string()))
+    }
+
+    fn uris(request: &Request) -> Vec<&str> {
+        request
+            .targets
+            .iter()
+            .map(|entry| entry.uri.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn menu_inside_a_pick_acts_on_the_pick_and_keeps_it() {
+        let ctx = context();
+        let id = Id::unique("list");
+        let mut list = List::open(&ctx, id, 4);
+        list.press(1, Press::Replace);
+        list.press(3, Press::Toggle);
+        list.menu(&ctx, door(), 3, Gate::default(), None, entry_at);
+        list.finish(&ctx);
+
+        let request = context_menu::take_request(&ctx).expect("a request was posted");
+        assert_eq!(
+            uris(&request),
+            vec!["u1", "u3"],
+            "the whole pick, ascending"
+        );
+        let kept = List::open(&ctx, id, 4);
+        assert!(
+            kept.look(1).selected && kept.look(3).selected,
+            "the pick was collapsed"
+        );
+    }
+
+    #[test]
+    fn menu_outside_selects_first() {
+        let ctx = context();
+        let id = Id::unique("list");
+        let mut list = List::open(&ctx, id, 4);
+        list.press(1, Press::Replace);
+        list.press(3, Press::Toggle);
+        list.menu(&ctx, door(), 2, Gate::default(), None, entry_at);
+        list.finish(&ctx);
+
+        let request = context_menu::take_request(&ctx).expect("a request was posted");
+        assert_eq!(uris(&request), vec!["u2"], "the row under the menu, alone");
+        let kept = List::open(&ctx, id, 4);
+        assert!(kept.look(2).selected, "the row is picked");
+        assert!(!kept.look(1).selected, "and nothing else is");
+    }
+
+    #[test]
+    fn menu_is_refused_while_carrying_or_writing_and_selects_nothing() {
+        for gate in [
+            Gate {
+                carrying: true,
+                writing: false,
+            },
+            Gate {
+                carrying: false,
+                writing: true,
+            },
+        ] {
+            let ctx = context();
+            let id = Id::unique("list");
+            let mut list = List::open(&ctx, id, 4);
+            list.press(1, Press::Replace);
+            list.menu(&ctx, door(), 3, gate, None, entry_at);
+            list.finish(&ctx);
+
+            assert_eq!(context_menu::take_request(&ctx), None, "{gate:?}");
+            let kept = List::open(&ctx, id, 4);
+            assert!(kept.look(1).selected, "{gate:?}");
+            assert!(
+                !kept.look(3).selected,
+                "{gate:?}: the refused open picked a row"
+            );
+        }
+    }
+
+    #[test]
+    fn menu_refuses_a_pick_it_cannot_answer_for() {
+        let ctx = context();
+        let id = Id::unique("list");
+        let mut list = List::open(&ctx, id, 4);
+        list.press(1, Press::Replace);
+        list.press(3, Press::Toggle);
+        list.menu(&ctx, door(), 3, Gate::default(), None, |row| {
+            (row != 3).then(|| entry(&row.to_string()))
+        });
+        list.finish(&ctx);
+
+        assert_eq!(context_menu::take_request(&ctx), None);
+        let kept = List::open(&ctx, id, 4);
+        assert!(
+            kept.look(1).selected && kept.look(3).selected,
+            "a pick refused whole still changed the pick"
+        );
+    }
+
+    #[test]
+    fn a_posted_request_is_taken_once() {
+        let ctx = context();
+        let request = Request {
+            door: door(),
+            items: crate::verbs::track_items(&[entry("0")], None),
+            targets: vec![entry("0")],
+            page: Some(Page::Playlist("spotify:playlist:a".to_owned())),
+        };
+        context_menu::post(&ctx, request.clone());
+        assert_eq!(context_menu::take_request(&ctx), Some(request));
+        assert_eq!(
+            context_menu::take_request(&ctx),
+            None,
+            "a request is read once"
+        );
     }
 
     #[test]

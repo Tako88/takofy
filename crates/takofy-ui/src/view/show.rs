@@ -167,7 +167,7 @@ pub fn show_view(
                                         detail.episodes.get(row).map(Episode::entry)
                                     });
                                 }
-                                Some(Click::Open(_)) | None => {}
+                                Some(Click::Menu(_)) | Some(Click::Open(_)) | None => {}
                             }
                         }
                         selection.finish(ui.ctx());

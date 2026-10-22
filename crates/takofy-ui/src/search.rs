@@ -30,18 +30,8 @@ pub fn collapse(raw: &str) -> Option<String> {
     }
 }
 
-/// Which input last chose a row.
-///
-/// The keyboard owns the rule, the wash and the glyph; the pointer owns the
-/// wash and the tick, and never borrows the rule (R9).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Device {
-    /// The arrows and typing: the tier that shows what Enter will fire.
-    #[default]
-    Keyboard,
-    /// The mouse: a hint, not the target.
-    Pointer,
-}
+/// The two lit tiers are one menu's, so the device lives beside the menu.
+pub use crate::menu::Device;
 
 /// One read: the key it is about, and what that key's answer is doing.
 ///

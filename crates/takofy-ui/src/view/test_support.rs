@@ -28,6 +28,26 @@ pub fn click_events(pos: Pos2) -> [Event; 3] {
     ]
 }
 
+/// One press or release of the secondary button at `pos`.
+pub fn secondary_button(pos: Pos2, pressed: bool) -> Event {
+    Event::PointerButton {
+        pos,
+        button: PointerButton::Secondary,
+        pressed,
+        modifiers: Modifiers::NONE,
+    }
+}
+
+/// The passes one right-click takes, in order: the pointer arrives, presses and
+/// releases the secondary button.
+pub fn secondary_click_events(pos: Pos2) -> [Event; 3] {
+    [
+        Event::PointerMoved(pos),
+        secondary_button(pos, true),
+        secondary_button(pos, false),
+    ]
+}
+
 /// The passes one drag takes, in order: the pointer arrives and presses, walks
 /// to `to` in steps, and releases there.
 ///
