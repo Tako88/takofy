@@ -70,6 +70,8 @@ pub enum Verb {
     AddToPlaylist,
     NewPlaylist,
     Remove,
+    /// Removes the one row a library menu was opened on from the library.
+    RemoveFromLibrary,
 }
 
 /// The list a menu's rows came from, which decides its verbs and their labels.
@@ -85,6 +87,8 @@ pub enum Listing {
     Queue,
     /// The entry Now Playing is on, which is never removable.
     Current,
+    /// One row of the sidebar, whose verbs act on that row alone.
+    Library(LibraryItem),
 }
 
 impl Listing {
@@ -554,6 +558,19 @@ impl Menu {
     /// can apply the verb the close reported.
     pub fn targets(&self) -> &[TrackEntry] {
         &self.targets
+    }
+
+    /// The list the menu's rows came from, read after the close.
+    pub fn listing(&self) -> &Listing {
+        &self.listing
+    }
+
+    /// The sidebar row the menu was opened on, read after the close.
+    pub fn library_item(&self) -> Option<&LibraryItem> {
+        match &self.listing {
+            Listing::Library(item) => Some(item),
+            Listing::Page | Listing::Playlist { .. } | Listing::Queue | Listing::Current => None,
+        }
     }
 
     /// The removal this menu's list would make, read after the close.
@@ -1311,5 +1328,71 @@ mod tests {
         );
         assert!(plain.is_open(), "a menu with no removal closed");
         assert_eq!(plain.lit(), Some(0), "the lit row moved");
+    }
+
+    fn library_row(kind: SidebarKind, uri: &str, name: &str) -> LibraryItem {
+        LibraryItem {
+            kind,
+            uri: uri.to_owned(),
+            name: name.to_owned(),
+        }
+    }
+
+    /// A menu opened on one sidebar row, the way its door posts it.
+    fn library_menu(row: LibraryItem) -> Menu {
+        let mut request = request(Device::Keyboard, 0);
+        request.items = crate::verbs::library_items(&row, true);
+        request.listing = Listing::Library(row);
+        request.targets = Vec::new();
+        request.rows = Vec::new();
+        opened_on(request)
+    }
+
+    #[test]
+    fn a_library_listing_is_never_a_cut_and_keeps_its_item() {
+        let row = library_row(SidebarKind::Playlists, "spotify:playlist:a", "Deep Focus");
+        let mut menu = library_menu(row.clone());
+
+        assert_eq!(menu.cut(), None, "a sidebar row is not a pick");
+        assert_eq!(menu.library_item(), Some(&row));
+
+        assert!(menu.close(Reason::Escape).is_some());
+        assert_eq!(
+            menu.library_item(),
+            Some(&row),
+            "the shell reads the item after the menu closed on it"
+        );
+    }
+
+    #[test]
+    fn del_chooses_the_library_rows_removal() {
+        let mut menu = library_menu(library_row(
+            SidebarKind::Albums,
+            "spotify:album:r",
+            "A Record",
+        ));
+
+        assert_eq!(
+            menu.choose_destructive(),
+            Some(Closed {
+                opener: Some(opener()),
+                chose: Some(Verb::RemoveFromLibrary),
+            })
+        );
+        assert!(!menu.is_open());
+    }
+
+    #[test]
+    fn a_later_track_menu_forgets_the_library_item() {
+        let mut menu = library_menu(library_row(
+            SidebarKind::Podcasts,
+            "spotify:show:s",
+            "A Show",
+        ));
+        assert!(menu.close(Reason::Escape).is_some());
+
+        assert!(menu.open(request(Device::Pointer, 2), Gate::default()));
+
+        assert_eq!(menu.library_item(), None, "the last row's item leaked");
     }
 }

@@ -267,7 +267,11 @@ pub fn show(ui: &mut Ui, frame: Frame<'_>) -> Option<Closed> {
             let (surface, clicked) =
                 menu_box::card(ui, card, |ui| draw_rows(ui, menu, rect, area_id, tokens));
             surface.widget_info(|| {
-                WidgetInfo::labeled(egui::Role::Menu, true, verbs::menu_label(menu.targets()))
+                WidgetInfo::labeled(
+                    egui::Role::Menu,
+                    true,
+                    verbs::menu_label(menu.targets(), menu.listing()),
+                )
             });
             chosen = clicked;
             if !sizing {

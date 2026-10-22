@@ -14,7 +14,7 @@ use crate::drawer::{Drawer, Input};
 use crate::landing::{self, Area, Landing, Target};
 use crate::layout::{self, Grid, NowPlaying, Playbar, Sidebar};
 use crate::library::Library;
-use crate::menu::{Cut, Gate, Listing, Verb};
+use crate::menu::{Cut, Gate, LibraryItem, Listing, Verb};
 use crate::message::Command;
 use crate::queue::{Queue, Step};
 use crate::reorder;
@@ -492,6 +492,20 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
 /// The snapshot the menu took is what the verb acts on, so a list that reloaded
 /// under the menu cannot change what it does.
 fn apply_verb(ui: &Ui, screen: &mut Screen<'_>, verb: Verb) -> Option<Command> {
+    // A library menu's rows act on the one item it named, and it carries no
+    // targets: the listing is what decides, before the pick is read.
+    if let Some(item) = screen.menu.library_item().cloned()
+        && let Some(outcome) = verbs::library_outcome(verb, &item)
+    {
+        return match outcome {
+            verbs::Outcome::Copy(text) => {
+                ui.ctx().copy_text(text);
+                None
+            }
+            verbs::Outcome::Unlink(item) => apply_remove_from_library(ui, screen, &item),
+            _ => None,
+        };
+    }
     let targets = screen.menu.targets().to_vec();
     match verbs::outcome(verb, &targets)? {
         verbs::Outcome::Queue(entries) => {
@@ -516,6 +530,9 @@ fn apply_verb(ui: &Ui, screen: &mut Screen<'_>, verb: Verb) -> Option<Command> {
             let uri = screen.menu.chosen_target()?.uri.clone();
             screen.library.add_pick(&uri, &tracks)
         }
+        // A library row's removal is the listing branch above; a track pick has
+        // no such verb.
+        verbs::Outcome::Unlink(_) => None,
     }
 }
 
@@ -547,6 +564,23 @@ fn apply_like(
         return None;
     }
     screen.library.set_liked(tracks, liked)
+}
+
+/// Applies the removal a sidebar row's menu chose.
+///
+/// The frame's gates are checked again here, as a page removal's are: an intent
+/// made while a field is typing, the drawer is open, a block is carried or a
+/// write is already in flight is dropped rather than applied.
+fn apply_remove_from_library(
+    ui: &Ui,
+    screen: &mut Screen<'_>,
+    item: &LibraryItem,
+) -> Option<Command> {
+    let gate = door_gate(ui.ctx(), screen, &Listing::Library(item.clone()));
+    if !gate.allows() || *screen.drawer == Drawer::Open || ui.ctx().text_edit_focused() {
+        return None;
+    }
+    screen.library.remove_from_library(item)
 }
 
 /// The gate a menu on `listing` opens under.
@@ -589,7 +623,9 @@ fn apply_cut(ui: &Ui, screen: &mut Screen<'_>, cut: Cut) -> Option<Command> {
             let _ = screen.queue.remove_rows(&cut.rows, &cut.entries);
             None
         }
-        Listing::Page | Listing::Current => None,
+        // A library row's removal is applied by the menu's own verb, because it
+        // names no rows to cut.
+        Listing::Page | Listing::Current | Listing::Library(_) => None,
     }
 }
 
@@ -1051,18 +1087,20 @@ mod tests {
     use std::time::Instant;
 
     use takofy_model::{
-        CoverUrl, Move, PlaylistAccess, PlaylistEntry, Removal, Revision, TrackEntry,
+        CoverUrl, Move, PlaylistAccess, PlaylistEntry, Removal, Revision, SavedAlbum, TrackEntry,
     };
 
     use super::*;
     use crate::cover::Art;
     use crate::library::{Library, Load};
+    use crate::menu::LibraryItem;
     use crate::message::{Failure, Update};
     use crate::player::{NowPlaying, Transport, TransportState};
     use crate::queue::Queue;
     use crate::route::Page;
     use crate::search::Device;
     use crate::selection::Press;
+    use crate::sidebar_kind::SidebarKind;
     use crate::signin::SignIn;
     use crate::theme::{extent, fonts, icon, space, style};
 
@@ -9987,5 +10025,231 @@ mod tests {
             "Night Drive",
             "a dropped submit lost the name"
         );
+    }
+
+    /// A window whose sidebar holds one row the user may unlink.
+    fn sidebar_row(window: &mut Window, uri: &str, name: &str) {
+        window.library.apply(&Update::Playlists(vec![PlaylistEntry {
+            uri: uri.to_owned(),
+            name: name.to_owned(),
+            named: true,
+            cover: None,
+            description: None,
+            owner: None,
+            tracks: None,
+            access: page_access(true),
+        }]));
+        window
+            .library
+            .apply(&Update::RootlistAccess(PlaylistAccess {
+                revision: revision("rev-1"),
+                editable: true,
+            }));
+    }
+
+    /// Opens the menu a sidebar row's door posts, without a pointer.
+    fn open_library_menu(window: &mut Window, row: LibraryItem, removable: bool) {
+        let request = crate::menu::Request {
+            door: crate::menu::Door {
+                anchor: crate::menu::Anchor::Button(Rect::from_min_size(
+                    egui::Pos2::new(60.0, 300.0),
+                    Vec2::new(28.0, 28.0),
+                )),
+                opener: egui::Id::unique("library-row"),
+                device: crate::menu::Device::Keyboard,
+            },
+            playlists: Vec::new(),
+            items: crate::verbs::library_items(&row, removable),
+            targets: Vec::new(),
+            rows: Vec::new(),
+            listing: Listing::Library(row),
+            page: window.library.page().cloned(),
+        };
+        assert!(
+            window.menu.open(request, Gate::default()),
+            "the menu opened"
+        );
+    }
+
+    fn library_row(kind: SidebarKind, uri: &str, name: &str) -> LibraryItem {
+        LibraryItem {
+            kind,
+            uri: uri.to_owned(),
+            name: name.to_owned(),
+        }
+    }
+
+    #[test]
+    fn copy_link_on_a_library_row_writes_its_url() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let uri = "spotify:playlist:4uLU6hMCjMI75M1A2tKUQC";
+        sidebar_row(&mut window, uri, "Deep Focus");
+        open_library_menu(
+            &mut window,
+            library_row(SidebarKind::Playlists, uri, "Deep Focus"),
+            true,
+        );
+        settle_menu(&mut window, &mut transport, &mut queue);
+
+        let (_, frame) = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![key(egui::Key::Enter, true)],
+        );
+        let copied = frame
+            .platform_output
+            .commands
+            .iter()
+            .find_map(|command| match command {
+                egui::OutputCommand::CopyText(text) => Some(text.as_str()),
+                _ => None,
+            });
+        assert_eq!(
+            copied,
+            Some("https://open.spotify.com/playlist/4uLU6hMCjMI75M1A2tKUQC"),
+            "an empty target list is not what decides a library menu's verb"
+        );
+    }
+
+    #[test]
+    fn a_library_rows_removal_issues_its_one_command() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let uri = "spotify:playlist:4uLU6hMCjMI75M1A2tKUQC";
+        sidebar_row(&mut window, uri, "Deep Focus");
+        open_library_menu(
+            &mut window,
+            library_row(SidebarKind::Playlists, uri, "Deep Focus"),
+            true,
+        );
+        settle_menu(&mut window, &mut transport, &mut queue);
+
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Delete);
+
+        assert_eq!(
+            command,
+            Some(Command::RemovePlaylist {
+                playlist: uri.to_owned(),
+                revision: revision("rev-1"),
+                index: 0,
+            })
+        );
+        assert!(window.library.write_in_flight());
+    }
+
+    #[test]
+    fn a_library_rows_removal_is_dropped_while_a_gate_holds() {
+        let uri = "spotify:album:4uLU6hMCjMI75M1A2tKUQC";
+
+        // The drawer covers the window.
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let row = library_row(SidebarKind::Albums, uri, "A Record");
+        window.library.apply(&Update::SavedAlbums(vec![SavedAlbum {
+            uri: uri.to_owned(),
+            name: "A Record".to_owned(),
+            named: true,
+            artists: String::new(),
+            year: None,
+            cover: None,
+            tracks: None,
+        }]));
+        open_library_menu(&mut window, row.clone(), true);
+        settle_menu(&mut window, &mut transport, &mut queue);
+        window.drawer = Drawer::Open;
+        assert_eq!(
+            press(&mut window, &mut transport, &mut queue, egui::Key::Delete),
+            None,
+            "a removal was applied under the drawer"
+        );
+        assert!(!window.library.write_in_flight());
+
+        // A block is carried.
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        window.library.apply(&Update::SavedAlbums(vec![SavedAlbum {
+            uri: uri.to_owned(),
+            name: "A Record".to_owned(),
+            named: true,
+            artists: String::new(),
+            year: None,
+            cover: None,
+            tracks: None,
+        }]));
+        open_library_menu(&mut window, row, true);
+        settle_menu(&mut window, &mut transport, &mut queue);
+        egui::DragAndDrop::set_payload(&window.ctx, ());
+        assert_eq!(
+            press(&mut window, &mut transport, &mut queue, egui::Key::Delete),
+            None,
+            "a removal was applied while a block was carried"
+        );
+        assert!(!window.library.write_in_flight());
+    }
+
+    #[test]
+    fn a_library_rows_removal_is_dropped_while_a_field_holds_the_keyboard() {
+        let ctx = egui::Context::default();
+        ctx.set_fonts(fonts::definitions());
+        ctx.set_global_style(style(&Tokens::DARK));
+        let uri = "spotify:album:4uLU6hMCjMI75M1A2tKUQC";
+        let mut library = Library::default();
+        library.apply(&Update::SavedAlbums(vec![SavedAlbum {
+            uri: uri.to_owned(),
+            name: "A Record".to_owned(),
+            named: true,
+            artists: String::new(),
+            year: None,
+            cover: None,
+            tracks: None,
+        }]));
+        let row = library_row(SidebarKind::Albums, uri, "A Record");
+        let mut state = SignIn::SignedIn;
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut drawer = Drawer::default();
+        let mut menu = crate::menu::Menu::default();
+        let mut art = Art::default();
+        let mut pane = layout::PanePref::default();
+        let mut typed = String::new();
+        let mut command = None;
+
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    Vec2::new(1400.0, 900.0),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                let id = egui::Id::unique("field");
+                egui::TextEdit::singleline(&mut typed).id(id).show(ui);
+                ui.memory_mut(|memory| memory.request_focus(id));
+                assert!(ui.ctx().text_edit_focused(), "the field holds the key");
+                let mut screen = Screen {
+                    state: &mut state,
+                    library: &mut library,
+                    transport: &mut transport,
+                    queue: &mut queue,
+                    drawer: &mut drawer,
+                    menu: &mut menu,
+                    position_ms: 0,
+                    art: &mut art,
+                    now: Instant::now(),
+                    now_ms: 0,
+                    pane: &mut pane,
+                };
+                command = apply_remove_from_library(ui, &mut screen, &row);
+            },
+        );
+
+        output.textures_delta.clear();
+
+        assert_eq!(command, None, "a removal was applied over a typing field");
+        assert!(!library.write_in_flight());
     }
 }
