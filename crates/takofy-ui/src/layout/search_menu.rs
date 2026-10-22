@@ -23,6 +23,7 @@
 //! cut the marker at the ends. This geometry cannot do that for the view — it
 //! does not know which row is the menu's first or last.
 
+use egui::emath::GuiRounding as _;
 use egui::{Rect, pos2, vec2};
 
 use crate::theme::{extent, icon, space, stroke};
@@ -92,10 +93,14 @@ pub fn menu_rect(field: Rect, window: Rect, height: f32) -> Rect {
     // pulled back in.
     left = left.clamp(window.left(), (window.right() - width).max(window.left()));
 
-    Rect::from_min_size(
+    // On egui's own grid, like any widget: the field is measured from text, so
+    // its rect is rarely whole, and a card a third of a point off draws its
+    // hairline soft and trips egui's debug build with an orange "Unaligned".
+    let rect = Rect::from_min_size(
         pos2(left, field.bottom() + extent::MENU_GAP),
         vec2(width, height),
-    )
+    );
+    Rect::from_min_max(rect.min.round_ui(), rect.max.round_ui())
 }
 
 /// The height of `shown` result rows plus, when the answer is longer than the

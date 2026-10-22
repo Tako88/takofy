@@ -9,6 +9,7 @@
 //! cap. A row is the reference's `space-3`/`space-1` padding, its label, and the
 //! trailing slot a key hint or a chevron takes.
 
+use egui::emath::GuiRounding as _;
 use egui::{Rect, Vec2, pos2, vec2};
 
 use super::search_menu::{is_sane, sane};
@@ -98,7 +99,11 @@ pub fn place(anchor: Anchor, size: Vec2, window: Rect) -> Rect {
 
     let top = top.clamp(window.top(), (window.bottom() - height).max(window.top()));
     let left = left.clamp(window.left(), (window.right() - width).max(window.left()));
-    Rect::from_min_size(pos2(left, top), vec2(width, height))
+    // On egui's own grid, like any widget: a card whose edges sit a third of a
+    // point off draws its hairline and its rule fuzzy, and egui's debug build
+    // flags every `Ui` that lands there with an orange "Unaligned".
+    let rect = Rect::from_min_size(pos2(left, top), vec2(width, height));
+    Rect::from_min_max(rect.min.round_ui(), rect.max.round_ui())
 }
 
 /// One command row's parts: the label, and the trailing slot it leaves room for.
@@ -295,6 +300,27 @@ mod tests {
         assert!(window.contains_rect(menu), "{menu:?} left the window");
         assert!(menu.right() <= corner.x, "it should have flipped left");
         assert!(menu.bottom() <= corner.y, "it should have flipped up");
+    }
+
+    #[test]
+    fn every_placement_lands_on_egui_s_own_grid() {
+        let window = window();
+        for x in [100.0, 100.3, 421.77, 900.51] {
+            for y in [80.0, 80.65, 313.3] {
+                let button = Rect::from_min_size(pos2(x, y), vec2(28.0, 28.0));
+                for anchor in [Anchor::Button(button), Anchor::Pointer(pos2(x, y))] {
+                    let menu = place(anchor, size(), window);
+                    for edge in [menu.left(), menu.right(), menu.top(), menu.bottom()] {
+                        let grid = edge / (1.0 / 32.0);
+                        assert!(
+                            (grid - grid.round()).abs() < 1e-3,
+                            "{edge} for {anchor:?} is off the grid"
+                        );
+                    }
+                    assert!(window.contains_rect(menu), "{menu:?} left the window");
+                }
+            }
+        }
     }
 
     #[test]
