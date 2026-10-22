@@ -544,7 +544,9 @@ impl Library {
             Update::Search { .. } | Update::SearchFailed { .. } => {
                 self.search.apply(update);
             }
-            Update::NeedsAuthorization
+            Update::TracksRemoved { .. }
+            | Update::RemoveFailed { .. }
+            | Update::NeedsAuthorization
             | Update::SignInFailed(_)
             | Update::Transport(_)
             | Update::Cover { .. }

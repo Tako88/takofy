@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use takofy_core::credentials::{AccessToken, CredentialStore};
 use takofy_core::login::{AuthError, SourceErrorKind, TokenSource, authorize, resume};
 use takofy_core::playback::{PlaybackError, PlaybackEvent};
-use takofy_model::{CoverUrl, Move, Revision};
+use takofy_model::{CoverUrl, Move, Removal, Revision};
 use takofy_ui::message::{Command, Failure, TransportUpdate, Update};
 use tokio::runtime::{Handle, Runtime};
 use tokio::sync::Semaphore;
@@ -375,6 +375,24 @@ pub(crate) fn start<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                         &playlist,
                         &revision,
                         &moves,
+                    )
+                    .await;
+                    if step.stopped() {
+                        break;
+                    }
+                }
+                Event::Command(Some(Command::RemoveTracks {
+                    playlist,
+                    revision,
+                    removals,
+                })) => {
+                    let step = remove_tracks(
+                        &mut host,
+                        &mut stop_rx,
+                        &task_notifier,
+                        &playlist,
+                        &revision,
+                        &removals,
                     )
                     .await;
                     if step.stopped() {
@@ -887,6 +905,38 @@ async fn move_track<H: SessionHost>(
     }
 }
 
+/// Removes a playlist's rows and announces the revision its reply names.
+///
+/// A failure is `Save`, not `Load`, because the user asked for this and it did
+/// not stick.
+async fn remove_tracks<H: SessionHost>(
+    host: &mut H,
+    stop: &mut StopReceiver<()>,
+    notifier: &Notifier,
+    playlist: &str,
+    revision: &Revision,
+    removals: &[Removal],
+) -> Step {
+    match stop_or(stop, host.remove_tracks(playlist, revision, removals)).await {
+        None => Step::Stopped,
+        Some(Ok(revision)) => {
+            notifier.send(Update::TracksRemoved {
+                playlist: playlist.to_owned(),
+                revision,
+            });
+            Step::Done
+        }
+        Some(Err(error)) => {
+            log::warn!("remove write failed: {}", error.kind());
+            notifier.send(Update::RemoveFailed {
+                playlist: playlist.to_owned(),
+                failure: Failure::Save,
+            });
+            Step::Done
+        }
+    }
+}
+
 /// Writes one move to the sidebar's playlists and announces the reply revision.
 async fn move_playlist<H: SessionHost>(
     host: &mut H,
@@ -1136,8 +1186,8 @@ mod tests {
     use takofy_core::login::{SourceError, SourceErrorKind, TokenSet, TokenSource};
     use takofy_model::{
         AlbumDetail, ArtistDetail, CoverImage, CoverUrl, Episode, FollowedArtist, FollowedShow,
-        LyricLine, Move, PlaylistAccess, PlaylistEntry, SavedAlbum, Show, ShowDetail, TrackEntry,
-        TrackLyrics,
+        LyricLine, Move, PlaylistAccess, PlaylistEntry, Removal, SavedAlbum, Show, ShowDetail,
+        TrackEntry, TrackLyrics,
     };
     use takofy_ui::signin::failure_message;
     use tokio::runtime::Runtime;
@@ -1570,6 +1620,7 @@ mod tests {
         release_script: Mutex<ReleaseScript>,
         follow_script: Mutex<FollowScript>,
         move_script: Mutex<MoveScript>,
+        remove_script: Mutex<MoveScript>,
         rootlist_move_script: Mutex<RootlistMoveScript>,
         add_script: Mutex<AddScript>,
         connected: AtomicBool,
@@ -1589,6 +1640,7 @@ mod tests {
         releases: AtomicUsize,
         follow_writes: AtomicUsize,
         move_writes: AtomicUsize,
+        remove_writes: AtomicUsize,
         rootlist_move_writes: AtomicUsize,
         add_writes: AtomicUsize,
         artist_started: Mutex<Option<Sender<()>>>,
@@ -1598,6 +1650,7 @@ mod tests {
 
         last_follow: Mutex<Option<(String, bool)>>,
         last_move: Mutex<Option<(String, Revision, Vec<Move>)>>,
+        last_remove: Mutex<Option<(String, Revision, Vec<Removal>)>>,
         last_root_move: Mutex<Option<(Revision, usize, usize)>>,
         last_add: Mutex<Option<(String, Revision, usize, String)>>,
         move_started: Mutex<Option<Sender<()>>>,
@@ -1965,6 +2018,29 @@ mod tests {
             }
             let connected = self.shared.connected.load(Ordering::SeqCst);
             let script = self.shared.move_script.lock().expect("lock").clone();
+            async move {
+                if !connected {
+                    return Err(SessionError::NotConnected);
+                }
+                match script {
+                    MoveScript::Ready(revision) => Ok(revision),
+                    MoveScript::Fail => Err(SessionError::NotConnected),
+                    MoveScript::Pending => std::future::pending().await,
+                }
+            }
+        }
+
+        fn remove_tracks(
+            &self,
+            playlist: &str,
+            revision: &Revision,
+            removals: &[Removal],
+        ) -> impl Future<Output = Result<Revision, SessionError>> + Send {
+            self.shared.remove_writes.fetch_add(1, Ordering::SeqCst);
+            *self.shared.last_remove.lock().expect("lock") =
+                Some((playlist.to_owned(), revision.clone(), removals.to_vec()));
+            let connected = self.shared.connected.load(Ordering::SeqCst);
+            let script = self.shared.remove_script.lock().expect("lock").clone();
             async move {
                 if !connected {
                     return Err(SessionError::NotConnected);
@@ -4669,6 +4745,126 @@ mod tests {
             shared.last_move.lock().expect("lock").clone(),
             Some(("spotify:playlist:a".to_owned(), base, moves)),
             "both moves are one write with one revision"
+        );
+    }
+
+    #[test]
+    fn a_removal_announces_the_reply_revision_and_sends_what_was_asked() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+        let base = revision(1);
+        let reply = revision(2);
+        *shared.remove_script.lock().expect("lock") = MoveScript::Ready(reply.clone());
+        let removals = vec![
+            Removal { from: 5, length: 1 },
+            Removal { from: 3, length: 1 },
+        ];
+
+        let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::RemoveTracks {
+                    playlist: "spotify:playlist:a".to_owned(),
+                    revision: base.clone(),
+                    removals: removals.clone(),
+                })
+                .expect("remove");
+            ui_end.updates.recv().expect("removed")
+        });
+
+        assert_eq!(
+            update,
+            Update::TracksRemoved {
+                playlist: "spotify:playlist:a".to_owned(),
+                revision: reply,
+            }
+        );
+        assert_eq!(shared.remove_writes.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            shared.last_remove.lock().expect("lock").clone(),
+            Some(("spotify:playlist:a".to_owned(), base, removals)),
+            "the write is sent with the revision and the chain that was asked for"
+        );
+    }
+
+    #[test]
+    fn a_removal_failure_announces_remove_failed() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+        *shared.remove_script.lock().expect("lock") = MoveScript::Fail;
+
+        let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::RemoveTracks {
+                    playlist: "spotify:playlist:a".to_owned(),
+                    revision: revision(1),
+                    removals: vec![Removal { from: 0, length: 1 }],
+                })
+                .expect("remove");
+            ui_end.updates.recv().expect("remove failed")
+        });
+
+        assert_eq!(
+            update,
+            Update::RemoveFailed {
+                playlist: "spotify:playlist:a".to_owned(),
+                failure: Failure::Save,
+            }
+        );
+        assert_eq!(shared.remove_writes.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_two_run_removal_is_one_write() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+        *shared.remove_script.lock().expect("lock") = MoveScript::Ready(revision(2));
+
+        let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::RemoveTracks {
+                    playlist: "spotify:playlist:a".to_owned(),
+                    revision: revision(1),
+                    removals: vec![
+                        Removal { from: 6, length: 2 },
+                        Removal { from: 1, length: 1 },
+                    ],
+                })
+                .expect("remove");
+            ui_end.updates.recv().expect("removed")
+        });
+
+        assert!(matches!(update, Update::TracksRemoved { .. }));
+        assert_eq!(
+            shared.remove_writes.load(Ordering::SeqCst),
+            1,
+            "a gapped pick is one change set, not one write per run"
+        );
+        assert_eq!(
+            shared
+                .last_remove
+                .lock()
+                .expect("lock")
+                .as_ref()
+                .map(|(_, _, removals)| removals.len()),
+            Some(2)
         );
     }
 

@@ -21,8 +21,8 @@ use librespot::protocol::metadata::{
 use protobuf::Message as _;
 use takofy_model::{
     AlbumDetail, ArtistDetail, CoverUrl, Episode, FollowedArtist, FollowedShow, Move,
-    PlaylistAccess, PlaylistEntry, PublishedAt, Revision, SavedAlbum, ShowDetail, TrackEntry,
-    TrackLyrics,
+    PlaylistAccess, PlaylistEntry, PublishedAt, Removal, Revision, SavedAlbum, ShowDetail,
+    TrackEntry, TrackLyrics,
 };
 
 use crate::album::{AlbumError, detail, positions};
@@ -364,6 +364,23 @@ pub(crate) async fn write_move(
     playlist_edit::require_moves(moves)?;
     let endpoint = playlist_edit::changes_endpoint(uri)?;
     write_changes(session, endpoint, playlist_edit::move_body(revision, moves)).await
+}
+
+/// Removes `removals` from a playlist, as one delta on one revision.
+pub(crate) async fn write_remove(
+    session: &Session,
+    uri: &str,
+    revision: &Revision,
+    removals: &[Removal],
+) -> Result<Revision, playlist_edit::PlaylistError> {
+    playlist_edit::require_removals(removals)?;
+    let endpoint = playlist_edit::changes_endpoint(uri)?;
+    write_changes(
+        session,
+        endpoint,
+        playlist_edit::removals_body(revision, removals),
+    )
+    .await
 }
 
 /// Writes one move to the user's rootlist.

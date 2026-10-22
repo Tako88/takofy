@@ -15,14 +15,14 @@ use crate::remote::{
     ROOTLIST_WIRE, RemoteContext, RemoteRootlist, label_playlists, label_tracks, read_album,
     read_artist, read_followed_artists, read_followed_shows, read_lyrics, read_playlist_state,
     read_related, read_release_tracks, read_saved_albums, read_show, write_add, write_follow,
-    write_move, write_rootlist_move,
+    write_move, write_remove, write_rootlist_move,
 };
 use crate::rootlist::{RootlistError, fetch_all};
 use crate::search::search_uri;
 use crate::show::ShowError;
 use takofy_model::{
     AlbumDetail, ArtistDetail, CoverUrl, FollowedArtist, FollowedShow, Move, PlaylistAccess,
-    PlaylistEntry, Revision, SavedAlbum, ShowDetail, TrackEntry, TrackLyrics,
+    PlaylistEntry, Removal, Revision, SavedAlbum, ShowDetail, TrackEntry, TrackLyrics,
 };
 
 /// Why an [`Engine`] operation failed.
@@ -144,6 +144,16 @@ impl Engine {
         moves: &[Move],
     ) -> Result<Revision, EngineError> {
         Ok(write_move(&self.session, playlist_uri, revision, moves).await?)
+    }
+
+    /// Removes rows from a playlist, answering the revision to hold next.
+    pub async fn remove_tracks(
+        &self,
+        playlist_uri: &str,
+        revision: &Revision,
+        removals: &[Removal],
+    ) -> Result<Revision, EngineError> {
+        Ok(write_remove(&self.session, playlist_uri, revision, removals).await?)
     }
 
     /// Writes one move to the user's rootlist, answering the revision to hold

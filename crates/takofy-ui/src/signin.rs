@@ -51,6 +51,8 @@ impl SignIn {
                 | Update::Tracks { .. }
                 | Update::TrackMoved { .. }
                 | Update::MoveFailed { .. }
+                | Update::TracksRemoved { .. }
+                | Update::RemoveFailed { .. }
                 | Update::TracksFailed { .. }
                 | Update::Album(_)
                 | Update::AlbumFailed { .. }
