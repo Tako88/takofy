@@ -353,7 +353,8 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
     let request = context_menu::take_request(ui.ctx());
     let page = screen.library.page();
     let _ = screen.menu.follow_page(page);
-    if let Some(request) = request {
+    if let Some(mut request) = request {
+        request.allow_create(regions.sidebar == Sidebar::Full && screen.library.creatable());
         let gate = door_gate(ui.ctx(), screen, &request.listing);
         let _ = screen.menu.open(request, gate);
     }
@@ -488,7 +489,21 @@ fn apply_verb(ui: &Ui, screen: &mut Screen<'_>, verb: Verb) -> Option<Command> {
             cut.and_then(|cut| apply_cut(ui, screen, cut))
         }
         verbs::Outcome::Like { tracks, liked } => apply_like(ui, screen, tracks, liked),
+        verbs::Outcome::NewPlaylist => apply_new_playlist(ui, screen),
     }
+}
+
+/// Opens the sidebar's name field for the menu's new-playlist row.
+///
+/// The field is the sidebar's, so the drawer and a carried block both drop the
+/// choice: a field nobody can see, or one opened over a list about to move, is
+/// worse than nothing.
+fn apply_new_playlist(ui: &Ui, screen: &mut Screen<'_>) -> Option<Command> {
+    if *screen.drawer == Drawer::Open || carry::carrying(ui.ctx()) {
+        return None;
+    }
+    screen.library.naming.open();
+    None
 }
 
 /// Applies a save or a remove-from-your-library the menu chose.
@@ -9108,6 +9123,179 @@ mod tests {
         assert!(
             painted_at(&frame, "3 saved").is_some(),
             "the head did not count the new row"
+        );
+    }
+
+    // ---- the menu's new-playlist row ----
+
+    /// Opens the `⋯` menu of the page row titled `title`, and answers the verbs
+    /// it offers.
+    fn open_row_menu(
+        window: &mut Window,
+        transport: &mut Transport,
+        queue: &mut Queue,
+        title: &str,
+    ) -> Vec<Verb> {
+        let (_, frame) = window.frame(transport, queue, Vec::new());
+        let more = more_button(&frame, view_rect(window), title);
+        let _ = window.click(transport, queue, more);
+        settle_menu(window, transport, queue);
+        assert!(window.menu.is_open(), "the `⋯` opened no menu");
+        window.menu.items().iter().map(|item| item.verb).collect()
+    }
+
+    #[test]
+    fn the_menu_row_opens_the_field_and_sends_no_command() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1"]);
+        sidebar_playlists(&mut window, &[("a", Some(0))], Some(rootlist_access(true)));
+
+        let offered = open_row_menu(&mut window, &mut transport, &mut queue, "p0");
+        assert!(
+            offered.contains(&Verb::NewPlaylist),
+            "the row was stripped from a menu that could offer it: {offered:?}"
+        );
+        // The pointer opened the menu, so it lit nothing: the row is clicked where
+        // it is painted.
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let at = painted_at(&frame, "New playlist…").expect("the row is painted");
+        let command = window.click(
+            &mut transport,
+            &mut queue,
+            egui::pos2(at.x + 20.0, at.y + 6.0),
+        );
+
+        assert_eq!(command, None, "the new-playlist row sent a command");
+        assert!(!window.menu.is_open(), "the menu stayed open");
+        assert!(
+            window.library.naming.is_open(),
+            "the row opened no naming field"
+        );
+        assert!(!window.library.write_in_flight(), "the row started a write");
+    }
+
+    #[test]
+    fn the_menu_row_is_absent_in_the_rail_layout() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(800.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1"]);
+        sidebar_playlists(&mut window, &[("a", Some(0))], Some(rootlist_access(true)));
+        assert!(window.library.creatable());
+
+        let offered = open_row_menu(&mut window, &mut transport, &mut queue, "p0");
+
+        assert!(
+            !offered.contains(&Verb::NewPlaylist),
+            "the rail offered a field it has no column for: {offered:?}"
+        );
+    }
+
+    #[test]
+    fn the_menu_row_is_absent_while_the_playlists_load() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1"]);
+        window.library.playlists = Load::Loading;
+        assert!(!window.library.creatable());
+
+        let offered = open_row_menu(&mut window, &mut transport, &mut queue, "p0");
+
+        assert!(
+            !offered.contains(&Verb::NewPlaylist),
+            "a list that is still loading offered a create: {offered:?}"
+        );
+    }
+
+    #[test]
+    fn a_chosen_row_is_dropped_while_the_drawer_is_open_or_a_block_is_carried() {
+        // The keyboard door, because a press that reaches a menu row closes the
+        // drawer first: this is the only way to make the choice the gate guards.
+        for drawer_open in [true, false] {
+            let mut transport = Transport::default();
+            let mut queue = Queue::default();
+            let mut window = Window::new(Vec2::new(1400.0, 900.0));
+            playlist_page(&mut window, &["p0", "p1"]);
+            sidebar_playlists(&mut window, &[("a", Some(0))], Some(rootlist_access(true)));
+            let _ = click_page_row(&mut window, &mut transport, &mut queue, "p0");
+            let _ = chord(
+                &mut window,
+                &mut transport,
+                &mut queue,
+                egui::Key::F10,
+                egui::Modifiers::SHIFT,
+            );
+            assert!(window.menu.is_open(), "the keyboard opened no menu");
+            let offered: Vec<Verb> = window.menu.items().iter().map(|item| item.verb).collect();
+            let row = offered
+                .iter()
+                .position(|verb| *verb == Verb::NewPlaylist)
+                .expect("the row");
+            for _ in 0..row {
+                let _ = press(
+                    &mut window,
+                    &mut transport,
+                    &mut queue,
+                    egui::Key::ArrowDown,
+                );
+            }
+            if drawer_open {
+                window.drawer = Drawer::Open;
+            } else {
+                // Any payload says a block is held; the gate reads no more.
+                egui::DragAndDrop::set_payload(&window.ctx, ());
+            }
+
+            let _ = press(&mut window, &mut transport, &mut queue, egui::Key::Enter);
+
+            assert!(
+                !window.library.naming.is_open(),
+                "a chosen row opened the field (drawer open: {drawer_open})"
+            );
+        }
+    }
+
+    #[test]
+    fn a_submit_is_dropped_when_another_region_took_the_command() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0"]);
+        sidebar_playlists(&mut window, &[("a", Some(0))], Some(rootlist_access(true)));
+        // An album on top, so Back returns to a playlist whose page was dropped
+        // and has to be asked for again.
+        window.library.open(Page::Album(ALBUM.to_owned()));
+        window.library.tracks = Load::Idle;
+        open_naming(&mut window, &mut transport, &mut queue);
+        type_text(&mut window, &mut transport, &mut queue, "Night Drive");
+
+        let command = window
+            .frame(
+                &mut transport,
+                &mut queue,
+                vec![
+                    key(egui::Key::Enter, true),
+                    key(egui::Key::BrowserBack, true),
+                ],
+            )
+            .0;
+
+        assert!(
+            matches!(command, Some(Command::LoadTracks { .. })),
+            "the frame's one command is the nav's: {command:?}"
+        );
+        assert!(
+            !window.library.naming.writing(),
+            "a dropped submit started a write"
+        );
+        assert!(!window.library.write_in_flight());
+        assert_eq!(
+            window.library.naming.text(),
+            "Night Drive",
+            "a dropped submit lost the name"
         );
     }
 }

@@ -538,6 +538,11 @@ mod tests {
             "Created it, but could not add it to your list.",
             "the playlist exists, so the sentence says what is missing"
         );
+        assert_ne!(
+            sidebar_notice(SidebarWrite::Create),
+            sidebar_notice(SidebarWrite::Link),
+            "the two failures are not the same failure"
+        );
     }
 
     #[test]

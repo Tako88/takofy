@@ -65,6 +65,7 @@ pub enum Verb {
     GoToAlbum,
     GoToArtist,
     CopyLink,
+    NewPlaylist,
     Remove,
 }
 
@@ -150,6 +151,19 @@ pub struct Request {
     pub listing: Listing,
     /// The page it was opened on, so a page change closes it.
     pub page: Option<Page>,
+}
+
+impl Request {
+    /// Strips the new-playlist row when the window cannot offer it.
+    ///
+    /// Done at the one place a request is taken, rather than at each door: a
+    /// menu opened in the rail has no sidebar to put the field in, and one
+    /// opened before the playlists are ready has no list to insert into.
+    pub fn allow_create(&mut self, allow: bool) {
+        if !allow {
+            self.items.retain(|item| item.verb != Verb::NewPlaylist);
+        }
+    }
 }
 
 /// Why a menu closed.

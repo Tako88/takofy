@@ -895,8 +895,8 @@ impl Library {
         if !self.creatable() {
             return None;
         }
-        let name = self.naming.begin_write()?;
         let revision = self.rootlist.as_ref()?.revision.clone();
+        let name = self.naming.begin_write()?;
         self.sidebar_pending = Some(SidebarPending::Create);
         self.sidebar_notice = None;
         Some(Command::CreatePlaylist { name, revision })
