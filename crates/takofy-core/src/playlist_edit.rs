@@ -22,8 +22,8 @@ pub enum PlaylistError {
     /// The request failed; the message is the source's.
     #[error("{0}")]
     Source(String),
-    /// The write was accepted but the reply named no revision to hold next.
-    #[error("the reply carried no revision")]
+    /// The write was accepted but the reply named nothing to hold next.
+    #[error("the reply named nothing to hold next")]
     Reply,
     /// The write asked for no ops, so there is nothing to send.
     #[error("no moves to write")]

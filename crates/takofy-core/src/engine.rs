@@ -15,7 +15,8 @@ use crate::remote::{
     ROOTLIST_WIRE, RemoteContext, RemoteRootlist, label_playlists, label_tracks, read_album,
     read_artist, read_followed_artists, read_followed_shows, read_liked_tracks, read_lyrics,
     read_playlist_state, read_related, read_release_tracks, read_saved_albums, read_show,
-    write_add, write_follow, write_like, write_move, write_remove, write_rootlist_move,
+    write_add, write_create, write_follow, write_like, write_move, write_remove,
+    write_rootlist_add, write_rootlist_move,
 };
 use crate::rootlist::{RootlistError, fetch_all};
 use crate::search::search_uri;
@@ -165,6 +166,33 @@ impl Engine {
         to: usize,
     ) -> Result<Revision, EngineError> {
         Ok(write_rootlist_move(&self.session, revision, from, to).await?)
+    }
+
+    /// Creates a playlist called `name`, answering its URI.
+    ///
+    /// The playlist is not on the rootlist until [`Self::link_playlist`] puts it
+    /// there, and nothing else can find it before that.
+    pub async fn make_playlist(&self, name: &str) -> Result<String, EngineError> {
+        Ok(write_create(&self.session, name).await?)
+    }
+
+    /// Puts `playlist_uri` at the front of the user's rootlist, answering the
+    /// revision to hold next.
+    pub async fn link_playlist(
+        &self,
+        revision: &Revision,
+        playlist_uri: &str,
+    ) -> Result<Revision, EngineError> {
+        Ok(write_rootlist_add(&self.session, revision, playlist_uri).await?)
+    }
+
+    /// What a playlist read says about writing to it, when the read answers.
+    ///
+    /// Best effort: a list that cannot be read yet is one the sidebar may not
+    /// write to, which is the fail-safe the caller draws.
+    pub async fn playlist_state(&self, playlist_uri: &str) -> Option<PlaylistAccess> {
+        let state = read_playlist_state(&self.session, playlist_uri).await?;
+        playlist_edit::listing_access(state.revision.as_bytes(), state.can_edit)
     }
 
     /// Appends one track to a playlist, answering the revision to hold next.

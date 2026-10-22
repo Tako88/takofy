@@ -574,6 +574,9 @@ impl Library {
             }
             Update::NeedsAuthorization
             | Update::SignInFailed(_)
+            | Update::PlaylistCreated { .. }
+            | Update::PlaylistCreateFailed
+            | Update::PlaylistUnlinked
             | Update::Transport(_)
             | Update::Cover { .. }
             | Update::CoverFailed { .. } => {}

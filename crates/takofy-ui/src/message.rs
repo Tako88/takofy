@@ -44,6 +44,9 @@ pub enum Command {
         from_index: usize,
         track: String,
     },
+    /// Create a playlist called `name` and put it at the front of the user's
+    /// rootlist, based on the rootlist's `revision`.
+    CreatePlaylist { name: String, revision: Revision },
     /// Load one album with its tracks.
     LoadAlbum { album: String },
     /// Load one artist, its discography and its followed state.
@@ -173,6 +176,18 @@ pub enum Update {
     },
     /// A track could not be appended to a playlist.
     AddFailed { playlist: String },
+    /// A playlist was created and linked, and this is the row to draw first.
+    ///
+    /// The revision is the link reply's, so the next rootlist write names the
+    /// list the link left behind.
+    PlaylistCreated {
+        entry: PlaylistEntry,
+        revision: Revision,
+    },
+    /// The playlist itself could not be created, so nothing exists.
+    PlaylistCreateFailed,
+    /// The playlist exists but could not be put on the rootlist.
+    PlaylistUnlinked,
     /// A playlist's tracks, plus the context's own image when it carried one.
     Tracks {
         playlist: String,
