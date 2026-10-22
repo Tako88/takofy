@@ -304,7 +304,8 @@ fn now_column(
         None,
         &mut x,
         art_rect.center().y,
-        &|_| true,
+        // A heart with no state to act on is inert, as a row's is.
+        &|control| control != Control::Like || liked.is_some(),
     );
     clicked
         .filter(|control| *control == Control::Like)
