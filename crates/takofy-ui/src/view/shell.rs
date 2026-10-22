@@ -206,8 +206,9 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
     let bar_state = playbar::Bar {
         queue_claimed: matches!(target, Some(Target::End)),
         like,
+        pane: layout::pane_button(content.width(), *screen.pane),
     };
-    command = command.or(region(ui, "playbar", grid.playbar, bar_rect, |ui| {
+    let playbar_reply = region(ui, "playbar", grid.playbar, bar_rect, |ui| {
         playbar::show(
             ui,
             screen.transport,
@@ -219,7 +220,15 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
             now_playing_cover,
             tokens,
         )
-    }));
+    });
+    command = command.or(playbar_reply.command);
+    // A pane press is local and drops no command, so it is applied whatever the
+    // frame's command did. The regions drew from the preference this frame began
+    // with, so the click needs a frame to show.
+    if playbar_reply.pane {
+        *screen.pane = screen.pane.press(content.width());
+        ui.ctx().request_repaint();
+    }
 
     // The panel only reports the row it was asked to play. Applying the jump
     // here, and only when no other region asked for a command, keeps a frame
@@ -4017,6 +4026,33 @@ mod tests {
         )
     }
 
+    /// The colours a frame painted inside `rect` in glyph shapes. The wash, the
+    /// fills and the focus ring are `Shape::Rect`, so the backgrounds are
+    /// excluded by kind.
+    fn glyph_colours_in(output: &egui::FullOutput, rect: Rect) -> Vec<Color32> {
+        let mut colours = Vec::new();
+        for clipped in &output.shapes {
+            if !rect.contains(clipped.shape.visual_bounding_rect().center()) {
+                continue;
+            }
+            match &clipped.shape {
+                egui::Shape::Path(path) => {
+                    if path.fill != Color32::TRANSPARENT {
+                        colours.push(path.fill);
+                    }
+                    if let egui::epaint::ColorMode::Solid(color) = &path.stroke.color
+                        && path.stroke.width > 0.0
+                    {
+                        colours.push(*color);
+                    }
+                }
+                egui::Shape::Circle(circle) => colours.push(circle.fill),
+                _ => {}
+            }
+        }
+        colours
+    }
+
     /// Every entry in the queue, in order, wherever the index has got to.
     fn entries(queue: &Queue) -> Vec<String> {
         let count = queue.first_upcoming() + queue.upcoming().len();
@@ -6635,24 +6671,230 @@ mod tests {
     }
 
     #[test]
-    fn the_queue_button_still_takes_no_click() {
+    fn at_900_and_at_1100_a_click_on_the_queue_button_changes_nothing() {
+        for width in [900.0, 1100.0] {
+            let mut transport = playing(cover("abc"));
+            let mut queue = queue_of(4, &mut transport);
+            let mut window = Window::new(Vec2::new(width, 900.0));
+            let at = queue_button_at(&window).center();
+            let before = entries(&queue);
+            assert_eq!(
+                layout::pane_button(width, window.pane),
+                layout::PaneButton::Unavailable,
+                "{width}"
+            );
+
+            assert_eq!(window.click(&mut transport, &mut queue, at), None);
+            assert_eq!(
+                entries(&queue),
+                before,
+                "{width}: a click on the queue button does nothing"
+            );
+            assert_eq!(
+                transport.now_playing.as_ref().map(|now| now.uri.as_str()),
+                Some("t0"),
+                "{width}: a click must not move the transport"
+            );
+            assert_eq!(
+                window.pane,
+                layout::PanePref::Auto,
+                "{width}: a click where the pane cannot exist changed the choice"
+            );
+        }
+    }
+
+    #[test]
+    fn at_1400_a_click_on_the_queue_button_hides_the_pane_and_a_second_shows_it() {
         let mut transport = playing(cover("abc"));
         let mut queue = queue_of(4, &mut transport);
-        let mut window = Window::new(Vec2::new(900.0, 900.0));
-        let at = queue_button_at(&window).center();
-        let before = entries(&queue);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            text_in(&frame, "t2", pane_rect_when_shown(&window)).is_some(),
+            "the pane is not drawn to begin with"
+        );
 
+        let at = queue_button_at(&window).center();
         assert_eq!(window.click(&mut transport, &mut queue, at), None);
         assert_eq!(
-            entries(&queue),
-            before,
-            "a click on the queue button does nothing"
+            window.pane,
+            layout::PanePref::Hidden,
+            "the click did not hide the pane"
+        );
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            painted_at(&frame, "t2").is_none(),
+            "a hidden pane still drew a queue row"
+        );
+
+        let at = queue_button_at(&window).center();
+        assert_eq!(window.click(&mut transport, &mut queue, at), None);
+        assert_eq!(
+            window.pane,
+            layout::PanePref::Auto,
+            "the second click did not show the pane"
+        );
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            text_in(&frame, "t2", pane_rect_when_shown(&window)).is_some(),
+            "a shown pane drew no queue row"
+        );
+    }
+
+    #[test]
+    fn the_choice_survives_navigation() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_playlists(&mut window, &[("Mix", None)], None);
+
+        let at = queue_button_at(&window).center();
+        assert_eq!(window.click(&mut transport, &mut queue, at), None);
+        assert_eq!(window.pane, layout::PanePref::Hidden);
+
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let row = sidebar_row_rect(&window, &frame, "Mix", "Playlist").center();
+        let some = window.library.page().cloned();
+        assert_eq!(some, None, "the library starts on the root");
+        assert_eq!(
+            window.click(&mut transport, &mut queue, row),
+            Some(Command::LoadTracks {
+                playlist: "playlist:Mix".to_owned()
+            })
         );
         assert_eq!(
-            transport.now_playing.as_ref().map(|now| now.uri.as_str()),
-            Some("t0"),
-            "a click must not move the transport"
+            window.library.page(),
+            Some(&Page::Playlist("playlist:Mix".to_owned())),
+            "the sidebar row did not navigate"
         );
+        assert_eq!(
+            window.pane,
+            layout::PanePref::Hidden,
+            "navigation reset the choice about the pane"
+        );
+
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            painted_at(&frame, "t2").is_none(),
+            "the pane came back on the way to another page"
+        );
+    }
+
+    #[test]
+    fn above_1120_with_the_pane_hidden_the_queue_button_takes_a_list_drop() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        window.pane = layout::PanePref::Hidden;
+        playlist_page(&mut window, &["p0", "p1"]);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let from = row_line(&frame, view_rect(&window), "p1");
+        let to = queue_button_at(&window).center();
+
+        assert_eq!(window.drag(&mut transport, &mut queue, from, to), None);
+        assert_eq!(entries(&queue), ["t0", "t1", "t2", "t3", "list:p1"]);
+    }
+
+    #[test]
+    fn a_drop_that_ends_on_the_button_does_not_toggle_the_pane() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        window.pane = layout::PanePref::Hidden;
+        playlist_page(&mut window, &["p0", "p1"]);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let from = row_line(&frame, view_rect(&window), "p1");
+        let to = queue_button_at(&window).center();
+
+        let (_, frame) = window.hold_drag(&mut transport, &mut queue, from, to);
+        assert!(
+            claimed_fill(&frame, &window).is_some(),
+            "a hidden pane's button is not the drop target"
+        );
+        let (_, _) = window.frame(&mut transport, &mut queue, vec![window.release(to)]);
+
+        assert_eq!(entries(&queue), ["t0", "t1", "t2", "t3", "list:p1"]);
+        assert_eq!(
+            window.pane,
+            layout::PanePref::Hidden,
+            "the release that ended the drop toggled the pane"
+        );
+    }
+
+    #[test]
+    fn a_pane_toggle_asks_for_the_frame_that_shows_it() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let at = queue_button_at(&window).center();
+
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        for event in crate::view::test_support::click_events(at) {
+            let _ = window.frame(&mut transport, &mut queue, vec![event]);
+        }
+        assert_eq!(window.pane, layout::PanePref::Hidden);
+        // The causes are read a pass behind, so the pass after the click carries
+        // the ones the click's own pass recorded.
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        let causes = window.ctx.repaint_causes();
+
+        assert!(
+            causes
+                .iter()
+                .any(|cause| cause.file.ends_with("view/shell.rs")),
+            "the toggle did not ask for the frame that shows it: {causes:?}"
+        );
+    }
+
+    #[test]
+    fn a_resize_to_a_wider_window_shows_the_pane_under_auto_and_still_hides_it_under_hidden() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+
+        let mut window = Window::new(Vec2::new(1100.0, 900.0));
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            painted_at(&frame, "t2").is_none(),
+            "the pane is on screen below its own threshold"
+        );
+        window.size = Vec2::new(1400.0, 900.0);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            text_in(&frame, "t2", pane_rect_when_shown(&window)).is_some(),
+            "a wider window under auto kept the pane hidden"
+        );
+
+        window.pane = layout::PanePref::Hidden;
+        window.size = Vec2::new(1100.0, 900.0);
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        assert_eq!(window.pane, layout::PanePref::Hidden);
+        window.size = Vec2::new(1400.0, 900.0);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            painted_at(&frame, "t2").is_none(),
+            "a wider window under a hidden choice showed the pane"
+        );
+    }
+
+    #[test]
+    fn the_availability_flip_does_not_change_the_narrow_look() {
+        for width in [900.0, 1100.0] {
+            let mut transport = playing(cover("abc"));
+            let mut queue = queue_of(4, &mut transport);
+            let mut window = Window::new(Vec2::new(width, 900.0));
+            let at = queue_button_at(&window);
+            let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+
+            let colours = glyph_colours_in(&frame, at);
+            assert!(!colours.is_empty(), "{width}: the button drew no glyph");
+            for colour in colours {
+                assert_eq!(
+                    colour,
+                    Tokens::DARK.palette.text_disabled,
+                    "{width}: a button with no pane to toggle is not drawn disabled"
+                );
+            }
+        }
     }
 
     #[test]

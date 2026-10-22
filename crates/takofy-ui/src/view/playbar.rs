@@ -12,7 +12,7 @@ use crate::availability::Control;
 use crate::cover::Cover;
 use crate::format::{format_position, format_remaining};
 use crate::icon::Icon;
-use crate::layout::{self, Playbar};
+use crate::layout::{self, PaneButton, Playbar};
 use crate::message::Command;
 use crate::player::{SEEK_STEP_MS, Transport, TransportState};
 use crate::queue::Queue;
@@ -123,20 +123,46 @@ fn down_runs(queue: &Queue) -> Vec<Run> {
     runs
 }
 
-/// The transport's right-hand run with repeat's state.
-fn up_runs(form: Playbar, queue: &Queue) -> Vec<Run> {
+/// The transport's right-hand run with repeat's and the queue's own state.
+fn up_runs(form: Playbar, queue: &Queue, bar: Bar) -> Vec<Run> {
     let repeat = queue.repeat();
     let mut runs = up_controls(form).to_vec();
-    if let Some(found) = runs.iter_mut().find(|run| run.control == Control::Repeat) {
-        *found = Run {
-            control: Control::Repeat,
-            icon: Icon::Repeat,
-            label: repeat.label(),
-            lit: repeat.lit(),
-            badge: repeat.badge(),
-        };
+    for run in &mut runs {
+        match run.control {
+            Control::Repeat => {
+                *run = Run {
+                    control: Control::Repeat,
+                    icon: Icon::Repeat,
+                    label: repeat.label(),
+                    lit: repeat.lit(),
+                    badge: repeat.badge(),
+                };
+            }
+            Control::Queue => *run = pane_run(bar.pane),
+            _ => {}
+        }
     }
     runs
+}
+
+/// The queue button's run: its glyph says whether the pane is on screen.
+fn pane_run(pane: PaneButton) -> Run {
+    Run {
+        control: Control::Queue,
+        icon: Icon::Queue,
+        label: match pane {
+            PaneButton::Unavailable => "Queue",
+            PaneButton::Shown => "Queue shown",
+            PaneButton::Hidden => "Queue hidden",
+        },
+        lit: pane == PaneButton::Shown,
+        badge: None,
+    }
+}
+
+/// Whether the queue button can toggle the pane this frame.
+fn pane_live(pane: PaneButton, carrying: bool) -> bool {
+    pane != PaneButton::Unavailable && !carrying
 }
 
 /// Whether a transport control can act this frame.
@@ -192,17 +218,61 @@ fn extras_controls(form: Playbar) -> &'static [Run] {
     }
 }
 
+/// The extras' runs with the queue's own state.
+fn extras_runs(form: Playbar, bar: Bar) -> Vec<Run> {
+    let mut runs = extras_controls(form).to_vec();
+    for run in &mut runs {
+        if run.control == Control::Queue {
+            *run = pane_run(bar.pane);
+        }
+    }
+    runs
+}
+
 /// What the bar needs from the frame beyond its own data.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Bar {
     /// Whether the queue's own button is the drop target this frame.
     pub queue_claimed: bool,
     /// The playing track's liked state, or `None` while the set cannot say.
     pub like: Option<bool>,
+    /// What the queue button can do about the pane at this width.
+    pub pane: PaneButton,
 }
 
-/// Draws the bar's three columns inside `rect` and returns the command a
-/// control in it asked for.
+impl Default for Bar {
+    /// A bar told nothing draws both switches inert: an unknown pane and an
+    /// unknown window are not the user's to act on.
+    fn default() -> Self {
+        Self {
+            queue_claimed: false,
+            like: None,
+            pane: PaneButton::Unavailable,
+        }
+    }
+}
+
+/// What the bar's controls asked for this frame.
+///
+/// The transport's moves are a command the shell hands on; the pane is the
+/// window's own state, so the press is reported as a press.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct Reply {
+    pub command: Option<Command>,
+    /// Whether the queue button was pressed.
+    pub pane: bool,
+}
+
+/// One column's press: a command to apply, and the control whose own state the
+/// shell owns.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+struct Pressed {
+    command: Option<Command>,
+    control: Option<Control>,
+}
+
+/// Draws the bar's three columns inside `rect` and reports what a control in it
+/// asked for.
 #[expect(
     clippy::too_many_arguments,
     reason = "the bar draws three columns from the transport, the queue, the carry and the frame"
@@ -217,10 +287,9 @@ pub fn show(
     rect: Rect,
     cover: Cover,
     tokens: &Tokens,
-) -> Option<Command> {
+) -> Reply {
     let cols = layout::playbar_for(rect, form);
     let [now, centre, extras] = cols.columns(rect);
-    let claimed = bar.queue_claimed.then_some(Control::Queue);
 
     let like = row_centred(ui, "playbar-now", now, |ui| {
         now_column(ui, transport, cover, tokens, form, bar.like)
@@ -236,13 +305,19 @@ pub fn show(
             },
         );
     }
-    let command = row_centred(ui, "playbar-centre", centre, |ui| {
-        centre_column(ui, transport, queue, position_ms, form, claimed, tokens)
+    let pressed = row_centred(ui, "playbar-centre", centre, |ui| {
+        centre_column(ui, transport, queue, position_ms, form, bar, tokens)
     });
-    row_centred(ui, "playbar-extras", extras, |ui| {
-        extras_column(ui, tokens, form, claimed);
+    let extras_press = row_centred(ui, "playbar-extras", extras, |ui| {
+        extras_column(ui, tokens, form, bar)
     });
-    command
+    // The reduced form draws the queue in the transport, so the two columns are
+    // one channel: a press is whichever of them reported it.
+    let control = extras_press.or(pressed.control);
+    Reply {
+        command: pressed.command,
+        pane: control == Some(Control::Queue),
+    }
 }
 
 /// The glyph a play control shows, given what the transport is doing.
@@ -379,12 +454,17 @@ fn centre_column(
     queue: &mut Queue,
     position_ms: u32,
     form: Playbar,
-    claimed: Option<Control>,
+    bar: Bar,
     tokens: &Tokens,
-) -> Option<Command> {
+) -> Pressed {
     let stack = extent::BUTTON_LG + space::S1 + extent::SLIDER_H;
     let top = row_centre(ui) - stack / 2.0;
     let carrying = carry::carrying(ui.ctx());
+    let claimed = bar.queue_claimed.then_some(Control::Queue);
+    let live = |control: Control| match control {
+        Control::Queue => pane_live(bar.pane, carrying),
+        other => transport_live(other, queue, carrying),
+    };
     let width = 2.0 * run_width(&DOWN) + extent::BUTTON_LG;
     let mut x = ui.max_rect().center().x - width / 2.0;
 
@@ -395,7 +475,7 @@ fn centre_column(
         claimed,
         &mut x,
         top + extent::BUTTON / 2.0,
-        &|control| transport_live(control, queue, carrying),
+        &live,
     );
 
     let play = Rect::from_min_size(Pos2::new(x, top), Vec2::splat(extent::BUTTON_LG));
@@ -418,11 +498,11 @@ fn centre_column(
     if let Some(control) = draw_run(
         ui,
         tokens,
-        &up_runs(form, queue),
+        &up_runs(form, queue, bar),
         claimed,
         &mut x,
         top + extent::BUTTON / 2.0,
-        &|control| transport_live(control, queue, carrying),
+        &live,
     ) {
         clicked = Some(control);
     }
@@ -490,25 +570,32 @@ fn centre_column(
 
     let command = seek_command(ui, transport, &seek, track);
     // egui reports a focused button's Enter or Space as a click and counts the
-    // repeats too, so a held key must not step a mode again.
+    // repeats too, so a held key must not step a mode or a toggle again. The
+    // press is dropped here, before anything reads it.
     let pointer = ui.input(|input| input.pointer.button_clicked(egui::PointerButton::Primary));
-    let held = matches!(clicked, Some(Control::Shuffle | Control::Repeat))
-        && !pointer
+    let held = matches!(
+        clicked,
+        Some(Control::Shuffle | Control::Repeat | Control::Queue)
+    ) && !pointer
         && context_menu::held_repeat(ui);
-    command.or(match clicked {
-        Some(Control::Previous) => queue.previous(position_ms, transport),
-        Some(Control::Next) => queue.next(transport),
-        Some(Control::PlayPause) => queue.toggle(transport),
-        Some(Control::Shuffle) if !held => {
-            queue.toggle_shuffle();
-            None
-        }
-        Some(Control::Repeat) if !held => {
-            queue.cycle_repeat();
-            None
-        }
-        _ => None,
-    })
+    let clicked = clicked.filter(|_| !held);
+    Pressed {
+        command: command.or(match clicked {
+            Some(Control::Previous) => queue.previous(position_ms, transport),
+            Some(Control::Next) => queue.next(transport),
+            Some(Control::PlayPause) => queue.toggle(transport),
+            Some(Control::Shuffle) => {
+                queue.toggle_shuffle();
+                None
+            }
+            Some(Control::Repeat) => {
+                queue.cycle_repeat();
+                None
+            }
+            _ => None,
+        }),
+        control: clicked,
+    }
 }
 
 /// The seek a click or a key on the focused track asks for.
@@ -569,19 +656,26 @@ fn seek_command(
 }
 
 /// The buttons the reference sheds first as the window narrows, and the volume.
-fn extras_column(ui: &mut Ui, tokens: &Tokens, form: Playbar, claimed: Option<Control>) {
-    let controls = extras_controls(form);
-    let width = run_width(controls);
+fn extras_column(ui: &mut Ui, tokens: &Tokens, form: Playbar, bar: Bar) -> Option<Control> {
+    let runs = extras_runs(form, bar);
+    let width = run_width(&runs);
     let mut x = ui.max_rect().right() - width;
-    draw_run(
+    let carrying = carry::carrying(ui.ctx());
+    let clicked = draw_run(
         ui,
         tokens,
-        controls,
-        claimed,
+        &runs,
+        bar.queue_claimed.then_some(Control::Queue),
         &mut x,
         row_centre(ui),
-        &|_| true,
+        &|control| match control {
+            Control::Queue => pane_live(bar.pane, carrying),
+            _ => true,
+        },
     );
+    let pointer = ui.input(|input| input.pointer.button_clicked(egui::PointerButton::Primary));
+    let held = clicked.is_some() && !pointer && context_menu::held_repeat(ui);
+    clicked.filter(|_| !held)
 }
 
 /// A `BUTTON` square whose left edge is `x` and whose centre is `centre_y`.
@@ -1308,8 +1402,8 @@ mod tests {
                     0,
                     form,
                     Bar {
-                        queue_claimed: false,
                         like,
+                        ..Bar::default()
                     },
                     bar,
                     Cover::Missing,
@@ -1581,18 +1675,18 @@ mod tests {
         queue
     }
 
-    /// One frame of the bar over `queue`: the command it returned and what it
-    /// painted.
+    /// One frame of the bar over `queue`: what it reported and what it painted.
     fn queue_frame(
         ctx: &egui::Context,
         tokens: &Tokens,
         queue: &mut Queue,
         form: Playbar,
+        bar: Bar,
         events: Vec<Event>,
-    ) -> (Option<Command>, egui::FullOutput) {
-        let bar = heart_bar();
+    ) -> (Reply, egui::FullOutput) {
+        let rect = heart_bar();
         let mut transport = playing(0);
-        let mut command = None;
+        let mut reply = Reply::default();
         let mut output = ctx.run_ui(
             RawInput {
                 screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 300.0))),
@@ -1600,21 +1694,21 @@ mod tests {
                 ..Default::default()
             },
             |ui| {
-                command = show(
+                reply = show(
                     ui,
                     &mut transport,
                     queue,
                     0,
                     form,
-                    Bar::default(),
                     bar,
+                    rect,
                     Cover::Missing,
                     tokens,
                 );
             },
         );
         output.textures_delta.clear();
-        (command, output)
+        (reply, output)
     }
 
     /// Where one of the transport's buttons is drawn, from the shape the column
@@ -1651,13 +1745,46 @@ mod tests {
         let bar = heart_bar();
         let centre = layout::playbar_for(bar, form).columns(bar)[1];
         let at = transport_slot(centre, control).center();
-        let _ = queue_frame(ctx, tokens, queue, form, Vec::new());
-        let mut commands =
-            vec![queue_frame(ctx, tokens, queue, form, vec![Event::PointerMoved(at)]).0];
+        let _ = queue_frame(ctx, tokens, queue, form, Bar::default(), Vec::new());
+        let mut commands = vec![
+            queue_frame(
+                ctx,
+                tokens,
+                queue,
+                form,
+                Bar::default(),
+                vec![Event::PointerMoved(at)],
+            )
+            .0
+            .command,
+        ];
         for event in click_events(at) {
-            commands.push(queue_frame(ctx, tokens, queue, form, vec![event]).0);
+            commands.push(
+                queue_frame(ctx, tokens, queue, form, Bar::default(), vec![event])
+                    .0
+                    .command,
+            );
         }
         commands
+    }
+
+    /// Clicks `at` over the passes egui's hit test needs, and reports every
+    /// frame.
+    fn click_at(
+        ctx: &egui::Context,
+        tokens: &Tokens,
+        queue: &mut Queue,
+        form: Playbar,
+        bar: Bar,
+        at: Pos2,
+    ) -> Vec<Reply> {
+        let _ = queue_frame(ctx, tokens, queue, form, bar, Vec::new());
+        let mut replies =
+            vec![queue_frame(ctx, tokens, queue, form, bar, vec![Event::PointerMoved(at)]).0];
+        for event in click_events(at) {
+            replies.push(queue_frame(ctx, tokens, queue, form, bar, vec![event]).0);
+        }
+        replies
     }
 
     fn controls_of(runs: &[Run]) -> Vec<Control> {
@@ -1701,21 +1828,150 @@ mod tests {
     }
 
     #[test]
-    fn the_state_runs_keep_the_tables_controls_and_widths() {
+    fn the_extras_and_up_runs_keep_the_tables_controls_and_widths() {
         let queue = queue_of(4);
+        let bars = [
+            Bar::default(),
+            Bar {
+                pane: PaneButton::Shown,
+                ..Bar::default()
+            },
+        ];
         for form in [Playbar::Full, Playbar::Reduced] {
             let down = down_runs(&queue);
             assert_eq!(controls_of(&down), controls_of(&DOWN), "{form:?}");
             assert_eq!(run_width(&down), run_width(&DOWN), "{form:?}");
 
-            let up = up_runs(form, &queue);
-            assert_eq!(controls_of(&up), controls_of(up_controls(form)), "{form:?}");
-            assert_eq!(
-                run_width(&up),
-                run_width(up_controls(form)),
-                "{form:?}: the layout reserves what the drawn runs take"
+            for bar in bars {
+                let up = up_runs(form, &queue, bar);
+                assert_eq!(controls_of(&up), controls_of(up_controls(form)), "{form:?}");
+                assert_eq!(
+                    run_width(&up),
+                    run_width(up_controls(form)),
+                    "{form:?}: the layout reserves what the drawn runs take"
+                );
+
+                let extras = extras_runs(form, bar);
+                assert_eq!(
+                    controls_of(&extras),
+                    controls_of(extras_controls(form)),
+                    "{form:?}"
+                );
+                assert_eq!(
+                    run_width(&extras),
+                    run_width(extras_controls(form)),
+                    "{form:?}: the layout reserves what the drawn runs take"
+                );
+            }
+        }
+    }
+
+    fn pane_run_in(form: Playbar, bar: Bar) -> Run {
+        let mut runs = extras_runs(form, bar);
+        runs.extend_from_slice(&up_runs(form, &queue_of(4), bar));
+        *runs
+            .iter()
+            .find(|run| run.control == Control::Queue)
+            .expect("the queue is drawn once per form")
+    }
+
+    #[test]
+    fn pane_labels_name_the_state_and_are_distinct() {
+        let labels = [
+            PaneButton::Unavailable,
+            PaneButton::Shown,
+            PaneButton::Hidden,
+        ]
+        .map(|pane| pane_run(pane).label);
+        for label in labels {
+            assert!(
+                label.starts_with("Queue"),
+                "{label} does not name the button"
             );
         }
+        let mut unique = labels.to_vec();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(
+            unique.len(),
+            labels.len(),
+            "{labels:?} do not tell the states apart"
+        );
+    }
+
+    #[test]
+    fn the_queue_run_is_lit_only_when_the_pane_is_shown() {
+        let lit = |pane| {
+            pane_run_in(
+                Playbar::Full,
+                Bar {
+                    pane,
+                    ..Bar::default()
+                },
+            )
+            .lit
+        };
+        assert!(lit(PaneButton::Shown), "a shown pane left the button unlit");
+        assert!(!lit(PaneButton::Hidden), "a hidden pane lit the button");
+        assert!(!lit(PaneButton::Unavailable), "the inert button was lit");
+    }
+
+    /// Whether the node a frame announced with `label` reads as disabled.
+    fn announced_disabled(output: &egui::FullOutput, label: &str) -> bool {
+        output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .and_then(|update| {
+                update
+                    .nodes
+                    .iter()
+                    .find(|(_, node)| node.label() == Some(label))
+                    .map(|(_, node)| node.is_disabled())
+            })
+            .unwrap_or_else(|| panic!("{label} is not announced"))
+    }
+
+    #[test]
+    fn queue_is_live_only_when_the_pane_can_toggle_and_nothing_is_carried() {
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        ctx.enable_accesskit();
+        let mut queue = Queue::default();
+
+        let live = |ctx: &egui::Context, queue: &mut Queue, bar: Bar| {
+            let (_, output) = queue_frame(ctx, &tokens, queue, Playbar::Full, bar, Vec::new());
+            !announced_disabled(&output, pane_run(bar.pane).label)
+        };
+
+        assert!(
+            live(
+                &ctx,
+                &mut queue,
+                Bar {
+                    pane: PaneButton::Shown,
+                    ..Bar::default()
+                }
+            ),
+            "a shown pane left the queue button inert"
+        );
+        assert!(
+            !live(&ctx, &mut queue, Bar::default()),
+            "an unavailable pane button still acted"
+        );
+
+        egui::DragAndDrop::set_payload(&ctx, egui::Vec2::ZERO);
+        assert!(
+            !live(
+                &ctx,
+                &mut queue,
+                Bar {
+                    pane: PaneButton::Shown,
+                    ..Bar::default()
+                }
+            ),
+            "a block in flight left the pane switch live"
+        );
     }
 
     #[test]
@@ -1729,7 +1985,7 @@ mod tests {
         assert!(!shuffle.lit);
         assert_eq!(shuffle.badge, None);
 
-        let repeat = up_runs(Playbar::Full, &queue)[1];
+        let repeat = up_runs(Playbar::Full, &queue, Bar::default())[1];
         assert_eq!(repeat.control, Control::Repeat);
         assert_eq!(repeat.icon, Icon::Repeat);
         assert_eq!(repeat.label, "Repeat off");
@@ -1739,7 +1995,7 @@ mod tests {
         queue.toggle_shuffle();
         queue.cycle_repeat();
         let shuffle = down_runs(&queue)[0];
-        let repeat = up_runs(Playbar::Full, &queue)[1];
+        let repeat = up_runs(Playbar::Full, &queue, Bar::default())[1];
         assert_eq!(shuffle.label, "Shuffle on");
         assert!(shuffle.lit);
         assert_eq!(repeat.label, "Repeat all");
@@ -1747,7 +2003,7 @@ mod tests {
         assert_eq!(repeat.badge, None);
 
         queue.cycle_repeat();
-        let repeat = up_runs(Playbar::Full, &queue)[1];
+        let repeat = up_runs(Playbar::Full, &queue, Bar::default())[1];
         assert_eq!(repeat.label, "Repeat one");
         assert!(repeat.lit, "one is an on state");
         assert_eq!(repeat.badge, Some("1"));
@@ -1770,7 +2026,7 @@ mod tests {
         let _ = draw_run(
             ui,
             tokens,
-            &up_runs(Playbar::Full, queue),
+            &up_runs(Playbar::Full, queue, Bar::default()),
             None,
             &mut x,
             20.0,
@@ -1857,13 +2113,21 @@ mod tests {
             let ctx = context(&tokens);
             let mut queue = queue_of(4);
 
-            let _ = queue_frame(&ctx, &tokens, &mut queue, Playbar::Full, Vec::new());
+            let _ = queue_frame(
+                &ctx,
+                &tokens,
+                &mut queue,
+                Playbar::Full,
+                Bar::default(),
+                Vec::new(),
+            );
             for _ in 0..tabs {
                 let _ = queue_frame(
                     &ctx,
                     &tokens,
                     &mut queue,
                     Playbar::Full,
+                    Bar::default(),
                     vec![key(Key::Tab, Modifiers::NONE)],
                 );
             }
@@ -1875,6 +2139,7 @@ mod tests {
                     &tokens,
                     &mut queue,
                     Playbar::Full,
+                    Bar::default(),
                     vec![enter(repeat)],
                 );
                 states.push((queue.shuffle(), queue.repeat()));
@@ -1945,14 +2210,28 @@ mod tests {
         let centre = layout::playbar_for(bar, Playbar::Full).columns(bar)[1];
         let shuffle = transport_slot(centre, Control::Shuffle);
 
-        let (_, output) = queue_frame(&ctx, &tokens, &mut queue, Playbar::Full, Vec::new());
+        let (_, output) = queue_frame(
+            &ctx,
+            &tokens,
+            &mut queue,
+            Playbar::Full,
+            Bar::default(),
+            Vec::new(),
+        );
         assert!(
             !accent_inside(&output, &tokens, shuffle),
             "an off shuffle took the accent"
         );
 
         queue.toggle_shuffle();
-        let (_, output) = queue_frame(&ctx, &tokens, &mut queue, Playbar::Full, Vec::new());
+        let (_, output) = queue_frame(
+            &ctx,
+            &tokens,
+            &mut queue,
+            Playbar::Full,
+            Bar::default(),
+            Vec::new(),
+        );
         assert!(
             accent_inside(&output, &tokens, shuffle),
             "an on shuffle did not take the accent"
@@ -1969,7 +2248,14 @@ mod tests {
         let repeat = transport_slot(centre, Control::Repeat);
 
         for _ in 0..2 {
-            let (_, output) = queue_frame(&ctx, &tokens, &mut queue, Playbar::Full, Vec::new());
+            let (_, output) = queue_frame(
+                &ctx,
+                &tokens,
+                &mut queue,
+                Playbar::Full,
+                Bar::default(),
+                Vec::new(),
+            );
             assert!(
                 !text_inside(&output, repeat).contains(&"1".to_owned()),
                 "{:?} carried the badge",
@@ -1978,11 +2264,179 @@ mod tests {
             queue.cycle_repeat();
         }
 
-        let (_, output) = queue_frame(&ctx, &tokens, &mut queue, Playbar::Full, Vec::new());
+        let (_, output) = queue_frame(
+            &ctx,
+            &tokens,
+            &mut queue,
+            Playbar::Full,
+            Bar::default(),
+            Vec::new(),
+        );
         assert_eq!(queue.repeat(), crate::repeat::Repeat::One);
         assert!(
             text_inside(&output, repeat).contains(&"1".to_owned()),
             "repeat one carries no badge"
         );
+    }
+
+    fn shown_bar() -> Bar {
+        Bar {
+            pane: PaneButton::Shown,
+            ..Bar::default()
+        }
+    }
+
+    #[test]
+    fn a_click_on_the_queue_button_reports_a_pane_press_and_no_command() {
+        for pane in [PaneButton::Shown, PaneButton::Hidden] {
+            let tokens = Tokens::DARK;
+            let ctx = context(&tokens);
+            let mut queue = queue_of(4);
+            let at = queue_button(heart_bar(), Playbar::Full).center();
+            let bar = Bar {
+                pane,
+                ..Bar::default()
+            };
+
+            let replies = click_at(&ctx, &tokens, &mut queue, Playbar::Full, bar, at);
+
+            assert!(
+                replies.iter().any(|reply| reply.pane),
+                "{pane:?}: the click did not reach the queue button: {replies:?}"
+            );
+            assert!(
+                replies.iter().all(|reply| reply.command.is_none()),
+                "{pane:?}: a pane press is the window's, so it asks for no command: {replies:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_click_on_an_unavailable_queue_button_reports_nothing() {
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        let mut queue = queue_of(4);
+        let at = queue_button(heart_bar(), Playbar::Full).center();
+
+        let replies = click_at(&ctx, &tokens, &mut queue, Playbar::Full, Bar::default(), at);
+
+        assert!(
+            replies.iter().all(|reply| !reply.pane),
+            "an unavailable button reported a press: {replies:?}"
+        );
+    }
+
+    #[test]
+    fn a_claimed_queue_button_reports_nothing() {
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        let mut queue = queue_of(4);
+        let at = queue_button(heart_bar(), Playbar::Full).center();
+        let bar = Bar {
+            queue_claimed: true,
+            ..shown_bar()
+        };
+
+        let replies = click_at(&ctx, &tokens, &mut queue, Playbar::Full, bar, at);
+
+        assert!(
+            replies.iter().all(|reply| !reply.pane),
+            "a claimed button toggled the pane: {replies:?}"
+        );
+    }
+
+    /// A held key must press the pane switch once, because a toggle that read
+    /// every repeat would flap the window.
+    #[test]
+    fn a_held_enter_on_the_queue_button_presses_once() {
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        let mut queue = queue_of(4);
+        let bar = shown_bar();
+
+        let _ = queue_frame(&ctx, &tokens, &mut queue, Playbar::Full, bar, Vec::new());
+        for _ in 0..7 {
+            let _ = queue_frame(
+                &ctx,
+                &tokens,
+                &mut queue,
+                Playbar::Full,
+                bar,
+                vec![key(Key::Tab, Modifiers::NONE)],
+            );
+        }
+
+        let enter = |repeat| Event::Key {
+            key: Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat,
+            modifiers: Modifiers::NONE,
+        };
+        let mut presses = Vec::new();
+        for repeat in [false, true, true] {
+            let (reply, _) = queue_frame(
+                &ctx,
+                &tokens,
+                &mut queue,
+                Playbar::Full,
+                bar,
+                vec![enter(repeat)],
+            );
+            presses.push(reply.pane);
+        }
+
+        assert_eq!(
+            presses,
+            vec![true, false, false],
+            "a held Enter toggled the pane more than once"
+        );
+    }
+
+    /// The reduced form draws the queue in the transport, so the same press has
+    /// to reach the same channel from that column.
+    #[test]
+    fn the_reduced_form_places_and_reports_the_queue_press_the_same_way() {
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        let mut queue = queue_of(4);
+        let bar = shown_bar();
+        let at = queue_button(heart_bar(), Playbar::Reduced).center();
+
+        let replies = click_at(&ctx, &tokens, &mut queue, Playbar::Reduced, bar, at);
+
+        assert!(
+            replies.iter().any(|reply| reply.pane),
+            "the reduced transport's queue press went nowhere: {replies:?}"
+        );
+    }
+
+    #[test]
+    fn a_lit_queue_paints_the_accent_and_an_unlit_one_does_not() {
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        let mut queue = queue_of(4);
+        let at = queue_button(heart_bar(), Playbar::Full);
+
+        for (bar, lit) in [
+            (shown_bar(), true),
+            (
+                Bar {
+                    pane: PaneButton::Hidden,
+                    ..Bar::default()
+                },
+                false,
+            ),
+            (Bar::default(), false),
+        ] {
+            let (_, output) =
+                queue_frame(&ctx, &tokens, &mut queue, Playbar::Full, bar, Vec::new());
+            assert_eq!(
+                accent_inside(&output, &tokens, at),
+                lit,
+                "{:?} drew the accent {lit}",
+                bar.pane
+            );
+        }
     }
 }
