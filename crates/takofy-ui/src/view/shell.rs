@@ -8874,6 +8874,37 @@ mod tests {
     }
 
     #[test]
+    fn escape_on_the_frame_the_field_opens() {
+        let ctx = column_context();
+        let mut art = Art::default();
+        let mut library = column_library(&["a"], true);
+        library.naming.open();
+        library.naming.edit().push_str("Night Drive");
+
+        // The field's key filter is stored only on the frame after it first
+        // holds the keyboard, so this Escape belongs to nobody: the frame opens
+        // the field and the key is dropped rather than closing it.
+        let opened = column_frame(
+            &ctx,
+            &mut library,
+            &mut art,
+            vec![key(egui::Key::Escape, true)],
+            true,
+        );
+
+        assert!(
+            library.naming.is_open(),
+            "the opening frame's Escape closed the field"
+        );
+        assert_eq!(library.naming.text(), "Night Drive");
+        assert!(
+            ctx.memory(|memory| memory.has_focus(opened.field)),
+            "the opening frame's Escape took the keyboard off the field"
+        );
+        assert_eq!(opened.command, None);
+    }
+
+    #[test]
     fn escape_cancels_and_returns_focus_to_plus() {
         let ctx = column_context();
         let mut art = Art::default();

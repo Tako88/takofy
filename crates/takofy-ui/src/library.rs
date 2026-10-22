@@ -187,6 +187,9 @@ pub struct Library {
     /// Its access has to be dropped with it: the access follows the list it
     /// belongs to, and a revision only means something beside that order.
     rootlist_dropped: bool,
+    /// Whether a failed link owes the list a fresh read, because the link may
+    /// have landed with only its reply lost.
+    rootlist_stale: bool,
     /// The sidebar write in flight. It excludes the page's write and itself.
     sidebar_pending: Option<SidebarPending>,
     /// Why the last sidebar write failed, until a gesture or a read clears it.
@@ -405,7 +408,9 @@ impl Library {
                 self.sidebar_kind.choose(SidebarKind::Playlists);
                 self.reveal_top = true;
             }
-            // Nothing was created, so the text stays for a second attempt.
+            // Nothing was created, so the text stays for a second attempt. The
+            // POST may still have landed with only its reply lost, and the route
+            // returns no id to check, so a retry can leave two playlists.
             Update::PlaylistCreateFailed => {
                 if !matches!(self.sidebar_pending, Some(SidebarPending::Create)) {
                     return;
@@ -423,6 +428,11 @@ impl Library {
                 self.sidebar_pending = None;
                 self.naming.finished();
                 self.sidebar_notice = Some(SidebarWrite::Link);
+                // The link may have landed with only its reply lost, so the held
+                // revision names the rootlist as it was before it. Dropping it
+                // refuses the next create or move until a read names a new one.
+                self.rootlist = None;
+                self.rootlist_stale = true;
             }
             Update::Tracks {
                 playlist,
@@ -1214,6 +1224,18 @@ impl Library {
         self.saved_albums = Load::Idle;
         self.likes.reload();
         Command::ReloadLibrary
+    }
+
+    /// The library read a failed link asks for, if one is due.
+    ///
+    /// Want-driven like the followed lists: the update carries no command, so it
+    /// is asked for after the drain, when the failed write is no longer pending
+    /// and the read can therefore be adopted.
+    pub fn rootlist_request(&mut self) -> Option<Command> {
+        if !std::mem::take(&mut self.rootlist_stale) {
+            return None;
+        }
+        Some(self.reload())
     }
 
     /// The command that starts the likeness load, if one is due.
@@ -6381,6 +6403,24 @@ mod tests {
     }
 
     #[test]
+    fn a_created_reply_with_no_ready_list_is_ignored() {
+        let mut library = naming_library(&["a"], "Mix");
+        assert!(library.create_playlist().is_some());
+        library.playlists = Load::Loading;
+
+        library.apply(&Update::PlaylistCreated {
+            entry: created("spotify:playlist:new", "Mix", access(0x09, true)),
+            revision: revision(0x08),
+        });
+
+        assert!(
+            matches!(library.playlists, Load::Loading),
+            "a read in flight was replaced by the created row's list"
+        );
+        assert!(!library.write_in_flight(), "the create stayed pending");
+    }
+
+    #[test]
     fn a_playlists_read_during_a_create_is_not_adopted_and_its_access_goes_with_it() {
         let mut library = naming_library(&["a", "b"], "Mix");
         assert!(library.create_playlist().is_some());
@@ -6457,6 +6497,24 @@ mod tests {
         assert_eq!(library.naming.text(), "");
         assert_eq!(sidebar_order(&library), names(&["a"]), "a row appeared");
         assert!(!library.write_in_flight());
+    }
+
+    #[test]
+    fn a_link_failure_asks_for_a_fresh_read() {
+        let mut library = naming_library(&["a"], "Night Drive");
+        assert!(library.create_playlist().is_some());
+
+        library.apply(&Update::PlaylistUnlinked);
+
+        assert!(
+            library.rootlist.is_none(),
+            "a revision from before the link is one the next write cannot name"
+        );
+        library.naming.open();
+        library.naming.edit().push_str("Again");
+        assert_eq!(library.create_playlist(), None, "a write on no revision");
+        assert_eq!(library.rootlist_request(), Some(Command::ReloadLibrary));
+        assert_eq!(library.rootlist_request(), None, "a second read");
     }
 
     #[test]

@@ -275,8 +275,9 @@ pub(crate) async fn read_playlist_state(session: &Session, uri: &str) -> Option<
     };
     let playlist = match Playlist::get(session, &id).await {
         Ok(playlist) => playlist,
-        Err(error) => {
-            log::warn!("playlist state could not be read: {error}");
+        Err(_) => {
+            // The error is not formatted: it can embed a response body.
+            log::warn!("playlist state could not be read");
             return None;
         }
     };
