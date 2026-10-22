@@ -2592,6 +2592,35 @@ mod tests {
     }
 
     #[test]
+    fn an_unowned_playlist_still_offers_its_removal() {
+        let ctx = context();
+        // The rootlist is the user's own, but this playlist's tracks are not
+        // theirs to edit; the unlink names the rootlist row and not the tracks.
+        let mut library = movable_playlists(&["A"], 7, false, None);
+        library.apply(&Update::RootlistAccess(takofy_model::PlaylistAccess {
+            revision: takofy_model::Revision::from_wire(&[7]).expect("a revision"),
+            editable: true,
+        }));
+        assert!(library.rootlist_removable());
+        let mut art = Art::default();
+        let (output, _) = run_column(&ctx, Vec::new(), &mut library, &mut art);
+        let at = name_line(&output, "A");
+
+        let _ = right_click(&ctx, at, &mut library, &mut art);
+
+        let request = context_menu::take_request(&ctx).expect("a menu");
+        assert_eq!(
+            request
+                .items
+                .iter()
+                .map(|item| item.label.as_str())
+                .collect::<Vec<_>>(),
+            ["Copy link", "Remove from library"],
+            "an unowned playlist was not offered its removal"
+        );
+    }
+
+    #[test]
     fn the_failure_notice_draws_on_every_tab() {
         let line = "Could not remove that from your library. Try again.";
         for kind in sidebar_kind::ROW {

@@ -210,8 +210,8 @@ enum SidebarPending {
     Add { playlist: String, count: usize },
     /// A playlist being created and linked, which names no list yet.
     Create,
-    /// One playlist being unlinked from the rootlist.
-    Remove { playlist: String },
+    /// One playlist being unlinked from the rootlist, and the row it named.
+    Remove { playlist: String, index: usize },
     /// One saved album, show or artist being written out of its set.
     RemoveSaved { uri: String },
 }
@@ -306,7 +306,11 @@ impl Library {
                 // can never be reordered on the previous read's revision.
                 self.rootlist = None;
                 self.rootlist_dropped = false;
-                self.sidebar_notice = None;
+                // A failed removal asked for this read, so its sentence has to
+                // outlive the answer; a chip change or the next write clears it.
+                if self.sidebar_notice != Some(SidebarWrite::Remove) {
+                    self.sidebar_notice = None;
+                }
             }
             Update::PlaylistFailed(failure) => {
                 self.playlists = Load::Failed(*failure);
@@ -356,20 +360,35 @@ impl Library {
             // A confirmed unlink drops the row and hands the next write its
             // revision.
             Update::PlaylistRemoved { playlist, revision } => {
-                let Some(SidebarPending::Remove { playlist: pending }) = &self.sidebar_pending
-                else {
-                    return;
+                let (pending, index) = match &self.sidebar_pending {
+                    Some(SidebarPending::Remove { playlist, index }) => (playlist.clone(), *index),
+                    _ => return,
                 };
-                if pending != playlist {
+                if pending != *playlist {
                     return;
                 }
                 self.sidebar_pending = None;
                 self.sidebar_notice = None;
+                // The list can move under the index the write named, and a
+                // removal at a stale one would unlink a playlist the user never
+                // picked. A list that no longer holds the row there is re-read
+                // rather than guessed at.
+                let named = match &self.playlists {
+                    Load::Ready(playlists) => playlists
+                        .get(index)
+                        .is_some_and(|entry| entry.uri == *playlist),
+                    Load::Idle | Load::Loading | Load::Failed(_) => false,
+                };
+                if !named {
+                    self.rootlist = None;
+                    self.rootlist_stale = true;
+                    return;
+                }
                 if let Some(access) = &mut self.rootlist {
                     access.revision = revision.clone();
                 }
                 if let Load::Ready(playlists) = &mut self.playlists {
-                    playlists.retain(|entry| entry.uri != *playlist);
+                    playlists.remove(index);
                 }
                 self.context_covers.remove(playlist);
                 // The removed playlist may be the page on screen; the rule a
@@ -386,7 +405,9 @@ impl Library {
             // landed with only its reply lost, so the next read is what heals
             // it.
             Update::PlaylistRemoveFailed { playlist } => {
-                let Some(SidebarPending::Remove { playlist: pending }) = &self.sidebar_pending
+                let Some(SidebarPending::Remove {
+                    playlist: pending, ..
+                }) = &self.sidebar_pending
                 else {
                     return;
                 };
@@ -786,7 +807,10 @@ impl Library {
     }
 
     /// Whether a sidebar write of `uri`'s saved removal is in flight.
-    fn saved_removal_pending(&self, uri: &str) -> bool {
+    ///
+    /// A page's own write asks this before sending: two writes for one artist
+    /// would land in order and leave its row and its label disagreeing.
+    pub fn saved_removal_pending(&self, uri: &str) -> bool {
         matches!(&self.sidebar_pending, Some(SidebarPending::RemoveSaved { uri: pending }) if pending == uri)
     }
 
@@ -1057,18 +1081,21 @@ impl Library {
         if !self.can_remove(item.kind) {
             return None;
         }
-        let command = match item.kind {
+        let index = match item.kind {
             SidebarKind::Playlists => {
                 let Load::Ready(playlists) = &self.playlists else {
                     return None;
                 };
-                let index = playlists.iter().position(|entry| entry.uri == item.uri)?;
-                Command::RemovePlaylist {
-                    playlist: item.uri.clone(),
-                    revision: self.rootlist.as_ref()?.revision.clone(),
-                    index,
-                }
+                Some(playlists.iter().position(|entry| entry.uri == item.uri)?)
             }
+            SidebarKind::Albums | SidebarKind::Artists | SidebarKind::Podcasts => None,
+        };
+        let command = match item.kind {
+            SidebarKind::Playlists => Command::RemovePlaylist {
+                playlist: item.uri.clone(),
+                revision: self.rootlist.as_ref()?.revision.clone(),
+                index: index?,
+            },
             SidebarKind::Albums => {
                 if !listed(&self.saved_albums, &item.uri, |album| &album.uri) {
                     return None;
@@ -1103,6 +1130,7 @@ impl Library {
         self.sidebar_pending = match item.kind {
             SidebarKind::Playlists => Some(SidebarPending::Remove {
                 playlist: item.uri.clone(),
+                index: index?,
             }),
             SidebarKind::Albums | SidebarKind::Artists | SidebarKind::Podcasts => {
                 Some(SidebarPending::RemoveSaved {
@@ -7191,7 +7219,8 @@ mod tests {
         assert_eq!(
             library.sidebar_pending,
             Some(SidebarPending::Remove {
-                playlist: "b".to_owned()
+                playlist: "b".to_owned(),
+                index: 1,
             })
         );
     }
@@ -7333,6 +7362,71 @@ mod tests {
     }
 
     #[test]
+    fn a_confirm_drops_one_row_of_a_duplicate_uri() {
+        let mut library = sidebar_library(&["a", "a"], 0x07, true, None);
+
+        assert!(
+            library
+                .remove_from_library(&item(SidebarKind::Playlists, "a"))
+                .is_some()
+        );
+        library.apply(&Update::PlaylistRemoved {
+            playlist: "a".to_owned(),
+            revision: revision(0x09),
+        });
+
+        assert_eq!(
+            sidebar_order(&library),
+            names(&["a"]),
+            "the confirm dropped every row naming that playlist"
+        );
+    }
+
+    #[test]
+    fn a_confirm_at_a_stale_index_rereads_instead_of_mutating_the_list() {
+        let mut shifted = sidebar_library(&["a", "b"], 0x07, true, None);
+        assert!(
+            shifted
+                .remove_from_library(&item(SidebarKind::Playlists, "b"))
+                .is_some()
+        );
+        // The list no longer holds the row at the index the write named, as a
+        // replacement list would leave it.
+        shifted.playlists = Load::Ready(vec![with_access(playlist("a", "A"), 0x07, true, None)]);
+        shifted.apply(&Update::PlaylistRemoved {
+            playlist: "b".to_owned(),
+            revision: revision(0x09),
+        });
+
+        assert_eq!(
+            sidebar_order(&shifted),
+            names(&["a"]),
+            "a removal at a stale index dropped the wrong row"
+        );
+        assert!(
+            shifted.rootlist.is_none(),
+            "a stale index kept the held revision"
+        );
+        assert!(shifted.rootlist_stale, "the moved list owed a fresh read");
+        assert_eq!(shifted.rootlist_request(), Some(Command::ReloadLibrary));
+
+        let mut vanished = sidebar_library(&["a"], 0x07, true, None);
+        assert!(
+            vanished
+                .remove_from_library(&item(SidebarKind::Playlists, "a"))
+                .is_some()
+        );
+        vanished.playlists = Load::Ready(Vec::new());
+        vanished.apply(&Update::PlaylistRemoved {
+            playlist: "a".to_owned(),
+            revision: revision(0x09),
+        });
+
+        assert_eq!(sidebar_order(&vanished), names(&[]));
+        assert!(vanished.rootlist_stale, "a missing row owed a fresh read");
+    }
+
+    #[test]
     fn a_follow_up_removal_names_the_shifted_index() {
         let mut library = sidebar_library(&["a", "b", "c"], 0x07, true, None);
         assert!(
@@ -7372,13 +7466,31 @@ mod tests {
             revision: revision(0x09),
         });
 
-        assert_eq!(library.page(), None, "the removed page stayed open");
+        assert_eq!(
+            library.page(),
+            None,
+            "the removed page stayed open instead of falling to the root"
+        );
+        let removed = Page::Playlist("a".to_owned());
+        assert!(
+            !library.history.pages().any(|page| *page == removed),
+            "the removed playlist stayed in the history: {:?}",
+            library.history
+        );
+        assert_eq!(library.wanted, None, "the removed playlist stayed wanted");
+        assert!(
+            library
+                .history
+                .pages()
+                .any(|page| *page == Page::Album("spotify:album:r".to_owned())),
+            "the album behind it was pruned with it"
+        );
         assert!(library.can_back());
-        assert!(library.back().is_some() || library.page().is_some());
+        library.back();
         assert_eq!(
             library.page(),
             Some(&Page::Album("spotify:album:r".to_owned())),
-            "the album behind it was pruned with it"
+            "Back does not land on the album behind the removed page"
         );
     }
 
@@ -7400,6 +7512,29 @@ mod tests {
         assert!(!library.write_in_flight());
         assert!(library.rootlist.is_none(), "the held revision was kept");
         assert_eq!(library.rootlist_request(), Some(Command::ReloadLibrary));
+
+        // The read the failure asked for must not erase its own sentence.
+        library.apply(&Update::Playlists(vec![
+            playlist("a", "A"),
+            playlist("b", "B"),
+        ]));
+        assert_eq!(sidebar_order(&library), names(&["a", "b"]));
+        assert_eq!(
+            library.sidebar_notice,
+            Some(SidebarWrite::Remove),
+            "the heal read cleared the notice it was asked for"
+        );
+
+        library.apply(&Update::RootlistAccess(rootlist_access(0x09, true)));
+        assert!(
+            library
+                .remove_from_library(&item(SidebarKind::Playlists, "a"))
+                .is_some()
+        );
+        assert_eq!(
+            library.sidebar_notice, None,
+            "the next write kept the old sentence"
+        );
     }
 
     #[test]

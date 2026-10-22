@@ -10397,6 +10397,50 @@ mod tests {
     }
 
     #[test]
+    fn a_confirmed_removal_lands_while_the_drawer_covers_the_column() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_playlists(
+            &mut window,
+            &[("Night Drive", None), ("Deep Focus", None)],
+            Some(rootlist_access(true)),
+        );
+        let _ = window.library.select("playlist:Night Drive");
+
+        right_click_sidebar_row(&mut window, &mut transport, &mut queue, "Night Drive");
+        settle_menu(&mut window, &mut transport, &mut queue);
+        assert!(
+            matches!(
+                press(&mut window, &mut transport, &mut queue, egui::Key::Delete),
+                Some(Command::RemovePlaylist { .. })
+            ),
+            "the removal never went out"
+        );
+
+        window.drawer = Drawer::Open;
+        window.library.apply(&Update::PlaylistRemoved {
+            playlist: "playlist:Night Drive".to_owned(),
+            revision: revision("root-2"),
+        });
+
+        assert_eq!(
+            window.library.page(),
+            None,
+            "the drawer dropped the removed page's way home"
+        );
+        match &window.library.playlists {
+            Load::Ready(playlists) => assert!(
+                playlists
+                    .iter()
+                    .all(|entry| entry.uri != "playlist:Night Drive"),
+                "the removed row stayed in the list"
+            ),
+            other => panic!("the list was dropped: {other:?}"),
+        }
+    }
+
+    #[test]
     fn del_on_a_bare_focused_row_removes_nothing() {
         let mut transport = Transport::default();
         let mut queue = Queue::default();

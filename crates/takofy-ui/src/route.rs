@@ -86,6 +86,17 @@ impl History {
         self.current.as_ref()
     }
 
+    /// Every page the history still holds, the one on screen included.
+    ///
+    /// A page can be dropped from a stack that is never walked again, so what a
+    /// pruning rule leaves behind has to be readable without moving.
+    pub fn pages(&self) -> impl Iterator<Item = &Page> + '_ {
+        self.current
+            .iter()
+            .chain(self.back.iter().flatten())
+            .chain(self.forward.iter().flatten())
+    }
+
     /// Moves to `page`, recording the move.
     ///
     /// Moving to the page already on screen changes nothing and returns false.
