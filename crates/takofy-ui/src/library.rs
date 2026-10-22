@@ -8263,4 +8263,43 @@ mod tests {
         assert!(!library.renaming.is_open());
         assert!(!library.renaming.wants_return());
     }
+    #[test]
+    fn the_next_page_write_carries_the_rename_replys_revision() {
+        let mut library = sidebar_library(&["a"], 0x07, true, None);
+        library.select("a");
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: vec![track("t0"), track("t1")],
+            cover: None,
+            access: access(0x07, true),
+        });
+        rename_pending(&mut library, "a", crate::naming::Surface::Row);
+        library.apply(&Update::PlaylistRenamed {
+            playlist: "a".to_owned(),
+            name: "New".to_owned(),
+            revision: revision(0x09),
+        });
+        let first = match &library.tracks {
+            Load::Ready(tracks) => tracks.tracks[0].clone(),
+            Load::Idle | Load::Loading | Load::Failed(_) => panic!("the page is ready"),
+        };
+
+        let (command, _) = library
+            .move_tracks("a", &[0], 2, &[first])
+            .expect("the move is taken");
+
+        assert_eq!(
+            command,
+            Command::MoveTrack {
+                playlist: "a".to_owned(),
+                revision: revision(0x09),
+                moves: vec![Move {
+                    from: 0,
+                    length: 1,
+                    to: 2,
+                }],
+            },
+            "the next move named the pre-rename base"
+        );
+    }
 }

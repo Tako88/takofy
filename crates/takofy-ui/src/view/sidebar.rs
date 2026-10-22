@@ -2601,6 +2601,42 @@ mod tests {
                 "a row the listing does not call editable offered Rename"
             );
         }
+
+        let ctx = context();
+        let mut library = movable_playlists(&["A"], 7, true, None);
+        if let Load::Ready(playlists) = &mut library.playlists {
+            playlists[0].access = None;
+        }
+        let mut art = Art::default();
+        let (output, _) = run_column(&ctx, Vec::new(), &mut library, &mut art);
+        let at = name_line(&output, "A");
+        let _ = right_click(&ctx, at, &mut library, &mut art);
+        let request = context_menu::take_request(&ctx).expect("the row posted a menu");
+        assert!(
+            request
+                .items
+                .iter()
+                .all(|item| item.verb != crate::menu::Verb::Rename),
+            "a row with no access yet offered Rename"
+        );
+
+        if let Load::Ready(playlists) = &mut library.playlists {
+            playlists[0].access = Some(takofy_model::PlaylistAccess {
+                revision: takofy_model::Revision::from_wire(&[7]).expect("a revision"),
+                editable: true,
+            });
+        }
+        let (output, _) = run_column(&ctx, Vec::new(), &mut library, &mut art);
+        let at = name_line(&output, "A");
+        let _ = right_click(&ctx, at, &mut library, &mut art);
+        let request = context_menu::take_request(&ctx).expect("the row posted a menu");
+        assert!(
+            request
+                .items
+                .iter()
+                .any(|item| item.verb == crate::menu::Verb::Rename),
+            "the arrived access still offered no Rename"
+        );
     }
 
     #[test]
