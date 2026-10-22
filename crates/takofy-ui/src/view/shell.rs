@@ -1087,7 +1087,8 @@ mod tests {
     use std::time::Instant;
 
     use takofy_model::{
-        CoverUrl, Move, PlaylistAccess, PlaylistEntry, Removal, Revision, SavedAlbum, TrackEntry,
+        CoverUrl, FollowedArtist, FollowedShow, Move, PlaylistAccess, PlaylistEntry, Removal,
+        Revision, SavedAlbum, TrackEntry,
     };
 
     use super::*;
@@ -10251,5 +10252,224 @@ mod tests {
 
         assert_eq!(command, None, "a removal was applied over a typing field");
         assert!(!library.write_in_flight());
+    }
+
+    /// A point inside the sidebar row painted as `name`.
+    fn sidebar_line(output: &egui::FullOutput, window: &Window, name: &str) -> egui::Pos2 {
+        let rect = text_in(output, name, sidebar_rect(window))
+            .unwrap_or_else(|| panic!("{name:?} is painted in the sidebar"));
+        egui::Pos2::new(rect.left() + 4.0, rect.center().y)
+    }
+
+    /// Right-clicks the sidebar row painted as `name`, the way a mouse does.
+    fn right_click_sidebar_row(
+        window: &mut Window,
+        transport: &mut Transport,
+        queue: &mut Queue,
+        name: &str,
+    ) {
+        let (_, frame) = window.frame(transport, queue, Vec::new());
+        let at = sidebar_line(&frame, window, name);
+        for event in [
+            egui::Event::PointerMoved(at),
+            side(at, egui::PointerButton::Secondary, true),
+            side(at, egui::PointerButton::Secondary, false),
+        ] {
+            let _ = window.frame(transport, queue, vec![event]);
+        }
+    }
+
+    /// A sidebar holding one row of each kind, each one the user may remove.
+    fn removable_rows(window: &mut Window) {
+        sidebar_playlists(
+            window,
+            &[("Night Drive", None)],
+            Some(rootlist_access(true)),
+        );
+        window
+            .library
+            .apply(&Update::FollowedShows(vec![FollowedShow {
+                uri: "spotify:show:s".to_owned(),
+                name: "Field Notes".to_owned(),
+                named: true,
+                publisher: None,
+                cover: None,
+                episodes: None,
+            }]));
+        window
+            .library
+            .apply(&Update::FollowedArtists(vec![FollowedArtist {
+                uri: "spotify:artist:a".to_owned(),
+                name: "Vela Moreno".to_owned(),
+                named: true,
+                portrait: None,
+                releases: None,
+            }]));
+        window.library.apply(&Update::SavedAlbums(vec![SavedAlbum {
+            uri: "spotify:album:r".to_owned(),
+            name: "A Record".to_owned(),
+            named: true,
+            artists: String::new(),
+            year: None,
+            cover: None,
+            tracks: None,
+        }]));
+    }
+
+    #[test]
+    fn a_sidebar_rows_removal_asks_for_its_kinds_own_write() {
+        for (kind, name) in [
+            (SidebarKind::Playlists, "Night Drive"),
+            (SidebarKind::Albums, "A Record"),
+            (SidebarKind::Artists, "Vela Moreno"),
+            (SidebarKind::Podcasts, "Field Notes"),
+        ] {
+            let mut transport = Transport::default();
+            let mut queue = Queue::default();
+            let mut window = Window::new(Vec2::new(1400.0, 900.0));
+            removable_rows(&mut window);
+            assert!(window.library.choose_kind(kind));
+
+            right_click_sidebar_row(&mut window, &mut transport, &mut queue, name);
+            assert!(window.menu.is_open(), "{kind:?} opened no menu");
+            settle_menu(&mut window, &mut transport, &mut queue);
+
+            let command = press(&mut window, &mut transport, &mut queue, egui::Key::Delete);
+
+            let expected = match kind {
+                SidebarKind::Playlists => Command::RemovePlaylist {
+                    playlist: "playlist:Night Drive".to_owned(),
+                    revision: revision("root-1"),
+                    index: 0,
+                },
+                SidebarKind::Albums => Command::RemoveSaved {
+                    uri: "spotify:album:r".to_owned(),
+                },
+                SidebarKind::Artists => Command::SetFollow {
+                    artist: "spotify:artist:a".to_owned(),
+                    followed: false,
+                },
+                SidebarKind::Podcasts => Command::RemoveSaved {
+                    uri: "spotify:show:s".to_owned(),
+                },
+            };
+            assert_eq!(command, Some(expected), "{kind:?}");
+            assert!(window.library.write_in_flight(), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn a_confirmed_removal_drops_the_row_and_its_open_page_goes_home() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_playlists(
+            &mut window,
+            &[("Night Drive", None), ("Deep Focus", None)],
+            Some(rootlist_access(true)),
+        );
+        let _ = window.library.select("playlist:Night Drive");
+        assert!(window.library.page().is_some());
+
+        right_click_sidebar_row(&mut window, &mut transport, &mut queue, "Night Drive");
+        settle_menu(&mut window, &mut transport, &mut queue);
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Delete);
+        assert!(
+            matches!(command, Some(Command::RemovePlaylist { .. })),
+            "{command:?}"
+        );
+
+        window.library.apply(&Update::PlaylistRemoved {
+            playlist: "playlist:Night Drive".to_owned(),
+            revision: revision("root-2"),
+        });
+
+        assert_eq!(window.library.page(), None, "the removed page stayed open");
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            painted_at(&frame, "Deep Focus").is_some(),
+            "the other row went with it"
+        );
+        assert!(
+            painted_at(&frame, "Night Drive").is_none(),
+            "the removed row stayed in the sidebar"
+        );
+    }
+
+    #[test]
+    fn del_on_a_bare_focused_row_removes_nothing() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_playlists(
+            &mut window,
+            &[("Night Drive", None)],
+            Some(rootlist_access(true)),
+        );
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let at = sidebar_line(&frame, &window, "Night Drive");
+        for pressed in [true, false] {
+            let _ = window.frame(
+                &mut transport,
+                &mut queue,
+                vec![side(at, egui::PointerButton::Primary, pressed)],
+            );
+        }
+        assert!(
+            window.ctx.memory(|memory| memory.focused()).is_some(),
+            "the click left the row without the keyboard"
+        );
+
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Delete);
+
+        assert_eq!(command, None, "a bare row unlinked a playlist");
+        assert!(!window.library.write_in_flight());
+    }
+
+    #[test]
+    fn a_sidebar_row_opens_no_menu_while_a_write_is_in_flight() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_playlists(
+            &mut window,
+            &[("Night Drive", None), ("Deep Focus", None)],
+            Some(rootlist_access(true)),
+        );
+        assert!(
+            window
+                .library
+                .move_playlist(0, 2, "playlist:Night Drive")
+                .is_some()
+        );
+
+        right_click_sidebar_row(&mut window, &mut transport, &mut queue, "Deep Focus");
+
+        assert!(!window.menu.is_open(), "a menu opened over a write");
+    }
+
+    #[test]
+    fn escape_closes_a_sidebar_rows_menu_back_to_its_row() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_playlists(
+            &mut window,
+            &[("Night Drive", None)],
+            Some(rootlist_access(true)),
+        );
+        right_click_sidebar_row(&mut window, &mut transport, &mut queue, "Night Drive");
+        assert!(window.menu.is_open());
+        let opener = window.menu.opener().expect("a door names its opener");
+        settle_menu(&mut window, &mut transport, &mut queue);
+
+        let _ = press(&mut window, &mut transport, &mut queue, egui::Key::Escape);
+
+        assert!(!window.menu.is_open());
+        assert_eq!(
+            window.ctx.memory(|memory| memory.focused()),
+            Some(opener),
+            "the keyboard went somewhere other than the row"
+        );
     }
 }
