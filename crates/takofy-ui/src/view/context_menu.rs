@@ -107,7 +107,11 @@ pub fn show(ui: &mut Ui, frame: Frame<'_>) -> Option<Closed> {
     // The frame the menu opens is its own: the Enter that opened it must not
     // also fire the row it lights, and the click that opened it must not
     // dismiss it.
-    let fresh = menu.just_opened();
+    // A frame is not a pass: egui can run the opening frame twice, so the input
+    // that opened the menu is recognised by the clock, not by a flag that the
+    // first pass would clear before the second pass read it.
+    let now = ui.input(|input| input.time);
+    let fresh = menu.just_opened(now);
 
     let widths: Vec<geometry::RowWidth> = menu
         .items()
@@ -148,9 +152,11 @@ pub fn show(ui: &mut Ui, frame: Frame<'_>) -> Option<Closed> {
             // is empty and every click on the card reads as a click elsewhere.
             ui.expand_to_include_rect(rect);
             sizing = ui.is_sizing_pass();
-            if fresh && !sizing {
-                // A sizing pass cannot take focus: the keyboard is asked for on
-                // the first frame that can hold it.
+            if !sizing {
+                // A sizing pass cannot take focus, so the keyboard is asked for
+                // on every frame that can hold it: a context menu is modal until
+                // it is dismissed, and a focus taken elsewhere must not leave it
+                // drawing keys nobody will read.
                 ui.memory_mut(|memory| memory.request_focus(surface_id));
             }
             let card = Card {
@@ -168,10 +174,8 @@ pub fn show(ui: &mut Ui, frame: Frame<'_>) -> Option<Closed> {
             chosen = clicked;
         });
 
-    // A sizing pass paints nothing and interacts with nothing, so the frame after
-    // it is still the menu's opening frame.
     if !sizing {
-        menu.settle_opened();
+        menu.mark_drawn(now);
     }
 
     // Enter is consumed on every frame, so a repeat reaches neither the `⋯` nor
@@ -235,11 +239,6 @@ pub fn show(ui: &mut Ui, frame: Frame<'_>) -> Option<Closed> {
         && ui.input(|input| input.pointer.any_down() || input.pointer.any_click());
     if engaged && !ui.memory(|memory| memory.has_focus(surface_id)) {
         ui.memory_mut(|memory| memory.request_focus(surface_id));
-    }
-    // The keyboard left the card for something else, so the menu is done. It
-    // does not take the keyboard back: whatever moved it is the user's.
-    if !fresh && !ui.memory(|memory| memory.has_focus(surface_id)) {
-        return close(ui, menu, Reason::Focus);
     }
     ui.memory_mut(|memory| memory.set_focus_lock_filter(surface_id, FILTER));
 
@@ -424,8 +423,8 @@ fn key_font() -> FontId {
 
 fn close(ui: &Ui, menu: &mut Menu, reason: Reason) -> Option<Closed> {
     let closed = menu.close(reason)?;
-    // A focus that moved elsewhere is the user's, so it is not taken back.
-    if reason != Reason::Focus {
+    // A page change has no button to give the keyboard back to.
+    if closed.opener.is_some() {
         focus_back(ui, closed);
     }
     Some(closed)

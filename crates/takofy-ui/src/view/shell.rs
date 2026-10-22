@@ -939,6 +939,8 @@ mod tests {
         /// The modifiers every frame reports as held. egui has no field for them
         /// on `RawInput`: a frame is told through `Event::ModifiersChanged`.
         held: egui::Modifiers,
+        /// Whether the frame reports the window as holding the OS keyboard.
+        unfocused: bool,
     }
 
     impl Window {
@@ -957,6 +959,7 @@ mod tests {
                 art: Art::default(),
                 now: Instant::now(),
                 held: egui::Modifiers::NONE,
+                unfocused: false,
             }
         }
 
@@ -974,6 +977,7 @@ mod tests {
             let input = egui::RawInput {
                 screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, self.size)),
                 events,
+                focused: !self.unfocused,
                 ..Default::default()
             };
             self.art.begin_frame();
@@ -7036,6 +7040,37 @@ mod tests {
             1,
             "a held Enter queued the row again"
         );
+    }
+
+    #[test]
+    fn the_menu_survives_idle_frames() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1"]);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let at = row_line(&frame, view_rect(&window), "p1");
+        for event in crate::view::test_support::secondary_click_events(at) {
+            let _ = window.frame(&mut transport, &mut queue, vec![event]);
+        }
+        assert!(window.menu.is_open(), "the right-click opened no menu");
+        for index in 0..10 {
+            let _ = window.frame(&mut transport, &mut queue, Vec::new());
+            assert!(
+                window.menu.is_open(),
+                "the menu closed on idle frame {index}"
+            );
+        }
+        // The window losing the OS keyboard is not the menu's business until the
+        // user acts.
+        window.unfocused = true;
+        for index in 0..3 {
+            let _ = window.frame(&mut transport, &mut queue, Vec::new());
+            assert!(
+                window.menu.is_open(),
+                "the menu closed on unfocused frame {index}"
+            );
+        }
     }
 
     #[test]

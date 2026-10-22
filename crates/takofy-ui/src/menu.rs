@@ -9,18 +9,20 @@
 //! cannot apply is absent rather than greyed; the destructive row is always
 //! last; and closing hands the keyboard back to the button that opened it.
 
-use egui::{Id, Rect};
+use egui::{Id, Pos2, Rect};
 use takofy_model::TrackEntry;
 
 use crate::route::Page;
 
 /// Where a menu is drawn from.
 ///
-/// Only the button form exists: one menu, one position, three doors, and every
-/// door opens it right-aligned to the row's own `⋯`.
+/// A button opens the menu right-aligned beneath itself, which is what the `⋯`
+/// and the keyboard do. A right-click opens it at the pointer instead: a menu
+/// that moved to the row's `⋯` would describe a place the user did not click.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Anchor {
     Button(Rect),
+    Pointer(Pos2),
 }
 
 /// Which input last chose a row.
@@ -119,7 +121,6 @@ pub enum Reason {
     Escape,
     Tab,
     Outside,
-    Focus,
     Page,
 }
 
@@ -153,9 +154,12 @@ pub struct Menu {
     targets: Vec<TrackEntry>,
     page: Option<Page>,
     lit: Option<usize>,
-    /// Set by `open`, cleared by the first frame that draws it, so the key that
-    /// opened the menu is not also the key that fires a row.
-    fresh: bool,
+    /// The clock of the first frame that drew this menu. A frame is not a pass:
+    /// egui may run a frame twice, so the opening input is recognised by the
+    /// clock rather than by a flag a first pass would clear before the second
+    /// pass read it - which is what read the door's own click as a click
+    /// outside.
+    first_drawn: Option<f64>,
 }
 
 impl Menu {
@@ -183,7 +187,7 @@ impl Menu {
         self.items = items;
         self.targets = request.targets;
         self.page = request.page;
-        self.fresh = true;
+        self.first_drawn = None;
         true
     }
 
@@ -240,6 +244,9 @@ impl Menu {
     }
 
     /// Closes for `reason`, reporting what the shell has to undo.
+    ///
+    /// A page change loses the rows the menu described, so it is the one close
+    /// that does not hand the keyboard back: the button is gone.
     pub fn close(&mut self, reason: Reason) -> Option<Closed> {
         let closed = self.close_with(None)?;
         let opener = if reason == Reason::Page {
@@ -259,18 +266,19 @@ impl Menu {
         None
     }
 
-    /// Whether the menu has not yet drawn a frame that could take the keyboard.
+    /// Whether `now` is still the frame the menu first drew on.
     ///
-    /// The flag is settled by [`Self::settle_opened`] rather than read and
-    /// cleared at once: an `Area`'s first frame is a sizing pass, which paints
-    /// nothing and cannot take focus, so that frame is not the menu's opening.
-    pub fn just_opened(&self) -> bool {
-        self.fresh
+    /// Used to ignore the input that opened it: the click that is the door is
+    /// also a click outside the menu, and an Enter on a focused `⋯` arrives in
+    /// the same frame the rows appear.
+    pub fn just_opened(&self, now: f64) -> bool {
+        self.first_drawn.is_none_or(|drawn| now <= drawn)
     }
 
-    /// Marks the menu's opening frame as drawn.
-    pub fn settle_opened(&mut self) {
-        self.fresh = false;
+    /// Marks `now` as the frame the menu first drew on. Called only by a pass
+    /// that really painted, since a sizing pass paints nothing.
+    pub fn mark_drawn(&mut self, now: f64) {
+        self.first_drawn.get_or_insert(now);
     }
 
     pub fn is_open(&self) -> bool {
@@ -555,8 +563,20 @@ mod tests {
     }
 
     #[test]
+    fn the_first_drawn_frame_is_the_opening_and_the_pass_after_it_is_not() {
+        let mut menu = opened(Device::Pointer, 3);
+        assert!(menu.just_opened(1.0), "nothing has drawn it yet");
+        menu.mark_drawn(1.0);
+        assert!(menu.just_opened(1.0), "a second pass of the same frame");
+        assert!(
+            !menu.just_opened(1.016),
+            "a later frame is not the opening, or the door's click would dismiss it"
+        );
+    }
+
+    #[test]
     fn escape_tab_outside_and_focus_all_return_the_opener() {
-        for reason in [Reason::Escape, Reason::Tab, Reason::Outside, Reason::Focus] {
+        for reason in [Reason::Escape, Reason::Tab, Reason::Outside] {
             let mut menu = opened(Device::Keyboard, 3);
             assert_eq!(
                 menu.close(reason),

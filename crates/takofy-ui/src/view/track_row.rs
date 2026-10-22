@@ -1033,8 +1033,13 @@ fn pointer_door(ui: &Ui, rect: Rect, opener: egui::Id, anchor: Rect) -> Option<D
     let over = ui
         .ctx()
         .rect_contains_pointer(ui.layer_id(), rect.intersect(ui.clip_rect()));
+    // At the cursor, not at the `⋯`: the click named a place. Falls back to the
+    // `⋯` when the pointer has already gone.
+    let at = ui
+        .input(|input| input.pointer.interact_pos())
+        .map_or(Anchor::Button(anchor), Anchor::Pointer);
     (secondary && over).then_some(Door {
-        anchor: Anchor::Button(anchor),
+        anchor: at,
         opener,
         device: Device::Pointer,
     })
@@ -1647,7 +1652,7 @@ mod tests {
     }
 
     #[test]
-    fn a_right_click_on_the_body_a_link_cell_and_the_index_opens_the_button_door() {
+    fn a_right_click_on_the_body_a_link_cell_and_the_index_opens_at_the_pointer() {
         let columns = columns().at(body_rect().min);
         let points = [
             body_point(),
@@ -1661,7 +1666,16 @@ mod tests {
             let answers = run(&ctx, &row, &secondary_click_events(point), Modifiers::NONE);
 
             let door = door(&answers).unwrap_or_else(|| panic!("no menu at {point:?}"));
-            assert_eq!(door.anchor, Anchor::Button(actions()), "at {point:?}");
+            let Anchor::Pointer(at) = door.anchor else {
+                panic!(
+                    "a right-click at {point:?} anchored to the `⋯`: {:?}",
+                    door.anchor
+                );
+            };
+            assert!(
+                (at - point).length() < 0.01,
+                "a right-click at {point:?} opened at {at:?}"
+            );
             assert_eq!(door.device, Device::Pointer, "at {point:?}");
             assert!(
                 !answers

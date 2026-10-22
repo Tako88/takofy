@@ -1,9 +1,9 @@
 //! A command menu's geometry: where the box lands, and how wide one row is.
 //!
-//! A menu opens from the button that asked for it — never from the pointer, so
-//! there is one position for all three doors. The box right-aligns to that
-//! button, sits `extent::MENU_GAP` below it, flips above when the window's
-//! bottom would cut it, and is clamped into the window in both axes.
+//! A button's menu right-aligns to that button, sits `extent::MENU_GAP` below
+//! it, and flips above when the window's bottom would cut it. A right-click's
+//! menu opens at the pointer instead, and flips left or up when it would run off
+//! an edge. Both are clamped into the window in both axes afterward.
 //!
 //! The width is the longest row's, within the sheet's 12 rem floor and 20 rem
 //! cap. A row is the reference's `space-3`/`space-1` padding, its label, and the
@@ -52,27 +52,52 @@ pub fn width(rows: &[RowWidth]) -> f32 {
 /// non-finite anchor, window or size falls back to the documented rect, so a bad
 /// read draws nothing instead of putting the menu somewhere arbitrary.
 pub fn place(anchor: Anchor, size: Vec2, window: Rect) -> Rect {
-    let Anchor::Button(button) = anchor;
     let height = room(size.y);
-    if !is_sane(button) || !is_sane(window) || !size.x.is_finite() || !size.y.is_finite() {
+    let (origin, sane_origin) = match anchor {
+        Anchor::Button(button) => (button, is_sane(button)),
+        Anchor::Pointer(point) => (
+            Rect::from_min_size(point, Vec2::ZERO),
+            point.x.is_finite() && point.y.is_finite(),
+        ),
+    };
+    if !sane_origin || !is_sane(window) || !size.x.is_finite() || !size.y.is_finite() {
         return Rect::from_min_size(pos2(0.0, extent::MENU_GAP), vec2(0.0, height));
     }
 
-    let button = sane(button);
     let window = sane(window);
     let width = room(size.x).min(window.width());
 
-    let below = button.bottom() + extent::MENU_GAP;
-    let above = button.top() - extent::MENU_GAP - height;
-    let top = if below + height <= window.bottom() {
-        below
-    } else {
-        above
+    let (left, top) = match anchor {
+        Anchor::Button(_) => {
+            let button = origin;
+            let below = button.bottom() + extent::MENU_GAP;
+            let above = button.top() - extent::MENU_GAP - height;
+            let top = if below + height <= window.bottom() {
+                below
+            } else {
+                above
+            };
+            (button.right() - width, top)
+        }
+        Anchor::Pointer(point) => {
+            // Under the cursor, unless that would hang off an edge, in which
+            // case the box goes the other way and the cursor lands outside it.
+            let left = if point.x + width <= window.right() {
+                point.x
+            } else {
+                point.x - width
+            };
+            let top = if point.y + height <= window.bottom() {
+                point.y
+            } else {
+                point.y - height
+            };
+            (left, top)
+        }
     };
 
     let top = top.clamp(window.top(), (window.bottom() - height).max(window.top()));
-    let left =
-        (button.right() - width).clamp(window.left(), (window.right() - width).max(window.left()));
+    let left = left.clamp(window.left(), (window.right() - width).max(window.left()));
     Rect::from_min_size(pos2(left, top), vec2(width, height))
 }
 
@@ -253,6 +278,23 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_pointer_menu_opens_at_the_pointer() {
+        let at = pos2(300.0, 200.0);
+        let menu = place(Anchor::Pointer(at), size(), window());
+        assert_eq!(menu.min, at);
+    }
+
+    #[test]
+    fn a_pointer_menu_flips_left_and_up_at_the_edges() {
+        let window = window();
+        let corner = pos2(window.right() - 10.0, window.bottom() - 10.0);
+        let menu = place(Anchor::Pointer(corner), size(), window);
+        assert!(window.contains_rect(menu), "{menu:?} left the window");
+        assert!(menu.right() <= corner.x, "it should have flipped left");
+        assert!(menu.bottom() <= corner.y, "it should have flipped up");
     }
 
     #[test]
