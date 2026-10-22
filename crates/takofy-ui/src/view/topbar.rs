@@ -22,6 +22,7 @@ use crate::theme::{
 };
 
 use super::controls;
+use super::keys::{FIELD_FILTER, pressed, pressed_once};
 use super::shell::{row_centred, rule};
 use super::text as recipe;
 
@@ -288,23 +289,6 @@ fn trail(ui: &mut Ui, crumbs: &[crate::trail::Crumb<'_>], rect: Rect, tokens: &T
 /// The placeholder, in every topbar (R17).
 const PLACEHOLDER: &str = "Track names, artists, albums";
 
-/// The text edit's own key filter: egui's defaults, plus Escape.
-///
-/// egui's memory surrenders focus on Escape before the topbar sees it, so
-/// without this the field would blur before R3's first step could act. The two
-/// arrow flags are the text edit's defaults and must stay: they keep arrow
-/// presses out of spatial focus movement.
-///
-/// It is one constant because focus is taken two ways — the text edit's own
-/// `show`, and the clear control's hand-back — and the filter stored with the
-/// focused widget must be the same in both.
-const FIELD_FILTER: egui::EventFilter = egui::EventFilter {
-    tab: false,
-    horizontal_arrows: true,
-    vertical_arrows: true,
-    escape: true,
-};
-
 /// The search field: a real text edit inside the painted box.
 ///
 /// The keys the field owns are taken before `TextEdit::show`, because a
@@ -535,44 +519,6 @@ fn search(
         // the answer is the memory's, not the response's.
         has_focus: ui.memory(|memory| memory.has_focus(id)),
         act,
-    })
-}
-
-/// Any press of `key` with no modifiers, auto-repeat included.
-///
-/// The field reads and consumes with the same rule: `consume_key` matches a key
-/// whose modifiers match logically, which would eat an Alt+Down the read never
-/// saw.
-fn pressed(input: &egui::InputState, key: Key) -> bool {
-    input.events.iter().any(|event| {
-        matches!(
-            event,
-            egui::Event::Key {
-                key: pressed,
-                pressed: true,
-                modifiers,
-                ..
-            } if *pressed == key && !modifiers.any()
-        )
-    })
-}
-
-/// A first press of `key` with no modifiers, never an auto-repeat.
-///
-/// A held Enter must not replay the marked row, and a held Escape must not step
-/// through both of R3's steps: one press, one action.
-fn pressed_once(input: &egui::InputState, key: Key) -> bool {
-    input.events.iter().any(|event| {
-        matches!(
-            event,
-            egui::Event::Key {
-                key: pressed,
-                pressed: true,
-                repeat: false,
-                modifiers,
-                ..
-            } if *pressed == key && !modifiers.any()
-        )
     })
 }
 
