@@ -757,8 +757,9 @@ pub(crate) async fn write_like(
         .map_or(0, |since| since.as_secs() as i64);
     let refs: Vec<&str> = uris.iter().map(String::as_str).collect();
     for batch in collection::like_batches(&refs, LIKE_BATCH) {
-        let body = collection::like_body(
+        let body = collection::items_body(
             &username,
+            collection::COLLECTION_SET,
             batch,
             liked.then_some(now),
             !liked,
