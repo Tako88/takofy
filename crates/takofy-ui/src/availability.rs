@@ -180,7 +180,7 @@ pub fn availability(control: Control) -> Availability {
         Control::Devices => Availability::Waiting,
         Control::Mute => Availability::Waiting,
         Control::Volume => Availability::Waiting,
-        Control::Fullscreen => Availability::Waiting,
+        Control::Fullscreen => Availability::Ready, // #35
 
         // A row's like and more are not the playbar's like or the Now Playing
         // more: they act on another track and must carry their own ids.
@@ -247,6 +247,7 @@ mod tests {
                     | Control::Shuffle
                     | Control::Repeat
                     | Control::Queue
+                    | Control::Fullscreen
                     | Control::HeroPlay
                     | Control::Follow
                     | Control::DiscographyFilter

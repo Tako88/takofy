@@ -43,6 +43,9 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
     // one set during this frame has not, and waits for the next.
     let pending = screen.queue.refocus();
     let content = ui.ctx().content_rect();
+    // Beside the window's size, because a fullscreen change the window manager
+    // made is read here on the next frame; nothing caches a request.
+    let fullscreen = ui.input(|input| input.viewport().fullscreen);
     let regions = layout::regions_with(content.width(), *screen.pane);
     let shell = layout::shell_for(&regions);
     let grid = layout::grid_for(content, &shell);
@@ -207,6 +210,7 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
         queue_claimed: matches!(target, Some(Target::End)),
         like,
         pane: layout::pane_button(content.width(), *screen.pane),
+        fullscreen,
     };
     let playbar_reply = region(ui, "playbar", grid.playbar, bar_rect, |ui| {
         playbar::show(
@@ -228,6 +232,14 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
     if playbar_reply.pane {
         *screen.pane = screen.pane.press(content.width());
         ui.ctx().request_repaint();
+    }
+    // Never optimistic: the command carries what the window is not, and the
+    // button lights only once the window reports the new state back.
+    if playbar_reply.fullscreen
+        && let Some(current) = fullscreen
+    {
+        ui.ctx()
+            .send_viewport_cmd(egui::ViewportCommand::Fullscreen(!current));
     }
 
     // The panel only reports the row it was asked to play. Applying the jump
@@ -1030,6 +1042,7 @@ pub(super) fn rule(ui: &Ui, rect: Rect, color: Color32) {
 #[cfg(test)]
 mod tests {
     use std::time::Instant;
+
     use takofy_model::{
         CoverUrl, Move, PlaylistAccess, PlaylistEntry, Removal, Revision, TrackEntry,
     };
@@ -1095,6 +1108,8 @@ mod tests {
         unfocused: bool,
         /// What the user asked of the Now Playing column.
         pane: layout::PanePref,
+        /// What the window reports about itself, or `None` while it cannot say.
+        fullscreen: Option<bool>,
     }
 
     impl Window {
@@ -1115,6 +1130,7 @@ mod tests {
                 held: egui::Modifiers::NONE,
                 unfocused: false,
                 pane: layout::PanePref::default(),
+                fullscreen: Some(false),
             }
         }
 
@@ -1129,8 +1145,17 @@ mod tests {
             let tokens = Tokens::DARK;
             let mut events = events;
             events.insert(0, egui::Event::ModifiersChanged(self.held));
+            let mut viewports = egui::ViewportIdMap::default();
+            viewports.insert(
+                egui::ViewportId::ROOT,
+                egui::ViewportInfo {
+                    fullscreen: self.fullscreen,
+                    ..Default::default()
+                },
+            );
             let input = egui::RawInput {
                 screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, self.size)),
+                viewports,
                 events,
                 focused: !self.unfocused,
                 ..Default::default()
@@ -1188,6 +1213,23 @@ mod tests {
                 }
             }
             command
+        }
+
+        /// Clicks `at` over the passes egui's hit test needs, returning the
+        /// viewport commands the passes sent.
+        fn click_viewport(
+            &mut self,
+            transport: &mut Transport,
+            queue: &mut Queue,
+            at: egui::Pos2,
+        ) -> Vec<egui::ViewportCommand> {
+            let _ = self.frame(transport, queue, Vec::new());
+            let mut commands = Vec::new();
+            for event in crate::view::test_support::click_events(at) {
+                let (_, frame) = self.frame(transport, queue, vec![event]);
+                commands.extend(viewport_commands(&frame));
+            }
+            commands
         }
 
         /// Clicks `at` over the passes egui's hit test needs, returning the
@@ -4088,6 +4130,34 @@ mod tests {
         playbar::queue_button(bar, regions.playbar)
     }
 
+    /// The playbar's fullscreen button: the last of the extras, which the
+    /// columns and the run tables both end with.
+    fn fullscreen_button_at(window: &Window) -> Rect {
+        let content = Rect::from_min_size(egui::Pos2::ZERO, window.size);
+        let regions = layout::regions_with(content.width(), window.pane);
+        let shell = layout::shell_for(&regions);
+        let bar = layout::grid_for(content, &shell)
+            .playbar
+            .shrink(stroke::HAIRLINE);
+        let [_, _, extras] = layout::playbar_for(bar, regions.playbar).columns(bar);
+        Rect::from_min_size(
+            egui::pos2(
+                extras.right() - extent::BUTTON,
+                extras.center().y - extent::BUTTON / 2.0,
+            ),
+            Vec2::splat(extent::BUTTON),
+        )
+    }
+
+    /// The viewport commands a frame sent the window.
+    fn viewport_commands(output: &egui::FullOutput) -> Vec<egui::ViewportCommand> {
+        output
+            .viewport_output
+            .get(&egui::ViewportId::ROOT)
+            .map(|viewport| viewport.commands.clone())
+            .unwrap_or_default()
+    }
+
     /// The rect the queue button's claim filled, if it drew one. The whole
     /// playbar is scanned, and it holds no view row that could wear the same
     /// fill.
@@ -6873,6 +6943,129 @@ mod tests {
         assert!(
             painted_at(&frame, "t2").is_none(),
             "a wider window under a hidden choice showed the pane"
+        );
+    }
+
+    /// Every click's passes, flattened, for the assertions below.
+    fn fullscreen_clicks(
+        window: &mut Window,
+        transport: &mut Transport,
+        queue: &mut Queue,
+    ) -> Vec<egui::ViewportCommand> {
+        let at = fullscreen_button_at(window).center();
+        window.click_viewport(transport, queue, at)
+    }
+
+    #[test]
+    fn fullscreen_click_sends_fullscreen_true_when_the_window_reports_false() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        window.fullscreen = Some(false);
+
+        let commands = fullscreen_clicks(&mut window, &mut transport, &mut queue);
+
+        assert!(
+            commands.contains(&egui::ViewportCommand::Fullscreen(true)),
+            "the click asked for no fullscreen: {commands:?}"
+        );
+    }
+
+    #[test]
+    fn fullscreen_click_sends_fullscreen_false_when_the_window_reports_true() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        window.fullscreen = Some(true);
+
+        let commands = fullscreen_clicks(&mut window, &mut transport, &mut queue);
+
+        assert!(
+            commands.contains(&egui::ViewportCommand::Fullscreen(false)),
+            "the click asked for no exit: {commands:?}"
+        );
+    }
+
+    #[test]
+    fn fullscreen_click_sends_nothing_when_the_state_is_unknown() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        window.fullscreen = None;
+
+        let commands = fullscreen_clicks(&mut window, &mut transport, &mut queue);
+
+        assert!(
+            !commands
+                .iter()
+                .any(|command| matches!(command, egui::ViewportCommand::Fullscreen(_))),
+            "a window that cannot say whether it is fullscreen was asked anyway: {commands:?}"
+        );
+    }
+
+    #[test]
+    fn a_window_manager_flip_is_read_not_remembered() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        window.fullscreen = Some(false);
+        let at = fullscreen_button_at(&window);
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            !glyph_colours_in(&window.frame(&mut transport, &mut queue, Vec::new()).1, at)
+                .contains(&Tokens::DARK.palette.accent),
+            "a windowed window lit the fullscreen button"
+        );
+
+        // The compositor's own key, with no click from the app.
+        window.fullscreen = Some(true);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            glyph_colours_in(&frame, at).contains(&Tokens::DARK.palette.accent),
+            "a fullscreen window left the button unlit"
+        );
+        assert_eq!(
+            viewport_commands(&frame)
+                .iter()
+                .filter(|command| matches!(command, egui::ViewportCommand::Fullscreen(_)))
+                .count(),
+            0,
+            "a window-manager change was answered with a request of our own"
+        );
+
+        window.fullscreen = Some(false);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            !glyph_colours_in(&frame, at).contains(&Tokens::DARK.palette.accent),
+            "the button stayed lit after the window left fullscreen"
+        );
+    }
+
+    #[test]
+    fn a_refused_request_leaves_the_button_unlit_and_the_next_click_asks_again() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        window.fullscreen = Some(false);
+        let at = fullscreen_button_at(&window);
+
+        let first = fullscreen_clicks(&mut window, &mut transport, &mut queue);
+        assert!(
+            first.contains(&egui::ViewportCommand::Fullscreen(true)),
+            "the first click asked for nothing: {first:?}"
+        );
+
+        // The compositor refused, so the window still reports itself windowed.
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            !glyph_colours_in(&frame, at).contains(&Tokens::DARK.palette.accent),
+            "a refused request lit the button anyway"
+        );
+
+        let second = fullscreen_clicks(&mut window, &mut transport, &mut queue);
+        assert!(
+            second.contains(&egui::ViewportCommand::Fullscreen(true)),
+            "the second click did not ask again: {second:?}"
         );
     }
 
