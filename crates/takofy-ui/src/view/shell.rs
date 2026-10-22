@@ -43,7 +43,10 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
     // one set during this frame has not, and waits for the next.
     let pending = screen.queue.refocus();
     let content = ui.ctx().content_rect();
-    let regions = layout::regions_for(content.width());
+    // Beside the window's size, because a fullscreen change the window manager
+    // made is read here on the next frame; nothing caches a request.
+    let fullscreen = ui.input(|input| input.viewport().fullscreen);
+    let regions = layout::regions_with(content.width(), *screen.pane);
     let shell = layout::shell_for(&regions);
     let grid = layout::grid_for(content, &shell);
 
@@ -206,8 +209,10 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
     let bar_state = playbar::Bar {
         queue_claimed: matches!(target, Some(Target::End)),
         like,
+        pane: layout::pane_button(content.width(), *screen.pane),
+        fullscreen,
     };
-    command = command.or(region(ui, "playbar", grid.playbar, bar_rect, |ui| {
+    let playbar_reply = region(ui, "playbar", grid.playbar, bar_rect, |ui| {
         playbar::show(
             ui,
             screen.transport,
@@ -219,7 +224,23 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
             now_playing_cover,
             tokens,
         )
-    }));
+    });
+    command = command.or(playbar_reply.command);
+    // A pane press is local and drops no command, so it is applied whatever the
+    // frame's command did. The regions drew from the preference this frame began
+    // with, so the click needs a frame to show.
+    if playbar_reply.pane {
+        *screen.pane = screen.pane.press(content.width());
+        ui.ctx().request_repaint();
+    }
+    // Never optimistic: the command carries what the window is not, and the
+    // button lights only once the window reports the new state back.
+    if playbar_reply.fullscreen
+        && let Some(current) = fullscreen
+    {
+        ui.ctx()
+            .send_viewport_cmd(egui::ViewportCommand::Fullscreen(!current));
+    }
 
     // The panel only reports the row it was asked to play. Applying the jump
     // here, and only when no other region asked for a command, keeps a frame
@@ -1085,6 +1106,10 @@ mod tests {
         held: egui::Modifiers,
         /// Whether the frame reports the window as holding the OS keyboard.
         unfocused: bool,
+        /// What the user asked of the Now Playing column.
+        pane: layout::PanePref,
+        /// What the window reports about itself, or `None` while it cannot say.
+        fullscreen: Option<bool>,
     }
 
     impl Window {
@@ -1104,6 +1129,8 @@ mod tests {
                 now: Instant::now(),
                 held: egui::Modifiers::NONE,
                 unfocused: false,
+                pane: layout::PanePref::default(),
+                fullscreen: Some(false),
             }
         }
 
@@ -1118,8 +1145,17 @@ mod tests {
             let tokens = Tokens::DARK;
             let mut events = events;
             events.insert(0, egui::Event::ModifiersChanged(self.held));
+            let mut viewports = egui::ViewportIdMap::default();
+            viewports.insert(
+                egui::ViewportId::ROOT,
+                egui::ViewportInfo {
+                    fullscreen: self.fullscreen,
+                    ..Default::default()
+                },
+            );
             let input = egui::RawInput {
                 screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, self.size)),
+                viewports,
                 events,
                 focused: !self.unfocused,
                 ..Default::default()
@@ -1137,6 +1173,7 @@ mod tests {
                 art: &mut self.art,
                 now: self.now,
                 now_ms: 0,
+                pane: &mut self.pane,
             };
             let mut output = self.ctx.run_ui(input, |ui| {
                 command = show(ui, &mut screen, &tokens);
@@ -1176,6 +1213,23 @@ mod tests {
                 }
             }
             command
+        }
+
+        /// Clicks `at` over the passes egui's hit test needs, returning the
+        /// viewport commands the passes sent.
+        fn click_viewport(
+            &mut self,
+            transport: &mut Transport,
+            queue: &mut Queue,
+            at: egui::Pos2,
+        ) -> Vec<egui::ViewportCommand> {
+            let _ = self.frame(transport, queue, Vec::new());
+            let mut commands = Vec::new();
+            for event in crate::view::test_support::click_events(at) {
+                let (_, frame) = self.frame(transport, queue, vec![event]);
+                commands.extend(viewport_commands(&frame));
+            }
+            commands
         }
 
         /// Clicks `at` over the passes egui's hit test needs, returning the
@@ -1276,9 +1330,10 @@ mod tests {
     }
 
     /// The topbar's rect, solved the same way the shell solves it.
+    /// The bar spans the main column, which the pane widens; `sidebar_rect` is width-only.
     fn topbar_rect(window: &Window) -> Rect {
         let content = Rect::from_min_size(egui::Pos2::ZERO, window.size);
-        let regions = layout::regions_for(content.width());
+        let regions = layout::regions_with(content.width(), window.pane);
         let shell = layout::shell_for(&regions);
         layout::grid_for(content, &shell).topbar
     }
@@ -1288,9 +1343,26 @@ mod tests {
     /// sidebar, which draws before the nav is applied.
     fn view_rect(window: &Window) -> Rect {
         let content = Rect::from_min_size(egui::Pos2::ZERO, window.size);
-        let regions = layout::regions_for(content.width());
+        let regions = layout::regions_with(content.width(), window.pane);
         let shell = layout::shell_for(&regions);
         layout::grid_for(content, &shell).view
+    }
+
+    /// The bottom rule the topbar paints, which spells out the width it drew at.
+    fn topbar_rule(frame: &egui::FullOutput, bar: Rect) -> Rect {
+        frame
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(shape)
+                    if shape.stroke.width == 0.0
+                        && (shape.rect.top() - bar.bottom()).abs() < 0.01 =>
+                {
+                    Some(shape.rect)
+                }
+                _ => None,
+            })
+            .expect("the topbar paints its bottom rule")
     }
 
     /// One press or release of `key` with no modifiers.
@@ -1516,6 +1588,37 @@ mod tests {
             (field.center().y - bar).abs() < 0.01,
             "the search field at {:?} is not on the bar's centre {bar}",
             field.center()
+        );
+    }
+
+    #[test]
+    fn the_topbar_widens_when_the_pane_is_hidden() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        ready_playlist(&mut window);
+
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let shown = topbar_rect(&window);
+        let shown_rule = topbar_rule(&frame, shown);
+        assert!(
+            (shown_rule.width() - (shown.width() - 2.0 * stroke::HAIRLINE)).abs() < 0.01,
+            "the topbar drew {shown_rule:?}, not the region it solved {shown:?}"
+        );
+
+        window.pane = layout::PanePref::Hidden;
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let hidden = topbar_rect(&window);
+        let hidden_rule = topbar_rule(&frame, hidden);
+
+        assert!(
+            hidden_rule.width() > shown_rule.width(),
+            "the hidden pane left the topbar at the width it had beside it: \
+             {hidden_rule:?} against {shown_rule:?}"
+        );
+        assert!(
+            (hidden_rule.width() - (hidden.width() - 2.0 * stroke::HAIRLINE)).abs() < 0.01,
+            "the topbar region {hidden:?} disagrees with the bar it drew {hidden_rule:?}"
         );
     }
 
@@ -4014,6 +4117,33 @@ mod tests {
         )
     }
 
+    /// The colours a frame painted inside `rect` in glyph shapes. The wash, the
+    /// fills and the focus ring are `Shape::Rect`, so the backgrounds are
+    /// excluded by kind.
+    fn glyph_colours_in(output: &egui::FullOutput, rect: Rect) -> Vec<Color32> {
+        let mut colours = Vec::new();
+        for clipped in &output.shapes {
+            if !rect.contains(clipped.shape.visual_bounding_rect().center()) {
+                continue;
+            }
+            match &clipped.shape {
+                egui::Shape::Path(path) => {
+                    if path.fill != Color32::TRANSPARENT {
+                        colours.push(path.fill);
+                    }
+                    if let egui::epaint::ColorMode::Solid(color) = &path.stroke.color
+                        && path.stroke.width > 0.0
+                    {
+                        colours.push(*color);
+                    }
+                }
+                egui::Shape::Circle(circle) => colours.push(circle.fill),
+                _ => {}
+            }
+        }
+        colours
+    }
+
     /// Every entry in the queue, in order, wherever the index has got to.
     fn entries(queue: &Queue) -> Vec<String> {
         let count = queue.first_upcoming() + queue.upcoming().len();
@@ -4024,11 +4154,12 @@ mod tests {
             .collect()
     }
 
-    /// The Now Playing column's content box. The queue pane takes its width and
-    /// ends at its bottom edge; its top is the panel's head, well above the pane.
-    fn pane_rect(window: &Window) -> Rect {
+    /// The Now Playing column's content box, for a window whose pane is shown.
+    /// The queue pane takes its width and ends at its bottom edge; its top is
+    /// the panel's head, well above the pane.
+    fn pane_rect_when_shown(window: &Window) -> Rect {
         let content = Rect::from_min_size(egui::Pos2::ZERO, window.size);
-        let regions = layout::regions_for(content.width());
+        let regions = layout::regions_with(content.width(), window.pane);
         let shell = layout::shell_for(&regions);
         layout::grid_for(content, &shell)
             .now_playing
@@ -4040,12 +4171,40 @@ mod tests {
     /// aims the pointer with it; what the button draws is read from the frame.
     fn queue_button_at(window: &Window) -> Rect {
         let content = Rect::from_min_size(egui::Pos2::ZERO, window.size);
-        let regions = layout::regions_for(content.width());
+        let regions = layout::regions_with(content.width(), window.pane);
         let shell = layout::shell_for(&regions);
         let bar = layout::grid_for(content, &shell)
             .playbar
             .shrink(stroke::HAIRLINE);
         playbar::queue_button(bar, regions.playbar)
+    }
+
+    /// The playbar's fullscreen button: the last of the extras, which the
+    /// columns and the run tables both end with.
+    fn fullscreen_button_at(window: &Window) -> Rect {
+        let content = Rect::from_min_size(egui::Pos2::ZERO, window.size);
+        let regions = layout::regions_with(content.width(), window.pane);
+        let shell = layout::shell_for(&regions);
+        let bar = layout::grid_for(content, &shell)
+            .playbar
+            .shrink(stroke::HAIRLINE);
+        let [_, _, extras] = layout::playbar_for(bar, regions.playbar).columns(bar);
+        Rect::from_min_size(
+            egui::pos2(
+                extras.right() - extent::BUTTON,
+                extras.center().y - extent::BUTTON / 2.0,
+            ),
+            Vec2::splat(extent::BUTTON),
+        )
+    }
+
+    /// The viewport commands a frame sent the window.
+    fn viewport_commands(output: &egui::FullOutput) -> Vec<egui::ViewportCommand> {
+        output
+            .viewport_output
+            .get(&egui::ViewportId::ROOT)
+            .map(|viewport| viewport.commands.clone())
+            .unwrap_or_default()
     }
 
     /// The rect the queue button's claim filled, if it drew one. The whole
@@ -4054,7 +4213,7 @@ mod tests {
     fn claimed_fill(output: &egui::FullOutput, window: &Window) -> Option<Rect> {
         let tokens = Tokens::DARK;
         let content = Rect::from_min_size(egui::Pos2::ZERO, window.size);
-        let regions = layout::regions_for(content.width());
+        let regions = layout::regions_with(content.width(), window.pane);
         let shell = layout::shell_for(&regions);
         let bar = layout::grid_for(content, &shell).playbar;
         output
@@ -4295,7 +4454,7 @@ mod tests {
         let mut queue = queue_of(4, &mut transport);
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let at = row_line(&frame, pane_rect(&window), "t2");
+        let at = row_line(&frame, pane_rect_when_shown(&window), "t2");
 
         assert_eq!(window.click(&mut transport, &mut queue, at), None);
         assert!(queue.selected(2), "the click picks the row");
@@ -4312,7 +4471,7 @@ mod tests {
         let mut queue = queue_of(4, &mut transport);
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let at = row_line(&frame, pane_rect(&window), "t2");
+        let at = row_line(&frame, pane_rect_when_shown(&window), "t2");
         assert!(
             ringed_row(&frame).is_none(),
             "nothing holds the keyboard yet"
@@ -4330,7 +4489,7 @@ mod tests {
         let mut queue = queue_of(4, &mut transport);
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let at = row_line(&frame, pane_rect(&window), "t2");
+        let at = row_line(&frame, pane_rect_when_shown(&window), "t2");
         let _ = window.click(&mut transport, &mut queue, at);
 
         assert_eq!(
@@ -4357,7 +4516,7 @@ mod tests {
         let mut queue = queue_of(7, &mut transport);
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let pane = pane_rect(&window);
+        let pane = pane_rect_when_shown(&window);
         let at = |title: &str| row_line(&frame, pane, title);
 
         let _ = window.click(&mut transport, &mut queue, at("t2"));
@@ -4381,7 +4540,7 @@ mod tests {
         let mut queue = queue_of(5, &mut transport);
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let from = row_line(&frame, pane_rect(&window), "t2");
+        let from = row_line(&frame, pane_rect_when_shown(&window), "t2");
         let to = below(from, 1.75);
 
         assert_eq!(
@@ -4404,7 +4563,7 @@ mod tests {
         let mut queue = queue_of(6, &mut transport);
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let pane = pane_rect(&window);
+        let pane = pane_rect_when_shown(&window);
         let _ = window.click(&mut transport, &mut queue, row_line(&frame, pane, "t2"));
         window.held = egui::Modifiers::COMMAND;
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
@@ -4431,7 +4590,7 @@ mod tests {
         let mut queue = queue_of(4, &mut transport);
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let pane = pane_rect(&window);
+        let pane = pane_rect_when_shown(&window);
         let from = row_line(&frame, pane, "t3");
         // The caption band above the first row is part of the target, and means
         // the first boundary the queue will take a drop at.
@@ -4458,7 +4617,7 @@ mod tests {
         let mut queue = queue_of(4, &mut transport);
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let from = row_line(&frame, pane_rect(&window), "t2");
+        let from = row_line(&frame, pane_rect_when_shown(&window), "t2");
         let before = entries(&queue);
 
         assert_eq!(
@@ -4481,7 +4640,7 @@ mod tests {
         playlist_page(&mut window, &["p0", "p1"]);
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
         let from = row_line(&frame, view_rect(&window), "p1");
-        let to = pane_rect(&window).center();
+        let to = pane_rect_when_shown(&window).center();
 
         assert_eq!(window.drag(&mut transport, &mut queue, from, to), None);
         assert_eq!(entries(&queue), ["list:p1"]);
@@ -4514,7 +4673,7 @@ mod tests {
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
         playlist_page(&mut window, &["p0", "p1", "p2"]);
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let pane = pane_rect(&window);
+        let pane = pane_rect_when_shown(&window);
         let from = row_line(&frame, view_rect(&window), "p1");
         let to = below(row_line(&frame, pane, "t3"), -0.25);
 
@@ -4967,7 +5126,7 @@ mod tests {
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
         read_only_playlist_page(&mut window, &["p0", "p1", "p2"]);
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let pane = pane_rect(&window);
+        let pane = pane_rect_when_shown(&window);
         let view = view_rect(&window);
         let from = row_line(&frame, view, "p1");
         let to = below(row_line(&frame, pane, "t3"), -0.25);
@@ -5347,7 +5506,7 @@ mod tests {
         );
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
         let from = row_line(&frame, sidebar_rect(&window), "A");
-        let to = pane_rect(&window).center();
+        let to = pane_rect_when_shown(&window).center();
         let before = entries(&queue);
 
         assert_eq!(window.drag(&mut transport, &mut queue, from, to), None);
@@ -5422,7 +5581,7 @@ mod tests {
 
         // A queue insert names no revision, so the gate leaves it alone.
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let pane = pane_rect(&window);
+        let pane = pane_rect_when_shown(&window);
         let from = row_line(&frame, view_rect(&window), "p1");
         let to = below(row_line(&frame, pane, "t3"), -0.25);
         assert_eq!(window.drag(&mut transport, &mut queue, from, to), None);
@@ -5777,7 +5936,7 @@ mod tests {
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
         sidebar_playlists(&mut window, &[("A", Some(2))], Some(rootlist_access(true)));
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let from = row_line(&frame, pane_rect(&window), TRACK_B);
+        let from = row_line(&frame, pane_rect_when_shown(&window), TRACK_B);
         let to = sidebar_row_rect(&window, &frame, "A", "Playlist · 2 tracks").center();
 
         assert_eq!(
@@ -5802,7 +5961,7 @@ mod tests {
         queue.press(1, Press::Replace);
         queue.press(2, Press::Toggle);
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let pane = pane_rect(&window);
+        let pane = pane_rect_when_shown(&window);
         let from = row_line(&frame, pane, TRACK_B);
         let to = sidebar_row_rect(&window, &frame, "A", "Playlist · 2 tracks").center();
 
@@ -5997,7 +6156,7 @@ mod tests {
         let mut queue = queue_of(4, &mut transport);
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let at = row_line(&frame, pane_rect(&window), "t2");
+        let at = row_line(&frame, pane_rect_when_shown(&window), "t2");
         let before = entries(&queue);
         // The second press of a double click, three points off the first.
         let _ = window.click(&mut transport, &mut queue, at);
@@ -6023,7 +6182,7 @@ mod tests {
         let mut queue = queue_of(5, &mut transport);
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let pane = pane_rect(&window);
+        let pane = pane_rect_when_shown(&window);
         let from = row_line(&frame, pane, "t2");
         let to = below(from, 1.75);
         let _ = window.hold_drag(&mut transport, &mut queue, from, to);
@@ -6048,7 +6207,7 @@ mod tests {
         let mut queue = queue_of(4, &mut transport);
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let from = row_line(&frame, pane_rect(&window), "t2");
+        let from = row_line(&frame, pane_rect_when_shown(&window), "t2");
         let _ = window.hold_drag(&mut transport, &mut queue, from, below(from, 1.75));
         assert!(carry::carried(&window.ctx).is_some());
 
@@ -6075,7 +6234,7 @@ mod tests {
         let mut queue = queue_of(5, &mut transport);
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let pane = pane_rect(&window);
+        let pane = pane_rect_when_shown(&window);
         let from = row_line(&frame, pane, "t2");
         let to = below(from, 1.75);
         let _ = window.hold_drag(&mut transport, &mut queue, from, to);
@@ -6098,7 +6257,7 @@ mod tests {
         let mut transport = playing(cover("abc"));
         let mut queue = queue_of(5, &mut transport);
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
-        let pane = pane_rect(&window);
+        let pane = pane_rect_when_shown(&window);
         clicked_row(&mut window, &mut queue, &mut transport, pane, "t2");
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
         let from = row_line(&frame, pane, "t3");
@@ -6123,7 +6282,7 @@ mod tests {
         let mut queue = queue_of(5, &mut transport);
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let pane = pane_rect(&window);
+        let pane = pane_rect_when_shown(&window);
         let from = row_line(&frame, pane, "t2");
         let to = below(from, 0.75);
         let size = Vec2::new(pane.width() - 2.0 * space::S3, QUEUE_ROW_H);
@@ -6181,7 +6340,7 @@ mod tests {
         let mut queue = queue_of(5, &mut transport);
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let pane = pane_rect(&window);
+        let pane = pane_rect_when_shown(&window);
         let from = row_line(&frame, pane, "t2");
         let to = view_rect(&window).center();
         let size = Vec2::new(pane.width() - 2.0 * space::S3, QUEUE_ROW_H);
@@ -6207,7 +6366,7 @@ mod tests {
         let mut queue = queue_of(5, &mut transport);
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let pane = pane_rect(&window);
+        let pane = pane_rect_when_shown(&window);
         let from = row_line(&frame, pane, "t2");
         let hover = row_line(&frame, pane, "t4");
         let washes = |output: &egui::FullOutput| {
@@ -6433,7 +6592,7 @@ mod tests {
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
         playlist_page(&mut window, &["p0"]);
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let pane = pane_rect(&window);
+        let pane = pane_rect_when_shown(&window);
         let last = row_line(&frame, pane, "t1");
         let from = row_line(&frame, view_rect(&window), "p0");
         let to = Pos2::new(pane.center().x, pane.bottom() - 4.0);
@@ -6480,7 +6639,7 @@ mod tests {
         let mut queue = queue_of(4, &mut transport);
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let from = row_line(&frame, pane_rect(&window), "t2");
+        let from = row_line(&frame, pane_rect_when_shown(&window), "t2");
         let _ = window.hold_drag(
             &mut transport,
             &mut queue,
@@ -6599,25 +6758,400 @@ mod tests {
         assert_eq!(entries(&queue), before, "a cancelled add changes nothing");
     }
 
+    /// A queued window whose pane the user hid: the view takes the width the
+    /// panel had, and the panel draws nothing.
     #[test]
-    fn the_queue_button_still_takes_no_click() {
+    fn a_hidden_pane_widens_the_view_and_a_shown_one_narrows_it() {
         let mut transport = playing(cover("abc"));
         let mut queue = queue_of(4, &mut transport);
-        let mut window = Window::new(Vec2::new(900.0, 900.0));
-        let at = queue_button_at(&window).center();
-        let before = entries(&queue);
+        let mut window = Window::new(Vec2::new(1240.0, 900.0));
 
+        let (_, shown) = window.frame(&mut transport, &mut queue, Vec::new());
+        let pane = pane_rect_when_shown(&window);
+        let narrow = view_rect(&window);
+        assert!(
+            text_in(&shown, "t2", pane).is_some(),
+            "the pane is not drawing its queue"
+        );
+
+        window.pane = layout::PanePref::Hidden;
+        let (_, hidden) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            text_in(&hidden, "t2", pane).is_none(),
+            "a hidden pane still drew a queue row"
+        );
+        let wide = view_rect(&window);
+        assert!(
+            wide.width() > narrow.width() + pane.width(),
+            "the view took {} of the pane's {}",
+            wide.width() - narrow.width(),
+            pane.width()
+        );
+    }
+
+    #[test]
+    fn at_900_and_at_1100_a_click_on_the_queue_button_changes_nothing() {
+        for width in [900.0, 1100.0] {
+            let mut transport = playing(cover("abc"));
+            let mut queue = queue_of(4, &mut transport);
+            let mut window = Window::new(Vec2::new(width, 900.0));
+            let at = queue_button_at(&window).center();
+            let before = entries(&queue);
+            assert_eq!(
+                layout::pane_button(width, window.pane),
+                layout::PaneButton::Unavailable,
+                "{width}"
+            );
+
+            assert_eq!(window.click(&mut transport, &mut queue, at), None);
+            assert_eq!(
+                entries(&queue),
+                before,
+                "{width}: a click on the queue button does nothing"
+            );
+            assert_eq!(
+                transport.now_playing.as_ref().map(|now| now.uri.as_str()),
+                Some("t0"),
+                "{width}: a click must not move the transport"
+            );
+            assert_eq!(
+                window.pane,
+                layout::PanePref::Auto,
+                "{width}: a click where the pane cannot exist changed the choice"
+            );
+        }
+    }
+
+    #[test]
+    fn at_1400_a_click_on_the_queue_button_hides_the_pane_and_a_second_shows_it() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            text_in(&frame, "t2", pane_rect_when_shown(&window)).is_some(),
+            "the pane is not drawn to begin with"
+        );
+
+        let at = queue_button_at(&window).center();
         assert_eq!(window.click(&mut transport, &mut queue, at), None);
         assert_eq!(
-            entries(&queue),
-            before,
-            "a click on the queue button does nothing"
+            window.pane,
+            layout::PanePref::Hidden,
+            "the click did not hide the pane"
+        );
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            painted_at(&frame, "t2").is_none(),
+            "a hidden pane still drew a queue row"
+        );
+
+        let at = queue_button_at(&window).center();
+        assert_eq!(window.click(&mut transport, &mut queue, at), None);
+        assert_eq!(
+            window.pane,
+            layout::PanePref::Auto,
+            "the second click did not show the pane"
+        );
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            text_in(&frame, "t2", pane_rect_when_shown(&window)).is_some(),
+            "a shown pane drew no queue row"
+        );
+    }
+
+    #[test]
+    fn the_choice_survives_navigation() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_playlists(&mut window, &[("Mix", None)], None);
+
+        let at = queue_button_at(&window).center();
+        assert_eq!(window.click(&mut transport, &mut queue, at), None);
+        assert_eq!(window.pane, layout::PanePref::Hidden);
+
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let row = sidebar_row_rect(&window, &frame, "Mix", "Playlist").center();
+        let some = window.library.page().cloned();
+        assert_eq!(some, None, "the library starts on the root");
+        assert_eq!(
+            window.click(&mut transport, &mut queue, row),
+            Some(Command::LoadTracks {
+                playlist: "playlist:Mix".to_owned()
+            })
         );
         assert_eq!(
-            transport.now_playing.as_ref().map(|now| now.uri.as_str()),
-            Some("t0"),
-            "a click must not move the transport"
+            window.library.page(),
+            Some(&Page::Playlist("playlist:Mix".to_owned())),
+            "the sidebar row did not navigate"
         );
+        assert_eq!(
+            window.pane,
+            layout::PanePref::Hidden,
+            "navigation reset the choice about the pane"
+        );
+
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            painted_at(&frame, "t2").is_none(),
+            "the pane came back on the way to another page"
+        );
+    }
+
+    #[test]
+    fn above_1120_with_the_pane_hidden_the_queue_button_takes_a_list_drop() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        window.pane = layout::PanePref::Hidden;
+        playlist_page(&mut window, &["p0", "p1"]);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let from = row_line(&frame, view_rect(&window), "p1");
+        let to = queue_button_at(&window).center();
+
+        assert_eq!(window.drag(&mut transport, &mut queue, from, to), None);
+        assert_eq!(entries(&queue), ["t0", "t1", "t2", "t3", "list:p1"]);
+    }
+
+    #[test]
+    fn a_drop_that_ends_on_the_button_does_not_toggle_the_pane() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        window.pane = layout::PanePref::Hidden;
+        playlist_page(&mut window, &["p0", "p1"]);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let from = row_line(&frame, view_rect(&window), "p1");
+        let to = queue_button_at(&window).center();
+
+        let (_, frame) = window.hold_drag(&mut transport, &mut queue, from, to);
+        assert!(
+            claimed_fill(&frame, &window).is_some(),
+            "a hidden pane's button is not the drop target"
+        );
+        let (_, _) = window.frame(&mut transport, &mut queue, vec![window.release(to)]);
+
+        assert_eq!(entries(&queue), ["t0", "t1", "t2", "t3", "list:p1"]);
+        assert_eq!(
+            window.pane,
+            layout::PanePref::Hidden,
+            "the release that ended the drop toggled the pane"
+        );
+    }
+
+    #[test]
+    fn a_pane_toggle_asks_for_the_frame_that_shows_it() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let at = queue_button_at(&window).center();
+
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        for event in crate::view::test_support::click_events(at) {
+            let _ = window.frame(&mut transport, &mut queue, vec![event]);
+        }
+        assert_eq!(window.pane, layout::PanePref::Hidden);
+        // The causes are read a pass behind, so the pass after the click carries
+        // the ones the click's own pass recorded.
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        let causes = window.ctx.repaint_causes();
+        let toggle = pane_toggle_repaint_line();
+        assert!(
+            causes.iter().any(|cause| {
+                cause.file.ends_with("view/shell.rs") && Some(cause.line as usize) == toggle
+            }),
+            "the toggle did not ask for the frame that shows it: {causes:?}"
+        );
+    }
+
+    /// The line of the `request_repaint` the pane-toggle branch calls, found in
+    /// the source so an edit that moves the branch keeps the test honest.
+    fn pane_toggle_repaint_line() -> Option<usize> {
+        let lines: Vec<&str> = include_str!("shell.rs").lines().collect();
+        let start = lines
+            .iter()
+            .position(|line| line.contains("if playbar_reply.pane"))
+            .expect("the pane-toggle branch is in this file");
+        lines[start + 1..]
+            .iter()
+            .take_while(|line| !line.trim_start().starts_with('}'))
+            .position(|line| line.contains("request_repaint"))
+            .map(|offset| start + offset + 2)
+    }
+
+    #[test]
+    fn a_resize_to_a_wider_window_shows_the_pane_under_auto_and_still_hides_it_under_hidden() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+
+        let mut window = Window::new(Vec2::new(1100.0, 900.0));
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            painted_at(&frame, "t2").is_none(),
+            "the pane is on screen below its own threshold"
+        );
+        window.size = Vec2::new(1400.0, 900.0);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            text_in(&frame, "t2", pane_rect_when_shown(&window)).is_some(),
+            "a wider window under auto kept the pane hidden"
+        );
+
+        window.pane = layout::PanePref::Hidden;
+        window.size = Vec2::new(1100.0, 900.0);
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        assert_eq!(window.pane, layout::PanePref::Hidden);
+        window.size = Vec2::new(1400.0, 900.0);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            painted_at(&frame, "t2").is_none(),
+            "a wider window under a hidden choice showed the pane"
+        );
+    }
+
+    /// Every click's passes, flattened, for the assertions below.
+    fn fullscreen_clicks(
+        window: &mut Window,
+        transport: &mut Transport,
+        queue: &mut Queue,
+    ) -> Vec<egui::ViewportCommand> {
+        let at = fullscreen_button_at(window).center();
+        window.click_viewport(transport, queue, at)
+    }
+
+    #[test]
+    fn fullscreen_click_sends_fullscreen_true_when_the_window_reports_false() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        window.fullscreen = Some(false);
+
+        let commands = fullscreen_clicks(&mut window, &mut transport, &mut queue);
+
+        assert!(
+            commands.contains(&egui::ViewportCommand::Fullscreen(true)),
+            "the click asked for no fullscreen: {commands:?}"
+        );
+    }
+
+    #[test]
+    fn fullscreen_click_sends_fullscreen_false_when_the_window_reports_true() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        window.fullscreen = Some(true);
+
+        let commands = fullscreen_clicks(&mut window, &mut transport, &mut queue);
+
+        assert!(
+            commands.contains(&egui::ViewportCommand::Fullscreen(false)),
+            "the click asked for no exit: {commands:?}"
+        );
+    }
+
+    #[test]
+    fn fullscreen_click_sends_nothing_when_the_state_is_unknown() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        window.fullscreen = None;
+
+        let commands = fullscreen_clicks(&mut window, &mut transport, &mut queue);
+
+        assert!(
+            !commands
+                .iter()
+                .any(|command| matches!(command, egui::ViewportCommand::Fullscreen(_))),
+            "a window that cannot say whether it is fullscreen was asked anyway: {commands:?}"
+        );
+    }
+
+    #[test]
+    fn a_window_manager_flip_is_read_not_remembered() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        window.fullscreen = Some(false);
+        let at = fullscreen_button_at(&window);
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            !glyph_colours_in(&window.frame(&mut transport, &mut queue, Vec::new()).1, at)
+                .contains(&Tokens::DARK.palette.accent),
+            "a windowed window lit the fullscreen button"
+        );
+
+        // The compositor's own key, with no click from the app.
+        window.fullscreen = Some(true);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            glyph_colours_in(&frame, at).contains(&Tokens::DARK.palette.accent),
+            "a fullscreen window left the button unlit"
+        );
+        assert_eq!(
+            viewport_commands(&frame)
+                .iter()
+                .filter(|command| matches!(command, egui::ViewportCommand::Fullscreen(_)))
+                .count(),
+            0,
+            "a window-manager change was answered with a request of our own"
+        );
+
+        window.fullscreen = Some(false);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            !glyph_colours_in(&frame, at).contains(&Tokens::DARK.palette.accent),
+            "the button stayed lit after the window left fullscreen"
+        );
+    }
+
+    #[test]
+    fn a_refused_request_leaves_the_button_unlit_and_the_next_click_asks_again() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        window.fullscreen = Some(false);
+        let at = fullscreen_button_at(&window);
+
+        let first = fullscreen_clicks(&mut window, &mut transport, &mut queue);
+        assert!(
+            first.contains(&egui::ViewportCommand::Fullscreen(true)),
+            "the first click asked for nothing: {first:?}"
+        );
+
+        // The compositor refused, so the window still reports itself windowed.
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            !glyph_colours_in(&frame, at).contains(&Tokens::DARK.palette.accent),
+            "a refused request lit the button anyway"
+        );
+
+        let second = fullscreen_clicks(&mut window, &mut transport, &mut queue);
+        assert!(
+            second.contains(&egui::ViewportCommand::Fullscreen(true)),
+            "the second click did not ask again: {second:?}"
+        );
+    }
+
+    #[test]
+    fn the_availability_flip_does_not_change_the_narrow_look() {
+        for width in [900.0, 1100.0] {
+            let mut transport = playing(cover("abc"));
+            let mut queue = queue_of(4, &mut transport);
+            let mut window = Window::new(Vec2::new(width, 900.0));
+            let at = queue_button_at(&window);
+            let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+
+            let colours = glyph_colours_in(&frame, at);
+            assert!(!colours.is_empty(), "{width}: the button drew no glyph");
+            for colour in colours {
+                assert_eq!(
+                    colour,
+                    Tokens::DARK.palette.text_disabled,
+                    "{width}: a button with no pane to toggle is not drawn disabled"
+                );
+            }
+        }
     }
 
     #[test]
@@ -6662,7 +7196,7 @@ mod tests {
         let mut queue = queue_of(24, &mut transport);
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let pane = pane_rect(&window);
+        let pane = pane_rect_when_shown(&window);
         let from = row_line(&frame, pane, "t2");
         let to = below(row_line(&frame, pane, "t5"), -0.25);
 
@@ -6700,7 +7234,7 @@ mod tests {
             let mut queue = queue_of(24, &mut transport);
             let mut window = Window::new(Vec2::new(1400.0, 900.0));
             let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-            let pane = pane_rect(&window);
+            let pane = pane_rect_when_shown(&window);
             let from = row_line(&frame, pane, "t2");
             let to = egui::pos2(pane.center().x, pane.bottom() - 4.0);
             let _ = window.hold_drag(&mut transport, &mut queue, from, to);
@@ -6743,7 +7277,7 @@ mod tests {
         let mut transport = playing(cover("abc"));
         let mut queue = queue_of(6, &mut transport);
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
-        let pane = pane_rect(&window);
+        let pane = pane_rect_when_shown(&window);
         clicked_row(&mut window, &mut queue, &mut transport, pane, "t2");
         window.held = egui::Modifiers::COMMAND;
         clicked_row(&mut window, &mut queue, &mut transport, pane, "t3");
@@ -6782,7 +7316,7 @@ mod tests {
         let mut queue = Queue::default();
         queue.start(&tracks, 0, &mut transport);
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
-        let pane = pane_rect(&window);
+        let pane = pane_rect_when_shown(&window);
 
         clicked_row(&mut window, &mut queue, &mut transport, pane, "t2");
         // A click always picks its row, so the pick is cleared here to leave only
@@ -6831,7 +7365,7 @@ mod tests {
         let mut transport = playing(cover("abc"));
         let mut queue = queue_of(5, &mut transport);
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
-        let pane = pane_rect(&window);
+        let pane = pane_rect_when_shown(&window);
         clicked_row(&mut window, &mut queue, &mut transport, pane, "t2");
         let before = entries(&queue);
 
@@ -6858,7 +7392,7 @@ mod tests {
         let mut transport = playing(cover("abc"));
         let mut queue = queue_of(5, &mut transport);
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
-        let pane = pane_rect(&window);
+        let pane = pane_rect_when_shown(&window);
         clicked_row(&mut window, &mut queue, &mut transport, pane, "t2");
 
         let _ = chord(
@@ -6890,7 +7424,7 @@ mod tests {
         let mut transport = playing(cover("abc"));
         let mut queue = queue_of(5, &mut transport);
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
-        let pane = pane_rect(&window);
+        let pane = pane_rect_when_shown(&window);
         clicked_row(&mut window, &mut queue, &mut transport, pane, "t2");
 
         // A held key: the press and its auto-repeat arrive on separate frames.
@@ -6944,7 +7478,7 @@ mod tests {
         transport.duration_ms = Some(100_000);
         transport.position_ms = 10_000;
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
-        let pane = pane_rect(&window);
+        let pane = pane_rect_when_shown(&window);
         clicked_row(&mut window, &mut queue, &mut transport, pane, "t2");
 
         // Tab reaches the seek slider, and only the slider turns Home into a seek.
@@ -7143,7 +7677,7 @@ mod tests {
 
     /// The Now Playing head's more button, solved the way the panel solves it.
     fn now_playing_more(window: &Window) -> egui::Pos2 {
-        let pane = pane_rect(window);
+        let pane = pane_rect_when_shown(window);
         let head = Rect::from_min_size(
             pane.min + Vec2::splat(space::S3),
             Vec2::new(pane.width() - 2.0 * space::S3, extent::BUTTON),
@@ -7852,7 +8386,7 @@ mod tests {
         );
         assert!(window.library.write_in_flight());
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let at = row_line(&frame, pane_rect(&window), "t2");
+        let at = row_line(&frame, pane_rect_when_shown(&window), "t2");
         for event in [
             egui::Event::PointerMoved(at),
             side(at, egui::PointerButton::Secondary, true),
@@ -7891,7 +8425,7 @@ mod tests {
             "the page started no write"
         );
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let at = row_line(&frame, pane_rect(&window), "t2");
+        let at = row_line(&frame, pane_rect_when_shown(&window), "t2");
         let _ = window.click(&mut transport, &mut queue, at);
 
         let command = press(&mut window, &mut transport, &mut queue, egui::Key::Delete);
@@ -8318,7 +8852,7 @@ mod tests {
         let mut queue = queue_of(4, &mut transport);
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let at = row_line(&frame, pane_rect(&window), "t2");
+        let at = row_line(&frame, pane_rect_when_shown(&window), "t2");
 
         for event in [
             egui::Event::PointerMoved(at),
@@ -8356,7 +8890,7 @@ mod tests {
         let mut queue = queue_of(4, &mut transport);
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let at = row_line(&frame, pane_rect(&window), "t2");
+        let at = row_line(&frame, pane_rect_when_shown(&window), "t2");
         let _ = window.click(&mut transport, &mut queue, at);
         assert!(!window.menu.is_open(), "a plain click opened a menu");
 

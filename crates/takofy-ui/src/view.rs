@@ -49,6 +49,7 @@ use egui::Ui;
 
 use crate::cover::Art;
 use crate::drawer::Drawer;
+use crate::layout::PanePref;
 use crate::library::Library;
 use crate::menu::Menu;
 use crate::message::Command;
@@ -64,6 +65,9 @@ pub struct Screen<'a> {
     pub transport: &'a mut Transport,
     pub queue: &'a mut Queue,
     pub drawer: &'a mut Drawer,
+    /// What the user asked of the Now Playing column, carried so the shell can
+    /// resolve it against the width and flip it on a press.
+    pub pane: &'a mut PanePref,
     /// The context menu, owned by the window because it survives frames.
     pub menu: &'a mut Menu,
     pub position_ms: u32,

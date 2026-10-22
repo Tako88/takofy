@@ -194,6 +194,39 @@ impl Table {
     }
 }
 
+/// What the user asked of the Now Playing column, resolved against the width.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum PanePref {
+    /// The width rule alone.
+    #[default]
+    Auto,
+    /// Hidden wherever the width would show it.
+    Hidden,
+}
+
+/// What the queue button can do about the pane at the current width.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PaneButton {
+    /// The width has no pane here, so there is nothing to toggle.
+    Unavailable,
+    Shown,
+    Hidden,
+}
+
+impl PanePref {
+    /// The preference a press on the queue button leaves.
+    ///
+    /// A press is inert where the width has no pane, so a click can never
+    /// corrupt a preference that applies at a wider window.
+    pub fn press(self, width: f32) -> PanePref {
+        match pane_button(width, self) {
+            PaneButton::Unavailable => self,
+            PaneButton::Shown => PanePref::Hidden,
+            PaneButton::Hidden => PanePref::Auto,
+        }
+    }
+}
+
 /// Which form each region takes at the current window width.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Regions {
@@ -246,6 +279,29 @@ pub fn regions_for(width: f32) -> Regions {
         } else {
             Table::Full
         },
+    }
+}
+
+/// The window's regions with the user's choice about the pane applied.
+///
+/// The width still decides every other region, and still decides that the pane
+/// is absent: a choice only ever takes the pane away.
+pub fn regions_with(width: f32, pane: PanePref) -> Regions {
+    let mut regions = regions_for(width);
+    if pane == PanePref::Hidden {
+        regions.now_playing = NowPlaying::Hidden;
+    }
+    regions
+}
+
+/// What the queue button can do at this width, so the view can draw it honestly.
+pub fn pane_button(width: f32, pane: PanePref) -> PaneButton {
+    if width <= NOWPLAYING_HIDDEN_MAX {
+        return PaneButton::Unavailable;
+    }
+    match pane {
+        PanePref::Auto => PaneButton::Shown,
+        PanePref::Hidden => PaneButton::Hidden,
     }
 }
 
@@ -460,8 +516,12 @@ mod tests {
     }
 
     fn solve(width: f32, height: f32) -> (Grid, Regions, Shell) {
+        solve_with(width, height, PanePref::Auto)
+    }
+
+    fn solve_with(width: f32, height: f32, pane: PanePref) -> (Grid, Regions, Shell) {
         let content = content(width, height);
-        let regions = regions_for(content.width());
+        let regions = regions_with(content.width(), pane);
         let shell = shell_for(&regions);
         (grid_for(content, &shell), regions, shell)
     }
@@ -524,6 +584,151 @@ mod tests {
         assert!(reduced.artist);
         // The date added and the like stay until the window is much narrower.
         assert!(reduced.added && reduced.like);
+    }
+
+    #[test]
+    fn regions_with_auto_equals_the_width_rule_at_every_width() {
+        let edges = [
+            NOWPLAYING_NARROW_MAX,
+            NOWPLAYING_HIDDEN_MAX,
+            PLAYBAR_REDUCED_MAX,
+            RAIL_MAX,
+            TABLE_REDUCED_MAX,
+            TABLE_NARROW_MAX,
+        ];
+        let sweep = (WINDOW_MIN[0] as u32..=2000).map(|width| width as f32);
+        let thresholds = edges
+            .iter()
+            .flat_map(|edge| [edge - 0.1, *edge, edge + 0.1]);
+        for width in sweep.chain(thresholds) {
+            assert_eq!(
+                regions_with(width, PanePref::Auto),
+                regions_for(width),
+                "{width}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_hidden_choice_hides_only_the_pane() {
+        for width in [1120.1, 1200.0, 1240.0, 1360.0, 1360.1, 1440.0, 2000.0] {
+            let shown = regions_for(width);
+            let hidden = regions_with(width, PanePref::Hidden);
+            assert_eq!(hidden.now_playing, NowPlaying::Hidden, "{width}");
+            assert_eq!(hidden.sidebar, shown.sidebar, "{width}");
+            assert_eq!(hidden.playbar, shown.playbar, "{width}");
+            assert_eq!(hidden.table, shown.table, "{width}");
+        }
+    }
+
+    #[test]
+    fn at_and_below_1120_the_choice_is_moot() {
+        for width in [WINDOW_MIN[0], 900.0, 1000.0, 1120.0] {
+            assert_eq!(
+                regions_with(width, PanePref::Hidden),
+                regions_with(width, PanePref::Auto),
+                "{width}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_choice_never_opens_a_pane_the_width_hides() {
+        // The only choice a preference can express is "hidden"; there is no
+        // variant that would force a pane onto a window with no room for it.
+        for width in [WINDOW_MIN[0], 900.0, 1120.0] {
+            assert_eq!(
+                regions_with(width, PanePref::Hidden).now_playing,
+                NowPlaying::Hidden,
+                "{width}"
+            );
+        }
+    }
+
+    #[test]
+    fn pane_button_is_unavailable_at_and_below_1120_and_follows_the_choice_above() {
+        for width in [WINDOW_MIN[0], 900.0, 1000.0, 1120.0] {
+            for pane in [PanePref::Auto, PanePref::Hidden] {
+                assert_eq!(
+                    pane_button(width, pane),
+                    PaneButton::Unavailable,
+                    "{width} {pane:?}"
+                );
+            }
+        }
+        assert_eq!(pane_button(1120.1, PanePref::Auto), PaneButton::Shown);
+        assert_eq!(pane_button(1120.1, PanePref::Hidden), PaneButton::Hidden);
+        assert_eq!(pane_button(1440.0, PanePref::Auto), PaneButton::Shown);
+    }
+
+    #[test]
+    fn press_flips_where_the_pane_exists_and_is_inert_where_it_does_not() {
+        assert_eq!(PanePref::Auto.press(1240.0), PanePref::Hidden);
+        assert_eq!(PanePref::Hidden.press(1240.0), PanePref::Auto);
+        assert_eq!(PanePref::Auto.press(1120.1), PanePref::Hidden);
+
+        for width in [WINDOW_MIN[0], 900.0, 1120.0] {
+            for pane in [PanePref::Auto, PanePref::Hidden] {
+                assert_eq!(pane.press(width), pane, "{width} {pane:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_hidden_choice_survives_a_trip_below_the_threshold() {
+        let hidden = PanePref::Auto.press(1240.0);
+        assert_eq!(hidden, PanePref::Hidden);
+
+        let narrow = hidden.press(800.0);
+        assert_eq!(narrow, PanePref::Hidden, "a narrow press changed nothing");
+        assert_eq!(
+            regions_with(1240.0, narrow).now_playing,
+            NowPlaying::Hidden,
+            "the pane came back on the way up"
+        );
+    }
+
+    #[test]
+    fn the_reduced_playbar_never_has_a_pane_to_toggle() {
+        for width in (WINDOW_MIN[0] as u32)..=(PLAYBAR_REDUCED_MAX as u32) {
+            let width = width as f32;
+            assert_eq!(regions_for(width).playbar, Playbar::Reduced, "{width}");
+            for pane in [PanePref::Auto, PanePref::Hidden] {
+                assert_eq!(
+                    pane_button(width, pane),
+                    PaneButton::Unavailable,
+                    "{width} {pane:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_user_hidden_pane_hands_its_width_to_the_view() {
+        let (shown, _, _) = solve(1240.0, 900.0);
+        let (hidden, regions, shell) = solve_with(1240.0, 900.0, PanePref::Hidden);
+        assert_eq!(regions.now_playing, NowPlaying::Hidden);
+        assert!(hidden.now_playing.is_none());
+        assert_eq!(hidden.view.right(), 1240.0 - shell.padding);
+        assert!(hidden.view.width() > shown.view.width());
+    }
+
+    #[test]
+    fn the_regions_tile_the_inner_area_with_the_pane_hidden_by_choice() {
+        let (grid, _, shell) = solve_with(1240.0, 900.0, PanePref::Hidden);
+        let inner = content(1240.0, 900.0).shrink(shell.padding);
+
+        let area =
+            grid.sidebar.area() + grid.topbar.area() + grid.view.area() + grid.playbar.area();
+        let column_gaps = shell.gap * grid.sidebar.height();
+        let row_gap = shell.gap * inner.width();
+        let tiled = area + column_gaps + row_gap;
+
+        assert!(
+            (tiled - inner.area()).abs() < 0.01,
+            "regions cover {tiled}, inner area is {}",
+            inner.area()
+        );
     }
 
     #[test]
