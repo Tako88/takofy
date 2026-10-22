@@ -8,6 +8,11 @@
 //! events that follow it; a restart by `Seek` never sets it, because no load
 //! ever follows.
 //!
+//! Where a finished track goes is the repeat mode's business, and the Next
+//! button asks the same table, so the end of a track and a click cannot disagree
+//! about what follows. A loop plays nothing new, so it counts against the skip
+//! cap exactly as an unavailable row does.
+//!
 //! The queue also edits its own order and keeps the selection over its rows,
 //! because both are indices into it. One rule holds them apart: an edit never
 //! touches `index`, `awaiting_start` or `skips`. The rows an edit may move all
@@ -22,6 +27,7 @@ use takofy_model::TrackEntry;
 use crate::message::{Command, TransportUpdate, Update};
 use crate::player::{RESTART_AFTER_MS, Transport, TransportState};
 use crate::reorder;
+use crate::repeat::{self, Cause, Hop, Repeat};
 use crate::selection::{Press, Selection};
 
 /// How many tracks an unplayable run may skip before the queue stops and shows
@@ -46,13 +52,16 @@ pub struct Queue {
     /// Set when a `Play` is in flight; `Ended`/`Unavailable` before the load's
     /// first event are the previous track's and must be ignored.
     awaiting_start: bool,
-    /// Consecutive auto-advances from `Unavailable`. A user move or a playing
-    /// position clears it.
+    /// Consecutive auto-advances that played nothing new: an unavailable row or
+    /// a repeat loop. A user move, a playing position or a known duration clears
+    /// it.
     skips: u32,
     /// The upcoming rows the pointer has picked.
     selection: Selection,
     /// The row the keyboard hands focus to once this frame's rows are drawn.
     refocus: Option<usize>,
+    /// Where a finished track goes.
+    repeat: Repeat,
 }
 
 impl Queue {
@@ -75,9 +84,9 @@ impl Queue {
 
     /// Steps forward one entry, if there is one.
     pub fn next(&mut self, transport: &mut Transport) -> Option<Command> {
-        let index = self.index.filter(|index| index + 1 < self.tracks.len())?;
+        let hop = self.hop(Cause::Manual)?;
         self.skips = 0;
-        self.goto(index + 1, transport)
+        self.follow(hop, transport)
     }
 
     /// Restarts the current entry when it is past the threshold or is the
@@ -125,8 +134,15 @@ impl Queue {
             return None;
         };
         match update {
-            TransportUpdate::Loading | TransportUpdate::Duration { .. } => {
+            TransportUpdate::Loading => {
                 self.awaiting_start = false;
+                None
+            }
+            // A duration proves the track loaded, so it ends a run of advances
+            // that never did.
+            TransportUpdate::Duration { .. } => {
+                self.awaiting_start = false;
+                self.skips = 0;
                 None
             }
             TransportUpdate::Position { paused, .. } => {
@@ -144,25 +160,21 @@ impl Queue {
                 if self.awaiting_start {
                     return None;
                 }
-                self.goto_next(transport)
+                self.move_on(Cause::Ended, transport)
             }
             TransportUpdate::Unavailable => {
                 if self.awaiting_start {
                     return None;
                 }
-                self.skips = self.skips.saturating_add(1);
-                if self.skips > MAX_CONSECUTIVE_SKIPS {
-                    return None;
-                }
-                self.goto_next(transport)
+                self.move_on(Cause::Unavailable, transport)
             }
             TransportUpdate::Seeked { .. } | TransportUpdate::Stopped => None,
         }
     }
 
-    /// Whether there is an entry after the current one.
+    /// Whether Next would move: the same answer `next` gives, without playing.
     pub fn can_next(&self) -> bool {
-        matches!(self.index, Some(index) if index + 1 < self.tracks.len())
+        self.hop(Cause::Manual).is_some()
     }
 
     /// Whether the queue has a current entry, and so something to step back
@@ -414,9 +426,44 @@ impl Queue {
         !self.tracks.is_empty()
     }
 
-    fn goto_next(&mut self, transport: &mut Transport) -> Option<Command> {
-        let next = self.index? + 1;
-        self.goto(next, transport)
+    /// The repeat mode.
+    pub fn repeat(&self) -> Repeat {
+        self.repeat
+    }
+
+    /// Steps to the repeat mode after this one.
+    pub fn cycle_repeat(&mut self) {
+        self.repeat = self.repeat.next();
+    }
+
+    /// Where the queue goes for `cause`.
+    fn hop(&self, cause: Cause) -> Option<Hop> {
+        repeat::advance(self.repeat, self.index, self.tracks.len(), cause)
+    }
+
+    /// Steps the queue for `cause`, counting a lap that played nothing.
+    ///
+    /// A failed run and a repeat loop are the same hazard: a load per lap with
+    /// nothing playing between them.
+    fn move_on(&mut self, cause: Cause, transport: &mut Transport) -> Option<Command> {
+        let hop = self.hop(cause)?;
+        if cause == Cause::Unavailable || matches!(hop, Hop::Wrap | Hop::Replay) {
+            self.skips = self.skips.saturating_add(1);
+            if self.skips > MAX_CONSECUTIVE_SKIPS {
+                return None;
+            }
+        }
+        self.follow(hop, transport)
+    }
+
+    /// Plays what `hop` names.
+    fn follow(&mut self, hop: Hop, transport: &mut Transport) -> Option<Command> {
+        let index = match hop {
+            Hop::Next => self.index? + 1,
+            Hop::Wrap => 0,
+            Hop::Replay => self.index?,
+        };
+        self.goto(index, transport)
     }
 
     /// Whether `row` is in the editable region: after the current entry.
@@ -839,6 +886,257 @@ mod tests {
             );
         }
         assert_eq!(skip(&mut queue, &mut transport), None);
+    }
+
+    /// The number of repeat clicks that reach `repeat` from Off.
+    fn clicks(repeat: Repeat) -> usize {
+        match repeat {
+            Repeat::Off => 0,
+            Repeat::All => 1,
+            Repeat::One => 2,
+        }
+    }
+
+    /// A queue started on `count` tracks at `index`, in `repeat` mode.
+    fn started_in(count: usize, index: usize, repeat: Repeat) -> Queue {
+        let mut queue = started(count, index);
+        for _ in 0..clicks(repeat) {
+            queue.cycle_repeat();
+        }
+        queue
+    }
+
+    #[test]
+    fn repeat_all_wraps_to_row_zero_on_a_natural_end() {
+        let mut queue = started_in(3, 2, Repeat::All);
+        let mut transport = Transport::default();
+        clear_guard(&mut queue, &mut transport);
+
+        assert_eq!(end(&mut queue, &mut transport), Some(play("t0")));
+        assert_eq!(
+            queue.index,
+            Some(0),
+            "a wrap leaves the current row at zero"
+        );
+    }
+
+    #[test]
+    fn repeat_all_manual_next_wraps_and_can_next_is_true_on_the_last_row() {
+        let mut queue = started_in(3, 2, Repeat::All);
+        let mut transport = Transport::default();
+
+        assert!(queue.can_next(), "All always has somewhere to go");
+        assert_eq!(queue.next(&mut transport), Some(play("t0")));
+    }
+
+    #[test]
+    fn can_next_agrees_with_next_for_every_state() {
+        let mut transport = Transport::default();
+        for repeat in [Repeat::Off, Repeat::All, Repeat::One] {
+            for count in 0..=4 {
+                for index in 0..count {
+                    let mut queue = started_in(count, index, repeat);
+                    let can = queue.can_next();
+                    assert_eq!(
+                        queue.next(&mut transport).is_some(),
+                        can,
+                        "{repeat:?} on {count} rows at {index}"
+                    );
+                }
+            }
+            let mut armed = armed(3);
+            for _ in 0..clicks(repeat) {
+                armed.cycle_repeat();
+            }
+            assert!(!armed.can_next(), "{repeat:?} on an armed queue");
+            assert_eq!(armed.next(&mut transport), None, "{repeat:?} armed");
+        }
+    }
+
+    #[test]
+    fn repeat_one_replays_the_current_row_and_arms_the_guard() {
+        let mut queue = started_in(3, 1, Repeat::One);
+        let mut transport = Transport::default();
+        clear_guard(&mut queue, &mut transport);
+
+        assert_eq!(end(&mut queue, &mut transport), Some(play("t1")));
+        assert_eq!(queue.index, Some(1));
+        assert!(queue.awaiting_start, "a replay is a fresh play");
+    }
+
+    #[test]
+    fn a_stale_ended_after_a_replay_is_ignored() {
+        let mut queue = started_in(3, 1, Repeat::One);
+        let mut transport = Transport::default();
+        clear_guard(&mut queue, &mut transport);
+
+        assert_eq!(end(&mut queue, &mut transport), Some(play("t1")));
+        assert_eq!(
+            end(&mut queue, &mut transport),
+            None,
+            "the end that follows a replay belongs to the load before it"
+        );
+        clear_guard(&mut queue, &mut transport);
+        assert_eq!(end(&mut queue, &mut transport), Some(play("t1")));
+    }
+
+    #[test]
+    fn repeat_one_manual_next_advances_and_stops_at_the_end() {
+        let mut queue = started_in(2, 0, Repeat::One);
+        let mut transport = Transport::default();
+
+        assert_eq!(queue.next(&mut transport), Some(play("t1")));
+        assert!(!queue.can_next(), "One governs the end, not the button");
+        assert_eq!(queue.next(&mut transport), None);
+    }
+
+    #[test]
+    fn repeat_one_unavailable_moves_on_like_off() {
+        let mut queue = started_in(3, 0, Repeat::One);
+        let mut transport = Transport::default();
+        assert_eq!(skip(&mut queue, &mut transport), Some(play("t1")));
+
+        let mut last = started_in(2, 1, Repeat::One);
+        assert_eq!(
+            skip(&mut last, &mut transport),
+            None,
+            "an unplayable last row stops even under One"
+        );
+    }
+
+    #[test]
+    fn repeat_one_that_ends_without_a_position_stops_at_the_cap() {
+        let mut queue = started_in(1, 0, Repeat::One);
+        let mut transport = Transport::default();
+
+        for lap in 1..=MAX_CONSECUTIVE_SKIPS {
+            clear_guard(&mut queue, &mut transport);
+            assert_eq!(
+                end(&mut queue, &mut transport),
+                Some(play("t0")),
+                "replay {lap}"
+            );
+        }
+        clear_guard(&mut queue, &mut transport);
+        assert_eq!(
+            end(&mut queue, &mut transport),
+            None,
+            "a loop that never reports a position must stop at the cap"
+        );
+    }
+
+    #[test]
+    fn a_healthy_repeat_one_loop_never_hits_the_cap() {
+        let mut queue = started_in(1, 0, Repeat::One);
+        let mut transport = Transport::default();
+
+        for lap in 0..30 {
+            clear_guard(&mut queue, &mut transport);
+            feed(
+                &mut queue,
+                &mut transport,
+                TransportUpdate::Position {
+                    position_ms: 1_000,
+                    paused: false,
+                },
+            );
+            assert_eq!(
+                end(&mut queue, &mut transport),
+                Some(play("t0")),
+                "lap {lap}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_duration_resets_the_skip_run() {
+        let mut queue = started_in(1, 0, Repeat::One);
+        let mut transport = Transport::default();
+
+        for lap in 0..30 {
+            clear_guard(&mut queue, &mut transport);
+            feed(
+                &mut queue,
+                &mut transport,
+                TransportUpdate::Duration {
+                    duration_ms: 222_000,
+                },
+            );
+            assert_eq!(
+                end(&mut queue, &mut transport),
+                Some(play("t0")),
+                "lap {lap}"
+            );
+            assert_eq!(queue.skips, 1, "a known duration must reset the streak");
+        }
+    }
+
+    #[test]
+    fn repeat_all_over_a_failing_queue_stops_at_the_cap() {
+        let mut queue = started_in(3, 0, Repeat::All);
+        let mut transport = Transport::default();
+
+        for (lap, uri) in ["t1", "t2", "t0", "t1", "t2"].into_iter().enumerate() {
+            assert_eq!(
+                skip(&mut queue, &mut transport),
+                Some(play(uri)),
+                "lap {lap}"
+            );
+        }
+        assert_eq!(
+            skip(&mut queue, &mut transport),
+            None,
+            "a failing queue that wraps must still stop at the cap"
+        );
+    }
+
+    #[test]
+    fn a_silent_wrap_on_one_row_counts_toward_the_cap() {
+        let mut queue = started_in(1, 0, Repeat::All);
+        let mut transport = Transport::default();
+
+        for lap in 1..=MAX_CONSECUTIVE_SKIPS {
+            clear_guard(&mut queue, &mut transport);
+            assert_eq!(
+                end(&mut queue, &mut transport),
+                Some(play("t0")),
+                "wrap {lap}"
+            );
+        }
+        clear_guard(&mut queue, &mut transport);
+        assert_eq!(end(&mut queue, &mut transport), None, "capped");
+    }
+
+    #[test]
+    fn repeat_one_on_an_armed_queue_ignores_ended_and_toggle_starts_row_zero() {
+        let mut queue = Queue::default();
+        let mut transport = Transport::default();
+        assert_eq!(queue.append(tracks(3)), Some(0..3));
+        queue.cycle_repeat();
+        queue.cycle_repeat();
+        assert_eq!(queue.repeat(), Repeat::One);
+
+        assert_eq!(end(&mut queue, &mut transport), None);
+        assert!(queue.armed(), "nothing was playing, so nothing repeats");
+        assert_eq!(queue.toggle(&mut transport), Some(play("t0")));
+    }
+
+    #[test]
+    fn changing_repeat_never_touches_index_guard_or_skips() {
+        let mut queue = started(6, 1);
+        let mut transport = Transport::default();
+        clear_guard(&mut queue, &mut transport);
+        assert_eq!(
+            feed(&mut queue, &mut transport, TransportUpdate::Unavailable),
+            Some(play("t2"))
+        );
+        let before = (queue.index, queue.awaiting_start, queue.skips);
+
+        for _ in 0..3 {
+            queue.cycle_repeat();
+            assert_eq!((queue.index, queue.awaiting_start, queue.skips), before);
+        }
+        assert_eq!(queue.repeat(), Repeat::Off);
     }
 
     #[test]

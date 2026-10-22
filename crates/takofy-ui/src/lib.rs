@@ -23,6 +23,7 @@ pub mod queue;
 pub mod releases;
 pub mod removal;
 pub mod reorder;
+pub mod repeat;
 pub mod route;
 pub mod scroll;
 pub mod search;
