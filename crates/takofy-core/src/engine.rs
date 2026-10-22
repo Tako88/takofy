@@ -13,9 +13,9 @@ use crate::playback::{Playback, PlaybackError, PlaybackEvent};
 use crate::playlist_edit::{self, PlaylistError};
 use crate::remote::{
     ROOTLIST_WIRE, RemoteContext, RemoteRootlist, label_playlists, label_tracks, read_album,
-    read_artist, read_followed_artists, read_followed_shows, read_lyrics, read_playlist_state,
-    read_related, read_release_tracks, read_saved_albums, read_show, write_add, write_follow,
-    write_move, write_remove, write_rootlist_move,
+    read_artist, read_followed_artists, read_followed_shows, read_liked_tracks, read_lyrics,
+    read_playlist_state, read_related, read_release_tracks, read_saved_albums, read_show,
+    write_add, write_follow, write_like, write_move, write_remove, write_rootlist_move,
 };
 use crate::rootlist::{RootlistError, fetch_all};
 use crate::search::search_uri;
@@ -257,6 +257,16 @@ impl Engine {
     /// The albums the user saves, newest save first, each as its card draws it.
     pub async fn saved_albums(&self) -> Result<Vec<SavedAlbum>, EngineError> {
         Ok(read_saved_albums(&self.session).await?)
+    }
+
+    /// The tracks the user has liked, newest save first.
+    pub async fn liked_tracks(&self) -> Result<Vec<String>, EngineError> {
+        Ok(read_liked_tracks(&self.session).await?)
+    }
+
+    /// Writes one pick into the liked-songs set, or out of it.
+    pub async fn set_liked(&self, tracks: Vec<String>, liked: bool) -> Result<(), EngineError> {
+        Ok(write_like(&self.session, tracks, liked).await?)
     }
 }
 

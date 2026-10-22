@@ -34,6 +34,13 @@ pub(crate) fn album_order(items: Vec<Item>) -> Vec<String> {
     newest_first(items, |uri| matches!(uri, SpotifyUri::Album { .. }))
 }
 
+/// The liked tracks' URIs, newest save first.
+///
+/// The same set holds saved albums and episodes, so only track items are kept.
+pub(crate) fn track_order(items: Vec<Item>) -> Vec<String> {
+    newest_first(items, |uri| matches!(uri, SpotifyUri::Track { .. }))
+}
+
 /// An artist as its card draws it, before it is joined to the saved order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArtistCard {
@@ -168,6 +175,7 @@ mod tests {
 
     use super::{
         ArtistCard, album_order, artist_card, artist_entries, artist_order, saved_album_entries,
+        track_order,
     };
     use crate::collection::Item;
 
@@ -244,6 +252,44 @@ mod tests {
                 item(&album_uri(1), Some(2_000), false),
             ]),
             vec![album_uri(1)],
+            "the first occurrence's date sorts, so the later, newer duplicate does not win"
+        );
+    }
+
+    #[test]
+    fn track_order_keeps_only_live_track_items() {
+        assert_eq!(
+            track_order(vec![
+                item(&track_uri(1), Some(100), false),
+                item(&album_uri(2), Some(200), false),
+                item(&episode_uri(3), Some(300), false),
+                item(&track_uri(4), Some(400), true),
+                item(&track_uri(5), None, false),
+            ]),
+            vec![track_uri(1), track_uri(5)],
+            "an album, an episode and a removed track are not liked songs"
+        );
+    }
+
+    #[test]
+    fn a_track_saved_removed_and_saved_again_is_one_track() {
+        assert_eq!(
+            track_order(vec![
+                item(&track_uri(1), Some(100), true),  // saved, then removed
+                item(&track_uri(1), Some(200), false), // saved again
+            ]),
+            vec![track_uri(1)]
+        );
+    }
+
+    #[test]
+    fn track_order_keeps_the_first_duplicate() {
+        assert_eq!(
+            track_order(vec![
+                item(&track_uri(1), Some(100), false),
+                item(&track_uri(1), Some(2_000), false),
+            ]),
+            vec![track_uri(1)],
             "the first occurrence's date sorts, so the later, newer duplicate does not win"
         );
     }
