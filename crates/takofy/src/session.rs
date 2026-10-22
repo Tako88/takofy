@@ -100,6 +100,17 @@ pub(crate) trait SessionHost: Send + 'static {
         to: usize,
     ) -> impl Future<Output = Result<Revision, SessionError>> + Send;
 
+    /// Unlinks one row of the sidebar's playlists, answering the revision to
+    /// hold next.
+    fn remove_playlist(
+        &self,
+        revision: &Revision,
+        index: usize,
+    ) -> impl Future<Output = Result<Revision, SessionError>> + Send;
+
+    /// Writes one saved album or show out of the library.
+    fn remove_saved(&self, uri: &str) -> impl Future<Output = Result<(), SessionError>> + Send;
+
     /// Appends tracks to a playlist as one write, answering the revision to
     /// hold next.
     fn add_tracks(
@@ -303,6 +314,27 @@ impl SessionHost for LiveSession {
                 .move_playlist(revision, from, to)
                 .await
                 .map_err(SessionError::Engine),
+            None => Err(SessionError::NotConnected),
+        }
+    }
+
+    async fn remove_playlist(
+        &self,
+        revision: &Revision,
+        index: usize,
+    ) -> Result<Revision, SessionError> {
+        match &self.engine {
+            Some(engine) => engine
+                .remove_playlist(revision, index)
+                .await
+                .map_err(SessionError::Engine),
+            None => Err(SessionError::NotConnected),
+        }
+    }
+
+    async fn remove_saved(&self, uri: &str) -> Result<(), SessionError> {
+        match &self.engine {
+            Some(engine) => engine.remove_saved(uri).await.map_err(SessionError::Engine),
             None => Err(SessionError::NotConnected),
         }
     }

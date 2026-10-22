@@ -420,6 +420,30 @@ pub(crate) fn start<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                         break;
                     }
                 }
+                Event::Command(Some(Command::RemovePlaylist {
+                    playlist,
+                    revision,
+                    index,
+                })) => {
+                    let step = remove_playlist(
+                        &mut host,
+                        &mut stop_rx,
+                        &task_notifier,
+                        &playlist,
+                        &revision,
+                        index,
+                    )
+                    .await;
+                    if step.stopped() {
+                        break;
+                    }
+                }
+                Event::Command(Some(Command::RemoveSaved { uri })) => {
+                    let step = remove_saved(&mut host, &mut stop_rx, &task_notifier, &uri).await;
+                    if step.stopped() {
+                        break;
+                    }
+                }
                 Event::Command(Some(Command::AddTracks {
                     playlist,
                     revision,
@@ -1035,6 +1059,62 @@ async fn move_playlist<H: SessionHost>(
         Some(Err(error)) => {
             log::warn!("playlist move failed: {}", error.kind());
             notifier.send(Update::PlaylistMoveFailed);
+            Step::Done
+        }
+    }
+}
+
+/// Unlinks one rootlist row and announces the revision its reply names.
+async fn remove_playlist<H: SessionHost>(
+    host: &mut H,
+    stop: &mut StopReceiver<()>,
+    notifier: &Notifier,
+    playlist: &str,
+    revision: &Revision,
+    index: usize,
+) -> Step {
+    match stop_or(stop, host.remove_playlist(revision, index)).await {
+        None => Step::Stopped,
+        Some(Ok(revision)) => {
+            notifier.send(Update::PlaylistRemoved {
+                playlist: playlist.to_owned(),
+                revision,
+            });
+            Step::Done
+        }
+        Some(Err(error)) => {
+            log::warn!("playlist removal failed: {}", error.kind());
+            notifier.send(Update::PlaylistRemoveFailed {
+                playlist: playlist.to_owned(),
+            });
+            Step::Done
+        }
+    }
+}
+
+/// Writes one saved album or show out and echoes the URI it was asked for.
+///
+/// The reply carries no body, so the echo is the whole confirmation the window
+/// gets until its next read.
+async fn remove_saved<H: SessionHost>(
+    host: &mut H,
+    stop: &mut StopReceiver<()>,
+    notifier: &Notifier,
+    uri: &str,
+) -> Step {
+    match stop_or(stop, host.remove_saved(uri)).await {
+        None => Step::Stopped,
+        Some(Ok(())) => {
+            notifier.send(Update::SavedRemoved {
+                uri: uri.to_owned(),
+            });
+            Step::Done
+        }
+        Some(Err(error)) => {
+            log::warn!("saved removal failed: {}", error.kind());
+            notifier.send(Update::SavedRemoveFailed {
+                uri: uri.to_owned(),
+            });
             Step::Done
         }
     }
@@ -1922,6 +2002,8 @@ mod tests {
         move_script: Mutex<MoveScript>,
         remove_script: Mutex<MoveScript>,
         rootlist_move_script: Mutex<RootlistMoveScript>,
+        remove_playlist_script: Mutex<RootlistMoveScript>,
+        remove_saved_script: Mutex<LikeScript>,
         add_script: Mutex<AddScript>,
         rename_script: Mutex<RenameScript>,
         create_script: Mutex<CreateScript>,
@@ -1948,6 +2030,8 @@ mod tests {
         move_writes: AtomicUsize,
         remove_writes: AtomicUsize,
         rootlist_move_writes: AtomicUsize,
+        remove_playlist_writes: AtomicUsize,
+        remove_saved_writes: AtomicUsize,
         add_writes: AtomicUsize,
         rename_writes: AtomicUsize,
         create_writes: AtomicUsize,
@@ -1962,6 +2046,8 @@ mod tests {
         last_move: Mutex<Option<(String, Revision, Vec<Move>)>>,
         last_remove: Mutex<Option<(String, Revision, Vec<Removal>)>>,
         last_root_move: Mutex<Option<(Revision, usize, usize)>>,
+        last_playlist_remove: Mutex<Option<(Revision, usize)>>,
+        last_saved_remove: Mutex<Option<String>>,
         last_add: Mutex<Option<AddWrite>>,
         last_rename: Mutex<Option<RenameWrite>>,
         last_create: Mutex<Option<String>>,
@@ -1969,6 +2055,8 @@ mod tests {
         last_like: Mutex<Option<(Vec<String>, bool)>>,
         move_started: Mutex<Option<Sender<()>>>,
         rootlist_move_started: Mutex<Option<Sender<()>>>,
+        remove_playlist_started: Mutex<Option<Sender<()>>>,
+        remove_saved_started: Mutex<Option<Sender<()>>>,
         add_started: Mutex<Option<Sender<()>>>,
         rename_started: Mutex<Option<Sender<()>>>,
         create_started: Mutex<Option<Sender<()>>>,
@@ -2459,6 +2547,72 @@ mod tests {
                     RootlistMoveScript::Ready(revision) => Ok(revision),
                     RootlistMoveScript::Fail => Err(SessionError::NotConnected),
                     RootlistMoveScript::Pending => std::future::pending().await,
+                }
+            }
+        }
+
+        fn remove_playlist(
+            &self,
+            revision: &Revision,
+            index: usize,
+        ) -> impl Future<Output = Result<Revision, SessionError>> + Send {
+            self.shared
+                .remove_playlist_writes
+                .fetch_add(1, Ordering::SeqCst);
+            *self.shared.last_playlist_remove.lock().expect("lock") =
+                Some((revision.clone(), index));
+            if let Some(tx) = self
+                .shared
+                .remove_playlist_started
+                .lock()
+                .expect("lock")
+                .take()
+            {
+                let _ = tx.send(());
+            }
+            let connected = self.shared.connected.load(Ordering::SeqCst);
+            let script = self
+                .shared
+                .remove_playlist_script
+                .lock()
+                .expect("lock")
+                .clone();
+            async move {
+                if !connected {
+                    return Err(SessionError::NotConnected);
+                }
+                match script {
+                    RootlistMoveScript::Ready(revision) => Ok(revision),
+                    RootlistMoveScript::Fail => Err(SessionError::NotConnected),
+                    RootlistMoveScript::Pending => std::future::pending().await,
+                }
+            }
+        }
+
+        fn remove_saved(&self, uri: &str) -> impl Future<Output = Result<(), SessionError>> + Send {
+            self.shared
+                .remove_saved_writes
+                .fetch_add(1, Ordering::SeqCst);
+            *self.shared.last_saved_remove.lock().expect("lock") = Some(uri.to_owned());
+            if let Some(tx) = self
+                .shared
+                .remove_saved_started
+                .lock()
+                .expect("lock")
+                .take()
+            {
+                let _ = tx.send(());
+            }
+            let connected = self.shared.connected.load(Ordering::SeqCst);
+            let script = *self.shared.remove_saved_script.lock().expect("lock");
+            async move {
+                if !connected {
+                    return Err(SessionError::NotConnected);
+                }
+                match script {
+                    LikeScript::Ok => Ok(()),
+                    LikeScript::Fail => Err(SessionError::NotConnected),
+                    LikeScript::Pending => std::future::pending().await,
                 }
             }
         }
@@ -3288,6 +3442,220 @@ mod tests {
                 shared.shutdowns.load(Ordering::SeqCst),
                 1,
                 "the shutdown must run when the stop interrupts the move"
+            );
+        };
+
+        run_ordered(runtime, window, teardown);
+    }
+
+    #[test]
+    fn a_playlist_removal_announces_the_reply_revision_and_sends_what_was_asked() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+        let base = revision(1);
+        let reply = revision(2);
+        *shared.remove_playlist_script.lock().expect("lock") =
+            RootlistMoveScript::Ready(reply.clone());
+
+        let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::RemovePlaylist {
+                    playlist: "spotify:playlist:a".to_owned(),
+                    revision: base.clone(),
+                    index: 3,
+                })
+                .expect("remove");
+            ui_end.updates.recv().expect("removed")
+        });
+
+        assert_eq!(
+            update,
+            Update::PlaylistRemoved {
+                playlist: "spotify:playlist:a".to_owned(),
+                revision: reply,
+            }
+        );
+        assert_eq!(shared.remove_playlist_writes.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            shared.last_playlist_remove.lock().expect("lock").clone(),
+            Some((base, 3)),
+            "the unlink names the revision and the row that were asked for"
+        );
+    }
+
+    #[test]
+    fn a_failed_playlist_removal_is_announced() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+        *shared.remove_playlist_script.lock().expect("lock") = RootlistMoveScript::Fail;
+
+        let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::RemovePlaylist {
+                    playlist: "spotify:playlist:a".to_owned(),
+                    revision: revision(1),
+                    index: 0,
+                })
+                .expect("remove");
+            ui_end.updates.recv().expect("remove failed")
+        });
+
+        assert_eq!(
+            update,
+            Update::PlaylistRemoveFailed {
+                playlist: "spotify:playlist:a".to_owned(),
+            }
+        );
+        assert_eq!(shared.remove_playlist_writes.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_stop_with_the_playlist_removal_pending_shuts_down() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+        *shared.remove_playlist_script.lock().expect("lock") = RootlistMoveScript::Pending;
+        let (started_tx, started_rx) = channel();
+        *shared.remove_playlist_started.lock().expect("lock") = Some(started_tx);
+
+        let runtime = runtime();
+        let (ui_end, _slot, worker) = start(runtime.handle(), host, store, source);
+
+        let window = move || {
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::RemovePlaylist {
+                    playlist: "spotify:playlist:a".to_owned(),
+                    revision: revision(1),
+                    index: 0,
+                })
+                .expect("remove");
+            started_rx.recv().expect("remove started");
+        };
+        let teardown = move || async move {
+            tokio::time::timeout(Duration::from_secs(1), worker.finish())
+                .await
+                .expect("finish must resolve when the stop interrupts the removal");
+            assert_eq!(
+                shared.shutdowns.load(Ordering::SeqCst),
+                1,
+                "the shutdown must run when the stop interrupts the removal"
+            );
+        };
+
+        run_ordered(runtime, window, teardown);
+    }
+
+    #[test]
+    fn a_saved_removal_announces_the_uri_it_was_asked_for() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+        let album = "spotify:album:4uLU6hMCjMI75M1A2tKUQC";
+
+        let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::RemoveSaved {
+                    uri: album.to_owned(),
+                })
+                .expect("remove");
+            ui_end.updates.recv().expect("removed")
+        });
+
+        assert_eq!(
+            update,
+            Update::SavedRemoved {
+                uri: album.to_owned()
+            },
+            "the reply is empty, so the window hears what it asked for"
+        );
+        assert_eq!(shared.remove_saved_writes.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            shared.last_saved_remove.lock().expect("lock").clone(),
+            Some(album.to_owned())
+        );
+    }
+
+    #[test]
+    fn a_failed_saved_removal_is_announced() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+        *shared.remove_saved_script.lock().expect("lock") = LikeScript::Fail;
+        let show = "spotify:show:4uLU6hMCjMI75M1A2tKUQC";
+
+        let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::RemoveSaved {
+                    uri: show.to_owned(),
+                })
+                .expect("remove");
+            ui_end.updates.recv().expect("remove failed")
+        });
+
+        assert_eq!(
+            update,
+            Update::SavedRemoveFailed {
+                uri: show.to_owned()
+            }
+        );
+        assert_eq!(shared.remove_saved_writes.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_stop_during_a_saved_removal_ends_the_task() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+        *shared.remove_saved_script.lock().expect("lock") = LikeScript::Pending;
+        let (started_tx, started_rx) = channel();
+        *shared.remove_saved_started.lock().expect("lock") = Some(started_tx);
+
+        let runtime = runtime();
+        let (ui_end, _slot, worker) = start(runtime.handle(), host, store, source);
+
+        let window = move || {
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::RemoveSaved {
+                    uri: "spotify:album:4uLU6hMCjMI75M1A2tKUQC".to_owned(),
+                })
+                .expect("remove");
+            started_rx.recv().expect("remove started");
+        };
+        let teardown = move || async move {
+            tokio::time::timeout(Duration::from_secs(1), worker.finish())
+                .await
+                .expect("finish must resolve when the stop interrupts the removal");
+            assert_eq!(
+                shared.shutdowns.load(Ordering::SeqCst),
+                1,
+                "the shutdown must run when the stop interrupts the removal"
             );
         };
 
