@@ -604,11 +604,10 @@ impl Library {
                 self.sidebar_notice = Some(SidebarWrite::Rename);
                 self.renaming.failed();
                 if self.renaming.surface() == Surface::Band
-                    && matches!(&self.tracks, Load::Ready(tracks) if tracks.playlist == *playlist)
+                    && let Load::Ready(tracks) = &mut self.tracks
+                    && tracks.playlist == *playlist
                 {
-                    if let Load::Ready(tracks) = &mut self.tracks {
-                        tracks.notice = Some(Failure::Rename);
-                    }
+                    tracks.notice = Some(Failure::Rename);
                 }
             }
             Update::Tracks {
