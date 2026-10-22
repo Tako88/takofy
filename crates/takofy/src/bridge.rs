@@ -465,14 +465,9 @@ pub(crate) fn start<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                     }
                 }
                 Event::Command(Some(Command::RenamePlaylist { playlist, name })) => {
-                    let step = rename_playlist(
-                        &mut host,
-                        &mut stop_rx,
-                        &task_notifier,
-                        &playlist,
-                        &name,
-                    )
-                    .await;
+                    let step =
+                        rename_playlist(&mut host, &mut stop_rx, &task_notifier, &playlist, &name)
+                            .await;
                     if step.stopped() {
                         break;
                     }
@@ -7962,5 +7957,4 @@ mod tests {
 
         run_ordered(runtime, window, teardown);
     }
-
 }

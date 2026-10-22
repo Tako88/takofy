@@ -7939,10 +7939,7 @@ mod tests {
         );
         assert_eq!(
             match &library.tracks {
-                Load::Ready(tracks) => tracks
-                    .access
-                    .as_ref()
-                    .map(|held| held.revision.clone()),
+                Load::Ready(tracks) => tracks.access.as_ref().map(|held| held.revision.clone()),
                 Load::Idle | Load::Loading | Load::Failed(_) => None,
             },
             Some(revision(0x09)),
@@ -8125,10 +8122,7 @@ mod tests {
 
         assert_eq!(
             match &library.tracks {
-                Load::Ready(tracks) => tracks
-                    .access
-                    .as_ref()
-                    .map(|held| held.revision.clone()),
+                Load::Ready(tracks) => tracks.access.as_ref().map(|held| held.revision.clone()),
                 Load::Idle | Load::Loading | Load::Failed(_) => None,
             },
             Some(revision(0x09)),
@@ -8171,7 +8165,11 @@ mod tests {
 
         assert!(library.begin_rename("a", crate::naming::Surface::Row));
 
-        assert!(library.renaming.is_open_on("a", crate::naming::Surface::Row));
+        assert!(
+            library
+                .renaming
+                .is_open_on("a", crate::naming::Surface::Row)
+        );
         assert_eq!(library.renaming.text(), "a");
         assert!(library.renaming.wants_focus());
         assert!(!library.write_in_flight());
@@ -8250,7 +8248,10 @@ mod tests {
         *writing.renaming.edit() = "New".to_owned();
         assert!(writing.rename_playlist().is_some());
         writing.to_playlists();
-        assert!(writing.renaming.is_open(), "a write in flight lost its field");
+        assert!(
+            writing.renaming.is_open(),
+            "a write in flight lost its field"
+        );
     }
 
     #[test]
@@ -8263,5 +8264,4 @@ mod tests {
         assert!(!library.renaming.is_open());
         assert!(!library.renaming.wants_return());
     }
-
 }

@@ -17,9 +17,9 @@ use crate::icon::Icon;
 use crate::landing::Zone;
 use crate::layout::chips;
 use crate::library::{Library, Load};
-use crate::naming::{Renaming, Surface};
 use crate::menu::{Door, LibraryItem};
 use crate::message::{Command, Failure};
+use crate::naming::{Renaming, Surface};
 use crate::route::Page;
 use crate::sidebar_kind::{self, SidebarKind};
 use crate::signin::failure_message;
@@ -293,20 +293,6 @@ fn name_field(ui: &mut Ui, rect: Rect, library: &mut Library, tokens: &Tokens) {
 
 fn submit_id() -> egui::Id {
     egui::Id::unique("library-name-submit")
-}
-
-fn rename_submit_id() -> egui::Id {
-    egui::Id::unique("library-rename-submit")
-}
-
-/// Posts a row field's submit for the shell to apply this frame.
-fn post_rename_submit(ctx: &egui::Context) {
-    ctx.data_mut(|data| data.insert_temp(rename_submit_id(), true));
-}
-
-/// The row's submit posted this frame, read once so it cannot outlive it.
-pub(crate) fn take_rename_submit(ctx: &egui::Context) -> bool {
-    ctx.data_mut(|data| data.remove_temp::<bool>(rename_submit_id()).unwrap_or(false))
 }
 
 /// Posts the head's submit for the shell to apply this frame.
@@ -585,8 +571,8 @@ fn list_rows<T: ListItem + Clone>(
                                 origin = Some((start, place));
                             }
                             let kind = item.kind();
-                            let edit = draw.drag
-                                && draw.renaming.is_open_on(item.uri(), Surface::Row);
+                            let edit =
+                                draw.drag && draw.renaming.is_open_on(item.uri(), Surface::Row);
                             edit_drawn |= edit;
                             let cover = draw.art.look(item.cover(), draw.now);
                             let row = LibraryRow {
@@ -618,11 +604,7 @@ fn list_rows<T: ListItem + Clone>(
                                 pressed = Some(item.uri().to_owned());
                             }
                             if let Some(door) = drawn.door {
-                                opened = Some((
-                                    item.menu_item(ids.shelf),
-                                    door,
-                                    item.renamable(),
-                                ));
+                                opened = Some((item.menu_item(ids.shelf), door, item.renamable()));
                             }
                             // Only the playlists are a column a drag can lift;
                             // every other kind draws exactly as it always did.
@@ -726,9 +708,7 @@ impl ListItem for PlaylistEntry {
     }
 
     fn renamable(&self) -> bool {
-        self.access
-            .as_ref()
-            .is_some_and(|access| access.editable)
+        self.access.as_ref().is_some_and(|access| access.editable)
     }
 
     fn name(&self) -> &str {
@@ -1173,7 +1153,7 @@ fn one(
                 renaming.dismiss();
             }
             if out.enter {
-                post_rename_submit(ui.ctx());
+                name_field::post_submit(ui.ctx());
             }
             if out.escape {
                 renaming.cancel();
@@ -1190,8 +1170,11 @@ fn one(
                 StrokeKind::Inside,
             );
         } else {
-            ui.painter()
-                .galley(Pos2::new(name_x, top), name_line.clone(), tokens.palette.text);
+            ui.painter().galley(
+                Pos2::new(name_x, top),
+                name_line.clone(),
+                tokens.palette.text,
+            );
         }
     } else {
         ui.painter().galley(

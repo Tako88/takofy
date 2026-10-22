@@ -696,5 +696,4 @@ mod renaming_tests {
         finished.return_taken();
         assert_eq!(finished.uri(), "");
     }
-
 }

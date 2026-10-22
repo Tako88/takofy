@@ -128,3 +128,17 @@ pub(crate) fn edit(ui: &mut Ui, spec: Spec<'_>) -> Out {
         lost_focus,
     }
 }
+
+fn submit_id() -> Id {
+    Id::unique("library-rename-submit")
+}
+
+/// Posts a field's submit for the shell to apply this frame.
+pub(crate) fn post_submit(ctx: &egui::Context) {
+    ctx.data_mut(|data| data.insert_temp(submit_id(), true));
+}
+
+/// The submit posted this frame, read once so it cannot outlive it.
+pub(crate) fn take_submit(ctx: &egui::Context) -> bool {
+    ctx.data_mut(|data| data.remove_temp::<bool>(submit_id()).unwrap_or(false))
+}

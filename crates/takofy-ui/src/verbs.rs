@@ -1383,7 +1383,10 @@ mod tests {
         let row = library_row(SidebarKind::Playlists, "Deep Focus");
         let items = library_items(&row, rights(true, true));
 
-        assert_eq!(labels(&items), ["Rename", "Copy link", "Remove from library"]);
+        assert_eq!(
+            labels(&items),
+            ["Rename", "Copy link", "Remove from library"]
+        );
         assert_eq!(verbs(&items)[0], Verb::Rename);
         assert_eq!(items[0].kind, Kind::Plain);
         assert_eq!(items[0].key, None, "a rename has no key hint");
@@ -1502,18 +1505,11 @@ mod tests {
             ["Rename", "Copy link", "Remove from library"]
         );
         for surface in [crate::naming::Surface::Row, crate::naming::Surface::Band] {
-            let request = library_request(
-                row.clone(),
-                door,
-                rights(false, false),
-                None,
-                surface,
-            );
+            let request = library_request(row.clone(), door, rights(false, false), None, surface);
             assert_eq!(
                 matches!(request.listing, Listing::Library(_)),
                 surface == crate::naming::Surface::Row
             );
         }
     }
-
 }

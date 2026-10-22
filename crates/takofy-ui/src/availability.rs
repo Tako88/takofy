@@ -196,7 +196,7 @@ pub fn availability(control: Control) -> Availability {
         // is Ready and the moment decides whether it can act.
         Control::HeroShuffle => Availability::Waiting,
         Control::HeroLike => Availability::Waiting,
-        Control::HeroMore => Availability::Waiting,
+        Control::HeroMore => Availability::Ready,
         Control::HeroPlay => Availability::Ready,
         Control::CardPlay => Availability::Waiting,
 
@@ -249,6 +249,7 @@ mod tests {
                     | Control::Queue
                     | Control::Fullscreen
                     | Control::HeroPlay
+                    | Control::HeroMore
                     | Control::Follow
                     | Control::DiscographyFilter
                     | Control::ReleasePlay
