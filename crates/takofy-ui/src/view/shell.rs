@@ -503,6 +503,13 @@ fn apply_verb(ui: &Ui, screen: &mut Screen<'_>, verb: Verb) -> Option<Command> {
                 None
             }
             verbs::Outcome::Unlink(item) => apply_remove_from_library(ui, screen, &item),
+            verbs::Outcome::Rename(item) => {
+                let surface = match screen.menu.listing() {
+                    Listing::Band(_) => crate::naming::Surface::Band,
+                    _ => crate::naming::Surface::Row,
+                };
+                apply_rename(ui, screen, &item, surface)
+            }
             _ => None,
         };
     }
@@ -530,9 +537,9 @@ fn apply_verb(ui: &Ui, screen: &mut Screen<'_>, verb: Verb) -> Option<Command> {
             let uri = screen.menu.chosen_target()?.uri.clone();
             screen.library.add_pick(&uri, &tracks)
         }
-        // A library row's removal is the listing branch above; a track pick has
+        // A library row's verbs are the listing branch above; a track pick has
         // no such verb.
-        verbs::Outcome::Unlink(_) => None,
+        verbs::Outcome::Unlink(_) | verbs::Outcome::Rename(_) => None,
     }
 }
 
@@ -546,6 +553,23 @@ fn apply_new_playlist(ui: &Ui, screen: &mut Screen<'_>, pick: Vec<String>) -> Op
         return None;
     }
     screen.library.naming.open_with(pick);
+    None
+}
+
+/// Opens the rename field the menu's Rename row chose.
+///
+/// The field lives in a surface the drawer or a carried block can hide, so both
+/// drop the choice; a typed field takes the keys instead.
+fn apply_rename(
+    ui: &Ui,
+    screen: &mut Screen<'_>,
+    item: &LibraryItem,
+    surface: crate::naming::Surface,
+) -> Option<Command> {
+    if *screen.drawer == Drawer::Open || carry::carrying(ui.ctx()) || ui.ctx().text_edit_focused() {
+        return None;
+    }
+    screen.library.begin_rename(&item.uri, surface);
     None
 }
 
@@ -625,7 +649,7 @@ fn apply_cut(ui: &Ui, screen: &mut Screen<'_>, cut: Cut) -> Option<Command> {
         }
         // A library row's removal is applied by the menu's own verb, because it
         // names no rows to cut.
-        Listing::Page | Listing::Current | Listing::Library(_) => None,
+        Listing::Page | Listing::Current | Listing::Library(_) | Listing::Band(_) => None,
     }
 }
 
@@ -10060,7 +10084,13 @@ mod tests {
                 device: crate::menu::Device::Keyboard,
             },
             playlists: Vec::new(),
-            items: crate::verbs::library_items(&row, removable),
+            items: crate::verbs::library_items(
+                &row,
+                crate::verbs::LibraryRights {
+                    renamable: false,
+                    removable,
+                },
+            ),
             targets: Vec::new(),
             rows: Vec::new(),
             listing: Listing::Library(row),
@@ -10516,4 +10546,115 @@ mod tests {
             "the keyboard went somewhere other than the row"
         );
     }
+    /// Applies a rename the way the menu's Rename row would.
+    fn try_rename(
+        window: &mut Window,
+        uri: &str,
+        surface: crate::naming::Surface,
+    ) -> Option<Command> {
+        let ctx = window.ctx.clone();
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let item = library_row(SidebarKind::Playlists, uri, uri);
+        let mut command = None;
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, window.size)),
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| {
+            let mut screen = Screen {
+                state: &mut window.state,
+                library: &mut window.library,
+                transport: &mut transport,
+                queue: &mut queue,
+                drawer: &mut window.drawer,
+                menu: &mut window.menu,
+                position_ms: 0,
+                art: &mut window.art,
+                now: window.now,
+                now_ms: 0,
+                pane: &mut window.pane,
+            };
+            command = apply_rename(ui, &mut screen, &item, surface);
+        });
+        output.textures_delta.clear();
+        command
+    }
+
+    #[test]
+    fn apply_rename_opens_the_field_on_the_row_or_the_band() {
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_row(&mut window, "spotify:playlist:a", "A");
+
+        assert_eq!(
+            try_rename(&mut window, "spotify:playlist:a", crate::naming::Surface::Row),
+            None
+        );
+        assert!(window.library.renaming.is_open_on(
+            "spotify:playlist:a",
+            crate::naming::Surface::Row
+        ));
+
+        window.library.renaming.force_close();
+        assert_eq!(
+            try_rename(
+                &mut window,
+                "spotify:playlist:a",
+                crate::naming::Surface::Band
+            ),
+            None
+        );
+        assert!(window.library.renaming.is_open_on(
+            "spotify:playlist:a",
+            crate::naming::Surface::Band
+        ));
+    }
+
+    #[test]
+    fn apply_rename_drops_the_intent_when_the_field_cannot_be_seen() {
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_row(&mut window, "spotify:playlist:a", "A");
+
+        window.drawer = Drawer::Open;
+        assert_eq!(
+            try_rename(&mut window, "spotify:playlist:a", crate::naming::Surface::Row),
+            None
+        );
+        assert!(!window.library.renaming.is_open(), "the drawer hid the field");
+        window.drawer = Drawer::Closed;
+
+        carry::lift(
+            &window.ctx,
+            carried_rows(egui::Id::unique("list"), vec![0]),
+        );
+        assert_eq!(
+            try_rename(&mut window, "spotify:playlist:a", crate::naming::Surface::Row),
+            None
+        );
+        assert!(
+            !window.library.renaming.is_open(),
+            "a carried block held the field shut"
+        );
+        egui::DragAndDrop::clear_payload(&window.ctx);
+    }
+
+    #[test]
+    fn apply_rename_leaves_a_typed_field_alone() {
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        creatable_sidebar(&mut window);
+        open_naming(&mut window, &mut transport, &mut queue);
+        assert!(window.ctx.text_edit_focused());
+
+        assert_eq!(
+            try_rename(&mut window, "playlist:a", crate::naming::Surface::Row),
+            None
+        );
+        assert!(
+            !window.library.renaming.is_open(),
+            "a typed field was replaced"
+        );
+    }
+
 }

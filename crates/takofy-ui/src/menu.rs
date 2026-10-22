@@ -72,6 +72,8 @@ pub enum Verb {
     Remove,
     /// Removes the one row a library menu was opened on from the library.
     RemoveFromLibrary,
+    /// Opens the name field on the one playlist a library menu was opened on.
+    Rename,
 }
 
 /// The list a menu's rows came from, which decides its verbs and their labels.
@@ -89,6 +91,8 @@ pub enum Listing {
     Current,
     /// One row of the sidebar, whose verbs act on that row alone.
     Library(LibraryItem),
+    /// A playlist band, whose verbs act on the playlist it heads.
+    Band(LibraryItem),
 }
 
 impl Listing {
@@ -568,7 +572,7 @@ impl Menu {
     /// The sidebar row the menu was opened on, read after the close.
     pub fn library_item(&self) -> Option<&LibraryItem> {
         match &self.listing {
-            Listing::Library(item) => Some(item),
+            Listing::Library(item) | Listing::Band(item) => Some(item),
             Listing::Page | Listing::Playlist { .. } | Listing::Queue | Listing::Current => None,
         }
     }
@@ -1341,7 +1345,13 @@ mod tests {
     /// A menu opened on one sidebar row, the way its door posts it.
     fn library_menu(row: LibraryItem) -> Menu {
         let mut request = request(Device::Keyboard, 0);
-        request.items = crate::verbs::library_items(&row, true);
+        request.items = crate::verbs::library_items(
+            &row,
+            crate::verbs::LibraryRights {
+                renamable: true,
+                removable: true,
+            },
+        );
         request.listing = Listing::Library(row);
         request.targets = Vec::new();
         request.rows = Vec::new();

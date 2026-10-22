@@ -17,7 +17,7 @@ use crate::icon::Icon;
 use crate::landing::Zone;
 use crate::layout::chips;
 use crate::library::{Library, Load};
-use crate::menu::{Door, LibraryItem, Listing, Request};
+use crate::menu::{Door, LibraryItem};
 use crate::message::{Command, Failure};
 use crate::route::Page;
 use crate::sidebar_kind::{self, SidebarKind};
@@ -36,7 +36,7 @@ use super::queue_row;
 use super::rows::{self, Look};
 use super::shell::rule;
 use super::text as recipe;
-use crate::verbs;
+use crate::verbs::{self, LibraryRights};
 
 /// A library row: the art tile plus the padding above and below it.
 pub(super) const ROW_H: f32 = extent::LIBRARY_ART + 2.0 * space::S2;
@@ -472,6 +472,8 @@ struct Draw<'a> {
     menu: bool,
     /// Whether this kind's rows may be removed from the library.
     removable: bool,
+    /// Whether the playlists list may rewrite a row's name now.
+    renamable: bool,
     /// The page the menu records, so a page change closes it.
     here: Option<Page>,
     /// Whether a row may be dragged out of the column.
@@ -530,7 +532,7 @@ fn list_rows<T: ListItem + Clone>(
             let mut pressed: Option<String> = None;
             let entries = items.to_vec();
             let mut lifted_carry: Option<Carry> = None;
-            let mut opened: Option<(LibraryItem, Door)> = None;
+            let mut opened: Option<(LibraryItem, Door, bool)> = None;
             // The first drawn row and the index it holds, so the offer describes
             // the rows wherever the scroll put them.
             let mut origin: Option<(usize, Rect)> = None;
@@ -578,7 +580,11 @@ fn list_rows<T: ListItem + Clone>(
                                 pressed = Some(item.uri().to_owned());
                             }
                             if let Some(door) = drawn.door {
-                                opened = Some((item.menu_item(ids.shelf), door));
+                                opened = Some((
+                                    item.menu_item(ids.shelf),
+                                    door,
+                                    item.renamable(),
+                                ));
                             }
                             // Only the playlists are a column a drag can lift;
                             // every other kind draws exactly as it always did.
@@ -605,8 +611,17 @@ fn list_rows<T: ListItem + Clone>(
             if let Some(carry) = lifted_carry {
                 carry::lift(ui.ctx(), carry);
             }
-            if let Some((item, door)) = opened {
-                open_menu(ui.ctx(), item, door, draw.removable, draw.here.clone());
+            if let Some((item, door, renamable)) = opened {
+                open_menu(
+                    ui.ctx(),
+                    item,
+                    door,
+                    LibraryRights {
+                        renamable: draw.renamable && renamable,
+                        removable: draw.removable,
+                    },
+                    draw.here.clone(),
+                );
             }
             if ids.lifts
                 && draw.offer
@@ -654,11 +669,21 @@ trait ListItem {
             name: self.name().to_owned(),
         }
     }
+    /// Whether the listing says the user may rewrite this row's name.
+    fn renamable(&self) -> bool {
+        false
+    }
 }
 
 impl ListItem for PlaylistEntry {
     fn uri(&self) -> &str {
         &self.uri
+    }
+
+    fn renamable(&self) -> bool {
+        self.access
+            .as_ref()
+            .is_some_and(|access| access.editable)
     }
 
     fn name(&self) -> &str {
@@ -788,12 +813,15 @@ fn rows(
     };
 
     let chosen = library.sidebar_kind.chosen();
+    let renamable =
+        drag && !library.write_in_flight() && matches!(library.playlists, Load::Ready(_));
     let mut draw = Draw {
         art,
         now,
         tokens,
         menu: drag,
         removable: drag && library.can_remove(chosen),
+        renamable,
         here: library.page().cloned(),
         drag,
         lift: drag && library.rootlist_movable(),
@@ -1091,20 +1119,12 @@ fn open_menu(
     ctx: &egui::Context,
     item: LibraryItem,
     door: Door,
-    removable: bool,
+    rights: LibraryRights,
     page: Option<Page>,
 ) {
     context_menu::post(
         ctx,
-        Request {
-            door,
-            items: verbs::library_items(&item, removable),
-            playlists: Vec::new(),
-            targets: Vec::new(),
-            rows: Vec::new(),
-            listing: Listing::Library(item),
-            page,
-        },
+        verbs::library_request(item, door, rights, page, crate::naming::Surface::Row),
     );
 }
 
@@ -2416,13 +2436,18 @@ mod tests {
                     name: name.to_owned(),
                 })
             );
+            let expected = if kind == SidebarKind::Playlists {
+                vec!["Rename", "Copy link", "Remove from library"]
+            } else {
+                vec!["Copy link", "Remove from library"]
+            };
             assert_eq!(
                 request
                     .items
                     .iter()
                     .map(|item| item.label.as_str())
                     .collect::<Vec<_>>(),
-                ["Copy link", "Remove from library"],
+                expected,
                 "{kind:?}"
             );
             assert!(
@@ -2436,6 +2461,36 @@ mod tests {
 
             assert_eq!(command, None, "{kind:?} opened its page");
             assert!(carry::carried(&ctx).is_none(), "{kind:?} lifted its row");
+        }
+    }
+
+    #[test]
+    fn a_row_the_user_cannot_write_offers_no_rename() {
+        for access in [
+            Some(takofy_model::PlaylistAccess {
+                revision: takofy_model::Revision::from_wire(&[7]).expect("a revision"),
+                editable: false,
+            }),
+            None,
+        ] {
+            let ctx = context();
+            let mut library = movable_playlists(&["A"], 7, true, None);
+            if let Load::Ready(playlists) = &mut library.playlists {
+                playlists[0].access = access;
+            }
+            let mut art = Art::default();
+            let (output, _) = run_column(&ctx, Vec::new(), &mut library, &mut art);
+            let at = name_line(&output, "A");
+            let _ = right_click(&ctx, at, &mut library, &mut art);
+
+            let request = context_menu::take_request(&ctx).expect("the row posted a menu");
+            assert!(
+                request
+                    .items
+                    .iter()
+                    .all(|item| item.verb != crate::menu::Verb::Rename),
+                "a row the listing does not call editable offered Rename"
+            );
         }
     }
 

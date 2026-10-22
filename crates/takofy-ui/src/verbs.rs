@@ -8,7 +8,7 @@ use std::collections::HashSet;
 use takofy_model::TrackEntry;
 
 use crate::likes::Standing;
-use crate::menu::{Item, Kind, LibraryItem, Listing, Verb};
+use crate::menu::{Door, Item, Kind, LibraryItem, Listing, Request, Verb};
 use crate::route::Page;
 
 /// What applying a verb does, once the shell has the frame's command to spare.
@@ -30,6 +30,8 @@ pub enum Outcome {
     AddToPlaylist { tracks: Vec<String> },
     /// The sidebar row leaves the library.
     Unlink(LibraryItem),
+    /// The sidebar row's name field opens.
+    Rename(LibraryItem),
 }
 
 /// The web address a URI stands for, or `None` when it has none.
@@ -48,17 +50,30 @@ pub fn spotify_link(uri: &str) -> Option<String> {
     Some(format!("https://open.spotify.com/{kind}/{id}"))
 }
 
-/// The commands a sidebar row offers: its link, and its removal.
+/// What a library row may do about its place in the library.
 ///
-/// The removal is absent rather than greyed when the library cannot write it,
-/// and it is the destructive row, so it is drawn last. A sidebar row is one
+/// Both are absent rather than greyed, and both come from the library's own
+/// state: a row the user cannot write offers neither.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LibraryRights {
+    pub renamable: bool,
+    pub removable: bool,
+}
+
+/// The commands a sidebar row offers: its rename, its link, and its removal.
+///
+/// A command the library cannot write is absent rather than greyed, and the
+/// removal is the destructive row, so it is drawn last. A sidebar row is one
 /// thing rather than a pick, so nothing here carries a count.
-pub fn library_items(row: &LibraryItem, removable: bool) -> Vec<Item> {
+pub fn library_items(row: &LibraryItem, rights: LibraryRights) -> Vec<Item> {
     let mut items = Vec::new();
+    if rights.renamable {
+        items.push(item(Verb::Rename, "Rename".to_owned()));
+    }
     if spotify_link(&row.uri).is_some() {
         items.push(item(Verb::CopyLink, "Copy link".to_owned()));
     }
-    if removable {
+    if rights.removable {
         items.push(Item {
             label: "Remove from library".to_owned(),
             kind: Kind::Destructive,
@@ -70,6 +85,33 @@ pub fn library_items(row: &LibraryItem, removable: bool) -> Vec<Item> {
     items
 }
 
+/// The request a row or a band posts for its own menu.
+///
+/// The listing carries the surface it came from: a row's menu acts on the
+/// sidebar, a band's on the page it heads.
+pub fn library_request(
+    item: LibraryItem,
+    door: Door,
+    rights: LibraryRights,
+    page: Option<Page>,
+    surface: crate::naming::Surface,
+) -> Request {
+    let items = library_items(&item, rights);
+    let listing = match surface {
+        crate::naming::Surface::Row => Listing::Library(item),
+        crate::naming::Surface::Band => Listing::Band(item),
+    };
+    Request {
+        door,
+        items,
+        playlists: Vec::new(),
+        targets: Vec::new(),
+        rows: Vec::new(),
+        listing,
+        page,
+    }
+}
+
 /// What a sidebar row's verb does with the row it was opened on.
 ///
 /// `None` when the verb is not this row's. The removal carries the item, because
@@ -79,6 +121,7 @@ pub fn library_outcome(verb: Verb, row: &LibraryItem) -> Option<Outcome> {
     match verb {
         Verb::CopyLink => spotify_link(&row.uri).map(Outcome::Copy),
         Verb::RemoveFromLibrary => Some(Outcome::Unlink(row.clone())),
+        Verb::Rename => Some(Outcome::Rename(row.clone())),
         _ => None,
     }
 }
@@ -202,9 +245,9 @@ pub fn outcome(verb: Verb, targets: &[TrackEntry]) -> Option<Outcome> {
         }),
         Verb::AddToPlaylist => pick(targets).map(|tracks| Outcome::AddToPlaylist { tracks }),
         Verb::Remove => (!targets.is_empty()).then_some(Outcome::Remove),
-        // A library row's verbs never act on a track pick, so this one has no
+        // A library row's verbs never act on a track pick, so these have no
         // meaning here.
-        Verb::RemoveFromLibrary => None,
+        Verb::RemoveFromLibrary | Verb::Rename => None,
         Verb::Save => like_outcome(targets, true),
         Verb::Unsave => like_outcome(targets, false),
     }
@@ -273,7 +316,7 @@ fn item(verb: Verb, label: String) -> Item {
 ///
 /// A library row names itself; a pick names its count.
 pub fn menu_label(targets: &[TrackEntry], listing: &Listing) -> String {
-    if let Listing::Library(item) = listing {
+    if let Listing::Library(item) | Listing::Band(item) = listing {
         return item.name.clone();
     }
     match targets {
@@ -301,7 +344,7 @@ fn remove_label(targets: &[TrackEntry], listing: &Listing) -> Option<String> {
         }),
         // A library row's removal row is built by `library_items`, because it
         // is one thing rather than a pick.
-        Listing::Page | Listing::Current | Listing::Library(_) => None,
+        Listing::Page | Listing::Current | Listing::Library(_) | Listing::Band(_) => None,
     }
 }
 
@@ -1303,11 +1346,18 @@ mod tests {
         }
     }
 
+    fn rights(renamable: bool, removable: bool) -> LibraryRights {
+        LibraryRights {
+            renamable,
+            removable,
+        }
+    }
+
     #[test]
     fn a_library_row_offers_its_link_and_the_removal_last() {
         for kind in crate::sidebar_kind::ROW {
             let row = library_row(kind, "Deep Focus");
-            let items = library_items(&row, true);
+            let items = library_items(&row, rights(false, true));
 
             assert_eq!(
                 labels(&items),
@@ -1329,19 +1379,45 @@ mod tests {
     }
 
     #[test]
+    fn a_renamable_library_row_offers_rename_first_and_plain() {
+        let row = library_row(SidebarKind::Playlists, "Deep Focus");
+        let items = library_items(&row, rights(true, true));
+
+        assert_eq!(labels(&items), ["Rename", "Copy link", "Remove from library"]);
+        assert_eq!(verbs(&items)[0], Verb::Rename);
+        assert_eq!(items[0].kind, Kind::Plain);
+        assert_eq!(items[0].key, None, "a rename has no key hint");
+    }
+
+    #[test]
+    fn a_row_that_is_not_renamable_has_no_rename_row() {
+        let row = library_row(SidebarKind::Playlists, "Deep Focus");
+
+        assert!(
+            library_items(&row, rights(false, true))
+                .iter()
+                .all(|item| item.verb != Verb::Rename),
+            "a row the user cannot rename offered one"
+        );
+    }
+
+    #[test]
     fn a_library_row_the_library_cannot_write_offers_only_its_link() {
         let row = library_row(SidebarKind::Playlists, "Deep Focus");
 
-        assert_eq!(labels(&library_items(&row, false)), ["Copy link"]);
+        assert_eq!(
+            labels(&library_items(&row, rights(false, false))),
+            ["Copy link"]
+        );
         assert!(
-            library_items(&row, false)
+            library_items(&row, rights(false, false))
                 .iter()
                 .all(|item| item.verb != Verb::RemoveFromLibrary)
         );
     }
 
     #[test]
-    fn library_outcome_copies_the_link_and_unlinks_the_item() {
+    fn library_outcome_copies_the_link_renames_and_unlinks_the_item() {
         let row = library_row(SidebarKind::Albums, "A Record");
 
         assert_eq!(
@@ -1353,6 +1429,10 @@ mod tests {
         assert_eq!(
             library_outcome(Verb::RemoveFromLibrary, &row),
             Some(Outcome::Unlink(row.clone()))
+        );
+        assert_eq!(
+            library_outcome(Verb::Rename, &row),
+            Some(Outcome::Rename(row.clone()))
         );
         for verb in [
             Verb::AddToQueue,
@@ -1382,10 +1462,58 @@ mod tests {
         let row = library_row(SidebarKind::Playlists, "Deep Focus");
 
         assert_eq!(
-            menu_label(&[], &Listing::Library(row)),
+            menu_label(&[], &Listing::Library(row.clone())),
             "Deep Focus",
             "a menu states its subject, not its commands"
         );
+        assert_eq!(
+            menu_label(&[], &Listing::Band(row)),
+            "Deep Focus",
+            "a band menu names its playlist too"
+        );
         assert_eq!(menu_label(&[], &Listing::Page), "Commands");
     }
+    #[test]
+    fn library_request_picks_the_listing_from_the_surface() {
+        let row = library_row(SidebarKind::Playlists, "Deep Focus");
+        let door = Door {
+            anchor: Anchor::Button(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(28.0, 28.0),
+            )),
+            opener: egui::Id::unique("row"),
+            device: Device::Keyboard,
+        };
+        let request = library_request(
+            row.clone(),
+            door,
+            rights(true, true),
+            Some(Page::Playlist("spotify:playlist:a".to_owned())),
+            crate::naming::Surface::Band,
+        );
+
+        assert_eq!(request.listing, Listing::Band(row.clone()));
+        assert_eq!(
+            request
+                .items
+                .iter()
+                .map(|item| item.label.as_str())
+                .collect::<Vec<_>>(),
+            ["Rename", "Copy link", "Remove from library"]
+        );
+        for surface in [crate::naming::Surface::Row, crate::naming::Surface::Band] {
+            let request = library_request(
+                row.clone(),
+                door,
+                rights(false, false),
+                None,
+                surface,
+            );
+            assert_eq!(
+                matches!(request.listing, Listing::Library(_)),
+                surface == crate::naming::Surface::Row
+            );
+        }
+    }
+
 }
