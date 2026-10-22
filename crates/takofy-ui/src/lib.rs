@@ -28,6 +28,7 @@ pub mod route;
 pub mod scroll;
 pub mod search;
 pub mod selection;
+pub mod shuffle;
 pub mod sidebar_kind;
 pub mod signin;
 pub mod theme;
