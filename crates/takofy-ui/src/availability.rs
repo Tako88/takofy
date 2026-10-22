@@ -156,7 +156,7 @@ pub fn availability(control: Control) -> Availability {
         Control::HistoryForward => Availability::Ready, // #16
 
         Control::NavHome => Availability::Ready,
-        Control::LibraryCreate => Availability::Waiting, // #3
+        Control::LibraryCreate => Availability::Ready, // #35
         Control::FilterPlaylists => Availability::Ready, // #3
         Control::FilterArtists => Availability::Ready,
         Control::FilterAlbums => Availability::Ready,
@@ -236,6 +236,7 @@ mod tests {
                 control,
                 Control::DrawerToggle
                     | Control::NavHome
+                    | Control::LibraryCreate
                     | Control::TrailPlaylists
                     | Control::HistoryBack
                     | Control::HistoryForward

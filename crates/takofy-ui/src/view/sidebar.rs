@@ -5,8 +5,10 @@
 
 use std::time::Instant;
 
-use egui::{Layout, Pos2, Rect, RichText, Sense, Ui, UiBuilder, Vec2};
-use takofy_model::{CoverUrl, FollowedArtist, FollowedShow, PlaylistEntry, SavedAlbum};
+use egui::{Align, Layout, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Ui, UiBuilder, Vec2};
+use takofy_model::{
+    CoverUrl, FollowedArtist, FollowedShow, PLAYLIST_NAME_MAX, PlaylistEntry, SavedAlbum,
+};
 
 use crate::availability::Control;
 use crate::cover::{Art, Cover};
@@ -29,6 +31,7 @@ use crate::theme::{
 use super::art;
 use super::carry::{self, Carry, ColumnOffer, Ghost, Source};
 use super::controls;
+use super::keys::{FIELD_FILTER, pressed_once};
 use super::queue_row;
 use super::rows::{self, Look};
 use super::shell::rule;
@@ -75,7 +78,7 @@ fn draw(
 ) -> Option<Command> {
     let band = ui.available_rect_before_wrap();
     let y = filters(ui, library, tokens, band);
-    let y = head(ui, library, tokens, band, y);
+    let y = head(ui, library, tokens, band, y, drag);
 
     let list = Rect::from_min_size(
         Pos2::new(band.left() + space::S2, y),
@@ -120,8 +123,21 @@ fn filters(ui: &mut Ui, library: &mut Library, tokens: &Tokens, band: Rect) -> f
     origin.y + placed.height + space::S3
 }
 
-/// The rule, the library's size and the button that will one day create one.
-fn head(ui: &mut Ui, library: &Library, tokens: &Tokens, band: Rect, top: f32) -> f32 {
+/// The rule, the library's size and the button that creates a playlist.
+///
+/// The count and the name field share one row: the button swaps the label for a
+/// field rather than opening a second surface, and becomes the cancel that
+/// closes it. The drawer's form discards its command, so neither is live there —
+/// a press that started a write would leave the sidebar waiting for a reply
+/// nobody asked for.
+fn head(
+    ui: &mut Ui,
+    library: &mut Library,
+    tokens: &Tokens,
+    band: Rect,
+    top: f32,
+    drag: bool,
+) -> f32 {
     rule(
         ui,
         Rect::from_min_size(
@@ -135,6 +151,57 @@ fn head(ui: &mut Ui, library: &Library, tokens: &Tokens, band: Rect, top: f32) -
         Pos2::new(band.left() + space::S4, top + space::S2),
         Vec2::new(band.width() - 2.0 * space::S4, extent::BUTTON),
     );
+    let open = drag && library.naming.is_open();
+    let create = Rect::from_min_size(
+        Pos2::new(
+            row.right() - extent::BUTTON,
+            row.center().y - extent::BUTTON / 2.0,
+        ),
+        Vec2::splat(extent::BUTTON),
+    );
+
+    if open {
+        let field = Rect::from_min_max(row.min, Pos2::new(create.left() - space::S2, row.bottom()));
+        name_field(ui, field, library, tokens);
+    } else {
+        count_label(ui, row, library, tokens);
+    }
+
+    let (icon, label, live) = if open {
+        let writing = library.naming.writing();
+        (Icon::Close, "Cancel new playlist", drag && !writing)
+    } else {
+        (Icon::Plus, "Create playlist", drag && library.creatable())
+    };
+    let slot = controls::icon_button(
+        ui,
+        tokens,
+        Control::LibraryCreate,
+        create,
+        icon,
+        Size::MD,
+        label,
+        live,
+    );
+    if slot.response.clicked() {
+        if open {
+            library.naming.cancel();
+        } else {
+            library.naming.open();
+        }
+    }
+    // The keyboard comes back here after a cancel and after a create: the field
+    // is gone, so nothing else could hold it.
+    if library.naming.wants_button() {
+        slot.response.request_focus();
+        library.naming.button_focus_taken();
+    }
+
+    row.bottom() + space::S2
+}
+
+/// How many things the sidebar lists, in the head's own words.
+fn count_label(ui: &mut Ui, row: Rect, library: &Library, tokens: &Tokens) {
     let (shown, total) = counts(library);
     let label = recipe::spaced(
         ui,
@@ -148,28 +215,140 @@ fn head(ui: &mut Ui, library: &Library, tokens: &Tokens, band: Rect, top: f32) -
         label,
         tokens.palette.text_subtle,
     );
+}
 
-    // Creating a playlist waits for folders, so this is the reference's button
-    // in its waiting form, and it is the only one left in the head.
-    let create = Rect::from_min_size(
-        Pos2::new(
-            row.right() - extent::BUTTON,
-            row.center().y - extent::BUTTON / 2.0,
-        ),
-        Vec2::splat(extent::BUTTON),
-    );
-    controls::icon_button(
-        ui,
-        tokens,
-        Control::LibraryCreate,
-        create,
-        Icon::Plus,
-        Size::MD,
-        "Create playlist or folder",
-        true,
-    );
+/// The new playlist's name, in the count's place.
+///
+/// Enter and Escape are taken before `TextEdit::show`, because a singleline edit
+/// surrenders focus on Enter and would eat the key that submits. A submit is
+/// posted for the shell rather than sent from here: the field cannot know
+/// whether another region already took the frame's one command.
+fn name_field(ui: &mut Ui, rect: Rect, library: &mut Library, tokens: &Tokens) {
+    if rect.width() <= 0.0 {
+        return;
+    }
+    ui.painter()
+        .rect_filled(rect, radius::SM, tokens.palette.surface_raised);
 
-    row.bottom() + space::S2
+    let writing = library.naming.writing();
+    let id = ui.scope_id().with((Control::LibraryCreate, "name"));
+    let focused_before = ui.memory(|memory| memory.has_focus(id));
+    let (enter, escape) = if focused_before && !writing {
+        ui.input(|input| {
+            (
+                pressed_once(input, egui::Key::Enter),
+                pressed_once(input, egui::Key::Escape),
+            )
+        })
+    } else {
+        (false, false)
+    };
+    if focused_before {
+        ui.input_mut(|input| {
+            if enter {
+                input.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
+            }
+            if escape {
+                input.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
+            }
+        });
+    }
+    if library.naming.wants_focus() {
+        ui.memory_mut(|memory| memory.request_focus(id));
+    }
+    if focused_before {
+        // egui stores a filter only for a widget that had focus last frame, so
+        // this takes effect on the frame after the field first holds the
+        // keyboard. Without it the field would lose Escape to egui's own
+        // focus handling, and `request_focus` stores a default filter.
+        ui.memory_mut(|memory| memory.set_focus_lock_filter(id, FIELD_FILTER));
+    }
+
+    let mut focused = focused_before;
+    if writing {
+        // The reply decides what the row is called, so an edit now would be lost
+        // with the field.
+        ui.painter().text(
+            Pos2::new(rect.left() + space::S2, rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            library.naming.text(),
+            egui::FontId::new(text::SM, fonts::sans(Weight::Regular)),
+            tokens.palette.text_disabled,
+        );
+    } else {
+        let inset = egui::Margin {
+            left: space::S2 as i8,
+            right: space::S2 as i8,
+            top: 0,
+            bottom: 0,
+        };
+        let mut child = ui.new_child(
+            UiBuilder::new()
+                .id_salt("library-name-text")
+                .max_rect(rect)
+                .layout(Layout::left_to_right(Align::Center)),
+        );
+        child.set_clip_rect(rect);
+        child.visuals_mut().weak_text_color = Some(tokens.palette.text_subtle);
+        child.visuals_mut().text_cursor.stroke = Stroke::new(stroke::HAIRLINE, tokens.palette.text);
+
+        let output = egui::TextEdit::singleline(library.naming.edit())
+            .id(id)
+            .frame(egui::Frame::NONE.inner_margin(inset))
+            .min_size(rect.size())
+            .desired_width(rect.width())
+            .align(egui::Align2::LEFT_CENTER)
+            .font(egui::FontId::new(text::SM, fonts::sans(Weight::Regular)))
+            .text_color(tokens.palette.text)
+            .event_filter(FIELD_FILTER)
+            .hint_text(RichText::new("New playlist name"))
+            .char_limit(PLAYLIST_NAME_MAX)
+            .show(&mut child);
+        focused = output.response.has_focus();
+        if focused {
+            library.naming.focus_taken();
+        }
+        // A blank field left behind says nothing, so it goes; text does not, so a
+        // click elsewhere never loses a name.
+        if output.response.lost_focus() && library.naming.text().trim().is_empty() {
+            library.naming.cancel();
+        }
+    }
+
+    if enter {
+        post_submit(ui.ctx());
+    }
+    if escape {
+        library.naming.cancel();
+    }
+
+    // Border only: no glow, no glyph, and no width change, because the field's
+    // own width is the row's.
+    let border = if focused {
+        tokens.palette.text
+    } else {
+        tokens.palette.border
+    };
+    ui.painter().rect_stroke(
+        rect,
+        radius::SM,
+        Stroke::new(stroke::HAIRLINE, border),
+        StrokeKind::Inside,
+    );
+}
+
+fn submit_id() -> egui::Id {
+    egui::Id::unique("library-name-submit")
+}
+
+/// Posts the head's submit for the shell to apply this frame.
+fn post_submit(ctx: &egui::Context) {
+    ctx.data_mut(|data| data.insert_temp(submit_id(), true));
+}
+
+/// The submit posted this frame, read once so it cannot outlive it.
+pub(crate) fn take_submit(ctx: &egui::Context) -> bool {
+    ctx.data_mut(|data| data.remove_temp::<bool>(submit_id()).unwrap_or(false))
 }
 
 /// How many things the sidebar lists, and how many the chosen filter shows.
@@ -343,6 +522,10 @@ struct Draw<'a> {
     /// An add only needs the row's own playlist, so it is offered whenever the
     /// list is ready; the reorder it might mean instead is refused elsewhere.
     offer: bool,
+    /// Whether this frame's list should show its first row.
+    ///
+    /// Taken once, so scrolling stays the user's on every other frame.
+    reveal: bool,
 }
 
 /// What a press in a list asks the window to do.
@@ -400,52 +583,56 @@ fn list_rows<T: ListItem + Clone>(
                     .layout(Layout::top_down(egui::Align::Min)),
                 |ui| {
                     ui.spacing_mut().item_spacing.y = space::PX;
-                    egui::ScrollArea::vertical()
-                        .auto_shrink([false, false])
-                        .show_rows(ui, ROW_H, entries.len(), |ui, range| {
-                            let start = range.start;
-                            for index in range {
-                                let Some(item) = entries.get(index) else {
-                                    continue;
-                                };
-                                let (_, place) =
-                                    ui.allocate_space(Vec2::new(ui.available_width(), ROW_H));
-                                if origin.is_none() {
-                                    origin = Some((start, place));
-                                }
-                                let kind = item.kind();
-                                let row = LibraryRow {
-                                    id: ids.id(ui, item.uri()),
-                                    name: item.name(),
-                                    kind: &kind,
-                                    cover: draw.art.look(item.cover(), draw.now),
-                                    selected: current == Some(item.uri()),
-                                    lifted: lifted.contains(&index),
-                                };
-                                let drawn = one(ui, place, row, draw.tokens, draw.drag);
-                                if drawn.clicked {
-                                    pressed = Some(item.uri().to_owned());
-                                }
-                                // Only the playlists are a column a drag can lift;
-                                // every other kind draws exactly as it always did.
-                                if drawn.lift && ids.lifts && draw.lift {
-                                    let ghost = queue_row::Lifted::new(
-                                        item.name().to_owned(),
-                                        kind.clone(),
-                                        None,
-                                        draw.art.look(item.cover(), draw.now),
-                                    );
-                                    lifted_carry = Some(Carry {
-                                        source: Source::Playlist,
-                                        rows: vec![index],
-                                        entries: Vec::new(),
-                                        playlist: Some(item.uri().to_owned()),
-                                        size: place.size(),
-                                        ghost: Ghost::Queue(ghost),
-                                    });
-                                }
+                    let mut area = egui::ScrollArea::vertical().auto_shrink([false, false]);
+                    if draw.reveal {
+                        // The only scroll-to the sidebar has: the offset is set on
+                        // the frame the reveal is taken and left alone after it.
+                        area = area.vertical_scroll_offset(0.0);
+                    }
+                    area.show_rows(ui, ROW_H, entries.len(), |ui, range| {
+                        let start = range.start;
+                        for index in range {
+                            let Some(item) = entries.get(index) else {
+                                continue;
+                            };
+                            let (_, place) =
+                                ui.allocate_space(Vec2::new(ui.available_width(), ROW_H));
+                            if origin.is_none() {
+                                origin = Some((start, place));
                             }
-                        });
+                            let kind = item.kind();
+                            let row = LibraryRow {
+                                id: ids.id(ui, item.uri()),
+                                name: item.name(),
+                                kind: &kind,
+                                cover: draw.art.look(item.cover(), draw.now),
+                                selected: current == Some(item.uri()),
+                                lifted: lifted.contains(&index),
+                            };
+                            let drawn = one(ui, place, row, draw.tokens, draw.drag);
+                            if drawn.clicked {
+                                pressed = Some(item.uri().to_owned());
+                            }
+                            // Only the playlists are a column a drag can lift;
+                            // every other kind draws exactly as it always did.
+                            if drawn.lift && ids.lifts && draw.lift {
+                                let ghost = queue_row::Lifted::new(
+                                    item.name().to_owned(),
+                                    kind.clone(),
+                                    None,
+                                    draw.art.look(item.cover(), draw.now),
+                                );
+                                lifted_carry = Some(Carry {
+                                    source: Source::Playlist,
+                                    rows: vec![index],
+                                    entries: Vec::new(),
+                                    playlist: Some(item.uri().to_owned()),
+                                    size: place.size(),
+                                    ghost: Ghost::Queue(ghost),
+                                });
+                            }
+                        }
+                    });
                 },
             );
             if let Some(carry) = lifted_carry {
@@ -632,6 +819,7 @@ fn rows(
         drag,
         lift: drag && library.rootlist_movable(),
         offer: drag,
+        reveal: std::mem::take(&mut library.reveal_top),
     };
     let (action, open) = match library.sidebar_kind.chosen() {
         SidebarKind::Playlists => (

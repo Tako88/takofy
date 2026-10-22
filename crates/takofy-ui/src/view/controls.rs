@@ -734,10 +734,10 @@ mod tests {
         run(&ctx, input(Vec::new()), |ui| {
             let slot = slot(
                 ui,
-                Control::LibraryCreate,
+                Control::TrailHome,
                 Role::Button,
                 cell(0.0),
-                "Create playlist or folder",
+                "Home",
                 &Tokens::DARK,
                 true,
             );
@@ -813,10 +813,10 @@ mod tests {
         run(&ctx, input(Vec::new()), |ui| {
             let slot = slot(
                 ui,
-                Control::LibraryCreate,
+                Control::TrailHome,
                 Role::Button,
                 cell(0.0),
-                "Create playlist or folder",
+                "Home",
                 &Tokens::DARK,
                 true,
             );
@@ -827,7 +827,7 @@ mod tests {
         });
         let (disabled, label) = node.expect("the slot has an AccessKit node");
         assert!(disabled, "a waiting control must be announced disabled");
-        assert_eq!(label.as_deref(), Some("Create playlist or folder"));
+        assert_eq!(label.as_deref(), Some("Home"));
     }
 
     /// Which chip filters the list is a selection, so it has to reach the
@@ -881,7 +881,7 @@ mod tests {
         let ctx = Context::default();
         let controls = [
             (Control::DrawerToggle, "Toggle"),
-            (Control::LibraryCreate, "Create playlist or folder"),
+            (Control::TrailHome, "Home"),
             (Control::TrailPlaylists, "Playlists"),
         ];
         let tab = Event::Key {
@@ -916,7 +916,7 @@ mod tests {
         }
 
         assert!(
-            !focused.contains(&Control::LibraryCreate),
+            !focused.contains(&Control::TrailHome),
             "a waiting control took focus: {focused:?}"
         );
         assert!(focused.contains(&Control::DrawerToggle));
@@ -936,10 +936,10 @@ mod tests {
                 run(ctx, input(vec![event]), |ui| {
                     let waiting_slot = slot(
                         ui,
-                        Control::LibraryCreate,
+                        Control::TrailHome,
                         Role::Button,
                         waiting,
-                        "Create playlist or folder",
+                        "Home",
                         &Tokens::DARK,
                         true,
                     );
