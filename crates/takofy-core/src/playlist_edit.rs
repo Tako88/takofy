@@ -3,9 +3,9 @@
 use librespot::core::SpotifyUri;
 use librespot::protocol::playlist4_external::SelectedListContent;
 use protobuf::Message as _;
-use takofy_model::{Move, PlaylistAccess, Removal, Revision};
+use takofy_model::{Move, PLAYLIST_NAME_MAX, PlaylistAccess, Removal, Revision};
 
-use crate::wire::{put_bytes, put_message, put_varint_field};
+use crate::wire::{put_bytes, put_message, put_str, put_varint_field};
 
 /// Why a playlist could not be changed.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -34,6 +34,12 @@ pub enum PlaylistError {
     /// The removals do not name a chain the wire can apply in sequence.
     #[error("the removals do not form a descending, non-overlapping chain")]
     BadRemovals,
+    /// The name is blank, so there is nothing to call the playlist.
+    #[error("the playlist has no name")]
+    NoName,
+    /// The name is longer than the server takes.
+    #[error("the playlist name is too long")]
+    NameTooLong,
 }
 
 /// Whether `moves` names anything to write.
@@ -116,10 +122,11 @@ pub fn move_body(revision: &Revision, moves: &[Move]) -> Vec<u8> {
     changes(revision, &ops)
 }
 
-/// The change set that appends one item, based on `revision`.
+/// The change set that appends one item at `from_index`, based on `revision`.
 ///
-/// An append names the list's length as its index, which is where the item goes
-/// in a list it already holds in full.
+/// An append to a list the client holds in full names the list's length as its
+/// index, which is where the item goes; any other index inserts before the item
+/// the client counted there, so the caller's index is the wire's.
 pub fn add_body(revision: &Revision, from_index: usize, uri: &str) -> Vec<u8> {
     let mut item = Vec::new();
     put_bytes(1, uri.as_bytes(), &mut item);
@@ -159,6 +166,72 @@ pub fn remove_body(revision: &Revision, from_index: usize, length: usize) -> Vec
             length,
         }],
     )
+}
+
+/// The route that creates a playlist.
+pub const CREATE_ENDPOINT: &str = "/playlist/v2/playlist";
+
+/// `ModificationRequest.create_item_kind` for a playlist, which is what tells the
+/// route to make a playlist and not a folder.
+const CREATE_ITEM_KIND: u64 = 1;
+
+/// The request that creates a playlist called `name`.
+///
+/// It names no base revision: a create starts a list rather than changing one,
+/// so there is no version it could be based on. `playlist` is true and the item
+/// kind is 1, which is what tells the route to make a playlist and not a folder.
+pub fn create_body(name: &str) -> Vec<u8> {
+    let mut body = Vec::new();
+    put_str(4, name, &mut body);
+    put_varint_field(5, 1, &mut body);
+    put_varint_field(12, CREATE_ITEM_KIND, &mut body);
+    body
+}
+
+/// The new playlist's URI, from whichever field of the reply carries it.
+///
+/// The shipped message says field 2 and the probe measured field 1, and neither
+/// is compiled, so the reply is scanned rather than parsed: the first
+/// length-delimited top-level field that spells a playlist URI is the answer.
+/// Anything that is not a well-formed field ends the scan.
+pub fn created_uri(bytes: &[u8]) -> Option<String> {
+    let mut rest = bytes;
+    while let Some((key, tail)) = varint(rest) {
+        let field = key >> 3;
+        match key & 0x07 {
+            0 => rest = varint(tail)?.1,
+            1 => rest = tail.get(8..)?,
+            2 => {
+                let (length, body) = varint(tail)?;
+                let length = usize::try_from(length).ok()?;
+                let (value, after) = body.split_at_checked(length)?;
+                if field != 0
+                    && let Ok(uri) = std::str::from_utf8(value)
+                    && require_playlist(uri).is_ok()
+                {
+                    return Some(uri.to_owned());
+                }
+                rest = after;
+            }
+            5 => rest = tail.get(4..)?,
+            _ => return None,
+        }
+    }
+    None
+}
+
+/// One varint and what follows it, or `None` when the bytes end mid-value.
+fn varint(mut bytes: &[u8]) -> Option<(u64, &[u8])> {
+    let mut value = 0u64;
+    for shift in (0..64).step_by(7) {
+        let (byte, rest) = bytes.split_first()?;
+        value |= u64::from(byte & 0x7f) << shift;
+        bytes = rest;
+        if byte & 0x80 == 0 {
+            return Some((value, rest));
+        }
+    }
+    None
 }
 
 /// The revision a write's answer holds next, when it names one.
@@ -216,6 +289,28 @@ pub fn require_track(uri: &str) -> Result<(), PlaylistError> {
     }
 }
 
+/// Whether `uri` names a playlist.
+pub fn require_playlist(uri: &str) -> Result<(), PlaylistError> {
+    match SpotifyUri::from_uri(uri) {
+        Ok(SpotifyUri::Playlist { .. }) => Ok(()),
+        _ => Err(PlaylistError::NotAPlaylist),
+    }
+}
+
+/// Whether `name` is one the server takes.
+///
+/// The length is counted in characters: a name is what the user typed, and the
+/// cap is on the name rather than on its encoding.
+pub fn require_name(name: &str) -> Result<(), PlaylistError> {
+    if name.trim().is_empty() {
+        return Err(PlaylistError::NoName);
+    }
+    if name.chars().count() > PLAYLIST_NAME_MAX {
+        return Err(PlaylistError::NameTooLong);
+    }
+    Ok(())
+}
+
 /// The changes route for a playlist, or why the URI names none.
 pub fn changes_endpoint(uri: &str) -> Result<String, PlaylistError> {
     let Ok(SpotifyUri::Playlist { id, .. }) = SpotifyUri::from_uri(uri) else {
@@ -242,11 +337,12 @@ mod tests {
     use protobuf::Message as _;
 
     use super::{
-        PlaylistError, access, add_body, changes_endpoint, listing_access, move_body, owned,
-        removals_body, remove_body, reply_revision, require_moves, require_removals, require_track,
-        rootlist_changes_endpoint,
+        PlaylistError, access, add_body, changes_endpoint, create_body, created_uri,
+        listing_access, move_body, owned, removals_body, remove_body, reply_revision,
+        require_moves, require_name, require_playlist, require_removals, require_track,
+        rootlist_changes_endpoint, varint,
     };
-    use takofy_model::{Move, PlaylistAccess, Removal, Revision};
+    use takofy_model::{Move, PLAYLIST_NAME_MAX, PlaylistAccess, Removal, Revision};
 
     /// The revision the probe wrote, 24 bytes.
     const PROBE_REV: [u8; 24] = [
@@ -256,6 +352,9 @@ mod tests {
 
     /// The track the probe appended, 36 bytes of URI.
     const PROBE_TRACK: &str = "spotify:track:4uLU6hMCjMI75M1A2tKUQC";
+
+    /// A created playlist's URI, the 39 bytes the probe measured.
+    const NEW_PLAYLIST: &str = "spotify:playlist:0JQ5DAqbMKFEC4WFtoNRpw";
 
     fn probe() -> Revision {
         Revision::from_wire(&PROBE_REV).expect("the probe's revision")
@@ -817,5 +916,210 @@ mod tests {
             })
         );
         assert_eq!(listing_access(&[], true), None, "no revision, no access");
+    }
+
+    /// Every top-level field of a hand-encoded body: its number and its payload,
+    /// with a varint payload as its little-endian bytes.
+    fn fields(bytes: &[u8]) -> Vec<(u64, Vec<u8>)> {
+        let mut found = Vec::new();
+        let mut rest = bytes;
+        while let Some((key, tail)) = varint(rest) {
+            let (payload, after) = match key & 0x07 {
+                0 => {
+                    let (value, after) = varint(tail).expect("a varint value");
+                    (value.to_le_bytes().to_vec(), after)
+                }
+                2 => {
+                    let (length, body) = varint(tail).expect("a length");
+                    let (value, after) = body
+                        .split_at_checked(length as usize)
+                        .expect("a whole field");
+                    (value.to_vec(), after)
+                }
+                other => panic!("wire type {other} is not in this body"),
+            };
+            found.push((key >> 3, payload));
+            rest = after;
+        }
+        assert!(rest.is_empty(), "the body ended mid-field");
+        found
+    }
+
+    #[test]
+    fn a_create_body_for_mix_is_names_playlist_and_kind() {
+        assert_eq!(
+            create_body("Mix"),
+            vec![
+                0x22, 0x03, 0x4d, 0x69, 0x78, // ModificationRequest.name = "Mix"
+                0x28, 0x01, // ModificationRequest.playlist = true
+                0x60, 0x01, // ModificationRequest.create_item_kind = 1
+            ]
+        );
+    }
+
+    #[test]
+    fn a_create_body_for_a_multibyte_name_writes_utf8_length() {
+        // "Måne" is four characters and five bytes, so the field counts bytes.
+        assert_eq!(
+            create_body("Måne"),
+            vec![
+                0x22, 0x05, 0x4d, 0xc3, 0xa5, 0x6e, 0x65, 0x28, 0x01, 0x60, 0x01
+            ]
+        );
+    }
+
+    #[test]
+    fn a_create_body_for_a_100_char_name_keeps_a_one_byte_length() {
+        let name = "a".repeat(PLAYLIST_NAME_MAX);
+        let body = create_body(&name);
+        assert_eq!(&body[..2], &[0x22, 0x64], "100 bytes, still one varint");
+        assert_eq!(&body[2..102], name.as_bytes());
+        assert_eq!(&body[102..], &[0x28, 0x01, 0x60, 0x01]);
+    }
+
+    #[test]
+    fn create_body_parses_back_as_name_playlist_true_and_kind_one() {
+        let found = fields(&create_body("Mix"));
+        assert_eq!(found.len(), 3, "a name, the playlist flag and the kind");
+        assert_eq!(found[0], (4, b"Mix".to_vec()));
+        assert_eq!(found[1], (5, 1u64.to_le_bytes().to_vec()));
+        assert_eq!(found[2], (12, 1u64.to_le_bytes().to_vec()));
+    }
+
+    #[test]
+    fn require_name_rejects_blank_and_over_100_chars() {
+        for blank in ["", " ", "   ", "\t\n"] {
+            assert_eq!(require_name(blank), Err(PlaylistError::NoName), "{blank:?}");
+        }
+        assert_eq!(require_name("Mix"), Ok(()));
+        assert_eq!(require_name(&"a".repeat(PLAYLIST_NAME_MAX)), Ok(()));
+        assert_eq!(
+            require_name(&"a".repeat(PLAYLIST_NAME_MAX + 1)),
+            Err(PlaylistError::NameTooLong)
+        );
+        // The cap counts characters: 100 two-byte characters is 200 bytes and
+        // still a name the server takes.
+        assert_eq!(require_name(&"å".repeat(PLAYLIST_NAME_MAX)), Ok(()));
+        assert_eq!(
+            require_name(&"å".repeat(PLAYLIST_NAME_MAX + 1)),
+            Err(PlaylistError::NameTooLong)
+        );
+    }
+
+    /// One length-delimited field holding `uri`.
+    fn uri_field(field: u8, uri: &str) -> Vec<u8> {
+        let mut body = vec![(field << 3) | 2, uri.len() as u8];
+        body.extend_from_slice(uri.as_bytes());
+        body
+    }
+
+    #[test]
+    fn created_uri_reads_field_one_or_field_two() {
+        for field in [1, 2] {
+            assert_eq!(
+                created_uri(&uri_field(field, NEW_PLAYLIST)),
+                Some(NEW_PLAYLIST.to_owned()),
+                "field {field}"
+            );
+        }
+    }
+
+    #[test]
+    fn created_uri_reads_a_39_byte_uri() {
+        assert_eq!(NEW_PLAYLIST.len(), 39, "the probe's length");
+        let body = uri_field(1, NEW_PLAYLIST);
+        assert_eq!(body[1], 39);
+        assert_eq!(created_uri(&body), Some(NEW_PLAYLIST.to_owned()));
+    }
+
+    #[test]
+    fn created_uri_skips_unknown_fields_before_and_after() {
+        let mut body = vec![
+            0x08, 0x01, // field 1, a varint
+            0x19, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // field 3, 64-bit
+            0x25, 0x00, 0x00, 0x00, 0x00, // field 4, 32-bit
+            0x32, 0x02, 0x68, 0x69, // field 6, the string "hi"
+        ];
+        body.extend_from_slice(&uri_field(2, NEW_PLAYLIST));
+        body.extend_from_slice(&[0x38, 0x01]); // field 7, a varint after it
+        assert_eq!(created_uri(&body), Some(NEW_PLAYLIST.to_owned()));
+    }
+
+    #[test]
+    fn created_uri_rejects_a_non_playlist_uri_a_truncated_length_and_garbage() {
+        assert_eq!(created_uri(&uri_field(1, PROBE_TRACK)), None);
+        assert_eq!(
+            created_uri(&uri_field(1, "spotify:album:4uLU6hMCjMI75M1A2tKUQC")),
+            None
+        );
+        assert_eq!(
+            created_uri(&[0x0a, 0x27, 0x73, 0x70]),
+            None,
+            "a short field"
+        );
+        assert_eq!(created_uri(&[0x0a, 0x05, 0x68]), None);
+        assert_eq!(created_uri(&[0xff]), None);
+        assert_eq!(created_uri(&[0x1f]), None, "a group has no place here");
+        assert_eq!(created_uri(&[]), None);
+    }
+
+    #[test]
+    fn require_playlist_accepts_a_playlist_and_rejects_track_artist_garbage() {
+        assert_eq!(require_playlist(NEW_PLAYLIST), Ok(()));
+        for uri in [
+            PROBE_TRACK,
+            "spotify:artist:4uLU6hMCjMI75M1A2tKUQC",
+            "spotify:album:4uLU6hMCjMI75M1A2tKUQC",
+            "not a uri",
+            "",
+            "spotify:playlist:not-base62!",
+        ] {
+            assert_eq!(
+                require_playlist(uri),
+                Err(PlaylistError::NotAPlaylist),
+                "must refuse {uri:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_rootlist_add_at_zero_pins_its_bytes() {
+        let body = add_body(&probe(), 0, NEW_PLAYLIST);
+        let mut expected = vec![
+            0x0a, 0x18, // ListChanges.base_revision: 24 bytes
+        ];
+        expected.extend_from_slice(&PROBE_REV);
+        expected.extend_from_slice(&[
+            0x12, 0x4d, // ListChanges.deltas[0]: 77 bytes
+            0x0a, 0x18, // Delta.base_version: 24 bytes
+        ]);
+        expected.extend_from_slice(&PROBE_REV);
+        expected.extend_from_slice(&[
+            0x12, 0x31, // Delta.ops[0]: 49 bytes
+            0x08, 0x02, // Op.kind = ADD
+            0x12, 0x2d, // Op.add: 45 bytes
+            0x08, 0x00, // Add.from_index = 0
+            0x12, 0x29, // Add.items[0]: 41 bytes
+            0x0a, 0x27, // Item.uri: 39 bytes
+        ]);
+        expected.extend_from_slice(NEW_PLAYLIST.as_bytes());
+
+        // Item = 2 + 39 = 41; Add = 2 + (2 + 41) = 45; Op = 2 + (2 + 45) = 49;
+        // Delta = 26 + (2 + 49) = 77; ListChanges = 26 + (2 + 77) = 105.
+        assert_eq!(body, expected);
+        assert_eq!(body.len(), 105);
+    }
+
+    #[test]
+    fn a_rootlist_add_at_zero_parses_back_as_one_add_at_index_zero() {
+        let read = page(&add_body(&probe(), 0, NEW_PLAYLIST));
+        assert_eq!(read.deltas.len(), 1);
+        assert_eq!(read.deltas[0].ops.len(), 1);
+        let found = &read.deltas[0].ops[0];
+        assert_eq!(found.kind(), op::Kind::ADD);
+        let add = found.add.as_ref().expect("an add");
+        assert_eq!(add.from_index(), 0);
+        assert_eq!(add.items.len(), 1);
+        assert_eq!(add.items[0].uri(), NEW_PLAYLIST);
     }
 }
