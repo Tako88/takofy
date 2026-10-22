@@ -191,7 +191,10 @@ pub fn album_view(
                                     door,
                                     index,
                                     gate,
-                                    Some(&here),
+                                    carry::Open {
+                                        listing: carry::Listing::Page,
+                                        here: Some(&here),
+                                    },
                                     |row| album.tracks.get(row).cloned(),
                                 ),
                                 Some(Click::Lift) => {

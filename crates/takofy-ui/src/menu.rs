@@ -63,6 +63,37 @@ pub enum Verb {
     GoToAlbum,
     GoToArtist,
     CopyLink,
+    Remove,
+}
+
+/// The list a menu's rows came from, which decides its verbs and their labels.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum Listing {
+    /// Rows that are not a list the user may write: an album, an artist, a
+    /// search, a release block, or a playlist that is not theirs.
+    #[default]
+    Page,
+    /// An editable playlist page, which may both add and remove.
+    Playlist { uri: String, list: Id },
+    /// The queue's own rows, which may not add what is already there.
+    Queue,
+    /// The entry Now Playing is on, which is never removable.
+    Current,
+}
+
+impl Listing {
+    /// Whether this list offers a removal.
+    pub fn removable(&self) -> bool {
+        matches!(self, Listing::Playlist { .. } | Listing::Queue)
+    }
+}
+
+/// A removal a list asked for by key: which list, the rows, and what they held.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Cut {
+    pub listing: Listing,
+    pub rows: Vec<usize>,
+    pub entries: Vec<TrackEntry>,
 }
 
 /// One command row: what it says and what it does.
@@ -111,6 +142,10 @@ pub struct Request {
     /// The rows the verbs act on, cloned at open time so a list that reloads
     /// underneath the menu cannot change what it does.
     pub targets: Vec<TrackEntry>,
+    /// The rows those entries sit at, parallel to `targets`.
+    pub rows: Vec<usize>,
+    /// The list they belong to, which decides the verbs and their labels.
+    pub listing: Listing,
     /// The page it was opened on, so a page change closes it.
     pub page: Option<Page>,
 }
@@ -152,6 +187,8 @@ pub struct Menu {
     device: Device,
     items: Vec<Item>,
     targets: Vec<TrackEntry>,
+    rows: Vec<usize>,
+    listing: Listing,
     page: Option<Page>,
     lit: Option<usize>,
     /// The clock of the first frame that drew this menu. A frame is not a pass:
@@ -186,6 +223,8 @@ impl Menu {
         };
         self.items = items;
         self.targets = request.targets;
+        self.rows = request.rows;
+        self.listing = request.listing;
         self.page = request.page;
         self.first_drawn = None;
         true
@@ -243,6 +282,16 @@ impl Menu {
         self.choose(row)
     }
 
+    /// Chooses the destructive row, when the menu has one, and closes.
+    pub fn choose_destructive(&mut self) -> Option<Closed> {
+        let row = self
+            .items
+            .len()
+            .checked_sub(1)
+            .filter(|row| self.items[*row].kind == Kind::Destructive)?;
+        self.choose(row)
+    }
+
     /// Closes for `reason`, reporting what the shell has to undo.
     ///
     /// A page change loses the rows the menu described, so it is the one close
@@ -295,6 +344,24 @@ impl Menu {
         &self.targets
     }
 
+    /// The removal this menu's list would make, read after the close.
+    ///
+    /// A page's rows and the current entry are never removable, so only a
+    /// playlist and the queue answer.
+    pub fn cut(&self) -> Option<Cut> {
+        if !self.listing.removable()
+            || self.rows.is_empty()
+            || self.rows.len() != self.targets.len()
+        {
+            return None;
+        }
+        Some(Cut {
+            listing: self.listing.clone(),
+            rows: self.rows.clone(),
+            entries: self.targets.clone(),
+        })
+    }
+
     pub fn lit(&self) -> Option<usize> {
         self.lit
     }
@@ -331,7 +398,6 @@ mod tests {
 
     use super::*;
     use crate::route::Page;
-    use crate::verbs;
 
     fn opener() -> Id {
         Id::unique("row-more")
@@ -370,7 +436,32 @@ mod tests {
             door: door(device),
             items: (0..rows).map(item).collect(),
             targets: Vec::new(),
+            rows: Vec::new(),
+            listing: Listing::default(),
             page: None,
+        }
+    }
+
+    fn playlist_listing() -> Listing {
+        Listing::Playlist {
+            uri: "spotify:playlist:a".to_owned(),
+            list: Id::unique("playlist-tracks"),
+        }
+    }
+
+    fn opened_on(request: Request) -> Menu {
+        let mut menu = Menu::default();
+        assert!(menu.open(request, Gate::default()), "the menu opened");
+        menu
+    }
+
+    fn destructive_item(label: &str) -> Item {
+        Item {
+            label: label.to_owned(),
+            kind: Kind::Destructive,
+            key: Some("Del"),
+            submenu: false,
+            verb: Verb::Remove,
         }
     }
 
@@ -643,11 +734,85 @@ mod tests {
     }
 
     #[test]
-    fn no_item_carries_a_key_hint_or_a_chevron_today() {
-        let targets = [entry("spotify:track:a")];
-        for item in verbs::track_items(&targets, None) {
-            assert_eq!(item.key, None, "{}", item.label);
-            assert!(!item.submenu, "{}", item.label);
+    fn the_remove_row_is_drawn_last_and_lit_first_by_the_keyboard() {
+        let mut request = request(Device::Keyboard, 2);
+        request.items = vec![item(0), destructive_item("Remove from this playlist")];
+        let menu = opened_on(request);
+
+        assert_eq!(
+            menu.items().last().map(|item| item.verb),
+            Some(Verb::Remove),
+            "the destructive row is not last after the sort"
+        );
+        assert_eq!(menu.lit(), Some(0), "the keyboard opens on the first row");
+    }
+
+    #[test]
+    fn cut_is_built_from_the_snapshot_and_only_for_a_removing_listing() {
+        let entries = vec![entry("spotify:track:a"), entry("spotify:track:b")];
+        for listing in [
+            Listing::Page,
+            Listing::Current,
+            Listing::Queue,
+            playlist_listing(),
+        ] {
+            let mut request = request(Device::Pointer, 2);
+            request.listing = listing.clone();
+            request.rows = vec![1, 3];
+            request.targets = entries.clone();
+            let menu = opened_on(request);
+
+            let removing = matches!(listing, Listing::Queue | Listing::Playlist { .. });
+            match menu.cut() {
+                Some(cut) => {
+                    assert!(removing, "{listing:?} offered a removal");
+                    assert_eq!(cut.listing, listing, "{listing:?}");
+                    assert_eq!(cut.rows, vec![1, 3], "{listing:?}");
+                    assert_eq!(cut.entries, entries, "{listing:?}");
+                }
+                None => assert!(!removing, "{listing:?} has no cut"),
+            }
         }
+    }
+
+    #[test]
+    fn cut_survives_the_close() {
+        let mut request = request(Device::Keyboard, 2);
+        request.listing = Listing::Queue;
+        request.rows = vec![2];
+        request.targets = vec![entry("spotify:track:a")];
+        let mut menu = opened_on(request);
+
+        let cut = menu.cut().expect("a removal");
+        assert!(menu.close(Reason::Escape).is_some());
+        assert_eq!(
+            menu.cut(),
+            Some(cut),
+            "the shell reads the cut after the menu closed on it"
+        );
+    }
+
+    #[test]
+    fn choose_destructive_picks_the_last_row_only_if_destructive() {
+        let mut request = request(Device::Keyboard, 2);
+        request.items = vec![item(0), destructive_item("Remove from this playlist")];
+        let mut menu = opened_on(request);
+        assert_eq!(
+            menu.choose_destructive(),
+            Some(Closed {
+                opener: Some(opener()),
+                chose: Some(Verb::Remove),
+            })
+        );
+        assert!(!menu.is_open());
+
+        let mut plain = opened(Device::Keyboard, 2);
+        assert_eq!(
+            plain.choose_destructive(),
+            None,
+            "a menu with no removal chose one"
+        );
+        assert!(plain.is_open(), "a menu with no removal closed");
+        assert_eq!(plain.lit(), Some(0), "the lit row moved");
     }
 }

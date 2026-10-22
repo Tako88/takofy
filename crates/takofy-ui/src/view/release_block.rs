@@ -268,11 +268,17 @@ fn body(
                 match track_row::show(ui, rect, columns, &row, tokens) {
                     Some(Click::Play) => clicked.row = Some(index),
                     Some(Click::Select(press)) => selection.press(index, press),
-                    Some(Click::Menu(door)) => {
-                        selection.menu(ui.ctx(), door, index, gate, block.here, |row| {
-                            tracks.get(row).cloned()
-                        })
-                    }
+                    Some(Click::Menu(door)) => selection.menu(
+                        ui.ctx(),
+                        door,
+                        index,
+                        gate,
+                        carry::Open {
+                            listing: carry::Listing::Page,
+                            here: block.here,
+                        },
+                        |row| tracks.get(row).cloned(),
+                    ),
                     Some(Click::Lift) => {
                         let ghost = Ghost::Table(row.lifted(columns));
                         selection.lift(index, rect.size(), ghost, |row| tracks.get(row).cloned());

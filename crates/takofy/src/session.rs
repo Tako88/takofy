@@ -12,7 +12,7 @@ use takofy_core::engine::{Engine, EngineError, RootlistRead};
 use takofy_core::playback::{Playback, PlaybackError, PlaybackEvent};
 use takofy_model::{
     AlbumDetail, ArtistDetail, CoverUrl, FollowedArtist, FollowedShow, Move, PlaylistAccess,
-    Revision, SavedAlbum, ShowDetail, TrackEntry, TrackLyrics,
+    Removal, Revision, SavedAlbum, ShowDetail, TrackEntry, TrackLyrics,
 };
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::oneshot::Receiver;
@@ -109,6 +109,14 @@ pub(crate) trait SessionHost: Send + 'static {
         &mut self,
         playlist: &str,
     ) -> impl Future<Output = Result<TrackPage, SessionError>> + Send;
+
+    /// Removes rows from a playlist, answering the revision to hold next.
+    fn remove_tracks(
+        &self,
+        playlist: &str,
+        revision: &Revision,
+        removals: &[Removal],
+    ) -> impl Future<Output = Result<Revision, SessionError>> + Send;
 
     /// Writes one move to a playlist, answering the revision to hold next.
     fn move_track(
@@ -290,6 +298,21 @@ impl SessionHost for LiveSession {
         match &self.engine {
             Some(engine) => engine
                 .move_track(playlist, revision, moves)
+                .await
+                .map_err(SessionError::Engine),
+            None => Err(SessionError::NotConnected),
+        }
+    }
+
+    async fn remove_tracks(
+        &self,
+        playlist: &str,
+        revision: &Revision,
+        removals: &[Removal],
+    ) -> Result<Revision, SessionError> {
+        match &self.engine {
+            Some(engine) => engine
+                .remove_tracks(playlist, revision, removals)
                 .await
                 .map_err(SessionError::Engine),
             None => Err(SessionError::NotConnected),

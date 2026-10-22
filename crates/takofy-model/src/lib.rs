@@ -481,6 +481,16 @@ pub struct Move {
     pub to: usize,
 }
 
+/// One `REM` operation: `length` rows dropped at `from`.
+///
+/// A chain is sent highest `from` first, so each index reads against the list
+/// the removal before it left.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Removal {
+    pub from: usize,
+    pub length: usize,
+}
+
 /// What a playlist page may change, and the version it was read at.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlaylistAccess {
@@ -492,7 +502,7 @@ pub struct PlaylistAccess {
 mod tests {
     use super::{
         AddedAt, CoverImage, CoverUrl, Episode, Move, PlaylistAccess, PlaylistEntry, PublishedAt,
-        Revision, TrackEntry, TrackLyrics,
+        Removal, Revision, TrackEntry, TrackLyrics,
     };
 
     fn revision(byte: u8) -> Revision {
@@ -795,5 +805,13 @@ mod tests {
         let copy = mv;
         assert_eq!(copy, mv);
         assert_ne!(mv, Move { length: 1, ..mv });
+    }
+
+    #[test]
+    fn a_removal_is_a_value_the_chain_can_share() {
+        let removal = Removal { from: 5, length: 2 };
+        let copy = removal;
+        assert_eq!(copy, removal);
+        assert_ne!(removal, Removal { from: 4, ..removal });
     }
 }

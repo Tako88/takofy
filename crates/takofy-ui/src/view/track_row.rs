@@ -357,6 +357,15 @@ struct Link {
     page: Option<Page>,
 }
 
+/// The widget id of the body of the row at `number` in `uri`'s list.
+///
+/// The position is part of the key, because a playlist may hold the same track
+/// twice: keyed by the track alone, two rows would share one focus node. The
+/// number is one-based, as the row is drawn.
+pub(super) fn id(ui: &Ui, uri: &str, number: usize) -> egui::Id {
+    ui.scope_id().with(("track-row", (uri, number)))
+}
+
 /// Draws one row into `rect`, and reports what a click on it asked for.
 ///
 /// `rect` is `layout::table::row_rect` for this row and `columns` is what
@@ -375,7 +384,7 @@ pub fn show(
     // twice: keyed by the track alone, two rows would share one hover, one focus
     // node and one click, and the wrong occurrence would play.
     let key = (row.uri, row.number);
-    let body = rows::body(ui, rect, ui.scope_id().with(("track-row", key)), row.look);
+    let body = rows::body(ui, rect, id(ui, row.uri, row.number), row.look);
     let response = &body.response;
     response.widget_info(|| {
         egui::WidgetInfo::labeled(
@@ -968,35 +977,9 @@ fn more(
         node.set_expanded(open);
         node.set_has_popup(egui::accesskit::HasPopup::Menu);
     });
-    // egui does not focus a widget on a click; the row's body asks for it by hand
-    // and the more does the same, so Enter and the focus ring land where the
-    // pointer last was.
-    let clicked = slot.response.clicked();
-    if clicked {
-        slot.response.request_focus();
-    }
-
-    // A press on a focused `⋯` is also Enter or Space, which egui reports as a
-    // click without a pointer, so the device decides what the sheet's tiers mean.
-    let pointer = ui.input(|input| input.pointer.button_clicked(egui::PointerButton::Primary));
-    let device = if pointer {
-        Device::Pointer
-    } else {
-        Device::Keyboard
-    };
-    // The `⋯` whose own menu is up closes it through the outside click rather
-    // than posting a fresh request over it, and a held key's repeats are not
-    // presses of the user's.
-    let toggle = clicked && pointer && opener == Some(id);
-    let held = clicked && !pointer && context_menu::held_repeat(ui);
-    let door = (clicked && !toggle && !held).then_some(Door {
-        anchor: Anchor::Button(rect),
-        opener: id,
-        device,
-    });
     More {
         hovered: under_pointer(&slot),
-        door,
+        door: context_menu::button_door(ui, &slot, rect, id),
         id,
         focused: slot.response.has_focus(),
     }
@@ -1009,12 +992,7 @@ fn key_door(ui: &Ui, row: &egui::Response, more: &More, anchor: Rect) -> Option<
     if !row_focused && !more_focused {
         return None;
     }
-    let pressed = ui.input_mut(|input| {
-        // Shift is required for F10, so a plain F10 is not this door.
-        input.consume_key(egui::Modifiers::SHIFT, egui::Key::F10)
-            || input.consume_key(egui::Modifiers::NONE, egui::Key::Menu)
-    });
-    pressed.then_some(Door {
+    context_menu::menu_key_pressed(ui).then_some(Door {
         anchor: Anchor::Button(anchor),
         opener: if more_focused { more.id } else { row.id },
         device: Device::Keyboard,
@@ -1028,7 +1006,7 @@ fn key_door(ui: &Ui, row: &egui::Response, more: &More, anchor: Rect) -> Option<
 /// right-click over the album or the artist is still the row's. The rect test is
 /// the layer and clip test, so a right-click under another layer, or outside the
 /// scroll's clip, opens nothing.
-fn pointer_door(ui: &Ui, rect: Rect, opener: egui::Id, anchor: Rect) -> Option<Door> {
+pub(super) fn pointer_door(ui: &Ui, rect: Rect, opener: egui::Id, anchor: Rect) -> Option<Door> {
     let secondary = ui.input(|input| input.pointer.secondary_clicked());
     let over = ui
         .ctx()

@@ -3,7 +3,7 @@
 use librespot::core::SpotifyUri;
 use librespot::protocol::playlist4_external::SelectedListContent;
 use protobuf::Message as _;
-use takofy_model::{Move, PlaylistAccess, Revision};
+use takofy_model::{Move, PlaylistAccess, Removal, Revision};
 
 use crate::wire::{put_bytes, put_message, put_varint_field};
 
@@ -28,6 +28,12 @@ pub enum PlaylistError {
     /// The write asked for no ops, so there is nothing to send.
     #[error("no moves to write")]
     NoMoves,
+    /// The write asked for no removals, so there is nothing to send.
+    #[error("no rows to remove")]
+    NoRemovals,
+    /// The removals do not name a chain the wire can apply in sequence.
+    #[error("the removals do not form a descending, non-overlapping chain")]
+    BadRemovals,
 }
 
 /// Whether `moves` names anything to write.
@@ -37,6 +43,27 @@ pub fn require_moves(moves: &[Move]) -> Result<(), PlaylistError> {
     } else {
         Ok(())
     }
+}
+
+/// Whether `removals` names a chain the wire applies in order.
+///
+/// The chain is highest index first and never overlaps, so each removal names
+/// rows that the removals before it left in place.
+pub fn require_removals(removals: &[Removal]) -> Result<(), PlaylistError> {
+    let Some((&first, rest)) = removals.split_first() else {
+        return Err(PlaylistError::NoRemovals);
+    };
+    let mut below = usize::MAX;
+    for removal in std::iter::once(&first).chain(rest) {
+        let Some(end) = removal.from.checked_add(removal.length) else {
+            return Err(PlaylistError::BadRemovals);
+        };
+        if removal.length == 0 || end > below {
+            return Err(PlaylistError::BadRemovals);
+        }
+        below = removal.from;
+    }
+    Ok(())
 }
 
 /// `Op.kind` for an add in the playlist schema.
@@ -103,15 +130,35 @@ pub fn add_body(revision: &Revision, from_index: usize, uri: &str) -> Vec<u8> {
     changes(revision, &[op(ADD, 2, &add)])
 }
 
+/// The change set that applies `removals`, based on `revision`.
+///
+/// The ops apply in sequence, so a gapped pick is one change set of several
+/// `REM`s, highest index first.
+pub fn removals_body(revision: &Revision, removals: &[Removal]) -> Vec<u8> {
+    let ops: Vec<Vec<u8>> = removals
+        .iter()
+        .map(|removal| {
+            let mut rem = Vec::new();
+            put_varint_field(1, removal.from as u64, &mut rem);
+            put_varint_field(2, removal.length as u64, &mut rem);
+            op(REM, 3, &rem)
+        })
+        .collect();
+    changes(revision, &ops)
+}
+
 /// The change set that removes `length` items from `from_index`, based on
 /// `revision`.
 ///
 /// It undoes an add made at the same index with length one.
 pub fn remove_body(revision: &Revision, from_index: usize, length: usize) -> Vec<u8> {
-    let mut rem = Vec::new();
-    put_varint_field(1, from_index as u64, &mut rem);
-    put_varint_field(2, length as u64, &mut rem);
-    changes(revision, &[op(REM, 3, &rem)])
+    removals_body(
+        revision,
+        &[Removal {
+            from: from_index,
+            length,
+        }],
+    )
 }
 
 /// The revision a write's answer holds next, when it names one.
@@ -196,9 +243,10 @@ mod tests {
 
     use super::{
         PlaylistError, access, add_body, changes_endpoint, listing_access, move_body, owned,
-        remove_body, reply_revision, require_moves, require_track, rootlist_changes_endpoint,
+        removals_body, remove_body, reply_revision, require_moves, require_removals, require_track,
+        rootlist_changes_endpoint,
     };
-    use takofy_model::{Move, PlaylistAccess, Revision};
+    use takofy_model::{Move, PlaylistAccess, Removal, Revision};
 
     /// The revision the probe wrote, 24 bytes.
     const PROBE_REV: [u8; 24] = [
@@ -219,6 +267,10 @@ mod tests {
 
     fn page(bytes: &[u8]) -> ListChanges {
         ListChanges::parse_from_bytes(bytes).expect("a change set")
+    }
+
+    fn removal(from: usize, length: usize) -> Removal {
+        Removal { from, length }
     }
 
     fn one(from: usize, to: usize) -> [Move; 1] {
@@ -670,6 +722,82 @@ mod tests {
                 "must refuse {uri:?}"
             );
         }
+    }
+
+    #[test]
+    fn require_removals_rejects_empty_zero_length_ascending_and_overlapping_lists() {
+        assert_eq!(require_removals(&[]), Err(PlaylistError::NoRemovals));
+        assert_eq!(
+            require_removals(&[removal(4, 0)]),
+            Err(PlaylistError::BadRemovals)
+        );
+        assert_eq!(
+            require_removals(&[removal(1, 1), removal(4, 1)]),
+            Err(PlaylistError::BadRemovals),
+            "an ascending chain names rows the last removal moved"
+        );
+        assert_eq!(
+            require_removals(&[removal(4, 3), removal(3, 2)]),
+            Err(PlaylistError::BadRemovals),
+            "the runs overlap"
+        );
+        assert_eq!(
+            require_removals(&[removal(4, 3), removal(4, 1)]),
+            Err(PlaylistError::BadRemovals),
+            "two runs start at the same row"
+        );
+    }
+
+    #[test]
+    fn require_removals_accepts_a_descending_chain() {
+        assert_eq!(
+            require_removals(&[removal(5, 1), removal(3, 1), removal(1, 1)]),
+            Ok(())
+        );
+        assert_eq!(
+            require_removals(&[removal(6, 3), removal(2, 2), removal(0, 1)]),
+            Ok(()),
+            "runs may touch as long as they do not overlap"
+        );
+    }
+
+    #[test]
+    fn a_removal_that_overflows_is_rejected() {
+        assert_eq!(
+            require_removals(&[removal(usize::MAX, 2)]),
+            Err(PlaylistError::BadRemovals)
+        );
+        assert_eq!(
+            require_removals(&[removal(usize::MAX, usize::MAX)]),
+            Err(PlaylistError::BadRemovals)
+        );
+    }
+
+    #[test]
+    fn removals_body_is_one_delta_with_one_op_per_removal_in_order() {
+        let chain = [removal(5, 1), removal(3, 1), removal(1, 1)];
+        let body = removals_body(&probe(), &chain);
+        let read = page(&body);
+        assert_eq!(read.base_revision(), &PROBE_REV[..]);
+        assert_eq!(read.deltas.len(), 1, "one delta carries the chain");
+        assert_eq!(read.deltas[0].base_version(), &PROBE_REV[..]);
+        assert_eq!(read.deltas[0].ops.len(), 3);
+        for (found, removal) in read.deltas[0].ops.iter().zip(&chain) {
+            assert_eq!(found.kind(), op::Kind::REM);
+            let rem = found.rem.as_ref().expect("a remove");
+            assert_eq!(
+                (rem.from_index() as usize, rem.length() as usize),
+                (removal.from, removal.length),
+                "the ops keep the descending order they were given"
+            );
+            assert!(found.mov.is_none(), "a removal is not a move");
+        }
+
+        assert_eq!(
+            removals_body(&probe(), &[removal(23, 1)]),
+            remove_body(&probe(), 23, 1),
+            "one run is the pinned single-removal body"
+        );
     }
 
     #[test]

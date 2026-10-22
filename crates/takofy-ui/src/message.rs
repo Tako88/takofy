@@ -5,7 +5,8 @@
 
 use takofy_model::{
     AlbumDetail, ArtistDetail, CoverImage, CoverUrl, FollowedArtist, FollowedShow, Move,
-    PlaylistAccess, PlaylistEntry, Revision, SavedAlbum, ShowDetail, TrackEntry, TrackLyrics,
+    PlaylistAccess, PlaylistEntry, Removal, Revision, SavedAlbum, ShowDetail, TrackEntry,
+    TrackLyrics,
 };
 
 /// A request from the window to the worker.
@@ -20,6 +21,14 @@ pub enum Command {
         playlist: String,
         revision: Revision,
         moves: Vec<Move>,
+    },
+    /// Remove rows of a playlist, as one change set on `revision`.
+    RemoveTracks {
+        playlist: String,
+        revision: Revision,
+        /// Highest index first, so each removal reads against the list the one
+        /// before it left.
+        removals: Vec<Removal>,
     },
     /// Move one row of the sidebar's playlists to a new place, based on
     /// `revision`.
@@ -175,6 +184,14 @@ pub enum Update {
     },
     /// A playlist move did not stick.
     MoveFailed { playlist: String, failure: Failure },
+    /// Playlist rows were removed, and this is the revision the next write must
+    /// name.
+    TracksRemoved {
+        playlist: String,
+        revision: Revision,
+    },
+    /// A playlist removal did not stick.
+    RemoveFailed { playlist: String, failure: Failure },
     /// A playlist's tracks could not be loaded.
     TracksFailed { playlist: String, failure: Failure },
     /// One album, its tracks in the album's own order.
