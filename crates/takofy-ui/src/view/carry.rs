@@ -72,15 +72,20 @@ pub struct Carry {
 }
 
 impl Carry {
-    /// The one track this carry would add, when it is exactly one track.
+    /// Every track this carry would add, in the order the rows were taken.
     ///
-    /// A block of two rows, an episode and a local file are all refused, so the
-    /// caller never has to look at the entries to know what it holds.
-    pub fn track(&self) -> Option<&TrackEntry> {
-        if self.source == Source::Playlist || self.rows.len() != 1 || self.entries.len() != 1 {
+    /// A block that holds anything else is refused whole: the pick is every row
+    /// the drag took or nothing, so the caller never has to look inside.
+    pub fn pick(&self) -> Option<Vec<String>> {
+        if self.source == Source::Playlist || self.rows.len() != self.entries.len() {
             return None;
         }
-        self.entries.first().filter(|entry| entry.is_track())
+        verbs::pick(&self.entries)
+    }
+
+    /// Whether this carry holds a pick an add can take.
+    pub fn addable(&self) -> bool {
+        self.pick().is_some()
     }
 }
 
@@ -816,46 +821,61 @@ mod tests {
     }
 
     #[test]
-    fn only_one_track_is_a_track_to_add() {
-        let one = entry("x");
-        let named = TrackEntry {
+    fn a_pick_of_tracks_travels_whole_and_in_order() {
+        let first = TrackEntry {
             uri: "spotify:track:4uLU6hMCjMI75M1A2tKUQC".to_owned(),
-            ..one.clone()
+            ..entry("a")
         };
-
-        let two_rows = Carry {
-            entries: vec![named.clone()],
+        let second = TrackEntry {
+            uri: "spotify:track:4uLU6hMCjMI75M1A2tKUQD".to_owned(),
+            ..first.clone()
+        };
+        let block = Carry {
+            entries: vec![first.clone(), second.clone()],
             rows: vec![1, 2],
             ..carry(Source::Queue, Vec::new())
         };
-        assert_eq!(two_rows.track(), None, "a block of two rows");
 
-        let no_entries = carry(Source::Queue, vec![3]);
-        assert_eq!(no_entries.track(), None, "no entries travel");
+        assert_eq!(
+            block.pick(),
+            Some(vec![first.uri.clone(), second.uri.clone()])
+        );
+        assert!(block.addable());
+    }
+
+    #[test]
+    fn a_playlist_an_episode_and_a_local_file_are_not_picks() {
+        let named = TrackEntry {
+            uri: "spotify:track:4uLU6hMCjMI75M1A2tKUQC".to_owned(),
+            ..entry("a")
+        };
 
         let playlist = Carry {
             rows: vec![1],
             playlist: Some("spotify:playlist:a".to_owned()),
             ..carry(Source::Playlist, Vec::new())
         };
-        assert_eq!(playlist.track(), None, "a playlist is no track");
+        assert_eq!(playlist.pick(), None, "a playlist is no pick");
+        assert!(!playlist.addable());
 
-        let episode = Carry {
-            rows: vec![1],
-            entries: vec![TrackEntry {
-                uri: "spotify:episode:1".to_owned(),
-                ..named.clone()
-            }],
-            ..carry(Source::Queue, Vec::new())
-        };
-        assert_eq!(episode.track(), None, "an episode is no track");
+        for (uri, why) in [
+            ("spotify:episode:1", "an episode is no track"),
+            ("spotify:local:A:B:C:1000", "a local file is no track"),
+        ] {
+            let carry = Carry {
+                rows: vec![1],
+                entries: vec![TrackEntry {
+                    uri: uri.to_owned(),
+                    ..named.clone()
+                }],
+                ..carry(Source::Queue, Vec::new())
+            };
+            assert_eq!(carry.pick(), None, "{why}");
+            assert!(!carry.addable(), "{why}");
+        }
 
-        let track = Carry {
-            rows: vec![1],
-            entries: vec![named.clone()],
-            ..carry(Source::Queue, Vec::new())
-        };
-        assert_eq!(track.track(), Some(&named));
+        let no_entries = carry(Source::Queue, vec![3]);
+        assert_eq!(no_entries.pick(), None, "the rows and the entries disagree");
     }
 
     #[test]

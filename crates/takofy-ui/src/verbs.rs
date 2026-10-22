@@ -185,6 +185,19 @@ fn like_outcome(targets: &[TrackEntry], liked: bool) -> Option<Outcome> {
     Some(Outcome::Like { tracks, liked })
 }
 
+/// Whether a pick is one an add can take: every row a track, and at least one.
+pub fn pickable(targets: &[TrackEntry]) -> bool {
+    !targets.is_empty() && targets.iter().all(TrackEntry::is_track)
+}
+
+/// The tracks a pick would add, in the order the rows were taken.
+///
+/// Nothing is de-duplicated: two rows holding one track both travel, because the
+/// pick is what the user dragged and not a set.
+pub fn pick(targets: &[TrackEntry]) -> Option<Vec<String>> {
+    pickable(targets).then(|| targets.iter().map(|entry| entry.uri.clone()).collect())
+}
+
 /// One plain command row.
 fn item(verb: Verb, label: String) -> Item {
     Item {
@@ -1048,5 +1061,54 @@ mod tests {
             offered - 1,
             "allowing a stripped row put it back"
         );
+    }
+
+    #[test]
+    fn a_pick_of_tracks_keeps_the_rows_order_and_duplicates() {
+        assert_eq!(pick(&tracks(&["spotify:track:a"])), Some(pick_of(&["a"])));
+        assert_eq!(
+            pick(&tracks(&[
+                "spotify:track:a",
+                "spotify:track:b",
+                "spotify:track:c"
+            ])),
+            Some(pick_of(&["a", "b", "c"]))
+        );
+        assert_eq!(
+            pick(&tracks(&["spotify:track:a", "spotify:track:a"])),
+            Some(pick_of(&["a", "a"])),
+            "two rows holding one track both travel"
+        );
+    }
+
+    #[test]
+    fn a_pick_with_anything_but_tracks_is_not_a_pick() {
+        assert_eq!(pick(&[]), None, "an empty pick");
+        assert!(!pickable(&[]));
+        for uri in ["spotify:episode:e", "spotify:local:A:B:C:1000"] {
+            assert_eq!(pick(&tracks(&[uri])), None, "{uri}");
+            assert_eq!(
+                pick(&tracks(&["spotify:track:a", uri])),
+                None,
+                "a mixed pick is refused whole: {uri}"
+            );
+            assert_eq!(
+                pick(&tracks(&[uri, "spotify:track:a"])),
+                None,
+                "{uri} in front"
+            );
+        }
+    }
+
+    #[test]
+    fn a_pick_is_only_tracks_and_nothing_else() {
+        assert!(pickable(&tracks(&["spotify:track:a"])));
+        assert!(pickable(&tracks(&["spotify:track:a", "spotify:track:b"])));
+        assert!(!pickable(&tracks(&["spotify:episode:e"])));
+    }
+
+    /// The URIs a pick holds, so a test names only their ids.
+    fn pick_of(ids: &[&str]) -> Vec<String> {
+        ids.iter().map(|id| format!("spotify:track:{id}")).collect()
     }
 }

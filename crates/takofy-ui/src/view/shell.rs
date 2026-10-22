@@ -684,8 +684,8 @@ fn rootlist_target(
     Some(Target::Rootlist(at))
 }
 
-/// Where a carried track adds itself: the playlist row under the pointer, when
-/// that row may take it.
+/// Where a carried block adds itself: the playlist row under the pointer, when
+/// that row may take the whole pick.
 fn add_target(
     carry: &Carry,
     column: Option<&ColumnOffer>,
@@ -693,7 +693,9 @@ fn add_target(
     pointer: Option<Pos2>,
 ) -> Option<Target> {
     let column = column?;
-    carry.track()?;
+    if !carry.addable() {
+        return None;
+    }
     let slot = landing::slot_at(pointer, Some(&column.zone), column.drawn)?;
     library.addable(slot.row).then_some(Target::Add(slot))
 }
@@ -716,9 +718,7 @@ fn add(screen: &mut Screen<'_>, carry: &Carry, slot: landing::Slot, free: bool) 
     if !free {
         return None;
     }
-    screen
-        .library
-        .add_tracks(slot.row, &[carry.track()?.uri.clone()])
+    screen.library.add_tracks(slot.row, &carry.pick()?)
 }
 
 /// Moves the dropped rows in their own list and picks where they landed.
@@ -5953,15 +5953,19 @@ mod tests {
     }
 
     #[test]
-    fn a_block_of_two_rows_is_never_added() {
+    fn a_block_of_three_rows_is_one_add_in_row_order() {
         let mut transport = playing(cover("abc"));
-        let mut queue = queue_of_tracks(&[TRACK_A, TRACK_B, TRACK_A, TRACK_B], &mut transport);
+        let mut queue = queue_of_tracks(
+            &[TRACK_A, TRACK_B, "spotify:track:c", TRACK_A, TRACK_B],
+            &mut transport,
+        );
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
         sidebar_playlists(&mut window, &[("A", Some(2))], Some(rootlist_access(true)));
-        // Rows 1 and 2 are one picked block: the first entry is playing, so it
-        // is never lifted.
+        // Rows 1, 2 and 3 are one picked block: the first entry is playing, so
+        // it is never lifted.
         queue.press(1, Press::Replace);
         queue.press(2, Press::Toggle);
+        queue.press(3, Press::Toggle);
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
         let pane = pane_rect_when_shown(&window);
         let from = row_line(&frame, pane, TRACK_B);
@@ -5969,8 +5973,37 @@ mod tests {
 
         assert_eq!(
             window.drag(&mut transport, &mut queue, from, to),
+            Some(Command::AddTracks {
+                playlist: "playlist:A".to_owned(),
+                revision: revision("root-1"),
+                from_index: 2,
+                tracks: vec![
+                    TRACK_B.to_owned(),
+                    "spotify:track:c".to_owned(),
+                    TRACK_A.to_owned(),
+                ],
+            }),
+            "one command, and the pick in the order the rows were taken"
+        );
+    }
+
+    #[test]
+    fn a_pick_with_one_episode_marks_no_target_and_sends_nothing() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of_tracks(&[TRACK_A, "spotify:episode:1", TRACK_B], &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_playlists(&mut window, &[("A", Some(2))], Some(rootlist_access(true)));
+        queue.press(1, Press::Replace);
+        queue.press(2, Press::Toggle);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let pane = pane_rect_when_shown(&window);
+        let from = row_line(&frame, pane, "spotify:episode:1");
+        let to = sidebar_row_rect(&window, &frame, "A", "Playlist · 2 tracks").center();
+
+        assert_eq!(
+            window.drag(&mut transport, &mut queue, from, to),
             None,
-            "two rows are one block, and a block is never added"
+            "a mixed pick is refused whole, so nothing is offered"
         );
     }
 
