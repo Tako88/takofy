@@ -9,7 +9,7 @@ use std::ops::Range;
 
 use takofy_model::{
     AlbumDetail, ArtistDetail, CoverUrl, FollowedArtist, FollowedShow, PlaylistAccess,
-    PlaylistEntry, SavedAlbum, ShowDetail, TrackEntry,
+    PlaylistEntry, Revision, SavedAlbum, ShowDetail, TrackEntry,
 };
 
 use crate::discography::Filter;
@@ -18,6 +18,7 @@ use crate::library_filter::{RootFilter, RootKind};
 use crate::lyrics::LyricsPanel;
 use crate::message::{Command, Failure, Update};
 use crate::releases::Releases;
+use crate::removal;
 use crate::reorder;
 use crate::route::{History, Page};
 use crate::search::Search;
@@ -406,27 +407,25 @@ impl Library {
             }
             // The reply ends the write and names the revision the next one uses.
             Update::TrackMoved { playlist, revision } => {
-                if !self.writing(playlist) {
+                self.end_page_write(playlist, revision);
+            }
+            // A removal's reply is a move's, plus the count it took out.
+            Update::TracksRemoved { playlist, revision } => {
+                let gone = self
+                    .pending
+                    .as_ref()
+                    .filter(|pending| pending.playlist == *playlist)
+                    .map_or(0, |pending| {
+                        pending.before.len().saturating_sub(pending.after.len())
+                    });
+                if !self.end_page_write(playlist, revision) {
                     return;
                 }
-                self.pending = None;
-                if let Load::Ready(tracks) = &mut self.tracks
-                    && tracks.playlist == *playlist
-                {
-                    tracks.notice = None;
-                    if let Some(access) = &mut tracks.access {
-                        access.revision = revision.clone();
-                    }
-                }
-                if let Load::Ready(playlists) = &mut self.playlists
-                    && let Some(entry) = playlists.iter_mut().find(|entry| entry.uri == *playlist)
-                    && let Some(access) = &mut entry.access
-                {
-                    access.revision = revision.clone();
-                }
+                self.lower_page_count(playlist, gone);
             }
             // A failed write puts the rows back where they were, and says so.
-            Update::MoveFailed { playlist, failure } => {
+            Update::MoveFailed { playlist, failure }
+            | Update::RemoveFailed { playlist, failure } => {
                 if !self.writing(playlist) {
                     return;
                 }
@@ -544,13 +543,46 @@ impl Library {
             Update::Search { .. } | Update::SearchFailed { .. } => {
                 self.search.apply(update);
             }
-            Update::TracksRemoved { .. }
-            | Update::RemoveFailed { .. }
-            | Update::NeedsAuthorization
+            Update::NeedsAuthorization
             | Update::SignInFailed(_)
             | Update::Transport(_)
             | Update::Cover { .. }
             | Update::CoverFailed { .. } => {}
+        }
+    }
+
+    /// Ends the page write for `playlist` and holds `revision` for the next one.
+    fn end_page_write(&mut self, playlist: &str, revision: &Revision) -> bool {
+        if !self.writing(playlist) {
+            return false;
+        }
+        self.pending = None;
+        if let Load::Ready(tracks) = &mut self.tracks
+            && tracks.playlist == *playlist
+        {
+            tracks.notice = None;
+            if let Some(access) = &mut tracks.access {
+                access.revision = revision.clone();
+            }
+        }
+        if let Load::Ready(playlists) = &mut self.playlists
+            && let Some(entry) = playlists.iter_mut().find(|entry| entry.uri == *playlist)
+            && let Some(access) = &mut entry.access
+        {
+            access.revision = revision.clone();
+        }
+        true
+    }
+
+    /// Lowers the sidebar's declared count for `playlist` by `gone` rows.
+    fn lower_page_count(&mut self, playlist: &str, gone: usize) {
+        if gone == 0 {
+            return;
+        }
+        if let Load::Ready(playlists) = &mut self.playlists
+            && let Some(entry) = playlists.iter_mut().find(|entry| entry.uri == playlist)
+        {
+            entry.tracks = entry.tracks.map(|count| count.saturating_sub(gone));
         }
     }
 
@@ -701,6 +733,14 @@ impl Library {
             )
     }
 
+    /// Whether the loaded track page may take rows out now.
+    ///
+    /// A removal names the same revision a move does, so it waits for the same
+    /// things.
+    pub fn removable(&self) -> bool {
+        self.movable()
+    }
+
     /// Whether the sidebar's playlists may be reordered now.
     ///
     /// It needs a read that kept every item, read at a known revision, and no
@@ -807,26 +847,10 @@ impl Library {
         boundary: usize,
         carried: &[TrackEntry],
     ) -> Option<(Command, Range<usize>)> {
+        let access = self.page_write(playlist, rows, carried)?;
         let Load::Ready(tracks) = &self.tracks else {
             return None;
         };
-        if !self.liftable()
-            || self.sidebar_pending.is_some()
-            || self.selected() != Some(playlist)
-            || tracks.playlist != playlist
-        {
-            return None;
-        }
-        let access = tracks.access.clone().filter(|access| access.editable)?;
-        let ascending = !rows.is_empty() && rows.windows(2).all(|pair| pair[0] < pair[1]);
-        let held = rows.len() == carried.len()
-            && rows
-                .iter()
-                .zip(carried)
-                .all(|(row, entry)| tracks.tracks.get(*row) == Some(entry));
-        if !ascending || !held {
-            return None;
-        }
         let found = reorder::block(&tracks.tracks, rows, boundary)?;
         self.pending = Some(reorder::Pending {
             playlist: playlist.to_owned(),
@@ -847,6 +871,75 @@ impl Library {
             },
             found.landed..found.landed + rows.len(),
         ))
+    }
+
+    /// Takes the picked rows out of the page, and asks for one write.
+    ///
+    /// It runs the same guards a move does, because both name a revision and
+    /// only one write may be in flight. The rows are gone on screen at once and
+    /// kept until the reply lands; a write that fails puts them back and the
+    /// page says so. Nothing is re-requested, so a removal can never leave a
+    /// ready page waiting.
+    pub fn remove_tracks(
+        &mut self,
+        playlist: &str,
+        rows: &[usize],
+        carried: &[TrackEntry],
+    ) -> Option<Command> {
+        let access = self.page_write(playlist, rows, carried)?;
+        let Load::Ready(tracks) = &self.tracks else {
+            return None;
+        };
+        let found = removal::plan(&tracks.tracks, rows)?;
+        self.pending = Some(reorder::Pending {
+            playlist: playlist.to_owned(),
+            before: tracks.tracks.clone(),
+            after: found.kept.clone(),
+        });
+        self.tracks = Load::Ready(TracksFor {
+            playlist: playlist.to_owned(),
+            tracks: found.kept,
+            access: Some(access.clone()),
+            notice: None,
+        });
+        Some(Command::RemoveTracks {
+            playlist: playlist.to_owned(),
+            revision: access.revision,
+            removals: found.removals,
+        })
+    }
+
+    /// What a page write may name now, when `rows` still hold `carried`.
+    ///
+    /// One write at a time, on the playlist on screen, with rows that are
+    /// ascending and unchanged since the gesture picked them.
+    fn page_write(
+        &self,
+        playlist: &str,
+        rows: &[usize],
+        carried: &[TrackEntry],
+    ) -> Option<PlaylistAccess> {
+        let Load::Ready(tracks) = &self.tracks else {
+            return None;
+        };
+        if !self.liftable()
+            || self.sidebar_pending.is_some()
+            || self.selected() != Some(playlist)
+            || tracks.playlist != playlist
+        {
+            return None;
+        }
+        let access = tracks.access.clone().filter(|access| access.editable)?;
+        let ascending = !rows.is_empty() && rows.windows(2).all(|pair| pair[0] < pair[1]);
+        let held = rows.len() == carried.len()
+            && rows
+                .iter()
+                .zip(carried)
+                .all(|(row, entry)| tracks.tracks.get(*row) == Some(entry));
+        if !ascending || !held {
+            return None;
+        }
+        Some(access)
     }
 
     /// Marks a playlist as wanted and returns the command that loads it.
@@ -1226,7 +1319,7 @@ impl Library {
 mod tests {
     use takofy_model::{
         AddedAt, AlbumDetail, ArtistDetail, CoverUrl, Episode, FollowedShow, Move, PlaylistAccess,
-        PlaylistEntry, ReleaseKind, Revision, Show, ShowDetail, TrackEntry, TrackLyrics,
+        PlaylistEntry, ReleaseKind, Removal, Revision, Show, ShowDetail, TrackEntry, TrackLyrics,
     };
 
     use super::*;
@@ -5531,5 +5624,309 @@ mod tests {
         // nothing. This pins the settled rule for the empty list itself.
         assert!(settled);
         assert!(library.selected_entry().is_none());
+    }
+    #[test]
+    fn a_removal_issues_one_command_with_the_chain_and_the_held_revision() {
+        let mut library = page_with("a", &["t0", "t1", "t2", "t3", "t4"], access(0x01, true));
+
+        assert_eq!(
+            library.remove_tracks("a", &[1, 3], &moved(&["t1", "t3"])),
+            Some(Command::RemoveTracks {
+                playlist: "a".to_owned(),
+                revision: revision(0x01),
+                removals: vec![
+                    Removal { from: 3, length: 1 },
+                    Removal { from: 1, length: 1 },
+                ],
+            })
+        );
+    }
+
+    #[test]
+    fn a_removal_applies_the_rows_at_once_and_records_pending() {
+        let mut library = page_with("a", &["t0", "t1", "t2", "t3"], access(0x01, true));
+
+        assert!(
+            library
+                .remove_tracks("a", &[1, 2], &moved(&["t1", "t2"]))
+                .is_some()
+        );
+        assert_eq!(
+            library.tracks,
+            ready("a", &["t0", "t3"], access(0x01, true)),
+            "the rows are gone before the write is answered"
+        );
+        assert_eq!(
+            library.pending,
+            Some(reorder::Pending {
+                playlist: "a".to_owned(),
+                before: moved(&["t0", "t1", "t2", "t3"]),
+                after: moved(&["t0", "t3"]),
+            })
+        );
+    }
+
+    #[test]
+    fn a_removal_waits_while_a_page_write_is_pending() {
+        let mut library = page_with("a", &["t0", "t1", "t2"], access(0x01, true));
+        assert!(library.remove_tracks("a", &[0], &moved(&["t0"])).is_some());
+
+        assert_eq!(
+            library.remove_tracks("a", &[0], &moved(&["t1"])),
+            None,
+            "one gesture is one write, so a second waits for the reply"
+        );
+        assert!(!library.removable());
+    }
+
+    #[test]
+    fn a_removal_waits_while_a_sidebar_write_is_pending() {
+        let mut library = page_with("a", &["t0", "t1", "t2"], access(0x01, true));
+        library.playlists = Load::Ready(vec![
+            with_access(playlist("a", "a"), 0x07, true, None),
+            with_access(playlist("b", "b"), 0x07, true, None),
+        ]);
+        library.apply(&Update::RootlistAccess(rootlist_access(0x07, true)));
+        assert!(library.move_playlist(0, 2, "a").is_some());
+
+        assert_eq!(
+            library.remove_tracks("a", &[0], &moved(&["t0"])),
+            None,
+            "a sidebar write holds every list still"
+        );
+    }
+
+    #[test]
+    fn a_removal_refuses_a_read_only_page() {
+        let mut library = page_with("a", &["t0", "t1"], access(0x01, false));
+
+        assert_eq!(library.remove_tracks("a", &[0], &moved(&["t0"])), None);
+        assert!(!library.removable());
+        assert_eq!(library.pending, None);
+        assert_eq!(
+            library.tracks,
+            ready("a", &["t0", "t1"], access(0x01, false))
+        );
+    }
+
+    #[test]
+    fn a_removal_refuses_a_stale_pick() {
+        let mut library = page_with("a", &["t0", "t1"], access(0x01, true));
+
+        assert_eq!(
+            library.remove_tracks("a", &[0], &moved(&["gone"])),
+            None,
+            "the row holds another entry now"
+        );
+        assert_eq!(
+            library.remove_tracks("a", &[0, 1], &moved(&["t0"])),
+            None,
+            "the rows and the entries are not parallel"
+        );
+        assert_eq!(
+            library.remove_tracks("a", &[9], &moved(&["gone"])),
+            None,
+            "a row the list does not hold"
+        );
+        assert_eq!(library.pending, None);
+    }
+
+    #[test]
+    fn a_removal_refuses_an_unsorted_pick() {
+        let mut library = page_with("a", &["t0", "t1"], access(0x01, true));
+
+        assert_eq!(
+            library.remove_tracks("a", &[1, 0], &moved(&["t1", "t0"])),
+            None
+        );
+        assert_eq!(
+            library.remove_tracks("a", &[0, 0], &moved(&["t0", "t0"])),
+            None,
+            "a repeated row is not a pick"
+        );
+        assert_eq!(library.pending, None);
+    }
+
+    #[test]
+    fn the_reply_revision_ends_the_write_and_the_next_removal_uses_it() {
+        let mut library = page_with("a", &["t0", "t1", "t2"], access(0x01, true));
+        assert!(library.remove_tracks("a", &[1], &moved(&["t1"])).is_some());
+
+        library.apply(&Update::TracksRemoved {
+            playlist: "a".to_owned(),
+            revision: revision(0x02),
+        });
+
+        assert_eq!(library.pending, None);
+        assert_eq!(
+            library.tracks,
+            ready("a", &["t0", "t2"], access(0x02, true))
+        );
+        assert_eq!(
+            library.remove_tracks("a", &[1], &moved(&["t2"])),
+            Some(Command::RemoveTracks {
+                playlist: "a".to_owned(),
+                revision: revision(0x02),
+                removals: vec![Removal { from: 1, length: 1 }],
+            })
+        );
+    }
+
+    #[test]
+    fn the_reply_lowers_the_sidebar_count_by_the_rows_removed() {
+        let mut library = page_with("a", &["t0", "t1", "t2", "t3"], access(0x01, true));
+        library.playlists =
+            Load::Ready(vec![with_access(playlist("a", "a"), 0x07, true, Some(12))]);
+        assert!(
+            library
+                .remove_tracks("a", &[1, 2], &moved(&["t1", "t2"]))
+                .is_some()
+        );
+
+        library.apply(&Update::TracksRemoved {
+            playlist: "a".to_owned(),
+            revision: revision(0x02),
+        });
+
+        assert_eq!(
+            sidebar_entry(&library, "a").and_then(|entry| entry.tracks),
+            Some(10)
+        );
+    }
+
+    #[test]
+    fn a_move_reply_leaves_the_count_alone() {
+        let mut library = page_with("a", &["t0", "t1", "t2"], access(0x01, true));
+        library.playlists =
+            Load::Ready(vec![with_access(playlist("a", "a"), 0x07, true, Some(12))]);
+        assert!(move_one(&mut library, "a", 0, 2, &track("t0")).is_some());
+
+        library.apply(&Update::TrackMoved {
+            playlist: "a".to_owned(),
+            revision: revision(0x02),
+        });
+
+        assert_eq!(
+            sidebar_entry(&library, "a").and_then(|entry| entry.tracks),
+            Some(12),
+            "a move changes the order, never the count"
+        );
+    }
+
+    #[test]
+    fn a_failed_removal_restores_the_rows_and_says_so() {
+        let mut library = page_with("a", &["t0", "t1", "t2"], access(0x01, true));
+        assert!(library.remove_tracks("a", &[1], &moved(&["t1"])).is_some());
+
+        library.apply(&Update::RemoveFailed {
+            playlist: "a".to_owned(),
+            failure: Failure::Save,
+        });
+
+        assert_eq!(library.pending, None);
+        assert_eq!(
+            library.tracks,
+            Load::Ready(TracksFor {
+                playlist: "a".to_owned(),
+                tracks: moved(&["t0", "t1", "t2"]),
+                access: access(0x01, true),
+                notice: Some(Failure::Save),
+            })
+        );
+    }
+
+    #[test]
+    fn a_failed_removal_leaves_the_sidebar_count_alone() {
+        let mut library = page_with("a", &["t0", "t1"], access(0x01, true));
+        library.playlists = Load::Ready(vec![with_access(playlist("a", "a"), 0x07, true, Some(7))]);
+        assert!(library.remove_tracks("a", &[1], &moved(&["t1"])).is_some());
+
+        library.apply(&Update::RemoveFailed {
+            playlist: "a".to_owned(),
+            failure: Failure::Save,
+        });
+
+        assert_eq!(
+            sidebar_entry(&library, "a").and_then(|entry| entry.tracks),
+            Some(7)
+        );
+    }
+
+    #[test]
+    fn a_read_while_a_removal_is_pending_keeps_the_removed_order() {
+        let mut library = page_with("a", &["t0", "t1", "t2"], access(0x01, true));
+        assert!(library.remove_tracks("a", &[1], &moved(&["t1"])).is_some());
+
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: moved(&["t0", "t1", "t2"]),
+            cover: None,
+            access: access(0x01, true),
+        });
+
+        assert_eq!(
+            library.tracks,
+            ready("a", &["t0", "t2"], access(0x01, true)),
+            "a read issued before the write landed must not resurrect the rows"
+        );
+    }
+
+    #[test]
+    fn a_removal_never_drops_the_page() {
+        let mut library = page_with("a", &["t0", "t1", "t2"], access(0x01, true));
+        assert!(library.remove_tracks("a", &[1], &moved(&["t1"])).is_some());
+        assert!(
+            matches!(library.tracks, Load::Ready(_)),
+            "the issue keeps the page ready, so nothing has to be re-requested"
+        );
+
+        library.apply(&Update::TracksRemoved {
+            playlist: "a".to_owned(),
+            revision: revision(0x02),
+        });
+        assert!(matches!(library.tracks, Load::Ready(_)));
+
+        library.apply(&Update::RemoveFailed {
+            playlist: "a".to_owned(),
+            failure: Failure::Save,
+        });
+        assert!(matches!(library.tracks, Load::Ready(_)));
+    }
+
+    #[test]
+    fn removable_matches_movable() {
+        for (uris, access) in [
+            (&["t0", "t1"][..], access(0x01, true)),
+            (&["t0", "t1"][..], access(0x01, false)),
+            (&["t0", "t1"][..], None),
+        ] {
+            let library = page_with("a", uris, access);
+            assert_eq!(library.removable(), library.movable(), "{uris:?}");
+        }
+
+        let mut writing = page_with("a", &["t0", "t1"], access(0x01, true));
+        assert!(writing.remove_tracks("a", &[0], &moved(&["t0"])).is_some());
+        assert_eq!(writing.removable(), writing.movable());
+        assert!(!writing.removable());
+    }
+
+    #[test]
+    fn an_emptied_playlist_stays_ready_and_empty() {
+        let mut library = page_with("a", &["t0", "t1"], access(0x01, true));
+
+        assert!(
+            library
+                .remove_tracks("a", &[0, 1], &moved(&["t0", "t1"]))
+                .is_some()
+        );
+        assert_eq!(library.tracks, ready("a", &[], access(0x01, true)));
+
+        library.apply(&Update::TracksRemoved {
+            playlist: "a".to_owned(),
+            revision: revision(0x02),
+        });
+        assert_eq!(library.tracks, ready("a", &[], access(0x02, true)));
+        assert_eq!(library.selected(), Some("a"));
+        assert!(library.removable(), "an empty editable list still rewrites");
     }
 }
