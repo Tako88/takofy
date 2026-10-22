@@ -336,6 +336,19 @@ pub(crate) fn start<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                         break;
                     }
                 }
+                Event::Command(Some(Command::LoadLikedTracks)) => {
+                    let step = load_liked_tracks(&mut host, &mut stop_rx, &task_notifier).await;
+                    if step.stopped() {
+                        break;
+                    }
+                }
+                Event::Command(Some(Command::SetLiked { tracks, liked })) => {
+                    let step =
+                        set_liked(&mut host, &mut stop_rx, &task_notifier, &tracks, liked).await;
+                    if step.stopped() {
+                        break;
+                    }
+                }
                 Event::Command(Some(Command::Search { query })) => {
                     let step = load_search(&mut host, &mut stop_rx, &task_notifier, &query).await;
                     if step.stopped() {
@@ -682,6 +695,55 @@ async fn load_saved_albums<H: SessionHost>(
         }
         Some(Err(error)) => {
             notifier.send(Update::SavedAlbumsFailed(albums_failure(&error)));
+            Step::Done
+        }
+    }
+}
+
+/// Loads the tracks the user has liked and announces the whole set.
+///
+async fn load_liked_tracks<H: SessionHost>(
+    host: &mut H,
+    stop: &mut StopReceiver<()>,
+    notifier: &Notifier,
+) -> Step {
+    match stop_or(stop, host.liked_tracks()).await {
+        None => Step::Stopped,
+        Some(Ok(tracks)) => {
+            notifier.send(Update::LikedTracks(tracks));
+            Step::Done
+        }
+        Some(Err(error)) => {
+            notifier.send(Update::LikedTracksFailed(liked_failure(&error)));
+            Step::Done
+        }
+    }
+}
+
+/// Writes the liked set and announces what was requested.
+///
+async fn set_liked<H: SessionHost>(
+    host: &mut H,
+    stop: &mut StopReceiver<()>,
+    notifier: &Notifier,
+    tracks: &[String],
+    liked: bool,
+) -> Step {
+    match stop_or(stop, host.set_liked(tracks.to_vec(), liked)).await {
+        None => Step::Stopped,
+        Some(Ok(())) => {
+            notifier.send(Update::Liked {
+                tracks: tracks.to_vec(),
+                liked,
+            });
+            Step::Done
+        }
+        Some(Err(error)) => {
+            log::warn!("like write failed: {}", error.kind());
+            notifier.send(Update::LikeFailed {
+                tracks: tracks.to_vec(),
+                failure: Failure::Save,
+            });
             Step::Done
         }
     }
@@ -1080,6 +1142,13 @@ pub(crate) fn artists_failure(error: &SessionError) -> Failure {
 pub(crate) fn albums_failure(error: &SessionError) -> Failure {
     log::warn!("session failure: {}", error.kind());
     Failure::SavedAlbums
+}
+
+/// A liked-songs read has no surface of its own; its failure is the library's
+/// load. The reason is for the log, never the window.
+pub(crate) fn liked_failure(error: &SessionError) -> Failure {
+    log::warn!("session failure: {}", error.kind());
+    Failure::Load
 }
 
 /// The lyrics pane has its own failure: the page around it may draw fine, and
@@ -1491,6 +1560,28 @@ mod tests {
         }
     }
 
+    /// A scripted liked-tracks answer; the default is an empty set.
+    #[derive(Clone)]
+    enum LikedScript {
+        Ready(Vec<String>),
+        Fail,
+    }
+
+    impl Default for LikedScript {
+        fn default() -> Self {
+            Self::Ready(Vec::new())
+        }
+    }
+
+    /// A scripted like write.
+    #[derive(Clone, Copy, Default)]
+    enum LikeScript {
+        #[default]
+        Ok,
+        Fail,
+        Pending,
+    }
+
     /// A scripted artist answer; the default is a bare one at [`ARTIST`].
     #[derive(Clone)]
     enum ArtistScript {
@@ -1614,6 +1705,8 @@ mod tests {
         followed_artists_script: Mutex<FollowedArtistsScript>,
         related_script: Mutex<RelatedScript>,
         saved_albums_script: Mutex<SavedAlbumsScript>,
+        liked_script: Mutex<LikedScript>,
+        like_script: Mutex<LikeScript>,
         artist_script: Mutex<ArtistScript>,
         lyrics_script: Mutex<LyricsScript>,
         search_script: Mutex<SearchScript>,
@@ -1632,6 +1725,8 @@ mod tests {
         followed_lists: AtomicUsize,
         followed_artist_lists: AtomicUsize,
         saved_album_lists: AtomicUsize,
+        liked_lists: AtomicUsize,
+        like_writes: AtomicUsize,
         artists: AtomicUsize,
         lyrics_loads: AtomicUsize,
         searches: AtomicUsize,
@@ -1653,9 +1748,11 @@ mod tests {
         last_remove: Mutex<Option<(String, Revision, Vec<Removal>)>>,
         last_root_move: Mutex<Option<(Revision, usize, usize)>>,
         last_add: Mutex<Option<(String, Revision, usize, String)>>,
+        last_like: Mutex<Option<(Vec<String>, bool)>>,
         move_started: Mutex<Option<Sender<()>>>,
         rootlist_move_started: Mutex<Option<Sender<()>>>,
         add_started: Mutex<Option<Sender<()>>>,
+        like_started: Mutex<Option<Sender<()>>>,
         plays: AtomicUsize,
         pauses: AtomicUsize,
         resumes: AtomicUsize,
@@ -1891,6 +1988,45 @@ mod tests {
                 match script {
                     SavedAlbumsScript::Ready(albums) => Ok(albums),
                     SavedAlbumsScript::Fail => Err(SessionError::NotConnected),
+                }
+            }
+        }
+
+        fn liked_tracks(&self) -> impl Future<Output = Result<Vec<String>, SessionError>> + Send {
+            self.shared.liked_lists.fetch_add(1, Ordering::SeqCst);
+            let connected = self.shared.connected.load(Ordering::SeqCst);
+            let script = self.shared.liked_script.lock().expect("lock").clone();
+            async move {
+                if !connected {
+                    return Err(SessionError::NotConnected);
+                }
+                match script {
+                    LikedScript::Ready(tracks) => Ok(tracks),
+                    LikedScript::Fail => Err(SessionError::NotConnected),
+                }
+            }
+        }
+
+        fn set_liked(
+            &self,
+            tracks: Vec<String>,
+            liked: bool,
+        ) -> impl Future<Output = Result<(), SessionError>> + Send {
+            self.shared.like_writes.fetch_add(1, Ordering::SeqCst);
+            *self.shared.last_like.lock().expect("lock") = Some((tracks, liked));
+            if let Some(tx) = self.shared.like_started.lock().expect("lock").take() {
+                let _ = tx.send(());
+            }
+            let connected = self.shared.connected.load(Ordering::SeqCst);
+            let script = *self.shared.like_script.lock().expect("lock");
+            async move {
+                if !connected {
+                    return Err(SessionError::NotConnected);
+                }
+                match script {
+                    LikeScript::Ok => Ok(()),
+                    LikeScript::Fail => Err(SessionError::NotConnected),
+                    LikeScript::Pending => std::future::pending().await,
                 }
             }
         }
@@ -4080,6 +4216,153 @@ mod tests {
             0,
             "the list is want-driven, never chained onto the rootlist"
         );
+    }
+
+    /// Runs one liked-tracks command through the live path and returns the
+    /// update the window receives.
+    fn run_liked(script: LikedScript) -> Update {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+        *shared.liked_script.lock().expect("lock") = script;
+
+        run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::LoadLikedTracks)
+                .expect("load");
+            ui_end.updates.recv().expect("liked tracks")
+        })
+    }
+
+    #[test]
+    fn loading_the_liked_tracks_announces_the_whole_set() {
+        assert_eq!(
+            run_liked(LikedScript::Ready(vec![TRACK.to_owned()])),
+            Update::LikedTracks(vec![TRACK.to_owned()])
+        );
+    }
+
+    #[test]
+    fn a_liked_tracks_failure_announces_the_failed_update() {
+        assert_eq!(
+            run_liked(LikedScript::Fail),
+            Update::LikedTracksFailed(Failure::Load),
+            "a liked read has no surface of its own, so its failure is the library's"
+        );
+    }
+
+    /// Runs one like write through the live path, with the scripted answer.
+    fn run_like(script: LikeScript, liked: bool) -> Update {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+        *shared.like_script.lock().expect("lock") = script;
+
+        run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::SetLiked {
+                    tracks: vec![TRACK.to_owned()],
+                    liked,
+                })
+                .expect("like");
+            ui_end.updates.recv().expect("like answer")
+        })
+    }
+
+    #[test]
+    fn a_like_announces_the_requested_tracks_and_value_on_success() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+
+        let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::SetLiked {
+                    tracks: vec![TRACK.to_owned()],
+                    liked: true,
+                })
+                .expect("like");
+            ui_end.updates.recv().expect("liked")
+        });
+
+        assert_eq!(
+            update,
+            Update::Liked {
+                tracks: vec![TRACK.to_owned()],
+                liked: true,
+            }
+        );
+        assert_eq!(shared.like_writes.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            shared.last_like.lock().expect("lock").clone(),
+            Some((vec![TRACK.to_owned()], true)),
+            "the write is sent with the pick the user made"
+        );
+    }
+
+    #[test]
+    fn a_like_failure_announces_like_failed_with_save() {
+        assert_eq!(
+            run_like(LikeScript::Fail, false),
+            Update::LikeFailed {
+                tracks: vec![TRACK.to_owned()],
+                failure: Failure::Save,
+            }
+        );
+    }
+
+    #[test]
+    fn a_stop_during_a_like_write_ends_the_task() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+        *shared.like_script.lock().expect("lock") = LikeScript::Pending;
+        let (started_tx, started_rx) = channel();
+        *shared.like_started.lock().expect("lock") = Some(started_tx);
+
+        let runtime = runtime();
+        let (ui_end, _slot, worker) = start(runtime.handle(), host, store, source);
+
+        let window = move || {
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::SetLiked {
+                    tracks: vec![TRACK.to_owned()],
+                    liked: true,
+                })
+                .expect("like");
+            started_rx.recv().expect("like started");
+        };
+        let teardown = move || async move {
+            tokio::time::timeout(Duration::from_secs(1), worker.finish())
+                .await
+                .expect("finish must resolve when the stop interrupts the like write");
+            assert_eq!(
+                shared.shutdowns.load(Ordering::SeqCst),
+                1,
+                "the shutdown must run when the stop interrupts the like write"
+            );
+        };
+
+        run_ordered(runtime, window, teardown);
     }
 
     #[test]

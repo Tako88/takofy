@@ -130,6 +130,11 @@ impl eframe::App for TakofyApp {
         if let Some(command) = self.library.saved_albums_request() {
             let _ = self.ui_end.commands.send(command);
         }
+        // The liked set is read once the playlists can name a signed-in window;
+        // a failed write arms one more read through the same path.
+        if let Some(command) = self.library.likes_request() {
+            let _ = self.ui_end.commands.send(command);
+        }
         // The artist page's likeness row is its second read: it is asked for
         // once the artist's own detail has landed and named somebody.
         if let Some(command) = self.library.related_request() {

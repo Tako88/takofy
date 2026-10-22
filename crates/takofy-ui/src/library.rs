@@ -15,7 +15,7 @@ use takofy_model::{
 use crate::discography::Filter;
 use crate::follow::Follow;
 use crate::library_filter::{RootFilter, RootKind};
-use crate::likes::Likes;
+use crate::likes::{self, Likes};
 use crate::lyrics::LyricsPanel;
 use crate::message::{Command, Failure, Update};
 use crate::releases::Releases;
@@ -513,6 +513,26 @@ impl Library {
             }
             Update::SavedAlbumsFailed(failure) => {
                 self.saved_albums = Load::Failed(*failure);
+            }
+            // The liked set is a whole set, not keyed by URI: the state keeps its
+            // own epoch guard so a read that predates a flip is dropped.
+            Update::LikedTracks(tracks) => {
+                self.likes.apply(&likes::Event::Set(tracks.clone()));
+            }
+            Update::LikedTracksFailed(failure) => {
+                self.likes.apply(&likes::Event::SetFailed(*failure));
+            }
+            Update::Liked { tracks, liked } => {
+                self.likes.apply(&likes::Event::Confirmed {
+                    tracks: tracks.clone(),
+                    liked: *liked,
+                });
+            }
+            Update::LikeFailed { tracks, failure } => {
+                self.likes.apply(&likes::Event::Failed {
+                    tracks: tracks.clone(),
+                    failure: *failure,
+                });
             }
             // The likeness cards are keyed by the artist they belong to: the
             // page's own detail can be replaced while they are in flight.
@@ -1209,6 +1229,28 @@ impl Library {
         } else {
             None
         }
+    }
+
+    /// The command that starts the liked-songs read, if one is due.
+    ///
+    /// It waits for the playlists, because a signed-out window has no set to
+    /// read and no heart to draw; every later sweep is the set's own to ask for.
+    pub fn likes_request(&mut self) -> Option<Command> {
+        self.likes
+            .request(matches!(self.playlists, Load::Ready(_)))
+            .then_some(Command::LoadLikedTracks)
+    }
+
+    /// Flips the liked set and asks for the write, or changes nothing.
+    ///
+    /// The set mutates only when it has a change to send, so a refused or empty
+    /// flip never leaves a write pending with nothing on the wire.
+    pub fn set_liked(&mut self, tracks: Vec<String>, liked: bool) -> Option<Command> {
+        let change = self.likes.set(&tracks, liked)?;
+        Some(Command::SetLiked {
+            tracks: change.tracks,
+            liked: change.liked,
+        })
     }
 
     /// The album the album page draws, once it is loaded and named by that page.
