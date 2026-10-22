@@ -11205,9 +11205,9 @@ mod tests {
         window.library.apply(&Update::PlaylistRenameFailed {
             playlist: "spotify:playlist:a".to_owned(),
         });
-        // The field takes the keyboard back on the frame after the reply, and
-        // owns Escape from the frame after that: egui stores a filter only for a
-        // widget that had focus last frame.
+        // The reply asks for the keyboard back. The field owns the Escape
+        // after that, even though egui stores a filter only for a widget that
+        // had focus last frame.
         let _ = window.frame(&mut transport, &mut queue, Vec::new());
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
         assert_eq!(
@@ -11248,8 +11248,8 @@ mod tests {
         window.library.apply(&Update::PlaylistRenameFailed {
             playlist: "playlist:Mix".to_owned(),
         });
-        // The field takes the keyboard back on the frame after the reply, and
-        // owns Escape from the frame after that.
+        // The reply asks for the keyboard back, and the field owns the Escape
+        // after that.
         let _ = window.frame(&mut transport, &mut queue, Vec::new());
         let _ = window.frame(&mut transport, &mut queue, Vec::new());
         assert_eq!(
@@ -11270,6 +11270,76 @@ mod tests {
             page_notice(&window),
             None,
             "the page's sentence outlived the field"
+        );
+    }
+
+    /// A failed rename asks for the keyboard back in the reply's own frame.
+    /// The first Escape after that must close the field: a second press is not
+    /// the user's first answer, and the field may not have one coming.
+    #[test]
+    fn one_escape_closes_a_row_field_after_a_failed_rename() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_row(&mut window, "spotify:playlist:a", "A");
+        open_row_rename(
+            &mut window,
+            &mut transport,
+            &mut queue,
+            "spotify:playlist:a",
+            "A",
+        );
+        window.library.renaming.edit().clear();
+        type_text(&mut window, &mut transport, &mut queue, "New");
+        assert!(press(&mut window, &mut transport, &mut queue, egui::Key::Enter).is_some());
+        window.library.apply(&Update::PlaylistRenameFailed {
+            playlist: "spotify:playlist:a".to_owned(),
+        });
+        // The reply's frame is the one that asks for the keyboard back.
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            window.ctx.text_edit_focused(),
+            "the failed rename left the field without the keyboard"
+        );
+
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Escape);
+
+        assert_eq!(command, None);
+        assert!(
+            !window.library.renaming.is_open(),
+            "one Escape after the failure was swallowed"
+        );
+    }
+
+    /// The band field's half of the same claim: the failed reply hands the
+    /// keyboard back, and the very next Escape is the one that closes it.
+    #[test]
+    fn one_escape_closes_a_band_field_after_a_failed_rename() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        band_page(&mut window);
+        let _ = press_band_title(&mut window, &mut transport, &mut queue, "Mix");
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        type_text(&mut window, &mut transport, &mut queue, "New");
+        assert!(press(&mut window, &mut transport, &mut queue, egui::Key::Enter).is_some());
+        window.library.apply(&Update::PlaylistRenameFailed {
+            playlist: "playlist:Mix".to_owned(),
+        });
+        // The reply's frame is the one that asks for the keyboard back.
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            window.ctx.text_edit_focused(),
+            "the failed rename left the band field without the keyboard"
+        );
+
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Escape);
+
+        assert_eq!(command, None);
+        assert!(
+            !window.library.renaming.is_open(),
+            "one Escape after the failure was swallowed"
         );
     }
 

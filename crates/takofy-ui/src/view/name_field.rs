@@ -56,17 +56,26 @@ pub(crate) fn edit(ui: &mut Ui, spec: Spec<'_>) -> Out {
     }
 
     let focused_before = ui.memory(|memory| memory.has_focus(id));
-    let (enter, escape) = if focused_before && !writing {
-        ui.input(|input| {
-            (
-                pressed_once(input, egui::Key::Enter),
-                pressed_once(input, egui::Key::Escape),
-            )
-        })
+    // egui stores a filter only for a widget that had focus last frame, so the
+    // frame the field first asks for the keyboard cannot store it yet. The next
+    // frame does, and still owns the Escape egui would otherwise swallow.
+    let asked = asked_last_frame(ui.ctx(), id);
+    let (enter_pressed, escape_pressed) = ui.input(|input| {
+        (
+            pressed_once(input, egui::Key::Enter),
+            pressed_once(input, egui::Key::Escape),
+        )
+    });
+    // The Escape that the missing filter surrendered is still the field's: it
+    // takes the keyboard back in the same frame it reads that press.
+    let repairs = !writing && asked && escape_pressed;
+    let owns = !writing && (focused_before || repairs);
+    let (enter, escape) = if owns {
+        (enter_pressed, escape_pressed)
     } else {
         (false, false)
     };
-    if focused_before {
+    if owns {
         ui.input_mut(|input| {
             if enter {
                 input.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
@@ -76,15 +85,15 @@ pub(crate) fn edit(ui: &mut Ui, spec: Spec<'_>) -> Out {
             }
         });
     }
-    if wants_focus {
+    if !writing && (wants_focus || repairs) {
         ui.memory_mut(|memory| memory.request_focus(id));
     }
-    if focused_before {
-        // egui stores a filter only for a widget that had focus last frame, so
-        // this takes effect on the frame after the field first holds the
-        // keyboard. Without it the field would lose Escape to egui's own focus
-        // handling, and `request_focus` stores a default filter.
+    if focused_before || (!writing && (wants_focus || repairs)) {
+        // The filter must exist before the widget has focus, or the first key is swallowed.
         ui.memory_mut(|memory| memory.set_focus_lock_filter(id, FIELD_FILTER));
+    }
+    if wants_focus && !ui.memory(|memory| memory.had_focus_last_frame(id)) {
+        mark_asked(ui.ctx(), id);
     }
 
     let mut focused = focused_before;
@@ -127,6 +136,25 @@ pub(crate) fn edit(ui: &mut Ui, spec: Spec<'_>) -> Out {
         focused,
         lost_focus,
     }
+}
+
+/// The key under which a field records the frame it asked for the keyboard.
+fn ask_key(id: Id) -> Id {
+    id.with("focus-asked")
+}
+
+/// Whether this field asked for the keyboard on the frame before this one.
+fn asked_last_frame(ctx: &egui::Context, id: Id) -> bool {
+    let Some(previous) = ctx.cumulative_frame_nr().checked_sub(1) else {
+        return false;
+    };
+    ctx.data(|data| data.get_temp::<u64>(ask_key(id))) == Some(previous)
+}
+
+/// Records that this field asked for the keyboard on this frame.
+fn mark_asked(ctx: &egui::Context, id: Id) {
+    let frame = ctx.cumulative_frame_nr();
+    ctx.data_mut(|data| data.insert_temp(ask_key(id), frame));
 }
 
 fn submit_id() -> Id {
