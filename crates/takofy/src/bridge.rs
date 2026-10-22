@@ -1151,6 +1151,14 @@ async fn create_playlist<H: SessionHost>(
             Some(Err(error)) => log::warn!("add to a new playlist failed: {}", error.kind()),
         }
     }
+    // No reply on this chain carries a cover, so a new row would draw an empty
+    // slot until the next rootlist reload. One read fills it, and a read that
+    // does not answer costs the row its cover and nothing else.
+    let (cover, description) = match stop_or(stop, host.playlist_entry(&uri)).await {
+        None => return Step::Stopped,
+        Some(Some(entry)) => (entry.cover, entry.description),
+        Some(None) => (None, None),
+    };
     notifier.send(Update::PlaylistCreated {
         entry: PlaylistEntry {
             uri: uri.clone(),
@@ -1158,8 +1166,8 @@ async fn create_playlist<H: SessionHost>(
             // A list the rename did not reach keeps the typed name for this
             // session only, and the notice below says so.
             named,
-            cover: None,
-            description: None,
+            cover,
+            description,
             tracks: Some(landed),
             owner: None,
             access,
@@ -1838,6 +1846,14 @@ mod tests {
     /// the name it should carry afterwards.
     type RenameWrite = (String, Revision, String);
 
+    /// A scripted one-playlist read; the default answers nothing.
+    #[derive(Clone, Default)]
+    enum EntryScript {
+        #[default]
+        Missing,
+        Ready(Box<PlaylistEntry>),
+    }
+
     /// The playlist a scripted create makes.
     const CREATED: &str = "spotify:playlist:0JQ5DAqbMKFEC4WFtoNRpw";
 
@@ -1887,6 +1903,8 @@ mod tests {
     struct FakeState {
         connect_scripts: Mutex<Vec<ConnectScript>>,
         rootlist_script: Mutex<RootlistScript>,
+        entry_script: Mutex<EntryScript>,
+        entry_reads: AtomicUsize,
         tracks_script: Mutex<TracksScript>,
         album_script: Mutex<AlbumScript>,
         show_script: Mutex<ShowScript>,
@@ -2045,6 +2063,20 @@ mod tests {
                     RootlistScript::ReadyWith(read) => Ok(read),
                     RootlistScript::Fail => Err(SessionError::NotConnected),
                     RootlistScript::Pending => std::future::pending().await,
+                }
+            }
+        }
+
+        fn playlist_entry(
+            &self,
+            _playlist: &str,
+        ) -> impl Future<Output = Option<PlaylistEntry>> + Send {
+            self.shared.entry_reads.fetch_add(1, Ordering::SeqCst);
+            let script = self.shared.entry_script.lock().expect("lock").clone();
+            async move {
+                match script {
+                    EntryScript::Missing => None,
+                    EntryScript::Ready(entry) => Some(*entry),
                 }
             }
         }
@@ -3523,6 +3555,55 @@ mod tests {
             Some((CREATED.to_owned(), revision(9), "Night Drive".to_owned())),
             "the rename names the list the create made, on the read's revision"
         );
+    }
+
+    #[test]
+    fn a_created_row_carries_the_cover_the_one_playlist_read_gives() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+        let cover = CoverUrl::from_wire("https://i.scdn.co/image/abcdef").expect("a cover");
+        let read = PlaylistEntry {
+            cover: Some(cover.clone()),
+            description: Some("Made here".to_owned()),
+            ..PlaylistEntry {
+                uri: CREATED.to_owned(),
+                name: "Night Drive".to_owned(),
+                named: true,
+                cover: None,
+                description: None,
+                tracks: Some(0),
+                owner: None,
+                access: None,
+            }
+        };
+        *shared.entry_script.lock().expect("lock") = EntryScript::Ready(Box::new(read));
+
+        let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::CreatePlaylist {
+                    name: "Night Drive".to_owned(),
+                    revision: revision(1),
+                    tracks: Vec::new(),
+                })
+                .expect("create");
+            ui_end.updates.recv().expect("created")
+        });
+
+        let Update::PlaylistCreated { entry, .. } = update else {
+            panic!("a create announces the row");
+        };
+        assert_eq!(
+            entry.cover,
+            Some(cover),
+            "the row draws the cover the read gave, not an empty slot"
+        );
+        assert_eq!(entry.description.as_deref(), Some("Made here"));
+        assert_eq!(shared.entry_reads.load(Ordering::SeqCst), 1);
     }
 
     #[test]

@@ -12,7 +12,7 @@ use takofy_core::engine::{Engine, EngineError, RootlistRead};
 use takofy_core::playback::{Playback, PlaybackError, PlaybackEvent};
 use takofy_model::{
     AlbumDetail, ArtistDetail, CoverUrl, FollowedArtist, FollowedShow, Move, PlaylistAccess,
-    Removal, Revision, SavedAlbum, ShowDetail, TrackEntry, TrackLyrics,
+    PlaylistEntry, Removal, Revision, SavedAlbum, ShowDetail, TrackEntry, TrackLyrics,
 };
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::oneshot::Receiver;
@@ -86,6 +86,10 @@ pub(crate) trait SessionHost: Send + 'static {
     ) -> impl Future<Output = Result<(), SessionError>> + Send;
 
     fn rootlist(&self) -> impl Future<Output = Result<RootlistRead, SessionError>> + Send;
+
+    /// One playlist as the sidebar draws it, or `None` when the read does not
+    /// answer.
+    fn playlist_entry(&self, playlist: &str) -> impl Future<Output = Option<PlaylistEntry>> + Send;
 
     /// Writes one move to the sidebar's playlists, answering the revision to
     /// hold next.
@@ -278,6 +282,13 @@ impl SessionHost for LiveSession {
         match &self.engine {
             Some(engine) => engine.rootlist().await.map_err(SessionError::Engine),
             None => Err(SessionError::NotConnected),
+        }
+    }
+
+    async fn playlist_entry(&self, playlist: &str) -> Option<PlaylistEntry> {
+        match &self.engine {
+            Some(engine) => engine.playlist_entry(playlist).await,
+            None => None,
         }
     }
 

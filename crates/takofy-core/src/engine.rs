@@ -77,6 +77,16 @@ impl Engine {
         })
     }
 
+    /// One playlist as the sidebar draws it: its name, cover and counts.
+    ///
+    /// A created list has none of these in the write's replies, so this is the
+    /// read that fills them in without waiting for the next rootlist reload.
+    pub async fn playlist_entry(&self, playlist_uri: &str) -> Option<PlaylistEntry> {
+        label_playlists(&self.session, vec![playlist_uri.to_owned()])
+            .await
+            .pop()
+    }
+
     /// Starts a player over this session.
     ///
     /// Needs an active Tokio runtime: the event forwarder is spawned on it.
