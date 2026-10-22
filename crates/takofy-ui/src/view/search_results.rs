@@ -177,7 +177,10 @@ pub fn search_view(
                                     door,
                                     index,
                                     gate,
-                                    Some(&here),
+                                    carry::Open {
+                                        listing: carry::Listing::Page,
+                                        here: Some(&here),
+                                    },
                                     |row| tracks.get(row).cloned(),
                                 ),
                                 Some(Click::Lift) => {

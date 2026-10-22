@@ -5,7 +5,7 @@
 
 use takofy_model::TrackEntry;
 
-use crate::menu::{Item, Kind, Verb};
+use crate::menu::{Item, Kind, Listing, Verb};
 use crate::route::Page;
 
 /// What applying a verb does, once the shell has the frame's command to spare.
@@ -17,6 +17,8 @@ pub enum Outcome {
     Copy(String),
     /// The page a go-to opens.
     Open(Page),
+    /// The list's rows leave it. Which list, and which rows, is the menu's cut.
+    Remove,
 }
 
 /// The web address a row's URI stands for, or `None` when it has none.
@@ -36,17 +38,19 @@ pub fn spotify_link(uri: &str) -> Option<String> {
     Some(format!("https://open.spotify.com/{kind}/{id}"))
 }
 
-/// The rows' commands, in the sheet's order: queue, album, artist, link.
+/// The rows' commands, in the sheet's order: queue, album, artist, link, remove.
 ///
 /// A verb that cannot apply is absent rather than greyed, and a pick only keeps
 /// the verbs that are single-valued across it.
-pub fn track_items(targets: &[TrackEntry], here: Option<&Page>) -> Vec<Item> {
+pub fn track_items(targets: &[TrackEntry], here: Option<&Page>, listing: &Listing) -> Vec<Item> {
     let mut items = Vec::new();
     if targets.is_empty() {
         return items;
     }
 
-    items.push(item(Verb::AddToQueue, queue_label(targets)));
+    if matches!(listing, Listing::Page | Listing::Playlist { .. }) {
+        items.push(item(Verb::AddToQueue, queue_label(targets)));
+    }
 
     if let Some(uri) = single(targets, |entry| entry.album_uri.as_deref())
         && here != Some(&Page::Album(uri.to_owned()))
@@ -69,6 +73,16 @@ pub fn track_items(targets: &[TrackEntry], here: Option<&Page>) -> Vec<Item> {
             format!("Copy {} links", links.len())
         };
         items.push(item(Verb::CopyLink, label));
+    }
+
+    if let Some(label) = remove_label(targets, listing) {
+        items.push(Item {
+            label,
+            kind: Kind::Destructive,
+            key: Some("Del"),
+            submenu: false,
+            verb: Verb::Remove,
+        });
     }
 
     items
@@ -95,6 +109,7 @@ pub fn outcome(verb: Verb, targets: &[TrackEntry]) -> Option<Outcome> {
             })?;
             Some(Outcome::Open(Page::credit(uri)))
         }
+        Verb::Remove => (!targets.is_empty()).then_some(Outcome::Remove),
     }
 }
 
@@ -116,6 +131,26 @@ pub fn menu_label(targets: &[TrackEntry]) -> String {
         [] => "Commands".to_owned(),
         [one] => one.title.clone(),
         many => format!("{} {}", many.len(), noun(many)),
+    }
+}
+
+/// The destructive command's label, which names the list and the pick's count.
+///
+/// `None` for a list that cannot remove, and for a pick the menu would not open
+/// on.
+fn remove_label(targets: &[TrackEntry], listing: &Listing) -> Option<String> {
+    match listing {
+        Listing::Playlist { .. } => Some(match targets {
+            [] => return None,
+            [..] if targets.len() == 1 => "Remove from this playlist".to_owned(),
+            many => format!("Remove {} {} from this playlist", many.len(), noun(many)),
+        }),
+        Listing::Queue => Some(match targets {
+            [] => return None,
+            [..] if targets.len() == 1 => "Remove from the queue".to_owned(),
+            many => format!("Remove {} from the queue", many.len()),
+        }),
+        Listing::Page | Listing::Current => None,
     }
 }
 
@@ -168,7 +203,7 @@ fn links(targets: &[TrackEntry]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::menu::{Item, Kind, Verb};
+    use crate::menu::{Item, Kind, Listing, Verb};
     use crate::route::Page;
     use takofy_model::TrackEntry;
 
@@ -223,7 +258,7 @@ mod tests {
 
     #[test]
     fn one_track_gets_the_sheets_four_verbs_in_order() {
-        let items = track_items(&[entry("spotify:track:a")], None);
+        let items = track_items(&[entry("spotify:track:a")], None, &Listing::Page);
         assert_eq!(
             labels(&items),
             ["Add to queue", "Go to album", "Go to artist", "Copy link"]
@@ -247,7 +282,7 @@ mod tests {
             entry("spotify:track:b"),
             entry("spotify:track:c"),
         ];
-        let items = track_items(&targets, None);
+        let items = track_items(&targets, None, &Listing::Page);
         let labels = labels(&items);
         assert_eq!(labels[0], "Add 3 tracks to queue");
         assert_eq!(labels[2], "Go to artist", "a go-to never carries a count");
@@ -258,12 +293,20 @@ mod tests {
     fn a_pick_across_albums_omits_go_to_album_and_across_artists_go_to_artist() {
         let mut other_album = entry("spotify:track:b");
         other_album.album_uri = Some("spotify:album:z".to_owned());
-        let items = track_items(&[entry("spotify:track:a"), other_album], None);
+        let items = track_items(
+            &[entry("spotify:track:a"), other_album],
+            None,
+            &Listing::Page,
+        );
         assert!(!labels(&items).contains(&"Go to album"));
 
         let mut other_artist = entry("spotify:track:b");
         other_artist.artist_uris = vec!["spotify:artist:z".to_owned()];
-        let items = track_items(&[entry("spotify:track:a"), other_artist], None);
+        let items = track_items(
+            &[entry("spotify:track:a"), other_artist],
+            None,
+            &Listing::Page,
+        );
         assert!(!labels(&items).contains(&"Go to artist"));
     }
 
@@ -272,18 +315,26 @@ mod tests {
         let mut bare = entry("spotify:track:a");
         bare.album_uri = None;
         bare.artist_uris = Vec::new();
-        let items = track_items(&[bare], None);
+        let items = track_items(&[bare], None, &Listing::Page);
         assert_eq!(labels(&items), ["Add to queue", "Copy link"]);
     }
 
     #[test]
     fn a_verb_that_leads_here_is_omitted() {
         let targets = [entry("spotify:track:a")];
-        let album = track_items(&targets, Some(&Page::Album("spotify:album:a".to_owned())));
+        let album = track_items(
+            &targets,
+            Some(&Page::Album("spotify:album:a".to_owned())),
+            &Listing::Page,
+        );
         assert!(!labels(&album).contains(&"Go to album"));
         assert!(labels(&album).contains(&"Go to artist"));
 
-        let artist = track_items(&targets, Some(&Page::credit("spotify:artist:b")));
+        let artist = track_items(
+            &targets,
+            Some(&Page::credit("spotify:artist:b")),
+            &Listing::Page,
+        );
         assert!(!labels(&artist).contains(&"Go to artist"));
         assert!(labels(&artist).contains(&"Go to album"));
     }
@@ -294,7 +345,7 @@ mod tests {
         local.album_uri = None;
         local.artist_uris = Vec::new();
         let targets = [entry("spotify:track:a"), local];
-        let items = track_items(&targets, None);
+        let items = track_items(&targets, None, &Listing::Page);
         let copy = items
             .iter()
             .find(|item| item.verb == Verb::CopyLink)
@@ -312,14 +363,14 @@ mod tests {
         let mut local = entry("spotify:local:A:B:C:1000");
         local.album_uri = None;
         local.artist_uris = Vec::new();
-        let items = track_items(&[local], None);
+        let items = track_items(&[local], None, &Listing::Page);
         assert_eq!(labels(&items), ["Add to queue"]);
     }
 
     #[test]
     fn an_episode_pick_says_items() {
         let episode = entry("spotify:episode:e");
-        let items = track_items(&[episode.clone(), episode], None);
+        let items = track_items(&[episode.clone(), episode], None, &Listing::Page);
         assert_eq!(labels(&items)[0], "Add 2 items to queue");
     }
 
@@ -363,5 +414,154 @@ mod tests {
         assert_eq!(outcome(Verb::GoToAlbum, &[bare.clone()]), None);
         assert_eq!(outcome(Verb::GoToArtist, &[bare]), None);
         assert_eq!(outcome(Verb::AddToQueue, &[]), None);
+    }
+    fn playlist_listing() -> Listing {
+        Listing::Playlist {
+            uri: "spotify:playlist:a".to_owned(),
+            list: egui::Id::unique("playlist-tracks"),
+        }
+    }
+
+    #[test]
+    fn a_playlist_pick_labels_the_count() {
+        let one = track_items(&[entry("spotify:track:a")], None, &playlist_listing());
+        assert_eq!(
+            labels(&one),
+            [
+                "Add to queue",
+                "Go to album",
+                "Go to artist",
+                "Copy link",
+                "Remove from this playlist",
+            ]
+        );
+
+        let three = [
+            entry("spotify:track:a"),
+            entry("spotify:track:b"),
+            entry("spotify:track:c"),
+        ];
+        let items = track_items(&three, None, &playlist_listing());
+        assert!(
+            labels(&items).contains(&"Remove 3 tracks from this playlist"),
+            "{:?}",
+            labels(&items)
+        );
+    }
+
+    #[test]
+    fn a_queue_pick_labels_the_count_without_a_noun() {
+        let one = track_items(&[entry("spotify:track:a")], None, &Listing::Queue);
+        assert_eq!(
+            labels(&one),
+            [
+                "Go to album",
+                "Go to artist",
+                "Copy link",
+                "Remove from the queue"
+            ]
+        );
+
+        let three = [
+            entry("spotify:track:a"),
+            entry("spotify:track:b"),
+            entry("spotify:track:c"),
+        ];
+        let items = track_items(&three, None, &Listing::Queue);
+        assert_eq!(labels(&items)[3], "Remove 3 from the queue");
+    }
+
+    #[test]
+    fn the_remove_row_is_last_destructive_and_carries_del() {
+        let items = track_items(&[entry("spotify:track:a")], None, &playlist_listing());
+        let last = items.last().expect("a command");
+        assert_eq!(last.verb, Verb::Remove);
+        assert_eq!(last.kind, Kind::Destructive);
+        assert_eq!(last.key, Some("Del"));
+        assert!(!last.submenu);
+        assert!(
+            items[..items.len() - 1]
+                .iter()
+                .all(|item| item.kind == Kind::Plain),
+            "a second command claimed to be destructive"
+        );
+    }
+
+    #[test]
+    fn a_page_listing_has_no_remove_row() {
+        let items = track_items(&[entry("spotify:track:a")], None, &Listing::Page);
+        assert!(!verbs(&items).contains(&Verb::Remove));
+        assert!(verbs(&items).contains(&Verb::AddToQueue));
+    }
+
+    #[test]
+    fn the_current_listing_has_neither_add_nor_remove() {
+        let items = track_items(&[entry("spotify:track:a")], None, &Listing::Current);
+        assert_eq!(
+            verbs(&items),
+            [Verb::GoToAlbum, Verb::GoToArtist, Verb::CopyLink]
+        );
+    }
+
+    #[test]
+    fn the_queue_listing_has_no_add_to_queue() {
+        let items = track_items(&[entry("spotify:track:a")], None, &Listing::Queue);
+        assert!(!verbs(&items).contains(&Verb::AddToQueue));
+        assert_eq!(verbs(&items).last(), Some(&Verb::Remove));
+    }
+
+    #[test]
+    fn no_other_item_carries_a_key_hint() {
+        let targets = [entry("spotify:track:a")];
+        for listing in [
+            Listing::Page,
+            Listing::Queue,
+            Listing::Current,
+            playlist_listing(),
+        ] {
+            for item in track_items(&targets, None, &listing) {
+                if item.verb == Verb::Remove {
+                    assert_eq!(item.key, Some("Del"), "{}", item.label);
+                } else {
+                    assert_eq!(item.key, None, "{}", item.label);
+                }
+                assert!(!item.submenu, "{}", item.label);
+            }
+        }
+    }
+
+    #[test]
+    fn a_local_current_entry_has_no_items() {
+        let mut local = entry("spotify:local:A:B:C:1000");
+        local.album_uri = None;
+        local.artist_uris = Vec::new();
+        assert!(track_items(&[local], None, &Listing::Current).is_empty());
+    }
+
+    #[test]
+    fn outcome_remove_is_a_unit_and_none_for_no_targets() {
+        let targets = [entry("spotify:track:a")];
+        assert_eq!(outcome(Verb::Remove, &targets), Some(Outcome::Remove));
+        assert_eq!(outcome(Verb::Remove, &[]), None);
+    }
+
+    #[test]
+    fn a_mixed_pick_says_items_and_counts_only_the_linkable_rows() {
+        let mut local = entry("spotify:local:A:B:C:1000");
+        local.album_uri = None;
+        local.artist_uris = Vec::new();
+        let targets = [entry("spotify:track:a"), entry("spotify:episode:e"), local];
+
+        let items = track_items(&targets, None, &playlist_listing());
+        assert!(
+            labels(&items).contains(&"Remove 3 items from this playlist"),
+            "{:?}",
+            labels(&items)
+        );
+        let copy = items
+            .iter()
+            .find(|item| item.verb == Verb::CopyLink)
+            .expect("two rows are linkable");
+        assert_eq!(copy.label, "Copy 2 links");
     }
 }

@@ -14,7 +14,7 @@ use crate::drawer::{Drawer, Input};
 use crate::landing::{self, Area, Landing, Target};
 use crate::layout::{self, Grid, NowPlaying, Playbar, Sidebar};
 use crate::library::Library;
-use crate::menu::{Gate, Verb};
+use crate::menu::{Cut, Gate, Listing, Verb};
 use crate::message::Command;
 use crate::queue::{Queue, Step};
 use crate::reorder;
@@ -353,6 +353,16 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
         command = apply_verb(ui, screen, verb);
     }
 
+    // A list's `Del` posts its cut; the shell is the only place one is applied.
+    // It is taken whether or not it can be, so a frame that took the command
+    // leaves nothing behind for the next.
+    let cut = context_menu::take_cut(ui.ctx());
+    if command.is_none()
+        && let Some(cut) = cut
+    {
+        command = apply_cut(ui, screen, cut);
+    }
+
     // Settled before the drawer, so the Escape that cancels a drag does not also
     // close it. egui takes that Escape itself, before any region draws.
     let free = command.is_none();
@@ -437,6 +447,43 @@ fn apply_verb(ui: &Ui, screen: &mut Screen<'_>, verb: Verb) -> Option<Command> {
             None
         }
         verbs::Outcome::Open(page) => screen.library.open(page),
+        verbs::Outcome::Remove => {
+            let cut = screen.menu.cut();
+            cut.and_then(|cut| apply_cut(ui, screen, cut))
+        }
+    }
+}
+
+/// Applies a removal a menu chose, or a list's `Del` posted.
+///
+/// The frame's gates are checked again here: an intent made while a field is
+/// typing, the drawer is open, a block is carried, a write is in flight or
+/// another region took the command is dropped rather than applied.
+fn apply_cut(ui: &Ui, screen: &mut Screen<'_>, cut: Cut) -> Option<Command> {
+    let gate = Gate {
+        carrying: carry::carrying(ui.ctx()),
+        writing: screen.library.write_in_flight(),
+    };
+    if !gate.allows()
+        || screen.menu.is_open()
+        || *screen.drawer == Drawer::Open
+        || ui.ctx().text_edit_focused()
+    {
+        return None;
+    }
+    match cut.listing {
+        Listing::Playlist { uri, list } => {
+            let command = screen
+                .library
+                .remove_tracks(&uri, &cut.rows, &cut.entries)?;
+            carry::forget_rows(ui.ctx(), list, &cut.rows);
+            Some(command)
+        }
+        Listing::Queue => {
+            let _ = screen.queue.remove_rows(&cut.rows, &cut.entries);
+            None
+        }
+        Listing::Page | Listing::Current => None,
     }
 }
 
@@ -880,7 +927,9 @@ pub(super) fn rule(ui: &Ui, rect: Rect, color: Color32) {
 mod tests {
     use std::time::Instant;
 
-    use takofy_model::{CoverUrl, Move, PlaylistAccess, PlaylistEntry, Revision, TrackEntry};
+    use takofy_model::{
+        CoverUrl, Move, PlaylistAccess, PlaylistEntry, Removal, Revision, TrackEntry,
+    };
 
     use super::*;
     use crate::cover::Art;
@@ -6868,8 +6917,14 @@ mod tests {
     }
 
     /// Opens the context menu on these rows, as a row's door would.
-    fn open_menu(window: &mut Window, verb: Verb, targets: Vec<TrackEntry>) {
-        let items: Vec<_> = crate::verbs::track_items(&targets, None)
+    fn open_menu(
+        window: &mut Window,
+        verb: Verb,
+        targets: Vec<TrackEntry>,
+        listing: Listing,
+        rows: Vec<usize>,
+    ) {
+        let items: Vec<_> = crate::verbs::track_items(&targets, None, &listing)
             .into_iter()
             .filter(|item| item.verb == verb)
             .collect();
@@ -6885,12 +6940,35 @@ mod tests {
             },
             items,
             targets,
-            page: None,
+            rows,
+            listing,
+            // The page it is opened on, as a door posts it, so a page change
+            // still closes it.
+            page: window.library.page().cloned(),
         };
         assert!(
             window.menu.open(request, Gate::default()),
             "the menu opened"
         );
+    }
+
+    /// The page's listing, under the id its rows are picked by.
+    fn playlist_listing() -> Listing {
+        Listing::Playlist {
+            uri: PLAYLIST.to_owned(),
+            list: egui::Id::unique(("playlist-tracks", PLAYLIST)),
+        }
+    }
+
+    /// The page's own entries at `rows`, which is what a request acts on.
+    fn page_entries(window: &Window, rows: &[usize]) -> Vec<TrackEntry> {
+        match &window.library.tracks {
+            Load::Ready(tracks) => rows
+                .iter()
+                .filter_map(|row| tracks.tracks.get(*row).cloned())
+                .collect(),
+            Load::Idle | Load::Loading | Load::Failed(_) => Vec::new(),
+        }
     }
 
     /// The two frames an `Area` takes to arrive, so the menu's opening frame is
@@ -7123,7 +7201,13 @@ mod tests {
         let mut transport = Transport::default();
         let mut queue = Queue::default();
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
-        open_menu(&mut window, Verb::AddToQueue, vec![menu_track(0)]);
+        open_menu(
+            &mut window,
+            Verb::AddToQueue,
+            vec![menu_track(0)],
+            Listing::Page,
+            vec![0],
+        );
         settle_menu(&mut window, &mut transport, &mut queue);
 
         assert_eq!(
@@ -7151,6 +7235,8 @@ mod tests {
             &mut window,
             Verb::CopyLink,
             vec![menu_track(0), menu_track(1)],
+            Listing::Page,
+            vec![0, 1],
         );
         settle_menu(&mut window, &mut transport, &mut queue);
 
@@ -7179,7 +7265,13 @@ mod tests {
         let mut transport = Transport::default();
         let mut queue = Queue::default();
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
-        open_menu(&mut window, Verb::GoToAlbum, vec![menu_track(0)]);
+        open_menu(
+            &mut window,
+            Verb::GoToAlbum,
+            vec![menu_track(0)],
+            Listing::Page,
+            vec![0],
+        );
         settle_menu(&mut window, &mut transport, &mut queue);
 
         let command = press(&mut window, &mut transport, &mut queue, egui::Key::Enter);
@@ -7197,7 +7289,13 @@ mod tests {
         let mut transport = Transport::default();
         let mut queue = Queue::default();
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
-        open_menu(&mut window, Verb::AddToQueue, vec![menu_track(0)]);
+        open_menu(
+            &mut window,
+            Verb::AddToQueue,
+            vec![menu_track(0)],
+            Listing::Page,
+            vec![0],
+        );
         settle_menu(&mut window, &mut transport, &mut queue);
         assert!(window.menu.is_open());
 
@@ -7206,6 +7304,140 @@ mod tests {
         assert!(
             !window.menu.is_open(),
             "the menu outlived the page its rows came from"
+        );
+    }
+    #[test]
+    fn a_chosen_remove_on_a_playlist_issues_the_command_and_forgets_the_pick() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1", "p2"]);
+        // A frame first, so the page's own list is the one the picks are kept
+        // against.
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        let listing = playlist_listing();
+        let Listing::Playlist { list, .. } = listing.clone() else {
+            panic!("the page is a playlist");
+        };
+        carry::select_rows(&window.ctx, list, 0..2);
+        let targets = page_entries(&window, &[0]);
+        open_menu(&mut window, Verb::Remove, targets, listing, vec![0]);
+        settle_menu(&mut window, &mut transport, &mut queue);
+
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Enter);
+
+        assert_eq!(
+            command,
+            Some(Command::RemoveTracks {
+                playlist: PLAYLIST.to_owned(),
+                revision: revision("rev-1"),
+                removals: vec![Removal { from: 0, length: 1 }],
+            })
+        );
+        assert_eq!(page_rows(&window), vec!["list:p1", "list:p2"]);
+        let list = carry::List::open(&window.ctx, list, 2);
+        assert!(
+            list.look(0).selected,
+            "the pick did not shift with the rows"
+        );
+        assert!(
+            !list.look(1).selected,
+            "the removed row's pick survived the removal"
+        );
+    }
+
+    #[test]
+    fn a_chosen_remove_on_the_queue_removes_the_rows_and_refocuses() {
+        let mut transport = Transport::default();
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let targets = queue.entries_at(&[1]);
+        open_menu(&mut window, Verb::Remove, targets, Listing::Queue, vec![1]);
+        settle_menu(&mut window, &mut transport, &mut queue);
+
+        // One press, so the row that takes the keyboard back still names it.
+        let (command, _) = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![key(egui::Key::Enter, true)],
+        );
+
+        assert_eq!(command, None, "the queue removes locally");
+        assert_eq!(entries(&queue), vec!["t0", "t2", "t3"]);
+        assert_eq!(queue.refocus(), Some(1));
+        assert!(!window.menu.is_open());
+        assert!(
+            window
+                .ctx
+                .memory(|memory| memory.has_focus(egui::Id::unique("row-more"))),
+            "the keyboard did not go back to the button"
+        );
+    }
+
+    #[test]
+    fn delete_in_the_open_menu_chooses_the_removal() {
+        let mut transport = Transport::default();
+        let mut queue = queue_of(3, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let targets = queue.entries_at(&[1]);
+        open_menu(&mut window, Verb::Remove, targets, Listing::Queue, vec![1]);
+        settle_menu(&mut window, &mut transport, &mut queue);
+
+        let _ = press(&mut window, &mut transport, &mut queue, egui::Key::Delete);
+
+        assert!(!window.menu.is_open(), "Del left the menu open");
+        assert_eq!(entries(&queue), vec!["t0", "t2"]);
+    }
+
+    #[test]
+    fn a_menu_without_a_removal_ignores_delete() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        open_menu(
+            &mut window,
+            Verb::AddToQueue,
+            vec![menu_track(0)],
+            Listing::Page,
+            vec![0],
+        );
+        settle_menu(&mut window, &mut transport, &mut queue);
+
+        let _ = press(&mut window, &mut transport, &mut queue, egui::Key::Delete);
+
+        assert!(
+            window.menu.is_open(),
+            "a menu with no removal closed on Del"
+        );
+        assert_eq!(queue.upcoming().count(), 0, "the Del fired a verb");
+    }
+
+    #[test]
+    fn a_refused_cut_leaves_the_rows_alone() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1"]);
+        let targets = page_entries(&window, &[0]);
+        open_menu(
+            &mut window,
+            Verb::Remove,
+            targets,
+            playlist_listing(),
+            vec![0],
+        );
+        settle_menu(&mut window, &mut transport, &mut queue);
+
+        // The drawer owns the frame, so the shell drops the cut rather than
+        // writing behind it.
+        window.drawer = Drawer::Open;
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Enter);
+
+        assert_eq!(command, None);
+        assert_eq!(page_rows(&window), vec!["list:p0", "list:p1"]);
+        assert!(
+            !window.library.write_in_flight(),
+            "a dropped cut left a write in flight"
         );
     }
 }

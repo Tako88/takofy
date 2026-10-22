@@ -220,11 +220,17 @@ pub fn tracks_view(
                             }
                             Some(Click::Open(page)) => open = Some(page),
                             Some(Click::Select(press)) => selection.press(index, press),
-                            Some(Click::Menu(door)) => {
-                                selection.menu(ui.ctx(), door, index, gate, library.page(), |row| {
-                                    tracks.tracks.get(row).cloned()
-                                })
-                            }
+                            Some(Click::Menu(door)) => selection.menu(
+                                ui.ctx(),
+                                door,
+                                index,
+                                gate,
+                                carry::Open {
+                                    listing: carry::Listing::Page,
+                                    here: library.page(),
+                                },
+                                |row| tracks.tracks.get(row).cloned(),
+                            ),
                             // A write in flight holds the page still; a page it
                             // may not write still lifts.
                             Some(Click::Lift) if liftable => {

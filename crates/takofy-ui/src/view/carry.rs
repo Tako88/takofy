@@ -21,6 +21,7 @@ use egui::{Context, DragAndDrop, Id, Vec2};
 use takofy_model::TrackEntry;
 
 use crate::landing::Zone;
+pub use crate::menu::Listing;
 use crate::menu::{Door, Gate, Request};
 use crate::queue::Queue;
 use crate::route::Page;
@@ -181,6 +182,22 @@ pub fn follow_page(ctx: &Context, page: Option<&Page>) {
     });
 }
 
+/// What a list posts a request with: the list it is, and the page it is on.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Open<'a> {
+    pub listing: Listing,
+    pub here: Option<&'a Page>,
+}
+
+/// Forgets `rows` from `list`'s selection, the shift a removal leaves behind.
+pub fn forget_rows(ctx: &Context, list: Id, rows: &[usize]) {
+    ctx.data_mut(|data| {
+        data.get_temp_mut_or_default::<Picks>(picks())
+            .get_mut(list)
+            .without(rows);
+    });
+}
+
 /// The block a queue lift carries, or `None` when the queue will not lift it or
 /// cannot name an entry for every row it picked.
 pub fn from_queue(queue: &mut Queue, lift: Lift) -> Option<Carry> {
@@ -308,7 +325,7 @@ impl List {
         door: Door,
         row: usize,
         gate: Gate,
-        here: Option<&Page>,
+        open: Open<'_>,
         entry_at: impl Fn(usize) -> Option<TrackEntry>,
     ) {
         if !gate.allows() {
@@ -325,14 +342,16 @@ impl List {
         };
         self.selection = selection;
         self.changed = true;
-        let items = verbs::track_items(&targets, here);
+        let items = verbs::track_items(&targets, open.here, &open.listing);
         context_menu::post(
             ctx,
             Request {
                 door,
                 items,
                 targets,
-                page: here.cloned(),
+                rows,
+                listing: open.listing,
+                page: open.here.cloned(),
             },
         );
     }
@@ -448,6 +467,13 @@ mod tests {
         Some(entry(&row.to_string()))
     }
 
+    fn opened() -> Open<'static> {
+        Open {
+            listing: Listing::Page,
+            here: None,
+        }
+    }
+
     fn uris(request: &Request) -> Vec<&str> {
         request
             .targets
@@ -463,7 +489,7 @@ mod tests {
         let mut list = List::open(&ctx, id, 4);
         list.press(1, Press::Replace);
         list.press(3, Press::Toggle);
-        list.menu(&ctx, door(), 3, Gate::default(), None, entry_at);
+        list.menu(&ctx, door(), 3, Gate::default(), opened(), entry_at);
         list.finish(&ctx);
 
         let request = context_menu::take_request(&ctx).expect("a request was posted");
@@ -486,7 +512,7 @@ mod tests {
         let mut list = List::open(&ctx, id, 4);
         list.press(1, Press::Replace);
         list.press(3, Press::Toggle);
-        list.menu(&ctx, door(), 2, Gate::default(), None, entry_at);
+        list.menu(&ctx, door(), 2, Gate::default(), opened(), entry_at);
         list.finish(&ctx);
 
         let request = context_menu::take_request(&ctx).expect("a request was posted");
@@ -512,7 +538,7 @@ mod tests {
             let id = Id::unique("list");
             let mut list = List::open(&ctx, id, 4);
             list.press(1, Press::Replace);
-            list.menu(&ctx, door(), 3, gate, None, entry_at);
+            list.menu(&ctx, door(), 3, gate, opened(), entry_at);
             list.finish(&ctx);
 
             assert_eq!(context_menu::take_request(&ctx), None, "{gate:?}");
@@ -532,7 +558,7 @@ mod tests {
         let mut list = List::open(&ctx, id, 4);
         list.press(1, Press::Replace);
         list.press(3, Press::Toggle);
-        list.menu(&ctx, door(), 3, Gate::default(), None, |row| {
+        list.menu(&ctx, door(), 3, Gate::default(), opened(), |row| {
             (row != 3).then(|| entry(&row.to_string()))
         });
         list.finish(&ctx);
@@ -550,8 +576,10 @@ mod tests {
         let ctx = context();
         let request = Request {
             door: door(),
-            items: crate::verbs::track_items(&[entry("0")], None),
+            items: crate::verbs::track_items(&[entry("0")], None, &Listing::Page),
             targets: vec![entry("0")],
+            rows: vec![0],
+            listing: Listing::Page,
             page: Some(Page::Playlist("spotify:playlist:a".to_owned())),
         };
         context_menu::post(&ctx, request.clone());
@@ -1046,5 +1074,51 @@ mod tests {
 
         assert!(!carrying(&ctx));
         assert!(carried(&ctx).is_none());
+    }
+    #[test]
+    fn request_rows_and_targets_stay_parallel() {
+        let ctx = context();
+        let id = Id::unique("list");
+        let mut list = List::open(&ctx, id, 6);
+        list.press(1, Press::Replace);
+        list.press(3, Press::Toggle);
+        list.press(4, Press::Toggle);
+        list.menu(
+            &ctx,
+            door(),
+            3,
+            Gate::default(),
+            Open {
+                listing: Listing::Queue,
+                here: None,
+            },
+            entry_at,
+        );
+        list.finish(&ctx);
+
+        let request = context_menu::take_request(&ctx).expect("a request was posted");
+        assert_eq!(request.rows, vec![1, 3, 4]);
+        assert_eq!(uris(&request), vec!["u1", "u3", "u4"]);
+        assert_eq!(request.listing, Listing::Queue);
+    }
+
+    #[test]
+    fn forget_rows_shifts_the_lists_selection() {
+        let ctx = context();
+        let id = Id::unique("list");
+        let mut list = List::open(&ctx, id, 6);
+        list.press(1, Press::Replace);
+        list.press(3, Press::Toggle);
+        list.press(5, Press::Toggle);
+        list.finish(&ctx);
+
+        forget_rows(&ctx, id, &[1, 3]);
+
+        let list = List::open(&ctx, id, 6);
+        assert!(
+            list.look(3).selected,
+            "the row below the pick did not shift"
+        );
+        assert!(!list.look(1).selected && !list.look(5).selected);
     }
 }

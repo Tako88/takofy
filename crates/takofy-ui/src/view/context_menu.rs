@@ -17,7 +17,7 @@ use egui::{
 
 use crate::icon::{self, Icon};
 use crate::layout::menu as geometry;
-use crate::menu::{Closed, Item, Kind, Menu, Reason, Request, Step, Tier};
+use crate::menu::{Closed, Cut, Item, Kind, Menu, Reason, Request, Step, Tier};
 use crate::theme::icon::Size;
 use crate::theme::{MonoWeight, Tokens, fonts, radius, stroke, text, tracking};
 use crate::verbs;
@@ -64,6 +64,54 @@ pub fn post(ctx: &egui::Context, request: Request) {
     ctx.data_mut(|data| data.insert_temp(request_id(), request));
 }
 
+/// The cut a list posted for this frame, read once so it cannot outlive it.
+pub fn take_cut(ctx: &egui::Context) -> Option<Cut> {
+    ctx.data_mut(|data| {
+        let cut = data.get_temp::<Cut>(cut_id());
+        data.remove::<Cut>(cut_id());
+        cut
+    })
+}
+
+/// Takes this frame's Delete presses and reports whether one was a fresh press.
+///
+/// The auto-repeats behind a held key are consumed with it, so a held `Del`
+/// removes once, and a modified `Del` is left to whoever else may want it.
+pub fn take_delete(ui: &Ui) -> bool {
+    let mut owned = false;
+    let mut fresh = false;
+    ui.input(|input| {
+        for event in &input.events {
+            if let Some(repeat) = delete_key(event) {
+                owned = true;
+                fresh |= !repeat;
+            }
+        }
+    });
+    if !owned {
+        return false;
+    }
+    ui.input_mut(|input| input.events.retain(|event| delete_key(event).is_none()));
+    fresh
+}
+
+/// `Some(repeat)` when this event is a Delete the lists own.
+///
+/// `consume_key` would admit a `Del` held with a modifier, so the modifiers are
+/// read here instead.
+fn delete_key(event: &Event) -> Option<bool> {
+    match event {
+        Event::Key {
+            key: Key::Delete,
+            pressed: true,
+            repeat,
+            modifiers,
+            ..
+        } if modifiers.is_none() => Some(*repeat),
+        _ => None,
+    }
+}
+
 /// The widget the open menu was opened from, if one is open.
 ///
 /// A row draws before the menu does, so this is how the `⋯` that opened it
@@ -80,6 +128,11 @@ fn request_id() -> Id {
 /// The id the open menu's opener lives under.
 fn open_opener_id() -> Id {
     Id::unique("context-menu-opener")
+}
+
+/// The id a posted cut lives under.
+fn cut_id() -> Id {
+    Id::unique("context-menu-cut")
 }
 
 /// Records — or forgets — the widget whose menu is up.
@@ -213,6 +266,15 @@ pub fn show(ui: &mut Ui, frame: Frame<'_>) -> Option<Closed> {
         }
         if last {
             menu.step(Step::Last);
+        }
+        // Del is the destructive row's key, so the hint tells the truth while
+        // the menu is open: a menu without one takes the key and does nothing.
+        if free
+            && take_delete(ui)
+            && let Some(closed) = menu.choose_destructive()
+        {
+            focus_back(ui, closed);
+            return Some(closed);
         }
         if enter
             && free
@@ -444,7 +506,7 @@ mod tests {
 
     use super::*;
     use crate::layout::search_menu::row_rect;
-    use crate::menu::{Anchor, Device, Door, Gate, Item, Kind, Menu, Request, Verb};
+    use crate::menu::{Anchor, Device, Door, Gate, Item, Kind, Listing, Menu, Request, Verb};
     use crate::theme::{extent, fonts, style};
     use crate::verbs;
     use crate::view::test_support::{button, click_events};
@@ -500,9 +562,9 @@ mod tests {
         }
     }
 
-    /// The four verbs one track gets, in the sheet's order.
+    /// The four verbs one track gets on a page, in the sheet's order.
     fn items() -> Vec<Item> {
-        verbs::track_items(&[track()], None)
+        verbs::track_items(&[track()], None, &Listing::Page)
     }
 
     fn request(device: Device, items: Vec<Item>) -> Request {
@@ -510,6 +572,8 @@ mod tests {
             door: door(device),
             items,
             targets: vec![track()],
+            rows: vec![0],
+            listing: Listing::Page,
             page: None,
         }
     }
@@ -677,6 +741,43 @@ mod tests {
             }
         }
         output.expect("two passes")
+    }
+
+    /// How many Delete presses the frame still has after the menu read it.
+    fn deletes(ui: &egui::Ui) -> usize {
+        ui.input(|input| {
+            input
+                .events
+                .iter()
+                .filter(|event| {
+                    matches!(
+                        event,
+                        Event::Key {
+                            key: Key::Delete,
+                            pressed: true,
+                            ..
+                        }
+                    )
+                })
+                .count()
+        })
+    }
+
+    fn destructive_item(label: &str) -> Item {
+        Item {
+            label: label.to_owned(),
+            kind: Kind::Destructive,
+            key: Some("Del"),
+            submenu: false,
+            verb: Verb::Remove,
+        }
+    }
+
+    /// The four page verbs, plus the destructive one last.
+    fn removable() -> Vec<Item> {
+        let mut items = items();
+        items.push(destructive_item("Remove from this playlist"));
+        items
     }
 
     fn key_event(key: Key, modifiers: Modifiers) -> Event {
@@ -1417,6 +1518,8 @@ mod tests {
                     },
                     items: items(),
                     targets: vec![track()],
+                    rows: vec![0],
+                    listing: Listing::Page,
                     page: None,
                 },
                 Gate::default()
@@ -1492,5 +1595,69 @@ mod tests {
         let (drawn, _) = draw(&ctx, &mut menu, true, Vec::new(), |_, _| ());
         assert_eq!(drawn.closed, None);
         assert!(drawn.output.shapes.is_empty(), "a closed menu painted");
+    }
+    #[test]
+    fn delete_chooses_the_destructive_row_and_takes_the_key() {
+        let ctx = context();
+        let mut menu = opened_with(Device::Pointer, removable());
+        warm(&ctx, &mut menu);
+        let (drawn, left) = draw(
+            &ctx,
+            &mut menu,
+            true,
+            vec![key_event(Key::Delete, Modifiers::NONE)],
+            |ui, _| deletes(ui),
+        );
+        assert_eq!(
+            drawn.closed.and_then(|closed| closed.chose),
+            Some(Verb::Remove),
+            "Del did not choose the destructive row"
+        );
+        assert_eq!(left, 0, "the Del reached the region behind the menu");
+        assert!(!menu.is_open());
+    }
+
+    #[test]
+    fn delete_in_a_menu_without_a_removal_does_nothing() {
+        let ctx = context();
+        let mut menu = opened(Device::Pointer);
+        warm(&ctx, &mut menu);
+        let (drawn, left) = draw(
+            &ctx,
+            &mut menu,
+            true,
+            vec![key_event(Key::Delete, Modifiers::NONE)],
+            |ui, _| deletes(ui),
+        );
+        assert_eq!(drawn.closed, None, "a menu with no removal chose one");
+        assert!(menu.is_open(), "a menu with no removal closed on Del");
+        assert_eq!(left, 0, "the menu left the key for the page behind it");
+    }
+
+    #[test]
+    fn a_modified_delete_is_not_the_menus_and_a_repeat_chooses_nothing() {
+        let ctx = context();
+        let mut menu = opened_with(Device::Pointer, removable());
+        warm(&ctx, &mut menu);
+        let shifted = Event::Key {
+            key: Key::Delete,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::SHIFT,
+        };
+        let (drawn, left) = draw(&ctx, &mut menu, true, vec![shifted], |ui, _| deletes(ui));
+        assert_eq!(drawn.closed, None, "Shift+Del chose a row");
+        assert!(menu.is_open());
+        assert_eq!(left, 1, "a modified Del was taken from its own owner");
+
+        let mut menu = opened_with(Device::Pointer, removable());
+        warm(&ctx, &mut menu);
+        let (drawn, left) = draw(&ctx, &mut menu, true, vec![repeat(Key::Delete)], |ui, _| {
+            deletes(ui)
+        });
+        assert_eq!(drawn.closed, None, "a held Del chose twice");
+        assert!(menu.is_open(), "a held Del closed the menu");
+        assert_eq!(left, 0, "a held Del leaked past the menu");
     }
 }

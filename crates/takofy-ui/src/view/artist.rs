@@ -355,11 +355,17 @@ fn popular(
                 *command = queue.start(&artist.top_tracks, index, transport);
             }
             Some(Click::Select(press)) => selection.press(index, press),
-            Some(Click::Menu(door)) => {
-                selection.menu(ui.ctx(), door, index, gate, Some(&here), |row| {
-                    artist.top_tracks.get(row).cloned()
-                })
-            }
+            Some(Click::Menu(door)) => selection.menu(
+                ui.ctx(),
+                door,
+                index,
+                gate,
+                carry::Open {
+                    listing: carry::Listing::Page,
+                    here: Some(&here),
+                },
+                |row| artist.top_tracks.get(row).cloned(),
+            ),
             Some(Click::Lift) => {
                 let ghost = Ghost::Table(row.lifted(columns));
                 selection.lift(index, rect.size(), ghost, |row| {
