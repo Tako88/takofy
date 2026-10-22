@@ -16,10 +16,12 @@ use crate::layout::{self, Playbar};
 use crate::message::Command;
 use crate::player::{SEEK_STEP_MS, Transport, TransportState};
 use crate::queue::Queue;
+use crate::shuffle;
 use crate::theme::icon::Size;
 use crate::theme::{MonoWeight, Tokens, Weight, extent, fonts, radius, space, text, tracking};
 
 use super::art;
+use super::carry;
 use super::context_menu;
 use super::controls;
 use super::heart;
@@ -32,9 +34,10 @@ const VOLUME: Control = Control::Volume;
 
 /// One control in a run: what it is, what it draws, and what it is called.
 ///
-/// The element carries its own glyph and label because the run is not always
-/// static: the playbar's heart is filled and named by the track's state, and a
-/// `(Control, Icon)` pair has nowhere to put either.
+/// The element carries its own glyph, label and badge because the run is not
+/// always static: the playbar's heart is filled and named by the track's state,
+/// and shuffle and repeat are named by the queue's, so a `(Control, Icon)` pair
+/// has nowhere to put either.
 #[derive(Clone, Copy)]
 struct Run {
     control: Control,
@@ -42,6 +45,8 @@ struct Run {
     label: &'static str,
     /// Whether the glyph is the control's own state, painted in the accent.
     lit: bool,
+    /// A mark at the glyph's lower right, which is how repeat-one reads.
+    badge: Option<&'static str>,
 }
 
 impl Run {
@@ -52,6 +57,7 @@ impl Run {
             icon,
             label: "",
             lit: false,
+            badge: None,
         }
     }
 }
@@ -101,6 +107,53 @@ fn up_controls(form: Playbar) -> &'static [Run] {
     }
 }
 
+/// The transport's left-hand run with shuffle's state.
+fn down_runs(queue: &Queue) -> Vec<Run> {
+    let mut runs = DOWN.to_vec();
+    let on = queue.shuffle();
+    if let Some(first) = runs.first_mut() {
+        *first = Run {
+            control: Control::Shuffle,
+            icon: Icon::Shuffle,
+            label: shuffle::label(on),
+            lit: on,
+            badge: None,
+        };
+    }
+    runs
+}
+
+/// The transport's right-hand run with repeat's state.
+fn up_runs(form: Playbar, queue: &Queue) -> Vec<Run> {
+    let repeat = queue.repeat();
+    let mut runs = up_controls(form).to_vec();
+    if let Some(found) = runs.iter_mut().find(|run| run.control == Control::Repeat) {
+        *found = Run {
+            control: Control::Repeat,
+            icon: Icon::Repeat,
+            label: repeat.label(),
+            lit: repeat.lit(),
+            badge: repeat.badge(),
+        };
+    }
+    runs
+}
+
+/// Whether a transport control can act this frame.
+///
+/// Shuffle is inert while a block is carried: a drop is resolved against the
+/// rows it was picked from, and drawing the list again under it would refuse the
+/// user's drag silently.
+fn transport_live(control: Control, queue: &Queue, carrying: bool) -> bool {
+    match control {
+        Control::Previous => queue.can_previous(),
+        Control::Next => queue.can_next(),
+        Control::Shuffle => queue.can_toggle() && !carrying,
+        Control::Repeat => queue.can_toggle(),
+        _ => true,
+    }
+}
+
 fn now_controls(form: Playbar) -> &'static [Run] {
     match form {
         Playbar::Full => &NOW_FULL,
@@ -123,6 +176,7 @@ fn now_runs(form: Playbar, liked: Option<bool>) -> Vec<Run> {
         },
         label: crate::verbs::heart_label(liked_now),
         lit: liked_now,
+        badge: None,
     };
     let mut runs = now_controls(form).to_vec();
     if let Some(first) = runs.first_mut() {
@@ -330,18 +384,18 @@ fn centre_column(
 ) -> Option<Command> {
     let stack = extent::BUTTON_LG + space::S1 + extent::SLIDER_H;
     let top = row_centre(ui) - stack / 2.0;
-    let up = up_controls(form);
+    let carrying = carry::carrying(ui.ctx());
     let width = 2.0 * run_width(&DOWN) + extent::BUTTON_LG;
     let mut x = ui.max_rect().center().x - width / 2.0;
 
     let mut clicked = draw_run(
         ui,
         tokens,
-        &DOWN,
+        &down_runs(queue),
         claimed,
         &mut x,
         top + extent::BUTTON / 2.0,
-        &|control| control != Control::Previous || queue.can_previous(),
+        &|control| transport_live(control, queue, carrying),
     );
 
     let play = Rect::from_min_size(Pos2::new(x, top), Vec2::splat(extent::BUTTON_LG));
@@ -364,11 +418,11 @@ fn centre_column(
     if let Some(control) = draw_run(
         ui,
         tokens,
-        up,
+        &up_runs(form, queue),
         claimed,
         &mut x,
         top + extent::BUTTON / 2.0,
-        &|control| control != Control::Next || queue.can_next(),
+        &|control| transport_live(control, queue, carrying),
     ) {
         clicked = Some(control);
     }
@@ -435,10 +489,24 @@ fn centre_column(
     );
 
     let command = seek_command(ui, transport, &seek, track);
+    // egui reports a focused button's Enter or Space as a click and counts the
+    // repeats too, so a held key must not step a mode again.
+    let pointer = ui.input(|input| input.pointer.button_clicked(egui::PointerButton::Primary));
+    let held = matches!(clicked, Some(Control::Shuffle | Control::Repeat))
+        && !pointer
+        && context_menu::held_repeat(ui);
     command.or(match clicked {
         Some(Control::Previous) => queue.previous(position_ms, transport),
         Some(Control::Next) => queue.next(transport),
         Some(Control::PlayPause) => queue.toggle(transport),
+        Some(Control::Shuffle) if !held => {
+            queue.toggle_shuffle();
+            None
+        }
+        Some(Control::Repeat) if !held => {
+            queue.cycle_repeat();
+            None
+        }
         _ => None,
     })
 }
@@ -554,6 +622,23 @@ pub fn queue_button(rect: Rect, form: Playbar) -> Rect {
     }
 }
 
+/// A state glyph's badge, at its lower right.
+fn paint_badge(ui: &Ui, tokens: &Tokens, rect: Rect, badge: &str) {
+    let galley = recipe::spaced(
+        ui,
+        badge,
+        FontId::new(text::XXS, fonts::mono(MonoWeight::Regular)),
+        tokens.palette.text,
+        0.0,
+    );
+    let glyph = Rect::from_center_size(rect.center(), Vec2::splat(Size::MD.side));
+    let at = Pos2::new(
+        glyph.right() - galley.size().x,
+        glyph.bottom() - galley.size().y,
+    );
+    ui.painter().galley(at, galley, tokens.palette.text);
+}
+
 /// Draws a run left to right, advancing `x` past it, and returns the one
 /// control that was clicked.
 fn draw_run(
@@ -600,7 +685,7 @@ fn draw_run(
             } else {
                 let live = can_act(run.control);
                 if run.lit {
-                    controls::icon_button_liked(
+                    controls::icon_button_on(
                         ui,
                         tokens,
                         run.control,
@@ -626,6 +711,9 @@ fn draw_run(
             };
             if slot.response.clicked() {
                 clicked = Some(run.control);
+            }
+            if let Some(badge) = run.badge {
+                paint_badge(ui, tokens, rect, badge);
             }
             *x += extent::BUTTON;
         }
@@ -1471,5 +1559,430 @@ mod tests {
         ] {
             assert_eq!(play_glyph(state), Icon::Play, "{state:?}");
         }
+    }
+
+    fn queue_of(count: usize) -> Queue {
+        let tracks: Vec<takofy_model::TrackEntry> = (0..count)
+            .map(|index| takofy_model::TrackEntry {
+                uri: format!("t{index}"),
+                title: format!("t{index}"),
+                artists: String::new(),
+                album: None,
+                album_uri: None,
+                artist_uris: Vec::new(),
+                added_at: None,
+                duration_ms: None,
+                named: true,
+                cover: None,
+            })
+            .collect();
+        let mut queue = Queue::seeded(5);
+        queue.start(&tracks, 0, &mut Transport::default());
+        queue
+    }
+
+    /// One frame of the bar over `queue`: the command it returned and what it
+    /// painted.
+    fn queue_frame(
+        ctx: &egui::Context,
+        tokens: &Tokens,
+        queue: &mut Queue,
+        form: Playbar,
+        events: Vec<Event>,
+    ) -> (Option<Command>, egui::FullOutput) {
+        let bar = heart_bar();
+        let mut transport = playing(0);
+        let mut command = None;
+        let mut output = ctx.run_ui(
+            RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 300.0))),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                command = show(
+                    ui,
+                    &mut transport,
+                    queue,
+                    0,
+                    form,
+                    Bar::default(),
+                    bar,
+                    Cover::Missing,
+                    tokens,
+                );
+            },
+        );
+        output.textures_delta.clear();
+        (command, output)
+    }
+
+    /// Where one of the transport's buttons is drawn, from the shape the column
+    /// lays out by.
+    fn transport_slot(centre: Rect, control: Control) -> Rect {
+        let stack = extent::BUTTON_LG + space::S1 + extent::SLIDER_H;
+        let top = centre.center().y - stack / 2.0;
+        let start = centre.center().x - (2.0 * run_width(&DOWN) + extent::BUTTON_LG) / 2.0;
+        let up = start + run_width(&DOWN) + extent::BUTTON_LG + space::S1;
+        let at = |left: f32, index: usize| {
+            Rect::from_min_size(
+                Pos2::new(left + index as f32 * (extent::BUTTON + space::S1), top),
+                Vec2::splat(extent::BUTTON),
+            )
+        };
+        match control {
+            Control::Shuffle => at(start, 0),
+            Control::Previous => at(start, 1),
+            Control::Next => at(up, 0),
+            Control::Repeat => at(up, 1),
+            other => panic!("{other:?} is not one of the transport's runs"),
+        }
+    }
+
+    /// Clicks `control` over the four passes a click takes, and reports what each
+    /// one returned.
+    fn click_control(
+        ctx: &egui::Context,
+        tokens: &Tokens,
+        queue: &mut Queue,
+        form: Playbar,
+        control: Control,
+    ) -> Vec<Option<Command>> {
+        let bar = heart_bar();
+        let centre = layout::playbar_for(bar, form).columns(bar)[1];
+        let at = transport_slot(centre, control).center();
+        let _ = queue_frame(ctx, tokens, queue, form, Vec::new());
+        let mut commands =
+            vec![queue_frame(ctx, tokens, queue, form, vec![Event::PointerMoved(at)]).0];
+        for event in click_events(at) {
+            commands.push(queue_frame(ctx, tokens, queue, form, vec![event]).0);
+        }
+        commands
+    }
+
+    fn controls_of(runs: &[Run]) -> Vec<Control> {
+        runs.iter().map(|run| run.control).collect()
+    }
+
+    /// The colour a painted shape is drawn in, when it paints one.
+    fn shape_colour(shape: &egui::Shape) -> Option<egui::Color32> {
+        match shape {
+            egui::Shape::Path(path) if path.fill != egui::Color32::TRANSPARENT => Some(path.fill),
+            egui::Shape::Path(path) => match path.stroke.color {
+                egui::epaint::ColorMode::Solid(color) => Some(color),
+                egui::epaint::ColorMode::UV(_) => None,
+            },
+            egui::Shape::Circle(circle) => Some(circle.fill),
+            egui::Shape::LineSegment { stroke, .. } => Some(stroke.color),
+            _ => None,
+        }
+    }
+
+    /// Whether anything inside `rect` is painted in the accent.
+    fn accent_inside(output: &egui::FullOutput, tokens: &Tokens, rect: Rect) -> bool {
+        output.shapes.iter().any(|clipped| {
+            rect.contains(clipped.shape.visual_bounding_rect().center())
+                && shape_colour(&clipped.shape) == Some(tokens.palette.accent)
+        })
+    }
+
+    /// The text painted inside `rect`.
+    fn text_inside(output: &egui::FullOutput, rect: Rect) -> Vec<String> {
+        output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Text(text) if rect.contains(text.pos) => {
+                    Some(text.galley.text().to_owned())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_state_runs_keep_the_tables_controls_and_widths() {
+        let queue = queue_of(4);
+        for form in [Playbar::Full, Playbar::Reduced] {
+            let down = down_runs(&queue);
+            assert_eq!(controls_of(&down), controls_of(&DOWN), "{form:?}");
+            assert_eq!(run_width(&down), run_width(&DOWN), "{form:?}");
+
+            let up = up_runs(form, &queue);
+            assert_eq!(controls_of(&up), controls_of(up_controls(form)), "{form:?}");
+            assert_eq!(
+                run_width(&up),
+                run_width(up_controls(form)),
+                "{form:?}: the layout reserves what the drawn runs take"
+            );
+        }
+    }
+
+    #[test]
+    fn shuffle_and_repeat_runs_follow_the_queue() {
+        let mut queue = queue_of(4);
+
+        let shuffle = down_runs(&queue)[0];
+        assert_eq!(shuffle.control, Control::Shuffle);
+        assert_eq!(shuffle.icon, Icon::Shuffle);
+        assert_eq!(shuffle.label, "Shuffle off");
+        assert!(!shuffle.lit);
+        assert_eq!(shuffle.badge, None);
+
+        let repeat = up_runs(Playbar::Full, &queue)[1];
+        assert_eq!(repeat.control, Control::Repeat);
+        assert_eq!(repeat.icon, Icon::Repeat);
+        assert_eq!(repeat.label, "Repeat off");
+        assert!(!repeat.lit, "off is not the mode's own state");
+        assert_eq!(repeat.badge, None);
+
+        queue.toggle_shuffle();
+        queue.cycle_repeat();
+        let shuffle = down_runs(&queue)[0];
+        let repeat = up_runs(Playbar::Full, &queue)[1];
+        assert_eq!(shuffle.label, "Shuffle on");
+        assert!(shuffle.lit);
+        assert_eq!(repeat.label, "Repeat all");
+        assert!(repeat.lit);
+        assert_eq!(repeat.badge, None);
+
+        queue.cycle_repeat();
+        let repeat = up_runs(Playbar::Full, &queue)[1];
+        assert_eq!(repeat.label, "Repeat one");
+        assert!(repeat.lit, "one is an on state");
+        assert_eq!(repeat.badge, Some("1"));
+    }
+
+    /// The label a control's slot announces this frame.
+    fn announced(ui: &Ui, control: Control) -> String {
+        let id = controls::slot_id(ui, control, ());
+        ui.ctx()
+            .accesskit_node_builder(id, |node| node.label().map(str::to_owned))
+            .flatten()
+            .unwrap_or_else(|| panic!("{control:?} has no AccessKit node"))
+    }
+
+    /// The two mode buttons' announced labels, drawn into the current `ui`.
+    fn mode_labels(ui: &mut Ui, tokens: &Tokens, queue: &Queue) -> Vec<String> {
+        let mut x = 0.0;
+        let _ = draw_run(ui, tokens, &down_runs(queue), None, &mut x, 20.0, &|_| true);
+        let mut x = 100.0;
+        let _ = draw_run(
+            ui,
+            tokens,
+            &up_runs(Playbar::Full, queue),
+            None,
+            &mut x,
+            20.0,
+            &|_| true,
+        );
+        [Control::Shuffle, Control::Repeat]
+            .map(|control| announced(ui, control))
+            .to_vec()
+    }
+
+    #[test]
+    fn the_labels_are_announced_per_state() {
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        ctx.enable_accesskit();
+        let mut queue = queue_of(4);
+        let labels = |queue: &mut Queue| {
+            let mut announced = Vec::new();
+            run(&ctx, input(Vec::new()), |ui| {
+                announced = mode_labels(ui, &tokens, queue);
+            });
+            announced
+        };
+
+        assert_eq!(labels(&mut queue), ["Shuffle off", "Repeat off"]);
+        queue.toggle_shuffle();
+        assert_eq!(labels(&mut queue), ["Shuffle on", "Repeat off"]);
+        queue.cycle_repeat();
+        assert_eq!(labels(&mut queue), ["Shuffle on", "Repeat all"]);
+        queue.cycle_repeat();
+        assert_eq!(labels(&mut queue), ["Shuffle on", "Repeat one"]);
+    }
+
+    #[test]
+    fn a_click_on_shuffle_toggles_the_queue_and_sends_no_command() {
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        let mut queue = queue_of(4);
+        assert!(!queue.shuffle());
+
+        let commands = click_control(&ctx, &tokens, &mut queue, Playbar::Full, Control::Shuffle);
+
+        assert!(queue.shuffle(), "the click did not reach the queue");
+        assert!(
+            commands.iter().all(Option::is_none),
+            "a mode is the window's own state, so it asks for nothing: {commands:?}"
+        );
+    }
+
+    #[test]
+    fn three_clicks_on_repeat_cycle_off_all_one_off() {
+        use crate::repeat::Repeat;
+
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        let mut queue = queue_of(4);
+        let mut modes = Vec::new();
+
+        for _ in 0..3 {
+            let _ = click_control(&ctx, &tokens, &mut queue, Playbar::Full, Control::Repeat);
+            modes.push(queue.repeat());
+        }
+
+        assert_eq!(modes, [Repeat::All, Repeat::One, Repeat::Off]);
+    }
+
+    #[test]
+    fn a_held_enter_on_repeat_and_on_shuffle_changes_state_once() {
+        use crate::repeat::Repeat;
+
+        let enter = |repeat| Event::Key {
+            key: Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat,
+            modifiers: Modifiers::NONE,
+        };
+        let cases = [
+            (Control::Shuffle, 1, (true, Repeat::Off)),
+            (Control::Repeat, 5, (false, Repeat::All)),
+        ];
+        for (control, tabs, expected) in cases {
+            let tokens = Tokens::DARK;
+            let ctx = context(&tokens);
+            let mut queue = queue_of(4);
+
+            let _ = queue_frame(&ctx, &tokens, &mut queue, Playbar::Full, Vec::new());
+            for _ in 0..tabs {
+                let _ = queue_frame(
+                    &ctx,
+                    &tokens,
+                    &mut queue,
+                    Playbar::Full,
+                    vec![key(Key::Tab, Modifiers::NONE)],
+                );
+            }
+
+            let mut states = Vec::new();
+            for repeat in [false, true, true] {
+                let _ = queue_frame(
+                    &ctx,
+                    &tokens,
+                    &mut queue,
+                    Playbar::Full,
+                    vec![enter(repeat)],
+                );
+                states.push((queue.shuffle(), queue.repeat()));
+            }
+
+            assert_eq!(
+                states, [expected; 3],
+                "{control:?}: a held key stepped the mode more than once"
+            );
+        }
+    }
+
+    #[test]
+    fn shuffle_is_inert_while_a_block_is_carried_and_repeat_is_not() {
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        let mut queue = queue_of(4);
+        egui::DragAndDrop::set_payload(&ctx, egui::Vec2::ZERO);
+        assert!(crate::view::carry::carrying(&ctx));
+
+        let commands = click_control(&ctx, &tokens, &mut queue, Playbar::Full, Control::Shuffle);
+        assert!(
+            !queue.shuffle(),
+            "a shuffle under a drag would refuse the drop"
+        );
+        assert!(
+            commands.iter().all(Option::is_none),
+            "an inert button asks for nothing: {commands:?}"
+        );
+
+        let _ = click_control(&ctx, &tokens, &mut queue, Playbar::Full, Control::Repeat);
+        assert_eq!(
+            queue.repeat(),
+            crate::repeat::Repeat::All,
+            "repeat moves no row"
+        );
+    }
+
+    #[test]
+    fn the_reduced_bar_keeps_both_live() {
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        let mut queue = queue_of(4);
+
+        let _ = click_control(
+            &ctx,
+            &tokens,
+            &mut queue,
+            Playbar::Reduced,
+            Control::Shuffle,
+        );
+        assert!(queue.shuffle(), "the reduced bar shed shuffle");
+
+        let _ = click_control(&ctx, &tokens, &mut queue, Playbar::Reduced, Control::Repeat);
+        assert_eq!(
+            queue.repeat(),
+            crate::repeat::Repeat::All,
+            "the reduced bar shed repeat"
+        );
+    }
+
+    #[test]
+    fn a_lit_shuffle_paints_the_accent_and_an_unlit_one_does_not() {
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        let mut queue = queue_of(4);
+        let bar = heart_bar();
+        let centre = layout::playbar_for(bar, Playbar::Full).columns(bar)[1];
+        let shuffle = transport_slot(centre, Control::Shuffle);
+
+        let (_, output) = queue_frame(&ctx, &tokens, &mut queue, Playbar::Full, Vec::new());
+        assert!(
+            !accent_inside(&output, &tokens, shuffle),
+            "an off shuffle took the accent"
+        );
+
+        queue.toggle_shuffle();
+        let (_, output) = queue_frame(&ctx, &tokens, &mut queue, Playbar::Full, Vec::new());
+        assert!(
+            accent_inside(&output, &tokens, shuffle),
+            "an on shuffle did not take the accent"
+        );
+    }
+
+    #[test]
+    fn repeat_one_paints_a_one_and_the_other_states_do_not() {
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        let mut queue = queue_of(4);
+        let bar = heart_bar();
+        let centre = layout::playbar_for(bar, Playbar::Full).columns(bar)[1];
+        let repeat = transport_slot(centre, Control::Repeat);
+
+        for _ in 0..2 {
+            let (_, output) = queue_frame(&ctx, &tokens, &mut queue, Playbar::Full, Vec::new());
+            assert!(
+                !text_inside(&output, repeat).contains(&"1".to_owned()),
+                "{:?} carried the badge",
+                queue.repeat()
+            );
+            queue.cycle_repeat();
+        }
+
+        let (_, output) = queue_frame(&ctx, &tokens, &mut queue, Playbar::Full, Vec::new());
+        assert_eq!(queue.repeat(), crate::repeat::Repeat::One);
+        assert!(
+            text_inside(&output, repeat).contains(&"1".to_owned()),
+            "repeat one carries no badge"
+        );
     }
 }

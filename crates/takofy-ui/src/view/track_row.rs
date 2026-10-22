@@ -936,7 +936,7 @@ fn like(
     let label = heart_label(liked_now);
     let live = liked.is_some() && !row.look.carrying;
     let slot = if liked_now {
-        controls::icon_button_liked(
+        controls::icon_button_on(
             ui,
             tokens,
             Control::TrackLike,

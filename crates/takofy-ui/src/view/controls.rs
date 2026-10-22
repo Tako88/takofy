@@ -256,13 +256,13 @@ pub fn icon_button_keyed(
     )
 }
 
-/// An icon button whose glyph carries a state of its own: a liked heart takes
-/// the accent tone, the one signal colour the palette has.
+/// An icon button whose own state is on: the glyph takes the accent tone, the
+/// one signal colour the palette has.
 #[expect(
     clippy::too_many_arguments,
     reason = "the same facts as a button, plus the state its glyph carries"
 )]
-pub fn icon_button_liked(
+pub fn icon_button_on(
     ui: &mut Ui,
     tokens: &Tokens,
     control: Control,
@@ -283,7 +283,7 @@ pub fn icon_button_liked(
         size,
         label,
         live,
-        Lit::Liked,
+        Lit::On,
     )
 }
 
@@ -362,8 +362,8 @@ enum Lit {
     Claimed,
     /// The menu this button opened is still up.
     Open,
-    /// The button's own state is on: a liked heart.
-    Liked,
+    /// The button's own state is on.
+    On,
 }
 
 /// An icon button's body: the wash, or the claim's or the open state's fill, and
@@ -394,7 +394,7 @@ fn paint_icon_button(
             }
             foreground(tokens, slot.live, slot.hover)
         }
-        Lit::Liked => {
+        Lit::On => {
             if let Some(fill) = wash(ui, tokens, slot.hover) {
                 ui.painter().rect_filled(rect, radius::SM, fill);
             }
