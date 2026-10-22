@@ -187,6 +187,9 @@ pub struct Renaming {
     writing: bool,
     wants_focus: bool,
     wants_return: bool,
+    /// The user closed the field, so anything the sidebar or the page said about
+    /// the write it carried is about a field that is gone.
+    left: bool,
 }
 
 impl Renaming {
@@ -201,6 +204,7 @@ impl Renaming {
         self.text = current.to_owned();
         self.wants_focus = true;
         self.wants_return = false;
+        self.left = false;
     }
 
     /// Whether a field is drawn.
@@ -259,6 +263,14 @@ impl Renaming {
         self.uri.clear();
     }
 
+    /// Whether the user closed the field, clearing the flag.
+    ///
+    /// The owner reads it after drawing: a cancel, a blur and a dismissed field
+    /// are all the user leaving, and the notices beside the field go with it.
+    pub fn take_left(&mut self) -> bool {
+        std::mem::take(&mut self.left)
+    }
+
     /// The field is open but its row is not on screen; ask again when it is.
     pub fn ask_focus(&mut self) {
         if self.is_open() {
@@ -293,6 +305,7 @@ impl Renaming {
         if self.writing {
             return;
         }
+        self.left |= self.open;
         self.close();
         self.wants_return = true;
     }
@@ -303,13 +316,21 @@ impl Renaming {
         if self.writing {
             return;
         }
+        self.left |= self.open;
         self.close();
         self.uri.clear();
         self.wants_return = false;
     }
 
     /// The rename failed, so the text stays for a retry.
+    ///
+    /// A field that is no longer open has nothing to retry in: its reply lost the
+    /// race with the page or the drawer that took the field away, and asking for
+    /// the keyboard would take it from whatever the user is on now.
     pub fn failed(&mut self) {
+        if !self.is_open() {
+            return;
+        }
         self.writing = false;
         self.wants_focus = true;
     }
@@ -671,6 +692,39 @@ mod renaming_tests {
         assert!(renaming.wants_return());
         renaming.return_taken();
         assert!(!renaming.wants_return());
+    }
+
+    #[test]
+    fn a_closed_field_that_fails_asks_for_nothing() {
+        let mut renaming = Renaming::default();
+        renaming.failed();
+
+        assert!(!renaming.is_open());
+        assert!(
+            !renaming.wants_focus(),
+            "a field nobody drew took the keyboard"
+        );
+    }
+
+    #[test]
+    fn a_cancel_or_a_dismiss_is_the_user_leaving() {
+        let mut cancelled = typing("Mix");
+        assert!(!cancelled.take_left());
+        cancelled.cancel();
+        assert!(cancelled.take_left());
+        assert!(!cancelled.take_left(), "the leave was read twice");
+
+        let mut dismissed = typing("Mix");
+        dismissed.dismiss();
+        assert!(dismissed.take_left());
+
+        let mut finished = typing("Mix");
+        assert!(finished.begin_write().is_some());
+        finished.finished();
+        assert!(
+            !finished.take_left(),
+            "a confirmed rename is the reply's, not the user's leaving"
+        );
     }
 
     #[test]

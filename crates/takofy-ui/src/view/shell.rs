@@ -47,6 +47,12 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
     // made is read here on the next frame; nothing caches a request.
     let fullscreen = ui.input(|input| input.viewport().fullscreen);
     let regions = layout::regions_with(content.width(), *screen.pane);
+    // A row's rename field is drawn by the column. The rail draws the same
+    // sidebar only in the drawer, so a closed drawer leaves the field with no
+    // row to sit in and no row to hand the keyboard back to.
+    if regions.sidebar != Sidebar::Full {
+        screen.library.dismiss_row_rename();
+    }
     let shell = layout::shell_for(&regions);
     let grid = layout::grid_for(content, &shell);
 
@@ -481,6 +487,11 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
     if screen.library.search.wants(page.as_deref()) {
         ui.ctx().request_repaint();
     }
+
+    // A field the user closed takes the sentence its failed write left with it:
+    // the notice named a field that is no longer on screen, so nothing is left
+    // asking for the retry it described.
+    screen.library.settle_rename();
 
     // Only a refocus this frame's rows drew is settled: one set after they drew —
     // a held Alt+↓ sets one every frame — waits for the frame that draws it.
@@ -10990,6 +11001,321 @@ mod tests {
             .is_some(),
             "the foot did not say why the field stayed"
         );
+    }
+
+    /// The row's own widget id, taken from a press on it: a press on the row
+    /// takes the keyboard, which is the place Tab continues from.
+    fn press_sidebar_row(
+        window: &mut Window,
+        transport: &mut Transport,
+        queue: &mut Queue,
+        name: &str,
+    ) -> egui::Id {
+        let (_, frame) = window.frame(transport, queue, Vec::new());
+        let at = sidebar_line(&frame, window, name);
+        for event in crate::view::test_support::click_events(at) {
+            let _ = window.frame(transport, queue, vec![event]);
+        }
+        window
+            .ctx
+            .memory(|memory| memory.focused())
+            .expect("the row took no keyboard")
+    }
+
+    /// The band title's widget id, taken from the press that opens its field:
+    /// a press on the title takes the keyboard before the field draws.
+    fn press_band_title(
+        window: &mut Window,
+        transport: &mut Transport,
+        queue: &mut Queue,
+        name: &str,
+    ) -> egui::Id {
+        let (_, frame) = window.frame(transport, queue, Vec::new());
+        let at = text_in(&frame, name, view_rect(window))
+            .unwrap_or_else(|| panic!("{name:?} is painted in the band"))
+            .center();
+        for event in crate::view::test_support::click_events(at) {
+            let _ = window.frame(transport, queue, vec![event]);
+        }
+        assert!(
+            window
+                .library
+                .renaming
+                .is_open_on("playlist:Mix", crate::naming::Surface::Band),
+            "the title opened no field"
+        );
+        window
+            .ctx
+            .memory(|memory| memory.focused())
+            .expect("the title took no keyboard")
+    }
+
+    #[test]
+    fn escape_on_the_row_field_hands_the_keyboard_back_to_its_row() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_row(&mut window, "spotify:playlist:a", "A");
+        let row = press_sidebar_row(&mut window, &mut transport, &mut queue, "A");
+
+        open_row_rename(
+            &mut window,
+            &mut transport,
+            &mut queue,
+            "spotify:playlist:a",
+            "A",
+        );
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Escape);
+
+        assert_eq!(command, None);
+        assert!(!window.library.renaming.is_open());
+        assert!(
+            window.ctx.memory(|memory| memory.has_focus(row)),
+            "Escape left the keyboard nowhere"
+        );
+    }
+
+    #[test]
+    fn a_confirmed_row_rename_hands_the_keyboard_back_to_its_row() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_row(&mut window, "spotify:playlist:a", "A");
+        let row = press_sidebar_row(&mut window, &mut transport, &mut queue, "A");
+
+        open_row_rename(
+            &mut window,
+            &mut transport,
+            &mut queue,
+            "spotify:playlist:a",
+            "A",
+        );
+        type_text(&mut window, &mut transport, &mut queue, "New");
+        assert!(
+            press(&mut window, &mut transport, &mut queue, egui::Key::Enter).is_some(),
+            "Enter sent nothing"
+        );
+        window.library.apply(&Update::PlaylistRenamed {
+            playlist: "spotify:playlist:a".to_owned(),
+            name: "New".to_owned(),
+            revision: revision("rev-2"),
+        });
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+
+        assert!(!window.library.renaming.is_open());
+        assert!(
+            window.ctx.memory(|memory| memory.has_focus(row)),
+            "a confirmed rename left the keyboard nowhere"
+        );
+    }
+
+    #[test]
+    fn escape_on_the_band_field_hands_the_keyboard_back_to_the_title() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        band_page(&mut window);
+        let title = press_band_title(&mut window, &mut transport, &mut queue, "Mix");
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            window.ctx.text_edit_focused(),
+            "the band field has no keyboard"
+        );
+
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Escape);
+
+        assert_eq!(command, None);
+        assert!(!window.library.renaming.is_open());
+        assert!(
+            window.ctx.memory(|memory| memory.has_focus(title)),
+            "Escape left the keyboard nowhere"
+        );
+    }
+
+    #[test]
+    fn a_confirmed_band_rename_hands_the_keyboard_back_to_the_title() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        band_page(&mut window);
+        let title = press_band_title(&mut window, &mut transport, &mut queue, "Mix");
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        type_text(&mut window, &mut transport, &mut queue, "New");
+        assert!(
+            press(&mut window, &mut transport, &mut queue, egui::Key::Enter).is_some(),
+            "Enter sent nothing"
+        );
+        window.library.apply(&Update::PlaylistRenamed {
+            playlist: "playlist:Mix".to_owned(),
+            name: "New".to_owned(),
+            revision: revision("rev-2"),
+        });
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+
+        assert!(!window.library.renaming.is_open());
+        assert!(
+            window.ctx.memory(|memory| memory.has_focus(title)),
+            "a confirmed rename left the keyboard nowhere"
+        );
+    }
+
+    #[test]
+    fn a_row_field_closes_when_the_sidebar_leaves_the_column() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_row(&mut window, "spotify:playlist:a", "A");
+        open_row_rename(
+            &mut window,
+            &mut transport,
+            &mut queue,
+            "spotify:playlist:a",
+            "A",
+        );
+
+        // Below the rail width the column is gone: the drawer is the sidebar,
+        // and it is closed.
+        window.size = Vec2::new(900.0, 900.0);
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+
+        assert!(
+            !window.library.renaming.is_open(),
+            "the rail kept a field no row draws"
+        );
+    }
+
+    #[test]
+    fn escape_after_a_failed_row_rename_takes_the_sentence_with_it() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_row(&mut window, "spotify:playlist:a", "A");
+        open_row_rename(
+            &mut window,
+            &mut transport,
+            &mut queue,
+            "spotify:playlist:a",
+            "A",
+        );
+        window.library.renaming.edit().clear();
+        type_text(&mut window, &mut transport, &mut queue, "New");
+        assert!(press(&mut window, &mut transport, &mut queue, egui::Key::Enter).is_some());
+        window.library.apply(&Update::PlaylistRenameFailed {
+            playlist: "spotify:playlist:a".to_owned(),
+        });
+        // The field takes the keyboard back on the frame after the reply, and
+        // owns Escape from the frame after that: egui stores a filter only for a
+        // widget that had focus last frame.
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert_eq!(
+            window.library.sidebar_notice,
+            Some(crate::library::SidebarWrite::Rename)
+        );
+        assert!(
+            text_in(
+                &frame,
+                crate::signin::failure_message(Failure::Rename),
+                sidebar_rect(&window)
+            )
+            .is_some(),
+            "the foot never said why"
+        );
+
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Escape);
+
+        assert_eq!(command, None);
+        assert!(!window.library.renaming.is_open());
+        assert_eq!(
+            window.library.sidebar_notice, None,
+            "the failed rename's sentence outlived its field"
+        );
+    }
+
+    #[test]
+    fn escape_after_a_failed_band_rename_takes_both_sentences_with_it() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        band_page(&mut window);
+        let _ = press_band_title(&mut window, &mut transport, &mut queue, "Mix");
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        type_text(&mut window, &mut transport, &mut queue, "New");
+        assert!(press(&mut window, &mut transport, &mut queue, egui::Key::Enter).is_some());
+        window.library.apply(&Update::PlaylistRenameFailed {
+            playlist: "playlist:Mix".to_owned(),
+        });
+        // The field takes the keyboard back on the frame after the reply, and
+        // owns Escape from the frame after that.
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        assert_eq!(
+            window.library.sidebar_notice,
+            Some(crate::library::SidebarWrite::Rename)
+        );
+        assert_eq!(page_notice(&window), Some(Failure::Rename));
+
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Escape);
+
+        assert_eq!(command, None);
+        assert!(!window.library.renaming.is_open());
+        assert_eq!(
+            window.library.sidebar_notice, None,
+            "the foot's sentence outlived the field"
+        );
+        assert_eq!(
+            page_notice(&window),
+            None,
+            "the page's sentence outlived the field"
+        );
+    }
+
+    #[test]
+    fn a_dismissed_row_field_takes_the_failed_rename_sentence_with_it() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_row(&mut window, "spotify:playlist:a", "A");
+        open_row_rename(
+            &mut window,
+            &mut transport,
+            &mut queue,
+            "spotify:playlist:a",
+            "A",
+        );
+        window.library.renaming.edit().clear();
+        type_text(&mut window, &mut transport, &mut queue, "New");
+        assert!(press(&mut window, &mut transport, &mut queue, egui::Key::Enter).is_some());
+        window.library.apply(&Update::PlaylistRenameFailed {
+            playlist: "spotify:playlist:a".to_owned(),
+        });
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        assert_eq!(
+            window.library.sidebar_notice,
+            Some(crate::library::SidebarWrite::Rename)
+        );
+
+        // A chip change dismisses the row's field rather than cancelling it.
+        assert!(window.library.choose_kind(SidebarKind::Podcasts));
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+
+        assert!(!window.library.renaming.is_open());
+        assert_eq!(
+            window.library.sidebar_notice, None,
+            "a dismissed field kept the sentence it explained"
+        );
+    }
+
+    /// The sentence a playlist page carries, when it carries one.
+    fn page_notice(window: &Window) -> Option<Failure> {
+        match &window.library.tracks {
+            Load::Ready(tracks) => tracks.notice,
+            Load::Idle | Load::Loading | Load::Failed(_) => None,
+        }
     }
 
     #[test]

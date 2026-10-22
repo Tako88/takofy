@@ -155,7 +155,13 @@ pub fn tracks_view(
                 },
             );
             library.renaming = renaming;
-            if library.renaming.wants_return() {
+            // The band takes a hand-back only for its own field: a row's return
+            // belongs to the row, and a field raised on another page has no
+            // title here to go back to.
+            if library.renaming.wants_return()
+                && library.renaming.surface() == Surface::Band
+                && library.renaming.uri() == entry.uri
+            {
                 if let Some(id) = reply.title_id {
                     ui.memory_mut(|memory| memory.request_focus(id));
                 }
@@ -4431,6 +4437,200 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             .expect("the row is painted");
 
         assert_eq!(closed_top, open_top, "the field moved the tracks");
+        // The floor holding still is not the whole claim: the band itself keeps
+        // the box it had, and the title keeps the baseline it stood on, so the
+        // field is drawn in the title's own place rather than beside it.
+        let closed_band = band_rect(&closed_output);
+        let open_band = band_rect(&open_output);
+        assert_eq!(
+            closed_band, open_band,
+            "the field resized or moved the band"
+        );
+
+        let closed_title = text_rect(&closed_output, "Night Drive").expect("the title is painted");
+        let open_title = text_rect(&open_output, "Night Drive").expect("the field paints the name");
+        // The field's own text layout rounds its baseline to a fraction of a
+        // point, so the claim is that the title keeps its row, not its subpixel.
+        assert!(
+            (closed_title.top() - open_title.top()).abs() < 0.1,
+            "the field moved the title: {} then {}",
+            closed_title.top(),
+            open_title.top()
+        );
+        assert_eq!(
+            closed_title.height(),
+            open_title.height(),
+            "the field resized the title"
+        );
+    }
+
+    /// The band's own rect, read from the wash it paints behind itself.
+    fn band_rect(output: &egui::FullOutput) -> Rect {
+        let tokens = Tokens::DARK;
+        output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Rect(shape) if shape.fill == tokens.palette.hero_wash => {
+                    Some(shape.rect)
+                }
+                _ => None,
+            })
+            .expect("the band paints its wash")
+    }
+
+    /// The box a text shape with `label` was painted in.
+    fn text_rect(output: &egui::FullOutput, label: &str) -> Option<Rect> {
+        output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Text(text) if text.galley.text() == label => {
+                    Some(Rect::from_min_size(text.pos, text.galley.size()))
+                }
+                _ => None,
+            })
+    }
+
+    /// The title's widget id, taken from the press that opens its field: a press
+    /// on the title takes the keyboard before the field draws.
+    fn band_title_focus_id(ctx: &Context, library: &mut Library, name: &str) -> egui::Id {
+        assert_eq!(click_band_title(ctx, library, name), None);
+        ctx.memory(|memory| memory.focused())
+            .expect("the title did not take the keyboard")
+    }
+
+    #[test]
+    fn a_closed_band_field_hands_the_keyboard_back_to_the_title() {
+        let ctx = context();
+        let mut escaping = band_library("Night Drive", true, &["t0"]);
+        let title = band_title_focus_id(&ctx, &mut escaping, "Night Drive");
+        let _ = band_frame(&ctx, &mut escaping, Vec::new());
+        let _ = band_frame(&ctx, &mut escaping, Vec::new());
+        assert!(ctx.text_edit_focused(), "the field has no keyboard");
+
+        let _ = band_frame(&ctx, &mut escaping, vec![key(egui::Key::Escape)]);
+
+        assert!(!escaping.renaming.is_open());
+        assert!(
+            ctx.memory(|memory| memory.has_focus(title)),
+            "Escape left the keyboard nowhere"
+        );
+
+        let mut confirming = band_library("Night Drive", true, &["t0"]);
+        let title = band_title_focus_id(&ctx, &mut confirming, "Night Drive");
+        let _ = band_frame(&ctx, &mut confirming, Vec::new());
+        let _ = band_frame(&ctx, &mut confirming, Vec::new());
+        confirming.renaming.edit().clear();
+        confirming.renaming.edit().push_str("New");
+        let _ = band_frame(&ctx, &mut confirming, vec![key(egui::Key::Enter)]);
+        assert!(crate::view::name_field::take_submit(&ctx));
+        assert!(confirming.rename_playlist().is_some());
+        confirming.apply(&Update::PlaylistRenamed {
+            playlist: "spotify:playlist:a".to_owned(),
+            name: "New".to_owned(),
+            revision: Revision::from_wire(b"rev-2").expect("a revision"),
+        });
+        let _ = band_frame(&ctx, &mut confirming, Vec::new());
+
+        assert!(
+            ctx.memory(|memory| memory.has_focus(title)),
+            "a confirmed rename left the keyboard nowhere"
+        );
+    }
+
+    #[test]
+    fn escape_while_the_band_field_writes_closes_nothing() {
+        let ctx = context();
+        let mut library = band_library("Night Drive", true, &["t0"]);
+        click_band_title(&ctx, &mut library, "Night Drive");
+        let _ = band_frame(&ctx, &mut library, Vec::new());
+        let _ = band_frame(&ctx, &mut library, Vec::new());
+        library.renaming.edit().clear();
+        library.renaming.edit().push_str("New");
+        let _ = band_frame(&ctx, &mut library, vec![key(egui::Key::Enter)]);
+        assert!(crate::view::name_field::take_submit(&ctx));
+        assert!(library.rename_playlist().is_some());
+
+        let _ = band_frame(&ctx, &mut library, vec![key(egui::Key::Escape)]);
+
+        assert!(
+            library.renaming.is_open(),
+            "Escape closed a field that was writing"
+        );
+        assert!(library.renaming.writing());
+        assert!(!library.renaming.wants_return());
+    }
+
+    #[test]
+    fn a_row_fields_return_belongs_to_the_sidebar_row() {
+        let ctx = context();
+        let mut library = band_library("Night Drive", true, &["t0"]);
+        assert!(library.begin_rename("spotify:playlist:a", Surface::Row));
+        library.renaming.cancel();
+        assert!(library.renaming.wants_return());
+
+        let _ = band_frame(&ctx, &mut library, Vec::new());
+
+        assert!(
+            library.renaming.wants_return(),
+            "the band took a row field's hand-back"
+        );
+        assert_eq!(
+            library.renaming.uri(),
+            "spotify:playlist:a",
+            "the band cleared the row's target"
+        );
+    }
+
+    #[test]
+    fn a_band_fields_return_waits_for_the_page_that_opened_it() {
+        let ctx = context();
+        let mut library = band_library("Night Drive", true, &["t0"]);
+        if let Load::Ready(playlists) = &mut library.playlists {
+            playlists.push(PlaylistEntry {
+                uri: "spotify:playlist:b".to_owned(),
+                name: "Other".to_owned(),
+                named: true,
+                cover: None,
+                description: None,
+                owner: None,
+                tracks: Some(1),
+                access: access(true),
+            });
+        }
+        assert!(library.begin_rename("spotify:playlist:a", Surface::Band));
+        *library.renaming.edit() = "New".to_owned();
+        assert!(library.rename_playlist().is_some());
+
+        // The reply lands after the user moved to another playlist, where this
+        // field's title is not drawn at all.
+        library.select("spotify:playlist:b");
+        library.apply(&Update::Tracks {
+            playlist: "spotify:playlist:b".to_owned(),
+            tracks: vec![track("t9", "t9")],
+            cover: None,
+            access: access(true),
+        });
+        library.apply(&Update::PlaylistRenamed {
+            playlist: "spotify:playlist:a".to_owned(),
+            name: "New".to_owned(),
+            revision: Revision::from_wire(b"rev-2").expect("a revision"),
+        });
+        assert!(library.renaming.wants_return());
+
+        let _ = band_frame(&ctx, &mut library, Vec::new());
+
+        assert!(
+            library.renaming.wants_return(),
+            "another page spent the field's hand-back"
+        );
+        assert_eq!(
+            library.renaming.uri(),
+            "spotify:playlist:a",
+            "another page took the field's target"
+        );
+        assert!(!ctx.text_edit_focused());
     }
 
     #[test]

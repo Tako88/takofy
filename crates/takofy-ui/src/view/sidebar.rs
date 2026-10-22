@@ -819,8 +819,8 @@ fn rows(
     }
     // The drawer draws the same column with no drag and no menu; a row field
     // there has no row to return to.
-    if !drag && library.renaming.surface() == Surface::Row {
-        library.renaming.dismiss();
+    if !drag {
+        library.dismiss_row_rename();
     }
 
     // The failure line sits at the foot of every list, and the rows make room
@@ -1190,8 +1190,14 @@ fn one(
     );
     ui.set_opacity(before);
 
+    // egui reports a focused row's Enter or Space as a click, repeats too, so a
+    // held key would open the playlist once per frame. Only a fresh press is the
+    // user's, as it is for the band's title.
+    let clicked = response.clicked();
+    let pointer = ui.input(|input| input.pointer.button_clicked(egui::PointerButton::Primary));
+    let held = clicked && !pointer && context_menu::held_repeat(ui);
     Drawn {
-        clicked: response.clicked(),
+        clicked: clicked && !held,
         lift: !edit && response.drag_started_by(egui::PointerButton::Primary),
         door,
         response,
@@ -1668,6 +1674,53 @@ mod tests {
                 _ => None,
             })
             .unwrap_or_else(|| panic!("{label:?} is drawn"))
+    }
+
+    /// One press of `key`, fresh or as a held key's auto-repeat.
+    ///
+    /// egui decides the repeat against the pass before it, so `repeat: true` only
+    /// says "held" once the same key's press came in an earlier pass with no
+    /// release between them.
+    fn press(key: egui::Key, repeat: bool) -> Event {
+        Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    #[test]
+    fn a_held_enter_on_the_focused_row_does_not_open_it_again() {
+        let ctx = context();
+        let mut library = movable_playlists(&["A", "B"], 7, true, None);
+        let mut art = Art::default();
+        let (output, _) = run_column(&ctx, Vec::new(), &mut library, &mut art);
+        let at = name_line(&output, "A");
+        let _ = click(&ctx, at, &mut library, &mut art);
+        assert!(
+            ctx.memory(|memory| memory.focused()).is_some(),
+            "the row took no keyboard to hold Enter on"
+        );
+
+        // The first press is the user's, and opens the row once.
+        let (_, fresh) = run_column(
+            &ctx,
+            vec![press(egui::Key::Enter, false)],
+            &mut library,
+            &mut art,
+        );
+        assert!(fresh.is_some(), "a first press of Enter opened nothing");
+
+        // The repeats of the same held key are not presses of the user's.
+        let (_, held) = run_column(
+            &ctx,
+            vec![press(egui::Key::Enter, true)],
+            &mut library,
+            &mut art,
+        );
+        assert_eq!(held, None, "a held Enter opened the row it just opened");
     }
 
     #[test]

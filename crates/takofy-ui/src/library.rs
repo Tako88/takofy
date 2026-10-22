@@ -1214,6 +1214,35 @@ impl Library {
         Some(command)
     }
 
+    /// Closes a row's rename field because the sidebar cannot draw its rows.
+    ///
+    /// The field lives in a row of the column; below the rail width the same
+    /// sidebar is only drawn by the drawer, and a closed drawer leaves the field
+    /// nowhere to draw.
+    pub fn dismiss_row_rename(&mut self) {
+        if self.renaming.surface() == Surface::Row {
+            self.renaming.dismiss();
+        }
+    }
+
+    /// Applies a rename field the user closed this frame.
+    ///
+    /// Escape, a blur and a chip change all close the field, and the row or band
+    /// it was drawn in takes the keyboard back. The sentence a failed write left
+    /// named that field, so it goes with it: nothing on screen is left asking
+    /// for the retry it described.
+    pub fn settle_rename(&mut self) {
+        if !self.renaming.take_left() {
+            return;
+        }
+        self.sidebar_notice = None;
+        if let Load::Ready(tracks) = &mut self.tracks
+            && tracks.notice == Some(Failure::Rename)
+        {
+            tracks.notice = None;
+        }
+    }
+
     /// Presses a sidebar chip, and clears the sentence a failed write left.
     pub fn choose_kind(&mut self, kind: SidebarKind) -> bool {
         let moved = self.sidebar_kind.chosen() != kind;
@@ -1293,8 +1322,11 @@ impl Library {
 
     /// Starts a rename for the name in the field, and asks for one write.
     ///
-    /// A name that did not change closes the field and sends nothing, so the
-    /// wire never sees a no-op write. A refusal changes nothing, so a held Enter
+    /// A name the server already holds closes the field and sends nothing, so
+    /// the wire never sees a no-op write. Only a row the listing calls named is
+    /// the server's own: an unnamed row shows the name a create typed and its
+    /// rename never reached, so sending the text it shows is the first write of
+    /// that name rather than a no-op. A refusal changes nothing, so a held Enter
     /// sends once.
     pub fn rename_playlist(&mut self) -> Option<Command> {
         if !self.renaming.is_open() || self.renaming.writing() {
@@ -1307,12 +1339,12 @@ impl Library {
         let Load::Ready(playlists) = &self.playlists else {
             return None;
         };
-        let current = playlists
+        let (current, named) = playlists
             .iter()
             .find(|entry| entry.uri == uri)
-            .map(|entry| entry.name.clone())?;
+            .map(|entry| (entry.name.clone(), entry.named))?;
         let name = self.renaming.begin_write()?;
-        if name == current {
+        if named && name == current {
             self.renaming.finished();
             return None;
         }
@@ -8217,6 +8249,59 @@ mod tests {
         assert!(!library.renaming.is_open());
         assert!(!library.write_in_flight());
         assert!(library.renaming.wants_return());
+    }
+
+    #[test]
+    fn a_rename_to_the_text_an_unnamed_row_shows_is_sent() {
+        // A create whose own rename failed keeps the typed name in the row for
+        // this session only: `named` is false, so the server has never heard it.
+        // Opening Rename on that row prefills the text it shows, and Enter must
+        // still reach the wire.
+        let mut library = renaming_library();
+        if let Load::Ready(playlists) = &mut library.playlists {
+            playlists[0].named = false;
+        }
+        assert!(library.begin_rename("a", crate::naming::Surface::Row));
+        assert_eq!(library.renaming.text(), "a", "the field prefilled nothing");
+
+        assert_eq!(
+            library.rename_playlist(),
+            Some(Command::RenamePlaylist {
+                playlist: "a".to_owned(),
+                name: "a".to_owned(),
+            }),
+            "an unnamed row's own text was treated as the server's name"
+        );
+        assert!(library.renaming.writing());
+
+        library.apply(&Update::PlaylistRenamed {
+            playlist: "a".to_owned(),
+            name: "a".to_owned(),
+            revision: revision(0x09),
+        });
+        let entry = sidebar_entry(&library, "a").expect("the row");
+        assert!(entry.named, "the sent name did not make the row named");
+    }
+
+    #[test]
+    fn a_rename_enter_is_refused_while_a_page_write_holds_the_list() {
+        let mut library = renaming_library();
+        assert!(library.begin_rename("a", crate::naming::Surface::Band));
+        *library.renaming.edit() = "New".to_owned();
+        let first = match &library.tracks {
+            Load::Ready(tracks) => tracks.tracks[0].clone(),
+            Load::Idle | Load::Loading | Load::Failed(_) => panic!("the page is ready"),
+        };
+        assert!(library.remove_tracks("a", &[0], &[first]).is_some());
+
+        assert_eq!(
+            library.rename_playlist(),
+            None,
+            "a rename overran a write the page had already started"
+        );
+        assert!(library.renaming.is_open(), "a refusal closed the field");
+        assert!(!library.renaming.writing());
+        assert_eq!(library.renaming.text(), "New", "a refusal dropped the text");
     }
 
     #[test]

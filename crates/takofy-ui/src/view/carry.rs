@@ -616,6 +616,22 @@ mod tests {
     }
 
     #[test]
+    fn any_payload_counts_as_carrying() {
+        // The gates ask whether a block is held, not whose it is, so a test that
+        // only needs them held shut may set any payload type at all.
+        let ctx = context();
+        assert!(!carrying(&ctx), "an empty context carries nothing");
+        egui::DragAndDrop::set_payload(&ctx, ());
+        assert!(carrying(&ctx), "a foreign payload is still a carry");
+        assert!(
+            carried(&ctx).is_none(),
+            "a foreign payload is no block of ours"
+        );
+        egui::DragAndDrop::clear_payload(&ctx);
+        assert!(!carrying(&ctx));
+    }
+
+    #[test]
     fn menu_inside_a_pick_acts_on_the_pick_and_keeps_it() {
         let ctx = context();
         let id = Id::unique("list");
