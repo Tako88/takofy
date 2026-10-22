@@ -17,6 +17,7 @@ use crate::follow::Follow;
 use crate::library_filter::{RootFilter, RootKind};
 use crate::likes::{self, Likes};
 use crate::lyrics::LyricsPanel;
+use crate::menu::AddTarget;
 use crate::message::{Command, Failure, Update};
 use crate::naming::Naming;
 use crate::releases::Releases;
@@ -950,6 +951,41 @@ impl Library {
             from: step.from,
             to: step.to,
         })
+    }
+
+    /// The playlists the add submenu may offer, in the sidebar's own order.
+    ///
+    /// Only the lists that can take a track, and never the page on screen. A
+    /// write in flight empties it: one gesture is one write.
+    pub fn add_targets(&self) -> Vec<AddTarget> {
+        if self.write_in_flight() {
+            return Vec::new();
+        }
+        let Load::Ready(playlists) = &self.playlists else {
+            return Vec::new();
+        };
+        playlists
+            .iter()
+            .filter(|entry| self.selected() != Some(entry.uri.as_str()))
+            .filter_map(|entry| {
+                let (revision, length) = entry.add_basis()?;
+                Some(AddTarget {
+                    uri: entry.uri.clone(),
+                    name: entry.name.clone(),
+                    revision: revision.clone(),
+                    length,
+                })
+            })
+            .collect()
+    }
+
+    /// Adds `tracks` to the playlist `uri` names, when the sidebar holds it.
+    pub fn add_pick(&mut self, uri: &str, tracks: &[String]) -> Option<Command> {
+        let Load::Ready(playlists) = &self.playlists else {
+            return None;
+        };
+        let row = playlists.iter().position(|entry| entry.uri == uri)?;
+        self.add_tracks(row, tracks)
     }
 
     /// Appends `tracks` to `row`, and asks for one write.
@@ -4268,6 +4304,94 @@ mod tests {
         let mut library = sidebar_library(&["a", "b"], 0x07, true, Some(1));
         assert!(library.move_playlist(0, 2, "a").is_some());
         assert_eq!(library.add_tracks(1, &pick(&["spotify:track:x"])), None);
+    }
+
+    #[test]
+    fn the_add_targets_are_the_sidebars_order_without_the_open_page() {
+        let mut library = sidebar_library(&["a", "b", "c"], 0x07, true, Some(2));
+        library.select("b");
+
+        let targets = library.add_targets();
+
+        assert_eq!(
+            targets
+                .iter()
+                .map(|row| row.uri.as_str())
+                .collect::<Vec<_>>(),
+            ["a", "c"],
+            "the open page is no target, and the order is the sidebar's"
+        );
+        assert_eq!(targets[0].name, "a");
+        assert_eq!(targets[0].revision, revision(0x07));
+        assert_eq!(targets[0].length, 2);
+    }
+
+    #[test]
+    fn an_add_target_needs_an_editable_list_with_a_revision_and_a_count() {
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(vec![
+            with_access(playlist("a", "a"), 0x07, true, Some(2)),
+            with_access(playlist("b", "b"), 0x07, false, Some(2)),
+            with_access(playlist("c", "c"), 0x07, true, None),
+            playlist("d", "d"),
+        ]));
+        library.apply(&Update::RootlistAccess(rootlist_access(0x07, true)));
+
+        assert_eq!(
+            library
+                .add_targets()
+                .iter()
+                .map(|row| row.uri.as_str())
+                .collect::<Vec<_>>(),
+            ["a"],
+            "a foreign list is absent, never greyed"
+        );
+    }
+
+    #[test]
+    fn the_add_targets_are_empty_while_a_write_is_pending() {
+        let mut library = sidebar_library(&["a", "b"], 0x07, true, Some(2));
+        assert!(library.add_tracks(1, &pick(&["spotify:track:x"])).is_some());
+        assert!(library.add_targets().is_empty(), "an add is in flight");
+
+        let mut creating = sidebar_library(&["a", "b"], 0x07, true, Some(2));
+        creating.naming.open();
+        creating.naming.edit().push_str("Mix");
+        assert!(creating.creatable());
+        assert!(creating.create_playlist().is_some());
+        assert!(creating.add_targets().is_empty(), "a create is in flight");
+    }
+
+    #[test]
+    fn an_add_pick_names_the_held_list() {
+        let mut library = sidebar_library(&["a", "b"], 0x07, true, Some(3));
+        let tracks = pick(&["spotify:track:x", "spotify:track:y"]);
+
+        assert_eq!(
+            library.add_pick("b", &tracks),
+            Some(Command::AddTracks {
+                playlist: "b".to_owned(),
+                revision: revision(0x07),
+                from_index: 3,
+                tracks: tracks.clone(),
+            })
+        );
+    }
+
+    #[test]
+    fn an_add_pick_refuses_an_unknown_uri_the_open_page_and_a_pending_write() {
+        let mut library = sidebar_library(&["a", "b"], 0x07, true, Some(3));
+        let tracks = pick(&["spotify:track:x"]);
+
+        assert_eq!(library.add_pick("missing", &tracks), None);
+        assert!(library.addable(1), "an unknown URI is no write at all");
+
+        library.select("b");
+        assert_eq!(library.add_pick("b", &tracks), None, "the open page");
+        library.open(Page::Search("query".to_owned()));
+
+        assert!(library.add_pick("b", &tracks).is_some());
+        assert_eq!(library.add_pick("a", &tracks), None, "a write is pending");
     }
 
     #[test]

@@ -10,7 +10,7 @@
 //! last; and closing hands the keyboard back to the button that opened it.
 
 use egui::{Id, Pos2, Rect};
-use takofy_model::TrackEntry;
+use takofy_model::{Revision, TrackEntry};
 
 use crate::route::Page;
 
@@ -65,6 +65,7 @@ pub enum Verb {
     GoToAlbum,
     GoToArtist,
     CopyLink,
+    AddToPlaylist,
     NewPlaylist,
     Remove,
 }
@@ -101,8 +102,8 @@ pub struct Cut {
 
 /// One command row: what it says and what it does.
 ///
-/// `key` and `submenu` are the rest of the row grammar. No verb bound today
-/// carries either, so both are `None`/`false` until a slice binds one.
+/// `key` is a key hint and `submenu` says the row opens a list of its own rather
+/// than firing a command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Item {
     pub label: String,
@@ -137,11 +138,23 @@ impl Gate {
     }
 }
 
+/// One playlist the add submenu may offer, and what an add to it names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AddTarget {
+    pub uri: String,
+    pub name: String,
+    pub revision: Revision,
+    /// The playlist's length, which is the index an append names.
+    pub length: usize,
+}
+
 /// What a door asks the menu to show, taken as a snapshot of the rows it is about.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Request {
     pub door: Door,
     pub items: Vec<Item>,
+    /// The playlists the add submenu may offer, in the sidebar's own order.
+    pub playlists: Vec<AddTarget>,
     /// The rows the verbs act on, cloned at open time so a list that reloads
     /// underneath the menu cannot change what it does.
     pub targets: Vec<TrackEntry>,
@@ -162,6 +175,16 @@ impl Request {
     pub fn allow_create(&mut self, allow: bool) {
         if !allow {
             self.items.retain(|item| item.verb != Verb::NewPlaylist);
+        }
+    }
+
+    /// Takes the playlists the add submenu may offer, and strips the row when
+    /// there are none: a submenu with nothing in it is worse than no row.
+    pub fn allow_add(&mut self, targets: Vec<AddTarget>) {
+        let offered = !targets.is_empty();
+        self.playlists = targets;
+        if !offered {
+            self.items.retain(|item| item.verb != Verb::AddToPlaylist);
         }
     }
 }
@@ -207,6 +230,13 @@ pub struct Menu {
     listing: Listing,
     page: Option<Page>,
     lit: Option<usize>,
+    /// The lists the add submenu offers, in the sidebar's own order.
+    playlists: Vec<AddTarget>,
+    /// The row whose submenu is open, while it is.
+    submenu: Option<usize>,
+    /// The list the submenu's last choice named. It survives the close, as the
+    /// removal's snapshot does.
+    chosen: Option<usize>,
     /// The clock of the first frame that drew this menu. A frame is not a pass:
     /// egui may run a frame twice, so the opening input is recognised by the
     /// clock rather than by a flag a first pass would clear before the second
@@ -242,8 +272,56 @@ impl Menu {
         self.rows = request.rows;
         self.listing = request.listing;
         self.page = request.page;
+        self.playlists = request.playlists;
+        self.submenu = None;
+        self.chosen = None;
         self.first_drawn = None;
         true
+    }
+
+    /// Opens `row`'s submenu, when it has one and there is something to offer.
+    pub fn open_submenu(&mut self, row: usize) -> bool {
+        if !self.open || self.playlists.is_empty() {
+            return false;
+        }
+        if !self.items.get(row).is_some_and(|item| item.submenu) {
+            return false;
+        }
+        self.submenu = Some(row);
+        true
+    }
+
+    /// Closes the open submenu, leaving the menu itself up.
+    pub fn close_submenu(&mut self) {
+        self.submenu = None;
+    }
+
+    /// The row whose submenu is open, while it is.
+    pub fn submenu(&self) -> Option<usize> {
+        self.submenu
+    }
+
+    /// The lists the add submenu offers.
+    pub fn playlists(&self) -> &[AddTarget] {
+        &self.playlists
+    }
+
+    /// Chooses `index` of the open submenu's lists, and closes the menu.
+    ///
+    /// Refused without an open submenu, because a list nobody opened is a list
+    /// nobody saw.
+    pub fn choose_target(&mut self, index: usize) -> Option<Closed> {
+        self.submenu?;
+        if index >= self.playlists.len() {
+            return None;
+        }
+        self.chosen = Some(index);
+        self.close_with(Some(Verb::AddToPlaylist))
+    }
+
+    /// The list the submenu's last choice named, read after the close.
+    pub fn chosen_target(&self) -> Option<&AddTarget> {
+        self.chosen.and_then(|index| self.playlists.get(index))
     }
 
     /// Moves the lit row one step, clamping at the ends rather than wrapping.
@@ -286,9 +364,14 @@ impl Menu {
     }
 
     /// Chooses `row` with the pointer, and closes.
+    ///
+    /// A row that opens a submenu is not a command, so it closes nothing.
     pub fn choose(&mut self, row: usize) -> Option<Closed> {
-        let verb = self.items.get(row)?.verb;
-        self.close_with(Some(verb))
+        let item = self.items.get(row)?;
+        if item.submenu {
+            return None;
+        }
+        self.close_with(Some(item.verb))
     }
 
     /// Chooses the row the keyboard lit, and closes. Enter fires nothing the user
@@ -400,6 +483,7 @@ impl Menu {
         }
         self.open = false;
         self.lit = None;
+        self.submenu = None;
         Some(Closed {
             opener: self.opener,
             chose,
@@ -451,10 +535,30 @@ mod tests {
         Request {
             door: door(device),
             items: (0..rows).map(item).collect(),
+            playlists: Vec::new(),
             targets: Vec::new(),
             rows: Vec::new(),
             listing: Listing::default(),
             page: None,
+        }
+    }
+
+    fn target(uri: &str, name: &str, byte: u8, length: usize) -> AddTarget {
+        AddTarget {
+            uri: uri.to_owned(),
+            name: name.to_owned(),
+            revision: Revision::from_wire(&[byte]).expect("a revision"),
+            length,
+        }
+    }
+
+    fn add_item() -> Item {
+        Item {
+            label: "Add to playlist".to_owned(),
+            kind: Kind::Plain,
+            key: None,
+            submenu: true,
+            verb: Verb::AddToPlaylist,
         }
     }
 
@@ -806,6 +910,120 @@ mod tests {
             Some(cut),
             "the shell reads the cut after the menu closed on it"
         );
+    }
+
+    #[test]
+    fn a_submenu_row_is_not_a_command() {
+        let mut menu = Menu::default();
+        let mut request = request(Device::Pointer, 2);
+        request.items = vec![add_item(), item(1)];
+        request.playlists = vec![target("spotify:playlist:a", "A", 0x07, 3)];
+        assert!(menu.open(request, Gate::default()));
+
+        assert_eq!(menu.choose(0), None, "a submenu row fired a command");
+        assert!(menu.is_open(), "the menu closed on a row that opens a list");
+    }
+
+    #[test]
+    fn a_submenu_opens_only_on_a_submenu_row_with_candidates() {
+        let mut menu = Menu::default();
+        let mut offered = request(Device::Pointer, 2);
+        offered.items = vec![add_item(), item(1)];
+        offered.playlists = vec![target("spotify:playlist:a", "A", 0x07, 3)];
+        assert!(menu.open(offered, Gate::default()));
+
+        assert!(menu.open_submenu(0));
+        assert_eq!(menu.submenu(), Some(0));
+        menu.close_submenu();
+        assert_eq!(menu.submenu(), None);
+        assert!(!menu.open_submenu(1), "a plain row opens no list");
+
+        let mut empty = Menu::default();
+        let mut bare = request(Device::Pointer, 1);
+        bare.items = vec![add_item()];
+        assert!(empty.open(bare, Gate::default()));
+        assert!(!empty.open_submenu(0), "a list with nothing in it opened");
+        assert_eq!(empty.submenu(), None);
+    }
+
+    #[test]
+    fn choose_target_reports_the_add_and_refuses_without_an_open_submenu() {
+        let playlists = vec![
+            target("spotify:playlist:a", "A", 0x07, 3),
+            target("spotify:playlist:b", "B", 0x08, 5),
+        ];
+        let mut menu = Menu::default();
+        let mut request = request(Device::Pointer, 2);
+        request.items = vec![add_item(), item(1)];
+        request.playlists = playlists.clone();
+        assert!(menu.open(request, Gate::default()));
+
+        assert_eq!(menu.choose_target(0), None, "no submenu was open");
+        assert!(menu.is_open());
+
+        assert!(menu.open_submenu(0));
+        assert_eq!(menu.choose_target(2), None, "a list nobody offered");
+        assert!(menu.is_open(), "a miss closed the menu");
+
+        assert_eq!(
+            menu.choose_target(1),
+            Some(Closed {
+                opener: Some(opener()),
+                chose: Some(Verb::AddToPlaylist),
+            })
+        );
+        assert!(!menu.is_open());
+        assert_eq!(menu.submenu(), None);
+        assert_eq!(
+            menu.chosen_target(),
+            Some(&playlists[1]),
+            "the choice survives the close"
+        );
+    }
+
+    #[test]
+    fn opening_a_menu_forgets_the_last_choice() {
+        let playlists = vec![target("spotify:playlist:a", "A", 0x07, 3)];
+        let mut menu = Menu::default();
+        let mut first = request(Device::Pointer, 1);
+        first.items = vec![add_item()];
+        first.playlists = playlists.clone();
+        assert!(menu.open(first, Gate::default()));
+        assert!(menu.open_submenu(0));
+        assert!(menu.choose_target(0).is_some());
+        assert!(menu.chosen_target().is_some());
+
+        let mut again = request(Device::Pointer, 1);
+        again.items = vec![add_item()];
+        again.playlists = playlists;
+        assert!(menu.open(again, Gate::default()));
+
+        assert_eq!(menu.chosen_target(), None, "the last menu's choice leaked");
+        assert_eq!(menu.submenu(), None);
+    }
+
+    #[test]
+    fn allow_add_strips_the_row_when_nothing_is_offered() {
+        let mut request = request(Device::Pointer, 2);
+        request.items = vec![add_item(), item(1)];
+        let offered = request.items.len();
+
+        request.allow_add(Vec::new());
+        assert_eq!(request.items.len(), offered - 1);
+        assert!(
+            request
+                .items
+                .iter()
+                .all(|item| item.verb != Verb::AddToPlaylist)
+        );
+
+        request.allow_add(vec![target("spotify:playlist:a", "A", 0x07, 3)]);
+        assert_eq!(
+            request.items.len(),
+            offered - 1,
+            "allowing a stripped row put it back"
+        );
+        assert_eq!(request.playlists.len(), 1);
     }
 
     #[test]

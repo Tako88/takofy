@@ -26,6 +26,8 @@ pub enum Outcome {
     Like { tracks: Vec<String>, liked: bool },
     /// The sidebar's name field opens; nothing is sent and nothing else moves.
     NewPlaylist,
+    /// These tracks go to the playlist the submenu's chosen row names.
+    AddToPlaylist { tracks: Vec<String> },
 }
 
 /// The web address a row's URI stands for, or `None` when it has none.
@@ -103,6 +105,21 @@ pub fn track_items(
         items.push(item(Verb::CopyLink, label));
     }
 
+    // The submenu hangs off this row, so only a pick every playlist can take
+    // gets one; a pick with an episode in it is refused whole.
+    if let Some(tracks) = pick(targets) {
+        items.push(Item {
+            label: match tracks.len() {
+                1 => "Add to playlist".to_owned(),
+                many => format!("Add {many} tracks to playlist"),
+            },
+            kind: Kind::Plain,
+            key: None,
+            submenu: true,
+            verb: Verb::AddToPlaylist,
+        });
+    }
+
     // The sheet's new-playlist row follows the link and sits above the band: the
     // one action a menu can always offer must not be buried. It acts on nothing
     // the menu holds, so a menu with no other row keeps none of its own.
@@ -145,6 +162,7 @@ pub fn outcome(verb: Verb, targets: &[TrackEntry]) -> Option<Outcome> {
             Some(Outcome::Open(Page::credit(uri)))
         }
         Verb::NewPlaylist => Some(Outcome::NewPlaylist),
+        Verb::AddToPlaylist => pick(targets).map(|tracks| Outcome::AddToPlaylist { tracks }),
         Verb::Remove => (!targets.is_empty()).then_some(Outcome::Remove),
         Verb::Save => like_outcome(targets, true),
         Verb::Unsave => like_outcome(targets, false),
@@ -342,7 +360,7 @@ mod tests {
     }
 
     #[test]
-    fn one_track_gets_the_sheets_five_verbs_in_order() {
+    fn one_track_gets_the_sheets_six_verbs_in_order() {
         let items = track_items(
             &[entry("spotify:track:a")],
             None,
@@ -356,6 +374,7 @@ mod tests {
                 "Go to album",
                 "Go to artist",
                 "Copy link",
+                "Add to playlist",
                 "New playlist…"
             ]
         );
@@ -366,6 +385,7 @@ mod tests {
                 Verb::GoToAlbum,
                 Verb::GoToArtist,
                 Verb::CopyLink,
+                Verb::AddToPlaylist,
                 Verb::NewPlaylist,
             ]
         );
@@ -417,7 +437,12 @@ mod tests {
         let items = track_items(&[bare], None, &Listing::Page, Standing::Unknown);
         assert_eq!(
             labels(&items),
-            ["Add to queue", "Copy link", "New playlist…"]
+            [
+                "Add to queue",
+                "Copy link",
+                "Add to playlist",
+                "New playlist…"
+            ]
         );
     }
 
@@ -546,6 +571,7 @@ mod tests {
                 "Go to album",
                 "Go to artist",
                 "Copy link",
+                "Add to playlist",
                 "New playlist…",
                 "Remove from this playlist",
             ]
@@ -578,6 +604,7 @@ mod tests {
                 "Go to album",
                 "Go to artist",
                 "Copy link",
+                "Add to playlist",
                 "New playlist…",
                 "Remove from the queue"
             ]
@@ -589,7 +616,11 @@ mod tests {
             entry("spotify:track:c"),
         ];
         let items = track_items(&three, None, &Listing::Queue, Standing::Unknown);
-        assert_eq!(labels(&items)[4], "Remove 3 from the queue");
+        assert_eq!(
+            labels(&items).last(),
+            Some(&"Remove 3 from the queue"),
+            "the destructive row stays last"
+        );
     }
 
     #[test]
@@ -639,6 +670,7 @@ mod tests {
                 Verb::GoToAlbum,
                 Verb::GoToArtist,
                 Verb::CopyLink,
+                Verb::AddToPlaylist,
                 Verb::NewPlaylist
             ]
         );
@@ -671,7 +703,12 @@ mod tests {
                 } else {
                     assert_eq!(item.key, None, "{}", item.label);
                 }
-                assert!(!item.submenu, "{}", item.label);
+                assert_eq!(
+                    item.submenu,
+                    item.verb == Verb::AddToPlaylist,
+                    "{}",
+                    item.label
+                );
             }
         }
     }
@@ -743,6 +780,7 @@ mod tests {
                 "Go to album",
                 "Go to artist",
                 "Copy link",
+                "Add to playlist",
                 "New playlist…"
             ]
         );
@@ -754,6 +792,7 @@ mod tests {
                 Verb::GoToAlbum,
                 Verb::GoToArtist,
                 Verb::CopyLink,
+                Verb::AddToPlaylist,
                 Verb::NewPlaylist
             ]
         );
@@ -957,7 +996,8 @@ mod tests {
                 .position(|found| *found == verb)
                 .unwrap_or_else(|| panic!("{verb:?} is offered"))
         };
-        assert_eq!(at(Verb::NewPlaylist), at(Verb::CopyLink) + 1);
+        assert_eq!(at(Verb::AddToPlaylist), at(Verb::CopyLink) + 1);
+        assert_eq!(at(Verb::NewPlaylist), at(Verb::AddToPlaylist) + 1);
         assert_eq!(at(Verb::Remove), at(Verb::NewPlaylist) + 1);
     }
 
@@ -1034,6 +1074,7 @@ mod tests {
                 opener: egui::Id::unique("row-more"),
                 device: Device::Keyboard,
             },
+            playlists: Vec::new(),
             items,
             targets,
             rows: vec![0],
@@ -1105,6 +1146,68 @@ mod tests {
         assert!(pickable(&tracks(&["spotify:track:a"])));
         assert!(pickable(&tracks(&["spotify:track:a", "spotify:track:b"])));
         assert!(!pickable(&tracks(&["spotify:episode:e"])));
+    }
+
+    #[test]
+    fn an_add_row_names_the_pick_and_opens_a_list() {
+        for (uris, label) in [
+            (&["spotify:track:a"][..], "Add to playlist"),
+            (
+                &["spotify:track:a", "spotify:track:b", "spotify:track:c"][..],
+                "Add 3 tracks to playlist",
+            ),
+        ] {
+            let items = track_items(&tracks(uris), None, &Listing::Page, Standing::Unknown);
+            let row = items
+                .iter()
+                .find(|item| item.verb == Verb::AddToPlaylist)
+                .expect("an add row");
+            assert_eq!(row.label, label);
+            assert_eq!(row.kind, Kind::Plain);
+            assert_eq!(row.key, None);
+            assert!(row.submenu, "the add row is not a command");
+        }
+    }
+
+    #[test]
+    fn an_add_row_is_absent_for_a_pick_with_no_tracks() {
+        for listing in [
+            Listing::Page,
+            Listing::Queue,
+            Listing::Current,
+            playlist_listing(),
+        ] {
+            for uris in [
+                &["spotify:episode:e"][..],
+                &["spotify:local:A:B:C:1000"][..],
+                &["spotify:track:a", "spotify:episode:e"][..],
+            ] {
+                let items = track_items(&tracks(uris), None, &listing, Standing::Unknown);
+                assert!(
+                    items.iter().all(|item| item.verb != Verb::AddToPlaylist),
+                    "{listing:?} offered an add for {uris:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn outcome_add_to_playlist_carries_the_pick_in_order() {
+        let targets = tracks(&["spotify:track:a", "spotify:track:b", "spotify:track:c"]);
+        assert_eq!(
+            outcome(Verb::AddToPlaylist, &targets),
+            Some(Outcome::AddToPlaylist {
+                tracks: pick_of(&["a", "b", "c"]),
+            })
+        );
+        assert_eq!(outcome(Verb::AddToPlaylist, &[]), None);
+        assert_eq!(
+            outcome(
+                Verb::AddToPlaylist,
+                &tracks(&["spotify:track:a", "spotify:episode:e"])
+            ),
+            None
+        );
     }
 
     /// The URIs a pick holds, so a test names only their ids.

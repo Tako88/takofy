@@ -264,6 +264,7 @@ pub fn queue_menu(
         Request {
             door,
             items,
+            playlists: Vec::new(),
             targets: entries,
             rows,
             listing: Listing::Queue,
@@ -327,6 +328,7 @@ pub fn current_menu(
         Request {
             door,
             items,
+            playlists: Vec::new(),
             targets: vec![entry],
             rows: vec![0],
             listing: Listing::Current,
@@ -470,6 +472,7 @@ impl List {
             Request {
                 door,
                 items,
+                playlists: Vec::new(),
                 targets,
                 rows,
                 listing: open.listing,
@@ -725,6 +728,7 @@ mod tests {
         let ctx = context();
         let request = Request {
             door: door(),
+            playlists: Vec::new(),
             items: crate::verbs::track_items(
                 &[entry("0")],
                 None,

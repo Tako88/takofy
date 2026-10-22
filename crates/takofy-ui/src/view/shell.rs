@@ -375,6 +375,7 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
     let page = screen.library.page();
     let _ = screen.menu.follow_page(page);
     if let Some(mut request) = request {
+        request.allow_add(screen.library.add_targets());
         request.allow_create(regions.sidebar == Sidebar::Full && screen.library.creatable());
         let gate = door_gate(ui.ctx(), screen, &request.listing);
         let _ = screen.menu.open(request, gate);
@@ -511,6 +512,10 @@ fn apply_verb(ui: &Ui, screen: &mut Screen<'_>, verb: Verb) -> Option<Command> {
         }
         verbs::Outcome::Like { tracks, liked } => apply_like(ui, screen, tracks, liked),
         verbs::Outcome::NewPlaylist => apply_new_playlist(ui, screen),
+        verbs::Outcome::AddToPlaylist { tracks } => {
+            let uri = screen.menu.chosen_target()?.uri.clone();
+            screen.library.add_pick(&uri, &tracks)
+        }
     }
 }
 
@@ -7645,6 +7650,7 @@ mod tests {
                 opener: egui::Id::unique("row-more"),
                 device: crate::menu::Device::Keyboard,
             },
+            playlists: Vec::new(),
             items,
             targets,
             rows,
@@ -7747,6 +7753,7 @@ mod tests {
                 &playlist_listing(),
                 crate::likes::Standing::Unknown,
             ),
+            playlists: Vec::new(),
             targets,
             rows: rows.to_vec(),
             listing: playlist_listing(),

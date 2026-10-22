@@ -631,6 +631,7 @@ mod tests {
         Request {
             door: door(device),
             items,
+            playlists: Vec::new(),
             targets: vec![track()],
             rows: vec![0],
             listing: Listing::Page,
@@ -1576,6 +1577,7 @@ mod tests {
                         opener: opener(),
                         device: Device::Pointer,
                     },
+                    playlists: Vec::new(),
                     items: items(),
                     targets: vec![track()],
                     rows: vec![0],
