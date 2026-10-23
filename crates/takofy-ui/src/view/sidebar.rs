@@ -1151,9 +1151,7 @@ fn one(
                         text_color: tokens.palette.text,
                         weak_color: tokens.palette.text_subtle,
                         cursor: Stroke::new(stroke::HAIRLINE, tokens.palette.text),
-                        // Top-aligned: the field is taller than the name line, and
-                        // centring the text would move the name as the field opens.
-                        align: egui::Align2::LEFT_TOP,
+                        align: egui::Align2::LEFT_CENTER,
                     },
                 )
             };
@@ -2641,22 +2639,22 @@ mod tests {
     }
 
     #[test]
-    fn opening_a_row_field_does_not_move_the_name() {
+    fn a_row_field_centres_its_text_in_the_box() {
         let ctx = context();
         let mut library = movable_playlists(&["A"], 7, true, None);
         let mut art = Art::default();
         let (plain, _) = run_column(&ctx, Vec::new(), &mut library, &mut art);
-        let before = painted_text(&plain, "A").0.y;
-
         library
             .renaming
             .open("spotify:playlist:A", "A", crate::naming::Surface::Row);
-        let (editing, _) = run_column(&ctx, Vec::new(), &mut library, &mut art);
-        let after = painted_text(&editing, "A").0.y;
+        let (output, _) = run_column(&ctx, Vec::new(), &mut library, &mut art);
 
+        let (pos, size) = painted_text(&output, "A");
+        let middle = pos.y + size.y / 2.0;
+        let row_middle = row_top(&plain, "A", "Playlist") + ROW_H / 2.0;
         assert!(
-            (after - before).abs() < 0.5,
-            "the name jumped from {before} to {after} when its field opened"
+            (middle - row_middle).abs() < 1.0,
+            "the field's text sits at {middle}, not the row's middle {row_middle}"
         );
     }
 
