@@ -233,6 +233,15 @@ impl PrefsSync {
         }
     }
 
+    /// A sync whose file already holds `written`, saving through `writer`.
+    #[cfg(test)]
+    pub fn for_test(written: Prefs, writer: Option<PrefsWriter>) -> Self {
+        Self {
+            settle: Settle::new(written),
+            writer,
+        }
+    }
+
     /// Takes what the app holds now and returns how long until it has been quiet
     /// long enough to write, or `None` when nothing is pending.
     pub fn observe(&mut self, now: Instant, current: &Prefs) -> Option<Duration> {
@@ -261,17 +270,25 @@ impl PrefsSync {
 
 /// Reads the file once and starts the writer that saves later changes.
 ///
-/// The result is the defaults when there is no directory, no file, or a file
-/// this version refuses. A missing directory, a refusal and an unreadable file
-/// each log one warning. A refused or unreadable file is left alone until a
-/// value settles, and the first settled change then replaces it whole.
-pub fn open() -> (Prefs, PrefsSync) {
+/// The result is what the file held and the sync that will save later changes.
+/// A missing directory, a refusal and an unreadable file each log one warning.
+pub fn open() -> (Loaded, PrefsSync) {
     let Some(path) = config_file(cfg!(windows), |key| std::env::var_os(key)) else {
         warn!("no configuration directory: preferences will not be saved");
-        return (Prefs::default(), PrefsSync::off());
+        return (Loaded::Absent, PrefsSync::off());
     };
-    let loaded = load(&path);
-    let prefs = match &loaded {
+    open_at(&path, PrefsWriter::start)
+}
+
+/// Reads `path` and starts a writer over it through `start`.
+///
+/// The sync's baseline is the loaded value, or the defaults when there is none,
+/// so an untouched session writes nothing and a refused or unreadable file is
+/// left alone until a value settles; the first settled change then replaces it
+/// whole.
+fn open_at(path: &Path, start: impl FnOnce(&Path) -> Option<PrefsWriter>) -> (Loaded, PrefsSync) {
+    let loaded = load(path);
+    let baseline = match &loaded {
         Loaded::Found(prefs) => prefs.clone(),
         Loaded::Refused(reason) => {
             warn!("preferences file refused: {reason}");
@@ -283,9 +300,14 @@ pub fn open() -> (Prefs, PrefsSync) {
         }
         Loaded::Absent => Prefs::default(),
     };
-    let settle = Settle::new(prefs.clone());
-    let writer = PrefsWriter::start(&path);
-    (prefs, PrefsSync { settle, writer })
+    let writer = start(path);
+    (
+        loaded,
+        PrefsSync {
+            settle: Settle::new(baseline),
+            writer,
+        },
+    )
 }
 
 #[cfg(test)]
@@ -295,6 +317,8 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Instant;
     use takofy_ui::prefs::QUIET;
+    use takofy_ui::queue::Queue;
+    use takofy_ui::volume::Volume;
 
     struct Temp(PathBuf);
 
@@ -683,5 +707,92 @@ mod tests {
         assert_eq!(sync.observe(now + QUIET, &changed), None);
         sync.close(&changed);
         sync.close(&changed);
+    }
+
+    /// A running app's state, which `Prefs::of` reads back as `prefs`.
+    fn state(prefs: &Prefs) -> (Volume, Queue) {
+        let mut queue = Queue::seeded(1);
+        prefs.seed_queue(&mut queue);
+        (prefs.volume(), queue)
+    }
+
+    /// Writes `text` into `dir` and opens it with a writer that saves through
+    /// `sink`.
+    fn opened(
+        dir: &Temp,
+        text: &str,
+        sink: impl Fn(&Prefs) -> io::Result<()> + Send + 'static,
+    ) -> (Loaded, PrefsSync) {
+        dir.make();
+        fs::write(dir.file(), text).expect("a writable temp file");
+        open_at(&dir.file(), |_| PrefsWriter::with_sink(sink, FLUSH_WAIT))
+    }
+
+    #[test]
+    fn a_found_file_that_matches_its_own_values_writes_nothing_at_close() {
+        let dir = Temp::new("a_found_file_that_matches_its_own_values_writes_nothing_at_close");
+        let (log, sink) = recorder();
+        let text = "volume=40\nshuffle=true\nrepeat=all\n";
+        let (loaded, mut sync) = opened(&dir, text, sink);
+        let written = Prefs::parse(text).expect("valid prefs");
+        assert_eq!(loaded, Loaded::Found(written.clone()));
+
+        let (volume, queue) = state(&written);
+        sync.close(&Prefs::of(&volume, &queue));
+        drop(sync);
+
+        assert!(
+            log.lock().expect("the sink log").is_empty(),
+            "the file already holds these values, so closing writes nothing"
+        );
+    }
+
+    #[test]
+    fn a_changed_value_after_a_found_file_writes_once() {
+        let dir = Temp::new("a_changed_value_after_a_found_file_writes_once");
+        let (log, sink) = recorder();
+        let text = "volume=40\nshuffle=true\nrepeat=all\n";
+        let (loaded, mut sync) = opened(&dir, text, sink);
+        assert_eq!(
+            loaded,
+            Loaded::Found(Prefs::parse(text).expect("valid prefs"))
+        );
+
+        let changed = Prefs::parse("volume=60\nshuffle=true\nrepeat=all\n").expect("valid prefs");
+        let (volume, queue) = state(&changed);
+        sync.close(&Prefs::of(&volume, &queue));
+        sync.close(&Prefs::of(&volume, &queue));
+        drop(sync);
+
+        assert_eq!(
+            *log.lock().expect("the sink log"),
+            vec![changed],
+            "a value that differs from the file is written once"
+        );
+    }
+
+    #[test]
+    fn a_refused_file_is_not_rewritten_until_a_value_settles() {
+        let dir = Temp::new("a_refused_file_is_not_rewritten_until_a_value_settles");
+        dir.make();
+        let text = "volume=80\nrepeat=sometimes\n";
+        fs::write(dir.file(), text).expect("a writable temp file");
+        let (loaded, mut sync) = open_at(&dir.file(), PrefsWriter::start);
+        assert!(
+            matches!(loaded, Loaded::Refused(_)),
+            "the bad value refuses the file: {loaded:?}"
+        );
+
+        // The app holds the defaults for a refused file, so closing with them
+        // must leave the bytes the user wrote alone.
+        let (volume, queue) = state(&Prefs::default());
+        sync.close(&Prefs::of(&volume, &queue));
+        drop(sync);
+
+        assert_eq!(
+            fs::read_to_string(dir.file()).expect("the file is still there"),
+            text,
+            "a refused file is not rewritten"
+        );
     }
 }

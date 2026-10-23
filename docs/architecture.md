@@ -185,6 +185,13 @@ In the window, sign-in calls run on detached threads, not `spawn_blocking`:
 one parked on the browser callback can hold up the runtime drop, which waits
 on the blocking pool, and a detached thread dies with the process instead.
 
+Preferences are a file read once before the window opens and written by its own
+`takofy-prefs` thread, so the UI thread never touches the filesystem. A value is
+handed over after it has been quiet for 400 ms, and `on_exit` flushes whatever
+is still unsettled. The writer's `Drop` then waits a bounded two seconds for the
+thread and detaches it: a hung filesystem cannot hold the window open longer
+than that.
+
 ## Invariants
 
 - No token, auth code or credential reaches a log, a panic message or stdout.

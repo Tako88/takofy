@@ -9,9 +9,6 @@ mod cover;
 mod decode;
 mod headless;
 mod keychain;
-// Nothing in the binary calls into this module yet; its tests do. Remove the
-// allow when the app opens the file.
-#[allow(dead_code)]
 mod preferences;
 mod prompt;
 mod session;
@@ -126,6 +123,9 @@ fn run_window(flags: &Flags) -> ExitCode {
     // construction; a Paste source would block on a prompt nobody can answer.
     let source = Arc::new(SpotifyOAuth::new(&cfg.client_id, RedirectMode::Loopback));
     let host = session::LiveSession::new(cfg);
+    // Read once, before the window exists: the first frame draws what the file
+    // held, and the writer outlives the window only long enough to flush it.
+    let (loaded, prefs) = preferences::open();
 
     let runtime = match build_runtime() {
         Ok(runtime) => runtime,
@@ -135,14 +135,15 @@ fn run_window(flags: &Flags) -> ExitCode {
         }
     };
 
-    let result = bridge::run_window(runtime, host, store, source, |ui_end, slot| {
+    let result = bridge::run_window(runtime, host, store, source, move |ui_end, slot| {
         eframe::run_native(
             "Takofy",
             app::native_options(),
             Box::new(move |cc| {
                 slot.install(Arc::new(cc.egui_ctx.clone()));
                 cc.egui_ctx.request_repaint();
-                let app: Box<dyn eframe::App> = Box::new(app::TakofyApp::new(cc, ui_end));
+                let app: Box<dyn eframe::App> =
+                    Box::new(app::TakofyApp::new(cc, ui_end, loaded, prefs));
                 Ok(app)
             }),
         )
