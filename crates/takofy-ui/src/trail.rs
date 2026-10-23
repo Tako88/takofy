@@ -18,8 +18,8 @@ pub struct Crumb<'a> {
 
 /// The trail for the current page.
 ///
-/// With the root on screen, Playlists is where you are. On any page the
-/// Playlists crumb becomes a link and the last crumb is current: the playlist's
+/// With the root on screen, Playlists is where you are. On any page Home and
+/// Playlists both become links back to the root, and the last crumb is current: the playlist's
 /// name once the list that names it is ready, the album's or artist's own name
 /// once its detail names this page, or the page's kind when there is no name to
 /// show. A
@@ -29,7 +29,7 @@ pub fn trail(library: &Library) -> Vec<Crumb<'_>> {
     let mut crumbs = vec![Crumb {
         label: "Home",
         current: false,
-        link: false,
+        link: library.page().is_some(),
     }];
 
     let Some(page) = library.page() else {
@@ -147,15 +147,10 @@ mod tests {
         }
     }
 
-    /// Only one crumb may be a link, because the view names a link crumb with a
-    /// single `Control`, and two widgets cannot share a widget id. This is the
-    /// bug that drew egui's "second use of widget ID" warning over the trail the
-    /// moment a playlist was opened.
+    /// Home and Playlists both lead back to the root, and each names its own
+    /// `Control`: two links cannot share one widget id.
     #[test]
-    fn at_most_one_crumb_is_a_link() {
-        let mut unselected = Library::default();
-        unselected.apply(&Update::Playlists(vec![playlist("a", "Mix")]));
-
+    fn both_ways_back_are_links_on_a_page() {
         let mut selected = Library::default();
         selected.apply(&Update::Playlists(vec![playlist("a", "Mix")]));
         selected.select("a");
@@ -169,11 +164,23 @@ mod tests {
         let mut show = Library::default();
         show.open(Page::Show("spotify:show:a".to_owned()));
 
-        for library in [unselected, selected, album, artist, show] {
+        for library in [selected, album, artist, show] {
             let crumbs = trail(&library);
-            let links = crumbs.iter().filter(|crumb| crumb.link).count();
-            assert!(links <= 1, "{links} link crumbs: {crumbs:?}");
+            let links: Vec<&str> = crumbs
+                .iter()
+                .filter(|crumb| crumb.link)
+                .map(|crumb| crumb.label)
+                .collect();
+            assert_eq!(links, ["Home", "Playlists"], "{crumbs:?}");
         }
+    }
+
+    /// At the root there is nowhere to go back to, so neither is a link.
+    #[test]
+    fn the_root_trail_has_no_link() {
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(vec![playlist("a", "Mix")]));
+        assert!(trail(&library).iter().all(|crumb| !crumb.link));
     }
 
     #[test]
@@ -208,7 +215,7 @@ mod tests {
                 Crumb {
                     label: "Home",
                     current: false,
-                    link: false,
+                    link: true,
                 },
                 Crumb {
                     label: "Playlists",
@@ -259,7 +266,7 @@ mod tests {
                 Crumb {
                     label: "Home",
                     current: false,
-                    link: false,
+                    link: true,
                 },
                 Crumb {
                     label: "Playlists",
@@ -420,7 +427,7 @@ mod tests {
                     Crumb {
                         label: "Home",
                         current: false,
-                        link: false,
+                        link: true,
                     },
                     Crumb {
                         label: "Playlists",

@@ -254,11 +254,17 @@ fn trail(ui: &mut Ui, crumbs: &[crate::trail::Crumb<'_>], rect: Rect, tokens: &T
             );
             ui.painter().galley(place.min, galley, base);
         } else if crumb.link {
-            // One link crumb can exist at a time, which is why this is safe to
-            // name with a single control: two of them would share a widget id.
+            // Home and Playlists lead to the same place, so each names its own
+            // control: two links sharing one widget id is egui's second-use
+            // warning over the trail.
+            let control = if index == 0 {
+                Control::TrailHome
+            } else {
+                Control::TrailPlaylists
+            };
             let slot = controls::slot(
                 ui,
-                Control::TrailPlaylists,
+                control,
                 egui::Role::Button,
                 place,
                 crumb.label,
@@ -277,7 +283,7 @@ fn trail(ui: &mut Ui, crumbs: &[crate::trail::Crumb<'_>], rect: Rect, tokens: &T
             ui.painter().galley(place.min, galley, color);
             clicked |= slot.response.clicked();
         } else {
-            // Home has no view to go back to, so it is text, not a control.
+            // Home at the root has nowhere to go, so it is text, not a control.
             ui.painter().galley(place.min, galley, base);
         }
         x = place.right() + space::S2;
@@ -556,6 +562,38 @@ mod tests {
         });
         output.textures_delta.clear();
         assert_eq!(role, Some(egui::Role::SearchInput));
+    }
+
+    /// Home is the library root, so on a page its crumb leads back there.
+    #[test]
+    fn the_home_crumb_is_a_way_back_to_the_root() {
+        let tokens = Tokens::DARK;
+        let ctx = egui::Context::default();
+        ctx.set_fonts(fonts::definitions());
+        ctx.set_global_style(crate::theme::style(&tokens));
+
+        let mut library = Library::default();
+        library.open(crate::route::Page::Album("spotify:album:a".to_owned()));
+        let crumbs = crate::trail::trail(&library);
+
+        let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 40.0));
+        let at = Pos2::new(rect.left() + 2.0, rect.center().y);
+        let mut back = false;
+        for event in crate::view::test_support::click_events(at) {
+            let input = egui::RawInput {
+                screen_rect: Some(rect),
+                events: vec![event],
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                if trail(ui, &crumbs, rect, &tokens) {
+                    back = true;
+                }
+            });
+            output.textures_delta.clear();
+        }
+
+        assert!(back, "the Home crumb did not ask for the root");
     }
 
     /// The magnifier sits at the field's left edge, so the text has to start
