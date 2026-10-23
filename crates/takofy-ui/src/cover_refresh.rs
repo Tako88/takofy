@@ -14,7 +14,7 @@ use std::collections::{HashMap, HashSet};
 use takofy_model::TrackEntry;
 
 /// The derived covers that must be asked for again, and the asks in flight.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CoverRefresh {
     /// Playlists whose derived cover a row edit may have invalidated.
     due: HashSet<String>,
