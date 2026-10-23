@@ -161,7 +161,9 @@ fn body(
                 block.saved.is_some(),
                 block.saved == Some(true),
             ),
-            _ => (label, false, false),
+            // The menu names the release and nothing else, so it is openable
+            // whether or not any list has answered about it.
+            _ => (label, true, false),
         };
         let slot = if lit {
             controls::icon_button_on(
@@ -604,6 +606,62 @@ mod tests {
                 }
                 _ => None,
             })
+    }
+
+    /// The menu names the release alone, so the `…` must open whether or not a
+    /// list has answered about the release yet.
+    #[test]
+    fn the_blocks_more_button_opens_a_menu() {
+        let ctx = context();
+        let tokens = Tokens::DARK;
+        let transport = Transport::default();
+        let release = release(0);
+        let likes = Likes::default();
+        let mut clicked = Clicked::default();
+        let mut at = Pos2::ZERO;
+
+        let input = |events| RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 2000.0))),
+            events,
+            ..Default::default()
+        };
+        let mut warm = ctx.run_ui(input(Vec::new()), |_ui| {});
+        warm.textures_delta.clear();
+
+        let block = Block {
+            release: &release,
+            labels: Labels::Idle,
+            cover: Cover::Missing,
+            on_screen: true,
+            playable: true,
+            here: None,
+            writing: false,
+            likes: &likes,
+            saved: None,
+        };
+        let mut found = ctx.run_ui(input(Vec::new()), |ui| {
+            let head_top = ui.cursor().min.y + stroke::HAIRLINE + space::S5;
+            at = pos2(
+                ui.max_rect().right() - extent::BUTTON_LG / 2.0,
+                head_top + extent::RELEASE_ART / 2.0,
+            );
+            let _ = show(ui, Table::Full, &block, &transport, &tokens);
+        });
+        found.textures_delta.clear();
+        let mut arrived = ctx.run_ui(input(vec![egui::Event::PointerMoved(at)]), |_ui| {});
+        arrived.textures_delta.clear();
+
+        for event in crate::view::test_support::click_events(at) {
+            let mut output = ctx.run_ui(input(vec![event]), |ui| {
+                clicked = show(ui, Table::Full, &block, &transport, &tokens);
+            });
+            output.textures_delta.clear();
+        }
+
+        assert!(
+            clicked.more.is_some(),
+            "the block's `…` refused a press, so its menu cannot be reached"
+        );
     }
 
     #[test]

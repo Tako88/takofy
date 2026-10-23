@@ -2266,13 +2266,22 @@ impl Library {
     pub fn saved_albums_request(&mut self) -> Option<Command> {
         if self.saved_albums == Load::Idle
             && matches!(self.playlists, Load::Ready(_))
-            && albums_chosen(self.root_filter.chosen(), self.sidebar_kind.chosen())
+            && (albums_chosen(self.root_filter.chosen(), self.sidebar_kind.chosen())
+                || self.on_artist_page())
         {
             self.saved_albums = Load::Loading;
             Some(Command::LoadSavedAlbums)
         } else {
             None
         }
+    }
+
+    /// Whether the page on screen draws a heart on releases it did not read.
+    ///
+    /// An artist page draws one per release, and only the saved-albums set can
+    /// say what each one is.
+    fn on_artist_page(&self) -> bool {
+        matches!(self.page(), Some(crate::route::Page::Artist(_)))
     }
 
     /// The command that starts the liked-songs read, if one is due.
@@ -9518,6 +9527,37 @@ mod tests {
 
     /// A saved album reaches the sidebar by re-reading the list that holds it: an
     /// add names no card, so the list cannot gain the row on its own.
+    /// An artist page draws a heart on each of its releases, and only the whole
+    /// set can say what they are, so the page asks for it.
+    #[test]
+    fn an_artist_page_wants_the_saved_albums() {
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(Vec::new()));
+        library.open(Page::Artist("spotify:artist:a".to_owned()));
+
+        assert_eq!(
+            library.saved_albums_request(),
+            Some(Command::LoadSavedAlbums),
+            "an artist page's hearts have nothing to read"
+        );
+    }
+
+    #[test]
+    fn a_playlist_page_does_not_want_the_saved_albums() {
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(vec![playlist(
+            "spotify:playlist:a",
+            "Alpha",
+        )]));
+        library.open(Page::Playlist("spotify:playlist:a".to_owned()));
+
+        assert_eq!(
+            library.saved_albums_request(),
+            None,
+            "a page with no hearts on it asked for a set it does not draw"
+        );
+    }
+
     #[test]
     fn a_saved_album_re_arms_the_list_that_would_hold_it() {
         let mut library = saved_library();
