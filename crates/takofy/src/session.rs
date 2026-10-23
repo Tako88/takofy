@@ -633,9 +633,12 @@ impl SessionHost for LiveSession {
 
 #[cfg(test)]
 mod tests {
+    use librespot::core::SessionConfig;
+    use librespot::playback::mixer::VolumeGetter;
+    use takofy_core::playback::Volume;
     use tokio::sync::oneshot;
 
-    use super::stop_or;
+    use super::{LiveSession, SessionError, SessionHost, stop_or};
 
     #[tokio::test]
     async fn stop_or_returns_the_work_when_it_finishes_first() {
@@ -650,6 +653,46 @@ mod tests {
         assert_eq!(
             stop_or(&mut stop, std::future::pending::<u32>()).await,
             None
+        );
+    }
+
+    #[test]
+    fn a_level_set_before_the_player_exists_is_the_level_a_later_handle_reads() {
+        let live = LiveSession::new(SessionConfig::default());
+        live.set_volume(35);
+
+        // The player is built with a clone of this cell, so what the clone
+        // reads is what the player starts at.
+        let handle = live.volume.clone();
+        assert_eq!(
+            handle.attenuation_factor(),
+            Volume::at(35).attenuation_factor(),
+            "a clone taken later reads the level set before the player existed"
+        );
+
+        live.set_volume(60);
+        assert_eq!(
+            handle.attenuation_factor(),
+            Volume::at(60).attenuation_factor(),
+            "a later change through the session is seen through the clone"
+        );
+    }
+
+    #[test]
+    fn play_before_sign_in_fails_and_keeps_the_level() {
+        let mut live = LiveSession::new(SessionConfig::default());
+        live.set_volume(35);
+
+        let error = SessionHost::play(&mut live, "spotify:track:x")
+            .expect_err("a play with no engine must fail");
+        assert!(
+            matches!(error, SessionError::NotConnected),
+            "a play before sign-in reports the missing engine"
+        );
+        assert_eq!(
+            live.volume.attenuation_factor(),
+            Volume::at(35).attenuation_factor(),
+            "a failed play leaves the level alone"
         );
     }
 }
