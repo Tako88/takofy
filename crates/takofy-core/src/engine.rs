@@ -14,9 +14,9 @@ use crate::playlist_edit::{self, PlaylistError};
 use crate::remote::{
     ROOTLIST_WIRE, RemoteContext, RemoteRootlist, label_playlists, label_tracks, read_album,
     read_artist, read_followed_artists, read_followed_shows, read_liked_tracks, read_lyrics,
-    read_playlist_state, read_related, read_release_tracks, read_saved_albums, read_show,
-    write_add, write_create, write_follow, write_like, write_move, write_remove, write_rename,
-    write_rootlist_add, write_rootlist_move, write_rootlist_remove, write_saved,
+    read_playlist_state, read_related, read_release_tracks, read_saved_albums, read_saved_state,
+    read_show, write_add, write_create, write_follow, write_like, write_move, write_remove,
+    write_rename, write_rootlist_add, write_rootlist_move, write_rootlist_remove, write_saved,
 };
 use crate::rootlist::{RootlistError, fetch_all};
 use crate::search::search_uri;
@@ -194,6 +194,16 @@ impl Engine {
     /// Writes one saved album or show out of the library.
     pub async fn set_saved(&self, uri: &str, saved: bool) -> Result<(), EngineError> {
         Ok(write_saved(&self.session, uri, saved).await?)
+    }
+
+    /// Whether one album or show is in the library, or `None` when the probe did
+    /// not answer.
+    ///
+    /// This is the answer the library's own lists cannot give: a saved album is
+    /// only listed when the albums read has run, and a page needs to know about
+    /// its own album whatever the sidebar is showing.
+    pub async fn saved_state(&self, uri: &str) -> Option<bool> {
+        read_saved_state(&self.session, uri).await
     }
 
     /// Creates a playlist called `name`, answering its URI.

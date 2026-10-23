@@ -128,10 +128,13 @@ pub(crate) fn like_batches<'a>(uris: &'a [&'a str], per: usize) -> Vec<&'a [&'a 
 }
 
 /// One contains request: the username, the set, and one item per URI.
-pub(crate) fn contains_body(username: &str, uris: &[&str]) -> Vec<u8> {
+///
+/// The set is the caller's because the route answers for any of them: an artist
+/// is asked about the followed set, an album about the collection.
+pub(crate) fn contains_body(username: &str, set: &str, uris: &[&str]) -> Vec<u8> {
     let mut body = Vec::new();
     put_str(1, username, &mut body);
-    put_str(2, ARTIST_SET, &mut body);
+    put_str(2, set, &mut body);
     for uri in uris {
         let mut item = Vec::new();
         put_str(1, uri, &mut item);
@@ -383,7 +386,7 @@ mod tests {
     #[test]
     fn a_contains_probe_names_every_uri_in_one_body() {
         assert_eq!(
-            contains_body(USER, &[ONE, TWO]),
+            contains_body(USER, ARTIST_SET, &[ONE, TWO]),
             vec![
                 0x0a, 0x05, 0x61, 0x6c, 0x69, 0x63, 0x65, //
                 0x12, 0x06, 0x61, 0x72, 0x74, 0x69, 0x73, 0x74, //
@@ -392,6 +395,19 @@ mod tests {
                 0x1a, 0x12, 0x0a, 0x10, 0x73, 0x70, 0x6f, 0x74, 0x69, 0x66, 0x79, 0x3a, 0x61, 0x72,
                 0x74, 0x69, 0x73, 0x74, 0x3a, 0x79,
             ]
+        );
+    }
+
+    /// The set is the caller's: an album is asked about the collection, and the
+    /// body says so rather than naming the artist set out of habit.
+    #[test]
+    fn a_contains_probe_names_the_set_it_was_given() {
+        let body = contains_body(USER, COLLECTION_SET, &["spotify:album:r"]);
+        let artist = contains_body(USER, ARTIST_SET, &["spotify:album:r"]);
+        assert_ne!(body, artist, "the set reached the body");
+        assert!(
+            body.windows(10).any(|run| run == COLLECTION_SET.as_bytes()),
+            "the collection set is not in the body"
         );
     }
 

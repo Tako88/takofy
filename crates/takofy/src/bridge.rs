@@ -451,6 +451,12 @@ pub(crate) fn start<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                         break;
                     }
                 }
+                Event::Command(Some(Command::LoadSaved { uri })) => {
+                    let step = load_saved(&mut host, &mut stop_rx, &task_notifier, &uri).await;
+                    if step.stopped() {
+                        break;
+                    }
+                }
                 Event::Command(Some(Command::SetSaved { uri, saved })) => {
                     let step =
                         set_saved(&mut host, &mut stop_rx, &task_notifier, &uri, saved).await;
@@ -1143,6 +1149,26 @@ async fn link_playlist<H: SessionHost>(
             Step::Done
         }
     }
+}
+
+/// Asks whether one album or show is in the library, and announces the answer.
+///
+/// A probe that does not answer is announced as unknown rather than as "not
+/// saved": the heart then stays inert instead of claiming the item is not there.
+async fn load_saved<H: SessionHost>(
+    host: &mut H,
+    stop: &mut StopReceiver<()>,
+    notifier: &Notifier,
+    uri: &str,
+) -> Step {
+    let Some(answer) = stop_or(stop, host.saved_state(uri)).await else {
+        return Step::Stopped;
+    };
+    notifier.send(Update::SavedState {
+        uri: uri.to_owned(),
+        saved: answer,
+    });
+    Step::Done
 }
 
 /// Writes one album or show in or out, and echoes the URI it was asked for.
@@ -2154,6 +2180,10 @@ mod tests {
         rootlist_move_started: Mutex<Option<Sender<()>>>,
         remove_playlist_started: Mutex<Option<Sender<()>>>,
         remove_saved_started: Mutex<Option<Sender<()>>>,
+        probes: AtomicUsize,
+        last_probe: Mutex<Option<String>>,
+        probe_answer: Mutex<Option<bool>>,
+        probe_started: Mutex<Option<Sender<()>>>,
         add_started: Mutex<Option<Sender<()>>>,
         rename_started: Mutex<Option<Sender<()>>>,
         create_started: Mutex<Option<Sender<()>>>,
@@ -2686,6 +2716,16 @@ mod tests {
                     RootlistMoveScript::Pending => std::future::pending().await,
                 }
             }
+        }
+
+        fn saved_state(&self, uri: &str) -> impl Future<Output = Option<bool>> + Send {
+            self.shared.probes.fetch_add(1, Ordering::SeqCst);
+            *self.shared.last_probe.lock().expect("lock") = Some(uri.to_owned());
+            let answer = *self.shared.probe_answer.lock().expect("lock");
+            if let Some(tx) = self.shared.probe_started.lock().expect("lock").take() {
+                let _ = tx.send(());
+            }
+            async move { answer }
         }
 
         fn set_saved(
@@ -3666,6 +3706,42 @@ mod tests {
         };
 
         run_ordered(runtime, window, teardown);
+    }
+
+    #[test]
+    fn a_saved_probe_reaches_the_host_and_its_answer_comes_back() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+        *shared.probe_answer.lock().expect("lock") = Some(true);
+        let album = "spotify:album:4uLU6hMCjMI75M1A2tKUQC";
+
+        let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::LoadSaved {
+                    uri: album.to_owned(),
+                })
+                .expect("probe");
+            ui_end.updates.recv().expect("answered")
+        });
+
+        assert_eq!(
+            update,
+            Update::SavedState {
+                uri: album.to_owned(),
+                saved: Some(true),
+            }
+        );
+        assert_eq!(shared.probes.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            shared.last_probe.lock().expect("lock").clone(),
+            Some(album.to_owned())
+        );
     }
 
     #[test]

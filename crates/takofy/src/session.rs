@@ -108,6 +108,9 @@ pub(crate) trait SessionHost: Send + 'static {
         index: usize,
     ) -> impl Future<Output = Result<Revision, SessionError>> + Send;
 
+    /// Whether one album or show is in the library.
+    fn saved_state(&self, uri: &str) -> impl Future<Output = Option<bool>> + Send;
+
     /// Writes one album or show into the library, or out of it.
     fn set_saved(
         &self,
@@ -340,6 +343,13 @@ impl SessionHost for LiveSession {
                 .await
                 .map_err(SessionError::Engine),
             None => Err(SessionError::NotConnected),
+        }
+    }
+
+    async fn saved_state(&self, uri: &str) -> Option<bool> {
+        match &self.engine {
+            Some(engine) => engine.saved_state(uri).await,
+            None => None,
         }
     }
 

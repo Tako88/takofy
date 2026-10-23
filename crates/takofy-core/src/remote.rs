@@ -675,9 +675,24 @@ pub(crate) async fn read_lyrics(session: &Session, uri: &str) -> Result<TrackLyr
 /// Whether the artist is in the user's followed set, or `None` when the probe
 /// did not answer.
 async fn read_follow(session: &Session, uri: &str) -> Option<bool> {
+    probe_membership(session, collection::ARTIST_SET, uri).await
+}
+
+/// Whether one URI is in the set its kind belongs to, or `None` when the probe
+/// did not answer.
+///
+/// The set is the same one the write names, so an album is asked about the
+/// collection and a show about the show set. A URI with no set — a track's like
+/// is the songs list, not this route — is refused rather than guessed at.
+pub(crate) async fn read_saved_state(session: &Session, uri: &str) -> Option<bool> {
+    let set = collection::saved_set(uri).ok()?;
+    probe_membership(session, set, uri).await
+}
+
+async fn probe_membership(session: &Session, set: &str, uri: &str) -> Option<bool> {
     let headers = collection_headers()?;
     let username = session.username();
-    let body = collection::contains_body(&username, &[uri]);
+    let body = collection::contains_body(&username, set, &[uri]);
     match session
         .spclient()
         .request(

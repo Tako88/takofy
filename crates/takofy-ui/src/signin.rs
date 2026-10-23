@@ -51,6 +51,7 @@ impl SignIn {
                 | Update::PlaylistLinked { .. }
                 | Update::PlaylistLinkFailed { .. }
                 | Update::Saved { .. }
+                | Update::SavedState { .. }
                 | Update::SavedFailed { .. }
                 | Update::TrackAdded { .. }
                 | Update::AddFailed { .. }

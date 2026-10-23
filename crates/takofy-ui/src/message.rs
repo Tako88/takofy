@@ -52,6 +52,8 @@ pub enum Command {
         playlist: String,
         revision: Revision,
     },
+    /// Ask whether one album or show is in the library.
+    LoadSaved { uri: String },
     /// Write one album or show into the library, or out of it.
     ///
     /// An artist is not saved this way: it is followed, through
@@ -215,6 +217,9 @@ pub enum Update {
     },
     /// The playlist could not be put on the rootlist, so the library is as it was.
     PlaylistLinkFailed { playlist: String },
+    /// Whether one album or show is in the library. `saved` is `None` when the
+    /// probe did not answer.
+    SavedState { uri: String, saved: Option<bool> },
     /// A saved album or show entered the library, or left it. The reply carried
     /// no body, so this is the write's own echo.
     Saved { uri: String, saved: bool },

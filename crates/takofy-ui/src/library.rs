@@ -195,8 +195,15 @@ pub struct Library {
     sidebar_pending: Option<SidebarPending>,
     /// Why the last sidebar write failed, until a gesture or a read clears it.
     pub sidebar_notice: Option<SidebarWrite>,
-    /// The last saved write's answer, until a list that would know better lands.
-    saved_echo: Option<(String, bool)>,
+    /// What is known about one album's or show's place in the library, beyond
+    /// what the lists say.
+    ///
+    /// A write's echo and a probe's answer are the same fact, and both outlive
+    /// the lists: a saved album is only listed once the albums read has run, and
+    /// an add names no card at all.
+    saved_known: Vec<(String, bool)>,
+    /// The URI a saved-state probe is in flight for.
+    saved_probe: Option<String>,
     /// The library head's new-playlist field.
     pub naming: Naming,
     /// The in-place rename field, on a sidebar row or a playlist band.
@@ -463,6 +470,17 @@ impl Library {
             // The collection reply carries no body, so this echo is the whole
             // confirmation.
             Update::Saved { uri, saved } => self.end_saved(uri, *saved),
+            // The probe answers for one URI, and its answer is worth keeping: the
+            // page it was asked for stays on screen while the write follows it.
+            Update::SavedState { uri, saved } => {
+                if self.saved_probe.as_deref() != Some(uri.as_str()) {
+                    return;
+                }
+                self.saved_probe = None;
+                if let Some(saved) = saved {
+                    self.remember_saved(uri, *saved);
+                }
+            }
             Update::SavedFailed { uri, saved } => {
                 if !self.saved_pending(uri, *saved) {
                     return;
@@ -787,7 +805,6 @@ impl Library {
             // accepted whenever it arrives, whatever page is on screen.
             Update::FollowedShows(shows) => {
                 self.followed = Load::Ready(shows.clone());
-                self.saved_echo = None;
             }
             Update::FollowedShowsFailed(failure) => {
                 self.followed = Load::Failed(*failure);
@@ -800,7 +817,6 @@ impl Library {
             }
             Update::SavedAlbums(albums) => {
                 self.saved_albums = Load::Ready(albums.clone());
-                self.saved_echo = None;
             }
             Update::SavedAlbumsFailed(failure) => {
                 self.saved_albums = Load::Failed(*failure);
@@ -934,9 +950,7 @@ impl Library {
     /// so the list cannot gain the row until its next read, and the heart would
     /// fall back off in between.
     pub fn is_saved(&self, uri: &str) -> Option<bool> {
-        if let Some((echoed, saved)) = &self.saved_echo
-            && echoed == uri
-        {
+        if let Some((_, saved)) = self.saved_known.iter().find(|(known, _)| known == uri) {
             return Some(*saved);
         }
         let kind = uri.strip_prefix("spotify:")?.split_once(':')?.0;
@@ -961,6 +975,37 @@ impl Library {
         ready.then_some(false)
     }
 
+    /// Records one URI's place in the library, replacing an older answer.
+    fn remember_saved(&mut self, uri: &str, saved: bool) {
+        self.saved_known.retain(|(known, _)| known != uri);
+        self.saved_known.push((uri.to_owned(), saved));
+        // A page can only be one place at a time, so one answer is enough to keep.
+        if self.saved_known.len() > 64 {
+            self.saved_known.remove(0);
+        }
+    }
+
+    /// Asks whether the page's own album or show is in the library.
+    ///
+    /// The lists cannot answer this: a saved album is listed only after the
+    /// albums read has run, which happens when that chip is chosen. A band's
+    /// heart would therefore be inert on every page opened from search or from
+    /// another artist.
+    pub fn saved_request(&mut self) -> Option<Command> {
+        let uri = match self.page()? {
+            crate::route::Page::Album(uri) | crate::route::Page::Show(uri) => uri.clone(),
+            _ => return None,
+        };
+        if self.saved_known.iter().any(|(known, _)| *known == uri) {
+            return None;
+        }
+        if self.saved_probe.as_deref() == Some(uri.as_str()) {
+            return None;
+        }
+        self.saved_probe = Some(uri.clone());
+        Some(Command::LoadSaved { uri })
+    }
+
     /// Ends a saved write: a removal drops the row, an add remembers it.
     fn end_saved(&mut self, uri: &str, saved: bool) {
         if !self.saved_pending(uri, saved) {
@@ -968,7 +1013,7 @@ impl Library {
         }
         self.sidebar_pending = None;
         self.sidebar_notice = None;
-        self.saved_echo = Some((uri.to_owned(), saved));
+        self.remember_saved(uri, saved);
         if saved {
             return;
         }
@@ -7956,22 +8001,52 @@ mod tests {
     }
 
     #[test]
-    fn a_fresh_list_ends_the_echo_it_stood_in_for() {
-        let mut library = saved_library();
-        library.save_to_library(&item(SidebarKind::Albums, "spotify:album:new"));
-        library.apply(&Update::Saved {
+    fn a_probe_is_asked_for_when_no_list_can_answer() {
+        let mut library = Library::default();
+        // Nothing has been read, so no list can say whether this album is saved.
+        library.open(crate::route::Page::Album("spotify:album:new".to_owned()));
+        assert_eq!(library.is_saved("spotify:album:new"), None);
+
+        assert_eq!(
+            library.saved_request(),
+            Some(Command::LoadSaved {
+                uri: "spotify:album:new".to_owned(),
+            })
+        );
+        assert_eq!(library.saved_request(), None, "one probe per page");
+
+        library.apply(&Update::SavedState {
             uri: "spotify:album:new".to_owned(),
-            saved: true,
+            saved: Some(true),
         });
         assert_eq!(library.is_saved("spotify:album:new"), Some(true));
+        assert_eq!(library.saved_request(), None, "the answer ends the asking");
+    }
 
-        library.apply(&Update::SavedAlbums(Vec::new()));
+    #[test]
+    fn a_probe_that_does_not_answer_leaves_the_state_unknown() {
+        let mut library = Library::default();
+        library.open(crate::route::Page::Album("spotify:album:new".to_owned()));
+        library.saved_request();
+        library.apply(&Update::SavedState {
+            uri: "spotify:album:new".to_owned(),
+            saved: None,
+        });
 
         assert_eq!(
             library.is_saved("spotify:album:new"),
-            Some(false),
-            "a read is what the echo was standing in for"
+            None,
+            "an unanswered probe claims nothing"
         );
+    }
+
+    #[test]
+    fn a_page_that_is_not_an_album_or_a_show_asks_nothing() {
+        let mut library = Library::default();
+        library.open(crate::route::Page::Playlist(
+            "spotify:playlist:a".to_owned(),
+        ));
+        assert_eq!(library.saved_request(), None);
     }
 
     #[test]
