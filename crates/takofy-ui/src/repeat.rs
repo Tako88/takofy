@@ -62,6 +62,25 @@ impl Repeat {
         self != Self::Off
     }
 
+    /// The spelling a preferences file stores, which is not the display text.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::All => "all",
+            Self::One => "one",
+        }
+    }
+
+    /// The mode `key` names, or `None` for any other spelling.
+    pub fn from_key(key: &str) -> Option<Self> {
+        match key {
+            "off" => Some(Self::Off),
+            "all" => Some(Self::All),
+            "one" => Some(Self::One),
+            _ => None,
+        }
+    }
+
     /// The badge the glyph carries, which is the only thing that tells `One`
     /// from `All` at a glance.
     pub fn badge(self) -> Option<&'static str> {
@@ -264,5 +283,28 @@ mod tests {
         assert_eq!(Repeat::Off.badge(), None);
         assert_eq!(Repeat::All.badge(), None);
         assert_eq!(Repeat::One.badge(), Some("1"));
+    }
+
+    #[test]
+    fn repeat_keys_round_trip() {
+        for mode in MODES {
+            assert_eq!(
+                Repeat::from_key(mode.key()),
+                Some(mode),
+                "{} does not read back as {mode:?}",
+                mode.key()
+            );
+        }
+    }
+
+    #[test]
+    fn repeat_from_key_rejects_other_spellings() {
+        for spelling in ["Off", "", "all ", "none"] {
+            assert_eq!(
+                Repeat::from_key(spelling),
+                None,
+                "{spelling:?} is not one of the keys the file stores"
+            );
+        }
     }
 }
