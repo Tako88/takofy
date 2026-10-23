@@ -1039,6 +1039,12 @@ struct Drawn {
 /// One library row: a placeholder tile, the name and the kind.
 ///
 /// The tile stands in until covers are fetched.
+/// The rect a row's rename field takes: both text lines, so the field's own
+/// row height and caret fit instead of being clipped to the name line.
+fn rename_field(name_x: f32, top: f32, width: f32, name_h: f32, kind_h: f32) -> Rect {
+    Rect::from_min_size(Pos2::new(name_x, top), Vec2::new(width, name_h + kind_h))
+}
+
 fn one(
     ui: &mut Ui,
     rect: Rect,
@@ -1110,9 +1116,12 @@ fn one(
         name_width,
     );
     let top = rect.center().y - (name_line.size().y + kind_line.size().y) / 2.0;
-    let field = Rect::from_min_size(
-        Pos2::new(name_x, top),
-        Vec2::new(name_width, name_line.size().y),
+    let field = rename_field(
+        name_x,
+        top,
+        name_width,
+        name_line.size().y,
+        kind_line.size().y,
     );
     if edit {
         ui.painter()
@@ -1142,7 +1151,9 @@ fn one(
                         text_color: tokens.palette.text,
                         weak_color: tokens.palette.text_subtle,
                         cursor: Stroke::new(stroke::HAIRLINE, tokens.palette.text),
-                        align: egui::Align2::LEFT_CENTER,
+                        // Top-aligned: the field is taller than the name line, and
+                        // centring the text would move the name as the field opens.
+                        align: egui::Align2::LEFT_TOP,
                     },
                 )
             };
@@ -1183,11 +1194,14 @@ fn one(
             tokens.palette.text,
         );
     }
-    ui.painter().galley(
-        Pos2::new(name_x, top + name_line.size().y),
-        kind_line,
-        tokens.palette.text_subtle,
-    );
+    // The field covers the kind line, so drawing it would show through the box.
+    if !edit {
+        ui.painter().galley(
+            Pos2::new(name_x, top + name_line.size().y),
+            kind_line,
+            tokens.palette.text_subtle,
+        );
+    }
     ui.set_opacity(before);
 
     // egui reports a focused row's Enter or Space as a click, repeats too, so a
@@ -2624,6 +2638,42 @@ mod tests {
             assert_eq!(command, None, "{kind:?} opened its page");
             assert!(carry::carried(&ctx).is_none(), "{kind:?} lifted its row");
         }
+    }
+
+    #[test]
+    fn opening_a_row_field_does_not_move_the_name() {
+        let ctx = context();
+        let mut library = movable_playlists(&["A"], 7, true, None);
+        let mut art = Art::default();
+        let (plain, _) = run_column(&ctx, Vec::new(), &mut library, &mut art);
+        let before = painted_text(&plain, "A").0.y;
+
+        library
+            .renaming
+            .open("spotify:playlist:A", "A", crate::naming::Surface::Row);
+        let (editing, _) = run_column(&ctx, Vec::new(), &mut library, &mut art);
+        let after = painted_text(&editing, "A").0.y;
+
+        assert!(
+            (after - before).abs() < 0.5,
+            "the name jumped from {before} to {after} when its field opened"
+        );
+    }
+
+    #[test]
+    fn a_rename_field_is_as_tall_as_both_of_the_row_lines() {
+        let field = super::rename_field(10.0, 4.0, 120.0, 17.0, 13.0);
+        assert_eq!(field.min, Pos2::new(10.0, 4.0));
+        assert_eq!(field.width(), 120.0);
+        assert_eq!(
+            field.height(),
+            30.0,
+            "a field on the name line alone clips its own text"
+        );
+        assert!(
+            field.height() > 17.0,
+            "the field has no room past the name line"
+        );
     }
 
     #[test]
