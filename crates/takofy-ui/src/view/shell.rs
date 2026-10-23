@@ -518,6 +518,8 @@ fn apply_verb(ui: &Ui, screen: &mut Screen<'_>, verb: Verb) -> Option<Command> {
                 None
             }
             verbs::Outcome::Unlink(item) => apply_remove_from_library(ui, screen, &item),
+            verbs::Outcome::Save(item) => screen.library.save_to_library(&item),
+            verbs::Outcome::Follow { artist, followed } => apply_follow(screen, &artist, followed),
             verbs::Outcome::Rename(item) => {
                 let surface = match screen.menu.listing() {
                     Listing::Band(_) => crate::naming::Surface::Band,
@@ -554,7 +556,10 @@ fn apply_verb(ui: &Ui, screen: &mut Screen<'_>, verb: Verb) -> Option<Command> {
         }
         // A library row's verbs are the listing branch above; a track pick has
         // no such verb.
-        verbs::Outcome::Unlink(_) | verbs::Outcome::Rename(_) => None,
+        verbs::Outcome::Unlink(_)
+        | verbs::Outcome::Save(_)
+        | verbs::Outcome::Follow { .. }
+        | verbs::Outcome::Rename(_) => None,
     }
 }
 
@@ -666,6 +671,22 @@ fn apply_cut(ui: &Ui, screen: &mut Screen<'_>, cut: Cut) -> Option<Command> {
         // names no rows to cut.
         Listing::Page | Listing::Current | Listing::Library(_) | Listing::Band(_) => None,
     }
+}
+
+/// Follows or unfollows the artist a band's menu named.
+///
+/// A page that is on it also owns the label, so the page's own state is what the
+/// write is asked through; any other artist is a plain write.
+fn apply_follow(screen: &mut Screen<'_>, artist: &str, followed: bool) -> Option<Command> {
+    // A write already in flight for this artist is not doubled: two would land in
+    // order and leave the label and the row apart.
+    if screen.library.follow.artist() == Some(artist) && screen.library.follow.pending() {
+        return None;
+    }
+    Some(Command::SetFollow {
+        artist: artist.to_owned(),
+        followed,
+    })
 }
 
 /// Applies what the queue pane reported: the picked row, the lifted block, and
@@ -10151,6 +10172,7 @@ mod tests {
                 crate::verbs::LibraryRights {
                     renamable: false,
                     removable,
+                    saved: Some(true),
                 },
             ),
             targets: Vec::new(),
@@ -10754,6 +10776,7 @@ mod tests {
                 crate::verbs::LibraryRights {
                     renamable: true,
                     removable: true,
+                    saved: Some(true),
                 },
             ),
             targets: Vec::new(),
@@ -11509,6 +11532,7 @@ mod tests {
             crate::verbs::LibraryRights {
                 renamable: true,
                 removable: true,
+                saved: Some(true),
             },
         );
         settle_menu(&mut window, &mut transport, &mut queue);
@@ -11548,6 +11572,7 @@ mod tests {
             crate::verbs::LibraryRights {
                 renamable: false,
                 removable: false,
+                saved: Some(true),
             },
         );
         settle_menu(&mut window, &mut transport, &mut queue);

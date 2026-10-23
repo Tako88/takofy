@@ -646,6 +646,9 @@ fn list_rows<T: ListItem + Clone>(
                     LibraryRights {
                         renamable: draw.renamable && renamable,
                         removable: draw.removable,
+                        // A sidebar row is listed, so its own menu never offers a
+                        // save: there is nothing to put back.
+                        saved: Some(true),
                     },
                     draw.here.clone(),
                 );

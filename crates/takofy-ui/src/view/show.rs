@@ -29,7 +29,10 @@ use crate::scroll;
 use crate::sidebar_kind::SidebarKind;
 use crate::theme::Tokens;
 
+use crate::verbs;
+
 use super::carry::{self, Ghost};
+use super::context_menu;
 use super::episode_row;
 use super::hero;
 use super::section;
@@ -115,16 +118,38 @@ pub fn show_view(
                         shuffle: false,
                         cover,
                     };
+                    let saved = library.is_saved(&uri);
                     let reply = hero::show_with(
                         ui,
                         &band,
                         tokens,
                         hero::Tools {
                             title: hero::Title::Plain,
-                            more: None,
-                            saved: library.is_saved(&uri),
+                            more: Some(true),
+                            saved,
                         },
                     );
+                    if let Some(door) = reply.more_door {
+                        let item = LibraryItem {
+                            kind: SidebarKind::Podcasts,
+                            uri: uri.clone(),
+                            name: detail.show.name.clone(),
+                        };
+                        context_menu::post(
+                            ui.ctx(),
+                            verbs::library_request(
+                                item,
+                                door,
+                                verbs::LibraryRights {
+                                    renamable: false,
+                                    removable: saved == Some(true),
+                                    saved,
+                                },
+                                Some(Page::Show(uri.clone())),
+                                crate::naming::Surface::Band,
+                            ),
+                        );
+                    }
                     if reply.played && !detail.episodes.is_empty() {
                         command = queue.start(&entries(detail), 0, transport);
                     }

@@ -26,7 +26,10 @@ use crate::theme::{
     MonoWeight, Tokens, Weight, extent, fonts, radius, space, stroke, text, tracking,
 };
 
+use crate::menu::Door;
+
 use super::carry::{self, Ghost};
+use super::context_menu;
 use super::heart;
 use super::track_row::{self, Click, Row, TitleCell, state_of};
 use super::{art, controls, text as recipe};
@@ -71,12 +74,14 @@ pub fn height(count: usize) -> f32 {
 }
 
 /// What a click inside the block asked for.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
 pub struct Clicked {
     /// The block's own play control: the release from its first track.
     pub played: bool,
     /// The heart was pressed: the value it asks the library for.
     pub saved: Option<bool>,
+    /// The "…" was pressed, and this is the door it opened.
+    pub more: Option<Door>,
     /// A row's double click, as an index into the release's tracks.
     pub row: Option<usize>,
 }
@@ -185,6 +190,9 @@ fn body(
         };
         if control == Control::ReleaseLike && slot.response.clicked() {
             clicked.saved = block.saved.map(|saved| !saved);
+        }
+        if control == Control::ReleaseMore {
+            clicked.more = context_menu::button_door(ui, &slot, rect, slot.response.id);
         }
         right = rect.left() - space::S2;
     }
@@ -488,6 +496,7 @@ mod tests {
         let mut clicked = Clicked {
             played: false,
             saved: None,
+            more: None,
             row: None,
         };
 

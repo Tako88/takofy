@@ -20,6 +20,9 @@ use crate::message::Failure;
 use crate::theme::icon::Size;
 use crate::theme::{MonoWeight, Tokens, Weight, extent, fonts, hero, space, text, tracking};
 
+use crate::menu::Door;
+
+use super::context_menu;
 use super::{art, controls, text as recipe};
 
 /// What the artist hero says.
@@ -38,10 +41,13 @@ pub struct ArtistHero<'a> {
 }
 
 /// What a press on the hero asked for.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
 pub struct Pressed {
     pub played: bool,
     pub followed: bool,
+    pub shuffled: bool,
+    /// The "…" was pressed, and this is the door it opened.
+    pub more: Option<Door>,
 }
 
 /// Draws the hero and its action row.
@@ -164,6 +170,8 @@ fn actions(ui: &mut Ui, hero: &ArtistHero<'_>, tokens: &Tokens) -> Pressed {
 
     // The tools hug the right edge, in the reference's order.
     let mut right = row.right() - space::GUTTER;
+    let mut shuffled = false;
+    let mut more = None;
     for (control, icon, label) in [
         (Control::HeroMore, Icon::More, "More options"),
         (Control::HeroShuffle, Icon::Shuffle, "Shuffle"),
@@ -172,7 +180,13 @@ fn actions(ui: &mut Ui, hero: &ArtistHero<'_>, tokens: &Tokens) -> Pressed {
             Pos2::new(right - extent::BUTTON_LG, centre - extent::BUTTON_LG / 2.0),
             Vec2::splat(extent::BUTTON_LG),
         );
-        controls::icon_button(ui, tokens, control, rect, icon, Size::MD, label, false);
+        let slot = controls::icon_button(ui, tokens, control, rect, icon, Size::MD, label, true);
+        if control == Control::HeroShuffle && slot.response.clicked() {
+            shuffled = true;
+        }
+        if control == Control::HeroMore {
+            more = context_menu::button_door(ui, &slot, rect, slot.response.id);
+        }
         right = rect.left() - space::S2;
     }
 
@@ -198,5 +212,10 @@ fn actions(ui: &mut Ui, hero: &ArtistHero<'_>, tokens: &Tokens) -> Pressed {
         }
     }
 
-    Pressed { played, followed }
+    Pressed {
+        played,
+        followed,
+        shuffled,
+        more,
+    }
 }

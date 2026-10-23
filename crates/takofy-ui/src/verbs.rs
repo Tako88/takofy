@@ -30,6 +30,11 @@ pub enum Outcome {
     AddToPlaylist { tracks: Vec<String> },
     /// The sidebar row leaves the library.
     Unlink(LibraryItem),
+    /// The item enters the library: a link for a playlist, a collection write for
+    /// an album or a show.
+    Save(LibraryItem),
+    /// An artist is followed or unfollowed.
+    Follow { artist: String, followed: bool },
     /// The sidebar row's name field opens.
     Rename(LibraryItem),
 }
@@ -58,6 +63,11 @@ pub fn spotify_link(uri: &str) -> Option<String> {
 pub struct LibraryRights {
     pub renamable: bool,
     pub removable: bool,
+    /// Whether the item is in the library, or `None` when no list can say.
+    ///
+    /// A band offers the heart's verb from this, so a page whose kind the
+    /// library never reads gets neither row.
+    pub saved: Option<bool>,
 }
 
 /// The commands a sidebar row offers: its rename, its link, and its removal.
@@ -72,6 +82,9 @@ pub fn library_items(row: &LibraryItem, rights: LibraryRights) -> Vec<Item> {
     }
     if spotify_link(&row.uri).is_some() {
         items.push(item(Verb::CopyLink, "Copy link".to_owned()));
+    }
+    if rights.saved == Some(false) {
+        items.push(item(Verb::SaveToLibrary, "Save to your library".to_owned()));
     }
     if rights.removable {
         items.push(Item {
@@ -121,8 +134,45 @@ pub fn library_outcome(verb: Verb, row: &LibraryItem) -> Option<Outcome> {
     match verb {
         Verb::CopyLink => spotify_link(&row.uri).map(Outcome::Copy),
         Verb::RemoveFromLibrary => Some(Outcome::Unlink(row.clone())),
+        Verb::SaveToLibrary => Some(Outcome::Save(row.clone())),
         Verb::Rename => Some(Outcome::Rename(row.clone())),
+        Verb::Follow | Verb::Unfollow => Some(Outcome::Follow {
+            artist: row.uri.clone(),
+            followed: verb == Verb::Follow,
+        }),
         _ => None,
+    }
+}
+
+/// The request an artist's band posts for its own menu.
+///
+/// An artist's library entry is its follow, so the menu's rows are that write and
+/// the link; nothing else in the vocabulary acts on an artist.
+pub fn artist_request(
+    artist: LibraryItem,
+    door: Door,
+    unfollowed: bool,
+    page: Option<Page>,
+) -> Request {
+    let mut items = vec![item(
+        if unfollowed {
+            Verb::Follow
+        } else {
+            Verb::Unfollow
+        },
+        if unfollowed { "Follow" } else { "Unfollow" }.to_owned(),
+    )];
+    if spotify_link(&artist.uri).is_some() {
+        items.push(item(Verb::CopyLink, "Copy link".to_owned()));
+    }
+    Request {
+        door,
+        items,
+        playlists: Vec::new(),
+        targets: Vec::new(),
+        rows: Vec::new(),
+        listing: Listing::Band(artist),
+        page,
     }
 }
 
@@ -245,9 +295,13 @@ pub fn outcome(verb: Verb, targets: &[TrackEntry]) -> Option<Outcome> {
         }),
         Verb::AddToPlaylist => pick(targets).map(|tracks| Outcome::AddToPlaylist { tracks }),
         Verb::Remove => (!targets.is_empty()).then_some(Outcome::Remove),
-        // A library row's verbs never act on a track pick, so these have no
-        // meaning here.
-        Verb::RemoveFromLibrary | Verb::Rename => None,
+        // A band's or a row's verbs act on the thing the menu was opened on, not
+        // on a pick, so they have no meaning over track rows.
+        Verb::RemoveFromLibrary
+        | Verb::Rename
+        | Verb::SaveToLibrary
+        | Verb::Follow
+        | Verb::Unfollow => None,
         Verb::Save => like_outcome(targets, true),
         Verb::Unsave => like_outcome(targets, false),
     }
@@ -1350,7 +1404,104 @@ mod tests {
         LibraryRights {
             renamable,
             removable,
+            saved: Some(true),
         }
+    }
+
+    #[test]
+    fn an_artist_band_offers_its_follow_and_the_link_and_nothing_else() {
+        let row = crate::menu::LibraryItem {
+            kind: crate::sidebar_kind::SidebarKind::Artists,
+            uri: "spotify:artist:a".to_owned(),
+            name: "Vela Moreno".to_owned(),
+        };
+        let door = Door {
+            anchor: Anchor::Pointer(egui::Pos2::ZERO),
+            opener: egui::Id::unique("artist-more"),
+            device: Device::Keyboard,
+        };
+
+        let followed = artist_request(row.clone(), door, false, None);
+        let labels: Vec<&str> = followed
+            .items
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect();
+        assert_eq!(labels, ["Unfollow", "Copy link"], "{labels:?}");
+
+        let unfollowed = artist_request(row, door, true, None);
+        let labels: Vec<&str> = unfollowed
+            .items
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect();
+        assert_eq!(labels, ["Follow", "Copy link"], "{labels:?}");
+    }
+
+    #[test]
+    fn an_artists_verbs_name_the_follow_and_the_link() {
+        let row = crate::menu::LibraryItem {
+            kind: crate::sidebar_kind::SidebarKind::Artists,
+            uri: "spotify:artist:a".to_owned(),
+            name: "Vela Moreno".to_owned(),
+        };
+
+        assert_eq!(
+            library_outcome(Verb::Follow, &row),
+            Some(Outcome::Follow {
+                artist: "spotify:artist:a".to_owned(),
+                followed: true,
+            })
+        );
+        assert_eq!(
+            library_outcome(Verb::Unfollow, &row),
+            Some(Outcome::Follow {
+                artist: "spotify:artist:a".to_owned(),
+                followed: false,
+            })
+        );
+        assert_eq!(
+            library_outcome(Verb::SaveToLibrary, &row),
+            Some(Outcome::Save(row))
+        );
+    }
+
+    /// A band offers the save only when the library says it is not there, and the
+    /// removal only when it is.
+    #[test]
+    fn a_band_offers_one_direction_of_the_library_write() {
+        let row = crate::menu::LibraryItem {
+            kind: crate::sidebar_kind::SidebarKind::Albums,
+            uri: "spotify:album:r".to_owned(),
+            name: "Signal Decay".to_owned(),
+        };
+        let rights = |saved| LibraryRights {
+            renamable: false,
+            removable: saved == Some(true),
+            saved,
+        };
+
+        let labels = |saved| -> Vec<String> {
+            library_items(&row, rights(saved))
+                .into_iter()
+                .map(|item| item.label)
+                .collect()
+        };
+        assert_eq!(
+            labels(Some(false)),
+            ["Copy link", "Save to your library"],
+            "the identity verb comes before the library's"
+        );
+        assert_eq!(
+            labels(Some(true)),
+            ["Copy link", "Remove from library"],
+            "the destructive row stays last"
+        );
+        assert_eq!(
+            labels(None),
+            ["Copy link"],
+            "an unknown state offers neither write"
+        );
     }
 
     #[test]

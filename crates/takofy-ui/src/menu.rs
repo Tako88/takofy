@@ -74,6 +74,12 @@ pub enum Verb {
     RemoveFromLibrary,
     /// Opens the name field on the one playlist a library menu was opened on.
     Rename,
+    /// Puts the one item a menu was opened on into the library.
+    SaveToLibrary,
+    /// Follows the one artist a menu was opened on.
+    Follow,
+    /// Unfollows the one artist a menu was opened on.
+    Unfollow,
 }
 
 /// The list a menu's rows came from, which decides its verbs and their labels.
@@ -1350,6 +1356,7 @@ mod tests {
             crate::verbs::LibraryRights {
                 renamable: true,
                 removable: true,
+                saved: Some(true),
             },
         );
         request.listing = Listing::Library(row);

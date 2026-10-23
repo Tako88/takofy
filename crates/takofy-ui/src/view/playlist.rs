@@ -180,6 +180,8 @@ pub fn tracks_view(
                 let rights = LibraryRights {
                     renamable,
                     removable: library.can_remove(SidebarKind::Playlists),
+                    // The band's heart offers the same save the row's menu does.
+                    saved: library.is_saved(&entry.uri),
                 };
                 context_menu::post(
                     ui.ctx(),

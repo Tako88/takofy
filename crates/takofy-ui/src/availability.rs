@@ -218,7 +218,7 @@ pub fn availability(control: Control) -> Availability {
         Control::ReleasePlay => Availability::Ready,
         Control::EpisodeToggle => Availability::Ready,
         Control::ReleaseLike => Availability::Ready, // #35
-        Control::ReleaseMore => Availability::Waiting,
+        Control::ReleaseMore => Availability::Ready, // #35
 
         // The sign-in card's one control; the state decides whether it acts.
         Control::Authorize => Availability::Ready,
@@ -259,6 +259,7 @@ mod tests {
                     | Control::DiscographyFilter
                     | Control::ReleasePlay
                     | Control::ReleaseLike
+                    | Control::ReleaseMore
                     | Control::EpisodeToggle
                     | Control::TrackMore
                     | Control::TrackLike

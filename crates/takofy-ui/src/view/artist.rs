@@ -38,6 +38,7 @@ use crate::view::text as recipe;
 
 use super::artist_hero::{self, ArtistHero};
 use super::carry::{self, Ghost};
+use super::context_menu;
 use super::filter_row;
 use super::heart;
 use super::media;
@@ -46,6 +47,7 @@ use super::section;
 use super::skeleton;
 use super::track_list::{head, list_rect};
 use super::track_row::{self, Click, Row, TitleCell, state_of};
+use crate::verbs;
 
 /// Draws the artist page and returns the command its controls asked for.
 #[expect(
@@ -146,6 +148,26 @@ pub fn artist_view(
                     if pressed.played {
                         command = queue.start(&artist.top_tracks, 0, transport);
                     }
+                    if pressed.shuffled {
+                        command = (queue.start_with_shuffle(&artist.top_tracks, 0, transport))
+                            .or(command.take());
+                    }
+                    if let Some(door) = pressed.more {
+                        let item = LibraryItem {
+                            kind: SidebarKind::Artists,
+                            uri: uri.clone(),
+                            name: artist.name.clone(),
+                        };
+                        context_menu::post(
+                            ui.ctx(),
+                            verbs::artist_request(
+                                item,
+                                door,
+                                page.follow.confirmed() != Some(true),
+                                Some(here.clone()),
+                            ),
+                        );
+                    }
 
                     super::inner(ui, |ui| {
                         let width = ui.available_width();
@@ -239,6 +261,30 @@ pub fn artist_view(
                                 }
                                 if clicked.saved.is_some() {
                                     save = Some((release.uri.clone(), release.name.clone()));
+                                }
+                                if let Some(door) = clicked.more {
+                                    let item = LibraryItem {
+                                        kind: SidebarKind::Albums,
+                                        uri: release.uri.clone(),
+                                        name: release.name.clone(),
+                                    };
+                                    // A release is an album, so its menu is an
+                                    // album's: the library write and the link.
+                                    let rights = verbs::LibraryRights {
+                                        renamable: false,
+                                        removable: saved_of(&saved, &release.uri) == Some(true),
+                                        saved: saved_of(&saved, &release.uri),
+                                    };
+                                    context_menu::post(
+                                        ui.ctx(),
+                                        verbs::library_request(
+                                            item,
+                                            door,
+                                            rights,
+                                            Some(here.clone()),
+                                            crate::naming::Surface::Band,
+                                        ),
+                                    );
                                 }
                             }
                         }

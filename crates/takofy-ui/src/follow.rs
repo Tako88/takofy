@@ -49,6 +49,12 @@ impl Follow {
         self.artist.as_deref()
     }
 
+    /// Whether the server has been heard to follow this artist, or `None` when
+    /// the page's own probe did not answer.
+    pub fn confirmed(&self) -> Option<bool> {
+        self.confirmed
+    }
+
     /// The label the button draws.
     pub fn label(&self) -> &'static str {
         if self.confirmed == Some(true) {
