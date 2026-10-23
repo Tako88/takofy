@@ -4,10 +4,11 @@
 //! values, which are a transcription of the design, and this mapping, which is a
 //! fact about egui's field names.
 
+use egui::style::ScrollStyle;
 use egui::{FontId, Margin, Stroke, TextStyle, Vec2, Visuals};
 
 use super::fonts;
-use super::{Palette, Tokens, Weight, motion, radius, space, stroke, text};
+use super::{Palette, Tokens, Weight, extent, motion, opacity, radius, space, stroke, text};
 
 pub fn style(tokens: &Tokens) -> egui::Style {
     let p = &tokens.palette;
@@ -22,6 +23,25 @@ pub fn style(tokens: &Tokens) -> egui::Style {
     style.spacing.item_spacing = Vec2::new(space::S2, space::S2);
     style.spacing.button_padding = Vec2::new(space::S3, space::S2);
     style.spacing.menu_margin = Margin::same(space::S2 as i8);
+    style.spacing.scroll = ScrollStyle {
+        // The reference's thumb: bone on a transparent track, at rest and under
+        // the pointer, so hovering brightens one thing instead of revealing it.
+        foreground_color: true,
+        floating_width: extent::SCROLLBAR,
+        bar_width: extent::SCROLLBAR,
+        // The bar floats over the list's gutter. Reserving its width would make
+        // every row four points narrower the moment a list starts to overflow.
+        floating_allocated_width: 0.0,
+        dormant_background_opacity: 0.0,
+        active_background_opacity: 0.0,
+        interact_background_opacity: 0.0,
+        dormant_handle_opacity: opacity::SCROLL_REST,
+        // Hovering anywhere over the list is not a reason to brighten the bar;
+        // only the pointer on the bar itself is, as in the reference.
+        active_handle_opacity: opacity::SCROLL_REST,
+        interact_handle_opacity: opacity::SCROLL_HOVER,
+        ..ScrollStyle::floating()
+    };
 
     style.text_styles = [
         (
@@ -139,6 +159,33 @@ mod tests {
         let style = style(&Tokens::DARK);
         assert!(style.visuals.dark_mode);
         assert_eq!(style.animation_time, motion::BASE);
+    }
+
+    #[test]
+    fn the_scrollbar_is_a_thin_bone_thumb_that_brightens_under_the_pointer() {
+        let scroll = style(&Tokens::DARK).spacing.scroll;
+        assert!(
+            scroll.floating,
+            "a bar that allocates nothing but its own thumb"
+        );
+        assert!(
+            scroll.foreground_color,
+            "the thumb takes the text colour; a widget fill would make it a surface"
+        );
+        assert_eq!(scroll.floating_width, extent::SCROLLBAR);
+        assert_eq!(scroll.bar_width, extent::SCROLLBAR);
+        assert_eq!(
+            scroll.floating_allocated_width, 0.0,
+            "the bar floats, so a list does not reflow when its content overflows"
+        );
+        assert_eq!(scroll.dormant_background_opacity, 0.0);
+        assert_eq!(scroll.dormant_handle_opacity, opacity::SCROLL_REST);
+        assert_eq!(scroll.active_handle_opacity, opacity::SCROLL_REST);
+        assert_eq!(scroll.interact_handle_opacity, opacity::SCROLL_HOVER);
+        assert!(
+            scroll.dormant_handle_opacity < scroll.interact_handle_opacity,
+            "the thumb has to get louder when the pointer is on it"
+        );
     }
 
     /// A selection has to be seen: the reference draws it as the accent under

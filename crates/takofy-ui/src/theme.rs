@@ -157,6 +157,9 @@ pub mod extent {
     pub const CHIP_PAD_X: f32 = 7.2;
     pub const CHIP_PAD_Y: f32 = 3.2;
     pub const FOCUS_OFFSET: f32 = 2.0;
+    /// The reference's scrollbar thumb: 4pt of bone, never a wider bar that
+    /// expands on hover.
+    pub const SCROLLBAR: f32 = 4.0;
 
     /// The volume slider's width, 4.5 rem.
     pub const VOLUME_W: f32 = 72.0;
@@ -431,6 +434,10 @@ pub mod scroll {
 pub mod opacity {
     /// A row in flight: still legible, clearly not on the page.
     pub const LIFTED: f32 = 0.55;
+    /// The scrollbar at rest: present, but it never competes with a row.
+    pub const SCROLL_REST: f32 = 0.16;
+    /// The scrollbar under the pointer, or being dragged.
+    pub const SCROLL_HOVER: f32 = 0.30;
 }
 
 pub mod stroke {
