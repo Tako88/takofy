@@ -141,9 +141,10 @@ impl Engine {
                 &shown,
             )
         });
+        let cover = page_cover(pages.cover(), &tracks);
         Ok(PlaylistPage {
             tracks,
-            cover: pages.cover(),
+            cover,
             access,
         })
     }
@@ -405,12 +406,26 @@ impl TrackPages<'_> {
     }
 }
 
+/// The page's cover: the context image, else the first Track-kind row's own.
+///
+/// The single-row derivation matches the listing's, so the band and the sidebar
+/// row never disagree. A first track with no cover gives none rather than
+/// falling through to the next row.
+fn page_cover(context: Option<CoverUrl>, rows: &[TrackEntry]) -> Option<CoverUrl> {
+    context.or_else(|| {
+        rows.iter()
+            .find(|row| row.is_track())
+            .and_then(|row| row.cover.clone())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use super::search_page;
+    use super::{page_cover, search_page};
     use crate::context::{ContextError, Page, PageSource, PageTrack, Resolved};
+    use takofy_model::{CoverUrl, TrackEntry};
 
     /// A source that records every URI it is asked to resolve and answers one
     /// page with one track.
@@ -478,5 +493,87 @@ mod tests {
             None
         );
         assert_eq!(source.resolved(), Vec::<String>::new());
+    }
+
+    fn cover(tail: &str) -> CoverUrl {
+        CoverUrl::from_wire(&format!("https://i.scdn.co/image/{tail}")).expect("a cover url")
+    }
+
+    fn row(uri: &str) -> TrackEntry {
+        TrackEntry {
+            uri: uri.to_owned(),
+            title: "A Title".to_owned(),
+            artists: String::new(),
+            album: None,
+            album_uri: None,
+            artist_uris: Vec::new(),
+            added_at: None,
+            duration_ms: None,
+            named: true,
+            cover: None,
+        }
+    }
+
+    #[test]
+    fn page_cover_prefers_the_context_image() {
+        let rows = vec![TrackEntry {
+            cover: Some(cover("row")),
+            ..row("spotify:track:a")
+        }];
+        assert_eq!(
+            page_cover(Some(cover("context")), &rows),
+            Some(cover("context"))
+        );
+    }
+
+    #[test]
+    fn page_cover_takes_the_first_track_rows_cover_when_the_context_names_none() {
+        let rows = vec![
+            TrackEntry {
+                cover: Some(cover("first")),
+                ..row("spotify:track:a")
+            },
+            TrackEntry {
+                cover: Some(cover("second")),
+                ..row("spotify:track:b")
+            },
+        ];
+        assert_eq!(page_cover(None, &rows), Some(cover("first")));
+    }
+
+    #[test]
+    fn page_cover_skips_episodes_and_local_files_to_find_the_first_track() {
+        let rows = vec![
+            TrackEntry {
+                cover: Some(cover("episode")),
+                ..row("spotify:episode:1")
+            },
+            TrackEntry {
+                cover: Some(cover("local")),
+                ..row("spotify:local:a:b:c:1")
+            },
+            TrackEntry {
+                cover: Some(cover("track")),
+                ..row("spotify:track:a")
+            },
+        ];
+        assert_eq!(page_cover(None, &rows), Some(cover("track")));
+    }
+
+    #[test]
+    fn page_cover_is_none_when_the_first_track_has_no_cover_even_if_the_second_has_one() {
+        let rows = vec![
+            row("spotify:track:a"),
+            TrackEntry {
+                cover: Some(cover("second")),
+                ..row("spotify:track:b")
+            },
+        ];
+        assert_eq!(page_cover(None, &rows), None);
+    }
+
+    #[test]
+    fn page_cover_is_none_for_an_empty_page() {
+        assert_eq!(page_cover(None, &[]), None);
     }
 }

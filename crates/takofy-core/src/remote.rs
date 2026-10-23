@@ -22,8 +22,8 @@ use librespot::protocol::metadata::{
 use protobuf::Message as _;
 use takofy_model::{
     AlbumDetail, ArtistDetail, CoverUrl, Episode, FollowedArtist, FollowedShow, Move,
-    PlaylistAccess, PlaylistEntry, PublishedAt, Removal, Revision, SavedAlbum, ShowDetail,
-    TrackEntry, TrackLyrics,
+    PlaylistAccess, PlaylistCover, PlaylistEntry, PublishedAt, Removal, Revision, SavedAlbum,
+    ShowDetail, TrackEntry, TrackLyrics,
 };
 
 use crate::album::{AlbumError, detail, positions};
@@ -234,16 +234,18 @@ fn first_track_uri<'a>(mut uris: impl Iterator<Item = &'a SpotifyUri>) -> Option
     })
 }
 
-/// The picture if present, else the first track's album cover.
+/// The picture as a chosen cover, else the first track's album cover as a
+/// derived one.
 fn playlist_cover(
     picture: Option<CoverUrl>,
     first_track: Option<&str>,
     labels: &Labels,
-) -> Option<CoverUrl> {
-    picture.or_else(|| {
+) -> Option<PlaylistCover> {
+    picture.map(PlaylistCover::chosen).or_else(|| {
         first_track
             .and_then(|track| labels.get(track))
             .and_then(|label| label.cover.clone())
+            .map(PlaylistCover::derived)
     })
 }
 
@@ -1539,7 +1541,7 @@ mod tests {
         Show as ShowMessage, Track as TrackMessage,
     };
     use protobuf::Message as _;
-    use takofy_model::{AddedAt, CoverUrl, Episode, PublishedAt};
+    use takofy_model::{AddedAt, CoverOrigin, CoverUrl, Episode, PlaylistCover, PublishedAt};
 
     use crate::context::PageTrack;
     use crate::playlist_edit::owned as owned_by;
@@ -2200,7 +2202,7 @@ mod tests {
         );
         assert_eq!(
             playlist_cover(Some(cover_url()), Some("t"), &labels),
-            Some(cover_url())
+            Some(PlaylistCover::chosen(cover_url()))
         );
     }
 
@@ -2219,7 +2221,9 @@ mod tests {
                 cover: Some(cover_url()),
             },
         );
-        assert_eq!(playlist_cover(None, Some("t"), &labels), Some(cover_url()));
+        let cover = playlist_cover(None, Some("t"), &labels).expect("a derived cover");
+        assert_eq!(cover, PlaylistCover::derived(cover_url()));
+        assert_eq!(cover.origin, CoverOrigin::Derived);
     }
 
     #[test]

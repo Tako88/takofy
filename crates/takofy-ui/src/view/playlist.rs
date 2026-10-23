@@ -431,8 +431,7 @@ pub fn tracks_view(
 fn band_cover_for(entry: &PlaylistEntry, settled: bool, art: &mut Art, now: Instant) -> Cover {
     match band_cover(entry, settled) {
         BandCover::Pending => entry
-            .cover
-            .as_ref()
+            .cover_url()
             .and_then(|url| art.look_held(url, now))
             .unwrap_or(Cover::Loading),
         BandCover::Entry(url) => art.look(url, now),
@@ -852,7 +851,7 @@ impl MediaDraw<'_, '_> {
                 library_kind("Playlist", entry.owner.as_deref()),
                 media_size(RootKind::Playlists, entry.tracks),
                 false,
-                entry.cover.as_ref(),
+                entry.cover_url(),
             ),
             Item::Show(show) => (
                 &show.uri,
@@ -1006,8 +1005,8 @@ mod tests {
     use crate::view::rows::Look;
     use crate::view::track_row::State;
     use takofy_model::{
-        AddedAt, AlbumDetail, CoverImage, CoverUrl, PlaylistAccess, PlaylistEntry, Revision,
-        TrackEntry,
+        AddedAt, AlbumDetail, CoverImage, CoverUrl, PlaylistAccess, PlaylistCover, PlaylistEntry,
+        Revision, TrackEntry,
     };
 
     /// The probe window: 900 by 400, the size every bare-row test runs in.
@@ -1386,7 +1385,7 @@ mod tests {
             uri: uri.to_owned(),
             name: name.to_owned(),
             named: true,
-            cover: Some(cover),
+            cover: Some(PlaylistCover::derived(cover)),
             description: None,
             owner: None,
             tracks: None,

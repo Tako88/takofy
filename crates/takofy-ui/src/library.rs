@@ -9,7 +9,7 @@ use std::ops::Range;
 
 use takofy_model::{
     AlbumDetail, ArtistDetail, CoverUrl, FollowedArtist, FollowedShow, PlaylistAccess,
-    PlaylistEntry, Revision, SavedAlbum, ShowDetail, TrackEntry,
+    PlaylistCover, PlaylistEntry, Revision, SavedAlbum, ShowDetail, TrackEntry,
 };
 
 use crate::discography::Filter;
@@ -88,7 +88,7 @@ pub enum BandCover<'a> {
 /// disagree with it.
 pub fn band_cover(entry: &PlaylistEntry, settled: bool) -> BandCover<'_> {
     if settled {
-        BandCover::Entry(entry.cover.as_ref())
+        BandCover::Entry(entry.cover_url())
     } else {
         BandCover::Pending
     }
@@ -316,7 +316,7 @@ impl Library {
                 let mut playlists = playlists.clone();
                 for entry in &mut playlists {
                     if let Some(cover) = self.context_covers.get(&entry.uri) {
-                        entry.cover = Some(cover.clone());
+                        entry.cover = Some(PlaylistCover::derived(cover.clone()));
                     }
                 }
                 self.context_covers
@@ -681,7 +681,7 @@ impl Library {
                         && let Some(entry) =
                             playlists.iter_mut().find(|entry| entry.uri == *playlist)
                     {
-                        entry.cover = Some(cover.clone());
+                        entry.cover = Some(PlaylistCover::derived(cover.clone()));
                     }
                 }
                 if self.wanted.as_deref() == Some(playlist.as_str()) {
@@ -2220,7 +2220,8 @@ impl Library {
 mod tests {
     use takofy_model::{
         AddedAt, AlbumDetail, ArtistDetail, CoverUrl, Episode, FollowedShow, Move, PlaylistAccess,
-        PlaylistEntry, ReleaseKind, Removal, Revision, Show, ShowDetail, TrackEntry, TrackLyrics,
+        PlaylistCover, PlaylistEntry, ReleaseKind, Removal, Revision, Show, ShowDetail, TrackEntry,
+        TrackLyrics,
     };
 
     use super::*;
@@ -2465,7 +2466,7 @@ mod tests {
             uri: uri.to_owned(),
             name: name.to_owned(),
             named: true,
-            cover: Some(cover),
+            cover: Some(PlaylistCover::derived(cover)),
             description: None,
             owner: None,
             tracks: None,
