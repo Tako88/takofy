@@ -4,6 +4,11 @@
 //! or an Escape is already resolved when the list asks which rows to show. The
 //! query itself lives in [`TrackFilter`], which keeps it across frames and drops
 //! it when the page changes.
+//!
+//! The row pins to the top of the list's own viewport once the flow has scrolled
+//! it off: [`row_rect`] still takes the row's space, and the row is drawn and
+//! interacted at the clip top instead, so the list's geometry is unchanged and
+//! there is never a second field.
 
 use egui::{Align2, FontId, Pos2, Rect, Sense, Stroke, Ui, WidgetInfo, vec2};
 use takofy_model::TrackEntry;
@@ -38,22 +43,66 @@ pub(super) fn row_rect(ui: &mut Ui) -> Rect {
     row
 }
 
+/// What one frame of the tools row leaves the arm under it.
+pub(super) struct Shown {
+    /// `None` when the row is unfiltered; `Some` carries the ascending true
+    /// indices of the surviving rows, empty when nothing matches.
+    pub(super) hits: Option<Vec<usize>>,
+    /// The pinned row's box, when the row left its place in the flow and was
+    /// drawn at the top of the list's own viewport this frame. `None` when it
+    /// did not pin, so the arm's clip is untouched.
+    pub(super) occupies: Option<Rect>,
+}
+
 /// Draws the tools row and answers which true rows the query leaves.
-///
-/// `None` means the row is unfiltered; `Some` carries the ascending true indices
-/// of the surviving rows, including an empty list when nothing matches.
 pub(super) fn show(
     ui: &mut Ui,
     filter: &mut TrackFilter,
     playlist: &str,
     entries: &[TrackEntry],
     tokens: &Tokens,
-) -> Option<Vec<usize>> {
-    let row = row_rect(ui);
-    if row.width() <= 0.0 {
-        return filter
-            .needle(playlist)
-            .map(|needle| track_filter::hits(entries, &needle));
+) -> Shown {
+    let flow = row_rect(ui);
+    if flow.width() <= 0.0 {
+        return Shown {
+            hits: filter
+                .needle(playlist)
+                .map(|needle| track_filter::hits(entries, &needle)),
+            occupies: None,
+        };
+    }
+
+    // The row pins to the top of the list's own viewport once the flow has
+    // scrolled above it. Nothing else moves: the flow keeps the row's space, so
+    // the list's geometry, the scrollbar and its culling are unchanged. It is
+    // the same row, drawn and interacted at the clip top instead, so there is
+    // never a second field, a second id or a second focus.
+    let clip_top = ui.clip_rect().top();
+    let pinned = flow.top() < clip_top;
+    let row = if pinned {
+        Rect::from_min_size(Pos2::new(flow.left(), clip_top), flow.size())
+    } else {
+        flow
+    };
+
+    // The rows and the band above this one slide under a pinned row, and
+    // everything drawn before it stays on the canvas: what the field and the
+    // count leave empty would show the page behind instead of the row. The
+    // row's own surface is painted first, the row's full width and full
+    // height, so the row's contents land on it rather than beside it.
+    if pinned {
+        ui.painter().rect_filled(row, 0.0, tokens.palette.surface);
+        // The row is holding the list under it, so it wears an edge to say so:
+        // a full-width hairline at its bottom, the row's edge and not the
+        // field's underline, painted before the field keeps that underline.
+        ui.painter().rect_filled(
+            Rect::from_min_size(
+                Pos2::new(row.left(), row.bottom() - stroke::HAIRLINE),
+                vec2(row.width(), stroke::HAIRLINE),
+            ),
+            0.0,
+            tokens.palette.border,
+        );
     }
 
     // The count sits left of the field, so its box comes out of the row before
@@ -246,5 +295,8 @@ pub(super) fn show(
             tokens.palette.text_subtle,
         );
     }
-    hits
+    Shown {
+        hits,
+        occupies: pinned.then_some(row),
+    }
 }
