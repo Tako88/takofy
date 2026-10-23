@@ -9,6 +9,10 @@ mod cover;
 mod decode;
 mod headless;
 mod keychain;
+// Nothing in the binary calls into this module yet; its tests do. Remove the
+// allow when the app opens the file.
+#[allow(dead_code)]
+mod preferences;
 mod prompt;
 mod session;
 
