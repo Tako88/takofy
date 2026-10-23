@@ -1160,7 +1160,7 @@ mod tests {
 
     use super::*;
     use crate::cover::Art;
-    use crate::library::{Library, Load};
+    use crate::library::{Library, Load, MediaLayout};
     use crate::library_filter::RootKind;
     use crate::menu::LibraryItem;
     use crate::message::{Failure, Update};
@@ -10366,6 +10366,241 @@ mod tests {
 
         assert_eq!(command, None, "a removal was applied over a typing field");
         assert!(!library.write_in_flight());
+    }
+
+    // ---- the library root's list rows ----
+
+    /// Draws the root in the list density on `kind`'s chip.
+    fn library_list(window: &mut Window, kind: RootKind) {
+        window.library.layout = MediaLayout::List;
+        window.library.root_filter.choose(kind);
+    }
+
+    /// Clicks the `⋯` on the root's list row painted as `title`.
+    fn click_root_more(
+        window: &mut Window,
+        transport: &mut Transport,
+        queue: &mut Queue,
+        title: &str,
+    ) -> Option<Command> {
+        let (_, frame) = window.frame(transport, queue, Vec::new());
+        let more = more_button(&frame, view_rect(window), title);
+        window.click(transport, queue, more)
+    }
+
+    /// Opens the menu the root's list row painted as `title` offers.
+    fn open_root_menu(
+        window: &mut Window,
+        transport: &mut Transport,
+        queue: &mut Queue,
+        title: &str,
+    ) {
+        let _ = click_root_more(window, transport, queue, title);
+        settle_menu(window, transport, queue);
+        assert!(window.menu.is_open(), "the row's `⋯` opened no menu");
+    }
+
+    #[test]
+    fn a_root_rows_more_opens_the_sidebar_rows_menu() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let uri = "spotify:playlist:a";
+        sidebar_row(&mut window, uri, "Evening");
+        library_list(&mut window, RootKind::Playlists);
+
+        open_root_menu(&mut window, &mut transport, &mut queue, "Evening");
+
+        assert_eq!(
+            window.menu.listing(),
+            &Listing::Library(library_row(SidebarKind::Playlists, uri, "Evening"))
+        );
+        let labels: Vec<&str> = window
+            .menu
+            .items()
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect();
+        assert_eq!(labels, ["Copy link", "Remove from library"]);
+        assert_eq!(
+            window.menu.items().last().map(|item| item.kind),
+            Some(crate::menu::Kind::Destructive),
+            "the removal is the destructive row, drawn last"
+        );
+    }
+
+    #[test]
+    fn a_root_rows_removal_issues_its_kinds_own_write() {
+        // An editable playlist is unlinked from the rootlist.
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let uri = "spotify:playlist:a";
+        sidebar_row(&mut window, uri, "Evening");
+        library_list(&mut window, RootKind::Playlists);
+        open_root_menu(&mut window, &mut transport, &mut queue, "Evening");
+
+        assert_eq!(
+            press(&mut window, &mut transport, &mut queue, egui::Key::Delete),
+            Some(Command::RemovePlaylist {
+                playlist: uri.to_owned(),
+                revision: revision("rev-1"),
+                index: 0,
+            })
+        );
+        assert!(window.library.write_in_flight());
+
+        // A saved album is put back instead.
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let uri = "spotify:album:r";
+        window.library.apply(&Update::Playlists(Vec::new()));
+        window.library.apply(&Update::SavedAlbums(vec![SavedAlbum {
+            uri: uri.to_owned(),
+            name: "A Record".to_owned(),
+            named: true,
+            artists: String::new(),
+            year: None,
+            cover: None,
+            tracks: None,
+        }]));
+        library_list(&mut window, RootKind::Albums);
+        open_root_menu(&mut window, &mut transport, &mut queue, "A Record");
+
+        assert_eq!(
+            press(&mut window, &mut transport, &mut queue, egui::Key::Delete),
+            Some(Command::SetSaved {
+                uri: uri.to_owned(),
+                saved: false,
+            })
+        );
+        assert!(window.library.write_in_flight(), "the album's write is out");
+    }
+
+    #[test]
+    fn a_root_rows_copy_link_writes_its_url() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let uri = "spotify:playlist:4uLU6hMCjMI75M1A2tKUQC";
+        sidebar_row(&mut window, uri, "Deep Focus");
+        library_list(&mut window, RootKind::Playlists);
+        open_root_menu(&mut window, &mut transport, &mut queue, "Deep Focus");
+
+        // The pointer opened the menu and lit nothing; one step down puts the
+        // keyboard on the first row, the way a user reaching for the keys does.
+        let _ = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![key(egui::Key::ArrowDown, true)],
+        );
+        let (_, frame) = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![key(egui::Key::Enter, true)],
+        );
+
+        let copied = frame
+            .platform_output
+            .commands
+            .iter()
+            .find_map(|command| match command {
+                egui::OutputCommand::CopyText(text) => Some(text.as_str()),
+                _ => None,
+            });
+        assert_eq!(
+            copied,
+            Some("https://open.spotify.com/playlist/4uLU6hMCjMI75M1A2tKUQC")
+        );
+        assert!(!window.menu.is_open());
+    }
+
+    #[test]
+    fn a_root_rows_more_opens_nothing_while_a_write_is_in_flight() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let uri = "spotify:playlist:a";
+        sidebar_row(&mut window, uri, "Evening");
+        library_list(&mut window, RootKind::Playlists);
+        open_root_menu(&mut window, &mut transport, &mut queue, "Evening");
+        assert_eq!(
+            press(&mut window, &mut transport, &mut queue, egui::Key::Delete),
+            Some(Command::RemovePlaylist {
+                playlist: uri.to_owned(),
+                revision: revision("rev-1"),
+                index: 0,
+            })
+        );
+        assert!(window.library.write_in_flight());
+
+        let _ = click_root_more(&mut window, &mut transport, &mut queue, "Evening");
+        settle_menu(&mut window, &mut transport, &mut queue);
+
+        // The gate shuts the menu whole: there is no menu to ask what it omits.
+        assert!(!window.menu.is_open());
+
+        // The write's reply clears the gate and leaves the row where it was, so
+        // the same point pressed again opens the row's menu. Only the pair
+        // proves the gate is what shut it: the second press shows a live `⋯`
+        // sits under this point in this setup, the first shows the write alone
+        // holds it.
+        window.library.apply(&Update::PlaylistRemoveFailed {
+            playlist: uri.to_owned(),
+        });
+        assert!(!window.library.write_in_flight());
+
+        let _ = click_root_more(&mut window, &mut transport, &mut queue, "Evening");
+        settle_menu(&mut window, &mut transport, &mut queue);
+        assert!(
+            window.menu.is_open(),
+            "the `⋯` opened nothing with no write in flight"
+        );
+    }
+
+    #[test]
+    fn a_root_rows_refused_removal_is_a_dead_press() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let uri = "spotify:artist:a";
+        window.library.apply(&Update::Playlists(Vec::new()));
+        window
+            .library
+            .apply(&Update::FollowedArtists(vec![FollowedArtist {
+                uri: uri.to_owned(),
+                name: "Vela Moreno".to_owned(),
+                named: true,
+                portrait: None,
+                releases: None,
+            }]));
+        library_list(&mut window, RootKind::Artists);
+        open_root_menu(&mut window, &mut transport, &mut queue, "Vela Moreno");
+        assert_eq!(
+            window.menu.items().last().map(|item| item.verb),
+            Some(Verb::RemoveFromLibrary),
+            "the row was stripped of a removal the library still allowed"
+        );
+
+        // The list empties under the open menu, so the row the menu names is no
+        // longer saved and the write refuses.
+        window.library.apply(&Update::FollowedArtists(Vec::new()));
+        assert_eq!(
+            window.library.is_saved(uri),
+            Some(false),
+            "the removal was refused for another reason"
+        );
+
+        assert_eq!(
+            press(&mut window, &mut transport, &mut queue, egui::Key::Delete),
+            None,
+            "a refused removal produced a command"
+        );
+        assert!(!window.menu.is_open());
+        assert!(!window.library.write_in_flight());
+        assert!(
+            matches!(&window.library.followed_artists, Load::Ready(artists) if artists.is_empty()),
+            "a refused removal changed the list"
+        );
     }
 
     /// A point inside the sidebar row painted as `name`.
