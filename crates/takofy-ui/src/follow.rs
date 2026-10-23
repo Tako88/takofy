@@ -49,6 +49,12 @@ impl Follow {
         self.artist.as_deref()
     }
 
+    /// Whether the server has been heard to follow this artist, or `None` when
+    /// the page's own probe did not answer.
+    pub fn confirmed(&self) -> Option<bool> {
+        self.confirmed
+    }
+
     /// The label the button draws.
     pub fn label(&self) -> &'static str {
         if self.confirmed == Some(true) {
@@ -61,6 +67,11 @@ impl Follow {
     /// Whether the button can be pressed at all.
     pub fn pressable(&self) -> bool {
         self.artist.is_some() && self.pending.is_none()
+    }
+
+    /// Whether a write of the button's is in flight.
+    pub fn pending(&self) -> bool {
+        self.pending.is_some()
     }
 
     /// The failure the button's hint shows, if the last write failed.

@@ -9,20 +9,21 @@ use crate::context::{ContextError, Page, PageSource, Walker};
 use crate::credentials::AccessToken;
 use crate::followed::FollowedError;
 use crate::lyrics::LyricsError;
-use crate::playback::{Playback, PlaybackError, PlaybackEvent};
+use crate::playback::{Playback, PlaybackError, PlaybackEvent, Volume};
 use crate::playlist_edit::{self, PlaylistError};
 use crate::remote::{
     ROOTLIST_WIRE, RemoteContext, RemoteRootlist, label_playlists, label_tracks, read_album,
-    read_artist, read_followed_artists, read_followed_shows, read_lyrics, read_playlist_state,
-    read_related, read_release_tracks, read_saved_albums, read_show, write_add, write_follow,
-    write_move, write_rootlist_move,
+    read_artist, read_followed_artists, read_followed_shows, read_liked_tracks, read_lyrics,
+    read_playlist_state, read_related, read_release_tracks, read_saved_albums, read_saved_state,
+    read_show, write_add, write_create, write_follow, write_like, write_move, write_remove,
+    write_rename, write_rootlist_add, write_rootlist_move, write_rootlist_remove, write_saved,
 };
 use crate::rootlist::{RootlistError, fetch_all};
 use crate::search::search_uri;
 use crate::show::ShowError;
 use takofy_model::{
     AlbumDetail, ArtistDetail, CoverUrl, FollowedArtist, FollowedShow, Move, PlaylistAccess,
-    PlaylistEntry, Revision, SavedAlbum, ShowDetail, TrackEntry, TrackLyrics,
+    PlaylistEntry, Removal, Revision, SavedAlbum, ShowDetail, TrackEntry, TrackLyrics,
 };
 
 /// Why an [`Engine`] operation failed.
@@ -76,11 +77,22 @@ impl Engine {
         })
     }
 
+    /// One playlist as the sidebar draws it: its name, cover and counts.
+    ///
+    /// A created list has none of these in the write's replies, so this is the
+    /// read that fills them in without waiting for the next rootlist reload.
+    pub async fn playlist_entry(&self, playlist_uri: &str) -> Option<PlaylistEntry> {
+        label_playlists(&self.session, vec![playlist_uri.to_owned()])
+            .await
+            .pop()
+    }
+
     /// Starts a player over this session.
     ///
     /// Needs an active Tokio runtime: the event forwarder is spawned on it.
     pub fn playback(
         &self,
+        volume: Volume,
     ) -> Result<
         (
             Playback,
@@ -88,7 +100,7 @@ impl Engine {
         ),
         PlaybackError,
     > {
-        Playback::start(self.session.clone())
+        Playback::start(self.session.clone(), volume)
     }
 
     /// A paged, labelled view of a playlist's tracks.
@@ -129,9 +141,10 @@ impl Engine {
                 &shown,
             )
         });
+        let cover = page_cover(pages.cover(), &tracks);
         Ok(PlaylistPage {
             tracks,
-            cover: pages.cover(),
+            cover,
             access,
         })
     }
@@ -146,6 +159,16 @@ impl Engine {
         Ok(write_move(&self.session, playlist_uri, revision, moves).await?)
     }
 
+    /// Removes rows from a playlist, answering the revision to hold next.
+    pub async fn remove_tracks(
+        &self,
+        playlist_uri: &str,
+        revision: &Revision,
+        removals: &[Removal],
+    ) -> Result<Revision, EngineError> {
+        Ok(write_remove(&self.session, playlist_uri, revision, removals).await?)
+    }
+
     /// Writes one move to the user's rootlist, answering the revision to hold
     /// next.
     pub async fn move_playlist(
@@ -157,15 +180,86 @@ impl Engine {
         Ok(write_rootlist_move(&self.session, revision, from, to).await?)
     }
 
-    /// Appends one track to a playlist, answering the revision to hold next.
-    pub async fn add_track(
+    /// Removes one playlist from the user's rootlist, answering the revision the
+    /// next write must name.
+    ///
+    /// The rootlist unlinks only: the playlist itself survives.
+    pub async fn remove_playlist(
+        &self,
+        revision: &Revision,
+        index: usize,
+    ) -> Result<Revision, EngineError> {
+        Ok(write_rootlist_remove(&self.session, revision, index).await?)
+    }
+
+    /// Writes one saved album or show out of the library.
+    pub async fn set_saved(&self, uri: &str, saved: bool) -> Result<(), EngineError> {
+        Ok(write_saved(&self.session, uri, saved).await?)
+    }
+
+    /// Whether one album or show is in the library, or `None` when the probe did
+    /// not answer.
+    ///
+    /// This is the answer the library's own lists cannot give: a saved album is
+    /// only listed when the albums read has run, and a page needs to know about
+    /// its own album whatever the sidebar is showing.
+    pub async fn saved_state(&self, uri: &str) -> Option<bool> {
+        read_saved_state(&self.session, uri).await
+    }
+
+    /// Creates a playlist called `name`, answering its URI.
+    ///
+    /// The playlist is not on the rootlist until [`Self::link_playlist`] puts it
+    /// there, and nothing else can find it before that.
+    pub async fn make_playlist(&self, name: &str) -> Result<String, EngineError> {
+        Ok(write_create(&self.session, name).await?)
+    }
+
+    /// Puts `playlist_uri` at the front of the user's rootlist, answering the
+    /// revision to hold next.
+    pub async fn link_playlist(
+        &self,
+        revision: &Revision,
+        playlist_uri: &str,
+    ) -> Result<Revision, EngineError> {
+        Ok(write_rootlist_add(&self.session, revision, playlist_uri).await?)
+    }
+
+    /// What a playlist read says about writing to it, when the read answers.
+    ///
+    /// Best effort: a list that cannot be read yet is one the sidebar may not
+    /// write to, which is the fail-safe the caller draws.
+    pub async fn playlist_state(&self, playlist_uri: &str) -> Option<PlaylistAccess> {
+        let state = read_playlist_state(&self.session, playlist_uri).await?;
+        playlist_edit::listing_access(state.revision.as_bytes(), state.can_edit)
+    }
+
+    /// Renames a playlist, answering the revision to hold next.
+    pub async fn rename_playlist(
+        &self,
+        playlist_uri: &str,
+        revision: &Revision,
+        name: &str,
+    ) -> Result<Revision, EngineError> {
+        Ok(write_rename(&self.session, playlist_uri, revision, name).await?)
+    }
+
+    /// Appends tracks to a playlist, answering the revision to hold next.
+    pub async fn add_tracks(
         &self,
         playlist_uri: &str,
         revision: &Revision,
         from_index: usize,
-        track_uri: &str,
+        track_uris: &[String],
     ) -> Result<Revision, EngineError> {
-        Ok(write_add(&self.session, playlist_uri, revision, from_index, track_uri).await?)
+        Ok(write_add(
+            &self.session,
+            playlist_uri,
+            revision,
+            from_index,
+            track_uris,
+        )
+        .await?)
     }
 
     /// The tracks one search query answers, labelled, in the wire's own order.
@@ -248,6 +342,16 @@ impl Engine {
     pub async fn saved_albums(&self) -> Result<Vec<SavedAlbum>, EngineError> {
         Ok(read_saved_albums(&self.session).await?)
     }
+
+    /// The tracks the user has liked, newest save first.
+    pub async fn liked_tracks(&self) -> Result<Vec<String>, EngineError> {
+        Ok(read_liked_tracks(&self.session).await?)
+    }
+
+    /// Writes one pick into the liked-songs set, or out of it.
+    pub async fn set_liked(&self, tracks: Vec<String>, liked: bool) -> Result<(), EngineError> {
+        Ok(write_like(&self.session, tracks, liked).await?)
+    }
 }
 
 /// The rootlist: its entries, and what the column may write with.
@@ -302,12 +406,26 @@ impl TrackPages<'_> {
     }
 }
 
+/// The page's cover: the context image, else the first Track-kind row's own.
+///
+/// The single-row derivation matches the listing's, so the band and the sidebar
+/// row never disagree. A first track with no cover gives none rather than
+/// falling through to the next row.
+fn page_cover(context: Option<CoverUrl>, rows: &[TrackEntry]) -> Option<CoverUrl> {
+    context.or_else(|| {
+        rows.iter()
+            .find(|row| row.is_track())
+            .and_then(|row| row.cover.clone())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use super::search_page;
+    use super::{page_cover, search_page};
     use crate::context::{ContextError, Page, PageSource, PageTrack, Resolved};
+    use takofy_model::{CoverUrl, TrackEntry};
 
     /// A source that records every URI it is asked to resolve and answers one
     /// page with one track.
@@ -375,5 +493,87 @@ mod tests {
             None
         );
         assert_eq!(source.resolved(), Vec::<String>::new());
+    }
+
+    fn cover(tail: &str) -> CoverUrl {
+        CoverUrl::from_wire(&format!("https://i.scdn.co/image/{tail}")).expect("a cover url")
+    }
+
+    fn row(uri: &str) -> TrackEntry {
+        TrackEntry {
+            uri: uri.to_owned(),
+            title: "A Title".to_owned(),
+            artists: String::new(),
+            album: None,
+            album_uri: None,
+            artist_uris: Vec::new(),
+            added_at: None,
+            duration_ms: None,
+            named: true,
+            cover: None,
+        }
+    }
+
+    #[test]
+    fn page_cover_prefers_the_context_image() {
+        let rows = vec![TrackEntry {
+            cover: Some(cover("row")),
+            ..row("spotify:track:a")
+        }];
+        assert_eq!(
+            page_cover(Some(cover("context")), &rows),
+            Some(cover("context"))
+        );
+    }
+
+    #[test]
+    fn page_cover_takes_the_first_track_rows_cover_when_the_context_names_none() {
+        let rows = vec![
+            TrackEntry {
+                cover: Some(cover("first")),
+                ..row("spotify:track:a")
+            },
+            TrackEntry {
+                cover: Some(cover("second")),
+                ..row("spotify:track:b")
+            },
+        ];
+        assert_eq!(page_cover(None, &rows), Some(cover("first")));
+    }
+
+    #[test]
+    fn page_cover_skips_episodes_and_local_files_to_find_the_first_track() {
+        let rows = vec![
+            TrackEntry {
+                cover: Some(cover("episode")),
+                ..row("spotify:episode:1")
+            },
+            TrackEntry {
+                cover: Some(cover("local")),
+                ..row("spotify:local:a:b:c:1")
+            },
+            TrackEntry {
+                cover: Some(cover("track")),
+                ..row("spotify:track:a")
+            },
+        ];
+        assert_eq!(page_cover(None, &rows), Some(cover("track")));
+    }
+
+    #[test]
+    fn page_cover_is_none_when_the_first_track_has_no_cover_even_if_the_second_has_one() {
+        let rows = vec![
+            row("spotify:track:a"),
+            TrackEntry {
+                cover: Some(cover("second")),
+                ..row("spotify:track:b")
+            },
+        ];
+        assert_eq!(page_cover(None, &rows), None);
+    }
+
+    #[test]
+    fn page_cover_is_none_for_an_empty_page() {
+        assert_eq!(page_cover(None, &[]), None);
     }
 }

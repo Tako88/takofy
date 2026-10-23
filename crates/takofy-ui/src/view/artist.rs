@@ -24,24 +24,30 @@ use crate::cover::{Art, Cover};
 use crate::format::{discography_meta, format_position};
 use crate::layout::{Table, cards, table as table_layout};
 use crate::library::{Library, Load};
+use crate::likes::Likes;
+use crate::menu::LibraryItem;
 use crate::message::Command;
 use crate::player::Transport;
 use crate::queue::Queue;
 use crate::releases::Labels;
 use crate::route::Page;
 use crate::scroll;
+use crate::sidebar_kind::SidebarKind;
 use crate::theme::{Tokens, extent, space};
 use crate::view::text as recipe;
 
 use super::artist_hero::{self, ArtistHero};
 use super::carry::{self, Ghost};
+use super::context_menu;
 use super::filter_row;
+use super::heart;
 use super::media;
 use super::release_block::{self, Block};
 use super::section;
 use super::skeleton;
 use super::track_list::{head, list_rect};
 use super::track_row::{self, Click, Row, TitleCell, state_of};
+use crate::verbs;
 
 /// Draws the artist page and returns the command its controls asked for.
 #[expect(
@@ -64,12 +70,34 @@ pub fn artist_view(
         return None;
     };
     let uri = uri.clone();
+    // The page the release blocks' menus are about, and whether a write is
+    // holding the library still.
+    let here = Page::Artist(uri.clone());
+    let writing = library.write_in_flight();
+    // The sidebar's removal of this artist is already in flight; a follow write
+    // now would land in order with it and leave the row and the label apart.
+    let removal_pending = library.saved_pending(&uri, false);
 
     let mut command = None;
     let mut retry = false;
     // A card press names an artist; opening it needs the library, which the page
     // has borrowed for the whole draw, so it waits for the scroll area to close.
     let mut open: Option<String> = None;
+    // A release's heart asks the library for the release, which the page has
+    // borrowed; it is applied once the scroll area closes.
+    // The release the heart named, its name, and the value it asked for.
+    let mut save: Option<(String, String, bool)> = None;
+    // Every release's saved state, read once: the blocks draw inside the borrow.
+    let saved: Vec<(String, Option<bool>)> = library
+        .current_artist()
+        .map(|artist| {
+            artist
+                .releases
+                .iter()
+                .map(|release| (release.uri.clone(), library.is_saved(&release.uri)))
+                .collect()
+        })
+        .unwrap_or_default();
 
     // The scroll offset is this artist's, not the album's or the playlist's that
     // share the pane.
@@ -111,15 +139,35 @@ pub fn artist_view(
                         portrait: art.look(artist.portrait.as_ref(), now),
                         playable: !artist.top_tracks.is_empty(),
                         follow: page.follow.label(),
-                        follow_live: page.follow.pressable(),
+                        follow_live: page.follow.pressable() && !removal_pending,
                         follow_failed: page.follow.failed(),
                     };
                     let pressed = artist_hero::show(ui, &hero, tokens);
-                    if pressed.followed {
+                    if pressed.followed && !removal_pending {
                         command = page.follow.pressed();
                     }
                     if pressed.played {
                         command = queue.start(&artist.top_tracks, 0, transport);
+                    }
+                    if pressed.shuffled {
+                        command = (queue.start_with_shuffle(&artist.top_tracks, 0, transport))
+                            .or(command.take());
+                    }
+                    if let Some(door) = pressed.more {
+                        let item = LibraryItem {
+                            kind: SidebarKind::Artists,
+                            uri: uri.clone(),
+                            name: artist.name.clone(),
+                        };
+                        context_menu::post(
+                            ui.ctx(),
+                            verbs::artist_request(
+                                item,
+                                door,
+                                page.follow.confirmed() != Some(true),
+                                Some(here.clone()),
+                            ),
+                        );
                     }
 
                     super::inner(ui, |ui| {
@@ -133,6 +181,8 @@ pub fn artist_view(
                             queue,
                             tokens,
                             &mut command,
+                            writing,
+                            page.likes,
                         );
 
                         let tracks: usize = artist
@@ -174,6 +224,10 @@ pub fn artist_view(
                                         cover: Cover::Missing,
                                         on_screen: false,
                                         playable: false,
+                                        here: Some(&here),
+                                        writing,
+                                        likes: page.likes,
+                                        saved: saved_of(&saved, &release.uri),
                                     };
                                     let _ =
                                         release_block::show(ui, table, &block, transport, tokens);
@@ -187,6 +241,10 @@ pub fn artist_view(
                                     cover,
                                     on_screen: true,
                                     playable: matches!(labels, Labels::Ready(_)),
+                                    here: Some(&here),
+                                    writing,
+                                    likes: page.likes,
+                                    saved: saved_of(&saved, &release.uri),
                                 };
                                 let clicked =
                                     release_block::show(ui, table, &block, transport, tokens);
@@ -201,6 +259,33 @@ pub fn artist_view(
                                 }
                                 if let (Some(index), Some(tracks)) = (clicked.row, ready) {
                                     command = queue.start(tracks, index, transport);
+                                }
+                                if let Some(asked) = clicked.saved {
+                                    save = Some((release.uri.clone(), release.name.clone(), asked));
+                                }
+                                if let Some(door) = clicked.more {
+                                    let item = LibraryItem {
+                                        kind: SidebarKind::Albums,
+                                        uri: release.uri.clone(),
+                                        name: release.name.clone(),
+                                    };
+                                    // A release is an album, so its menu is an
+                                    // album's: the library write and the link.
+                                    let rights = verbs::LibraryRights {
+                                        renamable: false,
+                                        removable: saved_of(&saved, &release.uri) == Some(true),
+                                        saved: saved_of(&saved, &release.uri),
+                                    };
+                                    context_menu::post(
+                                        ui.ctx(),
+                                        verbs::library_request(
+                                            item,
+                                            door,
+                                            rights,
+                                            Some(here.clone()),
+                                            crate::naming::Surface::Band,
+                                        ),
+                                    );
                                 }
                             }
                         }
@@ -219,7 +304,25 @@ pub fn artist_view(
     if let Some(artist) = open {
         command = library.open(Page::Artist(artist));
     }
+    if let Some((uri, name, asked)) = save
+        && command.is_none()
+    {
+        let item = LibraryItem {
+            kind: SidebarKind::Albums,
+            uri,
+            name,
+        };
+        command = library.set_saved(&item, asked);
+    }
     command
+}
+
+/// One release's saved state, as the page read it before the draw.
+fn saved_of(saved: &[(String, Option<bool>)], uri: &str) -> Option<bool> {
+    saved
+        .iter()
+        .find(|(release, _)| release == uri)
+        .and_then(|(_, saved)| *saved)
 }
 
 /// The likeness row: the artists this one is heard with, as round cards.
@@ -267,6 +370,7 @@ fn fans(
             sub: "Artist",
             size: "",
             round: true,
+            shelf: SidebarKind::Artists,
             cover: art.look(card.portrait.as_ref(), now),
         };
         if media::tile(ui, rect, &media, tokens) {
@@ -283,7 +387,7 @@ fn fans(
 /// whole top list from there.
 #[expect(
     clippy::too_many_arguments,
-    reason = "the section needs its table, width, state and frame's stores"
+    reason = "the section needs its table, width, state, the frame's stores and the write gate"
 )]
 fn popular(
     ui: &mut Ui,
@@ -294,7 +398,12 @@ fn popular(
     queue: &mut Queue,
     tokens: &Tokens,
     command: &mut Option<Command>,
+    writing: bool,
+    likes: &Likes,
 ) {
+    // The section's rows are on this artist's page, so a menu opened on one of
+    // them knows which page it is about.
+    let here = Page::Artist(artist.uri.clone());
     section::head(ui, "Popular", "", tokens);
     if artist.top_tracks.is_empty() {
         ui.label(recipe::muted("No popular tracks.", tokens));
@@ -312,6 +421,7 @@ fn popular(
         Id::unique(("artist-popular", artist.uri.as_str())),
         count,
     );
+    let gate = selection.gate(writing);
 
     for (index, entry) in artist.top_tracks.iter().enumerate() {
         let rect = table_layout::row_rect(list, index, extent::ROW_H);
@@ -334,12 +444,35 @@ fn popular(
             state: state_of(&entry.uri, transport),
             cover: Cover::Missing,
             look: selection.look(index),
+            menu: gate.allows(),
+            liked: likes.state(&entry.uri),
         };
         match track_row::show(ui, rect, columns, &row, tokens) {
             Some(Click::Play) => {
                 *command = queue.start(&artist.top_tracks, index, transport);
             }
             Some(Click::Select(press)) => selection.press(index, press),
+            Some(Click::Like(liked)) => {
+                heart::post(
+                    ui.ctx(),
+                    heart::Ask {
+                        tracks: vec![entry.uri.clone()],
+                        liked,
+                    },
+                );
+            }
+            Some(Click::Menu(door)) => selection.menu(
+                ui.ctx(),
+                door,
+                index,
+                gate,
+                carry::Open {
+                    listing: carry::Listing::Page,
+                    here: Some(&here),
+                    likes,
+                },
+                |row| artist.top_tracks.get(row).cloned(),
+            ),
             Some(Click::Lift) => {
                 let ghost = Ghost::Table(row.lifted(columns));
                 selection.lift(index, rect.size(), ghost, |row| {
@@ -547,6 +680,57 @@ mod tests {
             releases,
             related: Vec::new(),
         }
+    }
+
+    #[test]
+    fn a_right_click_posts_the_popular_menu() {
+        let ctx = context();
+        let mut library = library_with(detail(
+            vec![
+                track("spotify:track:t0", "One", "Vela", 200_000),
+                track("spotify:track:t1", "Two", "Vela", 210_000),
+            ],
+            Vec::new(),
+        ));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+        let (_, output) = frame(
+            &ctx,
+            PAGE,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let at = text_rect(&output, "Two")
+            .expect("the second popular row is painted")
+            .center();
+
+        for event in crate::view::test_support::secondary_click_events(at) {
+            let _ = frame(
+                &ctx,
+                PAGE,
+                vec![event],
+                &mut library,
+                &mut transport,
+                &mut queue,
+                &mut art,
+            );
+        }
+        let request = crate::view::context_menu::take_request(&ctx)
+            .expect("a right-click on a popular row posted a request");
+        assert_eq!(request.targets.len(), 1);
+        assert_eq!(request.targets[0].uri, "spotify:track:t1");
+        assert_eq!(request.page, Some(Page::Artist(ARTIST.to_owned())));
+        assert!(
+            !request
+                .items
+                .iter()
+                .any(|item| item.verb == crate::menu::Verb::GoToArtist),
+            "the artist this page already is is not one of its verbs"
+        );
     }
 
     /// The likeness row draws under the discography, and a press opens that
@@ -1117,6 +1301,60 @@ mod tests {
     }
 
     #[test]
+    fn the_follow_press_writes_nothing_while_the_sidebar_removes_that_artist() {
+        let ctx = context();
+        let size = Vec2::new(900.0, 800.0);
+        let mut library = library_with(detail(Vec::new(), Vec::new()));
+        library.apply(&Update::FollowedArtists(vec![FollowedArtist {
+            uri: ARTIST.to_owned(),
+            name: "Vela Moreno".to_owned(),
+            named: true,
+            portrait: None,
+            releases: None,
+        }]));
+        library.apply(&Update::Followed {
+            artist: ARTIST.to_owned(),
+            followed: true,
+        });
+        assert!(
+            library
+                .remove_from_library(&crate::menu::LibraryItem {
+                    kind: crate::sidebar_kind::SidebarKind::Artists,
+                    uri: ARTIST.to_owned(),
+                    name: "Vela Moreno".to_owned(),
+                })
+                .is_some(),
+            "the sidebar removal never started"
+        );
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let (_, follow) = hero_rects(&ctx, size);
+        let command = click(
+            &ctx,
+            size,
+            follow.center(),
+            1,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+
+        assert_eq!(command, None, "a follow write raced the sidebar's removal");
+        assert!(
+            !library.follow.pending(),
+            "the page armed a write the sidebar already sent"
+        );
+        assert_eq!(
+            library.follow.label(),
+            "Following",
+            "the label moved before the removal answered"
+        );
+    }
+
+    #[test]
     fn a_follow_failure_draws_its_copy_beside_the_confirmed_label() {
         let ctx = context();
         let size = Vec2::new(900.0, 800.0);
@@ -1318,6 +1556,7 @@ mod tests {
         ];
         let mut transport = Transport::default();
         let mut clicked = None;
+        let likes = crate::likes::Likes::default();
 
         // The second row's rect inside a block drawn at the top of the pane.
         let mut row_rect = None;
@@ -1341,6 +1580,10 @@ mod tests {
                         cover: Cover::Missing,
                         on_screen: true,
                         playable: true,
+                        here: None,
+                        writing: false,
+                        likes: &likes,
+                        saved: None,
                     };
                     let out =
                         super::release_block::show(ui, Table::Full, &block, &transport, &tokens);

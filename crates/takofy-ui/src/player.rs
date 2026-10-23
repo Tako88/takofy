@@ -9,6 +9,7 @@ use takofy_model::CoverUrl;
 
 use crate::message::{Command, Failure, TransportUpdate, Update};
 use crate::signin::failure_message;
+use crate::volume::Volume;
 
 /// How often the bar is redrawn while a track plays. A repaint rate this
 /// interpolation depends on, so it is not a design token.
@@ -85,6 +86,8 @@ pub struct Transport {
     /// Whether the pointer is still down. Ending a drag is a one-shot transition,
     /// so asking twice about the same release asks once.
     pub dragging: bool,
+    /// The player's level and its lid.
+    pub volume: Volume,
 }
 
 /// The position and state a redraw interpolates from.
@@ -95,6 +98,16 @@ pub struct Anchor {
 }
 
 impl Transport {
+    /// The level the player has not been told, as the command that tells it.
+    ///
+    /// Taken rather than read, so a frame sends one command per change instead of
+    /// one per redraw of an unchanged bar.
+    pub fn take_volume(&mut self) -> Option<Command> {
+        self.volume
+            .take()
+            .map(|percent| Command::Volume { percent })
+    }
+
     /// Folds one update in, reporting whether the anchor moved so the caller
     /// can restamp its clock.
     pub fn apply(&mut self, update: &Update) -> bool {
@@ -748,6 +761,43 @@ mod tests {
             ..Transport::default()
         };
         assert_eq!(zero.fraction(0), None);
+    }
+
+    #[test]
+    fn a_restored_level_is_one_command_on_the_first_take() {
+        let mut transport = Transport {
+            volume: Volume::restored(35, false),
+            ..Transport::default()
+        };
+        assert_eq!(
+            transport.take_volume(),
+            Some(Command::Volume { percent: 35 }),
+            "a restored level must reach the player, not stay a slider position"
+        );
+        assert_eq!(transport.take_volume(), None, "one change is one command");
+    }
+
+    #[test]
+    fn a_restored_mute_takes_volume_to_zero() {
+        let mut transport = Transport {
+            volume: Volume::restored(35, true),
+            ..Transport::default()
+        };
+        assert_eq!(
+            transport.take_volume(),
+            Some(Command::Volume { percent: 0 }),
+            "a restored mute owes the level that is heard, which is silence"
+        );
+    }
+
+    #[test]
+    fn a_default_transport_owes_no_volume_command() {
+        let mut transport = Transport::default();
+        assert_eq!(
+            transport.take_volume(),
+            None,
+            "the player already starts at full, so there is nothing to send"
+        );
     }
 
     #[test]

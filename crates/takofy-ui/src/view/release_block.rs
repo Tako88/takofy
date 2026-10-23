@@ -18,6 +18,7 @@ use crate::cover::Cover;
 use crate::format::{format_position, release_meta, total_duration_ms};
 use crate::icon::Icon;
 use crate::layout::{Table, table as table_layout};
+use crate::likes::Likes;
 use crate::player::Transport;
 use crate::releases::Labels;
 use crate::theme::icon::Size;
@@ -25,7 +26,11 @@ use crate::theme::{
     MonoWeight, Tokens, Weight, extent, fonts, radius, space, stroke, text, tracking,
 };
 
+use crate::menu::Door;
+
 use super::carry::{self, Ghost};
+use super::context_menu;
+use super::heart;
 use super::track_row::{self, Click, Row, TitleCell, state_of};
 use super::{art, controls, text as recipe};
 
@@ -42,6 +47,15 @@ pub struct Block<'a> {
     /// Whether the release's own play can act: its rows must be labelled before
     /// there is anything to start.
     pub playable: bool,
+    /// The page the block is drawn on, so a row's menu knows which page it is
+    /// about.
+    pub here: Option<&'a crate::route::Page>,
+    /// Whether a write is holding the library still, which shuts the menu's gate.
+    pub writing: bool,
+    /// The liked-songs set, so a row's menu knows its library row.
+    pub likes: &'a Likes,
+    /// Whether this release is in the library, or `None` while no list can say.
+    pub saved: Option<bool>,
 }
 
 /// The height a block occupies: its hairline, the head, the gap under it, one
@@ -60,10 +74,14 @@ pub fn height(count: usize) -> f32 {
 }
 
 /// What a click inside the block asked for.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
 pub struct Clicked {
     /// The block's own play control: the release from its first track.
     pub played: bool,
+    /// The heart was pressed: the value it asks the library for.
+    pub saved: Option<bool>,
+    /// The "…" was pressed, and this is the door it opened.
+    pub more: Option<Door>,
     /// A row's double click, as an index into the release's tracks.
     pub row: Option<usize>,
 }
@@ -133,17 +151,51 @@ fn body(
             pos2(right - extent::BUTTON_LG, centre - extent::BUTTON_LG / 2.0),
             Vec2::splat(extent::BUTTON_LG),
         );
-        controls::icon_button_keyed(
-            ui,
-            tokens,
-            control,
-            release.uri.as_str(),
-            rect,
-            icon,
-            Size::MD,
-            label,
-            false,
-        );
+        let (label, live, lit) = match control {
+            Control::ReleaseLike => (
+                if block.saved == Some(true) {
+                    "Remove from your library"
+                } else {
+                    label
+                },
+                block.saved.is_some(),
+                block.saved == Some(true),
+            ),
+            // The menu names the release and nothing else, so it is openable
+            // whether or not any list has answered about it.
+            _ => (label, true, false),
+        };
+        let slot = if lit {
+            controls::icon_button_on(
+                ui,
+                tokens,
+                control,
+                release.uri.as_str(),
+                rect,
+                icon,
+                Size::MD,
+                label,
+                live,
+            )
+        } else {
+            controls::icon_button_keyed(
+                ui,
+                tokens,
+                control,
+                release.uri.as_str(),
+                rect,
+                icon,
+                Size::MD,
+                label,
+                live,
+            )
+        };
+        if control == Control::ReleaseLike && slot.response.clicked() {
+            clicked.saved = block.saved.map(|saved| !saved);
+        }
+        if control == Control::ReleaseMore {
+            clicked.more = context_menu::button_door(ui, &slot, rect, slot.response.id);
+        }
         right = rect.left() - space::S2;
     }
     let play = Rect::from_min_size(
@@ -234,6 +286,7 @@ fn body(
                 Id::unique(("release-tracks", &release.uri)),
                 tracks.len(),
             );
+            let gate = selection.gate(block.writing);
             for (index, entry) in tracks.iter().enumerate() {
                 let rect = table_layout::row_rect(list, index, extent::ROW_H);
                 if !visible.intersects(rect) {
@@ -257,10 +310,33 @@ fn body(
                     // The block's head already holds the release's one picture.
                     cover: Cover::Missing,
                     look: selection.look(index),
+                    menu: gate.allows(),
+                    liked: block.likes.state(&entry.uri),
                 };
                 match track_row::show(ui, rect, columns, &row, tokens) {
                     Some(Click::Play) => clicked.row = Some(index),
                     Some(Click::Select(press)) => selection.press(index, press),
+                    Some(Click::Like(liked)) => {
+                        heart::post(
+                            ui.ctx(),
+                            heart::Ask {
+                                tracks: vec![entry.uri.clone()],
+                                liked,
+                            },
+                        );
+                    }
+                    Some(Click::Menu(door)) => selection.menu(
+                        ui.ctx(),
+                        door,
+                        index,
+                        gate,
+                        carry::Open {
+                            listing: carry::Listing::Page,
+                            here: block.here,
+                            likes: block.likes,
+                        },
+                        |row| tracks.get(row).cloned(),
+                    ),
                     Some(Click::Lift) => {
                         let ghost = Ghost::Table(row.lifted(columns));
                         selection.lift(index, rect.size(), ghost, |row| tracks.get(row).cloned());
@@ -314,12 +390,17 @@ mod tests {
         let tokens = Tokens::DARK;
         let transport = Transport::default();
         let release = release(count);
+        let likes = Likes::default();
         let block = Block {
             release: &release,
             labels: Labels::Idle,
             cover: Cover::Missing,
             on_screen: false,
             playable: false,
+            here: None,
+            writing: false,
+            likes: &likes,
+            saved: None,
         };
 
         let mut measured = None;
@@ -335,6 +416,124 @@ mod tests {
         });
         output.textures_delta.clear();
         measured.expect("the block lays out")
+    }
+
+    /// The centre of the one glyph painted in the accent, if any.
+    ///
+    /// The icons are stroked, not filled, so the accent is the stroke's colour.
+    fn accent_centre(output: &egui::FullOutput, tokens: &Tokens) -> Option<Pos2> {
+        output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::Shape::Path(path)
+                    if matches!(
+                        path.stroke.color,
+                        egui::epaint::ColorMode::Solid(color) if color == tokens.palette.accent
+                    ) =>
+                {
+                    Some(clipped.shape.visual_bounding_rect().center())
+                }
+                _ => None,
+            })
+    }
+
+    /// One block drawn at a known saved state, as the frame painted it.
+    fn drawn(saved: bool, events: Vec<egui::Event>) -> egui::FullOutput {
+        let ctx = context();
+        let tokens = Tokens::DARK;
+        let transport = Transport::default();
+        let release = release(0);
+        let likes = Likes::default();
+        let mut output = ctx.run_ui(
+            RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 2000.0))),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                let block = Block {
+                    release: &release,
+                    labels: Labels::Idle,
+                    cover: Cover::Missing,
+                    on_screen: true,
+                    playable: false,
+                    here: None,
+                    writing: false,
+                    likes: &likes,
+                    saved: Some(saved),
+                };
+                let _ = show(ui, Table::Full, &block, &transport, &tokens);
+            },
+        );
+        output.textures_delta.clear();
+        output
+    }
+
+    #[test]
+    fn a_saved_release_paints_its_heart_in_the_accent_and_an_unsaved_one_does_not() {
+        let tokens = Tokens::DARK;
+        let saved = drawn(true, Vec::new());
+        assert!(
+            accent_centre(&saved, &tokens).is_some(),
+            "a saved release's heart is not filled"
+        );
+
+        let unsaved = drawn(false, Vec::new());
+        assert!(
+            accent_centre(&unsaved, &tokens).is_none(),
+            "an unsaved release's heart took the accent"
+        );
+    }
+
+    #[test]
+    fn a_press_on_the_blocks_heart_asks_for_the_other_state() {
+        let ctx = context();
+        let tokens = Tokens::DARK;
+        let at =
+            accent_centre(&drawn(true, Vec::new()), &tokens).expect("the saved heart is painted");
+        let transport = Transport::default();
+        let release = release(0);
+        let likes = Likes::default();
+        let mut clicked = Clicked {
+            played: false,
+            saved: None,
+            more: None,
+            row: None,
+        };
+
+        let input = |events| RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 2000.0))),
+            events,
+            ..Default::default()
+        };
+        let mut warm = ctx.run_ui(input(Vec::new()), |_ui| {});
+        warm.textures_delta.clear();
+        let mut arrived = ctx.run_ui(input(vec![egui::Event::PointerMoved(at)]), |_ui| {});
+        arrived.textures_delta.clear();
+        for event in crate::view::test_support::click_events(at) {
+            let mut output = ctx.run_ui(input(vec![event]), |ui| {
+                let block = Block {
+                    release: &release,
+                    labels: Labels::Idle,
+                    cover: Cover::Missing,
+                    on_screen: true,
+                    playable: false,
+                    here: None,
+                    writing: false,
+                    likes: &likes,
+                    saved: Some(true),
+                };
+                clicked = show(ui, Table::Full, &block, &transport, &tokens);
+            });
+            output.textures_delta.clear();
+        }
+
+        assert_eq!(
+            clicked.saved,
+            Some(false),
+            "a saved release's heart asks to take it out"
+        );
     }
 
     /// The page culls with [`height`] and then draws at the cursor, so the two
@@ -371,12 +570,17 @@ mod tests {
     ) -> (Clicked, egui::FullOutput) {
         let tokens = Tokens::DARK;
         let transport = Transport::default();
+        let likes = Likes::default();
         let block = Block {
             release,
             labels: Labels::Ready(tracks),
             cover: Cover::Missing,
             on_screen: true,
             playable: true,
+            here: None,
+            writing: false,
+            likes: &likes,
+            saved: None,
         };
         let input = RawInput {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 800.0))),
@@ -402,6 +606,115 @@ mod tests {
                 }
                 _ => None,
             })
+    }
+
+    /// The menu names the release alone, so the `…` must open whether or not a
+    /// list has answered about the release yet.
+    #[test]
+    fn the_blocks_more_button_opens_a_menu() {
+        let ctx = context();
+        let tokens = Tokens::DARK;
+        let transport = Transport::default();
+        let release = release(0);
+        let likes = Likes::default();
+        let mut clicked = Clicked::default();
+        let mut at = Pos2::ZERO;
+
+        let input = |events| RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 2000.0))),
+            events,
+            ..Default::default()
+        };
+        let mut warm = ctx.run_ui(input(Vec::new()), |_ui| {});
+        warm.textures_delta.clear();
+
+        let block = Block {
+            release: &release,
+            labels: Labels::Idle,
+            cover: Cover::Missing,
+            on_screen: true,
+            playable: true,
+            here: None,
+            writing: false,
+            likes: &likes,
+            saved: None,
+        };
+        let mut found = ctx.run_ui(input(Vec::new()), |ui| {
+            let head_top = ui.cursor().min.y + stroke::HAIRLINE + space::S5;
+            at = pos2(
+                ui.max_rect().right() - extent::BUTTON_LG / 2.0,
+                head_top + extent::RELEASE_ART / 2.0,
+            );
+            let _ = show(ui, Table::Full, &block, &transport, &tokens);
+        });
+        found.textures_delta.clear();
+        let mut arrived = ctx.run_ui(input(vec![egui::Event::PointerMoved(at)]), |_ui| {});
+        arrived.textures_delta.clear();
+
+        for event in crate::view::test_support::click_events(at) {
+            let mut output = ctx.run_ui(input(vec![event]), |ui| {
+                clicked = show(ui, Table::Full, &block, &transport, &tokens);
+            });
+            output.textures_delta.clear();
+        }
+
+        assert!(
+            clicked.more.is_some(),
+            "the block's `…` refused a press, so its menu cannot be reached"
+        );
+    }
+
+    #[test]
+    fn a_right_click_posts_the_blocks_menu() {
+        let ctx = context();
+        let release = release(2);
+        let tracks = vec![
+            labelled("spotify:track:1", "First"),
+            labelled("spotify:track:2", "Second"),
+        ];
+        let here = crate::route::Page::Artist("spotify:artist:a".to_owned());
+        let tokens = Tokens::DARK;
+        let transport = Transport::default();
+        let likes = crate::likes::Likes::default();
+        let (_, output) = painted(&ctx, &release, &tracks, Vec::new());
+        let at = text_rect(&output, "Second")
+            .expect("the second row is painted")
+            .center();
+
+        let mut posted = None;
+        for event in crate::view::test_support::secondary_click_events(at) {
+            let block = Block {
+                release: &release,
+                labels: Labels::Ready(&tracks),
+                cover: Cover::Missing,
+                on_screen: true,
+                playable: true,
+                here: Some(&here),
+                writing: false,
+                likes: &likes,
+                saved: None,
+            };
+            let mut drawn = ctx.run_ui(
+                RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 800.0))),
+                    events: vec![event],
+                    ..Default::default()
+                },
+                |ui| {
+                    let _ = show(ui, Table::Full, &block, &transport, &tokens);
+                },
+            );
+            drawn.textures_delta.clear();
+            posted = crate::view::context_menu::take_request(&ctx);
+        }
+
+        let request = posted.expect("a right-click on a block row posted a request");
+        assert_eq!(request.targets.len(), 1);
+        assert_eq!(request.targets[0].uri, "spotify:track:2");
+        assert_eq!(
+            request.page,
+            Some(crate::route::Page::Artist("spotify:artist:a".to_owned()))
+        );
     }
 
     #[test]

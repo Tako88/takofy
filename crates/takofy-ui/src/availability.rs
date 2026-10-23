@@ -156,14 +156,14 @@ pub fn availability(control: Control) -> Availability {
         Control::HistoryForward => Availability::Ready, // #16
 
         Control::NavHome => Availability::Ready,
-        Control::LibraryCreate => Availability::Waiting, // #3
+        Control::LibraryCreate => Availability::Ready, // #35
         Control::FilterPlaylists => Availability::Ready, // #3
         Control::FilterArtists => Availability::Ready,
         Control::FilterAlbums => Availability::Ready,
         Control::FilterPodcasts => Availability::Ready, // #3
         Control::SearchField => Availability::Ready,
-        Control::TrailHome => Availability::Waiting, // #17
-        Control::NowPlayingMore => Availability::Waiting, // #16
+        Control::TrailHome => Availability::Ready,
+        Control::NowPlayingMore => Availability::Ready, // #16
 
         // Transport and seek are their own issue.
         Control::Previous => Availability::Ready,  // #13
@@ -172,21 +172,20 @@ pub fn availability(control: Control) -> Availability {
         Control::Seek => Availability::Ready,      // #13
 
         // Playbar chrome with no separate issue yet.
-        Control::Like => Availability::Waiting,
+        Control::Like => Availability::Ready,    // #35
+        Control::Shuffle => Availability::Ready, // #35
+        Control::Repeat => Availability::Ready,  // #35
         Control::Miniplayer => Availability::Waiting,
-        Control::Shuffle => Availability::Waiting,
-        Control::Repeat => Availability::Waiting,
-        Control::Queue => Availability::Waiting,
+        Control::Queue => Availability::Ready, // #35
         Control::Devices => Availability::Waiting,
-        Control::Mute => Availability::Waiting,
-        Control::Volume => Availability::Waiting,
-        Control::Fullscreen => Availability::Waiting,
+        Control::Mute => Availability::Ready,       // #35
+        Control::Volume => Availability::Ready,     // #35
+        Control::Fullscreen => Availability::Ready, // #35
 
         // A row's like and more are not the playbar's like or the Now Playing
-        // more: they act on another track and must carry their own ids. Both
-        // are drawn but have no command yet (Q5(a)).
-        Control::TrackLike => Availability::Waiting,
-        Control::TrackMore => Availability::Waiting,
+        // more: they act on another track and must carry their own ids.
+        Control::TrackLike => Availability::Ready, // #35
+        Control::TrackMore => Availability::Ready,
 
         // The panel's tabs: the queue is state the window already holds, and
         // lyrics are a fetch and a parse it does not make. #15
@@ -195,9 +194,9 @@ pub fn availability(control: Control) -> Availability {
 
         // The hero's tools have no command yet. Its play has one, so the view
         // is Ready and the moment decides whether it can act.
-        Control::HeroShuffle => Availability::Waiting,
-        Control::HeroLike => Availability::Waiting,
-        Control::HeroMore => Availability::Waiting,
+        Control::HeroShuffle => Availability::Ready, // #35
+        Control::HeroLike => Availability::Ready,    // #35
+        Control::HeroMore => Availability::Ready,
         Control::HeroPlay => Availability::Ready,
         Control::CardPlay => Availability::Waiting,
 
@@ -214,12 +213,12 @@ pub fn availability(control: Control) -> Availability {
         Control::LibraryFilterArtists => Availability::Ready,
         Control::LibraryFilterAlbums => Availability::Ready,
         Control::LibraryFilterPodcasts => Availability::Ready, // #3
-        Control::LibraryMore => Availability::Waiting,         // #3
+        Control::LibraryMore => Availability::Ready,
         Control::LayoutGrid | Control::LayoutList => Availability::Ready,
         Control::ReleasePlay => Availability::Ready,
         Control::EpisodeToggle => Availability::Ready,
-        Control::ReleaseLike => Availability::Waiting,
-        Control::ReleaseMore => Availability::Waiting,
+        Control::ReleaseLike => Availability::Ready, // #35
+        Control::ReleaseMore => Availability::Ready, // #35
 
         // The sign-in card's one control; the state decides whether it acts.
         Control::Authorize => Availability::Ready,
@@ -237,6 +236,8 @@ mod tests {
                 control,
                 Control::DrawerToggle
                     | Control::NavHome
+                    | Control::LibraryCreate
+                    | Control::TrailHome
                     | Control::TrailPlaylists
                     | Control::HistoryBack
                     | Control::HistoryForward
@@ -244,11 +245,26 @@ mod tests {
                     | Control::PlayPause
                     | Control::Next
                     | Control::Seek
+                    | Control::Shuffle
+                    | Control::Repeat
+                    | Control::Queue
+                    | Control::Mute
+                    | Control::Volume
+                    | Control::Fullscreen
                     | Control::HeroPlay
+                    | Control::HeroMore
+                    | Control::HeroLike
+                    | Control::HeroShuffle
                     | Control::Follow
                     | Control::DiscographyFilter
                     | Control::ReleasePlay
+                    | Control::ReleaseLike
+                    | Control::ReleaseMore
                     | Control::EpisodeToggle
+                    | Control::TrackMore
+                    | Control::TrackLike
+                    | Control::Like
+                    | Control::NowPlayingMore
                     | Control::NowPlayingQueueTab
                     | Control::NowPlayingLyricsTab
                     | Control::Authorize
@@ -257,6 +273,7 @@ mod tests {
                     | Control::LibraryFilterArtists
                     | Control::LibraryFilterAlbums
                     | Control::LibraryFilterPodcasts
+                    | Control::LibraryMore
                     | Control::LayoutGrid
                     | Control::LayoutList
                     | Control::FilterPlaylists

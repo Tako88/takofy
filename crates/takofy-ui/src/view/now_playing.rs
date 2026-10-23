@@ -16,14 +16,18 @@ use crate::availability::Control;
 use crate::cover::{Art, Cover};
 use crate::icon::Icon;
 use crate::layout::panel::{self, Stack};
+use crate::likes::Likes;
 use crate::player::Transport;
 use crate::queue::Queue;
 use crate::theme::icon::Size;
 use crate::theme::{Tokens, extent, radius, space, text, tracking};
 
 use crate::lyrics::{LyricsPanel, Tab};
+use crate::menu::{Anchor, Device, Door, Listing};
+use crate::verbs;
 
 use super::art;
+use super::context_menu;
 use super::controls;
 use super::lyrics_pane;
 use super::queue_pane;
@@ -48,6 +52,8 @@ pub struct Reply {
     pub tab: Option<Tab>,
     /// Whether the lyrics pane's Retry was pressed.
     pub retry: bool,
+    /// The door the head's more button opened.
+    pub menu: Option<Door>,
 }
 
 /// The frame's own facts, so the panel's signature stays readable.
@@ -64,6 +70,7 @@ pub fn show(
     transport: &Transport,
     queue: &Queue,
     lyrics: &LyricsPanel,
+    likes: &Likes,
     position_ms: u32,
     frame: &mut Frame<'_>,
 ) -> Reply {
@@ -73,7 +80,7 @@ pub fn show(
     let tabs_h = tabs_height(ui, tokens);
     let stack = panel::stack_for(band, meta_h, tabs_h);
 
-    head(ui, stack, tokens);
+    let menu = head(ui, stack, queue, likes, tokens);
     art::tile(
         ui.painter(),
         stack.art,
@@ -92,6 +99,7 @@ pub fn show(
                 queue: queue_pane::show(ui, stack.pane, queue, frame.art, frame.now, tokens),
                 tab,
                 retry: false,
+                menu,
             };
         }
         Tab::Lyrics => lyrics_pane::show(
@@ -107,11 +115,16 @@ pub fn show(
         queue: queue_pane::Reply::default(),
         tab,
         retry,
+        menu,
     }
 }
 
-/// The head: the panel's caption and its more button, which waits.
-fn head(ui: &mut Ui, stack: Stack, tokens: &Tokens) {
+/// The head: the panel's caption and the current entry's more button.
+///
+/// The button is live only when there is a current entry with something to do:
+/// a queue with no current row, a local file and an entry with nothing to open
+/// all leave it waiting.
+fn head(ui: &mut Ui, stack: Stack, queue: &Queue, likes: &Likes, tokens: &Tokens) -> Option<Door> {
     let caption = recipe::caption(ui, "Now playing", tokens);
     ui.painter().galley(
         Pos2::new(
@@ -129,16 +142,42 @@ fn head(ui: &mut Ui, stack: Stack, tokens: &Tokens) {
         ),
         Vec2::splat(extent::BUTTON),
     );
-    controls::icon_button(
+    let live = queue.current().is_some_and(|entry| {
+        !verbs::track_items(
+            std::slice::from_ref(entry),
+            None,
+            &Listing::Current,
+            likes.standing(&[entry.uri.as_str()]),
+        )
+        .is_empty()
+    });
+    let id = controls::slot_id(ui, Control::NowPlayingMore, ());
+    let open = context_menu::open_opener(ui.ctx()) == Some(id);
+    let slot = controls::icon_button_open(
         ui,
         tokens,
         Control::NowPlayingMore,
+        (),
         more,
         Icon::More,
         Size::MD,
         "More",
-        true,
+        live,
+        open,
     );
+    if let Some(door) = context_menu::button_door(ui, &slot, more, id) {
+        return Some(door);
+    }
+    // The keyboard's door, taken only while the button holds it, so the key is
+    // left alone everywhere else.
+    if !slot.response.has_focus() {
+        return None;
+    }
+    context_menu::menu_key_pressed(ui).then_some(Door {
+        anchor: Anchor::Button(more),
+        opener: id,
+        device: Device::Keyboard,
+    })
 }
 
 /// Title, artist and the transport's state, or the one line that says nothing is
@@ -347,6 +386,7 @@ mod tests {
         art: Art,
         now: Instant,
         lyrics: crate::lyrics::LyricsPanel,
+        likes: crate::likes::Likes,
     }
 
     impl Panel {
@@ -357,6 +397,7 @@ mod tests {
                 art: Art::default(),
                 now: Instant::now(),
                 lyrics: crate::lyrics::LyricsPanel::default(),
+                likes: crate::likes::Likes::default(),
             }
         }
 
@@ -368,6 +409,11 @@ mod tests {
 
         /// Draws one frame and returns the queue reply it reported.
         fn frame(&mut self, ctx: &Context, events: Vec<Event>) -> queue_pane::Reply {
+            self.reply(ctx, events).queue
+        }
+
+        /// Draws one frame and returns the whole reply it reported.
+        fn reply(&mut self, ctx: &Context, events: Vec<Event>) -> Reply {
             let tokens = Tokens::DARK;
             let cover = self.art.look(
                 self.transport
@@ -384,6 +430,7 @@ mod tests {
                 queue,
                 art,
                 lyrics,
+                likes,
                 ..
             } = self;
             let position_ms = transport.position_ms;
@@ -393,6 +440,7 @@ mod tests {
                     transport,
                     queue,
                     lyrics,
+                    likes,
                     position_ms,
                     &mut Frame {
                         art,
@@ -402,7 +450,7 @@ mod tests {
                     },
                 );
             });
-            reply.queue
+            reply
         }
 
         /// Draws one frame and returns the text it painted.
@@ -415,6 +463,7 @@ mod tests {
                     &self.transport,
                     &self.queue,
                     &self.lyrics,
+                    &self.likes,
                     self.transport.position_ms,
                     &mut Frame {
                         art: &mut self.art,
@@ -441,6 +490,7 @@ mod tests {
                     &self.transport,
                     &self.queue,
                     &self.lyrics,
+                    &self.likes,
                     self.transport.position_ms,
                     &mut Frame {
                         art: &mut self.art,
@@ -507,6 +557,7 @@ mod tests {
                 &transport,
                 &queue,
                 &crate::lyrics::LyricsPanel::default(),
+                &crate::likes::Likes::default(),
                 transport.position_ms,
                 &mut Frame {
                     art: &mut art,
@@ -748,6 +799,7 @@ mod tests {
                     &panel.transport,
                     &panel.queue,
                     &panel.lyrics,
+                    &panel.likes,
                     panel.transport.position_ms,
                     &mut Frame {
                         art: &mut panel.art,
@@ -764,5 +816,72 @@ mod tests {
             reached_the_panel,
             "the keyboard reaches the live Lyrics tab"
         );
+    }
+    /// The head's more button, solved the way the panel solves it.
+    fn more_at() -> Pos2 {
+        let head = Rect::from_min_size(
+            Pos2::new(space::S3, space::S3),
+            Vec2::new(PROBE.x - 2.0 * space::S3, extent::BUTTON),
+        );
+        Pos2::new(head.right() - extent::BUTTON / 2.0, head.center().y)
+    }
+
+    /// A queue entry the menu has verbs for.
+    fn named_track() -> TrackEntry {
+        TrackEntry {
+            uri: "spotify:track:a".to_owned(),
+            album_uri: Some("spotify:album:a".to_owned()),
+            artist_uris: vec!["spotify:artist:b".to_owned()],
+            ..track(0)
+        }
+    }
+
+    /// Clicks the more button and returns the reply that opened a door.
+    fn click_more(panel: &mut Panel, ctx: &Context) -> Reply {
+        let _ = panel.reply(ctx, Vec::new());
+        let at = more_at();
+        let mut found = Reply::default();
+        for event in crate::view::test_support::click_events(at) {
+            let next = panel.reply(ctx, vec![event]);
+            if next.menu.is_some() {
+                found = next;
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn the_more_button_opens_a_current_door() {
+        let ctx = context();
+        let mut panel = Panel::new(playing("A Title", "A Band"));
+        let named = named_track();
+        panel.queue.start(&[named], 0, &mut panel.transport);
+
+        let reply = click_more(&mut panel, &ctx);
+
+        let door = reply.menu.expect("the more button opened no door");
+        assert_eq!(door.device, crate::menu::Device::Pointer);
+        assert!(
+            matches!(door.anchor, crate::menu::Anchor::Button(_)),
+            "the more's menu did not anchor on the button"
+        );
+    }
+
+    #[test]
+    fn the_more_button_waits_without_a_current_entry_that_has_verbs() {
+        for queue in [Queue::default(), {
+            let mut queue = Queue::default();
+            queue.start(&[track(0)], 0, &mut Transport::default());
+            queue
+        }] {
+            let ctx = context();
+            let mut panel = Panel::new(playing("A Title", "A Band"));
+            panel.queue = queue;
+
+            assert!(
+                click_more(&mut panel, &ctx).menu.is_none(),
+                "a waiting more button opened a menu"
+            );
+        }
     }
 }

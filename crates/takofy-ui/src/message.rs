@@ -5,7 +5,8 @@
 
 use takofy_model::{
     AlbumDetail, ArtistDetail, CoverImage, CoverUrl, FollowedArtist, FollowedShow, Move,
-    PlaylistAccess, PlaylistEntry, Revision, SavedAlbum, ShowDetail, TrackEntry, TrackLyrics,
+    PlaylistAccess, PlaylistEntry, Removal, Revision, SavedAlbum, ShowDetail, TrackEntry,
+    TrackLyrics,
 };
 
 /// A request from the window to the worker.
@@ -21,6 +22,14 @@ pub enum Command {
         revision: Revision,
         moves: Vec<Move>,
     },
+    /// Remove rows of a playlist, as one change set on `revision`.
+    RemoveTracks {
+        playlist: String,
+        revision: Revision,
+        /// Highest index first, so each removal reads against the list the one
+        /// before it left.
+        removals: Vec<Removal>,
+    },
     /// Move one row of the sidebar's playlists to a new place, based on
     /// `revision`.
     MovePlaylist {
@@ -28,12 +37,44 @@ pub enum Command {
         from: usize,
         to: usize,
     },
-    /// Append one track to a playlist, based on `revision`.
-    AddTrack {
+    /// Unlink one row of the sidebar's playlists, based on `revision`.
+    ///
+    /// The rootlist unlinks only, so the playlist survives the write.
+    RemovePlaylist {
+        playlist: String,
+        revision: Revision,
+        index: usize,
+    },
+    /// Put one playlist at the front of the sidebar's list, based on `revision`.
+    ///
+    /// The rootlist only links; the playlist itself is untouched.
+    LinkPlaylist {
+        playlist: String,
+        revision: Revision,
+    },
+    /// Ask whether one album or show is in the library.
+    LoadSaved { uri: String },
+    /// Write one album or show into the library, or out of it.
+    ///
+    /// An artist is not saved this way: it is followed, through
+    /// [`Command::SetFollow`].
+    SetSaved { uri: String, saved: bool },
+    /// Append tracks to a playlist, in the order given, based on `revision`.
+    AddTracks {
         playlist: String,
         revision: Revision,
         from_index: usize,
-        track: String,
+        tracks: Vec<String>,
+    },
+    /// Rename one playlist, based on the revision its own state read answers.
+    RenamePlaylist { playlist: String, name: String },
+    /// Create a playlist called `name` and put it at the front of the user's
+    /// rootlist, based on the rootlist's `revision`, with `tracks` to land in
+    /// it once it exists.
+    CreatePlaylist {
+        name: String,
+        revision: Revision,
+        tracks: Vec<String>,
     },
     /// Load one album with its tracks.
     LoadAlbum { album: String },
@@ -58,6 +99,10 @@ pub enum Command {
     LoadRelated { artist: String, uris: Vec<String> },
     /// Load the albums the user saved, as the library root draws them.
     LoadSavedAlbums,
+    /// Load the tracks the user has liked, newest save first.
+    LoadLikedTracks,
+    /// Write these tracks into the liked-songs set, or out of it.
+    SetLiked { tracks: Vec<String>, liked: bool },
     /// The tracks one search query answers.
     Search { query: String },
     /// Start playing a track.
@@ -70,6 +115,8 @@ pub enum Command {
     Stop,
     /// Jump to `position_ms` within the loaded track.
     Seek { position_ms: u32 },
+    /// Set the player's level. 0 is silence, 100 is unity gain.
+    Volume { percent: u16 },
     /// Fetch the playlists again.
     ReloadLibrary,
     /// Fetch one cover image from the worker.
@@ -91,6 +138,8 @@ pub enum Failure {
     Load,
     /// A write the user asked for did not stick.
     Save,
+    /// A playlist rename did not stick, and the field stays open.
+    Rename,
     /// The shows the user follows could not be loaded.
     Followed,
     /// The artists the user follows could not be loaded.
@@ -152,6 +201,30 @@ pub enum Update {
     PlaylistMoved { revision: Revision },
     /// A sidebar move did not stick.
     PlaylistMoveFailed,
+    /// A playlist left the rootlist, and this is the revision the next write
+    /// must name.
+    PlaylistRemoved {
+        playlist: String,
+        revision: Revision,
+    },
+    /// The playlist could not be unlinked, so it stays in the sidebar.
+    PlaylistRemoveFailed { playlist: String },
+    /// A playlist re-joined the rootlist, and this is the revision the next write
+    /// must name.
+    PlaylistLinked {
+        playlist: String,
+        revision: Revision,
+    },
+    /// The playlist could not be put on the rootlist, so the library is as it was.
+    PlaylistLinkFailed { playlist: String },
+    /// Whether one album or show is in the library. `saved` is `None` when the
+    /// probe did not answer.
+    SavedState { uri: String, saved: Option<bool> },
+    /// A saved album or show entered the library, or left it. The reply carried
+    /// no body, so this is the write's own echo.
+    Saved { uri: String, saved: bool },
+    /// The saved album or show could not be written, so it is where it was.
+    SavedFailed { uri: String, saved: bool },
     /// A track was appended to a playlist, and this is the revision the next
     /// write must name.
     TrackAdded {
@@ -160,6 +233,31 @@ pub enum Update {
     },
     /// A track could not be appended to a playlist.
     AddFailed { playlist: String },
+    /// A playlist exists but the pick it was created for did not land in it.
+    PlaylistUnfilled { playlist: String },
+    /// A playlist exists but the rename that gives it a name did not land, so it
+    /// keeps the typed name for this session only.
+    PlaylistUnnamed { playlist: String },
+    /// A playlist was renamed, and this is the revision the next write names.
+    PlaylistRenamed {
+        playlist: String,
+        name: String,
+        revision: Revision,
+    },
+    /// A playlist rename did not stick, so the field stays open with its text.
+    PlaylistRenameFailed { playlist: String },
+    /// A playlist was created and linked, and this is the row to draw first.
+    ///
+    /// The revision is the link reply's, so the next rootlist write names the
+    /// list the link left behind.
+    PlaylistCreated {
+        entry: PlaylistEntry,
+        revision: Revision,
+    },
+    /// The playlist itself could not be created, so nothing exists.
+    PlaylistCreateFailed,
+    /// The playlist exists but could not be put on the rootlist.
+    PlaylistUnlinked,
     /// A playlist's tracks, plus the context's own image when it carried one.
     Tracks {
         playlist: String,
@@ -175,6 +273,14 @@ pub enum Update {
     },
     /// A playlist move did not stick.
     MoveFailed { playlist: String, failure: Failure },
+    /// Playlist rows were removed, and this is the revision the next write must
+    /// name.
+    TracksRemoved {
+        playlist: String,
+        revision: Revision,
+    },
+    /// A playlist removal did not stick.
+    RemoveFailed { playlist: String, failure: Failure },
     /// A playlist's tracks could not be loaded.
     TracksFailed { playlist: String, failure: Failure },
     /// One album, its tracks in the album's own order.
@@ -208,6 +314,17 @@ pub enum Update {
     SavedAlbums(Vec<SavedAlbum>),
     /// The saved albums could not be loaded.
     SavedAlbumsFailed(Failure),
+    /// The tracks the user has liked, newest save first.
+    LikedTracks(Vec<String>),
+    /// The liked tracks could not be loaded; a set already read is kept.
+    LikedTracksFailed(Failure),
+    /// The liked write landed for these tracks, with this value.
+    Liked { tracks: Vec<String>, liked: bool },
+    /// The liked write did not stick.
+    LikeFailed {
+        tracks: Vec<String>,
+        failure: Failure,
+    },
     /// One release's labelled tracks, in the release's own order.
     ReleaseTracks {
         release: String,

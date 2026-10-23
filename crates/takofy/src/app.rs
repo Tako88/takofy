@@ -6,15 +6,19 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use eframe::egui;
 use takofy_ui::cover::Art;
 use takofy_ui::drawer::Drawer;
+use takofy_ui::layout::PanePref;
 use takofy_ui::library::Library;
+use takofy_ui::menu::Menu;
 use takofy_ui::message::{Command, Update};
 use takofy_ui::player::{REDRAW, Transport, TransportState};
+use takofy_ui::prefs::Prefs;
 use takofy_ui::queue::Queue;
 use takofy_ui::signin::SignIn;
 use takofy_ui::theme::{Tokens, fonts, scroll, style};
 use takofy_ui::{layout, view};
 
 use crate::bridge::UiEnd;
+use crate::preferences::{Loaded, PrefsSync};
 
 /// Window options. `run_and_return` must stay true: shutdown runs after the
 /// window closes, and eframe must return instead of exiting the process.
@@ -38,6 +42,10 @@ pub(crate) struct TakofyApp {
     transport: Transport,
     queue: Queue,
     drawer: Drawer,
+    /// What the user asked of the Now Playing column. Nothing persists it, so it
+    /// starts at the width rule every launch.
+    pane: PanePref,
+    menu: Menu,
     ui_end: UiEnd,
     tokens: Tokens,
     /// The decoded covers, the uploads and the fetches in flight.
@@ -45,6 +53,8 @@ pub(crate) struct TakofyApp {
     /// Restamped whenever the transport's anchor moves, so the interpolated
     /// position cannot drift from it.
     since: Option<Instant>,
+    /// The values that survive a restart, and the thread that saves them.
+    prefs: PrefsSync,
 }
 
 impl TakofyApp {
@@ -74,7 +84,12 @@ impl TakofyApp {
     }
 
     /// Installs the theme and takes ownership of the window's end.
-    pub(crate) fn new(cc: &eframe::CreationContext<'_>, ui_end: UiEnd) -> Self {
+    pub(crate) fn new(
+        cc: &eframe::CreationContext<'_>,
+        ui_end: UiEnd,
+        loaded: Loaded,
+        prefs: PrefsSync,
+    ) -> Self {
         let tokens = Tokens::DARK;
         cc.egui_ctx.set_fonts(fonts::definitions());
         cc.egui_ctx.set_global_style(style(&tokens));
@@ -83,17 +98,41 @@ impl TakofyApp {
         cc.egui_ctx.options_mut(|options| {
             options.input_options.line_scroll_speed = scroll::POINTS_PER_LINE;
         });
+        let (transport, queue) = Self::restored_state(&loaded);
         Self {
             state: SignIn::default(),
             library: Library::default(),
-            transport: Transport::default(),
-            queue: Queue::default(),
+            transport,
+            queue,
             drawer: Drawer::default(),
+            pane: PanePref::default(),
+            menu: Menu::default(),
             ui_end,
             tokens,
             art: Art::new(),
             since: None,
+            prefs,
         }
+    }
+
+    /// The transport and queue the file names.
+    ///
+    /// Only a file that parsed seeds them. Anything else starts on the defaults
+    /// and owes the player nothing: the player is already at full, so a command
+    /// there would be a level nobody asked for.
+    fn restored_state(loaded: &Loaded) -> (Transport, Queue) {
+        let mut queue = Queue::seeded(wall_clock_ms());
+        let transport = match loaded {
+            Loaded::Found(saved) => {
+                saved.seed_queue(&mut queue);
+                Transport {
+                    volume: saved.volume(),
+                    ..Transport::default()
+                }
+            }
+            Loaded::Absent | Loaded::Refused(_) | Loaded::Unreadable => Transport::default(),
+        };
+        (transport, queue)
     }
 }
 
@@ -113,6 +152,12 @@ impl eframe::App for TakofyApp {
         for command in commands {
             let _ = self.ui_end.commands.send(command);
         }
+        // A lost link reply leaves the held rootlist revision naming a list that
+        // may already carry the new playlist, so the read that names both again
+        // is asked for once the failed write is out of the way.
+        if let Some(command) = self.library.rootlist_request() {
+            let _ = self.ui_end.commands.send(command);
+        }
         // The followed list is want-driven: it is asked for after the drain, so
         // a playlists reply that just landed is what arms it. The worker never
         // chains it onto the rootlist.
@@ -127,9 +172,24 @@ impl eframe::App for TakofyApp {
         if let Some(command) = self.library.saved_albums_request() {
             let _ = self.ui_end.commands.send(command);
         }
+        // The liked set is read once the playlists can name a signed-in window;
+        // a failed write arms one more read through the same path.
+        // A page's own album or show needs its saved state whatever the sidebar
+        // is listing, so this is asked for by the page, not by a chip.
+        if let Some(command) = self.library.saved_request() {
+            let _ = self.ui_end.commands.send(command);
+        }
+        if let Some(command) = self.library.likes_request() {
+            let _ = self.ui_end.commands.send(command);
+        }
         // The artist page's likeness row is its second read: it is asked for
         // once the artist's own detail has landed and named somebody.
         if let Some(command) = self.library.related_request() {
+            let _ = self.ui_end.commands.send(command);
+        }
+        // A row edit can leave several playlists' covers wrong at once, and the
+        // loop may not run again this frame, so every due read goes out now.
+        while let Some(command) = self.library.tracks_request() {
             let _ = self.ui_end.commands.send(command);
         }
         // The search reads are want-driven like the lists above: the menu while
@@ -150,6 +210,11 @@ impl eframe::App for TakofyApp {
         window_clear_color(&self.tokens)
     }
 
+    fn on_exit(&mut self) {
+        self.prefs
+            .close(&Prefs::of(&self.transport.volume, &self.queue));
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let now = Instant::now();
         let position_ms = self
@@ -167,6 +232,8 @@ impl eframe::App for TakofyApp {
                 transport: &mut self.transport,
                 queue: &mut self.queue,
                 drawer: &mut self.drawer,
+                pane: &mut self.pane,
+                menu: &mut self.menu,
                 position_ms,
                 art: &mut self.art,
                 now,
@@ -176,6 +243,21 @@ impl eframe::App for TakofyApp {
         };
         if let Some(command) = command {
             let _ = self.ui_end.commands.send(command);
+        }
+        // The volume is not the frame's one command: a frame that already asked
+        // for something else would drop the level, and the bar would then show a
+        // level the player never got.
+        if let Some(command) = self.transport.take_volume() {
+            let _ = self.ui_end.commands.send(command);
+        }
+        // After the drain, so the value the frame drew is the one that settles.
+        // The wake keeps a value written while the window is otherwise idle.
+        if let Some(wake) = self
+            .prefs
+            .observe(now, &Prefs::of(&self.transport.volume, &self.queue))
+        {
+            ui.ctx()
+                .request_repaint_after(wake.max(Duration::from_millis(1)));
         }
         // After the draw, because only the draw arms the read: a navigation
         // that leaves the page idle asks for the frame that sends it.
@@ -257,14 +339,18 @@ fn schedule_wake(ctx: &egui::Context, art: &Art, now: Instant) {
 #[cfg(test)]
 mod tests {
     use std::sync::mpsc::channel;
+    use std::sync::{Arc, Mutex};
 
     use eframe::App;
     use takofy_model::{CoverImage, CoverUrl, TrackEntry};
     use takofy_ui::library::Load;
     use takofy_ui::message::{Command, Failure, TransportUpdate};
+    use takofy_ui::prefs::QUIET;
+    use takofy_ui::repeat::Repeat;
     use takofy_ui::route::Page;
 
     use super::*;
+    use crate::preferences::PrefsWriter;
 
     fn track(uri: &str) -> TrackEntry {
         TrackEntry {
@@ -293,6 +379,19 @@ mod tests {
             "read {reading} against the system's {system}"
         );
         assert!(reading > 1_704_067_200_000, "a 2024 floor, read {reading}");
+    }
+
+    #[test]
+    fn a_new_window_starts_with_the_width_rule_alone() {
+        let (app, _) = test_window();
+        assert_eq!(app.pane, PanePref::Auto, "a launch hid the pane");
+        for width in [layout::WINDOW_DEFAULT[0], 1440.0] {
+            assert_eq!(
+                layout::regions_with(width, app.pane),
+                layout::regions_for(width),
+                "{width}"
+            );
+        }
     }
 
     #[test]
@@ -527,42 +626,58 @@ mod tests {
     /// The artists and albums lists are want-driven like the shows: one send
     /// per chip press, and none before the chip is the chosen one.
     #[test]
-    fn logic_requests_the_artists_and_albums_only_once_their_chip_is_chosen() {
+    fn logic_requests_the_artists_and_albums_for_the_chip_that_names_them() {
         let mut library = Library::default();
         assert_eq!(library.followed_artists_request(), None);
         assert_eq!(library.saved_albums_request(), None);
 
-        // Ready playlists alone ask for nothing: the root still draws All.
+        // All draws every kind, so a ready library under it asks for both.
         library.apply(&Update::Playlists(Vec::new()));
-        assert_eq!(library.followed_artists_request(), None);
-        assert_eq!(library.saved_albums_request(), None);
-
-        assert!(
-            library
-                .root_filter
-                .choose(takofy_ui::library_filter::RootKind::Artists)
-        );
         assert_eq!(
             library.followed_artists_request(),
             Some(Command::LoadFollowedArtists)
-        );
-        assert_eq!(library.followed_artists, Load::Loading);
-        assert_eq!(
-            library.followed_artists_request(),
-            None,
-            "the load is in flight, so the next frame sends nothing"
-        );
-
-        assert!(
-            library
-                .root_filter
-                .choose(takofy_ui::library_filter::RootKind::Albums)
         );
         assert_eq!(
             library.saved_albums_request(),
             Some(Command::LoadSavedAlbums)
         );
-        assert_eq!(library.saved_albums_request(), None);
+
+        // A chip that draws only playlists names neither list, so a library
+        // that has not read them yet stays idle under it.
+        let mut narrowed = Library::default();
+        narrowed.apply(&Update::Playlists(Vec::new()));
+        assert!(
+            narrowed
+                .root_filter
+                .choose(takofy_ui::library_filter::RootKind::Playlists)
+        );
+        assert_eq!(narrowed.followed_artists_request(), None);
+        assert_eq!(narrowed.saved_albums_request(), None);
+
+        // A chip of its own asks for its own list, once.
+        let mut chip = Library::default();
+        chip.apply(&Update::Playlists(Vec::new()));
+        assert!(
+            chip.root_filter
+                .choose(takofy_ui::library_filter::RootKind::Artists)
+        );
+        assert_eq!(
+            chip.followed_artists_request(),
+            Some(Command::LoadFollowedArtists)
+        );
+        assert_eq!(chip.followed_artists, Load::Loading);
+        assert_eq!(
+            chip.followed_artists_request(),
+            None,
+            "the load is in flight, so the next frame sends nothing"
+        );
+
+        assert!(
+            chip.root_filter
+                .choose(takofy_ui::library_filter::RootKind::Albums)
+        );
+        assert_eq!(chip.saved_albums_request(), Some(Command::LoadSavedAlbums));
+        assert_eq!(chip.saved_albums_request(), None);
 
         // The sidebar's chips are the other surface that names the same lists.
         let mut sidebar = Library::default();
@@ -765,21 +880,33 @@ mod tests {
     /// A window with no worker behind it, so what `logic` sends can be read
     /// back from the command channel.
     fn test_window() -> (TakofyApp, tokio::sync::mpsc::UnboundedReceiver<Command>) {
+        test_window_with(Loaded::Absent, PrefsSync::off())
+    }
+
+    /// A window restored from `loaded` and saving through `prefs`.
+    fn test_window_with(
+        loaded: Loaded,
+        prefs: PrefsSync,
+    ) -> (TakofyApp, tokio::sync::mpsc::UnboundedReceiver<Command>) {
         let (sender, updates) = channel();
         // Nothing will ever arrive; a disconnected channel is what the window
         // already tolerates.
         drop(sender);
         let (commands, received) = tokio::sync::mpsc::unbounded_channel();
+        let (transport, queue) = TakofyApp::restored_state(&loaded);
         let app = TakofyApp {
             state: SignIn::default(),
             library: Library::default(),
-            transport: Transport::default(),
-            queue: Queue::default(),
+            transport,
+            queue,
             drawer: Drawer::default(),
+            pane: PanePref::default(),
+            menu: Menu::default(),
             ui_end: UiEnd { updates, commands },
             tokens: Tokens::DARK,
             art: Art::new(),
             since: None,
+            prefs,
         };
         (app, received)
     }
@@ -928,6 +1055,234 @@ mod tests {
         let mut output = ctx.run_ui(input, |ui| app.ui(ui, &mut frame));
         output.textures_delta.clear();
         output
+    }
+
+    type PrefsLog = Arc<Mutex<Vec<Prefs>>>;
+
+    /// A sink that keeps every value it is handed.
+    fn recording() -> (
+        PrefsLog,
+        impl Fn(&Prefs) -> std::io::Result<()> + Send + 'static,
+    ) {
+        let log: PrefsLog = Arc::new(Mutex::new(Vec::new()));
+        let sink = {
+            let log = Arc::clone(&log);
+            move |prefs: &Prefs| {
+                log.lock().expect("the sink log").push(prefs.clone());
+                Ok(())
+            }
+        };
+        (log, sink)
+    }
+
+    /// A sync whose file already holds `written`, saving through `sink`.
+    fn synced(
+        written: Prefs,
+        sink: impl Fn(&Prefs) -> std::io::Result<()> + Send + 'static,
+    ) -> PrefsSync {
+        PrefsSync::for_test(
+            written,
+            PrefsWriter::with_sink(sink, Duration::from_secs(2)),
+        )
+    }
+
+    fn found(text: &str) -> Loaded {
+        Loaded::Found(Prefs::parse(text).expect("valid prefs"))
+    }
+
+    /// The volume commands the frames since the last call sent.
+    fn volume_frames(received: &mut tokio::sync::mpsc::UnboundedReceiver<Command>) -> Vec<u16> {
+        let mut levels = Vec::new();
+        while let Ok(command) = received.try_recv() {
+            if let Command::Volume { percent } = command {
+                levels.push(percent);
+            }
+        }
+        levels
+    }
+
+    #[test]
+    fn restored_state_builds_the_transport_and_queue() {
+        let (transport, queue) =
+            TakofyApp::restored_state(&found("volume=40\nmute=false\nshuffle=true\nrepeat=all\n"));
+        assert_eq!(
+            transport.volume.level(),
+            40,
+            "the saved level seeds the bar"
+        );
+        assert!(!transport.volume.muted(), "the file was not muted");
+        assert!(queue.shuffle(), "the saved shuffle seeds the queue");
+        assert_eq!(queue.repeat(), Repeat::All, "the saved repeat seeds it too");
+    }
+
+    #[test]
+    fn a_restored_volume_is_sent_once_on_the_first_frame() {
+        let (mut app, mut received) = test_window_with(found("volume=40\n"), PrefsSync::off());
+        let ctx = window_context();
+        let _ = ui_frame(&mut app, &ctx);
+        assert_eq!(
+            volume_frames(&mut received),
+            vec![40],
+            "a remembered level reaches the player on the first frame"
+        );
+        let _ = ui_frame(&mut app, &ctx);
+        assert!(
+            volume_frames(&mut received).is_empty(),
+            "one change is one command"
+        );
+    }
+
+    #[test]
+    fn a_restored_mute_sends_zero() {
+        let (mut app, mut received) =
+            test_window_with(found("volume=70\nmute=true\n"), PrefsSync::off());
+        let ctx = window_context();
+        let _ = ui_frame(&mut app, &ctx);
+        assert_eq!(
+            volume_frames(&mut received),
+            vec![0],
+            "a remembered mute silences the player"
+        );
+        assert_eq!(
+            app.transport.volume.level(),
+            70,
+            "the bar keeps the level behind the lid"
+        );
+    }
+
+    #[test]
+    fn default_prefs_send_no_volume_command() {
+        for loaded in [
+            Loaded::Absent,
+            Loaded::Refused("line 3: bad value for `repeat`".to_owned()),
+            Loaded::Unreadable,
+        ] {
+            let (mut app, mut received) = test_window_with(loaded, PrefsSync::off());
+            let ctx = window_context();
+            let _ = ui_frame(&mut app, &ctx);
+            assert!(
+                volume_frames(&mut received).is_empty(),
+                "nothing is owed when the file named no level"
+            );
+        }
+    }
+
+    /// The delay the window asked for, which is egui's own first passes' work
+    /// until the app stops asking for anything.
+    fn root_delay(output: &egui::FullOutput) -> Duration {
+        output
+            .viewport_output
+            .get(&egui::ViewportId::ROOT)
+            .expect("the root viewport")
+            .repaint_delay
+    }
+
+    /// A signed-in window with nothing loading, so the only thing that can ask
+    /// for a frame is a value on its way to the file.
+    fn idle_window() -> (TakofyApp, tokio::sync::mpsc::UnboundedReceiver<Command>) {
+        let (mut app, received) = test_window();
+        app.state = SignIn::SignedIn;
+        app.library.playlists = Load::Ready(Vec::new());
+        (app, received)
+    }
+
+    #[test]
+    fn a_changed_volume_asks_for_a_wake_within_quiet() {
+        let (mut app, _received) = idle_window();
+        let ctx = window_context();
+        let mut idle = Duration::ZERO;
+        for _ in 0..10 {
+            idle = root_delay(&ui_frame(&mut app, &ctx));
+            if idle == Duration::MAX {
+                break;
+            }
+        }
+        assert_eq!(idle, Duration::MAX, "an idle window must not be woken");
+
+        assert!(app.transport.volume.set_fraction(0.4));
+        let delay = root_delay(&ui_frame(&mut app, &ctx));
+        assert!(
+            delay < Duration::MAX,
+            "a pending value must wake the window, at {delay:?}"
+        );
+        assert!(
+            delay <= QUIET,
+            "the write is due within the quiet window: {delay:?}"
+        );
+    }
+
+    #[test]
+    fn on_exit_flushes_an_unsettled_change() {
+        let (log, sink) = recording();
+        let written = Prefs::parse("volume=40\n").expect("valid prefs");
+        let (mut app, _received) =
+            test_window_with(Loaded::Found(written.clone()), synced(written, sink));
+        assert!(app.transport.volume.set_fraction(0.6));
+        let changed = Prefs::of(&app.transport.volume, &app.queue);
+
+        App::on_exit(&mut app);
+        drop(app);
+
+        assert_eq!(
+            *log.lock().expect("the sink log"),
+            vec![changed],
+            "close writes the value no frame had time to settle"
+        );
+    }
+
+    #[test]
+    fn on_exit_after_a_settled_write_sends_nothing_more() {
+        let (log, sink) = recording();
+        let written = Prefs::parse("volume=40\n").expect("valid prefs");
+        let (mut app, _received) =
+            test_window_with(Loaded::Found(written.clone()), synced(written, sink));
+        assert!(app.transport.volume.set_fraction(0.6));
+        let changed = Prefs::of(&app.transport.volume, &app.queue);
+        let now = Instant::now();
+        assert_eq!(
+            app.prefs.observe(now, &changed),
+            Some(QUIET),
+            "the change is armed, not written"
+        );
+        assert_eq!(
+            app.prefs.observe(now + QUIET, &changed),
+            None,
+            "quiet has passed, so the value is written"
+        );
+
+        App::on_exit(&mut app);
+        drop(app);
+
+        assert_eq!(
+            *log.lock().expect("the sink log"),
+            vec![changed],
+            "a settled value is not written again"
+        );
+    }
+
+    #[test]
+    fn an_untouched_session_never_writes() {
+        let (log, sink) = recording();
+        let written = Prefs::parse("volume=40\nshuffle=true\nrepeat=all\n").expect("valid prefs");
+        let (mut app, mut received) =
+            test_window_with(Loaded::Found(written.clone()), synced(written, sink));
+        let ctx = window_context();
+        for _ in 0..3 {
+            let _ = ui_frame(&mut app, &ctx);
+        }
+        assert_eq!(
+            volume_frames(&mut received),
+            vec![40],
+            "the restored level went out once, so the frames did run"
+        );
+
+        App::on_exit(&mut app);
+        drop(app);
+
+        assert!(
+            log.lock().expect("the sink log").is_empty(),
+            "nothing changed, so nothing is written"
+        );
     }
 
     /// A dropped results page is asked for after the draw, but `logic` has

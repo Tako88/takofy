@@ -33,7 +33,7 @@ pub(crate) const PAGE_LIMIT: u32 = 500;
 /// 100,000 items, and failing loudly past that is the intent.
 pub(crate) const COLLECTION_MAX_PAGES: usize = 200;
 
-/// Why a followed-shows read failed.
+/// Why a collection-set read or write failed.
 #[derive(Debug, thiserror::Error)]
 pub enum FollowedError {
     /// The request failed; the message is the source's.

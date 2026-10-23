@@ -19,15 +19,20 @@ use crate::landing::Zone;
 use crate::layout::{Table, cards, table as table_layout};
 use crate::library::{BandCover, Library, Load, MediaLayout, band_cover};
 use crate::library_filter::{self, Item, RootKind};
+use crate::menu::{Cut, Door, LibraryItem};
 use crate::message::{Command, Failure};
+use crate::naming::Surface;
 use crate::player::Transport;
 use crate::queue::Queue;
 use crate::route::Page;
 use crate::scroll;
+use crate::sidebar_kind::SidebarKind;
 use crate::theme::{Tokens, extent, space};
 
 use super::carry::{self, Ghost};
+use super::context_menu;
 use super::filter_row;
+use super::heart;
 use super::hero;
 use super::media;
 use super::skeleton;
@@ -35,6 +40,7 @@ use super::text as recipe;
 use super::track_list::{head, list_rect};
 use super::track_row::{self, Click, Row, state_of};
 use super::view_toggle;
+use crate::verbs::{self, LibraryRights};
 
 /// The main pane: the selected playlist's tracks, or the state of their load.
 #[expect(
@@ -86,6 +92,7 @@ pub fn tracks_view(
     // Read before the rows, which borrow the tracks these ask about.
     let movable = library.movable();
     let liftable = library.liftable();
+    let writing = library.write_in_flight();
     let mut command = None;
     let mut retry = false;
     // A link click is applied after the scroll area, because the matches below
@@ -97,15 +104,14 @@ pub fn tracks_view(
         // selection; with no name there is nothing to say above the rows. It
         // takes the width and starts at the cursor, so the header and the rows
         // follow it down one scroll area.
-        if let Some(entry) = library.selected_entry() {
-            let cover = band_cover_for(entry, settled, art, now);
-            let ready = match &library.tracks {
-                Load::Ready(tracks) => Some(tracks),
-                Load::Idle | Load::Loading | Load::Failed(_) => None,
+        if let Some(entry) = library.selected_entry().cloned() {
+            let cover = band_cover_for(&entry, settled, art, now);
+            let tracks = match &library.tracks {
+                Load::Ready(tracks) if !tracks.tracks.is_empty() => {
+                    Some((tracks.tracks.len(), total_duration_ms(&tracks.tracks)))
+                }
+                Load::Idle | Load::Loading | Load::Failed(_) | Load::Ready(_) => None,
             };
-            let tracks = ready
-                .filter(|tracks| !tracks.tracks.is_empty())
-                .map(|tracks| (tracks.tracks.len(), total_duration_ms(&tracks.tracks)));
             // The owner and the description come from the listing; the count and
             // the total wait for the tracks. The description is owned here so the
             // band can borrow it for as long as it is drawn.
@@ -118,6 +124,18 @@ pub fn tracks_view(
                 .as_deref()
                 .and_then(plain_description)
                 .unwrap_or_default();
+            let renamable = library.can_rename(&entry.uri);
+            let not_carrying = !carry::carrying(ui.ctx());
+            let more_live = not_carrying && !library.write_in_flight();
+            let renaming = std::mem::take(&mut library.renaming);
+            let mut renaming = renaming;
+            let title = if renaming.is_open_on(&entry.uri, Surface::Band) {
+                hero::Title::Editing(&mut renaming)
+            } else if renamable && not_carrying {
+                hero::Title::Clickable
+            } else {
+                hero::Title::Plain
+            };
             let band = hero::Band {
                 eyebrow: "Playlist",
                 title: &entry.name,
@@ -127,15 +145,90 @@ pub fn tracks_view(
                 shuffle: true,
                 cover,
             };
-            if hero::show(ui, &band, tokens)
-                && let Some(tracks) = ready
+            let reply = hero::show_with(
+                ui,
+                &band,
+                tokens,
+                hero::Tools {
+                    title,
+                    more: Some(more_live),
+                    saved: library.is_saved(&entry.uri),
+                },
+            );
+            library.renaming = renaming;
+            // The band takes a hand-back only for its own field: a row's return
+            // belongs to the row, and a field raised on another page has no
+            // title here to go back to.
+            if library.renaming.wants_return()
+                && library.renaming.surface() == Surface::Band
+                && library.renaming.uri() == entry.uri
             {
-                command = queue.start(&tracks.tracks, 0, transport);
+                if let Some(id) = reply.title_id {
+                    ui.memory_mut(|memory| memory.request_focus(id));
+                }
+                library.renaming.return_taken();
+            }
+            if reply.rename_clicked {
+                library.begin_rename(&entry.uri, Surface::Band);
+            }
+            if let Some(door) = reply.more_door {
+                let item = LibraryItem {
+                    kind: SidebarKind::Playlists,
+                    uri: entry.uri.clone(),
+                    name: entry.name.clone(),
+                };
+                let rights = LibraryRights {
+                    renamable,
+                    removable: library.can_remove(SidebarKind::Playlists),
+                    // The band's heart offers the same save the row's menu does.
+                    saved: library.is_saved(&entry.uri),
+                };
+                context_menu::post(
+                    ui.ctx(),
+                    verbs::library_request(
+                        item,
+                        door,
+                        rights,
+                        library.page().cloned(),
+                        Surface::Band,
+                    ),
+                );
+            }
+            if reply.saved.is_some() {
+                let item = LibraryItem {
+                    kind: SidebarKind::Playlists,
+                    uri: entry.uri.clone(),
+                    name: entry.name.clone(),
+                };
+                command = library.save_to_library(&item).or(command.take());
+            }
+            if (reply.played || reply.shuffled)
+                && tracks.is_some()
+                && let Load::Ready(tracks) = &library.tracks
+            {
+                command = (if reply.shuffled {
+                    queue.start_with_shuffle(&tracks.tracks, 0, transport)
+                } else {
+                    queue.start(&tracks.tracks, 0, transport)
+                })
+                .or(command.take());
             }
         }
 
         super::inner(ui, |ui| {
             let width = ui.available_width();
+            // A rename can fail on a list with no rows, so its sentence is drawn
+            // above the table arms rather than inside the non-empty one.
+            let notice = match &library.tracks {
+                Load::Ready(tracks) => tracks.notice,
+                Load::Idle | Load::Loading | Load::Failed(_) => None,
+            };
+            if let Some(failure) = notice {
+                ui.label(recipe::muted(
+                    crate::signin::failure_message(failure),
+                    tokens,
+                ));
+            }
             match &library.tracks {
                 Load::Idle => {}
                 Load::Loading => {
@@ -166,7 +259,11 @@ pub fn tracks_view(
                             .for_playlist(table_layout::is_playlist(&tracks.playlist)),
                     );
                     head(ui, columns, tokens);
-                    if let Some(failure) = tracks.notice {
+                    // A failed like is drawn here and nowhere else, so a flip
+                    // started on an album, artist, search or release-block
+                    // heart reverts without a word; a page change clears what
+                    // is left.
+                    if let Some(failure) = library.likes.notice() {
                         ui.label(recipe::muted(
                             crate::signin::failure_message(failure),
                             tokens,
@@ -181,16 +278,34 @@ pub fn tracks_view(
                     ui.allocate_rect(list, Sense::hover());
                     let visible = ui.clip_rect();
                     // The page is in the id: a selection belongs to a page, not to a row index.
-                    let mut selection = carry::List::open(
-                        ui.ctx(),
-                        Id::unique(("playlist-tracks", tracks.playlist.as_str())),
-                        count,
-                    );
+                    let list_id = Id::unique(("playlist-tracks", tracks.playlist.as_str()));
+                    // Only a page that may be written offers the destructive
+                    // verb and the key; a list that is not ours has neither.
+                    let listing = if movable {
+                        carry::Listing::Playlist {
+                            uri: tracks.playlist.clone(),
+                            list: list_id,
+                        }
+                    } else {
+                        carry::Listing::Page
+                    };
+                    let mut selection = carry::List::open(ui.ctx(), list_id, count);
+                    // The menu's gate is the list's: a carried block or a write in
+                    // flight holds the rows still, so no menu opens over them.
+                    let gate = selection.gate(writing);
+
+                    // The id the rows draw under, so a focused row is read from
+                    // the same `Ui` that drew them.
+                    let focused_now = ui.memory(|memory| memory.focused());
+                    let mut focused = None;
 
                     for (index, entry) in tracks.tracks.iter().enumerate() {
                         let rect = table_layout::row_rect(list, index, extent::ROW_H);
                         if !visible.intersects(rect) {
                             continue;
+                        }
+                        if focused_now == Some(track_row::id(ui, &entry.uri, index + 1)) {
+                            focused = Some(index);
                         }
                         let duration = entry.duration_ms.map(format_position);
                         let added = entry.added_at.and_then(|added| added_label(added, now_ms));
@@ -208,6 +323,8 @@ pub fn tracks_view(
                             state: state_of(&entry.uri, transport),
                             cover: art.look(entry.cover.as_ref(), now),
                             look: selection.look(index),
+                            menu: gate.allows(),
+                            liked: library.likes.state(&entry.uri),
                         };
                         match track_row::show(ui, rect, columns, &row, tokens) {
                             Some(Click::Play) => {
@@ -215,6 +332,27 @@ pub fn tracks_view(
                             }
                             Some(Click::Open(page)) => open = Some(page),
                             Some(Click::Select(press)) => selection.press(index, press),
+                            Some(Click::Like(liked)) => {
+                                heart::post(
+                                    ui.ctx(),
+                                    heart::Ask {
+                                        tracks: vec![entry.uri.clone()],
+                                        liked,
+                                    },
+                                );
+                            }
+                            Some(Click::Menu(door)) => selection.menu(
+                                ui.ctx(),
+                                door,
+                                index,
+                                gate,
+                                carry::Open {
+                                    listing: listing.clone(),
+                                    here: library.page(),
+                                    likes: &library.likes,
+                                },
+                                |row| tracks.tracks.get(row).cloned(),
+                            ),
                             // A write in flight holds the page still; a page it
                             // may not write still lifts.
                             Some(Click::Lift) if liftable => {
@@ -225,6 +363,32 @@ pub fn tracks_view(
                             }
                             Some(Click::Lift) => {}
                             None => {}
+                        }
+                    }
+                    // Del belongs to a focused row of a page that may be
+                    // written, and only while the menu is not holding the key:
+                    // a consumed event is gone, so the menu's own Del would
+                    // starve behind it.
+                    if movable
+                        && gate.allows()
+                        && !context_menu::is_open(ui.ctx())
+                        && let Some(row) = focused
+                        && context_menu::take_delete(ui)
+                    {
+                        let rows = selection.acting_rows(row);
+                        let entries: Vec<takofy_model::TrackEntry> = rows
+                            .iter()
+                            .filter_map(|row| tracks.tracks.get(*row).cloned())
+                            .collect();
+                        if rows.len() == entries.len() {
+                            context_menu::post_cut(
+                                ui.ctx(),
+                                Cut {
+                                    listing: listing.clone(),
+                                    rows,
+                                    entries,
+                                },
+                            );
                         }
                     }
                     // Only a page that may take the write says where its own
@@ -267,8 +431,7 @@ pub fn tracks_view(
 fn band_cover_for(entry: &PlaylistEntry, settled: bool, art: &mut Art, now: Instant) -> Cover {
     match band_cover(entry, settled) {
         BandCover::Pending => entry
-            .cover
-            .as_ref()
+            .cover_url()
             .and_then(|url| art.look_held(url, now))
             .unwrap_or(Cover::Loading),
         BandCover::Entry(url) => art.look(url, now),
@@ -411,12 +574,21 @@ fn slice<T>(load: &Load<Vec<T>>) -> &[T] {
 
 /// The note under the root's cards for the chosen chip.
 ///
-/// A chip that draws a followed list says what its own read is doing; All and
-/// Podcasts say it for the shows, which is the list they have always drawn.
+/// A chip that draws one followed list says what that read is doing. All draws
+/// every one of them, so it names the first that is still owed, in the order the
+/// cards are drawn.
 fn note_for(library: &Library, chosen: RootKind) -> LoadNote {
     match chosen {
         RootKind::Playlists => LoadNote::None,
-        RootKind::All | RootKind::Podcasts => index_note(FollowedRead::Shows, &library.followed),
+        RootKind::All => [
+            index_note(FollowedRead::Shows, &library.followed),
+            index_note(FollowedRead::Artists, &library.followed_artists),
+            index_note(FollowedRead::Albums, &library.saved_albums),
+        ]
+        .into_iter()
+        .find(|note| *note != LoadNote::None)
+        .unwrap_or(LoadNote::None),
+        RootKind::Podcasts => index_note(FollowedRead::Shows, &library.followed),
         RootKind::Artists => index_note(FollowedRead::Artists, &library.followed_artists),
         RootKind::Albums => index_note(FollowedRead::Albums, &library.saved_albums),
     }
@@ -512,6 +684,7 @@ fn idle(
                                 art,
                                 now,
                                 tokens,
+                                library: &*library,
                                 select: &mut select,
                                 open: &mut open,
                             },
@@ -651,8 +824,11 @@ fn list(ui: &mut Ui, items: &[Item<'_>], draw: &mut MediaDraw<'_, '_>) {
             continue;
         }
         let media = draw.media_of(item);
-        if media::row(ui, rect, &media.as_media(), draw.tokens) {
-            draw.activate(item, &media.uri);
+        let words = media.as_media();
+        match media::row(ui, rect, &words, draw.tokens) {
+            Some(media::Press::Open) => draw.activate(item, &media.uri),
+            Some(media::Press::Menu(door)) => draw.post_menu(ui.ctx(), &media, door),
+            None => {}
         }
     }
 }
@@ -662,6 +838,7 @@ struct MediaDraw<'a, 'b> {
     art: &'a mut Art,
     now: Instant,
     tokens: &'a Tokens,
+    library: &'b Library,
     select: &'b mut Option<String>,
     open: &'b mut Option<Page>,
 }
@@ -678,9 +855,39 @@ impl MediaDraw<'_, '_> {
         }
     }
 
+    /// The menu a row's `⋯` asked for: the sidebar row's own verbs, built for
+    /// the item it names.
+    fn post_menu(&self, ctx: &egui::Context, media: &MediaWords, door: Door) {
+        let item = LibraryItem {
+            kind: media.shelf,
+            uri: media.uri.clone(),
+            name: media.name.clone(),
+        };
+        let rights = LibraryRights {
+            // The name field lives in the sidebar, so the root offers no rename.
+            renamable: false,
+            removable: self.library.can_remove(media.shelf),
+            // Every root row comes from a loaded list, so there is nothing to
+            // put back.
+            saved: Some(true),
+        };
+        // The page is `None` at the root, and is read anyway so the request stays
+        // right if the root is ever drawn over a page.
+        context_menu::post(
+            ctx,
+            verbs::library_request(
+                item,
+                door,
+                rights,
+                self.library.page().cloned(),
+                Surface::Row,
+            ),
+        );
+    }
+
     /// One item's words and cover, owned so a borrow of the item is not needed.
     fn media_of(&mut self, item: &Item<'_>) -> MediaWords {
-        let (uri, name, kind, sub, size, round, cover) = match item {
+        let (uri, name, kind, sub, size, round, cover, shelf) = match item {
             Item::Playlist(entry) => (
                 &entry.uri,
                 &entry.name,
@@ -688,7 +895,8 @@ impl MediaDraw<'_, '_> {
                 library_kind("Playlist", entry.owner.as_deref()),
                 media_size(RootKind::Playlists, entry.tracks),
                 false,
-                entry.cover.as_ref(),
+                entry.cover_url(),
+                SidebarKind::Playlists,
             ),
             Item::Show(show) => (
                 &show.uri,
@@ -698,6 +906,7 @@ impl MediaDraw<'_, '_> {
                 media_size(RootKind::Podcasts, show.episodes),
                 false,
                 show.cover.as_ref(),
+                SidebarKind::Podcasts,
             ),
             Item::Artist(artist) => (
                 &artist.uri,
@@ -710,6 +919,7 @@ impl MediaDraw<'_, '_> {
                 ),
                 true,
                 artist.portrait.as_ref(),
+                SidebarKind::Artists,
             ),
             Item::Album(album) => (
                 &album.uri,
@@ -722,6 +932,7 @@ impl MediaDraw<'_, '_> {
                 media_size(RootKind::Albums, album.tracks.map(|count| count as usize)),
                 false,
                 album.cover.as_ref(),
+                SidebarKind::Albums,
             ),
         };
         MediaWords {
@@ -731,6 +942,7 @@ impl MediaDraw<'_, '_> {
             sub,
             size,
             round,
+            shelf,
             cover: self.art.look(cover, self.now),
         }
     }
@@ -744,6 +956,7 @@ struct MediaWords {
     sub: String,
     size: String,
     round: bool,
+    shelf: SidebarKind,
     cover: Cover,
 }
 
@@ -756,6 +969,7 @@ impl MediaWords {
             sub: &self.sub,
             size: &self.size,
             round: self.round,
+            shelf: self.shelf,
             cover: self.cover,
         }
     }
@@ -842,8 +1056,8 @@ mod tests {
     use crate::view::rows::Look;
     use crate::view::track_row::State;
     use takofy_model::{
-        AddedAt, AlbumDetail, CoverImage, CoverUrl, PlaylistAccess, PlaylistEntry, Revision,
-        TrackEntry,
+        AddedAt, AlbumDetail, CoverImage, CoverUrl, PlaylistAccess, PlaylistCover, PlaylistEntry,
+        Revision, TrackEntry,
     };
 
     /// The probe window: 900 by 400, the size every bare-row test runs in.
@@ -1222,7 +1436,7 @@ mod tests {
             uri: uri.to_owned(),
             name: name.to_owned(),
             named: true,
-            cover: Some(cover),
+            cover: Some(PlaylistCover::derived(cover)),
             description: None,
             owner: None,
             tracks: None,
@@ -1343,6 +1557,36 @@ mod tests {
         found.expect("the header and the list lay out")
     }
 
+    /// Makes the library's liked set these tracks, as a landed read would.
+    fn liked(library: &mut Library, uris: &[&str]) {
+        assert!(library.likes.request(true));
+        library.likes.apply(&crate::likes::Event::Set(
+            uris.iter().map(|uri| (*uri).to_owned()).collect(),
+        ));
+    }
+
+    /// The centre of the like column of the `index`-th row, solved the way the
+    /// view solves its columns.
+    fn heart_point_for(ctx: &Context, count: usize, index: usize) -> Pos2 {
+        let tokens = Tokens::DARK;
+        let table = Table::Full;
+        let mut found = None;
+        run(ctx, input(Vec::new()), |ui| {
+            ui.add_space(space::S3);
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                crate::view::inner(ui, |ui| {
+                    let width = ui.available_width();
+                    let columns = table_layout::columns(width, table.columns());
+                    head(ui, columns, &tokens);
+                    let list = list_rect(ui, count);
+                    let row = table_layout::row_rect(list, index, extent::ROW_H);
+                    found = Some(columns.at(row.min).like.center());
+                });
+            });
+        });
+        found.expect("the heart's column lays out")
+    }
+
     /// The rect `tracks_view` draws the `index`-th row's `cell` into, solved the
     /// way the painter solves it: the row's own rect, then the columns at its
     /// origin.
@@ -1390,7 +1634,7 @@ mod tests {
                     shuffle: true,
                     cover: Cover::Missing,
                 };
-                let _ = hero::show(ui, &band, &tokens);
+                let _ = hero::show_with(ui, &band, &tokens, hero::Tools::plain());
                 crate::view::inner(ui, |ui| {
                     let width = ui.available_width();
                     let columns = table_layout::columns(width, table.columns());
@@ -1425,7 +1669,7 @@ mod tests {
                     shuffle: true,
                     cover: Cover::Missing,
                 };
-                let _ = hero::show(ui, &band, &tokens);
+                let _ = hero::show_with(ui, &band, &tokens, hero::Tools::plain());
                 let bottom = ui.cursor().min.y;
                 let height = PLAY + 2.0 * space::S4;
                 let row =
@@ -1825,6 +2069,178 @@ mod tests {
     }
 
     #[test]
+    fn a_heart_click_posts_one_ask_with_the_rows_uri() {
+        let ctx = context();
+        let tracks = vec![
+            track("spotify:track:a", "t0"),
+            track("spotify:track:b", "t1"),
+        ];
+        let mut library = library_with(tracks);
+        liked(&mut library, &[]);
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let point = heart_point_for(&ctx, 2, 1);
+
+        let command = click(&ctx, point, &mut library, &mut transport, &mut queue);
+
+        assert_eq!(command, None, "a heart is not a command of its own");
+        let ask = crate::view::heart::take(&ctx).expect("an ask was posted");
+        assert_eq!(ask.tracks, vec!["spotify:track:b".to_owned()]);
+        assert!(ask.liked, "an unsaved row asks to be saved");
+    }
+
+    #[test]
+    fn a_heart_click_inside_a_pick_acts_on_that_row_only_and_keeps_the_pick() {
+        let ctx = context();
+        let tracks = vec![
+            track("spotify:track:a", "t0"),
+            track("spotify:track:b", "t1"),
+        ];
+        let mut library = library_with(tracks);
+        liked(&mut library, &[]);
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let list = egui::Id::unique(("playlist-tracks", "spotify:playlist:a"));
+        crate::view::carry::select_rows(&ctx, list, 0..2);
+        let point = heart_point_for(&ctx, 2, 1);
+
+        let _ = click(&ctx, point, &mut library, &mut transport, &mut queue);
+
+        let ask = crate::view::heart::take(&ctx).expect("an ask was posted");
+        assert_eq!(
+            ask.tracks,
+            vec!["spotify:track:b".to_owned()],
+            "the pick is the menu's, not the heart's"
+        );
+        let kept = crate::view::carry::List::open(&ctx, list, 2);
+        assert!(
+            kept.look(0).selected && kept.look(1).selected,
+            "the heart changed the pick"
+        );
+    }
+
+    #[test]
+    fn a_track_listed_twice_shows_one_state_on_both_rows() {
+        let ctx = context();
+        let tracks = vec![
+            track("spotify:track:a", "t0"),
+            track("spotify:track:a", "t0 again"),
+        ];
+        let mut library = library_with(tracks);
+        liked(&mut library, &["spotify:track:a"]);
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+
+        for index in 0..2 {
+            let point = heart_point_for(&ctx, 2, index);
+            let _ = click(&ctx, point, &mut library, &mut transport, &mut queue);
+            let ask = crate::view::heart::take(&ctx).expect("an ask was posted");
+            assert_eq!(
+                ask.tracks,
+                vec!["spotify:track:a".to_owned()],
+                "row {index}"
+            );
+            assert!(!ask.liked, "row {index} did not know the track was liked");
+        }
+    }
+
+    #[test]
+    fn a_failed_like_draws_its_sentence_in_the_pages_slot() {
+        let ctx = context();
+        let tracks = vec![track("spotify:track:a", "t0")];
+        let mut library = library_with(tracks);
+        liked(&mut library, &[]);
+        let change = library
+            .likes
+            .set(&["spotify:track:a".to_owned()], true)
+            .expect("a change");
+        library.likes.apply(&crate::likes::Event::Failed {
+            tracks: change.tracks,
+            failure: Failure::Save,
+        });
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let tokens = Tokens::DARK;
+
+        let output = run(&ctx, input(Vec::new()), |ui| {
+            let _ = tracks_view(
+                ui,
+                Table::Full,
+                &mut library,
+                &mut transport,
+                &mut queue,
+                &mut Art::default(),
+                Instant::now(),
+                NOW_MS,
+                &tokens,
+            );
+        });
+
+        assert!(
+            drawn_texts(&output).contains(&"Could not save that change. Try again."),
+            "the failed like drew no sentence: {:?}",
+            drawn_texts(&output)
+        );
+    }
+
+    #[test]
+    fn a_right_click_posts_the_menu_its_row_asked_for() {
+        let ctx = context();
+        let tracks = vec![track("a", "t0"), linkable("b")];
+        let mut library = library_with(tracks.clone());
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let centre = row_rect_for(&ctx, 2, 1).center();
+
+        for event in crate::view::test_support::secondary_click_events(centre) {
+            let _ = pass(&ctx, event, &mut library, &mut transport, &mut queue);
+        }
+        let request = crate::view::context_menu::take_request(&ctx)
+            .expect("a right-click on a row posted a request");
+        assert_eq!(request.targets.len(), 1);
+        assert_eq!(request.targets[0].uri, "b", "the row under the pointer");
+        assert_eq!(
+            request.page,
+            Some(crate::route::Page::Playlist(
+                "spotify:playlist:a".to_owned()
+            )),
+            "the page it was opened on, so a page change can close it"
+        );
+        assert!(
+            request
+                .items
+                .iter()
+                .any(|item| item.verb == crate::menu::Verb::GoToAlbum),
+            "the row's own album is one of its verbs"
+        );
+    }
+
+    #[test]
+    fn a_page_with_a_write_in_flight_posts_no_menu() {
+        let ctx = context();
+        let tracks = vec![track("a", "t0"), track("b", "t1")];
+        let mut library = library_with(tracks.clone());
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        assert!(
+            library
+                .move_tracks("spotify:playlist:a", &[0], 2, &[tracks[0].clone()])
+                .is_some(),
+            "the page takes the move first"
+        );
+        let centre = row_rect_for(&ctx, 2, 1).center();
+
+        for event in crate::view::test_support::secondary_click_events(centre) {
+            let _ = pass(&ctx, event, &mut library, &mut transport, &mut queue);
+        }
+        assert_eq!(
+            crate::view::context_menu::take_request(&ctx),
+            None,
+            "a write in flight holds the rows still, so no menu opens over them"
+        );
+    }
+
+    #[test]
     fn a_page_without_access_offers_nothing() {
         let ctx = context();
         let mut library = library_selected(
@@ -1980,6 +2396,8 @@ mod tests {
             state: State::Resting,
             cover: Cover::Missing,
             look: Look::default(),
+            menu: false,
+            liked: None,
         };
 
         run(&ctx, input(Vec::new()), |ui| {
@@ -2028,6 +2446,8 @@ mod tests {
             state: State::Resting,
             cover: Cover::Missing,
             look: Look::default(),
+            menu: false,
+            liked: None,
         };
 
         let mut output = ctx.run_ui(input(Vec::new()), |ui| {
@@ -2431,6 +2851,8 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             state: State::Resting,
             cover: Cover::Missing,
             look: Look::default(),
+            menu: false,
+            liked: None,
         };
 
         let mut output = ctx.run_ui(input(Vec::new()), |ui| {
@@ -2638,14 +3060,46 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
 
     #[test]
     fn idle_view_all_shows_playlists_and_shows() {
+        // The four kinds in one column are pinned by `library_filter`; this is
+        // the root reading them together, and settling.
         let mut library = library_idle(vec![playlist("a", "A")]);
         library.apply(&Update::FollowedShows(vec![show("s", "S")]));
+        library.apply(&Update::FollowedArtists(Vec::new()));
+        library.apply(&Update::SavedAlbums(Vec::new()));
         let IdleView::Grid { items, note } = idle_view(&library) else {
             panic!("a ready root is a grid: {:?}", idle_view(&library));
         };
         assert_eq!(items.len(), 2, "playlists first, then shows");
         assert!(matches!(items[0], Item::Playlist(entry) if entry.uri == "a"));
         assert!(matches!(&items[1], Item::Show(entry) if entry.uri == "s"));
+        assert_eq!(note, LoadNote::None);
+    }
+
+    /// All draws four reads, so its note names the first still owed, in the
+    /// order the cards are drawn.
+    #[test]
+    fn idle_view_all_names_the_first_read_it_is_still_owed() {
+        let mut library = library_idle(vec![playlist("a", "A")]);
+        library.apply(&Update::FollowedShows(Vec::new()));
+        let IdleView::Grid { note, .. } = idle_view(&library) else {
+            panic!("a ready root is a grid: {:?}", idle_view(&library));
+        };
+        assert_eq!(
+            note,
+            LoadNote::Loading(FollowedRead::Artists),
+            "the shows are in, so the artists are the first owed"
+        );
+
+        library.apply(&Update::FollowedArtists(Vec::new()));
+        let IdleView::Grid { note, .. } = idle_view(&library) else {
+            panic!("a ready root is a grid: {:?}", idle_view(&library));
+        };
+        assert_eq!(note, LoadNote::Loading(FollowedRead::Albums));
+
+        library.apply(&Update::SavedAlbums(Vec::new()));
+        let IdleView::Grid { note, .. } = idle_view(&library) else {
+            panic!("a ready root is a grid: {:?}", idle_view(&library));
+        };
         assert_eq!(note, LoadNote::None);
     }
 
@@ -2670,6 +3124,8 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
 
         let mut settled = library_idle(Vec::new());
         settled.apply(&Update::FollowedShows(Vec::new()));
+        settled.apply(&Update::FollowedArtists(Vec::new()));
+        settled.apply(&Update::SavedAlbums(Vec::new()));
         assert_eq!(idle_view(&settled), IdleView::Empty(RootKind::All));
     }
 
@@ -2814,6 +3270,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             sub: "Playlist · Vela Moreno",
             size: "62 songs",
             round: false,
+            shelf: SidebarKind::Playlists,
             cover: Cover::Missing,
         };
         let mut output = ctx.run_ui(input(Vec::new()), |ui| {
@@ -3875,7 +4332,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
                     shuffle: true,
                     cover: Cover::Missing,
                 };
-                let _ = hero::show(ui, &band, &tokens);
+                let _ = hero::show_with(ui, &band, &tokens, hero::Tools::plain());
             },
         );
         let band_top = band_top.expect("the band starts at the cursor");
@@ -3886,6 +4343,485 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             "the eyebrow's top {eyebrow} is above the band's top {band_top}: the \
              tallest content does not fit the band's height"
         );
+    }
+    /// A playlist page whose sidebar entry says whether the user may write it.
+    fn band_library(name: &str, editable: bool, titles: &[&str]) -> Library {
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(vec![PlaylistEntry {
+            uri: "spotify:playlist:a".to_owned(),
+            name: name.to_owned(),
+            named: true,
+            cover: None,
+            description: None,
+            owner: None,
+            tracks: Some(titles.len()),
+            access: access(editable),
+        }]));
+        library.apply(&Update::RootlistAccess(PlaylistAccess {
+            revision: Revision::from_wire(b"root-1").expect("a revision"),
+            editable: true,
+        }));
+        library.select("spotify:playlist:a");
+        library.apply(&Update::Tracks {
+            playlist: "spotify:playlist:a".to_owned(),
+            tracks: titles.iter().map(|title| track(title, title)).collect(),
+            cover: None,
+            access: access(editable),
+        });
+        library
+    }
+
+    /// One frame of the tracklist with `events`, reporting its command.
+    fn band_frame(
+        ctx: &Context,
+        library: &mut Library,
+        events: Vec<Event>,
+    ) -> (Option<Command>, egui::FullOutput) {
+        let tokens = Tokens::DARK;
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut command = None;
+        let output = run(ctx, input(events), |ui| {
+            command = tracks_view(
+                ui,
+                Table::Full,
+                library,
+                &mut transport,
+                &mut queue,
+                &mut Art::default(),
+                Instant::now(),
+                NOW_MS,
+                &tokens,
+            );
+        });
+        (command, output)
+    }
+
+    /// Clicks the band's title, returning the command the view reported.
+    fn click_band_title(ctx: &Context, library: &mut Library, name: &str) -> Option<Command> {
+        let output = tracklist_frame(ctx, Table::Full, library);
+        let at = galley_at(&output, name) + Vec2::new(20.0, 20.0);
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        click(ctx, at, library, &mut transport, &mut queue)
+    }
+
+    /// The "…" in the band's action row, from the icons it paints beside play.
+    fn band_more_point(ctx: &Context, library: &mut Library, name: &str) -> Pos2 {
+        let output = tracklist_frame(ctx, Table::Full, library);
+        let play = play_tile_rect_for(ctx, name);
+        output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Path(_) => Some(clipped.shape.visual_bounding_rect()),
+                _ => None,
+            })
+            .filter(|rect| rect.center().y < play.center().y + 20.0)
+            .filter(|rect| rect.center().x > play.right())
+            .max_by(|left, right| left.center().x.total_cmp(&right.center().x))
+            .map(|rect| rect.center())
+            .expect("the band paints its `⋯`")
+    }
+
+    #[test]
+    fn a_title_click_opens_the_band_field_only_on_a_list_of_ours() {
+        let ctx = context();
+        let mut editable = band_library("Night Drive", true, &["t0"]);
+        assert_eq!(click_band_title(&ctx, &mut editable, "Night Drive"), None);
+        assert!(
+            editable
+                .renaming
+                .is_open_on("spotify:playlist:a", Surface::Band)
+        );
+        assert_eq!(editable.renaming.text(), "Night Drive");
+
+        let mut read_only = band_library("Night Drive", false, &["t0"]);
+        assert_eq!(click_band_title(&ctx, &mut read_only, "Night Drive"), None);
+        assert!(!read_only.renaming.is_open());
+    }
+
+    #[test]
+    fn a_title_click_waits_while_a_block_is_carried_or_a_write_is_pending() {
+        let ctx = context();
+        let mut carried = band_library("Night Drive", true, &["t0"]);
+        egui::DragAndDrop::set_payload(&ctx, ());
+        assert_eq!(click_band_title(&ctx, &mut carried, "Night Drive"), None);
+        assert!(!carried.renaming.is_open(), "a carry opened the field");
+        egui::DragAndDrop::clear_payload(&ctx);
+
+        let mut writing = band_library("Night Drive", true, &["t0", "t1"]);
+        let first = match &writing.tracks {
+            Load::Ready(tracks) => tracks.tracks[0].clone(),
+            Load::Idle | Load::Loading | Load::Failed(_) => panic!("the page is ready"),
+        };
+        assert!(
+            writing
+                .remove_tracks("spotify:playlist:a", &[0], &[first])
+                .is_some()
+        );
+        assert_eq!(click_band_title(&ctx, &mut writing, "Night Drive"), None);
+        assert!(!writing.renaming.is_open(), "a write opened the field");
+    }
+
+    #[test]
+    fn the_band_menu_offers_rename_first_and_never_on_a_read_only_list() {
+        let ctx = context();
+        let mut editable = band_library("Night Drive", true, &["t0"]);
+        let at = band_more_point(&ctx, &mut editable, "Night Drive");
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        assert_eq!(
+            click(&ctx, at, &mut editable, &mut transport, &mut queue),
+            None
+        );
+        let request =
+            crate::view::context_menu::take_request(&ctx).expect("the band posted a menu");
+        assert_eq!(
+            request.listing,
+            crate::menu::Listing::Band(LibraryItem {
+                kind: SidebarKind::Playlists,
+                uri: "spotify:playlist:a".to_owned(),
+                name: "Night Drive".to_owned(),
+            })
+        );
+        assert_eq!(
+            request
+                .items
+                .iter()
+                .map(|item| item.verb)
+                .collect::<Vec<_>>(),
+            [
+                crate::menu::Verb::Rename,
+                crate::menu::Verb::CopyLink,
+                crate::menu::Verb::RemoveFromLibrary,
+            ]
+        );
+
+        let mut read_only = band_library("Night Drive", false, &["t0"]);
+        let at = band_more_point(&ctx, &mut read_only, "Night Drive");
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        assert_eq!(
+            click(&ctx, at, &mut read_only, &mut transport, &mut queue),
+            None
+        );
+        let request =
+            crate::view::context_menu::take_request(&ctx).expect("the band posted a menu");
+        assert!(
+            request
+                .items
+                .iter()
+                .all(|item| item.verb != crate::menu::Verb::Rename),
+            "a list we cannot write offered Rename"
+        );
+    }
+
+    #[test]
+    fn the_band_field_keeps_the_floor_still() {
+        let ctx = context();
+        let mut closed = band_library("Night Drive", true, &["t0"]);
+        let closed_output = tracklist_frame(&ctx, Table::Full, &mut closed);
+        let closed_top = drawn_galleys(&closed_output)
+            .into_iter()
+            .find(|(text, _, _)| text == "t0")
+            .map(|(_, top, _)| top)
+            .expect("the row is painted");
+
+        let mut open = band_library("Night Drive", true, &["t0"]);
+        assert!(open.begin_rename("spotify:playlist:a", Surface::Band));
+        let open_output = tracklist_frame(&ctx, Table::Full, &mut open);
+        let open_top = drawn_galleys(&open_output)
+            .into_iter()
+            .find(|(text, _, _)| text == "t0")
+            .map(|(_, top, _)| top)
+            .expect("the row is painted");
+
+        assert_eq!(closed_top, open_top, "the field moved the tracks");
+        // The floor holding still is not the whole claim: the band itself keeps
+        // the box it had, and the title keeps the baseline it stood on, so the
+        // field is drawn in the title's own place rather than beside it.
+        let closed_band = band_rect(&closed_output);
+        let open_band = band_rect(&open_output);
+        assert_eq!(
+            closed_band, open_band,
+            "the field resized or moved the band"
+        );
+
+        let closed_title = text_rect(&closed_output, "Night Drive").expect("the title is painted");
+        let open_title = text_rect(&open_output, "Night Drive").expect("the field paints the name");
+        // The field's own text layout rounds its baseline to a fraction of a
+        // point, so the claim is that the title keeps its row, not its subpixel.
+        assert!(
+            (closed_title.top() - open_title.top()).abs() < 0.1,
+            "the field moved the title: {} then {}",
+            closed_title.top(),
+            open_title.top()
+        );
+        assert_eq!(
+            closed_title.height(),
+            open_title.height(),
+            "the field resized the title"
+        );
+    }
+
+    /// The band's own rect, read from the wash it paints behind itself.
+    fn band_rect(output: &egui::FullOutput) -> Rect {
+        let tokens = Tokens::DARK;
+        output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Rect(shape) if shape.fill == tokens.palette.hero_wash => {
+                    Some(shape.rect)
+                }
+                _ => None,
+            })
+            .expect("the band paints its wash")
+    }
+
+    /// The box a text shape with `label` was painted in.
+    fn text_rect(output: &egui::FullOutput, label: &str) -> Option<Rect> {
+        output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Text(text) if text.galley.text() == label => {
+                    Some(Rect::from_min_size(text.pos, text.galley.size()))
+                }
+                _ => None,
+            })
+    }
+
+    /// The title's widget id, taken from the press that opens its field: a press
+    /// on the title takes the keyboard before the field draws.
+    fn band_title_focus_id(ctx: &Context, library: &mut Library, name: &str) -> egui::Id {
+        assert_eq!(click_band_title(ctx, library, name), None);
+        ctx.memory(|memory| memory.focused())
+            .expect("the title did not take the keyboard")
+    }
+
+    #[test]
+    fn a_closed_band_field_hands_the_keyboard_back_to_the_title() {
+        let ctx = context();
+        let mut escaping = band_library("Night Drive", true, &["t0"]);
+        let title = band_title_focus_id(&ctx, &mut escaping, "Night Drive");
+        let _ = band_frame(&ctx, &mut escaping, Vec::new());
+        let _ = band_frame(&ctx, &mut escaping, Vec::new());
+        assert!(ctx.text_edit_focused(), "the field has no keyboard");
+
+        let _ = band_frame(&ctx, &mut escaping, vec![key(egui::Key::Escape)]);
+
+        assert!(!escaping.renaming.is_open());
+        assert!(
+            ctx.memory(|memory| memory.has_focus(title)),
+            "Escape left the keyboard nowhere"
+        );
+
+        let mut confirming = band_library("Night Drive", true, &["t0"]);
+        let title = band_title_focus_id(&ctx, &mut confirming, "Night Drive");
+        let _ = band_frame(&ctx, &mut confirming, Vec::new());
+        let _ = band_frame(&ctx, &mut confirming, Vec::new());
+        confirming.renaming.edit().clear();
+        confirming.renaming.edit().push_str("New");
+        let _ = band_frame(&ctx, &mut confirming, vec![key(egui::Key::Enter)]);
+        assert!(crate::view::name_field::take_submit(&ctx));
+        assert!(confirming.rename_playlist().is_some());
+        confirming.apply(&Update::PlaylistRenamed {
+            playlist: "spotify:playlist:a".to_owned(),
+            name: "New".to_owned(),
+            revision: Revision::from_wire(b"rev-2").expect("a revision"),
+        });
+        let _ = band_frame(&ctx, &mut confirming, Vec::new());
+
+        assert!(
+            ctx.memory(|memory| memory.has_focus(title)),
+            "a confirmed rename left the keyboard nowhere"
+        );
+    }
+
+    #[test]
+    fn escape_while_the_band_field_writes_closes_nothing() {
+        let ctx = context();
+        let mut library = band_library("Night Drive", true, &["t0"]);
+        click_band_title(&ctx, &mut library, "Night Drive");
+        let _ = band_frame(&ctx, &mut library, Vec::new());
+        let _ = band_frame(&ctx, &mut library, Vec::new());
+        library.renaming.edit().clear();
+        library.renaming.edit().push_str("New");
+        let _ = band_frame(&ctx, &mut library, vec![key(egui::Key::Enter)]);
+        assert!(crate::view::name_field::take_submit(&ctx));
+        assert!(library.rename_playlist().is_some());
+
+        let _ = band_frame(&ctx, &mut library, vec![key(egui::Key::Escape)]);
+
+        assert!(
+            library.renaming.is_open(),
+            "Escape closed a field that was writing"
+        );
+        assert!(library.renaming.writing());
+        assert!(!library.renaming.wants_return());
+    }
+
+    #[test]
+    fn a_row_fields_return_belongs_to_the_sidebar_row() {
+        let ctx = context();
+        let mut library = band_library("Night Drive", true, &["t0"]);
+        assert!(library.begin_rename("spotify:playlist:a", Surface::Row));
+        library.renaming.cancel();
+        assert!(library.renaming.wants_return());
+
+        let _ = band_frame(&ctx, &mut library, Vec::new());
+
+        assert!(
+            library.renaming.wants_return(),
+            "the band took a row field's hand-back"
+        );
+        assert_eq!(
+            library.renaming.uri(),
+            "spotify:playlist:a",
+            "the band cleared the row's target"
+        );
+    }
+
+    #[test]
+    fn a_band_fields_return_waits_for_the_page_that_opened_it() {
+        let ctx = context();
+        let mut library = band_library("Night Drive", true, &["t0"]);
+        if let Load::Ready(playlists) = &mut library.playlists {
+            playlists.push(PlaylistEntry {
+                uri: "spotify:playlist:b".to_owned(),
+                name: "Other".to_owned(),
+                named: true,
+                cover: None,
+                description: None,
+                owner: None,
+                tracks: Some(1),
+                access: access(true),
+            });
+        }
+        assert!(library.begin_rename("spotify:playlist:a", Surface::Band));
+        *library.renaming.edit() = "New".to_owned();
+        assert!(library.rename_playlist().is_some());
+
+        // The reply lands after the user moved to another playlist, where this
+        // field's title is not drawn at all.
+        library.select("spotify:playlist:b");
+        library.apply(&Update::Tracks {
+            playlist: "spotify:playlist:b".to_owned(),
+            tracks: vec![track("t9", "t9")],
+            cover: None,
+            access: access(true),
+        });
+        library.apply(&Update::PlaylistRenamed {
+            playlist: "spotify:playlist:a".to_owned(),
+            name: "New".to_owned(),
+            revision: Revision::from_wire(b"rev-2").expect("a revision"),
+        });
+        assert!(library.renaming.wants_return());
+
+        let _ = band_frame(&ctx, &mut library, Vec::new());
+
+        assert!(
+            library.renaming.wants_return(),
+            "another page spent the field's hand-back"
+        );
+        assert_eq!(
+            library.renaming.uri(),
+            "spotify:playlist:a",
+            "another page took the field's target"
+        );
+        assert!(!ctx.text_edit_focused());
+    }
+
+    #[test]
+    fn the_band_field_takes_enter_and_escape() {
+        let ctx = context();
+        let mut library = band_library("Night Drive", true, &["t0"]);
+        click_band_title(&ctx, &mut library, "Night Drive");
+        let _ = band_frame(&ctx, &mut library, Vec::new());
+        let _ = band_frame(&ctx, &mut library, Vec::new());
+        assert!(ctx.text_edit_focused(), "the band field has no keyboard");
+
+        library.renaming.edit().clear();
+        let _ = band_frame(&ctx, &mut library, vec![Event::Text("New".to_owned())]);
+        let (command, _) = band_frame(&ctx, &mut library, vec![key(egui::Key::Enter)]);
+        assert_eq!(command, None, "the view never sends a command itself");
+        assert!(
+            crate::view::name_field::take_submit(&ctx),
+            "Enter posted no submit for the shell"
+        );
+        assert_eq!(
+            library.rename_playlist(),
+            Some(Command::RenamePlaylist {
+                playlist: "spotify:playlist:a".to_owned(),
+                name: "New".to_owned(),
+            })
+        );
+        assert!(library.renaming.writing());
+
+        let mut escaping = band_library("Night Drive", true, &["t0"]);
+        click_band_title(&ctx, &mut escaping, "Night Drive");
+        let _ = band_frame(&ctx, &mut escaping, Vec::new());
+        let _ = band_frame(&ctx, &mut escaping, Vec::new());
+        let (command, _) = band_frame(&ctx, &mut escaping, vec![key(egui::Key::Escape)]);
+        assert_eq!(command, None);
+        assert!(!escaping.renaming.is_open());
+    }
+
+    #[test]
+    fn a_held_enter_after_a_band_rename_does_not_reopen_the_field() {
+        let ctx = context();
+        let mut library = band_library("Night Drive", true, &["t0"]);
+        click_band_title(&ctx, &mut library, "Night Drive");
+        let _ = band_frame(&ctx, &mut library, Vec::new());
+        let _ = band_frame(&ctx, &mut library, Vec::new());
+        library.renaming.edit().clear();
+        let _ = band_frame(&ctx, &mut library, vec![Event::Text("New".to_owned())]);
+        let _ = band_frame(&ctx, &mut library, vec![key(egui::Key::Enter)]);
+        assert!(crate::view::name_field::take_submit(&ctx));
+        assert!(library.rename_playlist().is_some());
+        library.apply(&Update::PlaylistRenamed {
+            playlist: "spotify:playlist:a".to_owned(),
+            name: "New".to_owned(),
+            revision: Revision::from_wire(b"rev-2").expect("a revision"),
+        });
+        let _ = band_frame(&ctx, &mut library, Vec::new());
+
+        let repeat = Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: true,
+            modifiers: Modifiers::NONE,
+        };
+        let _ = band_frame(&ctx, &mut library, vec![repeat]);
+
+        assert!(
+            !library.renaming.is_open(),
+            "a held Enter reopened the field it just closed"
+        );
+    }
+
+    #[test]
+    fn a_band_rename_failure_on_an_empty_playlist_says_why() {
+        let ctx = context();
+        let mut library = band_library("Night Drive", true, &[]);
+        assert!(library.begin_rename("spotify:playlist:a", Surface::Band));
+        library.renaming.edit().clear();
+        library.renaming.edit().push_str("New");
+        assert!(library.rename_playlist().is_some());
+        library.apply(&Update::PlaylistRenameFailed {
+            playlist: "spotify:playlist:a".to_owned(),
+        });
+
+        let painted = painted_lines(&ctx, Table::Full, &mut library);
+
+        assert!(
+            painted.contains(&crate::signin::failure_message(Failure::Rename).to_owned()),
+            "an empty playlist hid the failure: {painted:?}"
+        );
+        assert!(painted.contains(&"No tracks in this playlist.".to_owned()));
     }
 }
 
@@ -3929,12 +4865,13 @@ mod root_tests {
     use std::time::Instant;
 
     use egui::{Context, Event, Pos2, RawInput, Rect, Vec2};
-    use takofy_model::{CoverUrl, Episode, FollowedShow, PlaylistEntry};
+    use takofy_model::{CoverUrl, Episode, FollowedShow, PlaylistAccess, PlaylistEntry, Revision};
 
     use super::*;
+    use crate::menu::{Anchor, Device, Kind, Listing, Request};
     use crate::message::{Failure, Update};
     use crate::theme::{extent, fonts, style};
-    use crate::view::test_support::click_events;
+    use crate::view::test_support::{click_events, secondary_click_events};
 
     const PROBE: Vec2 = Vec2::new(900.0, 800.0);
     const NOW_MS: u64 = 1_761_134_400_000;
@@ -4121,6 +5058,341 @@ mod root_tests {
             cover: None,
             tracks: None,
         }
+    }
+
+    /// Each of the four kinds knows the shelf it belongs to, so a menu built on
+    /// it never has to read the uri back.
+    #[test]
+    fn media_of_gives_each_item_its_shelf() {
+        let mut art = Art::default();
+        let tokens = Tokens::DARK;
+        let mut select = None;
+        let mut open = None;
+        let library = Library::default();
+        let mut draw = MediaDraw {
+            art: &mut art,
+            now: Instant::now(),
+            tokens: &tokens,
+            library: &library,
+            select: &mut select,
+            open: &mut open,
+        };
+        let playlist = playlist("spotify:playlist:a", "A");
+        let show = show("spotify:show:a", "A");
+        let artist = followed_artist("spotify:artist:a", "A");
+        let album = saved_album("spotify:album:a", "A");
+        let cases = [
+            (Item::Playlist(&playlist), SidebarKind::Playlists),
+            (Item::Show(&show), SidebarKind::Podcasts),
+            (Item::Artist(&artist), SidebarKind::Artists),
+            (Item::Album(&album), SidebarKind::Albums),
+        ];
+        for (item, shelf) in cases {
+            assert_eq!(draw.media_of(&item).shelf, shelf);
+        }
+    }
+
+    /// A rootlist, which a playlist row needs before it can be removed.
+    fn rootlist(editable: bool) -> PlaylistAccess {
+        PlaylistAccess {
+            revision: Revision::from_wire(b"root-1").expect("a revision"),
+            editable,
+        }
+    }
+
+    /// The rect the `index`-th list row is drawn into, solved the way the view
+    /// solves it: the head, the chips, then the rows.
+    fn row_rect_for(ctx: &Context, index: usize) -> Rect {
+        let tokens = Tokens::DARK;
+        let mut found = None;
+        let mut output = ctx.run_ui(input(Vec::new()), |ui| {
+            ui.add_space(space::S3);
+            crate::view::inner(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        crate::view::inner(ui, |ui| {
+                            page_head(ui, "", &tokens);
+                            let _ = filter_row::show_with(
+                                ui,
+                                &tokens,
+                                &library_filter::ROW,
+                                RootKind::All,
+                                RootKind::control,
+                                root_filter_label,
+                                filter_row::RowSlot::Trailing(view_toggle::reserved()),
+                            );
+                            let width = ui.available_width();
+                            let height = space::S2 + media::head_height(ui) + space::S2;
+                            let _ =
+                                ui.allocate_exact_size(vec2(width, height), egui::Sense::hover());
+                            let top = ui.cursor().min.y;
+                            found = Some(Rect::from_min_size(
+                                Pos2::new(ui.cursor().min.x, top + index as f32 * extent::ROW_H),
+                                vec2(width, extent::ROW_H),
+                            ));
+                        });
+                    });
+            });
+        });
+        output.textures_delta.clear();
+        found.expect("the root lays out")
+    }
+
+    /// One click's passes, and the request the frame posted for it.
+    fn click_for_menu(
+        ctx: &Context,
+        events: [Event; 3],
+        library: &mut Library,
+        art: &mut Art,
+    ) -> Option<Request> {
+        let tokens = Tokens::DARK;
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut request = None;
+        for event in events {
+            let library = &mut *library;
+            let mut output = ctx.run_ui(input(vec![event]), |ui| {
+                let _ = tracks_view(
+                    ui,
+                    Table::Full,
+                    library,
+                    &mut transport,
+                    &mut queue,
+                    art,
+                    Instant::now(),
+                    NOW_MS,
+                    &tokens,
+                );
+            });
+            output.textures_delta.clear();
+            if let Some(posted) = context_menu::take_request(ctx) {
+                request = Some(posted);
+            }
+        }
+        request
+    }
+
+    /// The `⋯` of the root's one list row, pressed, and the request it posted.
+    fn press_the_more(ctx: &Context, library: &mut Library, art: &mut Art) -> Option<Request> {
+        let more = media::columns(row_rect_for(ctx, 0)).more.center();
+        click_for_menu(ctx, click_events(more), library, art)
+    }
+
+    /// Presses the `⋯` on the root's one list row and checks the menu it posted.
+    fn expect_row_menu(kind: SidebarKind, uri: &str, name: &str, library: &mut Library) {
+        let ctx = context();
+        let mut art = Art::default();
+        library.layout = MediaLayout::List;
+        let _ = frame(&ctx, library, &mut art);
+
+        let request = press_the_more(&ctx, library, &mut art).expect("the `⋯` posted no request");
+        assert_eq!(
+            request.listing,
+            Listing::Library(LibraryItem {
+                kind,
+                uri: uri.to_owned(),
+                name: name.to_owned(),
+            })
+        );
+        let labels: Vec<&str> = request
+            .items
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect();
+        assert_eq!(labels, vec!["Copy link", "Remove from library"]);
+        assert!(
+            !labels.contains(&"Rename"),
+            "the root never offers a rename: {labels:?}"
+        );
+        assert_eq!(
+            request.items.last().map(|item| item.kind),
+            Some(Kind::Destructive),
+            "the removal is the destructive row, drawn last"
+        );
+        assert_eq!(request.page, None, "the root posts no page");
+        assert!(request.targets.is_empty() && request.rows.is_empty());
+        assert!(
+            matches!(request.door.anchor, Anchor::Button(_)),
+            "the `⋯`'s own press hangs the menu off itself: {:?}",
+            request.door.anchor
+        );
+        assert_eq!(request.door.device, Device::Pointer);
+        assert!(library.selected().is_none(), "the press also selected");
+        assert!(library.page().is_none(), "the press also opened a page");
+    }
+
+    #[test]
+    fn a_playlist_row_more_posts_the_sidebar_rows_menu() {
+        let mut library = library(vec![playlist("spotify:playlist:a", "Evening")], vec![]);
+        library.root_filter.choose(RootKind::Playlists);
+        library.apply(&Update::RootlistAccess(rootlist(true)));
+        expect_row_menu(
+            SidebarKind::Playlists,
+            "spotify:playlist:a",
+            "Evening",
+            &mut library,
+        );
+    }
+
+    #[test]
+    fn a_podcast_row_more_posts_the_sidebar_rows_menu() {
+        let mut library = library(vec![], vec![show("spotify:show:s", "Show One")]);
+        library.root_filter.choose(RootKind::Podcasts);
+        expect_row_menu(
+            SidebarKind::Podcasts,
+            "spotify:show:s",
+            "Show One",
+            &mut library,
+        );
+    }
+
+    #[test]
+    fn an_artist_row_more_posts_the_sidebar_rows_menu() {
+        let mut library = library(vec![], vec![]);
+        library.root_filter.choose(RootKind::Artists);
+        library.apply(&Update::FollowedArtists(vec![followed_artist(
+            "spotify:artist:a",
+            "Nils Aker",
+        )]));
+        expect_row_menu(
+            SidebarKind::Artists,
+            "spotify:artist:a",
+            "Nils Aker",
+            &mut library,
+        );
+    }
+
+    #[test]
+    fn an_album_row_more_posts_the_sidebar_rows_menu() {
+        let mut library = library(vec![], vec![]);
+        library.root_filter.choose(RootKind::Albums);
+        library.apply(&Update::SavedAlbums(vec![saved_album(
+            "spotify:album:a",
+            "Slow Tide",
+        )]));
+        expect_row_menu(
+            SidebarKind::Albums,
+            "spotify:album:a",
+            "Slow Tide",
+            &mut library,
+        );
+    }
+
+    #[test]
+    fn a_playlist_row_the_user_cannot_write_offers_only_its_link() {
+        let mut library = library(vec![playlist("spotify:playlist:a", "Evening")], vec![]);
+        library.root_filter.choose(RootKind::Playlists);
+        library.apply(&Update::RootlistAccess(rootlist(false)));
+        let ctx = context();
+        let mut art = Art::default();
+        library.layout = MediaLayout::List;
+        let _ = frame(&ctx, &mut library, &mut art);
+
+        let request =
+            press_the_more(&ctx, &mut library, &mut art).expect("the `⋯` posted no request");
+        let labels: Vec<&str> = request
+            .items
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect();
+        assert_eq!(
+            labels,
+            vec!["Copy link"],
+            "a row that cannot be removed keeps its link"
+        );
+    }
+
+    #[test]
+    fn a_right_click_on_a_playlist_row_posts_the_same_request_at_the_pointer() {
+        let mut library = library(vec![playlist("spotify:playlist:a", "Evening")], vec![]);
+        library.root_filter.choose(RootKind::Playlists);
+        library.apply(&Update::RootlistAccess(rootlist(true)));
+        let ctx = context();
+        let mut art = Art::default();
+        library.layout = MediaLayout::List;
+        let _ = frame(&ctx, &mut library, &mut art);
+
+        let by_more =
+            press_the_more(&ctx, &mut library, &mut art).expect("the `⋯` posted no request");
+        let body = media::columns(row_rect_for(&ctx, 0)).body.center();
+        let by_right = click_for_menu(&ctx, secondary_click_events(body), &mut library, &mut art)
+            .expect("a right-click posted no request");
+
+        assert_eq!(by_right.listing, by_more.listing);
+        assert_eq!(by_right.items, by_more.items);
+        assert_eq!(by_right.page, by_more.page);
+        let Anchor::Pointer(at) = by_right.door.anchor else {
+            panic!(
+                "a right-click anchored to the `⋯`: {:?}",
+                by_right.door.anchor
+            );
+        };
+        assert!(
+            (at - body).length() < 0.01,
+            "a right-click at {body:?} opened at {at:?}"
+        );
+        assert_ne!(
+            by_right.door.opener, by_more.door.opener,
+            "the pointer door names the row, not the `⋯`"
+        );
+    }
+
+    /// A tile has neither a row nor a `⋯`, so no press on it posts a menu: both
+    /// buttons do what a tile does, which is activate.
+    #[test]
+    fn a_grid_tile_posts_no_menu_on_a_click_or_a_right_click() {
+        let ctx = context();
+        let mut art = Art::default();
+        let gridded = || {
+            let mut library = library(vec![playlist("spotify:playlist:a", "Evening")], vec![]);
+            library.root_filter.choose(RootKind::Playlists);
+            library.apply(&Update::RootlistAccess(rootlist(true)));
+            library.layout = MediaLayout::Grid;
+            library
+        };
+
+        // The tile the grid solved, and the name it painted inside it: the press
+        // lands on a drawn tile and not on the gap a row's `⋯` would fill.
+        let mut library = gridded();
+        let before = frame(&ctx, &mut library, &mut art);
+        let card = card_rect_for(&ctx, 0, 1);
+        let name = text_rect(&before, "Evening").expect("the grid paints the tile's name");
+        assert!(
+            card.contains_rect(name),
+            "the tile's name {name:?} sits outside its card {card:?}"
+        );
+
+        let command = click(&ctx, card.center(), &mut library, &mut art);
+        assert_eq!(
+            command,
+            Some(Command::LoadTracks {
+                playlist: "spotify:playlist:a".to_owned()
+            }),
+            "a tile press selects its playlist, as it always did"
+        );
+        assert_eq!(library.selected(), Some("spotify:playlist:a"));
+        assert_eq!(
+            context_menu::take_request(&ctx),
+            None,
+            "a tile press posted a row menu"
+        );
+
+        // The right-click is its own press on a fresh library, and it must leave
+        // the selection alone.
+        let mut library = gridded();
+        let _ = frame(&ctx, &mut library, &mut art);
+        let request = click_for_menu(
+            &ctx,
+            secondary_click_events(card.center()),
+            &mut library,
+            &mut art,
+        );
+        assert_eq!(request, None, "a right-click on a tile posted a row menu");
+        assert!(
+            library.selected().is_none() && library.page().is_none(),
+            "a right-click on a tile activated it"
+        );
     }
 
     #[test]

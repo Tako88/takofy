@@ -3,6 +3,7 @@
 //! The only file in this crate that performs librespot I/O.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use futures_util::StreamExt;
 use http::header::{ACCEPT, CONTENT_TYPE};
@@ -21,8 +22,8 @@ use librespot::protocol::metadata::{
 use protobuf::Message as _;
 use takofy_model::{
     AlbumDetail, ArtistDetail, CoverUrl, Episode, FollowedArtist, FollowedShow, Move,
-    PlaylistAccess, PlaylistEntry, PublishedAt, Revision, SavedAlbum, ShowDetail, TrackEntry,
-    TrackLyrics,
+    PlaylistAccess, PlaylistCover, PlaylistEntry, PublishedAt, Removal, Revision, SavedAlbum,
+    ShowDetail, TrackEntry, TrackLyrics,
 };
 
 use crate::album::{AlbumError, detail, positions};
@@ -233,16 +234,18 @@ fn first_track_uri<'a>(mut uris: impl Iterator<Item = &'a SpotifyUri>) -> Option
     })
 }
 
-/// The picture if present, else the first track's album cover.
+/// The picture as a chosen cover, else the first track's album cover as a
+/// derived one.
 fn playlist_cover(
     picture: Option<CoverUrl>,
     first_track: Option<&str>,
     labels: &Labels,
-) -> Option<CoverUrl> {
-    picture.or_else(|| {
+) -> Option<PlaylistCover> {
+    picture.map(PlaylistCover::chosen).or_else(|| {
         first_track
             .and_then(|track| labels.get(track))
             .and_then(|label| label.cover.clone())
+            .map(PlaylistCover::derived)
     })
 }
 
@@ -274,8 +277,9 @@ pub(crate) async fn read_playlist_state(session: &Session, uri: &str) -> Option<
     };
     let playlist = match Playlist::get(session, &id).await {
         Ok(playlist) => playlist,
-        Err(error) => {
-            log::warn!("playlist state could not be read: {error}");
+        Err(_) => {
+            // The error is not formatted: it can embed a response body.
+            log::warn!("playlist state could not be read");
             return None;
         }
     };
@@ -328,16 +332,29 @@ impl Drop for Restore<'_> {
 
 /// Writes one change set, in exactly one attempt.
 ///
-/// None of these writes is idempotent: a retry after a reply was lost would
-/// apply the change twice, so the shared client is held to one attempt for this
-/// call and put back on every exit path, cancellation included.
-///
-/// The one attempt is session-wide while in force: the worker runs one command at a time.
+/// The reply's revision is what the next write names, so a reply that names
+/// none leaves the caller with nothing to base the next one on.
 async fn write_changes(
     session: &Session,
     endpoint: String,
     body: Vec<u8>,
 ) -> Result<Revision, playlist_edit::PlaylistError> {
+    let bytes = post_protobuf(session, endpoint, body).await?;
+    playlist_edit::reply_revision(&bytes).ok_or(playlist_edit::PlaylistError::Reply)
+}
+
+/// Posts one protobuf body, in exactly one attempt.
+///
+/// None of these writes is idempotent: a retry after a reply was lost would
+/// apply the change twice, so the shared client is held to one attempt for this
+/// call and put back on every exit path, cancellation included.
+///
+/// The one attempt is session-wide while in force: the worker runs one command at a time.
+async fn post_protobuf(
+    session: &Session,
+    endpoint: String,
+    body: Vec<u8>,
+) -> Result<Vec<u8>, playlist_edit::PlaylistError> {
     let headers = playlist_headers().ok_or_else(|| {
         playlist_edit::PlaylistError::Source(
             "the playlist media type is not a valid header".to_owned(),
@@ -346,12 +363,26 @@ async fn write_changes(
     let client = session.spclient();
     client.set_strategy(RequestStrategy::TryTimes(1));
     let _restore = Restore(client);
-    let answer = client
+    let bytes = client
         .request(&Method::POST, &endpoint, Some(headers), Some(&body))
-        .await;
-    let bytes =
-        answer.map_err(|error| playlist_edit::PlaylistError::Source(error.kind.to_string()))?;
-    playlist_edit::reply_revision(&bytes).ok_or(playlist_edit::PlaylistError::Reply)
+        .await
+        .map_err(|error| playlist_edit::PlaylistError::Source(error.kind.to_string()))?;
+    Ok(bytes.to_vec())
+}
+
+/// Creates a playlist called `name`, answering the URI the reply names.
+pub(crate) async fn write_create(
+    session: &Session,
+    name: &str,
+) -> Result<String, playlist_edit::PlaylistError> {
+    playlist_edit::require_name(name)?;
+    let bytes = post_protobuf(
+        session,
+        playlist_edit::CREATE_ENDPOINT.to_owned(),
+        playlist_edit::create_body(name),
+    )
+    .await?;
+    playlist_edit::created_uri(&bytes).ok_or(playlist_edit::PlaylistError::Reply)
 }
 
 /// Writes `moves` to a playlist, as one delta on one revision.
@@ -364,6 +395,43 @@ pub(crate) async fn write_move(
     playlist_edit::require_moves(moves)?;
     let endpoint = playlist_edit::changes_endpoint(uri)?;
     write_changes(session, endpoint, playlist_edit::move_body(revision, moves)).await
+}
+
+/// Renames a playlist to `name`, as one delta on one revision.
+///
+/// A create cannot name a list, so this is what gives a fresh playlist its
+/// title; it takes the revision the read gave and answers the next one.
+pub(crate) async fn write_rename(
+    session: &Session,
+    uri: &str,
+    revision: &Revision,
+    name: &str,
+) -> Result<Revision, playlist_edit::PlaylistError> {
+    playlist_edit::require_name(name)?;
+    let endpoint = playlist_edit::changes_endpoint(uri)?;
+    write_changes(
+        session,
+        endpoint,
+        playlist_edit::rename_body(revision, name),
+    )
+    .await
+}
+
+/// Removes `removals` from a playlist, as one delta on one revision.
+pub(crate) async fn write_remove(
+    session: &Session,
+    uri: &str,
+    revision: &Revision,
+    removals: &[Removal],
+) -> Result<Revision, playlist_edit::PlaylistError> {
+    playlist_edit::require_removals(removals)?;
+    let endpoint = playlist_edit::changes_endpoint(uri)?;
+    write_changes(
+        session,
+        endpoint,
+        playlist_edit::removals_body(revision, removals),
+    )
+    .await
 }
 
 /// Writes one move to the user's rootlist.
@@ -387,20 +455,92 @@ pub(crate) async fn write_rootlist_move(
     .await
 }
 
-/// Appends one track to a playlist.
+/// Puts `uri` at the front of the user's rootlist, based on `revision`.
+pub(crate) async fn write_rootlist_add(
+    session: &Session,
+    revision: &Revision,
+    uri: &str,
+) -> Result<Revision, playlist_edit::PlaylistError> {
+    playlist_edit::require_playlist(uri)?;
+    let endpoint = playlist_edit::rootlist_changes_endpoint(&session.username())?;
+    write_changes(
+        session,
+        endpoint,
+        playlist_edit::add_body(revision, 0, &[uri.to_owned()]),
+    )
+    .await
+}
+
+/// Removes one row from the user's rootlist, based on `revision`.
+///
+/// The rootlist unlinks only: the playlist itself survives and another client
+/// can put it back.
+pub(crate) async fn write_rootlist_remove(
+    session: &Session,
+    revision: &Revision,
+    index: usize,
+) -> Result<Revision, playlist_edit::PlaylistError> {
+    let endpoint = playlist_edit::rootlist_changes_endpoint(&session.username())?;
+    write_changes(
+        session,
+        endpoint,
+        playlist_edit::remove_body(revision, index, 1),
+    )
+    .await
+}
+
+/// Writes one saved album or show out of its set.
+///
+/// The reply is empty, so silence is not proof: the caller's confirmation is the
+/// next read. The write is idempotent, so it keeps the client's retry budget.
+pub(crate) async fn write_saved(
+    session: &Session,
+    uri: &str,
+    saved: bool,
+) -> Result<(), FollowedError> {
+    let set = collection::saved_set(uri)?;
+    let headers = collection_headers().ok_or_else(|| {
+        FollowedError::Source("the collection media type is not a valid header".to_owned())
+    })?;
+    let username = session.username();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs() as i64);
+    let body = collection::items_body(
+        &username,
+        set,
+        &[uri],
+        saved.then_some(now),
+        !saved,
+        &client_update_id(),
+    );
+    session
+        .spclient()
+        .request(
+            &Method::POST,
+            "/collection/v2/write",
+            Some(headers),
+            Some(&body),
+        )
+        .await
+        .map(|_| ())
+        .map_err(|error| FollowedError::Source(error.to_string()))
+}
+
+/// Appends tracks to a playlist as one change set.
 pub(crate) async fn write_add(
     session: &Session,
     uri: &str,
     revision: &Revision,
     from_index: usize,
-    track: &str,
+    tracks: &[String],
 ) -> Result<Revision, playlist_edit::PlaylistError> {
-    playlist_edit::require_track(track)?;
+    playlist_edit::require_tracks(tracks)?;
     let endpoint = playlist_edit::changes_endpoint(uri)?;
     write_changes(
         session,
         endpoint,
-        playlist_edit::add_body(revision, from_index, track),
+        playlist_edit::add_body(revision, from_index, tracks),
     )
     .await
 }
@@ -537,9 +677,24 @@ pub(crate) async fn read_lyrics(session: &Session, uri: &str) -> Result<TrackLyr
 /// Whether the artist is in the user's followed set, or `None` when the probe
 /// did not answer.
 async fn read_follow(session: &Session, uri: &str) -> Option<bool> {
+    probe_membership(session, collection::ARTIST_SET, uri).await
+}
+
+/// Whether one URI is in the set its kind belongs to, or `None` when the probe
+/// did not answer.
+///
+/// The set is the same one the write names, so an album is asked about the
+/// collection and a show about the show set. A URI with no set — a track's like
+/// is the songs list, not this route — is refused rather than guessed at.
+pub(crate) async fn read_saved_state(session: &Session, uri: &str) -> Option<bool> {
+    let set = collection::saved_set(uri).ok()?;
+    probe_membership(session, set, uri).await
+}
+
+async fn probe_membership(session: &Session, set: &str, uri: &str) -> Option<bool> {
     let headers = collection_headers()?;
     let username = session.username();
-    let body = collection::contains_body(&username, &[uri]);
+    let body = collection::contains_body(&username, set, &[uri]);
     match session
         .spclient()
         .request(
@@ -589,8 +744,18 @@ pub(crate) async fn write_follow(
         .map_err(|error| ArtistError::Source(error.to_string()))
 }
 
+/// How many URIs one like write names.
+///
+/// The write window is many seconds wide on a busy connection, so a large pick
+/// is cut into a few requests rather than one long one; a failure stops the
+/// rest and the confirming read is what heals the part that landed.
+const LIKE_BATCH: usize = 100;
+
 /// One collection set, paged through the collection endpoint until an answer
 /// carries no next token.
+///
+/// It is the one place a collection sweep picks its cap, so a read of the
+/// collection set is never cut short by the followed lists' smaller cap.
 ///
 /// A page that cannot be read fails the whole read rather than drawing a short
 /// list as if it were complete. The most answers the read accepts is the pager's.
@@ -627,6 +792,80 @@ async fn read_set(
         }
     }
     Ok(items)
+}
+
+/// The whole collection set, paged with the collection cap.
+async fn read_collection(session: &Session) -> Result<Vec<Item>, FollowedError> {
+    read_set(
+        session,
+        collection::COLLECTION_SET,
+        followed::Pager::with_cap(followed::COLLECTION_MAX_PAGES),
+    )
+    .await
+}
+
+/// The liked tracks' URIs, newest save first.
+///
+/// The set holds saved albums and episodes too, so only track items are kept.
+pub(crate) async fn read_liked_tracks(session: &Session) -> Result<Vec<String>, FollowedError> {
+    Ok(collected::track_order(read_collection(session).await?))
+}
+
+/// Writes one pick into the liked-songs set, or out of it.
+///
+/// A pick is cut into batches of [`LIKE_BATCH`] URIs and written in order; the
+/// first failure ends the rest. A non-track URI is refused before any request.
+pub(crate) async fn write_like(
+    session: &Session,
+    uris: Vec<String>,
+    liked: bool,
+) -> Result<(), FollowedError> {
+    collection::require_tracks(&uris)?;
+    let headers = collection_headers().ok_or_else(|| {
+        FollowedError::Source("the collection media type is not a valid header".to_owned())
+    })?;
+    let username = session.username();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs() as i64);
+    let refs: Vec<&str> = uris.iter().map(String::as_str).collect();
+    for batch in collection::like_batches(&refs, LIKE_BATCH) {
+        let body = collection::items_body(
+            &username,
+            collection::COLLECTION_SET,
+            batch,
+            liked.then_some(now),
+            !liked,
+            &client_update_id(),
+        );
+        session
+            .spclient()
+            .request(
+                &Method::POST,
+                "/collection/v2/write",
+                Some(headers.clone()),
+                Some(&body),
+            )
+            .await
+            .map_err(|error| FollowedError::Source(error.to_string()))?;
+    }
+    Ok(())
+}
+
+/// A label no other write of this run carries, so the endpoint does not treat a
+/// second like as the first one repeated.
+fn client_update_id() -> String {
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_millis());
+    update_id(millis, SEQ.fetch_add(1, Ordering::Relaxed))
+}
+
+/// The label's shape: the millisecond orders it in a log and the counter makes
+/// it unique, because a write's batches are sent within one millisecond.
+fn update_id(millis: u128, seq: u64) -> String {
+    format!("takofy-{millis}-{seq}")
 }
 
 /// The shows the user follows, newest follow first, each as its card draws it.
@@ -767,12 +1006,7 @@ pub(crate) async fn read_related(
 /// An empty set asks for no metadata at all. A chunk whose request fails costs
 /// only its albums, which stay in the list unnamed.
 pub(crate) async fn read_saved_albums(session: &Session) -> Result<Vec<SavedAlbum>, FollowedError> {
-    let items = read_set(
-        session,
-        collection::COLLECTION_SET,
-        followed::Pager::with_cap(followed::COLLECTION_MAX_PAGES),
-    )
-    .await?;
+    let items = read_collection(session).await?;
     let order = collected::album_order(items);
     if !needs_labels(&order) {
         return Ok(Vec::new());
@@ -1307,18 +1541,19 @@ mod tests {
         Show as ShowMessage, Track as TrackMessage,
     };
     use protobuf::Message as _;
-    use takofy_model::{AddedAt, CoverUrl, Episode, PublishedAt};
+    use takofy_model::{AddedAt, CoverOrigin, CoverUrl, Episode, PlaylistCover, PublishedAt};
 
     use crate::context::PageTrack;
     use crate::playlist_edit::owned as owned_by;
     use crate::show::ShowError;
 
     use super::{
-        Labels, PlaylistMeta, TrackLabel, context_cover, distinct_uris, duration_ms, episode_from,
-        episode_labels, episode_of, expand_episodes, expand_labels, first_track_uri, item_uris,
-        label_from_episode, label_of, merge_labels, needs_labels, non_blank, parse_show_uri,
-        partition_by_kind, playlist_cover, playlist_headers, playlist_label, playlist_length,
-        playlist_owner, published_at, show_card, track_label_from,
+        Labels, PlaylistMeta, TrackLabel, client_update_id, context_cover, distinct_uris,
+        duration_ms, episode_from, episode_labels, episode_of, expand_episodes, expand_labels,
+        first_track_uri, item_uris, label_from_episode, label_of, merge_labels, needs_labels,
+        non_blank, parse_show_uri, partition_by_kind, playlist_cover, playlist_headers,
+        playlist_label, playlist_length, playlist_owner, published_at, show_card, track_label_from,
+        update_id,
     };
 
     const TRACK_ID: &str = "4uLU6hMCjMI75M1A2tKUQC";
@@ -1967,7 +2202,7 @@ mod tests {
         );
         assert_eq!(
             playlist_cover(Some(cover_url()), Some("t"), &labels),
-            Some(cover_url())
+            Some(PlaylistCover::chosen(cover_url()))
         );
     }
 
@@ -1986,7 +2221,9 @@ mod tests {
                 cover: Some(cover_url()),
             },
         );
-        assert_eq!(playlist_cover(None, Some("t"), &labels), Some(cover_url()));
+        let cover = playlist_cover(None, Some("t"), &labels).expect("a derived cover");
+        assert_eq!(cover, PlaylistCover::derived(cover_url()));
+        assert_eq!(cover.origin, CoverOrigin::Derived);
     }
 
     #[test]
@@ -2572,5 +2809,23 @@ mod tests {
     #[test]
     fn needs_labels_is_true_for_any_show() {
         assert!(needs_labels(&owned(&[&show_uri(1)])));
+    }
+
+    #[test]
+    fn an_update_id_carries_the_millisecond_and_a_counter() {
+        assert_eq!(update_id(1_700_000_000_123, 0), "takofy-1700000000123-0");
+        assert_ne!(
+            update_id(1_700_000_000_123, 0),
+            update_id(1_700_000_000_123, 1),
+            "batches within one millisecond must still differ"
+        );
+    }
+
+    #[test]
+    fn every_client_update_id_of_a_run_is_different() {
+        let first = client_update_id();
+        let second = client_update_id();
+        assert_ne!(first, second);
+        assert!(first.starts_with("takofy-"), "{first}");
     }
 }

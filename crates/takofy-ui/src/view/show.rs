@@ -20,14 +20,19 @@ use crate::cover::Art;
 use crate::format::{episode_meta, plain_description, show_meta, total_label};
 use crate::layout::{episode as episode_layout, table as table_layout};
 use crate::library::{Library, Load};
+use crate::menu::LibraryItem;
 use crate::message::Command;
 use crate::player::Transport;
 use crate::queue::Queue;
 use crate::route::Page;
 use crate::scroll;
+use crate::sidebar_kind::SidebarKind;
 use crate::theme::Tokens;
 
+use crate::verbs;
+
 use super::carry::{self, Ghost};
+use super::context_menu;
 use super::episode_row;
 use super::hero;
 use super::section;
@@ -60,6 +65,9 @@ pub fn show_view(
 
     let mut command = None;
     let mut retry = false;
+    // The band's heart asks for the library, which the show is borrowed from.
+    // The value the heart asked for, and the name the write needs.
+    let mut save: Option<(String, bool)> = None;
 
     // The scroll offset is this show's, not the album's or the playlist's that
     // share the pane.
@@ -111,8 +119,45 @@ pub fn show_view(
                         shuffle: false,
                         cover,
                     };
-                    if hero::show(ui, &band, tokens) && !detail.episodes.is_empty() {
+                    let saved = library.is_saved(&uri);
+                    let reply = hero::show_with(
+                        ui,
+                        &band,
+                        tokens,
+                        hero::Tools {
+                            title: hero::Title::Plain,
+                            more: Some(true),
+                            saved,
+                        },
+                    );
+                    if let Some(door) = reply.more_door {
+                        let item = LibraryItem {
+                            kind: SidebarKind::Podcasts,
+                            uri: uri.clone(),
+                            name: detail.show.name.clone(),
+                        };
+                        context_menu::post(
+                            ui.ctx(),
+                            verbs::library_request(
+                                item,
+                                door,
+                                verbs::LibraryRights {
+                                    renamable: false,
+                                    removable: saved == Some(true),
+                                    saved,
+                                },
+                                Some(Page::Show(uri.clone())),
+                                crate::naming::Surface::Band,
+                            ),
+                        );
+                    }
+                    if reply.played && !detail.episodes.is_empty() {
                         command = queue.start(&entries(detail), 0, transport);
+                    }
+                    if let Some(asked) = reply.saved {
+                        // The library is borrowed for the show for the whole draw,
+                        // so the write is asked for once the borrow ends.
+                        save = Some((detail.show.name.clone(), asked));
                     }
 
                     super::inner(ui, |ui| {
@@ -167,7 +212,8 @@ pub fn show_view(
                                         detail.episodes.get(row).map(Episode::entry)
                                     });
                                 }
-                                Some(Click::Open(_)) | None => {}
+                                Some(Click::Menu(_)) | Some(Click::Open(_))
+                                | Some(Click::Like(_)) | None => {}
                             }
                         }
                         selection.finish(ui.ctx());
@@ -178,6 +224,16 @@ pub fn show_view(
 
     if retry {
         return library.open(Page::Show(uri));
+    }
+    if let Some((name, asked)) = save {
+        let item = LibraryItem {
+            kind: SidebarKind::Podcasts,
+            uri: uri.clone(),
+            name,
+        };
+        if command.is_none() {
+            command = library.set_saved(&item, asked);
+        }
     }
     command
 }
@@ -363,7 +419,7 @@ mod tests {
                     shuffle: false,
                     cover: Cover::Missing,
                 };
-                let _ = hero::show(ui, &band, &tokens);
+                let _ = hero::show_with(ui, &band, &tokens, hero::Tools::plain());
                 let bottom = ui.cursor().min.y;
                 let height = hero_tokens::PLAY + 2.0 * space::S4;
                 let row = Rect::from_min_size(

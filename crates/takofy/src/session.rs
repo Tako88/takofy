@@ -9,10 +9,10 @@ use std::future::Future;
 use librespot::core::SessionConfig;
 use takofy_core::credentials::AccessToken;
 use takofy_core::engine::{Engine, EngineError, RootlistRead};
-use takofy_core::playback::{Playback, PlaybackError, PlaybackEvent};
+use takofy_core::playback::{Playback, PlaybackError, PlaybackEvent, Volume};
 use takofy_model::{
     AlbumDetail, ArtistDetail, CoverUrl, FollowedArtist, FollowedShow, Move, PlaylistAccess,
-    Revision, SavedAlbum, ShowDetail, TrackEntry, TrackLyrics,
+    PlaylistEntry, Removal, Revision, SavedAlbum, ShowDetail, TrackEntry, TrackLyrics,
 };
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::oneshot::Receiver;
@@ -87,6 +87,10 @@ pub(crate) trait SessionHost: Send + 'static {
 
     fn rootlist(&self) -> impl Future<Output = Result<RootlistRead, SessionError>> + Send;
 
+    /// One playlist as the sidebar draws it, or `None` when the read does not
+    /// answer.
+    fn playlist_entry(&self, playlist: &str) -> impl Future<Output = Option<PlaylistEntry>> + Send;
+
     /// Writes one move to the sidebar's playlists, answering the revision to
     /// hold next.
     fn move_playlist(
@@ -96,19 +100,73 @@ pub(crate) trait SessionHost: Send + 'static {
         to: usize,
     ) -> impl Future<Output = Result<Revision, SessionError>> + Send;
 
-    /// Appends one track to a playlist, answering the revision to hold next.
-    fn add_track(
+    /// Unlinks one row of the sidebar's playlists, answering the revision to
+    /// hold next.
+    fn remove_playlist(
+        &self,
+        revision: &Revision,
+        index: usize,
+    ) -> impl Future<Output = Result<Revision, SessionError>> + Send;
+
+    /// Whether one album or show is in the library.
+    fn saved_state(&self, uri: &str) -> impl Future<Output = Option<bool>> + Send;
+
+    /// Writes one album or show into the library, or out of it.
+    fn set_saved(
+        &self,
+        uri: &str,
+        saved: bool,
+    ) -> impl Future<Output = Result<(), SessionError>> + Send;
+
+    /// Appends tracks to a playlist as one write, answering the revision to
+    /// hold next.
+    fn add_tracks(
         &self,
         playlist: &str,
         revision: &Revision,
         from_index: usize,
-        track: &str,
+        tracks: &[String],
     ) -> impl Future<Output = Result<Revision, SessionError>> + Send;
+
+    /// Creates a playlist called `name`, answering its URI.
+    fn make_playlist(
+        &self,
+        name: &str,
+    ) -> impl Future<Output = Result<String, SessionError>> + Send;
+
+    /// Renames `playlist`, answering the revision to hold next.
+    fn rename_playlist(
+        &self,
+        playlist: &str,
+        revision: &Revision,
+        name: &str,
+    ) -> impl Future<Output = Result<Revision, SessionError>> + Send;
+
+    /// Puts `playlist` at the front of the user's rootlist, answering the
+    /// revision to hold next.
+    fn link_playlist(
+        &self,
+        revision: &Revision,
+        playlist: &str,
+    ) -> impl Future<Output = Result<Revision, SessionError>> + Send;
+
+    /// What a playlist read says about writing to it; `None` when it cannot be
+    /// read.
+    fn playlist_state(&self, playlist: &str)
+    -> impl Future<Output = Option<PlaylistAccess>> + Send;
 
     fn tracks(
         &mut self,
         playlist: &str,
     ) -> impl Future<Output = Result<TrackPage, SessionError>> + Send;
+
+    /// Removes rows from a playlist, answering the revision to hold next.
+    fn remove_tracks(
+        &self,
+        playlist: &str,
+        revision: &Revision,
+        removals: &[Removal],
+    ) -> impl Future<Output = Result<Revision, SessionError>> + Send;
 
     /// Writes one move to a playlist, answering the revision to hold next.
     fn move_track(
@@ -136,6 +194,16 @@ pub(crate) trait SessionHost: Send + 'static {
 
     /// The albums the user saved, newest save first, each as its card draws it.
     fn saved_albums(&self) -> impl Future<Output = Result<Vec<SavedAlbum>, SessionError>> + Send;
+
+    /// The tracks the user has liked, newest save first.
+    fn liked_tracks(&self) -> impl Future<Output = Result<Vec<String>, SessionError>> + Send;
+
+    /// Writes these tracks into the liked-songs set, or out of it.
+    fn set_liked(
+        &self,
+        tracks: Vec<String>,
+        liked: bool,
+    ) -> impl Future<Output = Result<(), SessionError>> + Send;
 
     fn artist(&self, artist: &str)
     -> impl Future<Output = Result<ArtistPage, SessionError>> + Send;
@@ -174,6 +242,9 @@ pub(crate) trait SessionHost: Send + 'static {
     /// Jumps within the loaded track. A call with no player is a no-op.
     fn seek(&self, position_ms: u32);
 
+    /// Sets the level the player reads. 0 is silence, 100 is unity gain.
+    fn set_volume(&self, percent: u16);
+
     /// The event stream of a player started since the last call, so the one
     /// drain thread can be handed it exactly once.
     fn take_events(&mut self) -> Option<UnboundedReceiver<PlaybackEvent>>;
@@ -206,6 +277,9 @@ pub(crate) struct LiveSession {
     engine: Option<Engine>,
     playback: Option<Playback>,
     events: Option<UnboundedReceiver<PlaybackEvent>>,
+    /// The level the player will read, kept here so a change before the player
+    /// exists is still the level it starts with.
+    volume: Volume,
 }
 
 impl LiveSession {
@@ -215,6 +289,7 @@ impl LiveSession {
             engine: None,
             playback: None,
             events: None,
+            volume: Volume::default(),
         }
     }
 }
@@ -235,6 +310,13 @@ impl SessionHost for LiveSession {
         }
     }
 
+    async fn playlist_entry(&self, playlist: &str) -> Option<PlaylistEntry> {
+        match &self.engine {
+            Some(engine) => engine.playlist_entry(playlist).await,
+            None => None,
+        }
+    }
+
     async fn move_playlist(
         &self,
         revision: &Revision,
@@ -250,19 +332,96 @@ impl SessionHost for LiveSession {
         }
     }
 
-    async fn add_track(
+    async fn remove_playlist(
+        &self,
+        revision: &Revision,
+        index: usize,
+    ) -> Result<Revision, SessionError> {
+        match &self.engine {
+            Some(engine) => engine
+                .remove_playlist(revision, index)
+                .await
+                .map_err(SessionError::Engine),
+            None => Err(SessionError::NotConnected),
+        }
+    }
+
+    async fn saved_state(&self, uri: &str) -> Option<bool> {
+        match &self.engine {
+            Some(engine) => engine.saved_state(uri).await,
+            None => None,
+        }
+    }
+
+    async fn set_saved(&self, uri: &str, saved: bool) -> Result<(), SessionError> {
+        match &self.engine {
+            Some(engine) => engine
+                .set_saved(uri, saved)
+                .await
+                .map_err(SessionError::Engine),
+            None => Err(SessionError::NotConnected),
+        }
+    }
+
+    async fn add_tracks(
         &self,
         playlist: &str,
         revision: &Revision,
         from_index: usize,
-        track: &str,
+        tracks: &[String],
     ) -> Result<Revision, SessionError> {
         match &self.engine {
             Some(engine) => engine
-                .add_track(playlist, revision, from_index, track)
+                .add_tracks(playlist, revision, from_index, tracks)
                 .await
                 .map_err(SessionError::Engine),
             None => Err(SessionError::NotConnected),
+        }
+    }
+
+    async fn make_playlist(&self, name: &str) -> Result<String, SessionError> {
+        match &self.engine {
+            Some(engine) => engine
+                .make_playlist(name)
+                .await
+                .map_err(SessionError::Engine),
+            None => Err(SessionError::NotConnected),
+        }
+    }
+
+    async fn rename_playlist(
+        &self,
+        playlist: &str,
+        revision: &Revision,
+        name: &str,
+    ) -> Result<Revision, SessionError> {
+        match &self.engine {
+            Some(engine) => engine
+                .rename_playlist(playlist, revision, name)
+                .await
+                .map_err(SessionError::Engine),
+            None => Err(SessionError::NotConnected),
+        }
+    }
+
+    async fn link_playlist(
+        &self,
+        revision: &Revision,
+        playlist: &str,
+    ) -> Result<Revision, SessionError> {
+        match &self.engine {
+            Some(engine) => engine
+                .link_playlist(revision, playlist)
+                .await
+                .map_err(SessionError::Engine),
+            None => Err(SessionError::NotConnected),
+        }
+    }
+
+    async fn playlist_state(&self, playlist: &str) -> Option<PlaylistAccess> {
+        match &self.engine {
+            Some(engine) => engine.playlist_state(playlist).await,
+            None => None,
         }
     }
 
@@ -290,6 +449,21 @@ impl SessionHost for LiveSession {
         match &self.engine {
             Some(engine) => engine
                 .move_track(playlist, revision, moves)
+                .await
+                .map_err(SessionError::Engine),
+            None => Err(SessionError::NotConnected),
+        }
+    }
+
+    async fn remove_tracks(
+        &self,
+        playlist: &str,
+        revision: &Revision,
+        removals: &[Removal],
+    ) -> Result<Revision, SessionError> {
+        match &self.engine {
+            Some(engine) => engine
+                .remove_tracks(playlist, revision, removals)
                 .await
                 .map_err(SessionError::Engine),
             None => Err(SessionError::NotConnected),
@@ -330,6 +504,23 @@ impl SessionHost for LiveSession {
     async fn saved_albums(&self) -> Result<Vec<SavedAlbum>, SessionError> {
         match &self.engine {
             Some(engine) => engine.saved_albums().await.map_err(SessionError::Engine),
+            None => Err(SessionError::NotConnected),
+        }
+    }
+
+    async fn liked_tracks(&self) -> Result<Vec<String>, SessionError> {
+        match &self.engine {
+            Some(engine) => engine.liked_tracks().await.map_err(SessionError::Engine),
+            None => Err(SessionError::NotConnected),
+        }
+    }
+
+    async fn set_liked(&self, tracks: Vec<String>, liked: bool) -> Result<(), SessionError> {
+        match &self.engine {
+            Some(engine) => engine
+                .set_liked(tracks, liked)
+                .await
+                .map_err(SessionError::Engine),
             None => Err(SessionError::NotConnected),
         }
     }
@@ -386,7 +577,9 @@ impl SessionHost for LiveSession {
     fn play(&mut self, uri: &str) -> Result<(), SessionError> {
         if self.playback.is_none() {
             let engine = self.engine.as_ref().ok_or(SessionError::NotConnected)?;
-            let (playback, events) = engine.playback().map_err(SessionError::Playback)?;
+            let (playback, events) = engine
+                .playback(self.volume.clone())
+                .map_err(SessionError::Playback)?;
             self.playback = Some(playback);
             self.events = Some(events);
         }
@@ -418,6 +611,10 @@ impl SessionHost for LiveSession {
         }
     }
 
+    fn set_volume(&self, percent: u16) {
+        self.volume.set(percent);
+    }
+
     fn stop(&self) {
         if let Some(playback) = &self.playback {
             playback.stop();
@@ -436,9 +633,12 @@ impl SessionHost for LiveSession {
 
 #[cfg(test)]
 mod tests {
+    use librespot::core::SessionConfig;
+    use librespot::playback::mixer::VolumeGetter;
+    use takofy_core::playback::Volume;
     use tokio::sync::oneshot;
 
-    use super::stop_or;
+    use super::{LiveSession, SessionError, SessionHost, stop_or};
 
     #[tokio::test]
     async fn stop_or_returns_the_work_when_it_finishes_first() {
@@ -453,6 +653,46 @@ mod tests {
         assert_eq!(
             stop_or(&mut stop, std::future::pending::<u32>()).await,
             None
+        );
+    }
+
+    #[test]
+    fn a_level_set_before_the_player_exists_is_the_level_a_later_handle_reads() {
+        let live = LiveSession::new(SessionConfig::default());
+        live.set_volume(35);
+
+        // The player is built with a clone of this cell, so what the clone
+        // reads is what the player starts at.
+        let handle = live.volume.clone();
+        assert_eq!(
+            handle.attenuation_factor(),
+            Volume::at(35).attenuation_factor(),
+            "a clone taken later reads the level set before the player existed"
+        );
+
+        live.set_volume(60);
+        assert_eq!(
+            handle.attenuation_factor(),
+            Volume::at(60).attenuation_factor(),
+            "a later change through the session is seen through the clone"
+        );
+    }
+
+    #[test]
+    fn play_before_sign_in_fails_and_keeps_the_level() {
+        let mut live = LiveSession::new(SessionConfig::default());
+        live.set_volume(35);
+
+        let error = SessionHost::play(&mut live, "spotify:track:x")
+            .expect_err("a play with no engine must fail");
+        assert!(
+            matches!(error, SessionError::NotConnected),
+            "a play before sign-in reports the missing engine"
+        );
+        assert_eq!(
+            live.volume.attenuation_factor(),
+            Volume::at(35).attenuation_factor(),
+            "a failed play leaves the level alone"
         );
     }
 }

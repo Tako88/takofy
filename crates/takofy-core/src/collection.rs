@@ -9,7 +9,9 @@
 //! probe the hero reads its label from, the paged read of the followed shows,
 //! and the paged read of the collection set.
 
+use crate::followed::FollowedError;
 use crate::wire::{put_message, put_str, put_varint_field};
+use librespot::core::SpotifyUri;
 
 /// The media type both collection endpoints want on `Content-Type` and `Accept`.
 pub(crate) const VENDOR: &str = "application/vnd.collection-v2.spotify.proto";
@@ -50,11 +52,89 @@ pub(crate) fn write_body(
     body
 }
 
-/// One contains request: the username, the set, and one item per URI.
-pub(crate) fn contains_body(username: &str, uris: &[&str]) -> Vec<u8> {
+/// One write request for a set: the username, the set, one item per URI, and
+/// the label the endpoint de-duplicates by.
+///
+/// Every item carries the same date and removal flag, because one write is one
+/// gesture: liking names the instant the batch was added, unliking sets
+/// `is_removed` and carries no date.
+pub(crate) fn items_body(
+    username: &str,
+    set: &str,
+    uris: &[&str],
+    added_at: Option<i64>,
+    removed: bool,
+    client_update_id: &str,
+) -> Vec<u8> {
     let mut body = Vec::new();
     put_str(1, username, &mut body);
-    put_str(2, ARTIST_SET, &mut body);
+    put_str(2, set, &mut body);
+    for uri in uris {
+        let mut item = Vec::new();
+        put_str(1, uri, &mut item);
+        if let Some(added_at) = added_at {
+            put_varint_field(2, added_at as u64, &mut item);
+        }
+        if removed {
+            put_varint_field(3, 1, &mut item);
+        }
+        put_message(3, &item, &mut body);
+    }
+    put_str(4, client_update_id, &mut body);
+    body
+}
+
+/// The set a saved item of `uri` is written to, or a refusal.
+///
+/// Albums live in the collection set and shows in their own; a track is written
+/// by the like path, and an artist is not in a set at all — removing a followed
+/// artist is the unfollow. Refusing everything else keeps this writer out of
+/// paths it has no set for.
+pub(crate) fn saved_set(uri: &str) -> Result<&'static str, FollowedError> {
+    match SpotifyUri::from_uri(uri) {
+        Ok(SpotifyUri::Album { .. }) => Ok(COLLECTION_SET),
+        Ok(SpotifyUri::Show { .. }) => Ok(SHOW_SET),
+        _ => Err(FollowedError::Source(
+            "only an album or a show has a saved set".to_owned(),
+        )),
+    }
+}
+
+/// Refuses a pick that names anything but a track, before a request is made.
+///
+/// The collection set holds episodes and albums too, and a like names only a
+/// track: one wrong URI would make the whole write meaningless, so it is
+/// refused whole.
+pub(crate) fn require_tracks(uris: &[String]) -> Result<(), FollowedError> {
+    if uris
+        .iter()
+        .all(|uri| matches!(SpotifyUri::from_uri(uri), Ok(SpotifyUri::Track { .. })))
+    {
+        return Ok(());
+    }
+    Err(FollowedError::Source(
+        "a like writes tracks only".to_owned(),
+    ))
+}
+
+/// The pick cut into writes of at most `per` URIs, in order.
+///
+/// A zero size writes nothing rather than panicking on an empty chunk.
+pub(crate) fn like_batches<'a>(uris: &'a [&'a str], per: usize) -> Vec<&'a [&'a str]> {
+    if per == 0 {
+        return Vec::new();
+    }
+    uris.chunks(per).collect()
+}
+
+/// One contains request: the username, the set, and one item per URI.
+///
+/// The set is the caller's because the route answers for any of them: an artist
+/// is asked about the followed set, an album about the collection.
+pub(crate) fn contains_body(username: &str, set: &str, uris: &[&str]) -> Vec<u8> {
+    let mut body = Vec::new();
+    put_str(1, username, &mut body);
+    put_str(2, set, &mut body);
     for uri in uris {
         let mut item = Vec::new();
         put_str(1, uri, &mut item);
@@ -265,6 +345,11 @@ mod tests {
     const USER: &str = "alice";
     const ONE: &str = "spotify:artist:x";
     const TWO: &str = "spotify:artist:y";
+    const SHOW: &str = "spotify:show:x";
+    const TRACK_ONE: &str = "spotify:track:a";
+    const TRACK_TWO: &str = "spotify:track:b";
+    /// The label a write names itself with; the endpoint accepts any string.
+    const UPDATE_ID: &str = "takofy-1";
     /// 2023-11-14T22:13:20Z, the instant the probe wrote.
     const ADDED_AT: i64 = 1_700_000_000;
 
@@ -301,7 +386,7 @@ mod tests {
     #[test]
     fn a_contains_probe_names_every_uri_in_one_body() {
         assert_eq!(
-            contains_body(USER, &[ONE, TWO]),
+            contains_body(USER, ARTIST_SET, &[ONE, TWO]),
             vec![
                 0x0a, 0x05, 0x61, 0x6c, 0x69, 0x63, 0x65, //
                 0x12, 0x06, 0x61, 0x72, 0x74, 0x69, 0x73, 0x74, //
@@ -310,6 +395,19 @@ mod tests {
                 0x1a, 0x12, 0x0a, 0x10, 0x73, 0x70, 0x6f, 0x74, 0x69, 0x66, 0x79, 0x3a, 0x61, 0x72,
                 0x74, 0x69, 0x73, 0x74, 0x3a, 0x79,
             ]
+        );
+    }
+
+    /// The set is the caller's: an album is asked about the collection, and the
+    /// body says so rather than naming the artist set out of habit.
+    #[test]
+    fn a_contains_probe_names_the_set_it_was_given() {
+        let body = contains_body(USER, COLLECTION_SET, &["spotify:album:r"]);
+        let artist = contains_body(USER, ARTIST_SET, &["spotify:album:r"]);
+        assert_ne!(body, artist, "the set reached the body");
+        assert!(
+            body.windows(10).any(|run| run == COLLECTION_SET.as_bytes()),
+            "the collection set is not in the body"
         );
     }
 
@@ -373,6 +471,163 @@ mod tests {
             put_varint_field(3, 1, &mut item);
         }
         item
+    }
+
+    #[test]
+    fn a_like_write_names_the_collection_set_one_item_per_uri_and_the_update_id() {
+        assert_eq!(
+            items_body(
+                USER,
+                COLLECTION_SET,
+                &[TRACK_ONE, TRACK_TWO],
+                Some(ADDED_AT),
+                false,
+                UPDATE_ID,
+            ),
+            vec![
+                0x0a, 0x05, 0x61, 0x6c, 0x69, 0x63, 0x65, // field 1: the username
+                0x12, 0x0a, 0x63, 0x6f, 0x6c, 0x6c, 0x65, 0x63, 0x74, 0x69, 0x6f,
+                0x6e, // field 2: "collection"
+                0x1a, 0x17, // field 3: one 23-byte item
+                0x0a, 0x0f, 0x73, 0x70, 0x6f, 0x74, 0x69, 0x66, 0x79, 0x3a, 0x74, 0x72, 0x61, 0x63,
+                0x6b, 0x3a, 0x61, // item 1: the uri
+                0x10, 0x80, 0xe2, 0xcf, 0xaa, 0x06, // item 2: added_at
+                0x1a, 0x17, // field 3: the second item
+                0x0a, 0x0f, 0x73, 0x70, 0x6f, 0x74, 0x69, 0x66, 0x79, 0x3a, 0x74, 0x72, 0x61, 0x63,
+                0x6b, 0x3a, 0x62, // item 1: the uri
+                0x10, 0x80, 0xe2, 0xcf, 0xaa, 0x06, // item 2: added_at
+                0x22, 0x08, 0x74, 0x61, 0x6b, 0x6f, 0x66, 0x79, 0x2d, 0x31, // field 4: the id
+            ]
+        );
+    }
+
+    #[test]
+    fn a_like_item_carries_the_date_and_no_removal() {
+        assert_eq!(
+            items_body(
+                USER,
+                COLLECTION_SET,
+                &[TRACK_ONE],
+                Some(ADDED_AT),
+                false,
+                UPDATE_ID
+            ),
+            vec![
+                0x0a, 0x05, 0x61, 0x6c, 0x69, 0x63, 0x65, //
+                0x12, 0x0a, 0x63, 0x6f, 0x6c, 0x6c, 0x65, 0x63, 0x74, 0x69, 0x6f, 0x6e, //
+                0x1a, 0x17, //
+                0x0a, 0x0f, 0x73, 0x70, 0x6f, 0x74, 0x69, 0x66, 0x79, 0x3a, 0x74, 0x72, 0x61, 0x63,
+                0x6b, 0x3a, 0x61, //
+                0x10, 0x80, 0xe2, 0xcf, 0xaa, 0x06, //
+                0x22, 0x08, 0x74, 0x61, 0x6b, 0x6f, 0x66, 0x79, 0x2d, 0x31,
+            ]
+        );
+    }
+
+    #[test]
+    fn an_unlike_item_carries_is_removed_and_no_date() {
+        assert_eq!(
+            items_body(USER, COLLECTION_SET, &[TRACK_ONE], None, true, UPDATE_ID),
+            vec![
+                0x0a, 0x05, 0x61, 0x6c, 0x69, 0x63, 0x65, //
+                0x12, 0x0a, 0x63, 0x6f, 0x6c, 0x6c, 0x65, 0x63, 0x74, 0x69, 0x6f, 0x6e, //
+                0x1a, 0x13, //
+                0x0a, 0x0f, 0x73, 0x70, 0x6f, 0x74, 0x69, 0x66, 0x79, 0x3a, 0x74, 0x72, 0x61, 0x63,
+                0x6b, 0x3a, 0x61, //
+                0x18, 0x01, // item 3: is_removed
+                0x22, 0x08, 0x74, 0x61, 0x6b, 0x6f, 0x66, 0x79, 0x2d, 0x31,
+            ]
+        );
+    }
+
+    #[test]
+    fn a_show_removal_names_the_show_set_with_no_date() {
+        assert_eq!(
+            items_body(USER, SHOW_SET, &[SHOW], None, true, UPDATE_ID),
+            vec![
+                0x0a, 0x05, 0x61, 0x6c, 0x69, 0x63, 0x65, //
+                0x12, 0x04, 0x73, 0x68, 0x6f, 0x77, // field 2: "show"
+                0x1a, 0x12, // field 3: one 18-byte item
+                0x0a, 0x0e, 0x73, 0x70, 0x6f, 0x74, 0x69, 0x66, 0x79, 0x3a, 0x73, 0x68, 0x6f, 0x77,
+                0x3a, 0x78, // item 1: the uri
+                0x18, 0x01, // item 3: is_removed
+                0x22, 0x08, 0x74, 0x61, 0x6b, 0x6f, 0x66, 0x79, 0x2d, 0x31,
+            ]
+        );
+    }
+
+    #[test]
+    fn saved_set_maps_each_collectable_kind_to_its_set() {
+        let set = |uri: &str| saved_set(uri).ok();
+        assert_eq!(
+            set("spotify:album:4uLU6hMCjMI75M1A2tKUQC"),
+            Some(COLLECTION_SET)
+        );
+        assert_eq!(set("spotify:show:4uLU6hMCjMI75M1A2tKUQC"), Some(SHOW_SET));
+        for refused in [
+            "spotify:track:4uLU6hMCjMI75M1A2tKUQC",
+            "spotify:episode:4uLU6hMCjMI75M1A2tKUQC",
+            "spotify:artist:4uLU6hMCjMI75M1A2tKUQC",
+            "spotify:playlist:4uLU6hMCjMI75M1A2tKUQC",
+            "spotify:user:alice",
+            "spotify:local:A:B:C:1000",
+            "",
+            "spotify:",
+            "album:a",
+        ] {
+            assert_eq!(set(refused), None, "{refused:?} was given a set");
+        }
+    }
+
+    #[test]
+    fn require_tracks_rejects_an_album_an_artist_an_episode_and_garbage_before_any_request() {
+        use librespot::core::{SpotifyId, SpotifyUri};
+
+        let uri = |uri: SpotifyUri| -> String { uri.to_uri().expect("a uri") };
+        let id = SpotifyId::from_raw(&[1; 16]).expect("a 16-byte id");
+        let good = [
+            uri(SpotifyUri::Track { id }),
+            uri(SpotifyUri::Track {
+                id: SpotifyId::from_raw(&[2; 16]).expect("a 16-byte id"),
+            }),
+        ];
+        assert!(require_tracks(&good).is_ok());
+
+        for bad in [
+            uri(SpotifyUri::Album { id }),
+            uri(SpotifyUri::Artist { id }),
+            uri(SpotifyUri::Episode { id }),
+            "spotify:local:A:B:C:1000".to_owned(),
+            "track:a".to_owned(),
+            String::new(),
+            "spotify:track:".to_owned(),
+        ] {
+            let uris = [good[0].clone(), bad.clone()];
+            assert!(
+                require_tracks(&uris).is_err(),
+                "{bad:?} must be refused whole"
+            );
+        }
+        let empty: [String; 0] = [];
+        assert!(require_tracks(&empty).is_ok());
+    }
+
+    #[test]
+    fn like_batches_split_in_order_without_losing_or_repeating_a_uri() {
+        assert!(
+            like_batches(&[], 100).is_empty(),
+            "an empty pick is no write"
+        );
+
+        let all: Vec<String> = (0..250).map(|n| format!("spotify:track:{n}")).collect();
+        let refs: Vec<&str> = all.iter().map(String::as_str).collect();
+        let batches = like_batches(&refs, 100);
+        assert_eq!(
+            batches.iter().map(|batch| batch.len()).collect::<Vec<_>>(),
+            vec![100, 100, 50]
+        );
+        let flat: Vec<&str> = batches.into_iter().flatten().copied().collect();
+        assert_eq!(flat, refs, "every uri once, in the order it was picked");
     }
 
     #[test]

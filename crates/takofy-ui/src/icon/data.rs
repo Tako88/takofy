@@ -312,6 +312,38 @@ const HEART_LINES: &[Line] = &[Line {
 }];
 const HEART_FILLS: &[&[Point]] = &[];
 
+const HEART_FILLED_LINES: &[Line] = &[];
+const HEART_FILLED_FILLS: &[&[Point]] = &[
+    &[
+        (12.0, 7.2),
+        (10.7, 5.9),
+        (9.255, 4.902),
+        (7.555, 4.459),
+        (5.807, 4.624),
+        (4.22, 5.378),
+        (2.987, 6.628),
+        (2.256, 8.225),
+        (2.115, 9.976),
+        (2.582, 11.669),
+        (3.6, 13.1),
+        (12.0, 21.5),
+    ],
+    &[
+        (12.0, 7.2),
+        (13.3, 5.9),
+        (14.931, 4.82),
+        (16.85, 4.442),
+        (18.769, 4.82),
+        (20.4, 5.9),
+        (21.347, 7.185),
+        (21.845, 8.702),
+        (21.845, 10.298),
+        (21.347, 11.815),
+        (20.4, 13.1),
+        (12.0, 21.5),
+    ],
+];
+
 const MORE_LINES: &[Line] = &[];
 const MORE_FILLS: &[&[Point]] = &[
     &[
@@ -1166,6 +1198,11 @@ pub(super) fn glyph(icon: Icon) -> Glyph {
             lines: HEART_LINES,
             fills: HEART_FILLS,
         },
+        Icon::HeartFilled => Glyph {
+            source: 0xdb8dca42496c474f,
+            lines: HEART_FILLED_LINES,
+            fills: HEART_FILLED_FILLS,
+        },
         Icon::More => Glyph {
             source: 0x87486938587c71e9,
             lines: MORE_LINES,
@@ -1255,6 +1292,7 @@ pub(super) fn symbol_id(icon: Icon) -> &'static str {
         Icon::ArrowRight => "i-arrow-right",
         Icon::ChevronRight => "i-chevron-right",
         Icon::Heart => "i-heart",
+        Icon::HeartFilled => "i-heart-filled",
         Icon::More => "i-more",
         Icon::Close => "i-close",
         Icon::Plus => "i-plus",

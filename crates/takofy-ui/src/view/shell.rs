@@ -14,16 +14,21 @@ use crate::drawer::{Drawer, Input};
 use crate::landing::{self, Area, Landing, Target};
 use crate::layout::{self, Grid, NowPlaying, Playbar, Sidebar};
 use crate::library::Library;
+use crate::menu::{Cut, Gate, LibraryItem, Listing, Verb};
 use crate::message::Command;
 use crate::queue::{Queue, Step};
 use crate::reorder;
 use crate::route::Page;
 use crate::search::Act;
 use crate::theme::{Tokens, radius, stroke};
+use crate::verbs;
 
 use super::Screen;
 use super::carry::{self, Carry, ColumnOffer, Offer, Source};
-use super::{ghost, now_playing, playbar, playlist, queue_pane, search_menu, sidebar, topbar};
+use super::{
+    context_menu, ghost, heart, now_playing, playbar, playlist, queue_pane, search_menu, sidebar,
+    topbar,
+};
 
 /// The signed-in shell: three columns over a playbar, each panel a hairline box
 /// on the window background.
@@ -38,7 +43,16 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
     // one set during this frame has not, and waits for the next.
     let pending = screen.queue.refocus();
     let content = ui.ctx().content_rect();
-    let regions = layout::regions_for(content.width());
+    // Beside the window's size, because a fullscreen change the window manager
+    // made is read here on the next frame; nothing caches a request.
+    let fullscreen = ui.input(|input| input.viewport().fullscreen);
+    let regions = layout::regions_with(content.width(), *screen.pane);
+    // A row's rename field is drawn by the column. The rail draws the same
+    // sidebar only in the drawer, so a closed drawer leaves the field with no
+    // row to sit in and no row to hand the keyboard back to.
+    if regions.sidebar != Sidebar::Full {
+        screen.library.dismiss_row_rename();
+    }
     let shell = layout::shell_for(&regions);
     let grid = layout::grid_for(content, &shell);
 
@@ -133,6 +147,7 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
                 screen.transport,
                 screen.queue,
                 &screen.library.lyrics,
+                &screen.library.likes,
                 screen.position_ms,
                 &mut now_playing::Frame {
                     art: screen.art,
@@ -148,6 +163,17 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
     }
     if reply.retry {
         screen.library.lyrics.retry();
+    }
+    if let Some(door) = reply.menu {
+        let gate = door_gate(ui.ctx(), screen, &Listing::Current);
+        carry::current_menu(
+            screen.queue,
+            ui.ctx(),
+            door,
+            gate,
+            &screen.library.likes,
+            screen.library.page(),
+        );
     }
 
     // The pane reports what the pointer and the keyboard asked of the queue; it
@@ -181,19 +207,46 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
         }
     });
 
-    command = command.or(region(ui, "playbar", grid.playbar, bar_rect, |ui| {
+    let like = screen
+        .transport
+        .now_playing
+        .as_ref()
+        .and_then(|now| screen.library.likes.state(&now.uri));
+    let bar_state = playbar::Bar {
+        queue_claimed: matches!(target, Some(Target::End)),
+        like,
+        pane: layout::pane_button(content.width(), *screen.pane),
+        fullscreen,
+    };
+    let playbar_reply = region(ui, "playbar", grid.playbar, bar_rect, |ui| {
         playbar::show(
             ui,
             screen.transport,
             screen.queue,
             screen.position_ms,
             regions.playbar,
-            matches!(target, Some(Target::End)),
+            bar_state,
             bar_rect,
             now_playing_cover,
             tokens,
         )
-    }));
+    });
+    command = command.or(playbar_reply.command);
+    // A pane press is local and drops no command, so it is applied whatever the
+    // frame's command did. The regions drew from the preference this frame began
+    // with, so the click needs a frame to show.
+    if playbar_reply.pane {
+        *screen.pane = screen.pane.press(content.width());
+        ui.ctx().request_repaint();
+    }
+    // Never optimistic: the command carries what the window is not, and the
+    // button lights only once the window reports the new state back.
+    if playbar_reply.fullscreen
+        && let Some(current) = fullscreen
+    {
+        ui.ctx()
+            .send_viewport_cmd(egui::ViewportCommand::Fullscreen(!current));
+    }
 
     // The panel only reports the row it was asked to play. Applying the jump
     // here, and only when no other region asked for a command, keeps a frame
@@ -321,6 +374,64 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
         ui.ctx().request_repaint();
     }
 
+    // The context menu draws after the search drop-down, so it hangs over it and
+    // over every region. A page posts at most one request per frame, and a page
+    // that did not draw posts nothing.
+    let request = context_menu::take_request(ui.ctx());
+    let page = screen.library.page();
+    let _ = screen.menu.follow_page(page);
+    if let Some(mut request) = request {
+        request.allow_add(screen.library.add_targets());
+        request.allow_create(regions.sidebar == Sidebar::Full && screen.library.creatable());
+        let gate = door_gate(ui.ctx(), screen, &request.listing);
+        let _ = screen.menu.open(request, gate);
+    }
+    let frame = context_menu::Frame {
+        menu: &mut *screen.menu,
+        // A choice is applied only when no region took the frame's command:
+        // `library.open` mutates before it returns, so applying one whose
+        // command would then be dropped leaves state changed for a command
+        // nobody sends. A dropped choice is spent with its press, not retried.
+        free: command.is_none(),
+        tokens,
+    };
+    if let Some(closed) = context_menu::show(ui, frame)
+        && let Some(verb) = closed.chose
+    {
+        command = apply_verb(ui, screen, verb);
+    }
+
+    // A list's `Del` posts its cut; the shell is the only place one is applied.
+    // It is taken whether or not it can be, so a frame that took the command
+    // leaves nothing behind for the next.
+    let cut = context_menu::take_cut(ui.ctx());
+    if command.is_none()
+        && let Some(cut) = cut
+    {
+        command = apply_cut(ui, screen, cut);
+    }
+
+    // The head's submit posts an intent too. Applying it here is what keeps a
+    // dropped submit from leaving the sidebar waiting on a command nobody sent:
+    // the field keeps its text and the press is spent.
+    let submit = sidebar::take_submit(ui.ctx());
+    if command.is_none() && submit && !carry::carrying(ui.ctx()) {
+        command = screen.library.create_playlist();
+    }
+    let rename_submit = crate::view::name_field::take_submit(ui.ctx());
+    if command.is_none() && rename_submit && !carry::carrying(ui.ctx()) {
+        command = screen.library.rename_playlist();
+    }
+
+    // A heart posts its one-frame intent. It is taken whether or not it can be
+    // applied, so a dropped click leaves nothing behind for the next frame.
+    let ask = heart::take(ui.ctx());
+    if command.is_none()
+        && let Some(ask) = ask
+    {
+        command = apply_like(ui, screen, ask.tracks, ask.liked);
+    }
+
     // Settled before the drawer, so the Escape that cancels a drag does not also
     // close it. egui takes that Escape itself, before any region draws.
     let free = command.is_none();
@@ -377,6 +488,11 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
         ui.ctx().request_repaint();
     }
 
+    // A field the user closed takes the sentence its failed write left with it:
+    // the notice named a field that is no longer on screen, so nothing is left
+    // asking for the retry it described.
+    screen.library.settle_rename();
+
     // Only a refocus this frame's rows drew is settled: one set after they drew —
     // a held Alt+↓ sets one every frame — waits for the frame that draws it.
     if screen.queue.refocus() == pending {
@@ -384,6 +500,193 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
     }
 
     command
+}
+
+/// Applies the verb a context menu closed on.
+///
+/// The snapshot the menu took is what the verb acts on, so a list that reloaded
+/// under the menu cannot change what it does.
+fn apply_verb(ui: &Ui, screen: &mut Screen<'_>, verb: Verb) -> Option<Command> {
+    // A library menu's rows act on the one item it named, and it carries no
+    // targets: the listing is what decides, before the pick is read.
+    if let Some(item) = screen.menu.library_item().cloned()
+        && let Some(outcome) = verbs::library_outcome(verb, &item)
+    {
+        return match outcome {
+            verbs::Outcome::Copy(text) => {
+                ui.ctx().copy_text(text);
+                None
+            }
+            verbs::Outcome::Unlink(item) => apply_remove_from_library(ui, screen, &item),
+            verbs::Outcome::Save(item) => screen.library.save_to_library(&item),
+            verbs::Outcome::Follow { artist, followed } => apply_follow(screen, &artist, followed),
+            verbs::Outcome::Rename(item) => {
+                let surface = match screen.menu.listing() {
+                    Listing::Band(_) => crate::naming::Surface::Band,
+                    _ => crate::naming::Surface::Row,
+                };
+                apply_rename(ui, screen, &item, surface)
+            }
+            _ => None,
+        };
+    }
+    let targets = screen.menu.targets().to_vec();
+    match verbs::outcome(verb, &targets)? {
+        verbs::Outcome::Queue(entries) => {
+            // An add has no position to choose, so the entries go after the last.
+            let _ = screen.queue.append(entries);
+            None
+        }
+        verbs::Outcome::Copy(text) => {
+            // One URL per line, through egui's own platform output, so the
+            // window crate needs no clipboard dependency.
+            ui.ctx().copy_text(text);
+            None
+        }
+        verbs::Outcome::Open(page) => screen.library.open(page),
+        verbs::Outcome::Remove => {
+            let cut = screen.menu.cut();
+            cut.and_then(|cut| apply_cut(ui, screen, cut))
+        }
+        verbs::Outcome::Like { tracks, liked } => apply_like(ui, screen, tracks, liked),
+        verbs::Outcome::NewPlaylist { pick } => apply_new_playlist(ui, screen, pick),
+        verbs::Outcome::AddToPlaylist { tracks } => {
+            let uri = screen.menu.chosen_target()?.uri.clone();
+            screen.library.add_pick(&uri, &tracks)
+        }
+        // A library row's verbs are the listing branch above; a track pick has
+        // no such verb.
+        verbs::Outcome::Unlink(_)
+        | verbs::Outcome::Save(_)
+        | verbs::Outcome::Follow { .. }
+        | verbs::Outcome::Rename(_) => None,
+    }
+}
+
+/// Opens the sidebar's name field for the menu's new-playlist row.
+///
+/// The field is the sidebar's, so the drawer and a carried block both drop the
+/// choice: a field nobody can see, or one opened over a list about to move, is
+/// worse than nothing.
+fn apply_new_playlist(ui: &Ui, screen: &mut Screen<'_>, pick: Vec<String>) -> Option<Command> {
+    if *screen.drawer == Drawer::Open || carry::carrying(ui.ctx()) {
+        return None;
+    }
+    screen.library.naming.open_with(pick);
+    None
+}
+
+/// Opens the rename field the menu's Rename row chose.
+///
+/// The field lives in a surface the drawer or a carried block can hide, so both
+/// drop the choice; a typed field takes the keys instead.
+fn apply_rename(
+    ui: &Ui,
+    screen: &mut Screen<'_>,
+    item: &LibraryItem,
+    surface: crate::naming::Surface,
+) -> Option<Command> {
+    if *screen.drawer == Drawer::Open || carry::carrying(ui.ctx()) || ui.ctx().text_edit_focused() {
+        return None;
+    }
+    screen.library.begin_rename(&item.uri, surface);
+    None
+}
+
+/// Applies a save or a remove-from-your-library the menu chose.
+///
+/// The frame's gates are checked again here, as a removal's are: an intent made
+/// while a field is typing, the drawer is open, a block is carried or another
+/// region took the command is dropped rather than applied.
+fn apply_like(
+    ui: &Ui,
+    screen: &mut Screen<'_>,
+    tracks: Vec<String>,
+    liked: bool,
+) -> Option<Command> {
+    if *screen.drawer == Drawer::Open || carry::carrying(ui.ctx()) || ui.ctx().text_edit_focused() {
+        return None;
+    }
+    screen.library.set_liked(tracks, liked)
+}
+
+/// Applies the removal a sidebar row's menu chose.
+///
+/// The frame's gates are checked again here, as a page removal's are: an intent
+/// made while a field is typing, the drawer is open, a block is carried or a
+/// write is already in flight is dropped rather than applied.
+fn apply_remove_from_library(
+    ui: &Ui,
+    screen: &mut Screen<'_>,
+    item: &LibraryItem,
+) -> Option<Command> {
+    let gate = door_gate(ui.ctx(), screen, &Listing::Library(item.clone()));
+    if !gate.allows() || *screen.drawer == Drawer::Open || ui.ctx().text_edit_focused() {
+        return None;
+    }
+    screen.library.remove_from_library(item)
+}
+
+/// The gate a menu on `listing` opens under.
+///
+/// A queue or Now Playing menu touches no revision, so a playlist write in
+/// flight must not hold it shut; every other list still waits for it.
+fn door_gate(ctx: &egui::Context, screen: &Screen<'_>, listing: &Listing) -> Gate {
+    Gate {
+        carrying: carry::carrying(ctx),
+        writing: !matches!(listing, Listing::Queue | Listing::Current)
+            && screen.library.write_in_flight(),
+    }
+}
+
+/// Applies a removal a menu chose, or a list's `Del` posted.
+///
+/// The frame's gates are checked again here: an intent made while a field is
+/// typing, the drawer is open, a block is carried, a write the list waits on is
+/// in flight or another region took the command is dropped rather than applied.
+fn apply_cut(ui: &Ui, screen: &mut Screen<'_>, cut: Cut) -> Option<Command> {
+    let gate = door_gate(ui.ctx(), screen, &cut.listing);
+    if !gate.allows()
+        || screen.menu.is_open()
+        || *screen.drawer == Drawer::Open
+        || ui.ctx().text_edit_focused()
+    {
+        return None;
+    }
+    match cut.listing {
+        Listing::Playlist { uri, list } => {
+            let command = screen
+                .library
+                .remove_tracks(&uri, &cut.rows, &cut.entries)?;
+            carry::forget_rows(ui.ctx(), list, &cut.rows);
+            Some(command)
+        }
+        Listing::Queue => {
+            // A refusal is silent: the removal touched no wire, so there is
+            // nothing to report and nothing to retry.
+            let _ = screen.queue.remove_rows(&cut.rows, &cut.entries);
+            None
+        }
+        // A library row's removal is applied by the menu's own verb, because it
+        // names no rows to cut.
+        Listing::Page | Listing::Current | Listing::Library(_) | Listing::Band(_) => None,
+    }
+}
+
+/// Follows or unfollows the artist a band's menu named.
+///
+/// A page that is on it also owns the label, so the page's own state is what the
+/// write is asked through; any other artist is a plain write.
+fn apply_follow(screen: &mut Screen<'_>, artist: &str, followed: bool) -> Option<Command> {
+    // A write already in flight for this artist is not doubled: two would land in
+    // order and leave the label and the row apart.
+    if screen.library.follow.artist() == Some(artist) && screen.library.follow.pending() {
+        return None;
+    }
+    Some(Command::SetFollow {
+        artist: artist.to_owned(),
+        followed,
+    })
 }
 
 /// Applies what the queue pane reported: the picked row, the lifted block, and
@@ -396,6 +699,21 @@ fn apply_queue_reply(ui: &Ui, screen: &mut Screen<'_>, reply: &mut queue_pane::R
         && let Some(carry) = carry::from_queue(screen.queue, lift)
     {
         carry::lift(ui.ctx(), carry);
+    }
+    let gate = door_gate(ui.ctx(), screen, &Listing::Queue);
+    if let Some((row, door)) = reply.menu.take() {
+        carry::queue_menu(
+            screen.queue,
+            ui.ctx(),
+            door,
+            row,
+            gate,
+            &screen.library.likes,
+            screen.library.page(),
+        );
+    }
+    if let Some(row) = reply.remove.take() {
+        carry::queue_cut(screen.queue, ui.ctx(), row, gate);
     }
     // A row just lifted is on its way somewhere and must not also step.
     if !carry::carrying(ui.ctx()) {
@@ -467,8 +785,8 @@ fn rootlist_target(
     Some(Target::Rootlist(at))
 }
 
-/// Where a carried track adds itself: the playlist row under the pointer, when
-/// that row may take it.
+/// Where a carried block adds itself: the playlist row under the pointer, when
+/// that row may take the whole pick.
 fn add_target(
     carry: &Carry,
     column: Option<&ColumnOffer>,
@@ -476,7 +794,9 @@ fn add_target(
     pointer: Option<Pos2>,
 ) -> Option<Target> {
     let column = column?;
-    carry.track()?;
+    if !carry.addable() {
+        return None;
+    }
     let slot = landing::slot_at(pointer, Some(&column.zone), column.drawn)?;
     library.addable(slot.row).then_some(Target::Add(slot))
 }
@@ -494,12 +814,12 @@ fn rearrange(screen: &mut Screen<'_>, carry: &Carry, at: Landing, free: bool) ->
         .move_playlist(row, at.boundary, carry.playlist.as_deref()?)
 }
 
-/// Adds the carried track to the row it was dropped on, and asks for one write.
+/// Adds the carried tracks to the row they were dropped on, and asks for one write.
 fn add(screen: &mut Screen<'_>, carry: &Carry, slot: landing::Slot, free: bool) -> Option<Command> {
     if !free {
         return None;
     }
-    screen.library.add_track(slot.row, carry.track()?)
+    screen.library.add_tracks(slot.row, &carry.pick()?)
 }
 
 /// Moves the dropped rows in their own list and picks where they landed.
@@ -668,6 +988,13 @@ fn apply_nav(
             library.to_playlists();
             None
         }
+        // A list crumb asks for the root showing its own chip.
+        Some(topbar::Nav::Root(kind)) => {
+            library.to_playlists();
+            library.root_filter.choose(kind);
+            None
+        }
+        Some(topbar::Nav::Page(page)) => library.open(page),
     }
 }
 
@@ -826,17 +1153,23 @@ pub(super) fn rule(ui: &Ui, rect: Rect, color: Color32) {
 mod tests {
     use std::time::Instant;
 
-    use takofy_model::{CoverUrl, Move, PlaylistAccess, PlaylistEntry, Revision, TrackEntry};
+    use takofy_model::{
+        CoverUrl, FollowedArtist, FollowedShow, Move, PlaylistAccess, PlaylistEntry, Removal,
+        Revision, SavedAlbum, TrackEntry,
+    };
 
     use super::*;
     use crate::cover::Art;
-    use crate::library::{Library, Load};
+    use crate::library::{Library, Load, MediaLayout};
+    use crate::library_filter::RootKind;
+    use crate::menu::LibraryItem;
     use crate::message::{Failure, Update};
     use crate::player::{NowPlaying, Transport, TransportState};
     use crate::queue::Queue;
     use crate::route::Page;
     use crate::search::Device;
     use crate::selection::Press;
+    use crate::sidebar_kind::SidebarKind;
     use crate::signin::SignIn;
     use crate::theme::{extent, fonts, icon, space, style};
 
@@ -879,11 +1212,18 @@ mod tests {
         state: SignIn,
         library: Library,
         drawer: Drawer,
+        menu: crate::menu::Menu,
         art: Art,
         now: Instant,
         /// The modifiers every frame reports as held. egui has no field for them
         /// on `RawInput`: a frame is told through `Event::ModifiersChanged`.
         held: egui::Modifiers,
+        /// Whether the frame reports the window as holding the OS keyboard.
+        unfocused: bool,
+        /// What the user asked of the Now Playing column.
+        pane: layout::PanePref,
+        /// What the window reports about itself, or `None` while it cannot say.
+        fullscreen: Option<bool>,
     }
 
     impl Window {
@@ -898,9 +1238,13 @@ mod tests {
                 state: SignIn::SignedIn,
                 library: Library::default(),
                 drawer: Drawer::default(),
+                menu: crate::menu::Menu::default(),
                 art: Art::default(),
                 now: Instant::now(),
                 held: egui::Modifiers::NONE,
+                unfocused: false,
+                pane: layout::PanePref::default(),
+                fullscreen: Some(false),
             }
         }
 
@@ -915,9 +1259,19 @@ mod tests {
             let tokens = Tokens::DARK;
             let mut events = events;
             events.insert(0, egui::Event::ModifiersChanged(self.held));
+            let mut viewports = egui::ViewportIdMap::default();
+            viewports.insert(
+                egui::ViewportId::ROOT,
+                egui::ViewportInfo {
+                    fullscreen: self.fullscreen,
+                    ..Default::default()
+                },
+            );
             let input = egui::RawInput {
                 screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, self.size)),
+                viewports,
                 events,
+                focused: !self.unfocused,
                 ..Default::default()
             };
             self.art.begin_frame();
@@ -928,10 +1282,12 @@ mod tests {
                 transport,
                 queue,
                 drawer: &mut self.drawer,
+                menu: &mut self.menu,
                 position_ms: 0,
                 art: &mut self.art,
                 now: self.now,
                 now_ms: 0,
+                pane: &mut self.pane,
             };
             let mut output = self.ctx.run_ui(input, |ui| {
                 command = show(ui, &mut screen, &tokens);
@@ -971,6 +1327,23 @@ mod tests {
                 }
             }
             command
+        }
+
+        /// Clicks `at` over the passes egui's hit test needs, returning the
+        /// viewport commands the passes sent.
+        fn click_viewport(
+            &mut self,
+            transport: &mut Transport,
+            queue: &mut Queue,
+            at: egui::Pos2,
+        ) -> Vec<egui::ViewportCommand> {
+            let _ = self.frame(transport, queue, Vec::new());
+            let mut commands = Vec::new();
+            for event in crate::view::test_support::click_events(at) {
+                let (_, frame) = self.frame(transport, queue, vec![event]);
+                commands.extend(viewport_commands(&frame));
+            }
+            commands
         }
 
         /// Clicks `at` over the passes egui's hit test needs, returning the
@@ -1071,9 +1444,10 @@ mod tests {
     }
 
     /// The topbar's rect, solved the same way the shell solves it.
+    /// The bar spans the main column, which the pane widens; `sidebar_rect` is width-only.
     fn topbar_rect(window: &Window) -> Rect {
         let content = Rect::from_min_size(egui::Pos2::ZERO, window.size);
-        let regions = layout::regions_for(content.width());
+        let regions = layout::regions_with(content.width(), window.pane);
         let shell = layout::shell_for(&regions);
         layout::grid_for(content, &shell).topbar
     }
@@ -1083,9 +1457,26 @@ mod tests {
     /// sidebar, which draws before the nav is applied.
     fn view_rect(window: &Window) -> Rect {
         let content = Rect::from_min_size(egui::Pos2::ZERO, window.size);
-        let regions = layout::regions_for(content.width());
+        let regions = layout::regions_with(content.width(), window.pane);
         let shell = layout::shell_for(&regions);
         layout::grid_for(content, &shell).view
+    }
+
+    /// The bottom rule the topbar paints, which spells out the width it drew at.
+    fn topbar_rule(frame: &egui::FullOutput, bar: Rect) -> Rect {
+        frame
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(shape)
+                    if shape.stroke.width == 0.0
+                        && (shape.rect.top() - bar.bottom()).abs() < 0.01 =>
+                {
+                    Some(shape.rect)
+                }
+                _ => None,
+            })
+            .expect("the topbar paints its bottom rule")
     }
 
     /// One press or release of `key` with no modifiers.
@@ -1217,6 +1608,7 @@ mod tests {
     }
 
     const PLAYLIST: &str = "spotify:playlist:a";
+    const ARTIST: &str = "spotify:artist:a";
     const ALBUM: &str = "spotify:album:b";
     const ALBUM_B: &str = "spotify:album:c";
 
@@ -1311,6 +1703,37 @@ mod tests {
             (field.center().y - bar).abs() < 0.01,
             "the search field at {:?} is not on the bar's centre {bar}",
             field.center()
+        );
+    }
+
+    #[test]
+    fn the_topbar_widens_when_the_pane_is_hidden() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        ready_playlist(&mut window);
+
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let shown = topbar_rect(&window);
+        let shown_rule = topbar_rule(&frame, shown);
+        assert!(
+            (shown_rule.width() - (shown.width() - 2.0 * stroke::HAIRLINE)).abs() < 0.01,
+            "the topbar drew {shown_rule:?}, not the region it solved {shown:?}"
+        );
+
+        window.pane = layout::PanePref::Hidden;
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let hidden = topbar_rect(&window);
+        let hidden_rule = topbar_rule(&frame, hidden);
+
+        assert!(
+            hidden_rule.width() > shown_rule.width(),
+            "the hidden pane left the topbar at the width it had beside it: \
+             {hidden_rule:?} against {shown_rule:?}"
+        );
+        assert!(
+            (hidden_rule.width() - (hidden.width() - 2.0 * stroke::HAIRLINE)).abs() < 0.01,
+            "the topbar region {hidden:?} disagrees with the bar it drew {hidden_rule:?}"
         );
     }
 
@@ -1878,6 +2301,44 @@ mod tests {
         );
         assert_eq!(library.page(), Some(&Page::Playlist(PLAYLIST.to_owned())));
         assert_eq!(library.tracks, Load::Loading);
+    }
+
+    /// A list crumb asks for the root showing its own chip, which is the whole
+    /// reason a crumb names a list rather than just "back".
+    #[test]
+    fn a_list_crumb_returns_to_the_root_on_its_own_chip() {
+        let mut library = Library::default();
+        library.select(PLAYLIST);
+        library.root_filter.choose(RootKind::Albums);
+
+        assert_eq!(
+            apply_nav(
+                &mut library,
+                Some(topbar::Nav::Root(RootKind::Playlists)),
+                None
+            ),
+            None
+        );
+        assert_eq!(library.page(), None, "the root is on screen");
+        assert_eq!(library.root_filter.chosen(), RootKind::Playlists);
+    }
+
+    /// A crumb that names a page opens it.
+    #[test]
+    fn a_page_crumb_opens_the_page() {
+        let mut library = Library::default();
+
+        assert_eq!(
+            apply_nav(
+                &mut library,
+                Some(topbar::Nav::Page(Page::Artist(ARTIST.to_owned()))),
+                None,
+            ),
+            Some(Command::LoadArtist {
+                artist: ARTIST.to_owned()
+            })
+        );
+        assert_eq!(library.page(), Some(&Page::Artist(ARTIST.to_owned())));
     }
 
     /// Draws one frame of the whole shell at `screen` and returns the covers it
@@ -3809,6 +4270,33 @@ mod tests {
         )
     }
 
+    /// The colours a frame painted inside `rect` in glyph shapes. The wash, the
+    /// fills and the focus ring are `Shape::Rect`, so the backgrounds are
+    /// excluded by kind.
+    fn glyph_colours_in(output: &egui::FullOutput, rect: Rect) -> Vec<Color32> {
+        let mut colours = Vec::new();
+        for clipped in &output.shapes {
+            if !rect.contains(clipped.shape.visual_bounding_rect().center()) {
+                continue;
+            }
+            match &clipped.shape {
+                egui::Shape::Path(path) => {
+                    if path.fill != Color32::TRANSPARENT {
+                        colours.push(path.fill);
+                    }
+                    if let egui::epaint::ColorMode::Solid(color) = &path.stroke.color
+                        && path.stroke.width > 0.0
+                    {
+                        colours.push(*color);
+                    }
+                }
+                egui::Shape::Circle(circle) => colours.push(circle.fill),
+                _ => {}
+            }
+        }
+        colours
+    }
+
     /// Every entry in the queue, in order, wherever the index has got to.
     fn entries(queue: &Queue) -> Vec<String> {
         let count = queue.first_upcoming() + queue.upcoming().len();
@@ -3819,11 +4307,12 @@ mod tests {
             .collect()
     }
 
-    /// The Now Playing column's content box. The queue pane takes its width and
-    /// ends at its bottom edge; its top is the panel's head, well above the pane.
-    fn pane_rect(window: &Window) -> Rect {
+    /// The Now Playing column's content box, for a window whose pane is shown.
+    /// The queue pane takes its width and ends at its bottom edge; its top is
+    /// the panel's head, well above the pane.
+    fn pane_rect_when_shown(window: &Window) -> Rect {
         let content = Rect::from_min_size(egui::Pos2::ZERO, window.size);
-        let regions = layout::regions_for(content.width());
+        let regions = layout::regions_with(content.width(), window.pane);
         let shell = layout::shell_for(&regions);
         layout::grid_for(content, &shell)
             .now_playing
@@ -3835,12 +4324,40 @@ mod tests {
     /// aims the pointer with it; what the button draws is read from the frame.
     fn queue_button_at(window: &Window) -> Rect {
         let content = Rect::from_min_size(egui::Pos2::ZERO, window.size);
-        let regions = layout::regions_for(content.width());
+        let regions = layout::regions_with(content.width(), window.pane);
         let shell = layout::shell_for(&regions);
         let bar = layout::grid_for(content, &shell)
             .playbar
             .shrink(stroke::HAIRLINE);
         playbar::queue_button(bar, regions.playbar)
+    }
+
+    /// The playbar's fullscreen button: the last of the extras, which the
+    /// columns and the run tables both end with.
+    fn fullscreen_button_at(window: &Window) -> Rect {
+        let content = Rect::from_min_size(egui::Pos2::ZERO, window.size);
+        let regions = layout::regions_with(content.width(), window.pane);
+        let shell = layout::shell_for(&regions);
+        let bar = layout::grid_for(content, &shell)
+            .playbar
+            .shrink(stroke::HAIRLINE);
+        let [_, _, extras] = layout::playbar_for(bar, regions.playbar).columns(bar);
+        Rect::from_min_size(
+            egui::pos2(
+                extras.right() - extent::BUTTON,
+                extras.center().y - extent::BUTTON / 2.0,
+            ),
+            Vec2::splat(extent::BUTTON),
+        )
+    }
+
+    /// The viewport commands a frame sent the window.
+    fn viewport_commands(output: &egui::FullOutput) -> Vec<egui::ViewportCommand> {
+        output
+            .viewport_output
+            .get(&egui::ViewportId::ROOT)
+            .map(|viewport| viewport.commands.clone())
+            .unwrap_or_default()
     }
 
     /// The rect the queue button's claim filled, if it drew one. The whole
@@ -3849,7 +4366,7 @@ mod tests {
     fn claimed_fill(output: &egui::FullOutput, window: &Window) -> Option<Rect> {
         let tokens = Tokens::DARK;
         let content = Rect::from_min_size(egui::Pos2::ZERO, window.size);
-        let regions = layout::regions_for(content.width());
+        let regions = layout::regions_with(content.width(), window.pane);
         let shell = layout::shell_for(&regions);
         let bar = layout::grid_for(content, &shell).playbar;
         output
@@ -4090,7 +4607,7 @@ mod tests {
         let mut queue = queue_of(4, &mut transport);
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let at = row_line(&frame, pane_rect(&window), "t2");
+        let at = row_line(&frame, pane_rect_when_shown(&window), "t2");
 
         assert_eq!(window.click(&mut transport, &mut queue, at), None);
         assert!(queue.selected(2), "the click picks the row");
@@ -4107,7 +4624,7 @@ mod tests {
         let mut queue = queue_of(4, &mut transport);
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let at = row_line(&frame, pane_rect(&window), "t2");
+        let at = row_line(&frame, pane_rect_when_shown(&window), "t2");
         assert!(
             ringed_row(&frame).is_none(),
             "nothing holds the keyboard yet"
@@ -4125,7 +4642,7 @@ mod tests {
         let mut queue = queue_of(4, &mut transport);
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let at = row_line(&frame, pane_rect(&window), "t2");
+        let at = row_line(&frame, pane_rect_when_shown(&window), "t2");
         let _ = window.click(&mut transport, &mut queue, at);
 
         assert_eq!(
@@ -4152,7 +4669,7 @@ mod tests {
         let mut queue = queue_of(7, &mut transport);
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let pane = pane_rect(&window);
+        let pane = pane_rect_when_shown(&window);
         let at = |title: &str| row_line(&frame, pane, title);
 
         let _ = window.click(&mut transport, &mut queue, at("t2"));
@@ -4176,7 +4693,7 @@ mod tests {
         let mut queue = queue_of(5, &mut transport);
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let from = row_line(&frame, pane_rect(&window), "t2");
+        let from = row_line(&frame, pane_rect_when_shown(&window), "t2");
         let to = below(from, 1.75);
 
         assert_eq!(
@@ -4199,7 +4716,7 @@ mod tests {
         let mut queue = queue_of(6, &mut transport);
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let pane = pane_rect(&window);
+        let pane = pane_rect_when_shown(&window);
         let _ = window.click(&mut transport, &mut queue, row_line(&frame, pane, "t2"));
         window.held = egui::Modifiers::COMMAND;
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
@@ -4226,7 +4743,7 @@ mod tests {
         let mut queue = queue_of(4, &mut transport);
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let pane = pane_rect(&window);
+        let pane = pane_rect_when_shown(&window);
         let from = row_line(&frame, pane, "t3");
         // The caption band above the first row is part of the target, and means
         // the first boundary the queue will take a drop at.
@@ -4253,7 +4770,7 @@ mod tests {
         let mut queue = queue_of(4, &mut transport);
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let from = row_line(&frame, pane_rect(&window), "t2");
+        let from = row_line(&frame, pane_rect_when_shown(&window), "t2");
         let before = entries(&queue);
 
         assert_eq!(
@@ -4276,7 +4793,7 @@ mod tests {
         playlist_page(&mut window, &["p0", "p1"]);
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
         let from = row_line(&frame, view_rect(&window), "p1");
-        let to = pane_rect(&window).center();
+        let to = pane_rect_when_shown(&window).center();
 
         assert_eq!(window.drag(&mut transport, &mut queue, from, to), None);
         assert_eq!(entries(&queue), ["list:p1"]);
@@ -4309,7 +4826,7 @@ mod tests {
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
         playlist_page(&mut window, &["p0", "p1", "p2"]);
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let pane = pane_rect(&window);
+        let pane = pane_rect_when_shown(&window);
         let from = row_line(&frame, view_rect(&window), "p1");
         let to = below(row_line(&frame, pane, "t3"), -0.25);
 
@@ -4425,6 +4942,47 @@ mod tests {
         land(&mut queue, &carry, Target::End);
 
         assert_eq!(entries(&queue), ["t0", "t1", "t2", "t3", "t8", "t9"]);
+    }
+
+    #[test]
+    fn the_pick_a_carry_held_before_the_toggle_is_refused_after_it() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = Queue::seeded(9);
+        let tracks: Vec<TrackEntry> = (0..5).map(|index| track(index, None)).collect();
+        queue.start(&tracks, 0, &mut transport);
+        queue.press(1, Press::Replace);
+        for row in 2..5 {
+            queue.press(row, Press::Toggle);
+        }
+        let rows = queue.lift(1).expect("the coming rows are editable");
+        let carry = Carry {
+            source: Source::Queue,
+            rows: rows.clone(),
+            entries: queue.entries_at(&rows),
+            ..carried_rows(egui::Id::unique("queue"), rows)
+        };
+        queue.toggle_shuffle();
+        assert_ne!(
+            queue.entries_at(&carry.rows),
+            carry.entries,
+            "the premise: the shuffle moved the carried rows"
+        );
+        let before = entries(&queue);
+
+        land(
+            &mut queue,
+            &carry,
+            Target::At(Landing {
+                boundary: 2,
+                marker: Rect::ZERO,
+            }),
+        );
+
+        assert_eq!(
+            entries(&queue),
+            before,
+            "a pick held across a toggle must not move other tracks"
+        );
     }
 
     #[test]
@@ -4721,7 +5279,7 @@ mod tests {
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
         read_only_playlist_page(&mut window, &["p0", "p1", "p2"]);
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let pane = pane_rect(&window);
+        let pane = pane_rect_when_shown(&window);
         let view = view_rect(&window);
         let from = row_line(&frame, view, "p1");
         let to = below(row_line(&frame, pane, "t3"), -0.25);
@@ -5101,7 +5659,7 @@ mod tests {
         );
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
         let from = row_line(&frame, sidebar_rect(&window), "A");
-        let to = pane_rect(&window).center();
+        let to = pane_rect_when_shown(&window).center();
         let before = entries(&queue);
 
         assert_eq!(window.drag(&mut transport, &mut queue, from, to), None);
@@ -5176,7 +5734,7 @@ mod tests {
 
         // A queue insert names no revision, so the gate leaves it alone.
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let pane = pane_rect(&window);
+        let pane = pane_rect_when_shown(&window);
         let from = row_line(&frame, view_rect(&window), "p1");
         let to = below(row_line(&frame, pane, "t3"), -0.25);
         assert_eq!(window.drag(&mut transport, &mut queue, from, to), None);
@@ -5256,11 +5814,11 @@ mod tests {
 
         assert_eq!(
             window.drag(&mut transport, &mut queue, from, to),
-            Some(Command::AddTrack {
+            Some(Command::AddTracks {
                 playlist: "playlist:B".to_owned(),
                 revision: revision("root-1"),
                 from_index: 3,
-                track: TRACK_A.to_owned(),
+                tracks: vec![TRACK_A.to_owned()],
             }),
             "the length is the index an append names"
         );
@@ -5329,7 +5887,7 @@ mod tests {
         assert!(
             text_in(
                 &frame,
-                "Could not add that track. Try again.",
+                "Could not add those tracks. Try again.",
                 sidebar_rect(&window)
             )
             .is_some(),
@@ -5411,11 +5969,11 @@ mod tests {
         let (command, _) = window.frame(&mut transport, &mut queue, vec![window.release(to)]);
         assert_eq!(
             command,
-            Some(Command::AddTrack {
+            Some(Command::AddTracks {
                 playlist: "playlist:B".to_owned(),
                 revision: revision("root-1"),
                 from_index: 3,
-                track: TRACK_A.to_owned(),
+                tracks: vec![TRACK_A.to_owned()],
             }),
             "a row that can take the track takes it"
         );
@@ -5531,39 +6089,72 @@ mod tests {
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
         sidebar_playlists(&mut window, &[("A", Some(2))], Some(rootlist_access(true)));
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let from = row_line(&frame, pane_rect(&window), TRACK_B);
+        let from = row_line(&frame, pane_rect_when_shown(&window), TRACK_B);
         let to = sidebar_row_rect(&window, &frame, "A", "Playlist · 2 tracks").center();
 
         assert_eq!(
             window.drag(&mut transport, &mut queue, from, to),
-            Some(Command::AddTrack {
+            Some(Command::AddTracks {
                 playlist: "playlist:A".to_owned(),
                 revision: revision("root-1"),
                 from_index: 2,
-                track: TRACK_B.to_owned(),
+                tracks: vec![TRACK_B.to_owned()],
             })
         );
     }
 
     #[test]
-    fn a_block_of_two_rows_is_never_added() {
+    fn a_block_of_three_rows_is_one_add_in_row_order() {
         let mut transport = playing(cover("abc"));
-        let mut queue = queue_of_tracks(&[TRACK_A, TRACK_B, TRACK_A, TRACK_B], &mut transport);
+        let mut queue = queue_of_tracks(
+            &[TRACK_A, TRACK_B, "spotify:track:c", TRACK_A, TRACK_B],
+            &mut transport,
+        );
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
         sidebar_playlists(&mut window, &[("A", Some(2))], Some(rootlist_access(true)));
-        // Rows 1 and 2 are one picked block: the first entry is playing, so it
-        // is never lifted.
+        // Rows 1, 2 and 3 are one picked block: the first entry is playing, so
+        // it is never lifted.
         queue.press(1, Press::Replace);
         queue.press(2, Press::Toggle);
+        queue.press(3, Press::Toggle);
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let pane = pane_rect(&window);
+        let pane = pane_rect_when_shown(&window);
         let from = row_line(&frame, pane, TRACK_B);
         let to = sidebar_row_rect(&window, &frame, "A", "Playlist · 2 tracks").center();
 
         assert_eq!(
             window.drag(&mut transport, &mut queue, from, to),
+            Some(Command::AddTracks {
+                playlist: "playlist:A".to_owned(),
+                revision: revision("root-1"),
+                from_index: 2,
+                tracks: vec![
+                    TRACK_B.to_owned(),
+                    "spotify:track:c".to_owned(),
+                    TRACK_A.to_owned(),
+                ],
+            }),
+            "one command, and the pick in the order the rows were taken"
+        );
+    }
+
+    #[test]
+    fn a_pick_with_one_episode_marks_no_target_and_sends_nothing() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of_tracks(&[TRACK_A, "spotify:episode:1", TRACK_B], &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_playlists(&mut window, &[("A", Some(2))], Some(rootlist_access(true)));
+        queue.press(1, Press::Replace);
+        queue.press(2, Press::Toggle);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let pane = pane_rect_when_shown(&window);
+        let from = row_line(&frame, pane, "spotify:episode:1");
+        let to = sidebar_row_rect(&window, &frame, "A", "Playlist · 2 tracks").center();
+
+        assert_eq!(
+            window.drag(&mut transport, &mut queue, from, to),
             None,
-            "two rows are one block, and a block is never added"
+            "a mixed pick is refused whole, so nothing is offered"
         );
     }
 
@@ -5588,11 +6179,11 @@ mod tests {
 
         assert_eq!(
             command,
-            Some(Command::AddTrack {
+            Some(Command::AddTracks {
                 playlist: "playlist:A".to_owned(),
                 revision: revision("root-1"),
                 from_index: 2,
-                track: TRACK_A.to_owned(),
+                tracks: vec![TRACK_A.to_owned()],
             }),
             "the gap belongs to the row above, so it is an add and no reorder"
         );
@@ -5751,7 +6342,7 @@ mod tests {
         let mut queue = queue_of(4, &mut transport);
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let at = row_line(&frame, pane_rect(&window), "t2");
+        let at = row_line(&frame, pane_rect_when_shown(&window), "t2");
         let before = entries(&queue);
         // The second press of a double click, three points off the first.
         let _ = window.click(&mut transport, &mut queue, at);
@@ -5777,7 +6368,7 @@ mod tests {
         let mut queue = queue_of(5, &mut transport);
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let pane = pane_rect(&window);
+        let pane = pane_rect_when_shown(&window);
         let from = row_line(&frame, pane, "t2");
         let to = below(from, 1.75);
         let _ = window.hold_drag(&mut transport, &mut queue, from, to);
@@ -5802,7 +6393,7 @@ mod tests {
         let mut queue = queue_of(4, &mut transport);
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let from = row_line(&frame, pane_rect(&window), "t2");
+        let from = row_line(&frame, pane_rect_when_shown(&window), "t2");
         let _ = window.hold_drag(&mut transport, &mut queue, from, below(from, 1.75));
         assert!(carry::carried(&window.ctx).is_some());
 
@@ -5829,7 +6420,7 @@ mod tests {
         let mut queue = queue_of(5, &mut transport);
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let pane = pane_rect(&window);
+        let pane = pane_rect_when_shown(&window);
         let from = row_line(&frame, pane, "t2");
         let to = below(from, 1.75);
         let _ = window.hold_drag(&mut transport, &mut queue, from, to);
@@ -5852,7 +6443,7 @@ mod tests {
         let mut transport = playing(cover("abc"));
         let mut queue = queue_of(5, &mut transport);
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
-        let pane = pane_rect(&window);
+        let pane = pane_rect_when_shown(&window);
         clicked_row(&mut window, &mut queue, &mut transport, pane, "t2");
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
         let from = row_line(&frame, pane, "t3");
@@ -5877,7 +6468,7 @@ mod tests {
         let mut queue = queue_of(5, &mut transport);
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let pane = pane_rect(&window);
+        let pane = pane_rect_when_shown(&window);
         let from = row_line(&frame, pane, "t2");
         let to = below(from, 0.75);
         let size = Vec2::new(pane.width() - 2.0 * space::S3, QUEUE_ROW_H);
@@ -5935,7 +6526,7 @@ mod tests {
         let mut queue = queue_of(5, &mut transport);
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let pane = pane_rect(&window);
+        let pane = pane_rect_when_shown(&window);
         let from = row_line(&frame, pane, "t2");
         let to = view_rect(&window).center();
         let size = Vec2::new(pane.width() - 2.0 * space::S3, QUEUE_ROW_H);
@@ -5961,7 +6552,7 @@ mod tests {
         let mut queue = queue_of(5, &mut transport);
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let pane = pane_rect(&window);
+        let pane = pane_rect_when_shown(&window);
         let from = row_line(&frame, pane, "t2");
         let hover = row_line(&frame, pane, "t4");
         let washes = |output: &egui::FullOutput| {
@@ -6187,7 +6778,7 @@ mod tests {
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
         playlist_page(&mut window, &["p0"]);
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let pane = pane_rect(&window);
+        let pane = pane_rect_when_shown(&window);
         let last = row_line(&frame, pane, "t1");
         let from = row_line(&frame, view_rect(&window), "p0");
         let to = Pos2::new(pane.center().x, pane.bottom() - 4.0);
@@ -6234,7 +6825,7 @@ mod tests {
         let mut queue = queue_of(4, &mut transport);
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let from = row_line(&frame, pane_rect(&window), "t2");
+        let from = row_line(&frame, pane_rect_when_shown(&window), "t2");
         let _ = window.hold_drag(
             &mut transport,
             &mut queue,
@@ -6353,25 +6944,400 @@ mod tests {
         assert_eq!(entries(&queue), before, "a cancelled add changes nothing");
     }
 
+    /// A queued window whose pane the user hid: the view takes the width the
+    /// panel had, and the panel draws nothing.
     #[test]
-    fn the_queue_button_still_takes_no_click() {
+    fn a_hidden_pane_widens_the_view_and_a_shown_one_narrows_it() {
         let mut transport = playing(cover("abc"));
         let mut queue = queue_of(4, &mut transport);
-        let mut window = Window::new(Vec2::new(900.0, 900.0));
-        let at = queue_button_at(&window).center();
-        let before = entries(&queue);
+        let mut window = Window::new(Vec2::new(1240.0, 900.0));
 
+        let (_, shown) = window.frame(&mut transport, &mut queue, Vec::new());
+        let pane = pane_rect_when_shown(&window);
+        let narrow = view_rect(&window);
+        assert!(
+            text_in(&shown, "t2", pane).is_some(),
+            "the pane is not drawing its queue"
+        );
+
+        window.pane = layout::PanePref::Hidden;
+        let (_, hidden) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            text_in(&hidden, "t2", pane).is_none(),
+            "a hidden pane still drew a queue row"
+        );
+        let wide = view_rect(&window);
+        assert!(
+            wide.width() > narrow.width() + pane.width(),
+            "the view took {} of the pane's {}",
+            wide.width() - narrow.width(),
+            pane.width()
+        );
+    }
+
+    #[test]
+    fn at_900_and_at_1100_a_click_on_the_queue_button_changes_nothing() {
+        for width in [900.0, 1100.0] {
+            let mut transport = playing(cover("abc"));
+            let mut queue = queue_of(4, &mut transport);
+            let mut window = Window::new(Vec2::new(width, 900.0));
+            let at = queue_button_at(&window).center();
+            let before = entries(&queue);
+            assert_eq!(
+                layout::pane_button(width, window.pane),
+                layout::PaneButton::Unavailable,
+                "{width}"
+            );
+
+            assert_eq!(window.click(&mut transport, &mut queue, at), None);
+            assert_eq!(
+                entries(&queue),
+                before,
+                "{width}: a click on the queue button does nothing"
+            );
+            assert_eq!(
+                transport.now_playing.as_ref().map(|now| now.uri.as_str()),
+                Some("t0"),
+                "{width}: a click must not move the transport"
+            );
+            assert_eq!(
+                window.pane,
+                layout::PanePref::Auto,
+                "{width}: a click where the pane cannot exist changed the choice"
+            );
+        }
+    }
+
+    #[test]
+    fn at_1400_a_click_on_the_queue_button_hides_the_pane_and_a_second_shows_it() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            text_in(&frame, "t2", pane_rect_when_shown(&window)).is_some(),
+            "the pane is not drawn to begin with"
+        );
+
+        let at = queue_button_at(&window).center();
         assert_eq!(window.click(&mut transport, &mut queue, at), None);
         assert_eq!(
-            entries(&queue),
-            before,
-            "a click on the queue button does nothing"
+            window.pane,
+            layout::PanePref::Hidden,
+            "the click did not hide the pane"
+        );
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            painted_at(&frame, "t2").is_none(),
+            "a hidden pane still drew a queue row"
+        );
+
+        let at = queue_button_at(&window).center();
+        assert_eq!(window.click(&mut transport, &mut queue, at), None);
+        assert_eq!(
+            window.pane,
+            layout::PanePref::Auto,
+            "the second click did not show the pane"
+        );
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            text_in(&frame, "t2", pane_rect_when_shown(&window)).is_some(),
+            "a shown pane drew no queue row"
+        );
+    }
+
+    #[test]
+    fn the_choice_survives_navigation() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_playlists(&mut window, &[("Mix", None)], None);
+
+        let at = queue_button_at(&window).center();
+        assert_eq!(window.click(&mut transport, &mut queue, at), None);
+        assert_eq!(window.pane, layout::PanePref::Hidden);
+
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let row = sidebar_row_rect(&window, &frame, "Mix", "Playlist").center();
+        let some = window.library.page().cloned();
+        assert_eq!(some, None, "the library starts on the root");
+        assert_eq!(
+            window.click(&mut transport, &mut queue, row),
+            Some(Command::LoadTracks {
+                playlist: "playlist:Mix".to_owned()
+            })
         );
         assert_eq!(
-            transport.now_playing.as_ref().map(|now| now.uri.as_str()),
-            Some("t0"),
-            "a click must not move the transport"
+            window.library.page(),
+            Some(&Page::Playlist("playlist:Mix".to_owned())),
+            "the sidebar row did not navigate"
         );
+        assert_eq!(
+            window.pane,
+            layout::PanePref::Hidden,
+            "navigation reset the choice about the pane"
+        );
+
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            painted_at(&frame, "t2").is_none(),
+            "the pane came back on the way to another page"
+        );
+    }
+
+    #[test]
+    fn above_1120_with_the_pane_hidden_the_queue_button_takes_a_list_drop() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        window.pane = layout::PanePref::Hidden;
+        playlist_page(&mut window, &["p0", "p1"]);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let from = row_line(&frame, view_rect(&window), "p1");
+        let to = queue_button_at(&window).center();
+
+        assert_eq!(window.drag(&mut transport, &mut queue, from, to), None);
+        assert_eq!(entries(&queue), ["t0", "t1", "t2", "t3", "list:p1"]);
+    }
+
+    #[test]
+    fn a_drop_that_ends_on_the_button_does_not_toggle_the_pane() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        window.pane = layout::PanePref::Hidden;
+        playlist_page(&mut window, &["p0", "p1"]);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let from = row_line(&frame, view_rect(&window), "p1");
+        let to = queue_button_at(&window).center();
+
+        let (_, frame) = window.hold_drag(&mut transport, &mut queue, from, to);
+        assert!(
+            claimed_fill(&frame, &window).is_some(),
+            "a hidden pane's button is not the drop target"
+        );
+        let (_, _) = window.frame(&mut transport, &mut queue, vec![window.release(to)]);
+
+        assert_eq!(entries(&queue), ["t0", "t1", "t2", "t3", "list:p1"]);
+        assert_eq!(
+            window.pane,
+            layout::PanePref::Hidden,
+            "the release that ended the drop toggled the pane"
+        );
+    }
+
+    #[test]
+    fn a_pane_toggle_asks_for_the_frame_that_shows_it() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let at = queue_button_at(&window).center();
+
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        for event in crate::view::test_support::click_events(at) {
+            let _ = window.frame(&mut transport, &mut queue, vec![event]);
+        }
+        assert_eq!(window.pane, layout::PanePref::Hidden);
+        // The causes are read a pass behind, so the pass after the click carries
+        // the ones the click's own pass recorded.
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        let causes = window.ctx.repaint_causes();
+        let toggle = pane_toggle_repaint_line();
+        assert!(
+            causes.iter().any(|cause| {
+                cause.file.ends_with("view/shell.rs") && Some(cause.line as usize) == toggle
+            }),
+            "the toggle did not ask for the frame that shows it: {causes:?}"
+        );
+    }
+
+    /// The line of the `request_repaint` the pane-toggle branch calls, found in
+    /// the source so an edit that moves the branch keeps the test honest.
+    fn pane_toggle_repaint_line() -> Option<usize> {
+        let lines: Vec<&str> = include_str!("shell.rs").lines().collect();
+        let start = lines
+            .iter()
+            .position(|line| line.contains("if playbar_reply.pane"))
+            .expect("the pane-toggle branch is in this file");
+        lines[start + 1..]
+            .iter()
+            .take_while(|line| !line.trim_start().starts_with('}'))
+            .position(|line| line.contains("request_repaint"))
+            .map(|offset| start + offset + 2)
+    }
+
+    #[test]
+    fn a_resize_to_a_wider_window_shows_the_pane_under_auto_and_still_hides_it_under_hidden() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+
+        let mut window = Window::new(Vec2::new(1100.0, 900.0));
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            painted_at(&frame, "t2").is_none(),
+            "the pane is on screen below its own threshold"
+        );
+        window.size = Vec2::new(1400.0, 900.0);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            text_in(&frame, "t2", pane_rect_when_shown(&window)).is_some(),
+            "a wider window under auto kept the pane hidden"
+        );
+
+        window.pane = layout::PanePref::Hidden;
+        window.size = Vec2::new(1100.0, 900.0);
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        assert_eq!(window.pane, layout::PanePref::Hidden);
+        window.size = Vec2::new(1400.0, 900.0);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            painted_at(&frame, "t2").is_none(),
+            "a wider window under a hidden choice showed the pane"
+        );
+    }
+
+    /// Every click's passes, flattened, for the assertions below.
+    fn fullscreen_clicks(
+        window: &mut Window,
+        transport: &mut Transport,
+        queue: &mut Queue,
+    ) -> Vec<egui::ViewportCommand> {
+        let at = fullscreen_button_at(window).center();
+        window.click_viewport(transport, queue, at)
+    }
+
+    #[test]
+    fn fullscreen_click_sends_fullscreen_true_when_the_window_reports_false() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        window.fullscreen = Some(false);
+
+        let commands = fullscreen_clicks(&mut window, &mut transport, &mut queue);
+
+        assert!(
+            commands.contains(&egui::ViewportCommand::Fullscreen(true)),
+            "the click asked for no fullscreen: {commands:?}"
+        );
+    }
+
+    #[test]
+    fn fullscreen_click_sends_fullscreen_false_when_the_window_reports_true() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        window.fullscreen = Some(true);
+
+        let commands = fullscreen_clicks(&mut window, &mut transport, &mut queue);
+
+        assert!(
+            commands.contains(&egui::ViewportCommand::Fullscreen(false)),
+            "the click asked for no exit: {commands:?}"
+        );
+    }
+
+    #[test]
+    fn fullscreen_click_sends_nothing_when_the_state_is_unknown() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        window.fullscreen = None;
+
+        let commands = fullscreen_clicks(&mut window, &mut transport, &mut queue);
+
+        assert!(
+            !commands
+                .iter()
+                .any(|command| matches!(command, egui::ViewportCommand::Fullscreen(_))),
+            "a window that cannot say whether it is fullscreen was asked anyway: {commands:?}"
+        );
+    }
+
+    #[test]
+    fn a_window_manager_flip_is_read_not_remembered() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        window.fullscreen = Some(false);
+        let at = fullscreen_button_at(&window);
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            !glyph_colours_in(&window.frame(&mut transport, &mut queue, Vec::new()).1, at)
+                .contains(&Tokens::DARK.palette.accent),
+            "a windowed window lit the fullscreen button"
+        );
+
+        // The compositor's own key, with no click from the app.
+        window.fullscreen = Some(true);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            glyph_colours_in(&frame, at).contains(&Tokens::DARK.palette.accent),
+            "a fullscreen window left the button unlit"
+        );
+        assert_eq!(
+            viewport_commands(&frame)
+                .iter()
+                .filter(|command| matches!(command, egui::ViewportCommand::Fullscreen(_)))
+                .count(),
+            0,
+            "a window-manager change was answered with a request of our own"
+        );
+
+        window.fullscreen = Some(false);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            !glyph_colours_in(&frame, at).contains(&Tokens::DARK.palette.accent),
+            "the button stayed lit after the window left fullscreen"
+        );
+    }
+
+    #[test]
+    fn a_refused_request_leaves_the_button_unlit_and_the_next_click_asks_again() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        window.fullscreen = Some(false);
+        let at = fullscreen_button_at(&window);
+
+        let first = fullscreen_clicks(&mut window, &mut transport, &mut queue);
+        assert!(
+            first.contains(&egui::ViewportCommand::Fullscreen(true)),
+            "the first click asked for nothing: {first:?}"
+        );
+
+        // The compositor refused, so the window still reports itself windowed.
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            !glyph_colours_in(&frame, at).contains(&Tokens::DARK.palette.accent),
+            "a refused request lit the button anyway"
+        );
+
+        let second = fullscreen_clicks(&mut window, &mut transport, &mut queue);
+        assert!(
+            second.contains(&egui::ViewportCommand::Fullscreen(true)),
+            "the second click did not ask again: {second:?}"
+        );
+    }
+
+    #[test]
+    fn the_availability_flip_does_not_change_the_narrow_look() {
+        for width in [900.0, 1100.0] {
+            let mut transport = playing(cover("abc"));
+            let mut queue = queue_of(4, &mut transport);
+            let mut window = Window::new(Vec2::new(width, 900.0));
+            let at = queue_button_at(&window);
+            let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+
+            let colours = glyph_colours_in(&frame, at);
+            assert!(!colours.is_empty(), "{width}: the button drew no glyph");
+            for colour in colours {
+                assert_eq!(
+                    colour,
+                    Tokens::DARK.palette.text_disabled,
+                    "{width}: a button with no pane to toggle is not drawn disabled"
+                );
+            }
+        }
     }
 
     #[test]
@@ -6416,7 +7382,7 @@ mod tests {
         let mut queue = queue_of(24, &mut transport);
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let pane = pane_rect(&window);
+        let pane = pane_rect_when_shown(&window);
         let from = row_line(&frame, pane, "t2");
         let to = below(row_line(&frame, pane, "t5"), -0.25);
 
@@ -6454,7 +7420,7 @@ mod tests {
             let mut queue = queue_of(24, &mut transport);
             let mut window = Window::new(Vec2::new(1400.0, 900.0));
             let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-            let pane = pane_rect(&window);
+            let pane = pane_rect_when_shown(&window);
             let from = row_line(&frame, pane, "t2");
             let to = egui::pos2(pane.center().x, pane.bottom() - 4.0);
             let _ = window.hold_drag(&mut transport, &mut queue, from, to);
@@ -6497,7 +7463,7 @@ mod tests {
         let mut transport = playing(cover("abc"));
         let mut queue = queue_of(6, &mut transport);
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
-        let pane = pane_rect(&window);
+        let pane = pane_rect_when_shown(&window);
         clicked_row(&mut window, &mut queue, &mut transport, pane, "t2");
         window.held = egui::Modifiers::COMMAND;
         clicked_row(&mut window, &mut queue, &mut transport, pane, "t3");
@@ -6536,7 +7502,7 @@ mod tests {
         let mut queue = Queue::default();
         queue.start(&tracks, 0, &mut transport);
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
-        let pane = pane_rect(&window);
+        let pane = pane_rect_when_shown(&window);
 
         clicked_row(&mut window, &mut queue, &mut transport, pane, "t2");
         // A click always picks its row, so the pick is cleared here to leave only
@@ -6585,7 +7551,7 @@ mod tests {
         let mut transport = playing(cover("abc"));
         let mut queue = queue_of(5, &mut transport);
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
-        let pane = pane_rect(&window);
+        let pane = pane_rect_when_shown(&window);
         clicked_row(&mut window, &mut queue, &mut transport, pane, "t2");
         let before = entries(&queue);
 
@@ -6612,7 +7578,7 @@ mod tests {
         let mut transport = playing(cover("abc"));
         let mut queue = queue_of(5, &mut transport);
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
-        let pane = pane_rect(&window);
+        let pane = pane_rect_when_shown(&window);
         clicked_row(&mut window, &mut queue, &mut transport, pane, "t2");
 
         let _ = chord(
@@ -6644,7 +7610,7 @@ mod tests {
         let mut transport = playing(cover("abc"));
         let mut queue = queue_of(5, &mut transport);
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
-        let pane = pane_rect(&window);
+        let pane = pane_rect_when_shown(&window);
         clicked_row(&mut window, &mut queue, &mut transport, pane, "t2");
 
         // A held key: the press and its auto-repeat arrive on separate frames.
@@ -6698,7 +7664,7 @@ mod tests {
         transport.duration_ms = Some(100_000);
         transport.position_ms = 10_000;
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
-        let pane = pane_rect(&window);
+        let pane = pane_rect_when_shown(&window);
         clicked_row(&mut window, &mut queue, &mut transport, pane, "t2");
 
         // Tab reaches the seek slider, and only the slider turns Home into a seek.
@@ -6786,6 +7752,4082 @@ mod tests {
         assert!(
             !carry::List::open(&window.ctx, id, 3).look(1).selected,
             "a page change forgets every list's pick"
+        );
+    }
+
+    /// A track a menu's verbs can all act on: a real track URI, an album and an
+    /// artist.
+    fn menu_track(index: usize) -> TrackEntry {
+        TrackEntry {
+            uri: format!("spotify:track:{index}"),
+            title: format!("t{index}"),
+            artists: "A Band".to_owned(),
+            album: Some("A Record".to_owned()),
+            album_uri: Some(ALBUM.to_owned()),
+            artist_uris: vec!["spotify:artist:b".to_owned()],
+            added_at: None,
+            duration_ms: None,
+            named: true,
+            cover: None,
+        }
+    }
+
+    /// Opens the context menu on these rows, as a row's door would.
+    fn open_menu(
+        window: &mut Window,
+        verb: Verb,
+        targets: Vec<TrackEntry>,
+        listing: Listing,
+        rows: Vec<usize>,
+    ) {
+        let uris: Vec<&str> = targets.iter().map(|entry| entry.uri.as_str()).collect();
+        let standing = window.library.likes.standing(&uris);
+        let items: Vec<_> = crate::verbs::track_items(&targets, None, &listing, standing)
+            .into_iter()
+            .filter(|item| item.verb == verb)
+            .collect();
+        assert!(!items.is_empty(), "the verb is offered for these rows");
+        let request = crate::menu::Request {
+            door: crate::menu::Door {
+                anchor: crate::menu::Anchor::Button(Rect::from_min_size(
+                    egui::Pos2::new(600.0, 300.0),
+                    Vec2::new(28.0, 28.0),
+                )),
+                opener: egui::Id::unique("row-more"),
+                device: crate::menu::Device::Keyboard,
+            },
+            playlists: Vec::new(),
+            items,
+            targets,
+            rows,
+            listing,
+            // The page it is opened on, as a door posts it, so a page change
+            // still closes it.
+            page: window.library.page().cloned(),
+        };
+        assert!(
+            window.menu.open(request, Gate::default()),
+            "the menu opened"
+        );
+    }
+
+    /// The page's listing, under the id its rows are picked by.
+    fn playlist_listing() -> Listing {
+        Listing::Playlist {
+            uri: PLAYLIST.to_owned(),
+            list: egui::Id::unique(("playlist-tracks", PLAYLIST)),
+        }
+    }
+
+    /// The page's own entries at `rows`, which is what a request acts on.
+    fn page_entries(window: &Window, rows: &[usize]) -> Vec<TrackEntry> {
+        match &window.library.tracks {
+            Load::Ready(tracks) => rows
+                .iter()
+                .filter_map(|row| tracks.tracks.get(*row).cloned())
+                .collect(),
+            Load::Idle | Load::Loading | Load::Failed(_) => Vec::new(),
+        }
+    }
+
+    /// Clicks the playlist page's row titled `title`, which picks and focuses
+    /// it.
+    fn click_page_row(
+        window: &mut Window,
+        transport: &mut Transport,
+        queue: &mut Queue,
+        title: &str,
+    ) -> Option<Command> {
+        let (_, frame) = window.frame(transport, queue, Vec::new());
+        let at = row_line(&frame, view_rect(window), title);
+        window.click(transport, queue, at)
+    }
+
+    /// Right-clicks the playlist page's row titled `title`, the way a mouse
+    /// does: move, press, release.
+    fn right_click_page_row(
+        window: &mut Window,
+        transport: &mut Transport,
+        queue: &mut Queue,
+        title: &str,
+    ) {
+        let (_, frame) = window.frame(transport, queue, Vec::new());
+        let at = row_line(&frame, view_rect(window), title);
+        for event in [
+            egui::Event::PointerMoved(at),
+            side(at, egui::PointerButton::Secondary, true),
+            side(at, egui::PointerButton::Secondary, false),
+        ] {
+            let _ = window.frame(transport, queue, vec![event]);
+        }
+    }
+
+    /// The Now Playing head's more button, solved the way the panel solves it.
+    fn now_playing_more(window: &Window) -> egui::Pos2 {
+        let pane = pane_rect_when_shown(window);
+        let head = Rect::from_min_size(
+            pane.min + Vec2::splat(space::S3),
+            Vec2::new(pane.width() - 2.0 * space::S3, extent::BUTTON),
+        );
+        egui::Pos2::new(head.right() - extent::BUTTON / 2.0, head.center().y)
+    }
+
+    /// A cut the page would post for `rows`, built from the page's own entries.
+    fn page_cut(window: &Window, rows: &[usize]) -> Cut {
+        Cut {
+            listing: playlist_listing(),
+            rows: rows.to_vec(),
+            entries: page_entries(window, rows),
+        }
+    }
+
+    /// A request to open the menu on the page's rows, as a door posts it.
+    fn page_request(window: &Window, rows: &[usize]) -> crate::menu::Request {
+        let targets = page_entries(window, rows);
+        crate::menu::Request {
+            door: crate::menu::Door {
+                anchor: crate::menu::Anchor::Button(Rect::from_min_size(
+                    egui::Pos2::new(600.0, 300.0),
+                    Vec2::new(28.0, 28.0),
+                )),
+                opener: egui::Id::unique("row-more"),
+                device: crate::menu::Device::Keyboard,
+            },
+            items: crate::verbs::track_items(
+                &targets,
+                None,
+                &playlist_listing(),
+                crate::likes::Standing::Unknown,
+            ),
+            playlists: Vec::new(),
+            targets,
+            rows: rows.to_vec(),
+            listing: playlist_listing(),
+            page: window.library.page().cloned(),
+        }
+    }
+
+    /// The two frames an `Area` takes to arrive, so the menu's opening frame is
+    /// behind us.
+    fn settle_menu(window: &mut Window, transport: &mut Transport, queue: &mut Queue) {
+        for _ in 0..2 {
+            let _ = window.frame(transport, queue, Vec::new());
+        }
+    }
+
+    /// The `⋯` of the row titled `title`, found as the rightmost glyph on that
+    /// row's line: the like sits left of it, and the band's own `⋯` is a row
+    /// higher.
+    fn more_button(output: &egui::FullOutput, view: Rect, title: &str) -> egui::Pos2 {
+        let line = row_line(output, view, title).y;
+        output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Path(_) => Some(clipped.shape.visual_bounding_rect()),
+                _ => None,
+            })
+            .filter(|rect| {
+                view.contains(rect.center()) && (rect.center().y - line).abs() < extent::ROW_H
+            })
+            .max_by(|left, right| left.center().x.total_cmp(&right.center().x))
+            .map(|rect| rect.center())
+            .expect("the row paints a `⋯`")
+    }
+
+    #[test]
+    fn clicking_the_open_more_closes_its_menu_and_keeps_the_keyboard() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1"]);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let more = more_button(&frame, view_rect(&window), "p0");
+
+        let _ = window.click(&mut transport, &mut queue, more);
+        settle_menu(&mut window, &mut transport, &mut queue);
+        assert!(window.menu.is_open(), "the `⋯` opened no menu");
+
+        // The same `⋯` again closes it instead of resetting it.
+        let _ = window.click(&mut transport, &mut queue, more);
+        assert!(
+            !window.menu.is_open(),
+            "the `⋯` reset its own menu instead of closing it"
+        );
+
+        // And the keyboard is back on the `⋯`, so Enter opens the menu again.
+        let _ = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![key(egui::Key::Enter, true)],
+        );
+        assert!(
+            window.menu.is_open(),
+            "the `⋯` did not take the keyboard back"
+        );
+    }
+
+    #[test]
+    fn a_held_enter_that_opened_the_menu_fires_nothing() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1"]);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let more = more_button(&frame, view_rect(&window), "p0");
+
+        // Open from the `⋯` and close, so the button holds the keyboard.
+        let _ = window.click(&mut transport, &mut queue, more);
+        settle_menu(&mut window, &mut transport, &mut queue);
+        let _ = press(&mut window, &mut transport, &mut queue, egui::Key::Escape);
+        assert!(!window.menu.is_open(), "Escape closed the menu");
+
+        // Enter opens it and is held: no release comes before the repeats.
+        let _ = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![key(egui::Key::Enter, true)],
+        );
+        assert!(window.menu.is_open(), "Enter opened no menu");
+        for _ in 0..3 {
+            let _ = window.frame(
+                &mut transport,
+                &mut queue,
+                vec![key_repeat(egui::Key::Enter)],
+            );
+        }
+
+        assert!(window.menu.is_open(), "a held Enter closed the menu");
+        assert_eq!(window.menu.lit(), Some(0), "a held Enter moved the lit row");
+        assert_eq!(
+            queue.upcoming().count(),
+            0,
+            "a held Enter fired Add to queue"
+        );
+    }
+
+    #[test]
+    fn a_held_enter_after_choosing_does_not_reopen_the_menu() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1"]);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let more = more_button(&frame, view_rect(&window), "p0");
+
+        let _ = window.click(&mut transport, &mut queue, more);
+        settle_menu(&mut window, &mut transport, &mut queue);
+        let _ = press(
+            &mut window,
+            &mut transport,
+            &mut queue,
+            egui::Key::ArrowDown,
+        );
+        assert_eq!(window.menu.lit(), Some(0));
+
+        // Enter chooses, closes and hands the keyboard back to the `⋯`.
+        let chosen = window
+            .frame(
+                &mut transport,
+                &mut queue,
+                vec![key(egui::Key::Enter, true)],
+            )
+            .0;
+        assert_eq!(chosen, None, "adding to the queue asks for no command");
+        assert!(!window.menu.is_open(), "the choice left the menu open");
+        assert_eq!(queue.upcoming().count(), 1, "the choice queued nothing");
+
+        // Held, the repeats land on the `⋯` that now holds the keyboard.
+        for _ in 0..3 {
+            let _ = window.frame(
+                &mut transport,
+                &mut queue,
+                vec![key_repeat(egui::Key::Enter)],
+            );
+        }
+        assert!(
+            !window.menu.is_open(),
+            "a held Enter reopened the menu it chose from"
+        );
+        assert_eq!(
+            queue.upcoming().count(),
+            1,
+            "a held Enter queued the row again"
+        );
+    }
+
+    #[test]
+    fn the_menu_survives_idle_frames() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1"]);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let at = row_line(&frame, view_rect(&window), "p1");
+        for event in crate::view::test_support::secondary_click_events(at) {
+            let _ = window.frame(&mut transport, &mut queue, vec![event]);
+        }
+        assert!(window.menu.is_open(), "the right-click opened no menu");
+        for index in 0..10 {
+            let _ = window.frame(&mut transport, &mut queue, Vec::new());
+            assert!(
+                window.menu.is_open(),
+                "the menu closed on idle frame {index}"
+            );
+        }
+        // The window losing the OS keyboard is not the menu's business until the
+        // user acts.
+        window.unfocused = true;
+        for index in 0..3 {
+            let _ = window.frame(&mut transport, &mut queue, Vec::new());
+            assert!(
+                window.menu.is_open(),
+                "the menu closed on unfocused frame {index}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_right_click_on_a_playlist_row_opens_the_menu_the_shell_draws() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1"]);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let at = row_line(&frame, view_rect(&window), "p1");
+
+        // The row posts a request; the shell opens the menu on it in the same
+        // frame. The area's first frame is its sizing pass, and its second is
+        // the opening frame, which ignores keys.
+        for event in crate::view::test_support::secondary_click_events(at) {
+            let _ = window.frame(&mut transport, &mut queue, vec![event]);
+        }
+        assert!(window.menu.is_open(), "the right-click opened no menu");
+        settle_menu(&mut window, &mut transport, &mut queue);
+
+        // The pointer opened it, so nothing is lit until the keyboard asks.
+        assert_eq!(window.menu.lit(), None);
+        let _ = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![key(egui::Key::ArrowDown, true)],
+        );
+        let _ = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![key(egui::Key::ArrowDown, false)],
+        );
+        assert_eq!(window.menu.lit(), Some(0));
+
+        assert_eq!(
+            press(&mut window, &mut transport, &mut queue, egui::Key::Enter),
+            None,
+            "adding to the queue asks for no command"
+        );
+        assert!(!window.menu.is_open());
+        let queued: Vec<&str> = queue
+            .upcoming()
+            .map(|(_, entry)| entry.uri.as_str())
+            .collect();
+        assert_eq!(queued, vec!["list:p1"], "the row the menu was opened on");
+    }
+
+    #[test]
+    fn a_chosen_add_to_queue_appends_and_closes() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        open_menu(
+            &mut window,
+            Verb::AddToQueue,
+            vec![menu_track(0)],
+            Listing::Page,
+            vec![0],
+        );
+        settle_menu(&mut window, &mut transport, &mut queue);
+
+        assert_eq!(
+            press(&mut window, &mut transport, &mut queue, egui::Key::Enter),
+            None,
+            "adding to the queue asks for no command"
+        );
+        assert!(
+            !window.menu.is_open(),
+            "the menu stayed open after the choice"
+        );
+        let queued: Vec<&str> = queue
+            .upcoming()
+            .map(|(_, entry)| entry.uri.as_str())
+            .collect();
+        assert_eq!(queued, vec!["spotify:track:0"]);
+    }
+
+    #[test]
+    fn a_chosen_copy_link_emits_the_joined_urls() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        open_menu(
+            &mut window,
+            Verb::CopyLink,
+            vec![menu_track(0), menu_track(1)],
+            Listing::Page,
+            vec![0, 1],
+        );
+        settle_menu(&mut window, &mut transport, &mut queue);
+
+        let (_, frame) = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![key(egui::Key::Enter, true)],
+        );
+        let copied = frame
+            .platform_output
+            .commands
+            .iter()
+            .find_map(|command| match command {
+                egui::OutputCommand::CopyText(text) => Some(text.as_str()),
+                _ => None,
+            });
+        assert_eq!(
+            copied,
+            Some("https://open.spotify.com/track/0\nhttps://open.spotify.com/track/1"),
+            "one URL per line"
+        );
+    }
+
+    #[test]
+    fn a_chosen_go_to_opens_the_page() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        open_menu(
+            &mut window,
+            Verb::GoToAlbum,
+            vec![menu_track(0)],
+            Listing::Page,
+            vec![0],
+        );
+        settle_menu(&mut window, &mut transport, &mut queue);
+
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Enter);
+        assert_eq!(
+            window.library.page(),
+            Some(&Page::Album(ALBUM.to_owned())),
+            "the page did not open"
+        );
+        assert!(command.is_some(), "the page's read was not asked for");
+        assert!(!window.menu.is_open());
+    }
+
+    /// Makes the window's liked set these tracks, as a landed read would.
+    fn liked(window: &mut Window, tracks: &[&str]) {
+        assert!(window.library.likes.request(true));
+        window.library.apply(&Update::LikedTracks(
+            tracks.iter().map(|uri| (*uri).to_owned()).collect(),
+        ));
+    }
+
+    #[test]
+    fn choosing_save_issues_one_command_for_the_pick_and_flips_every_effective_row() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        liked(&mut window, &[]);
+        open_menu(
+            &mut window,
+            Verb::Save,
+            vec![menu_track(0), menu_track(1)],
+            Listing::Page,
+            vec![0, 1],
+        );
+        settle_menu(&mut window, &mut transport, &mut queue);
+
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Enter);
+
+        assert_eq!(
+            command,
+            Some(Command::SetLiked {
+                tracks: vec!["spotify:track:0".to_owned(), "spotify:track:1".to_owned()],
+                liked: true,
+            })
+        );
+        assert_eq!(window.library.likes.state("spotify:track:0"), Some(true));
+        assert_eq!(window.library.likes.state("spotify:track:1"), Some(true));
+        assert!(!window.menu.is_open());
+    }
+
+    #[test]
+    fn choosing_remove_from_your_library_unlikes() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        liked(&mut window, &["spotify:track:0"]);
+        open_menu(
+            &mut window,
+            Verb::Unsave,
+            vec![menu_track(0)],
+            Listing::Page,
+            vec![0],
+        );
+        settle_menu(&mut window, &mut transport, &mut queue);
+
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Enter);
+
+        assert_eq!(
+            command,
+            Some(Command::SetLiked {
+                tracks: vec!["spotify:track:0".to_owned()],
+                liked: false,
+            })
+        );
+        assert_eq!(window.library.likes.state("spotify:track:0"), Some(false));
+    }
+
+    #[test]
+    fn a_save_chosen_while_a_like_is_pending_is_dropped() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        liked(&mut window, &[]);
+        assert!(
+            window
+                .library
+                .set_liked(vec!["spotify:track:9".to_owned()], true)
+                .is_some()
+        );
+        open_menu(
+            &mut window,
+            Verb::Save,
+            vec![menu_track(1)],
+            Listing::Page,
+            vec![0],
+        );
+        settle_menu(&mut window, &mut transport, &mut queue);
+
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Enter);
+
+        assert_eq!(command, None, "a dropped save sent a command");
+        assert_eq!(window.library.likes.state("spotify:track:1"), Some(false));
+    }
+
+    #[test]
+    fn a_pending_like_does_not_hold_a_menu_shut() {
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        liked(&mut window, &[]);
+        assert!(
+            window
+                .library
+                .set_liked(vec!["spotify:track:9".to_owned()], true)
+                .is_some()
+        );
+        assert!(
+            !window.library.write_in_flight(),
+            "a like is not a playlist write"
+        );
+        open_menu(
+            &mut window,
+            Verb::Save,
+            vec![menu_track(1)],
+            Listing::Page,
+            vec![0],
+        );
+        assert!(window.menu.is_open(), "a like held the menu shut");
+    }
+
+    #[test]
+    fn a_playlist_write_does_not_stop_a_like() {
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1"]);
+        liked(&mut window, &[]);
+        let carried = page_entries(&window, &[0]);
+        assert!(
+            window
+                .library
+                .remove_tracks(PLAYLIST, &[0], &carried)
+                .is_some()
+        );
+        assert!(
+            window
+                .library
+                .set_liked(vec!["spotify:track:0".to_owned()], true)
+                .is_some(),
+            "a playlist write stopped a like"
+        );
+    }
+
+    #[test]
+    fn a_menu_opened_before_the_set_is_ready_has_no_library_row() {
+        let window = Window::new(Vec2::new(1400.0, 900.0));
+        let targets = vec![menu_track(0)];
+        let uris: Vec<&str> = targets.iter().map(|entry| entry.uri.as_str()).collect();
+        let standing = window.library.likes.standing(&uris);
+        assert_eq!(standing, crate::likes::Standing::Unknown);
+        let items = crate::verbs::track_items(&targets, None, &Listing::Page, standing);
+        assert!(
+            items
+                .iter()
+                .all(|item| !matches!(item.verb, Verb::Save | Verb::Unsave)),
+            "a set nobody has read offered a library row"
+        );
+    }
+
+    #[test]
+    fn an_applied_ask_issues_set_liked_and_flips_the_row() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        liked(&mut window, &[]);
+        crate::view::heart::post(
+            &window.ctx,
+            crate::view::heart::Ask {
+                tracks: vec!["spotify:track:a".to_owned()],
+                liked: true,
+            },
+        );
+
+        let (command, _) = window.frame(&mut transport, &mut queue, Vec::new());
+
+        assert_eq!(
+            command,
+            Some(Command::SetLiked {
+                tracks: vec!["spotify:track:a".to_owned()],
+                liked: true,
+            })
+        );
+        assert_eq!(window.library.likes.state("spotify:track:a"), Some(true));
+        assert!(
+            crate::view::heart::take(&window.ctx).is_none(),
+            "the ask was not taken"
+        );
+    }
+
+    #[test]
+    fn an_ask_with_the_drawer_open_is_dropped() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        liked(&mut window, &[]);
+        window.drawer = Drawer::Open;
+        crate::view::heart::post(
+            &window.ctx,
+            crate::view::heart::Ask {
+                tracks: vec!["spotify:track:a".to_owned()],
+                liked: true,
+            },
+        );
+
+        let (command, _) = window.frame(&mut transport, &mut queue, Vec::new());
+
+        assert_eq!(command, None, "a dropped ask sent a command");
+        assert_eq!(window.library.likes.state("spotify:track:a"), Some(false));
+        assert!(
+            crate::view::heart::take(&window.ctx).is_none(),
+            "a dropped ask outlived its frame"
+        );
+    }
+
+    #[test]
+    fn a_page_change_closes_the_menu() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        open_menu(
+            &mut window,
+            Verb::AddToQueue,
+            vec![menu_track(0)],
+            Listing::Page,
+            vec![0],
+        );
+        settle_menu(&mut window, &mut transport, &mut queue);
+        assert!(window.menu.is_open());
+
+        let _ = window.library.open(Page::Playlist(PLAYLIST.to_owned()));
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            !window.menu.is_open(),
+            "the menu outlived the page its rows came from"
+        );
+    }
+    #[test]
+    fn a_chosen_remove_on_a_playlist_issues_the_command_and_forgets_the_pick() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1", "p2"]);
+        // A frame first, so the page's own list is the one the picks are kept
+        // against.
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        let listing = playlist_listing();
+        let Listing::Playlist { list, .. } = listing.clone() else {
+            panic!("the page is a playlist");
+        };
+        carry::select_rows(&window.ctx, list, 0..2);
+        let targets = page_entries(&window, &[0]);
+        open_menu(&mut window, Verb::Remove, targets, listing, vec![0]);
+        settle_menu(&mut window, &mut transport, &mut queue);
+
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Enter);
+
+        assert_eq!(
+            command,
+            Some(Command::RemoveTracks {
+                playlist: PLAYLIST.to_owned(),
+                revision: revision("rev-1"),
+                removals: vec![Removal { from: 0, length: 1 }],
+            })
+        );
+        assert_eq!(page_rows(&window), vec!["list:p1", "list:p2"]);
+        let list = carry::List::open(&window.ctx, list, 2);
+        assert!(
+            list.look(0).selected,
+            "the pick did not shift with the rows"
+        );
+        assert!(
+            !list.look(1).selected,
+            "the removed row's pick survived the removal"
+        );
+    }
+
+    #[test]
+    fn a_chosen_remove_on_the_queue_removes_the_rows_and_refocuses() {
+        let mut transport = Transport::default();
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let targets = queue.entries_at(&[1]);
+        open_menu(&mut window, Verb::Remove, targets, Listing::Queue, vec![1]);
+        settle_menu(&mut window, &mut transport, &mut queue);
+
+        // One press, so the row that takes the keyboard back still names it.
+        let (command, _) = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![key(egui::Key::Enter, true)],
+        );
+
+        assert_eq!(command, None, "the queue removes locally");
+        assert_eq!(entries(&queue), vec!["t0", "t2", "t3"]);
+        assert_eq!(queue.refocus(), Some(1));
+        assert!(!window.menu.is_open());
+        assert!(
+            window
+                .ctx
+                .memory(|memory| memory.has_focus(egui::Id::unique("row-more"))),
+            "the keyboard did not go back to the button"
+        );
+    }
+
+    #[test]
+    fn delete_in_the_open_menu_chooses_the_removal() {
+        let mut transport = Transport::default();
+        let mut queue = queue_of(3, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let targets = queue.entries_at(&[1]);
+        open_menu(&mut window, Verb::Remove, targets, Listing::Queue, vec![1]);
+        settle_menu(&mut window, &mut transport, &mut queue);
+
+        let _ = press(&mut window, &mut transport, &mut queue, egui::Key::Delete);
+
+        assert!(!window.menu.is_open(), "Del left the menu open");
+        assert_eq!(entries(&queue), vec!["t0", "t2"]);
+    }
+
+    #[test]
+    fn a_stale_queue_cut_removes_nothing_and_leaves_the_rows() {
+        let mut transport = Transport::default();
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let targets = queue.entries_at(&[1]);
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        // The cut was made while row 1 was upcoming, and the queue moved on.
+        let _ = queue.next(&mut transport);
+        context_menu::post_cut(
+            &window.ctx,
+            Cut {
+                listing: Listing::Queue,
+                rows: vec![1],
+                entries: targets,
+            },
+        );
+
+        let (command, _) = window.frame(&mut transport, &mut queue, Vec::new());
+
+        assert_eq!(command, None, "a refused queue cut reported a command");
+        assert_eq!(entries(&queue), vec!["t0", "t1", "t2", "t3"]);
+        assert_eq!(queue.current().map(|entry| entry.uri.as_str()), Some("t1"));
+        assert!(!window.menu.is_open());
+    }
+
+    #[test]
+    fn a_queue_removal_is_not_blocked_by_a_playlist_write() {
+        let mut transport = Transport::default();
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1"]);
+        let carried = page_entries(&window, &[0]);
+        assert!(
+            window
+                .library
+                .remove_tracks(PLAYLIST, &[0], &carried)
+                .is_some(),
+            "the page started no write"
+        );
+        assert!(window.library.write_in_flight());
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let at = row_line(&frame, pane_rect_when_shown(&window), "t2");
+        for event in [
+            egui::Event::PointerMoved(at),
+            side(at, egui::PointerButton::Secondary, true),
+            side(at, egui::PointerButton::Secondary, false),
+        ] {
+            let _ = window.frame(&mut transport, &mut queue, vec![event]);
+        }
+        settle_menu(&mut window, &mut transport, &mut queue);
+
+        assert!(
+            window.menu.is_open(),
+            "a playlist write refused the queue's menu"
+        );
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Delete);
+
+        assert_eq!(command, None);
+        assert_eq!(entries(&queue), vec!["t0", "t1", "t3"]);
+        assert!(
+            window.library.write_in_flight(),
+            "the queue's removal settled the playlist write"
+        );
+    }
+
+    #[test]
+    fn a_queue_delete_while_a_playlist_write_is_pending_still_removes() {
+        let mut transport = Transport::default();
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1"]);
+        let carried = page_entries(&window, &[0]);
+        assert!(
+            window
+                .library
+                .remove_tracks(PLAYLIST, &[0], &carried)
+                .is_some(),
+            "the page started no write"
+        );
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let at = row_line(&frame, pane_rect_when_shown(&window), "t2");
+        let _ = window.click(&mut transport, &mut queue, at);
+
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Delete);
+
+        assert_eq!(command, None, "the queue's Del reported a command");
+        assert_eq!(entries(&queue), vec!["t0", "t1", "t3"]);
+        assert!(
+            window.library.write_in_flight(),
+            "the queue's Del settled the playlist write"
+        );
+    }
+
+    #[test]
+    fn a_menu_without_a_removal_ignores_delete() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        open_menu(
+            &mut window,
+            Verb::AddToQueue,
+            vec![menu_track(0)],
+            Listing::Page,
+            vec![0],
+        );
+        settle_menu(&mut window, &mut transport, &mut queue);
+
+        let _ = press(&mut window, &mut transport, &mut queue, egui::Key::Delete);
+
+        assert!(
+            window.menu.is_open(),
+            "a menu with no removal closed on Del"
+        );
+        assert_eq!(queue.upcoming().count(), 0, "the Del fired a verb");
+    }
+
+    #[test]
+    fn a_refused_cut_leaves_the_rows_alone() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1"]);
+        let targets = page_entries(&window, &[0]);
+        open_menu(
+            &mut window,
+            Verb::Remove,
+            targets,
+            playlist_listing(),
+            vec![0],
+        );
+        settle_menu(&mut window, &mut transport, &mut queue);
+
+        // The drawer owns the frame, so the shell drops the cut rather than
+        // writing behind it.
+        window.drawer = Drawer::Open;
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Enter);
+
+        assert_eq!(command, None);
+        assert_eq!(page_rows(&window), vec!["list:p0", "list:p1"]);
+        assert!(
+            !window.library.write_in_flight(),
+            "a dropped cut left a write in flight"
+        );
+    }
+    #[test]
+    fn a_right_click_on_an_editable_playlist_offers_remove_last() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1"]);
+
+        right_click_page_row(&mut window, &mut transport, &mut queue, "p0");
+        settle_menu(&mut window, &mut transport, &mut queue);
+
+        assert!(window.menu.is_open(), "the right-click opened no menu");
+        let last = window.menu.items().last().expect("a command");
+        assert_eq!(last.verb, Verb::Remove, "the last row is not the removal");
+        assert_eq!(last.label, "Remove from this playlist");
+        assert_eq!(last.key, Some("Del"));
+        assert!(
+            window.menu.cut().is_some_and(|cut| cut.rows == vec![0]),
+            "the menu is not about the row it was opened on"
+        );
+    }
+
+    #[test]
+    fn a_right_click_on_a_read_only_page_offers_no_remove() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        read_only_playlist_page(&mut window, &["p0", "p1"]);
+
+        right_click_page_row(&mut window, &mut transport, &mut queue, "p0");
+        settle_menu(&mut window, &mut transport, &mut queue);
+
+        assert!(window.menu.is_open(), "the right-click opened no menu");
+        assert!(
+            window
+                .menu
+                .items()
+                .iter()
+                .all(|item| item.verb != Verb::Remove),
+            "a list that is not ours offered a removal"
+        );
+        assert_eq!(window.menu.cut(), None);
+    }
+
+    #[test]
+    fn a_focused_rows_delete_removes_the_row() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1", "p2"]);
+        let _ = click_page_row(&mut window, &mut transport, &mut queue, "p1");
+
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Delete);
+
+        assert_eq!(
+            command,
+            Some(Command::RemoveTracks {
+                playlist: PLAYLIST.to_owned(),
+                revision: revision("rev-1"),
+                removals: vec![Removal { from: 1, length: 1 }],
+            })
+        );
+        assert_eq!(page_rows(&window), vec!["list:p0", "list:p2"]);
+    }
+
+    #[test]
+    fn a_focused_row_outside_the_pick_removes_only_itself() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1", "p2"]);
+        let _ = click_page_row(&mut window, &mut transport, &mut queue, "p0");
+        carry::select_rows(
+            &window.ctx,
+            egui::Id::unique(("playlist-tracks", PLAYLIST)),
+            1..3,
+        );
+
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Delete);
+
+        assert_eq!(
+            command,
+            Some(Command::RemoveTracks {
+                playlist: PLAYLIST.to_owned(),
+                revision: revision("rev-1"),
+                removals: vec![Removal { from: 0, length: 1 }],
+            }),
+            "Del acted on a pick the focused row is not in"
+        );
+        assert_eq!(page_rows(&window), vec!["list:p1", "list:p2"]);
+    }
+
+    #[test]
+    fn delete_with_no_focused_row_removes_nothing() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1"]);
+
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Delete);
+
+        assert_eq!(command, None);
+        assert_eq!(page_rows(&window), vec!["list:p0", "list:p1"]);
+        assert!(!window.library.write_in_flight());
+    }
+
+    #[test]
+    fn a_focused_more_button_does_not_answer_delete() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1"]);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let more = more_button(&frame, view_rect(&window), "p0");
+        let _ = window.click(&mut transport, &mut queue, more);
+
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Delete);
+
+        assert_eq!(
+            command, None,
+            "the focused `⋯` answered Del as if it were the row"
+        );
+        assert_eq!(page_rows(&window), vec!["list:p0", "list:p1"]);
+    }
+
+    #[test]
+    fn shift_or_ctrl_delete_is_not_this_key() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1"]);
+        let _ = click_page_row(&mut window, &mut transport, &mut queue, "p0");
+
+        for modifiers in [egui::Modifiers::SHIFT, egui::Modifiers::COMMAND] {
+            let command = chord(
+                &mut window,
+                &mut transport,
+                &mut queue,
+                egui::Key::Delete,
+                modifiers,
+            );
+            assert_eq!(command, None, "{modifiers:?}+Del removed a row");
+        }
+        assert_eq!(page_rows(&window), vec!["list:p0", "list:p1"]);
+    }
+
+    #[test]
+    fn a_held_delete_removes_once() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1", "p2"]);
+        let _ = click_page_row(&mut window, &mut transport, &mut queue, "p1");
+
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Delete);
+        assert!(command.is_some(), "the first Del removed nothing");
+        for _ in 0..3 {
+            let (held, _) = window.frame(
+                &mut transport,
+                &mut queue,
+                vec![key_repeat(egui::Key::Delete)],
+            );
+            assert_eq!(held, None, "a held Del removed a second row");
+        }
+        assert_eq!(page_rows(&window), vec!["list:p0", "list:p2"]);
+    }
+
+    #[test]
+    fn del_in_the_search_field_edits_text_and_removes_no_row() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1"]);
+        let _ = click_page_row(&mut window, &mut transport, &mut queue, "p0");
+        let at = field_box(&mut window, &mut transport, &mut queue).center();
+        let _ = window.click(&mut transport, &mut queue, at);
+        let _ = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![egui::Event::Text("abc".to_owned())],
+        );
+        // Del forward-deletes, and the caret sits after the text, so one step
+        // left puts a character in front of it.
+        let _ = press(
+            &mut window,
+            &mut transport,
+            &mut queue,
+            egui::Key::ArrowLeft,
+        );
+
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Delete);
+
+        assert_eq!(command, None);
+        assert_eq!(window.library.search.text, "ab", "the field lost the key");
+        assert_eq!(page_rows(&window), vec!["list:p0", "list:p1"]);
+    }
+
+    #[test]
+    fn a_cut_posted_while_a_field_is_typing_is_dropped() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1"]);
+        let at = field_box(&mut window, &mut transport, &mut queue).center();
+        let _ = window.click(&mut transport, &mut queue, at);
+
+        context_menu::post_cut(&window.ctx, page_cut(&window, &[0]));
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+
+        assert_eq!(page_rows(&window), vec!["list:p0", "list:p1"]);
+        assert!(!window.library.write_in_flight(), "a write went out");
+    }
+
+    #[test]
+    fn a_cut_posted_with_the_drawer_open_removes_nothing() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(800.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1"]);
+        window.drawer = Drawer::Open;
+
+        context_menu::post_cut(&window.ctx, page_cut(&window, &[0]));
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+
+        assert_eq!(page_rows(&window), vec!["list:p0", "list:p1"]);
+    }
+
+    #[test]
+    fn a_cut_posted_while_carrying_removes_nothing() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1"]);
+        // Any payload says a block is held; the gate reads no more than that.
+        egui::DragAndDrop::set_payload(&window.ctx, ());
+
+        context_menu::post_cut(&window.ctx, page_cut(&window, &[0]));
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+
+        assert_eq!(page_rows(&window), vec!["list:p0", "list:p1"]);
+    }
+
+    #[test]
+    fn a_cut_posted_while_a_write_is_pending_removes_nothing() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1", "p2"]);
+        assert!(
+            window
+                .library
+                .remove_tracks(PLAYLIST, &[0], &page_entries(&window, &[0]))
+                .is_some()
+        );
+
+        context_menu::post_cut(&window.ctx, page_cut(&window, &[0]));
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+
+        assert_eq!(
+            page_rows(&window),
+            vec!["list:p1", "list:p2"],
+            "a second removal went out behind the first"
+        );
+    }
+
+    #[test]
+    fn delete_on_a_read_only_page_does_nothing() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        read_only_playlist_page(&mut window, &["p0", "p1"]);
+        let _ = click_page_row(&mut window, &mut transport, &mut queue, "p0");
+
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Delete);
+
+        assert_eq!(command, None);
+        assert_eq!(page_rows(&window), vec!["list:p0", "list:p1"]);
+    }
+
+    #[test]
+    fn del_with_the_menu_open_chooses_the_menu_row_not_the_page() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1", "p2"]);
+        let _ = click_page_row(&mut window, &mut transport, &mut queue, "p0");
+        let targets = page_entries(&window, &[2]);
+        open_menu(
+            &mut window,
+            Verb::Remove,
+            targets,
+            playlist_listing(),
+            vec![2],
+        );
+        settle_menu(&mut window, &mut transport, &mut queue);
+
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Delete);
+
+        assert_eq!(
+            command,
+            Some(Command::RemoveTracks {
+                playlist: PLAYLIST.to_owned(),
+                revision: revision("rev-1"),
+                removals: vec![Removal { from: 2, length: 1 }],
+            }),
+            "the page's focused row answered a Del the menu owned"
+        );
+        assert_eq!(page_rows(&window), vec!["list:p0", "list:p1"]);
+    }
+
+    #[test]
+    fn a_cut_on_the_frame_a_menu_opened_is_dropped() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1"]);
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+
+        context_menu::post(&window.ctx, page_request(&window, &[1]));
+        context_menu::post_cut(&window.ctx, page_cut(&window, &[0]));
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+
+        assert!(window.menu.is_open(), "the request did not open a menu");
+        assert_eq!(
+            page_rows(&window),
+            vec!["list:p0", "list:p1"],
+            "a cut landed under a menu that opened over it"
+        );
+    }
+
+    #[test]
+    fn a_cut_is_dropped_when_another_region_took_the_command() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1"]);
+        let _ = answered_menu(&mut window, &mut transport, &mut queue, "a", 3);
+        let _ = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![key(egui::Key::ArrowDown, true)],
+        );
+        context_menu::post_cut(&window.ctx, page_cut(&window, &[0]));
+
+        // The search menu's Enter is the frame's command, so the cut is spent
+        // with it rather than applied behind it.
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Enter);
+
+        assert_eq!(
+            command,
+            Some(Command::Play {
+                uri: "t0".to_owned()
+            }),
+            "the search menu did not take the frame"
+        );
+        assert_eq!(page_rows(&window), vec!["list:p0", "list:p1"]);
+        assert!(!window.library.write_in_flight());
+    }
+    #[test]
+    fn a_right_click_on_a_queue_row_opens_the_queue_menu_and_removes_it() {
+        let mut transport = Transport::default();
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let at = row_line(&frame, pane_rect_when_shown(&window), "t2");
+
+        for event in [
+            egui::Event::PointerMoved(at),
+            side(at, egui::PointerButton::Secondary, true),
+            side(at, egui::PointerButton::Secondary, false),
+        ] {
+            let _ = window.frame(&mut transport, &mut queue, vec![event]);
+        }
+
+        settle_menu(&mut window, &mut transport, &mut queue);
+        assert!(window.menu.is_open(), "the right-click opened no menu");
+        assert!(
+            window
+                .menu
+                .items()
+                .iter()
+                .all(|item| item.verb != Verb::AddToQueue),
+            "the queue offered to add what is already there"
+        );
+        let last = window.menu.items().last().expect("a command");
+        assert_eq!(last.verb, Verb::Remove);
+        assert_eq!(last.label, "Remove from the queue");
+
+        // A pointer-opened menu lights nothing, so Enter is not its to fire;
+        // Del is the destructive row's key.
+        let _ = press(&mut window, &mut transport, &mut queue, egui::Key::Delete);
+
+        assert_eq!(entries(&queue), vec!["t0", "t1", "t3"]);
+        assert!(!window.menu.is_open(), "the menu outlived its choice");
+    }
+
+    #[test]
+    fn shift_f10_on_a_focused_queue_row_opens_the_queue_menu() {
+        let mut transport = Transport::default();
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let at = row_line(&frame, pane_rect_when_shown(&window), "t2");
+        let _ = window.click(&mut transport, &mut queue, at);
+        assert!(!window.menu.is_open(), "a plain click opened a menu");
+
+        let _ = chord(
+            &mut window,
+            &mut transport,
+            &mut queue,
+            egui::Key::F10,
+            egui::Modifiers::SHIFT,
+        );
+
+        assert!(window.menu.is_open(), "Shift+F10 opened no menu");
+        assert_eq!(
+            window.menu.cut().map(|cut| cut.rows),
+            Some(vec![2]),
+            "the menu is not about the focused row"
+        );
+        let _ = press(&mut window, &mut transport, &mut queue, egui::Key::Escape);
+        assert!(!window.menu.is_open());
+    }
+    #[test]
+    fn a_click_on_now_playings_more_opens_a_current_menu() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        queue.start(&[menu_track(0)], 0, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+
+        let at = now_playing_more(&window);
+        let _ = window.click(&mut transport, &mut queue, at);
+        settle_menu(&mut window, &mut transport, &mut queue);
+
+        assert!(window.menu.is_open(), "the more button opened no menu");
+        assert!(
+            window
+                .menu
+                .items()
+                .iter()
+                .all(|item| { item.verb != Verb::AddToQueue && item.verb != Verb::Remove }),
+            "Now Playing offered a list command"
+        );
+        assert_eq!(window.menu.cut(), None, "the entry was removable");
+        assert_eq!(
+            window
+                .menu
+                .items()
+                .iter()
+                .map(|item| item.verb)
+                .collect::<Vec<_>>(),
+            [Verb::GoToAlbum, Verb::GoToArtist, Verb::CopyLink]
+        );
+    }
+
+    #[test]
+    fn now_playings_more_opens_from_the_keyboard_after_a_click() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        queue.start(&[menu_track(0)], 0, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        let at = now_playing_more(&window);
+
+        // The press opens the menu and leaves the keyboard on the button; the
+        // Escape hands it back there, so the key door has something to work from.
+        let _ = window.click(&mut transport, &mut queue, at);
+        settle_menu(&mut window, &mut transport, &mut queue);
+        let _ = press(&mut window, &mut transport, &mut queue, egui::Key::Escape);
+        assert!(!window.menu.is_open());
+
+        let _ = chord(
+            &mut window,
+            &mut transport,
+            &mut queue,
+            egui::Key::F10,
+            egui::Modifiers::SHIFT,
+        );
+
+        assert!(window.menu.is_open(), "Shift+F10 opened no menu");
+    }
+
+    #[test]
+    fn now_playings_more_waits_without_a_current_entry() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+
+        let at = now_playing_more(&window);
+        let _ = window.click(&mut transport, &mut queue, at);
+
+        assert!(
+            !window.menu.is_open(),
+            "a waiting more button opened a menu"
+        );
+    }
+
+    // ---- the library head's new-playlist field ----
+
+    /// The head's button centre, from the band the sidebar solves.
+    ///
+    /// The chips are a 2x2 grid of `extent::BUTTON` cells with `space::S1`
+    /// between them, under `space::S4` of padding, and the head row is `space::S2`
+    /// below them.
+    fn head_plus(band: Rect) -> egui::Pos2 {
+        let chips = 2.0 * extent::BUTTON + space::S1;
+        let row = Rect::from_min_size(
+            egui::pos2(
+                band.left() + space::S4,
+                band.top() + space::S4 + chips + space::S3 + space::S2,
+            ),
+            Vec2::new(band.width() - 2.0 * space::S4, extent::BUTTON),
+        );
+        egui::pos2(row.right() - extent::BUTTON / 2.0, row.center().y)
+    }
+
+    fn sidebar_plus(window: &Window) -> egui::Pos2 {
+        head_plus(sidebar_rect(window))
+    }
+
+    /// A sidebar whose playlists and rootlist are ready to create one.
+    fn creatable_sidebar(window: &mut Window) {
+        sidebar_playlists(
+            window,
+            &[("a", Some(0)), ("b", Some(0))],
+            Some(rootlist_access(true)),
+        );
+    }
+
+    /// Opens the head's field with the `+`, and waits for the keyboard to follow.
+    fn open_naming(window: &mut Window, transport: &mut Transport, queue: &mut Queue) {
+        let _ = window.click(transport, queue, sidebar_plus(window));
+        assert!(window.library.naming.is_open(), "the `+` opened no field");
+        // The field is drawn on the frame after the press, and takes the keyboard
+        // on that frame.
+        let _ = window.frame(transport, queue, Vec::new());
+        assert!(
+            window.ctx.text_edit_focused(),
+            "the keyboard did not follow the field"
+        );
+        // One more frame, so the field's own key filter is the stored one: egui
+        // stores a filter only for a widget that had focus last frame.
+        let _ = window.frame(transport, queue, Vec::new());
+    }
+
+    /// Types into whatever holds the keyboard.
+    fn type_text(window: &mut Window, transport: &mut Transport, queue: &mut Queue, text: &str) {
+        let _ = window.frame(transport, queue, vec![egui::Event::Text(text.to_owned())]);
+    }
+
+    /// The row a create's reply hands the sidebar.
+    fn new_playlist(name: &str, access: Option<PlaylistAccess>) -> PlaylistEntry {
+        PlaylistEntry {
+            uri: "spotify:playlist:new".to_owned(),
+            name: name.to_owned(),
+            named: true,
+            cover: None,
+            description: None,
+            tracks: Some(0),
+            owner: None,
+            access,
+        }
+    }
+
+    /// Submits the open field with `name` typed into it, and answers the frame.
+    fn submit_name(
+        window: &mut Window,
+        transport: &mut Transport,
+        queue: &mut Queue,
+        name: &str,
+    ) -> Option<Command> {
+        open_naming(window, transport, queue);
+        type_text(window, transport, queue, name);
+        window
+            .frame(transport, queue, vec![key(egui::Key::Enter, true)])
+            .0
+    }
+
+    #[test]
+    fn plus_opens_the_field_and_the_keyboard_follows_next_frame() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        creatable_sidebar(&mut window);
+
+        let _ = window.click(&mut transport, &mut queue, sidebar_plus(&window));
+        assert!(window.library.naming.is_open());
+        assert!(
+            !window.ctx.text_edit_focused(),
+            "the field took the keyboard on the frame it opened"
+        );
+
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(window.ctx.text_edit_focused());
+    }
+
+    #[test]
+    fn enter_submits_the_trimmed_name_once() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        creatable_sidebar(&mut window);
+
+        assert_eq!(
+            submit_name(&mut window, &mut transport, &mut queue, "  Night  Drive "),
+            Some(Command::CreatePlaylist {
+                name: "Night  Drive".to_owned(),
+                revision: revision("root-1"),
+                tracks: Vec::new(),
+            })
+        );
+        assert!(window.library.write_in_flight());
+        assert!(window.library.naming.writing());
+
+        let _ = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![key(egui::Key::Enter, false)],
+        );
+        assert_eq!(
+            window
+                .frame(
+                    &mut transport,
+                    &mut queue,
+                    vec![key(egui::Key::Enter, true)]
+                )
+                .0,
+            None,
+            "a second Enter sent a second create"
+        );
+    }
+
+    #[test]
+    fn a_held_enter_submits_once() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        creatable_sidebar(&mut window);
+
+        assert!(submit_name(&mut window, &mut transport, &mut queue, "Mix").is_some());
+        assert_eq!(
+            window
+                .frame(
+                    &mut transport,
+                    &mut queue,
+                    vec![key_repeat(egui::Key::Enter)]
+                )
+                .0,
+            None,
+            "a held Enter replayed the submit"
+        );
+    }
+
+    #[test]
+    fn enter_on_blank_text_sends_nothing_and_keeps_the_field() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        creatable_sidebar(&mut window);
+
+        assert_eq!(
+            submit_name(&mut window, &mut transport, &mut queue, "   "),
+            None
+        );
+        assert!(window.library.naming.is_open(), "a blank submit closed it");
+        assert!(
+            window.ctx.text_edit_focused(),
+            "a blank submit dropped the keyboard"
+        );
+        assert!(!window.library.write_in_flight());
+        assert_eq!(window.library.sidebar_notice, None, "a blank submit spoke");
+    }
+
+    #[test]
+    fn typing_beyond_the_cap_is_truncated() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        creatable_sidebar(&mut window);
+        open_naming(&mut window, &mut transport, &mut queue);
+
+        type_text(&mut window, &mut transport, &mut queue, &"a".repeat(140));
+
+        assert_eq!(
+            window.library.naming.text().chars().count(),
+            takofy_model::PLAYLIST_NAME_MAX,
+            "the field took more than a name"
+        );
+    }
+
+    #[test]
+    fn blur_with_blank_text_cancels_and_blur_with_text_stays() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        creatable_sidebar(&mut window);
+
+        open_naming(&mut window, &mut transport, &mut queue);
+        let _ = window.click(&mut transport, &mut queue, view_rect(&window).center());
+        assert!(
+            !window.library.naming.is_open(),
+            "a blank field stayed open after a click elsewhere"
+        );
+
+        open_naming(&mut window, &mut transport, &mut queue);
+        type_text(&mut window, &mut transport, &mut queue, "Night Drive");
+        let _ = window.click(&mut transport, &mut queue, view_rect(&window).center());
+        assert!(
+            window.library.naming.is_open(),
+            "a click elsewhere threw a typed name away"
+        );
+        assert_eq!(window.library.naming.text(), "Night Drive");
+        assert!(
+            !window.ctx.text_edit_focused(),
+            "the field kept the keyboard"
+        );
+    }
+
+    #[test]
+    fn the_close_button_cancels() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        creatable_sidebar(&mut window);
+        open_naming(&mut window, &mut transport, &mut queue);
+        type_text(&mut window, &mut transport, &mut queue, "Night Drive");
+
+        let _ = window.click(&mut transport, &mut queue, sidebar_plus(&window));
+
+        assert!(!window.library.naming.is_open(), "the × did not close it");
+        assert_eq!(window.library.naming.text(), "");
+        assert!(!window.library.write_in_flight());
+    }
+
+    #[test]
+    fn while_writing_the_field_is_read_only_and_cancel_is_inert() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        creatable_sidebar(&mut window);
+
+        assert!(submit_name(&mut window, &mut transport, &mut queue, "Night Drive").is_some());
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            !window.ctx.text_edit_focused(),
+            "a field mid-write still took the keyboard"
+        );
+
+        let _ = window.click(&mut transport, &mut queue, sidebar_plus(&window));
+        assert!(
+            window.library.naming.is_open(),
+            "a cancel ended a create in flight"
+        );
+        assert!(window.library.naming.writing());
+
+        type_text(&mut window, &mut transport, &mut queue, "x");
+        assert_eq!(
+            window.library.naming.text(),
+            "Night Drive",
+            "a read-only field took a keystroke"
+        );
+    }
+
+    #[test]
+    fn a_make_failure_refocuses_the_field() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        creatable_sidebar(&mut window);
+
+        assert!(submit_name(&mut window, &mut transport, &mut queue, "Night Drive").is_some());
+        window.library.apply(&Update::PlaylistCreateFailed);
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+
+        assert!(window.library.naming.is_open());
+        assert_eq!(window.library.naming.text(), "Night Drive");
+        assert!(
+            window.ctx.text_edit_focused(),
+            "the retry had no keyboard in the field"
+        );
+        assert_eq!(
+            window.library.sidebar_notice,
+            Some(crate::library::SidebarWrite::Create)
+        );
+    }
+
+    #[test]
+    fn space_del_and_hearts_do_nothing_while_the_field_has_the_keyboard() {
+        let mut transport = playing(cover("a"));
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1"]);
+        sidebar_playlists(&mut window, &[("a", Some(0))], Some(rootlist_access(true)));
+        liked(&mut window, &[]);
+        let _ = click_page_row(&mut window, &mut transport, &mut queue, "p0");
+        open_naming(&mut window, &mut transport, &mut queue);
+        type_text(&mut window, &mut transport, &mut queue, "Mix");
+
+        assert_eq!(
+            window
+                .frame(
+                    &mut transport,
+                    &mut queue,
+                    vec![key(egui::Key::Space, true)]
+                )
+                .0,
+            None,
+            "a space reached the transport through the field"
+        );
+        assert_eq!(
+            window
+                .frame(
+                    &mut transport,
+                    &mut queue,
+                    vec![key(egui::Key::Delete, true)]
+                )
+                .0,
+            None,
+            "Del cut a row while the field had the keyboard"
+        );
+        crate::view::heart::post(
+            &window.ctx,
+            crate::view::heart::Ask {
+                tracks: vec!["spotify:track:a".to_owned()],
+                liked: true,
+            },
+        );
+        assert_eq!(
+            window.frame(&mut transport, &mut queue, Vec::new()).0,
+            None,
+            "a heart wrote while the field had the keyboard"
+        );
+        assert_eq!(window.library.likes.state("spotify:track:a"), Some(false));
+        assert_eq!(page_rows(&window), vec!["list:p0", "list:p1"]);
+    }
+
+    #[test]
+    fn the_count_label_returns_when_naming_closes() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        creatable_sidebar(&mut window);
+
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(painted_at(&frame, "2 saved").is_some());
+
+        open_naming(&mut window, &mut transport, &mut queue);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            painted_at(&frame, "2 saved").is_none(),
+            "the count stayed beside the field"
+        );
+
+        let _ = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![key(egui::Key::Escape, true)],
+        );
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            painted_at(&frame, "2 saved").is_some(),
+            "the count did not come back"
+        );
+    }
+
+    // ---- the head drawn alone, where its own widget ids are nameable ----
+
+    /// One frame of the sidebar alone, so a test can name the head's ids.
+    struct Column {
+        command: Option<Command>,
+        slot: egui::Id,
+        field: egui::Id,
+    }
+
+    /// Draws one frame of the sidebar at the column's own width.
+    fn column_frame(
+        ctx: &egui::Context,
+        library: &mut Library,
+        art: &mut Art,
+        events: Vec<egui::Event>,
+        drag: bool,
+    ) -> Column {
+        let tokens = Tokens::DARK;
+        let band = Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(254.0, 800.0));
+        let input = egui::RawInput {
+            screen_rect: Some(band),
+            events,
+            ..Default::default()
+        };
+        let mut slot = egui::Id::NULL;
+        let mut field = egui::Id::NULL;
+        let mut command = None;
+        art.begin_frame();
+        let mut output = ctx.run_ui(input, |ui| {
+            let control = crate::availability::Control::LibraryCreate;
+            slot = ui.scope_id().with((control, ()));
+            field = ui.scope_id().with((control, "name"));
+            command = if drag {
+                sidebar::column(ui, library, art, Instant::now(), &tokens)
+            } else {
+                sidebar::show(ui, library, art, Instant::now(), &tokens)
+            };
+        });
+        output.textures_delta.clear();
+        Column {
+            command,
+            slot,
+            field,
+        }
+    }
+
+    /// A styled context for the sidebar's own frames.
+    fn column_context() -> egui::Context {
+        let ctx = egui::Context::default();
+        ctx.set_fonts(fonts::definitions());
+        ctx.set_global_style(style(&Tokens::DARK));
+        ctx
+    }
+
+    /// Clicks `at` over the passes egui's hit test needs.
+    fn column_click(
+        ctx: &egui::Context,
+        library: &mut Library,
+        art: &mut Art,
+        drag: bool,
+        at: egui::Pos2,
+    ) -> Column {
+        let _ = column_frame(ctx, library, art, Vec::new(), drag);
+        let mut last = column_frame(ctx, library, art, Vec::new(), drag);
+        for event in crate::view::test_support::click_events(at) {
+            last = column_frame(ctx, library, art, vec![event], drag);
+        }
+        last
+    }
+
+    /// A library whose sidebar holds `names`, with a rootlist revision.
+    fn column_library(names: &[&str], rootlist: bool) -> Library {
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(
+            names
+                .iter()
+                .map(|name| PlaylistEntry {
+                    uri: format!("playlist:{name}"),
+                    name: (*name).to_owned(),
+                    named: true,
+                    cover: None,
+                    description: None,
+                    owner: None,
+                    tracks: None,
+                    access: None,
+                })
+                .collect(),
+        ));
+        if rootlist {
+            library.apply(&Update::RootlistAccess(rootlist_access(true)));
+        }
+        library
+    }
+
+    #[test]
+    fn escape_on_the_frame_the_field_opens() {
+        let ctx = column_context();
+        let mut art = Art::default();
+        let mut library = column_library(&["a"], true);
+        library.naming.open();
+        library.naming.edit().push_str("Night Drive");
+
+        // The field's key filter is stored only on the frame after it first
+        // holds the keyboard, so this Escape belongs to nobody: the frame opens
+        // the field and the key is dropped rather than closing it.
+        let opened = column_frame(
+            &ctx,
+            &mut library,
+            &mut art,
+            vec![key(egui::Key::Escape, true)],
+            true,
+        );
+
+        assert!(
+            library.naming.is_open(),
+            "the opening frame's Escape closed the field"
+        );
+        assert_eq!(library.naming.text(), "Night Drive");
+        assert!(
+            ctx.memory(|memory| memory.has_focus(opened.field)),
+            "the opening frame's Escape took the keyboard off the field"
+        );
+        assert_eq!(opened.command, None);
+    }
+
+    #[test]
+    fn escape_cancels_and_returns_focus_to_plus() {
+        let ctx = column_context();
+        let mut art = Art::default();
+        let mut library = column_library(&["a"], true);
+        library.naming.open();
+        library.naming.edit().push_str("Night Drive");
+
+        let opened = column_frame(&ctx, &mut library, &mut art, Vec::new(), true);
+        assert!(
+            ctx.memory(|memory| memory.has_focus(opened.field)),
+            "the field never took the keyboard"
+        );
+        // One frame for the field's own key filter to be the stored one.
+        let _ = column_frame(&ctx, &mut library, &mut art, Vec::new(), true);
+
+        let escaped = column_frame(
+            &ctx,
+            &mut library,
+            &mut art,
+            vec![key(egui::Key::Escape, true)],
+            true,
+        );
+        assert!(!library.naming.is_open(), "Escape did not close the field");
+        assert_eq!(library.naming.text(), "");
+        assert!(
+            ctx.memory(|memory| memory.has_focus(escaped.slot)),
+            "the keyboard did not go back to the +"
+        );
+    }
+
+    #[test]
+    fn escape_does_nothing_when_the_field_is_closed() {
+        let ctx = column_context();
+        let mut art = Art::default();
+        let mut library = column_library(&["a"], true);
+
+        let closed = column_frame(
+            &ctx,
+            &mut library,
+            &mut art,
+            vec![key(egui::Key::Escape, true)],
+            true,
+        );
+
+        assert!(!library.naming.is_open());
+        assert_eq!(closed.command, None);
+        assert_eq!(library.naming.text(), "");
+    }
+
+    #[test]
+    fn tab_leaves_the_field() {
+        let ctx = column_context();
+        let mut art = Art::default();
+        let mut library = column_library(&["a"], true);
+        library.naming.open();
+        library.naming.edit().push_str("Night Drive");
+        let opened = column_frame(&ctx, &mut library, &mut art, Vec::new(), true);
+        assert!(ctx.memory(|memory| memory.has_focus(opened.field)));
+        // One frame for the field's own key filter to be the stored one.
+        let _ = column_frame(&ctx, &mut library, &mut art, Vec::new(), true);
+
+        let _ = column_frame(
+            &ctx,
+            &mut library,
+            &mut art,
+            vec![key(egui::Key::Tab, true)],
+            true,
+        );
+        let after = column_frame(&ctx, &mut library, &mut art, Vec::new(), true);
+
+        assert!(
+            !ctx.memory(|memory| memory.has_focus(after.field)),
+            "Tab left the keyboard in the field"
+        );
+        assert!(library.naming.is_open(), "Tab closed the field");
+        assert_eq!(library.naming.text(), "Night Drive");
+    }
+
+    #[test]
+    fn the_plus_is_inert_in_the_drawer_form() {
+        let ctx = column_context();
+        let mut art = Art::default();
+        let mut library = column_library(&["a"], true);
+        let band = Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(254.0, 800.0));
+
+        let _ = column_click(&ctx, &mut library, &mut art, false, head_plus(band));
+
+        assert!(
+            !library.naming.is_open(),
+            "the drawer's + opened a field whose command is discarded"
+        );
+    }
+
+    #[test]
+    fn the_plus_is_inert_when_creatable_is_false() {
+        let ctx = column_context();
+        let mut art = Art::default();
+        let mut library = column_library(&["a"], false);
+        let band = Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(254.0, 800.0));
+
+        let _ = column_click(&ctx, &mut library, &mut art, true, head_plus(band));
+
+        assert!(!library.creatable());
+        assert!(
+            !library.naming.is_open(),
+            "a + with no rootlist to link against opened a field"
+        );
+    }
+
+    // ---- the created row in the sidebar's list ----
+
+    #[test]
+    fn a_created_row_is_drawn_first() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        creatable_sidebar(&mut window);
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        let area = sidebar_rect(&window);
+
+        window.library.naming.open();
+        window.library.naming.edit().push_str("Night Drive");
+        assert!(window.library.create_playlist().is_some());
+        window.library.apply(&Update::PlaylistCreated {
+            entry: new_playlist("Night Drive", page_access(true)),
+            revision: revision("root-2"),
+        });
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+
+        let created = text_in(&frame, "Night Drive", area).expect("the new row is painted");
+        let first = text_in(&frame, "a", area).expect("the old first row is painted");
+        assert!(
+            created.top() < first.top(),
+            "the created row is not the first one drawn"
+        );
+    }
+
+    #[test]
+    fn the_reveal_scrolls_to_the_top_once() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let names: Vec<String> = (0..30).map(|index| format!("r{index}")).collect();
+        let rows: Vec<(&str, Option<usize>)> =
+            names.iter().map(|name| (name.as_str(), Some(0))).collect();
+        sidebar_playlists(&mut window, &rows, Some(rootlist_access(true)));
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        let area = sidebar_rect(&window);
+
+        // The pointer has to be over the list for the wheel to reach it.
+        let _ = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![egui::Event::PointerMoved(egui::pos2(
+                area.center().x,
+                area.bottom() - 40.0,
+            ))],
+        );
+        let wheel = egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -600.0),
+            phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Wheel,
+            modifiers: egui::Modifiers::NONE,
+        };
+        for _ in 0..3 {
+            let _ = window.frame(&mut transport, &mut queue, vec![wheel.clone()]);
+        }
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            text_in(&frame, "r0", area).is_none(),
+            "the list never scrolled away from its first row"
+        );
+
+        window.library.naming.open();
+        window.library.naming.edit().push_str("Night Drive");
+        assert!(window.library.create_playlist().is_some());
+        window.library.apply(&Update::PlaylistCreated {
+            entry: new_playlist("Night Drive", page_access(true)),
+            revision: revision("root-2"),
+        });
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            text_in(&frame, "Night Drive", area).is_some(),
+            "the created row is not on screen"
+        );
+
+        // The reveal is one frame's: the wheel still moves the list afterwards.
+        for _ in 0..3 {
+            let _ = window.frame(&mut transport, &mut queue, vec![wheel.clone()]);
+        }
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            text_in(&frame, "Night Drive", area).is_none(),
+            "the list was forced back to the top on every frame"
+        );
+    }
+
+    #[test]
+    fn a_create_is_refused_while_a_block_is_carried() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        creatable_sidebar(&mut window);
+        open_naming(&mut window, &mut transport, &mut queue);
+        type_text(&mut window, &mut transport, &mut queue, "Night Drive");
+        // Any payload says a block is held; the gate reads no more than that.
+        egui::DragAndDrop::set_payload(&window.ctx, ());
+
+        assert_eq!(
+            window
+                .frame(
+                    &mut transport,
+                    &mut queue,
+                    vec![key(egui::Key::Enter, true)]
+                )
+                .0,
+            None,
+            "a create went out while a block was carried"
+        );
+        assert!(!window.library.write_in_flight());
+        assert_eq!(
+            window.library.naming.text(),
+            "Night Drive",
+            "the dropped submit lost the name"
+        );
+    }
+
+    #[test]
+    fn the_row_count_updates() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        creatable_sidebar(&mut window);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(painted_at(&frame, "2 saved").is_some());
+
+        window.library.naming.open();
+        window.library.naming.edit().push_str("Night Drive");
+        assert!(window.library.create_playlist().is_some());
+        window.library.apply(&Update::PlaylistCreated {
+            entry: new_playlist("Night Drive", page_access(true)),
+            revision: revision("root-2"),
+        });
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+
+        assert!(
+            painted_at(&frame, "3 saved").is_some(),
+            "the head did not count the new row"
+        );
+    }
+
+    // ---- the menu's new-playlist row ----
+
+    /// Opens the `⋯` menu of the page row titled `title`, and answers the verbs
+    /// it offers.
+    fn open_row_menu(
+        window: &mut Window,
+        transport: &mut Transport,
+        queue: &mut Queue,
+        title: &str,
+    ) -> Vec<Verb> {
+        let (_, frame) = window.frame(transport, queue, Vec::new());
+        let more = more_button(&frame, view_rect(window), title);
+        let _ = window.click(transport, queue, more);
+        settle_menu(window, transport, queue);
+        assert!(window.menu.is_open(), "the `⋯` opened no menu");
+        window.menu.items().iter().map(|item| item.verb).collect()
+    }
+
+    #[test]
+    fn the_menu_row_opens_the_field_and_sends_no_command() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1"]);
+        sidebar_playlists(&mut window, &[("a", Some(0))], Some(rootlist_access(true)));
+
+        let offered = open_row_menu(&mut window, &mut transport, &mut queue, "p0");
+        assert!(
+            offered.contains(&Verb::NewPlaylist),
+            "the row was stripped from a menu that could offer it: {offered:?}"
+        );
+        // The pointer opened the menu, so it lit nothing: the row is clicked where
+        // it is painted.
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let at = painted_at(&frame, "New playlist…").expect("the row is painted");
+        let command = window.click(
+            &mut transport,
+            &mut queue,
+            egui::pos2(at.x + 20.0, at.y + 6.0),
+        );
+
+        assert_eq!(command, None, "the new-playlist row sent a command");
+        assert!(!window.menu.is_open(), "the menu stayed open");
+        assert!(
+            window.library.naming.is_open(),
+            "the row opened no naming field"
+        );
+        assert!(!window.library.write_in_flight(), "the row started a write");
+    }
+
+    #[test]
+    fn a_created_list_takes_the_pick_the_menu_held() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        page_of_tracks(&mut window, &[TRACK_A]);
+        sidebar_playlists(&mut window, &[("a", Some(0))], Some(rootlist_access(true)));
+        let offered = open_row_menu(&mut window, &mut transport, &mut queue, TRACK_A);
+        assert!(offered.contains(&Verb::NewPlaylist), "{offered:?}");
+
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let at = painted_at(&frame, "New playlist…").expect("the row is painted");
+        let _ = window.click(
+            &mut transport,
+            &mut queue,
+            egui::pos2(at.x + 20.0, at.y + 6.0),
+        );
+        assert!(
+            window.library.naming.is_open(),
+            "the row opened no naming field"
+        );
+        assert_eq!(
+            window.library.naming.pick().to_vec(),
+            vec![TRACK_A.to_owned()],
+            "the field did not take the pick the menu held"
+        );
+
+        type_text(&mut window, &mut transport, &mut queue, "Night Drive");
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Enter);
+
+        assert_eq!(
+            command,
+            Some(Command::CreatePlaylist {
+                name: "Night Drive".to_owned(),
+                revision: revision("root-1"),
+                tracks: vec![TRACK_A.to_owned()],
+            }),
+            "the pick rides the create"
+        );
+    }
+
+    #[test]
+    fn the_menu_row_is_absent_in_the_rail_layout() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(800.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1"]);
+        sidebar_playlists(&mut window, &[("a", Some(0))], Some(rootlist_access(true)));
+        assert!(window.library.creatable());
+
+        let offered = open_row_menu(&mut window, &mut transport, &mut queue, "p0");
+
+        assert!(
+            !offered.contains(&Verb::NewPlaylist),
+            "the rail offered a field it has no column for: {offered:?}"
+        );
+    }
+
+    #[test]
+    fn the_menu_row_is_absent_while_the_playlists_load() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1"]);
+        window.library.playlists = Load::Loading;
+        assert!(!window.library.creatable());
+
+        let offered = open_row_menu(&mut window, &mut transport, &mut queue, "p0");
+
+        assert!(
+            !offered.contains(&Verb::NewPlaylist),
+            "a list that is still loading offered a create: {offered:?}"
+        );
+    }
+
+    #[test]
+    fn a_chosen_row_is_dropped_while_the_drawer_is_open_or_a_block_is_carried() {
+        // The keyboard door, because a press that reaches a menu row closes the
+        // drawer first: this is the only way to make the choice the gate guards.
+        for drawer_open in [true, false] {
+            let mut transport = Transport::default();
+            let mut queue = Queue::default();
+            let mut window = Window::new(Vec2::new(1400.0, 900.0));
+            playlist_page(&mut window, &["p0", "p1"]);
+            sidebar_playlists(&mut window, &[("a", Some(0))], Some(rootlist_access(true)));
+            let _ = click_page_row(&mut window, &mut transport, &mut queue, "p0");
+            let _ = chord(
+                &mut window,
+                &mut transport,
+                &mut queue,
+                egui::Key::F10,
+                egui::Modifiers::SHIFT,
+            );
+            assert!(window.menu.is_open(), "the keyboard opened no menu");
+            let offered: Vec<Verb> = window.menu.items().iter().map(|item| item.verb).collect();
+            let row = offered
+                .iter()
+                .position(|verb| *verb == Verb::NewPlaylist)
+                .expect("the row");
+            for _ in 0..row {
+                let _ = press(
+                    &mut window,
+                    &mut transport,
+                    &mut queue,
+                    egui::Key::ArrowDown,
+                );
+            }
+            if drawer_open {
+                window.drawer = Drawer::Open;
+            } else {
+                // Any payload says a block is held; the gate reads no more.
+                egui::DragAndDrop::set_payload(&window.ctx, ());
+            }
+
+            let _ = press(&mut window, &mut transport, &mut queue, egui::Key::Enter);
+
+            assert!(
+                !window.library.naming.is_open(),
+                "a chosen row opened the field (drawer open: {drawer_open})"
+            );
+        }
+    }
+
+    #[test]
+    fn a_submit_is_dropped_when_another_region_took_the_command() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0"]);
+        sidebar_playlists(&mut window, &[("a", Some(0))], Some(rootlist_access(true)));
+        // An album on top, so Back returns to a playlist whose page was dropped
+        // and has to be asked for again.
+        window.library.open(Page::Album(ALBUM.to_owned()));
+        window.library.tracks = Load::Idle;
+        open_naming(&mut window, &mut transport, &mut queue);
+        type_text(&mut window, &mut transport, &mut queue, "Night Drive");
+
+        let command = window
+            .frame(
+                &mut transport,
+                &mut queue,
+                vec![
+                    key(egui::Key::Enter, true),
+                    key(egui::Key::BrowserBack, true),
+                ],
+            )
+            .0;
+
+        assert!(
+            matches!(command, Some(Command::LoadTracks { .. })),
+            "the frame's one command is the nav's: {command:?}"
+        );
+        assert!(
+            !window.library.naming.writing(),
+            "a dropped submit started a write"
+        );
+        assert!(!window.library.write_in_flight());
+        assert_eq!(
+            window.library.naming.text(),
+            "Night Drive",
+            "a dropped submit lost the name"
+        );
+    }
+
+    /// A window whose sidebar holds one row the user may unlink.
+    fn sidebar_row(window: &mut Window, uri: &str, name: &str) {
+        window.library.apply(&Update::Playlists(vec![PlaylistEntry {
+            uri: uri.to_owned(),
+            name: name.to_owned(),
+            named: true,
+            cover: None,
+            description: None,
+            owner: None,
+            tracks: None,
+            access: page_access(true),
+        }]));
+        window
+            .library
+            .apply(&Update::RootlistAccess(PlaylistAccess {
+                revision: revision("rev-1"),
+                editable: true,
+            }));
+    }
+
+    /// Opens the menu a sidebar row's door posts, without a pointer.
+    fn open_library_menu(window: &mut Window, row: LibraryItem, removable: bool) {
+        let request = crate::menu::Request {
+            door: crate::menu::Door {
+                anchor: crate::menu::Anchor::Button(Rect::from_min_size(
+                    egui::Pos2::new(60.0, 300.0),
+                    Vec2::new(28.0, 28.0),
+                )),
+                opener: egui::Id::unique("library-row"),
+                device: crate::menu::Device::Keyboard,
+            },
+            playlists: Vec::new(),
+            items: crate::verbs::library_items(
+                &row,
+                crate::verbs::LibraryRights {
+                    renamable: false,
+                    removable,
+                    saved: Some(true),
+                },
+            ),
+            targets: Vec::new(),
+            rows: Vec::new(),
+            listing: Listing::Library(row),
+            page: window.library.page().cloned(),
+        };
+        assert!(
+            window.menu.open(request, Gate::default()),
+            "the menu opened"
+        );
+    }
+
+    fn library_row(kind: SidebarKind, uri: &str, name: &str) -> LibraryItem {
+        LibraryItem {
+            kind,
+            uri: uri.to_owned(),
+            name: name.to_owned(),
+        }
+    }
+
+    #[test]
+    fn copy_link_on_a_library_row_writes_its_url() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let uri = "spotify:playlist:4uLU6hMCjMI75M1A2tKUQC";
+        sidebar_row(&mut window, uri, "Deep Focus");
+        open_library_menu(
+            &mut window,
+            library_row(SidebarKind::Playlists, uri, "Deep Focus"),
+            true,
+        );
+        settle_menu(&mut window, &mut transport, &mut queue);
+
+        let (_, frame) = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![key(egui::Key::Enter, true)],
+        );
+        let copied = frame
+            .platform_output
+            .commands
+            .iter()
+            .find_map(|command| match command {
+                egui::OutputCommand::CopyText(text) => Some(text.as_str()),
+                _ => None,
+            });
+        assert_eq!(
+            copied,
+            Some("https://open.spotify.com/playlist/4uLU6hMCjMI75M1A2tKUQC"),
+            "an empty target list is not what decides a library menu's verb"
+        );
+    }
+
+    #[test]
+    fn a_library_rows_removal_issues_its_one_command() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let uri = "spotify:playlist:4uLU6hMCjMI75M1A2tKUQC";
+        sidebar_row(&mut window, uri, "Deep Focus");
+        open_library_menu(
+            &mut window,
+            library_row(SidebarKind::Playlists, uri, "Deep Focus"),
+            true,
+        );
+        settle_menu(&mut window, &mut transport, &mut queue);
+
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Delete);
+
+        assert_eq!(
+            command,
+            Some(Command::RemovePlaylist {
+                playlist: uri.to_owned(),
+                revision: revision("rev-1"),
+                index: 0,
+            })
+        );
+        assert!(window.library.write_in_flight());
+    }
+
+    #[test]
+    fn a_library_rows_removal_is_dropped_while_a_gate_holds() {
+        let uri = "spotify:album:4uLU6hMCjMI75M1A2tKUQC";
+
+        // The drawer covers the window.
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let row = library_row(SidebarKind::Albums, uri, "A Record");
+        window.library.apply(&Update::SavedAlbums(vec![SavedAlbum {
+            uri: uri.to_owned(),
+            name: "A Record".to_owned(),
+            named: true,
+            artists: String::new(),
+            year: None,
+            cover: None,
+            tracks: None,
+        }]));
+        open_library_menu(&mut window, row.clone(), true);
+        settle_menu(&mut window, &mut transport, &mut queue);
+        window.drawer = Drawer::Open;
+        assert_eq!(
+            press(&mut window, &mut transport, &mut queue, egui::Key::Delete),
+            None,
+            "a removal was applied under the drawer"
+        );
+        assert!(!window.library.write_in_flight());
+
+        // A block is carried.
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        window.library.apply(&Update::SavedAlbums(vec![SavedAlbum {
+            uri: uri.to_owned(),
+            name: "A Record".to_owned(),
+            named: true,
+            artists: String::new(),
+            year: None,
+            cover: None,
+            tracks: None,
+        }]));
+        open_library_menu(&mut window, row, true);
+        settle_menu(&mut window, &mut transport, &mut queue);
+        egui::DragAndDrop::set_payload(&window.ctx, ());
+        assert_eq!(
+            press(&mut window, &mut transport, &mut queue, egui::Key::Delete),
+            None,
+            "a removal was applied while a block was carried"
+        );
+        assert!(!window.library.write_in_flight());
+    }
+
+    #[test]
+    fn a_library_rows_removal_is_dropped_while_a_field_holds_the_keyboard() {
+        let ctx = egui::Context::default();
+        ctx.set_fonts(fonts::definitions());
+        ctx.set_global_style(style(&Tokens::DARK));
+        let uri = "spotify:album:4uLU6hMCjMI75M1A2tKUQC";
+        let mut library = Library::default();
+        library.apply(&Update::SavedAlbums(vec![SavedAlbum {
+            uri: uri.to_owned(),
+            name: "A Record".to_owned(),
+            named: true,
+            artists: String::new(),
+            year: None,
+            cover: None,
+            tracks: None,
+        }]));
+        let row = library_row(SidebarKind::Albums, uri, "A Record");
+        let mut state = SignIn::SignedIn;
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut drawer = Drawer::default();
+        let mut menu = crate::menu::Menu::default();
+        let mut art = Art::default();
+        let mut pane = layout::PanePref::default();
+        let mut typed = String::new();
+        let mut command = None;
+
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    Vec2::new(1400.0, 900.0),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                let id = egui::Id::unique("field");
+                egui::TextEdit::singleline(&mut typed).id(id).show(ui);
+                ui.memory_mut(|memory| memory.request_focus(id));
+                assert!(ui.ctx().text_edit_focused(), "the field holds the key");
+                let mut screen = Screen {
+                    state: &mut state,
+                    library: &mut library,
+                    transport: &mut transport,
+                    queue: &mut queue,
+                    drawer: &mut drawer,
+                    menu: &mut menu,
+                    position_ms: 0,
+                    art: &mut art,
+                    now: Instant::now(),
+                    now_ms: 0,
+                    pane: &mut pane,
+                };
+                command = apply_remove_from_library(ui, &mut screen, &row);
+            },
+        );
+
+        output.textures_delta.clear();
+
+        assert_eq!(command, None, "a removal was applied over a typing field");
+        assert!(!library.write_in_flight());
+    }
+
+    // ---- the library root's list rows ----
+
+    /// Draws the root in the list density on `kind`'s chip.
+    fn library_list(window: &mut Window, kind: RootKind) {
+        window.library.layout = MediaLayout::List;
+        window.library.root_filter.choose(kind);
+    }
+
+    /// Clicks the `⋯` on the root's list row painted as `title`.
+    fn click_root_more(
+        window: &mut Window,
+        transport: &mut Transport,
+        queue: &mut Queue,
+        title: &str,
+    ) -> Option<Command> {
+        let (_, frame) = window.frame(transport, queue, Vec::new());
+        let more = more_button(&frame, view_rect(window), title);
+        window.click(transport, queue, more)
+    }
+
+    /// Opens the menu the root's list row painted as `title` offers.
+    fn open_root_menu(
+        window: &mut Window,
+        transport: &mut Transport,
+        queue: &mut Queue,
+        title: &str,
+    ) {
+        let _ = click_root_more(window, transport, queue, title);
+        settle_menu(window, transport, queue);
+        assert!(window.menu.is_open(), "the row's `⋯` opened no menu");
+    }
+
+    #[test]
+    fn a_root_rows_more_opens_the_sidebar_rows_menu() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let uri = "spotify:playlist:a";
+        sidebar_row(&mut window, uri, "Evening");
+        library_list(&mut window, RootKind::Playlists);
+
+        open_root_menu(&mut window, &mut transport, &mut queue, "Evening");
+
+        assert_eq!(
+            window.menu.listing(),
+            &Listing::Library(library_row(SidebarKind::Playlists, uri, "Evening"))
+        );
+        let labels: Vec<&str> = window
+            .menu
+            .items()
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect();
+        assert_eq!(labels, ["Copy link", "Remove from library"]);
+        assert_eq!(
+            window.menu.items().last().map(|item| item.kind),
+            Some(crate::menu::Kind::Destructive),
+            "the removal is the destructive row, drawn last"
+        );
+    }
+
+    #[test]
+    fn a_root_rows_removal_issues_its_kinds_own_write() {
+        // An editable playlist is unlinked from the rootlist.
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let uri = "spotify:playlist:a";
+        sidebar_row(&mut window, uri, "Evening");
+        library_list(&mut window, RootKind::Playlists);
+        open_root_menu(&mut window, &mut transport, &mut queue, "Evening");
+
+        assert_eq!(
+            press(&mut window, &mut transport, &mut queue, egui::Key::Delete),
+            Some(Command::RemovePlaylist {
+                playlist: uri.to_owned(),
+                revision: revision("rev-1"),
+                index: 0,
+            })
+        );
+        assert!(window.library.write_in_flight());
+
+        // A saved album is put back instead.
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let uri = "spotify:album:r";
+        window.library.apply(&Update::Playlists(Vec::new()));
+        window.library.apply(&Update::SavedAlbums(vec![SavedAlbum {
+            uri: uri.to_owned(),
+            name: "A Record".to_owned(),
+            named: true,
+            artists: String::new(),
+            year: None,
+            cover: None,
+            tracks: None,
+        }]));
+        library_list(&mut window, RootKind::Albums);
+        open_root_menu(&mut window, &mut transport, &mut queue, "A Record");
+
+        assert_eq!(
+            press(&mut window, &mut transport, &mut queue, egui::Key::Delete),
+            Some(Command::SetSaved {
+                uri: uri.to_owned(),
+                saved: false,
+            })
+        );
+        assert!(window.library.write_in_flight(), "the album's write is out");
+    }
+
+    #[test]
+    fn a_root_rows_copy_link_writes_its_url() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let uri = "spotify:playlist:4uLU6hMCjMI75M1A2tKUQC";
+        sidebar_row(&mut window, uri, "Deep Focus");
+        library_list(&mut window, RootKind::Playlists);
+        open_root_menu(&mut window, &mut transport, &mut queue, "Deep Focus");
+
+        // The pointer opened the menu and lit nothing; one step down puts the
+        // keyboard on the first row, the way a user reaching for the keys does.
+        let _ = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![key(egui::Key::ArrowDown, true)],
+        );
+        let (_, frame) = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![key(egui::Key::Enter, true)],
+        );
+
+        let copied = frame
+            .platform_output
+            .commands
+            .iter()
+            .find_map(|command| match command {
+                egui::OutputCommand::CopyText(text) => Some(text.as_str()),
+                _ => None,
+            });
+        assert_eq!(
+            copied,
+            Some("https://open.spotify.com/playlist/4uLU6hMCjMI75M1A2tKUQC")
+        );
+        assert!(!window.menu.is_open());
+    }
+
+    #[test]
+    fn a_root_rows_more_opens_nothing_while_a_write_is_in_flight() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let uri = "spotify:playlist:a";
+        sidebar_row(&mut window, uri, "Evening");
+        library_list(&mut window, RootKind::Playlists);
+        open_root_menu(&mut window, &mut transport, &mut queue, "Evening");
+        assert_eq!(
+            press(&mut window, &mut transport, &mut queue, egui::Key::Delete),
+            Some(Command::RemovePlaylist {
+                playlist: uri.to_owned(),
+                revision: revision("rev-1"),
+                index: 0,
+            })
+        );
+        assert!(window.library.write_in_flight());
+
+        let _ = click_root_more(&mut window, &mut transport, &mut queue, "Evening");
+        settle_menu(&mut window, &mut transport, &mut queue);
+
+        // The gate shuts the menu whole: there is no menu to ask what it omits.
+        assert!(!window.menu.is_open());
+
+        // The write's reply clears the gate and leaves the row where it was, so
+        // the same point pressed again opens the row's menu. Only the pair
+        // proves the gate is what shut it: the second press shows a live `⋯`
+        // sits under this point in this setup, the first shows the write alone
+        // holds it.
+        window.library.apply(&Update::PlaylistRemoveFailed {
+            playlist: uri.to_owned(),
+        });
+        assert!(!window.library.write_in_flight());
+
+        let _ = click_root_more(&mut window, &mut transport, &mut queue, "Evening");
+        settle_menu(&mut window, &mut transport, &mut queue);
+        assert!(
+            window.menu.is_open(),
+            "the `⋯` opened nothing with no write in flight"
+        );
+    }
+
+    #[test]
+    fn a_root_rows_refused_removal_is_a_dead_press() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let uri = "spotify:artist:a";
+        window.library.apply(&Update::Playlists(Vec::new()));
+        window
+            .library
+            .apply(&Update::FollowedArtists(vec![FollowedArtist {
+                uri: uri.to_owned(),
+                name: "Vela Moreno".to_owned(),
+                named: true,
+                portrait: None,
+                releases: None,
+            }]));
+        library_list(&mut window, RootKind::Artists);
+        open_root_menu(&mut window, &mut transport, &mut queue, "Vela Moreno");
+        assert_eq!(
+            window.menu.items().last().map(|item| item.verb),
+            Some(Verb::RemoveFromLibrary),
+            "the row was stripped of a removal the library still allowed"
+        );
+
+        // The list empties under the open menu, so the row the menu names is no
+        // longer saved and the write refuses.
+        window.library.apply(&Update::FollowedArtists(Vec::new()));
+        assert_eq!(
+            window.library.is_saved(uri),
+            Some(false),
+            "the removal was refused for another reason"
+        );
+
+        assert_eq!(
+            press(&mut window, &mut transport, &mut queue, egui::Key::Delete),
+            None,
+            "a refused removal produced a command"
+        );
+        assert!(!window.menu.is_open());
+        assert!(!window.library.write_in_flight());
+        assert!(
+            matches!(&window.library.followed_artists, Load::Ready(artists) if artists.is_empty()),
+            "a refused removal changed the list"
+        );
+    }
+
+    /// A point inside the sidebar row painted as `name`.
+    fn sidebar_line(output: &egui::FullOutput, window: &Window, name: &str) -> egui::Pos2 {
+        let rect = text_in(output, name, sidebar_rect(window))
+            .unwrap_or_else(|| panic!("{name:?} is painted in the sidebar"));
+        egui::Pos2::new(rect.left() + 4.0, rect.center().y)
+    }
+
+    /// Right-clicks the sidebar row painted as `name`, the way a mouse does.
+    fn right_click_sidebar_row(
+        window: &mut Window,
+        transport: &mut Transport,
+        queue: &mut Queue,
+        name: &str,
+    ) {
+        let (_, frame) = window.frame(transport, queue, Vec::new());
+        let at = sidebar_line(&frame, window, name);
+        for event in [
+            egui::Event::PointerMoved(at),
+            side(at, egui::PointerButton::Secondary, true),
+            side(at, egui::PointerButton::Secondary, false),
+        ] {
+            let _ = window.frame(transport, queue, vec![event]);
+        }
+    }
+
+    /// A sidebar holding one row of each kind, each one the user may remove.
+    fn removable_rows(window: &mut Window) {
+        sidebar_playlists(
+            window,
+            &[("Night Drive", None)],
+            Some(rootlist_access(true)),
+        );
+        window
+            .library
+            .apply(&Update::FollowedShows(vec![FollowedShow {
+                uri: "spotify:show:s".to_owned(),
+                name: "Field Notes".to_owned(),
+                named: true,
+                publisher: None,
+                cover: None,
+                episodes: None,
+            }]));
+        window
+            .library
+            .apply(&Update::FollowedArtists(vec![FollowedArtist {
+                uri: "spotify:artist:a".to_owned(),
+                name: "Vela Moreno".to_owned(),
+                named: true,
+                portrait: None,
+                releases: None,
+            }]));
+        window.library.apply(&Update::SavedAlbums(vec![SavedAlbum {
+            uri: "spotify:album:r".to_owned(),
+            name: "A Record".to_owned(),
+            named: true,
+            artists: String::new(),
+            year: None,
+            cover: None,
+            tracks: None,
+        }]));
+    }
+
+    #[test]
+    fn a_sidebar_rows_removal_asks_for_its_kinds_own_write() {
+        for (kind, name) in [
+            (SidebarKind::Playlists, "Night Drive"),
+            (SidebarKind::Albums, "A Record"),
+            (SidebarKind::Artists, "Vela Moreno"),
+            (SidebarKind::Podcasts, "Field Notes"),
+        ] {
+            let mut transport = Transport::default();
+            let mut queue = Queue::default();
+            let mut window = Window::new(Vec2::new(1400.0, 900.0));
+            removable_rows(&mut window);
+            assert!(window.library.choose_kind(kind));
+
+            right_click_sidebar_row(&mut window, &mut transport, &mut queue, name);
+            assert!(window.menu.is_open(), "{kind:?} opened no menu");
+            settle_menu(&mut window, &mut transport, &mut queue);
+
+            let command = press(&mut window, &mut transport, &mut queue, egui::Key::Delete);
+
+            let expected = match kind {
+                SidebarKind::Playlists => Command::RemovePlaylist {
+                    playlist: "playlist:Night Drive".to_owned(),
+                    revision: revision("root-1"),
+                    index: 0,
+                },
+                SidebarKind::Albums => Command::SetSaved {
+                    uri: "spotify:album:r".to_owned(),
+                    saved: false,
+                },
+                SidebarKind::Artists => Command::SetFollow {
+                    artist: "spotify:artist:a".to_owned(),
+                    followed: false,
+                },
+                SidebarKind::Podcasts => Command::SetSaved {
+                    uri: "spotify:show:s".to_owned(),
+                    saved: false,
+                },
+            };
+            assert_eq!(command, Some(expected), "{kind:?}");
+            assert!(window.library.write_in_flight(), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn a_confirmed_removal_drops_the_row_and_its_open_page_goes_home() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_playlists(
+            &mut window,
+            &[("Night Drive", None), ("Deep Focus", None)],
+            Some(rootlist_access(true)),
+        );
+        let _ = window.library.select("playlist:Night Drive");
+        assert!(window.library.page().is_some());
+
+        right_click_sidebar_row(&mut window, &mut transport, &mut queue, "Night Drive");
+        settle_menu(&mut window, &mut transport, &mut queue);
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Delete);
+        assert!(
+            matches!(command, Some(Command::RemovePlaylist { .. })),
+            "{command:?}"
+        );
+
+        window.library.apply(&Update::PlaylistRemoved {
+            playlist: "playlist:Night Drive".to_owned(),
+            revision: revision("root-2"),
+        });
+
+        assert_eq!(window.library.page(), None, "the removed page stayed open");
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            painted_at(&frame, "Deep Focus").is_some(),
+            "the other row went with it"
+        );
+        assert!(
+            painted_at(&frame, "Night Drive").is_none(),
+            "the removed row stayed in the sidebar"
+        );
+    }
+
+    #[test]
+    fn a_confirmed_removal_lands_while_the_drawer_covers_the_column() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_playlists(
+            &mut window,
+            &[("Night Drive", None), ("Deep Focus", None)],
+            Some(rootlist_access(true)),
+        );
+        let _ = window.library.select("playlist:Night Drive");
+
+        right_click_sidebar_row(&mut window, &mut transport, &mut queue, "Night Drive");
+        settle_menu(&mut window, &mut transport, &mut queue);
+        assert!(
+            matches!(
+                press(&mut window, &mut transport, &mut queue, egui::Key::Delete),
+                Some(Command::RemovePlaylist { .. })
+            ),
+            "the removal never went out"
+        );
+
+        window.drawer = Drawer::Open;
+        window.library.apply(&Update::PlaylistRemoved {
+            playlist: "playlist:Night Drive".to_owned(),
+            revision: revision("root-2"),
+        });
+
+        assert_eq!(
+            window.library.page(),
+            None,
+            "the drawer dropped the removed page's way home"
+        );
+        match &window.library.playlists {
+            Load::Ready(playlists) => assert!(
+                playlists
+                    .iter()
+                    .all(|entry| entry.uri != "playlist:Night Drive"),
+                "the removed row stayed in the list"
+            ),
+            other => panic!("the list was dropped: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn del_on_a_bare_focused_row_removes_nothing() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_playlists(
+            &mut window,
+            &[("Night Drive", None)],
+            Some(rootlist_access(true)),
+        );
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let at = sidebar_line(&frame, &window, "Night Drive");
+        for pressed in [true, false] {
+            let _ = window.frame(
+                &mut transport,
+                &mut queue,
+                vec![side(at, egui::PointerButton::Primary, pressed)],
+            );
+        }
+        assert!(
+            window.ctx.memory(|memory| memory.focused()).is_some(),
+            "the click left the row without the keyboard"
+        );
+
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Delete);
+
+        assert_eq!(command, None, "a bare row unlinked a playlist");
+        assert!(!window.library.write_in_flight());
+    }
+
+    #[test]
+    fn a_sidebar_row_opens_no_menu_while_a_write_is_in_flight() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_playlists(
+            &mut window,
+            &[("Night Drive", None), ("Deep Focus", None)],
+            Some(rootlist_access(true)),
+        );
+        assert!(
+            window
+                .library
+                .move_playlist(0, 2, "playlist:Night Drive")
+                .is_some()
+        );
+
+        right_click_sidebar_row(&mut window, &mut transport, &mut queue, "Deep Focus");
+
+        assert!(!window.menu.is_open(), "a menu opened over a write");
+    }
+
+    #[test]
+    fn escape_closes_a_sidebar_rows_menu_back_to_its_row() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_playlists(
+            &mut window,
+            &[("Night Drive", None)],
+            Some(rootlist_access(true)),
+        );
+        right_click_sidebar_row(&mut window, &mut transport, &mut queue, "Night Drive");
+        assert!(window.menu.is_open());
+        let opener = window.menu.opener().expect("a door names its opener");
+        settle_menu(&mut window, &mut transport, &mut queue);
+
+        let _ = press(&mut window, &mut transport, &mut queue, egui::Key::Escape);
+
+        assert!(!window.menu.is_open());
+        assert_eq!(
+            window.ctx.memory(|memory| memory.focused()),
+            Some(opener),
+            "the keyboard went somewhere other than the row"
+        );
+    }
+    /// Applies a rename the way the menu's Rename row would.
+    fn try_rename(
+        window: &mut Window,
+        uri: &str,
+        surface: crate::naming::Surface,
+    ) -> Option<Command> {
+        let ctx = window.ctx.clone();
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let item = library_row(SidebarKind::Playlists, uri, uri);
+        let mut command = None;
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, window.size)),
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| {
+            let mut screen = Screen {
+                state: &mut window.state,
+                library: &mut window.library,
+                transport: &mut transport,
+                queue: &mut queue,
+                drawer: &mut window.drawer,
+                menu: &mut window.menu,
+                position_ms: 0,
+                art: &mut window.art,
+                now: window.now,
+                now_ms: 0,
+                pane: &mut window.pane,
+            };
+            command = apply_rename(ui, &mut screen, &item, surface);
+        });
+        output.textures_delta.clear();
+        command
+    }
+
+    #[test]
+    fn apply_rename_opens_the_field_on_the_row_or_the_band() {
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_row(&mut window, "spotify:playlist:a", "A");
+
+        assert_eq!(
+            try_rename(
+                &mut window,
+                "spotify:playlist:a",
+                crate::naming::Surface::Row
+            ),
+            None
+        );
+        assert!(
+            window
+                .library
+                .renaming
+                .is_open_on("spotify:playlist:a", crate::naming::Surface::Row)
+        );
+
+        window.library.renaming.force_close();
+        assert_eq!(
+            try_rename(
+                &mut window,
+                "spotify:playlist:a",
+                crate::naming::Surface::Band
+            ),
+            None
+        );
+        assert!(
+            window
+                .library
+                .renaming
+                .is_open_on("spotify:playlist:a", crate::naming::Surface::Band)
+        );
+    }
+
+    #[test]
+    fn apply_rename_drops_the_intent_when_the_field_cannot_be_seen() {
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_row(&mut window, "spotify:playlist:a", "A");
+
+        window.drawer = Drawer::Open;
+        assert_eq!(
+            try_rename(
+                &mut window,
+                "spotify:playlist:a",
+                crate::naming::Surface::Row
+            ),
+            None
+        );
+        assert!(
+            !window.library.renaming.is_open(),
+            "the drawer hid the field"
+        );
+        window.drawer = Drawer::Closed;
+
+        carry::lift(&window.ctx, carried_rows(egui::Id::unique("list"), vec![0]));
+        assert_eq!(
+            try_rename(
+                &mut window,
+                "spotify:playlist:a",
+                crate::naming::Surface::Row
+            ),
+            None
+        );
+        assert!(
+            !window.library.renaming.is_open(),
+            "a carried block held the field shut"
+        );
+        egui::DragAndDrop::clear_payload(&window.ctx);
+    }
+
+    #[test]
+    fn apply_rename_leaves_a_typed_field_alone() {
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        creatable_sidebar(&mut window);
+        open_naming(&mut window, &mut transport, &mut queue);
+        assert!(window.ctx.text_edit_focused());
+
+        assert_eq!(
+            try_rename(&mut window, "playlist:a", crate::naming::Surface::Row),
+            None
+        );
+        assert!(
+            !window.library.renaming.is_open(),
+            "a typed field was replaced"
+        );
+    }
+
+    /// Opens a sidebar row's menu with Rename on it.
+    fn open_rename_menu(window: &mut Window, row: LibraryItem) {
+        let request = crate::menu::Request {
+            door: crate::menu::Door {
+                anchor: crate::menu::Anchor::Button(Rect::from_min_size(
+                    egui::Pos2::new(60.0, 300.0),
+                    Vec2::new(28.0, 28.0),
+                )),
+                opener: egui::Id::unique("library-row"),
+                device: crate::menu::Device::Keyboard,
+            },
+            playlists: Vec::new(),
+            items: crate::verbs::library_items(
+                &row,
+                crate::verbs::LibraryRights {
+                    renamable: true,
+                    removable: true,
+                    saved: Some(true),
+                },
+            ),
+            targets: Vec::new(),
+            rows: Vec::new(),
+            listing: Listing::Library(row),
+            page: window.library.page().cloned(),
+        };
+        assert!(
+            window.menu.open(request, Gate::default()),
+            "the menu opened"
+        );
+    }
+
+    /// Opens a row's rename field from its menu and waits for the keyboard.
+    fn open_row_rename(
+        window: &mut Window,
+        transport: &mut Transport,
+        queue: &mut Queue,
+        uri: &str,
+        name: &str,
+    ) {
+        open_rename_menu(window, library_row(SidebarKind::Playlists, uri, name));
+        settle_menu(window, transport, queue);
+        let _ = press(window, transport, queue, egui::Key::Enter);
+        let _ = window.frame(transport, queue, Vec::new());
+        let _ = window.frame(transport, queue, Vec::new());
+        assert!(
+            window
+                .library
+                .renaming
+                .is_open_on(uri, crate::naming::Surface::Row),
+            "the Rename row opened no field"
+        );
+        assert!(
+            window.ctx.text_edit_focused(),
+            "the keyboard did not follow the field"
+        );
+    }
+
+    #[test]
+    fn a_row_menu_rename_opens_the_field_with_the_current_name() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_row(&mut window, "spotify:playlist:a", "A");
+
+        open_row_rename(
+            &mut window,
+            &mut transport,
+            &mut queue,
+            "spotify:playlist:a",
+            "A",
+        );
+
+        assert_eq!(window.library.renaming.text(), "A");
+        assert!(!window.library.write_in_flight());
+    }
+
+    #[test]
+    fn typing_and_enter_sends_the_trimmed_name() {
+        for (typed, expected) in [
+            ("  Night É  ".to_owned(), "Night É".to_owned()),
+            ("é".repeat(100), "é".repeat(100)),
+        ] {
+            let mut transport = Transport::default();
+            let mut queue = Queue::default();
+            let mut window = Window::new(Vec2::new(1400.0, 900.0));
+            sidebar_row(&mut window, "spotify:playlist:a", "A");
+            open_row_rename(
+                &mut window,
+                &mut transport,
+                &mut queue,
+                "spotify:playlist:a",
+                "A",
+            );
+
+            window.library.renaming.edit().clear();
+            type_text(&mut window, &mut transport, &mut queue, &typed);
+            let command = press(&mut window, &mut transport, &mut queue, egui::Key::Enter);
+
+            assert_eq!(
+                command,
+                Some(Command::RenamePlaylist {
+                    playlist: "spotify:playlist:a".to_owned(),
+                    name: expected,
+                })
+            );
+            assert!(window.library.renaming.writing());
+        }
+    }
+
+    #[test]
+    fn escape_closes_the_row_field_and_sends_nothing() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_row(&mut window, "spotify:playlist:a", "A");
+        open_row_rename(
+            &mut window,
+            &mut transport,
+            &mut queue,
+            "spotify:playlist:a",
+            "A",
+        );
+
+        window.library.renaming.edit().clear();
+        type_text(&mut window, &mut transport, &mut queue, "New");
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Escape);
+
+        assert_eq!(command, None);
+        assert!(!window.library.renaming.is_open());
+        assert!(!window.library.write_in_flight());
+    }
+
+    #[test]
+    fn a_blank_blur_cancels_but_a_named_blur_stays_open() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_row(&mut window, "spotify:playlist:a", "A");
+        open_row_rename(
+            &mut window,
+            &mut transport,
+            &mut queue,
+            "spotify:playlist:a",
+            "A",
+        );
+
+        window.library.renaming.edit().clear();
+        let id = window
+            .ctx
+            .memory(|memory| memory.focused())
+            .expect("a focus");
+        window.ctx.memory_mut(|memory| memory.surrender_focus(id));
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(!window.library.renaming.is_open(), "a blank blur stayed");
+
+        sidebar_row(&mut window, "spotify:playlist:a", "A");
+        open_row_rename(
+            &mut window,
+            &mut transport,
+            &mut queue,
+            "spotify:playlist:a",
+            "A",
+        );
+        let id = window
+            .ctx
+            .memory(|memory| memory.focused())
+            .expect("a focus");
+        window.ctx.memory_mut(|memory| memory.surrender_focus(id));
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            window.library.renaming.is_open(),
+            "a named blur lost the name"
+        );
+        assert_eq!(window.library.renaming.text(), "A");
+    }
+
+    #[test]
+    fn delete_inside_the_row_field_edits_text_and_removes_nothing() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_row(&mut window, "spotify:playlist:a", "A");
+        open_row_rename(
+            &mut window,
+            &mut transport,
+            &mut queue,
+            "spotify:playlist:a",
+            "A",
+        );
+
+        type_text(&mut window, &mut transport, &mut queue, "B");
+        let _ = press(&mut window, &mut transport, &mut queue, egui::Key::Home);
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Delete);
+
+        assert_eq!(command, None, "Del started a removal");
+        assert_eq!(window.library.renaming.text(), "B", "Del left the text");
+        assert_eq!(sidebar_order(&window), ["A"], "Del removed the row");
+        assert!(!window.library.write_in_flight());
+    }
+
+    #[test]
+    fn a_drag_from_the_open_row_begins_no_carry() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_row(&mut window, "spotify:playlist:a", "A");
+        open_row_rename(
+            &mut window,
+            &mut transport,
+            &mut queue,
+            "spotify:playlist:a",
+            "A",
+        );
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let from = sidebar_line(&frame, &window, "A");
+        let to = from + Vec2::new(0.0, sidebar::ROW_H + 8.0);
+
+        let command = window.drag(&mut transport, &mut queue, from, to);
+
+        assert_eq!(command, None);
+        assert!(
+            !carry::carrying(&window.ctx),
+            "a drag out of the field began a carry"
+        );
+        assert!(window.library.renaming.is_open());
+    }
+
+    #[test]
+    fn no_menu_opens_on_another_row_while_the_rename_writes() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_playlists(
+            &mut window,
+            &[("A", Some(0)), ("B", Some(0))],
+            Some(rootlist_access(true)),
+        );
+        open_row_rename(&mut window, &mut transport, &mut queue, "playlist:A", "A");
+        type_text(&mut window, &mut transport, &mut queue, "New");
+        assert!(press(&mut window, &mut transport, &mut queue, egui::Key::Enter).is_some());
+        assert!(window.library.write_in_flight());
+
+        right_click_sidebar_row(&mut window, &mut transport, &mut queue, "B");
+
+        assert_eq!(
+            crate::view::context_menu::take_request(&window.ctx),
+            None,
+            "a menu opened over a rename in flight"
+        );
+    }
+
+    #[test]
+    fn a_confirmed_row_rename_paints_the_new_name() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_row(&mut window, "spotify:playlist:a", "A");
+        open_row_rename(
+            &mut window,
+            &mut transport,
+            &mut queue,
+            "spotify:playlist:a",
+            "A",
+        );
+        type_text(&mut window, &mut transport, &mut queue, "New Name");
+        assert!(press(&mut window, &mut transport, &mut queue, egui::Key::Enter).is_some());
+
+        window.library.apply(&Update::PlaylistRenamed {
+            playlist: "spotify:playlist:a".to_owned(),
+            name: "New Name".to_owned(),
+            revision: revision("rev-2"),
+        });
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+
+        assert!(
+            text_in(&frame, "New Name", sidebar_rect(&window)).is_some(),
+            "the row still paints its old name"
+        );
+        assert!(!window.library.renaming.is_open());
+    }
+
+    #[test]
+    fn a_failed_row_rename_keeps_the_field_and_shows_the_foot_sentence() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_row(&mut window, "spotify:playlist:a", "A");
+        open_row_rename(
+            &mut window,
+            &mut transport,
+            &mut queue,
+            "spotify:playlist:a",
+            "A",
+        );
+        window.library.renaming.edit().clear();
+        type_text(&mut window, &mut transport, &mut queue, "New");
+        assert!(press(&mut window, &mut transport, &mut queue, egui::Key::Enter).is_some());
+
+        window.library.apply(&Update::PlaylistRenameFailed {
+            playlist: "spotify:playlist:a".to_owned(),
+        });
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+
+        assert!(window.library.renaming.is_open());
+        assert_eq!(window.library.renaming.text(), "New");
+        assert!(
+            text_in(
+                &frame,
+                crate::signin::failure_message(Failure::Rename),
+                sidebar_rect(&window)
+            )
+            .is_some(),
+            "the foot did not say why the field stayed"
+        );
+    }
+
+    /// The row's own widget id, taken from a press on it: a press on the row
+    /// takes the keyboard, which is the place Tab continues from.
+    fn press_sidebar_row(
+        window: &mut Window,
+        transport: &mut Transport,
+        queue: &mut Queue,
+        name: &str,
+    ) -> egui::Id {
+        let (_, frame) = window.frame(transport, queue, Vec::new());
+        let at = sidebar_line(&frame, window, name);
+        for event in crate::view::test_support::click_events(at) {
+            let _ = window.frame(transport, queue, vec![event]);
+        }
+        window
+            .ctx
+            .memory(|memory| memory.focused())
+            .expect("the row took no keyboard")
+    }
+
+    /// The band title's widget id, taken from the press that opens its field:
+    /// a press on the title takes the keyboard before the field draws.
+    fn press_band_title(
+        window: &mut Window,
+        transport: &mut Transport,
+        queue: &mut Queue,
+        name: &str,
+    ) -> egui::Id {
+        let (_, frame) = window.frame(transport, queue, Vec::new());
+        let at = text_in(&frame, name, view_rect(window))
+            .unwrap_or_else(|| panic!("{name:?} is painted in the band"))
+            .center();
+        for event in crate::view::test_support::click_events(at) {
+            let _ = window.frame(transport, queue, vec![event]);
+        }
+        assert!(
+            window
+                .library
+                .renaming
+                .is_open_on("playlist:Mix", crate::naming::Surface::Band),
+            "the title opened no field"
+        );
+        window
+            .ctx
+            .memory(|memory| memory.focused())
+            .expect("the title took no keyboard")
+    }
+
+    #[test]
+    fn escape_on_the_row_field_hands_the_keyboard_back_to_its_row() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_row(&mut window, "spotify:playlist:a", "A");
+        let row = press_sidebar_row(&mut window, &mut transport, &mut queue, "A");
+
+        open_row_rename(
+            &mut window,
+            &mut transport,
+            &mut queue,
+            "spotify:playlist:a",
+            "A",
+        );
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Escape);
+
+        assert_eq!(command, None);
+        assert!(!window.library.renaming.is_open());
+        assert!(
+            window.ctx.memory(|memory| memory.has_focus(row)),
+            "Escape left the keyboard nowhere"
+        );
+    }
+
+    #[test]
+    fn a_confirmed_row_rename_hands_the_keyboard_back_to_its_row() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_row(&mut window, "spotify:playlist:a", "A");
+        let row = press_sidebar_row(&mut window, &mut transport, &mut queue, "A");
+
+        open_row_rename(
+            &mut window,
+            &mut transport,
+            &mut queue,
+            "spotify:playlist:a",
+            "A",
+        );
+        type_text(&mut window, &mut transport, &mut queue, "New");
+        assert!(
+            press(&mut window, &mut transport, &mut queue, egui::Key::Enter).is_some(),
+            "Enter sent nothing"
+        );
+        window.library.apply(&Update::PlaylistRenamed {
+            playlist: "spotify:playlist:a".to_owned(),
+            name: "New".to_owned(),
+            revision: revision("rev-2"),
+        });
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+
+        assert!(!window.library.renaming.is_open());
+        assert!(
+            window.ctx.memory(|memory| memory.has_focus(row)),
+            "a confirmed rename left the keyboard nowhere"
+        );
+    }
+
+    #[test]
+    fn escape_on_the_band_field_hands_the_keyboard_back_to_the_title() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        band_page(&mut window);
+        let title = press_band_title(&mut window, &mut transport, &mut queue, "Mix");
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            window.ctx.text_edit_focused(),
+            "the band field has no keyboard"
+        );
+
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Escape);
+
+        assert_eq!(command, None);
+        assert!(!window.library.renaming.is_open());
+        assert!(
+            window.ctx.memory(|memory| memory.has_focus(title)),
+            "Escape left the keyboard nowhere"
+        );
+    }
+
+    #[test]
+    fn a_confirmed_band_rename_hands_the_keyboard_back_to_the_title() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        band_page(&mut window);
+        let title = press_band_title(&mut window, &mut transport, &mut queue, "Mix");
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        type_text(&mut window, &mut transport, &mut queue, "New");
+        assert!(
+            press(&mut window, &mut transport, &mut queue, egui::Key::Enter).is_some(),
+            "Enter sent nothing"
+        );
+        window.library.apply(&Update::PlaylistRenamed {
+            playlist: "playlist:Mix".to_owned(),
+            name: "New".to_owned(),
+            revision: revision("rev-2"),
+        });
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+
+        assert!(!window.library.renaming.is_open());
+        assert!(
+            window.ctx.memory(|memory| memory.has_focus(title)),
+            "a confirmed rename left the keyboard nowhere"
+        );
+    }
+
+    #[test]
+    fn a_row_field_closes_when_the_sidebar_leaves_the_column() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_row(&mut window, "spotify:playlist:a", "A");
+        open_row_rename(
+            &mut window,
+            &mut transport,
+            &mut queue,
+            "spotify:playlist:a",
+            "A",
+        );
+
+        // Below the rail width the column is gone: the drawer is the sidebar,
+        // and it is closed.
+        window.size = Vec2::new(900.0, 900.0);
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+
+        assert!(
+            !window.library.renaming.is_open(),
+            "the rail kept a field no row draws"
+        );
+    }
+
+    #[test]
+    fn escape_after_a_failed_row_rename_takes_the_sentence_with_it() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_row(&mut window, "spotify:playlist:a", "A");
+        open_row_rename(
+            &mut window,
+            &mut transport,
+            &mut queue,
+            "spotify:playlist:a",
+            "A",
+        );
+        window.library.renaming.edit().clear();
+        type_text(&mut window, &mut transport, &mut queue, "New");
+        assert!(press(&mut window, &mut transport, &mut queue, egui::Key::Enter).is_some());
+        window.library.apply(&Update::PlaylistRenameFailed {
+            playlist: "spotify:playlist:a".to_owned(),
+        });
+        // The reply asks for the keyboard back. The field owns the Escape
+        // after that, even though egui stores a filter only for a widget that
+        // had focus last frame.
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert_eq!(
+            window.library.sidebar_notice,
+            Some(crate::library::SidebarWrite::Rename)
+        );
+        assert!(
+            text_in(
+                &frame,
+                crate::signin::failure_message(Failure::Rename),
+                sidebar_rect(&window)
+            )
+            .is_some(),
+            "the foot never said why"
+        );
+
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Escape);
+
+        assert_eq!(command, None);
+        assert!(!window.library.renaming.is_open());
+        assert_eq!(
+            window.library.sidebar_notice, None,
+            "the failed rename's sentence outlived its field"
+        );
+    }
+
+    #[test]
+    fn escape_after_a_failed_band_rename_takes_both_sentences_with_it() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        band_page(&mut window);
+        let _ = press_band_title(&mut window, &mut transport, &mut queue, "Mix");
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        type_text(&mut window, &mut transport, &mut queue, "New");
+        assert!(press(&mut window, &mut transport, &mut queue, egui::Key::Enter).is_some());
+        window.library.apply(&Update::PlaylistRenameFailed {
+            playlist: "playlist:Mix".to_owned(),
+        });
+        // The reply asks for the keyboard back, and the field owns the Escape
+        // after that.
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        assert_eq!(
+            window.library.sidebar_notice,
+            Some(crate::library::SidebarWrite::Rename)
+        );
+        assert_eq!(page_notice(&window), Some(Failure::Rename));
+
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Escape);
+
+        assert_eq!(command, None);
+        assert!(!window.library.renaming.is_open());
+        assert_eq!(
+            window.library.sidebar_notice, None,
+            "the foot's sentence outlived the field"
+        );
+        assert_eq!(
+            page_notice(&window),
+            None,
+            "the page's sentence outlived the field"
+        );
+    }
+
+    /// A failed rename asks for the keyboard back in the reply's own frame.
+    /// The first Escape after that must close the field: a second press is not
+    /// the user's first answer, and the field may not have one coming.
+    #[test]
+    fn one_escape_closes_a_row_field_after_a_failed_rename() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_row(&mut window, "spotify:playlist:a", "A");
+        open_row_rename(
+            &mut window,
+            &mut transport,
+            &mut queue,
+            "spotify:playlist:a",
+            "A",
+        );
+        window.library.renaming.edit().clear();
+        type_text(&mut window, &mut transport, &mut queue, "New");
+        assert!(press(&mut window, &mut transport, &mut queue, egui::Key::Enter).is_some());
+        window.library.apply(&Update::PlaylistRenameFailed {
+            playlist: "spotify:playlist:a".to_owned(),
+        });
+        // The reply's frame is the one that asks for the keyboard back.
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            window.ctx.text_edit_focused(),
+            "the failed rename left the field without the keyboard"
+        );
+
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Escape);
+
+        assert_eq!(command, None);
+        assert!(
+            !window.library.renaming.is_open(),
+            "one Escape after the failure was swallowed"
+        );
+    }
+
+    /// The band field's half of the same claim: the failed reply hands the
+    /// keyboard back, and the very next Escape is the one that closes it.
+    #[test]
+    fn one_escape_closes_a_band_field_after_a_failed_rename() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        band_page(&mut window);
+        let _ = press_band_title(&mut window, &mut transport, &mut queue, "Mix");
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        type_text(&mut window, &mut transport, &mut queue, "New");
+        assert!(press(&mut window, &mut transport, &mut queue, egui::Key::Enter).is_some());
+        window.library.apply(&Update::PlaylistRenameFailed {
+            playlist: "playlist:Mix".to_owned(),
+        });
+        // The reply's frame is the one that asks for the keyboard back.
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            window.ctx.text_edit_focused(),
+            "the failed rename left the band field without the keyboard"
+        );
+
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Escape);
+
+        assert_eq!(command, None);
+        assert!(
+            !window.library.renaming.is_open(),
+            "one Escape after the failure was swallowed"
+        );
+    }
+
+    #[test]
+    fn a_dismissed_row_field_takes_the_failed_rename_sentence_with_it() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_row(&mut window, "spotify:playlist:a", "A");
+        open_row_rename(
+            &mut window,
+            &mut transport,
+            &mut queue,
+            "spotify:playlist:a",
+            "A",
+        );
+        window.library.renaming.edit().clear();
+        type_text(&mut window, &mut transport, &mut queue, "New");
+        assert!(press(&mut window, &mut transport, &mut queue, egui::Key::Enter).is_some());
+        window.library.apply(&Update::PlaylistRenameFailed {
+            playlist: "spotify:playlist:a".to_owned(),
+        });
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        assert_eq!(
+            window.library.sidebar_notice,
+            Some(crate::library::SidebarWrite::Rename)
+        );
+
+        // A chip change dismisses the row's field rather than cancelling it.
+        assert!(window.library.choose_kind(SidebarKind::Podcasts));
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+
+        assert!(!window.library.renaming.is_open());
+        assert_eq!(
+            window.library.sidebar_notice, None,
+            "a dismissed field kept the sentence it explained"
+        );
+    }
+
+    /// The sentence a playlist page carries, when it carries one.
+    fn page_notice(window: &Window) -> Option<Failure> {
+        match &window.library.tracks {
+            Load::Ready(tracks) => tracks.notice,
+            Load::Idle | Load::Loading | Load::Failed(_) => None,
+        }
+    }
+
+    #[test]
+    fn a_chip_change_dismisses_an_open_row_field() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_row(&mut window, "spotify:playlist:a", "A");
+        open_row_rename(
+            &mut window,
+            &mut transport,
+            &mut queue,
+            "spotify:playlist:a",
+            "A",
+        );
+
+        assert!(window.library.choose_kind(SidebarKind::Podcasts));
+
+        assert!(!window.library.renaming.is_open());
+    }
+
+    /// Posts a band menu the way the band's "…" does.
+    fn open_band_menu(window: &mut Window, row: LibraryItem, rights: crate::verbs::LibraryRights) {
+        let request = crate::menu::Request {
+            door: crate::menu::Door {
+                anchor: crate::menu::Anchor::Button(Rect::from_min_size(
+                    egui::Pos2::new(60.0, 300.0),
+                    Vec2::new(28.0, 28.0),
+                )),
+                opener: egui::Id::unique("band-more"),
+                device: crate::menu::Device::Keyboard,
+            },
+            playlists: Vec::new(),
+            items: crate::verbs::library_items(&row, rights),
+            targets: Vec::new(),
+            rows: Vec::new(),
+            listing: Listing::Band(row),
+            page: window.library.page().cloned(),
+        };
+        assert!(
+            window.menu.open(request, Gate::default()),
+            "the menu opened"
+        );
+    }
+
+    /// A playlist page whose sidebar row is the same playlist.
+    fn band_page(window: &mut Window) {
+        sidebar_playlists(window, &[("Mix", Some(0))], Some(rootlist_access(true)));
+        window.library.select("playlist:Mix");
+        window.library.apply(&Update::Tracks {
+            playlist: "playlist:Mix".to_owned(),
+            tracks: vec![TrackEntry {
+                uri: "list:p0".to_owned(),
+                title: "p0".to_owned(),
+                ..track(0, None)
+            }],
+            cover: None,
+            access: page_access(true),
+        });
+    }
+
+    #[test]
+    fn removing_from_the_band_menu_unlinks_and_takes_the_page_home() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        band_page(&mut window);
+        let row = library_row(SidebarKind::Playlists, "playlist:Mix", "Mix");
+        open_band_menu(
+            &mut window,
+            row,
+            crate::verbs::LibraryRights {
+                renamable: true,
+                removable: true,
+                saved: Some(true),
+            },
+        );
+        settle_menu(&mut window, &mut transport, &mut queue);
+
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Delete);
+
+        assert_eq!(
+            command,
+            Some(Command::RemovePlaylist {
+                playlist: "playlist:Mix".to_owned(),
+                revision: revision("root-1"),
+                index: 0,
+            })
+        );
+        window.library.apply(&Update::PlaylistRemoved {
+            playlist: "playlist:Mix".to_owned(),
+            revision: revision("root-2"),
+        });
+        assert!(
+            window.library.page().is_none(),
+            "the page stayed after its list left"
+        );
+    }
+
+    #[test]
+    fn copy_link_on_the_band_menu_writes_the_playlist_url() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let uri = "spotify:playlist:4uLU6hMCjMI75M1A2tKUQC";
+        sidebar_row(&mut window, uri, "Deep Focus");
+        window.library.select(uri);
+        let row = library_row(SidebarKind::Playlists, uri, "Deep Focus");
+        open_band_menu(
+            &mut window,
+            row,
+            crate::verbs::LibraryRights {
+                renamable: false,
+                removable: false,
+                saved: Some(true),
+            },
+        );
+        settle_menu(&mut window, &mut transport, &mut queue);
+
+        let (_, frame) = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![key(egui::Key::Enter, true)],
+        );
+        let copied = frame
+            .platform_output
+            .commands
+            .iter()
+            .find_map(|command| match command {
+                egui::OutputCommand::CopyText(text) => Some(text.as_str()),
+                _ => None,
+            });
+        assert_eq!(
+            copied,
+            Some("https://open.spotify.com/playlist/4uLU6hMCjMI75M1A2tKUQC")
         );
     }
 }

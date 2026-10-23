@@ -100,10 +100,10 @@ pub enum Item<'a> {
 
 /// The cards for the chosen chip.
 ///
-/// All shows the playlists then the followed shows, which is what the library
-/// has always drawn first; the two newer kinds narrow to their own lists rather
-/// than joining it. An empty list is not an error, so a chip with nothing
-/// behind it draws the empty copy.
+/// All is every kind in one column, in the chips' own order: the playlists and
+/// the shows the library has always drawn first, then the artists and the
+/// albums. A chip of its own narrows to its list. An empty list is not an
+/// error, so a chip with nothing behind it draws the empty copy.
 pub fn items<'a>(
     chosen: RootKind,
     playlists: &'a [PlaylistEntry],
@@ -116,6 +116,8 @@ pub fn items<'a>(
             .iter()
             .map(Item::Playlist)
             .chain(followed.iter().map(Item::Show))
+            .chain(artists.iter().map(Item::Artist))
+            .chain(albums.iter().map(Item::Album))
             .collect(),
         RootKind::Playlists => playlists.iter().map(Item::Playlist).collect(),
         RootKind::Artists => artists.iter().map(Item::Artist).collect(),
@@ -210,7 +212,7 @@ mod tests {
     }
 
     #[test]
-    fn all_shows_playlists_then_shows() {
+    fn all_shows_every_kind_in_the_chips_order() {
         let playlists = vec![playlist("p")];
         let shows = vec![show("s")];
         let artists = vec![artist("a")];
@@ -218,7 +220,9 @@ mod tests {
         let items = items(RootKind::All, &playlists, &shows, &artists, &albums);
         assert_eq!(items[0], Item::Playlist(&playlist("p")));
         assert_eq!(items[1], Item::Show(&show("s")));
-        assert_eq!(items.len(), 2, "the two newer kinds stay out of All");
+        assert_eq!(items[2], Item::Artist(&artist("a")));
+        assert_eq!(items[3], Item::Album(&album("b")));
+        assert_eq!(items.len(), 4, "a kind was left out of All");
     }
 
     #[test]

@@ -27,6 +27,7 @@ use crate::theme::{Tokens, extent};
 use crate::view::text as recipe;
 
 use super::carry::{self, Ghost};
+use super::heart;
 use super::section;
 use super::skeleton;
 use super::track_list::{head, list_rect};
@@ -53,6 +54,10 @@ pub fn search_view(
         return None;
     };
     let query = query.clone();
+    // The page a row's menu is about, so a verb that leads here is omitted and a
+    // page change can close the menu.
+    let here = Page::Search(query.clone());
+    let writing = library.write_in_flight();
 
     // No leading gap here: `tracks_view` adds the page's one gap before it
     // dispatches, and a second would start the page a step lower than every
@@ -135,6 +140,7 @@ pub fn search_view(
                             Id::unique(("search-tracks", query.as_str())),
                             count,
                         );
+                        let gate = selection.gate(writing);
 
                         for (index, entry) in tracks.iter().enumerate() {
                             let rect = table_layout::row_rect(list, index, extent::ROW_H);
@@ -157,6 +163,8 @@ pub fn search_view(
                                 state: state_of(&entry.uri, transport),
                                 cover: art.look(entry.cover.as_ref(), now),
                                 look: selection.look(index),
+                                menu: gate.allows(),
+                                liked: library.likes.state(&entry.uri),
                             };
                             // R16: a row plays the whole answer, entered here, so
                             // next and previous walk the results.
@@ -166,6 +174,27 @@ pub fn search_view(
                                 }
                                 Some(Click::Open(page)) => open = Some(page),
                                 Some(Click::Select(press)) => selection.press(index, press),
+                                Some(Click::Like(liked)) => {
+                                    heart::post(
+                                        ui.ctx(),
+                                        heart::Ask {
+                                            tracks: vec![entry.uri.clone()],
+                                            liked,
+                                        },
+                                    );
+                                }
+                                Some(Click::Menu(door)) => selection.menu(
+                                    ui.ctx(),
+                                    door,
+                                    index,
+                                    gate,
+                                    carry::Open {
+                                        listing: carry::Listing::Page,
+                                        here: Some(&here),
+                                        likes: &library.likes,
+                                    },
+                                    |row| tracks.get(row).cloned(),
+                                ),
                                 Some(Click::Lift) => {
                                     let ghost = Ghost::Table(row.lifted(columns));
                                     selection.lift(index, rect.size(), ghost, |row| {
@@ -275,6 +304,25 @@ mod tests {
         });
         output.textures_delta.clear();
         (command, output)
+    }
+
+    #[test]
+    fn a_right_click_posts_the_results_menu() {
+        let ctx = context();
+        let mut library = answered("a", 2);
+        let (_, output) = frame(&ctx, &mut library);
+        let at = text_rect(&output, "t1")
+            .expect("the second result is painted")
+            .center();
+
+        for event in crate::view::test_support::secondary_click_events(at) {
+            let _ = frame_with(&ctx, &mut library, vec![event]);
+        }
+        let request = crate::view::context_menu::take_request(&ctx)
+            .expect("a right-click on a result posted a request");
+        assert_eq!(request.targets.len(), 1);
+        assert_eq!(request.targets[0].uri, "t1");
+        assert_eq!(request.page, Some(Page::Search("a".to_owned())));
     }
 
     /// The rect a painted label occupies, read back from the frame.

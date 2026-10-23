@@ -15,13 +15,17 @@ use crate::availability::Control;
 use crate::icon::{self, Icon};
 use crate::layout::{self, Sidebar};
 use crate::library::Library;
+use crate::library_filter::RootKind;
+use crate::route::Page;
 use crate::search::{Act, KeyInput, MenuView};
 use crate::theme::icon::Size;
 use crate::theme::{
     MonoWeight, Tokens, Weight, extent, fonts, radius, space, stroke, text, tracking,
 };
+use crate::trail::Target;
 
 use super::controls;
+use super::keys::{FIELD_FILTER, pressed, pressed_once};
 use super::shell::{row_centred, rule};
 use super::text as recipe;
 
@@ -57,14 +61,18 @@ pub struct Field {
 }
 
 /// A move the topbar can ask the shell for.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Nav {
     /// Back to the previous page.
     Back,
     /// Forward to the page Back left behind.
     Forward,
-    /// Back to the library root, which is Home.
+    /// Back to the library root, which is Home, showing the chip it showed.
     Home,
+    /// Back to the library root, showing one chip.
+    Root(RootKind),
+    /// Open a page.
+    Page(Page),
 }
 
 /// Draws the topbar inside `rect`.
@@ -128,6 +136,7 @@ pub fn show(
         ];
         let side = extent::BUTTON;
         let top = crate::view::shell::row_centre(ui) - side / 2.0;
+        let last = cluster.len() - 1;
         for (index, (control, glyph, label, requested, live, current)) in
             cluster.into_iter().enumerate()
         {
@@ -148,7 +157,7 @@ pub fn show(
             }
             // The cluster is exactly its buttons and the gaps between them, so
             // the last one gets no trailing gap to overflow the row by.
-            let advance = if index + 1 == cluster.len() {
+            let advance = if index == last {
                 extent::BUTTON
             } else {
                 extent::BUTTON + space::S1
@@ -160,8 +169,13 @@ pub fn show(
     // The trail draws before the field, because the crumbs borrow the library
     // the field has to be edited through: once `trail` returns, the borrow is
     // done and the search state is free.
-    if trail(ui, &crumbs, places.trail, tokens) {
-        nav = Some(Nav::Home);
+    if let Some((index, target)) = trail(ui, &crumbs, places.trail, tokens) {
+        // Home leads to the root as it is; a list crumb sets the chip it names.
+        nav = Some(match (index, target) {
+            (0, _) => Nav::Home,
+            (_, Target::Root(kind)) => Nav::Root(kind),
+            (_, Target::Page(page)) => Nav::Page(page),
+        });
     }
     let search_field = search(ui, places.search, &mut library.search, tokens);
 
@@ -209,11 +223,17 @@ fn strokes(crumbs: &[crate::trail::Crumb<'_>]) -> f32 {
 }
 
 /// The path you came by, flush against the topbar's right padding.
-fn trail(ui: &mut Ui, crumbs: &[crate::trail::Crumb<'_>], rect: Rect, tokens: &Tokens) -> bool {
+/// The crumb a click landed on, with where it leads.
+fn trail(
+    ui: &mut Ui,
+    crumbs: &[crate::trail::Crumb<'_>],
+    rect: Rect,
+    tokens: &Tokens,
+) -> Option<(usize, Target)> {
     let font = FontId::new(text::XXS, fonts::mono(MonoWeight::Medium));
     let spacing = recipe::tracking_pts(text::XXS, tracking::WIDE);
     let mut x = rect.left();
-    let mut clicked = false;
+    let mut clicked = None;
 
     for (index, crumb) in crumbs.iter().enumerate() {
         if index > 0 {
@@ -252,12 +272,17 @@ fn trail(ui: &mut Ui, crumbs: &[crate::trail::Crumb<'_>], rect: Rect, tokens: &T
                 tokens.palette.accent,
             );
             ui.painter().galley(place.min, galley, base);
-        } else if crumb.link {
-            // One link crumb can exist at a time, which is why this is safe to
-            // name with a single control: two of them would share a widget id.
+        } else if crumb.target.is_some() {
+            // Each crumb names its own control, because two links sharing one
+            // widget id is egui's second-use warning over the trail.
+            let control = if index == 0 {
+                Control::TrailHome
+            } else {
+                Control::TrailPlaylists
+            };
             let slot = controls::slot(
                 ui,
-                Control::TrailPlaylists,
+                control,
                 egui::Role::Button,
                 place,
                 crumb.label,
@@ -274,9 +299,11 @@ fn trail(ui: &mut Ui, crumbs: &[crate::trail::Crumb<'_>], rect: Rect, tokens: &T
                 recipe::spaced(ui, &label, font.clone(), color, spacing)
             };
             ui.painter().galley(place.min, galley, color);
-            clicked |= slot.response.clicked();
+            if slot.response.clicked() {
+                clicked = crumb.target.clone().map(|target| (index, target));
+            }
         } else {
-            // Home has no view to go back to, so it is text, not a control.
+            // Home at the root has nowhere to go, so it is text, not a control.
             ui.painter().galley(place.min, galley, base);
         }
         x = place.right() + space::S2;
@@ -287,23 +314,6 @@ fn trail(ui: &mut Ui, crumbs: &[crate::trail::Crumb<'_>], rect: Rect, tokens: &T
 
 /// The placeholder, in every topbar (R17).
 const PLACEHOLDER: &str = "Track names, artists, albums";
-
-/// The text edit's own key filter: egui's defaults, plus Escape.
-///
-/// egui's memory surrenders focus on Escape before the topbar sees it, so
-/// without this the field would blur before R3's first step could act. The two
-/// arrow flags are the text edit's defaults and must stay: they keep arrow
-/// presses out of spatial focus movement.
-///
-/// It is one constant because focus is taken two ways — the text edit's own
-/// `show`, and the clear control's hand-back — and the filter stored with the
-/// focused widget must be the same in both.
-const FIELD_FILTER: egui::EventFilter = egui::EventFilter {
-    tab: false,
-    horizontal_arrows: true,
-    vertical_arrows: true,
-    escape: true,
-};
 
 /// The search field: a real text edit inside the painted box.
 ///
@@ -538,44 +548,6 @@ fn search(
     })
 }
 
-/// Any press of `key` with no modifiers, auto-repeat included.
-///
-/// The field reads and consumes with the same rule: `consume_key` matches a key
-/// whose modifiers match logically, which would eat an Alt+Down the read never
-/// saw.
-fn pressed(input: &egui::InputState, key: Key) -> bool {
-    input.events.iter().any(|event| {
-        matches!(
-            event,
-            egui::Event::Key {
-                key: pressed,
-                pressed: true,
-                modifiers,
-                ..
-            } if *pressed == key && !modifiers.any()
-        )
-    })
-}
-
-/// A first press of `key` with no modifiers, never an auto-repeat.
-///
-/// A held Enter must not replay the marked row, and a held Escape must not step
-/// through both of R3's steps: one press, one action.
-fn pressed_once(input: &egui::InputState, key: Key) -> bool {
-    input.events.iter().any(|event| {
-        matches!(
-            event,
-            egui::Event::Key {
-                key: pressed,
-                pressed: true,
-                repeat: false,
-                modifiers,
-                ..
-            } if *pressed == key && !modifiers.any()
-        )
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -610,6 +582,40 @@ mod tests {
         });
         output.textures_delta.clear();
         assert_eq!(role, Some(egui::Role::SearchInput));
+    }
+
+    /// Home is the library root, so on a page its crumb leads back there.
+    #[test]
+    fn the_home_crumb_is_a_way_back_to_the_root() {
+        let tokens = Tokens::DARK;
+        let ctx = egui::Context::default();
+        ctx.set_fonts(fonts::definitions());
+        ctx.set_global_style(crate::theme::style(&tokens));
+
+        let mut library = Library::default();
+        library.open(crate::route::Page::Album("spotify:album:a".to_owned()));
+        let crumbs = crate::trail::trail(&library);
+
+        let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 40.0));
+        let at = Pos2::new(rect.left() + 2.0, rect.center().y);
+        let mut back = None;
+        for event in crate::view::test_support::click_events(at) {
+            let input = egui::RawInput {
+                screen_rect: Some(rect),
+                events: vec![event],
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                if let Some(clicked) = trail(ui, &crumbs, rect, &tokens) {
+                    back = Some(clicked);
+                }
+            });
+            output.textures_delta.clear();
+        }
+
+        let (index, target) = back.expect("the Home crumb did not ask for the root");
+        assert_eq!(index, 0, "Home is the first crumb");
+        assert_eq!(target, Target::Root(RootKind::All));
     }
 
     /// The magnifier sits at the field's left edge, so the text has to start

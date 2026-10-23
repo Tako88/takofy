@@ -21,10 +21,15 @@ use egui::{Context, DragAndDrop, Id, Vec2};
 use takofy_model::TrackEntry;
 
 use crate::landing::Zone;
+use crate::likes::{Likes, Standing};
+pub use crate::menu::Listing;
+use crate::menu::{Cut, Door, Gate, Request};
 use crate::queue::Queue;
 use crate::route::Page;
 use crate::selection::{Picks, Press, Selection};
+use crate::verbs;
 
+use super::context_menu;
 use super::queue_pane::Lift;
 use super::queue_row;
 use super::rows::Look;
@@ -67,15 +72,20 @@ pub struct Carry {
 }
 
 impl Carry {
-    /// The one track this carry would add, when it is exactly one track.
+    /// Every track this carry would add, in the order the rows were taken.
     ///
-    /// A block of two rows, an episode and a local file are all refused, so the
-    /// caller never has to look at the entries to know what it holds.
-    pub fn track(&self) -> Option<&TrackEntry> {
-        if self.source == Source::Playlist || self.rows.len() != 1 || self.entries.len() != 1 {
+    /// A block that holds anything else is refused whole: the pick is every row
+    /// the drag took or nothing, so the caller never has to look inside.
+    pub fn pick(&self) -> Option<Vec<String>> {
+        if self.source == Source::Playlist || self.rows.len() != self.entries.len() {
             return None;
         }
-        self.entries.first().filter(|entry| entry.is_track())
+        verbs::pick(&self.entries)
+    }
+
+    /// Whether this carry holds a pick an add can take.
+    pub fn addable(&self) -> bool {
+        self.pick().is_some()
     }
 }
 
@@ -178,6 +188,30 @@ pub fn follow_page(ctx: &Context, page: Option<&Page>) {
     });
 }
 
+/// What a list posts a request with: the list it is, the page it is on, and the
+/// set its library row reads.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Open<'a> {
+    pub listing: Listing,
+    pub here: Option<&'a Page>,
+    pub likes: &'a Likes,
+}
+
+/// What these targets have in common, as the library row reads it.
+fn standing_of(likes: &Likes, targets: &[TrackEntry]) -> Standing {
+    let uris: Vec<&str> = targets.iter().map(|entry| entry.uri.as_str()).collect();
+    likes.standing(&uris)
+}
+
+/// Forgets `rows` from `list`'s selection, the shift a removal leaves behind.
+pub fn forget_rows(ctx: &Context, list: Id, rows: &[usize]) {
+    ctx.data_mut(|data| {
+        data.get_temp_mut_or_default::<Picks>(picks())
+            .get_mut(list)
+            .without(rows);
+    });
+}
+
 /// The block a queue lift carries, or `None` when the queue will not lift it or
 /// cannot name an entry for every row it picked.
 pub fn from_queue(queue: &mut Queue, lift: Lift) -> Option<Carry> {
@@ -196,6 +230,111 @@ pub fn from_queue(queue: &mut Queue, lift: Lift) -> Option<Carry> {
         ghost: Ghost::Queue(lift.ghost),
         playlist: None,
     })
+}
+
+/// Opens the queue's menu on `row`, acting on the whole pick it sits in.
+///
+/// The gate is checked before the pick changes, so a refused open leaves the
+/// queue exactly as it was, and a row the queue will not edit opens nothing.
+pub fn queue_menu(
+    queue: &mut Queue,
+    ctx: &Context,
+    door: Door,
+    row: usize,
+    gate: Gate,
+    likes: &Likes,
+    here: Option<&Page>,
+) {
+    if !gate.allows() {
+        return;
+    }
+    let rows = queue.act_on(row);
+    let entries = queue.entries_at(&rows);
+    if rows.is_empty() || rows.len() != entries.len() {
+        return;
+    }
+    let items = verbs::track_items(
+        &entries,
+        here,
+        &Listing::Queue,
+        standing_of(likes, &entries),
+    );
+    context_menu::post(
+        ctx,
+        Request {
+            door,
+            items,
+            playlists: Vec::new(),
+            targets: entries,
+            rows,
+            listing: Listing::Queue,
+            page: here.cloned(),
+        },
+    );
+}
+
+/// Posts the cut a queue `Del` makes on `row`, acting on the pick it sits in.
+///
+/// A refused gate leaves the pick alone, so a dropped intent changes nothing.
+pub fn queue_cut(queue: &mut Queue, ctx: &Context, row: usize, gate: Gate) {
+    if !gate.allows() {
+        return;
+    }
+    let rows = queue.act_on(row);
+    let entries = queue.entries_at(&rows);
+    if rows.is_empty() || rows.len() != entries.len() {
+        return;
+    }
+    context_menu::post_cut(
+        ctx,
+        Cut {
+            listing: Listing::Queue,
+            rows,
+            entries,
+        },
+    );
+}
+
+/// Opens Now Playing's menu on the entry it is playing.
+///
+/// The current entry is the queue's, and it is never removable: the menu lists
+/// what can be done with the track, not with a list it sits in.
+pub fn current_menu(
+    queue: &Queue,
+    ctx: &Context,
+    door: Door,
+    gate: Gate,
+    likes: &Likes,
+    here: Option<&Page>,
+) {
+    if !gate.allows() {
+        return;
+    }
+    let Some(entry) = queue.current().cloned() else {
+        return;
+    };
+    let targets = std::slice::from_ref(&entry);
+    let items = verbs::track_items(
+        targets,
+        here,
+        &Listing::Current,
+        standing_of(likes, targets),
+    );
+    if items.is_empty() {
+        return;
+    }
+    context_menu::post(
+        ctx,
+        Request {
+            door,
+            items,
+            playlists: Vec::new(),
+            targets: vec![entry],
+            rows: vec![0],
+            listing: Listing::Current,
+            page: here.cloned(),
+        },
+    );
 }
 
 /// One list's selection and its drag, for the frame that draws it.
@@ -280,6 +419,73 @@ impl List {
             ghost,
             playlist: None,
         });
+    }
+
+    /// The gate a menu on this list's rows opens under.
+    ///
+    /// A carried block is this list's own payload; a write in flight is the
+    /// caller's, because only the library knows about it.
+    pub fn gate(&self, writing: bool) -> Gate {
+        Gate {
+            carrying: self.carry.is_some(),
+            writing,
+        }
+    }
+
+    /// Opens the context menu on `row`, acting on the whole pick it sits in.
+    ///
+    /// A row inside the pick acts on all of it and leaves the pick alone; a row
+    /// outside it is picked first, so a menu about one row never stands over
+    /// another row that looks picked. A refused gate changes nothing, not even
+    /// the pick, and a pick this list cannot answer for is refused whole.
+    pub fn menu(
+        &mut self,
+        ctx: &Context,
+        door: Door,
+        row: usize,
+        gate: Gate,
+        open: Open<'_>,
+        entry_at: impl Fn(usize) -> Option<TrackEntry>,
+    ) {
+        if !gate.allows() {
+            return;
+        }
+        let mut selection = self.selection.clone();
+        let rows = selection.act_on(row);
+        let Some(targets) = rows
+            .iter()
+            .map(|row| entry_at(*row))
+            .collect::<Option<Vec<TrackEntry>>>()
+        else {
+            return;
+        };
+        self.selection = selection;
+        self.changed = true;
+        let items = verbs::track_items(
+            &targets,
+            open.here,
+            &open.listing,
+            standing_of(open.likes, &targets),
+        );
+        context_menu::post(
+            ctx,
+            Request {
+                door,
+                items,
+                playlists: Vec::new(),
+                targets,
+                rows,
+                listing: open.listing,
+                page: open.here.cloned(),
+            },
+        );
+    }
+
+    /// The rows a key acts on: the whole pick when `row` sits in it, otherwise
+    /// `row` alone, which the pick then becomes.
+    pub fn acting_rows(&mut self, row: usize) -> Vec<usize> {
+        self.changed = true;
+        self.selection.act_on(row)
     }
 
     /// Offers this list's rows to the shell as a target a reorder can land in.
@@ -378,6 +584,187 @@ mod tests {
         }
     }
 
+    fn door() -> Door {
+        Door {
+            anchor: crate::menu::Anchor::Button(Rect::from_min_size(
+                pos2(0.0, 0.0),
+                vec2(28.0, 28.0),
+            )),
+            opener: Id::unique("more"),
+            device: crate::menu::Device::Pointer,
+        }
+    }
+
+    fn entry_at(row: usize) -> Option<TrackEntry> {
+        Some(entry(&row.to_string()))
+    }
+
+    fn opened(likes: &Likes) -> Open<'_> {
+        Open {
+            listing: Listing::Page,
+            here: None,
+            likes,
+        }
+    }
+
+    fn uris(request: &Request) -> Vec<&str> {
+        request
+            .targets
+            .iter()
+            .map(|entry| entry.uri.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn any_payload_counts_as_carrying() {
+        // The gates ask whether a block is held, not whose it is, so a test that
+        // only needs them held shut may set any payload type at all.
+        let ctx = context();
+        assert!(!carrying(&ctx), "an empty context carries nothing");
+        egui::DragAndDrop::set_payload(&ctx, ());
+        assert!(carrying(&ctx), "a foreign payload is still a carry");
+        assert!(
+            carried(&ctx).is_none(),
+            "a foreign payload is no block of ours"
+        );
+        egui::DragAndDrop::clear_payload(&ctx);
+        assert!(!carrying(&ctx));
+    }
+
+    #[test]
+    fn menu_inside_a_pick_acts_on_the_pick_and_keeps_it() {
+        let ctx = context();
+        let id = Id::unique("list");
+        let mut list = List::open(&ctx, id, 4);
+        list.press(1, Press::Replace);
+        list.press(3, Press::Toggle);
+        list.menu(
+            &ctx,
+            door(),
+            3,
+            Gate::default(),
+            opened(&Likes::default()),
+            entry_at,
+        );
+        list.finish(&ctx);
+
+        let request = context_menu::take_request(&ctx).expect("a request was posted");
+        assert_eq!(
+            uris(&request),
+            vec!["u1", "u3"],
+            "the whole pick, ascending"
+        );
+        let kept = List::open(&ctx, id, 4);
+        assert!(
+            kept.look(1).selected && kept.look(3).selected,
+            "the pick was collapsed"
+        );
+    }
+
+    #[test]
+    fn menu_outside_selects_first() {
+        let ctx = context();
+        let id = Id::unique("list");
+        let mut list = List::open(&ctx, id, 4);
+        list.press(1, Press::Replace);
+        list.press(3, Press::Toggle);
+        list.menu(
+            &ctx,
+            door(),
+            2,
+            Gate::default(),
+            opened(&Likes::default()),
+            entry_at,
+        );
+        list.finish(&ctx);
+
+        let request = context_menu::take_request(&ctx).expect("a request was posted");
+        assert_eq!(uris(&request), vec!["u2"], "the row under the menu, alone");
+        let kept = List::open(&ctx, id, 4);
+        assert!(kept.look(2).selected, "the row is picked");
+        assert!(!kept.look(1).selected, "and nothing else is");
+    }
+
+    #[test]
+    fn menu_is_refused_while_carrying_or_writing_and_selects_nothing() {
+        for gate in [
+            Gate {
+                carrying: true,
+                writing: false,
+            },
+            Gate {
+                carrying: false,
+                writing: true,
+            },
+        ] {
+            let ctx = context();
+            let id = Id::unique("list");
+            let mut list = List::open(&ctx, id, 4);
+            list.press(1, Press::Replace);
+            list.menu(&ctx, door(), 3, gate, opened(&Likes::default()), entry_at);
+            list.finish(&ctx);
+
+            assert_eq!(context_menu::take_request(&ctx), None, "{gate:?}");
+            let kept = List::open(&ctx, id, 4);
+            assert!(kept.look(1).selected, "{gate:?}");
+            assert!(
+                !kept.look(3).selected,
+                "{gate:?}: the refused open picked a row"
+            );
+        }
+    }
+
+    #[test]
+    fn menu_refuses_a_pick_it_cannot_answer_for() {
+        let ctx = context();
+        let id = Id::unique("list");
+        let mut list = List::open(&ctx, id, 4);
+        list.press(1, Press::Replace);
+        list.press(3, Press::Toggle);
+        list.menu(
+            &ctx,
+            door(),
+            3,
+            Gate::default(),
+            opened(&Likes::default()),
+            |row| (row != 3).then(|| entry(&row.to_string())),
+        );
+        list.finish(&ctx);
+
+        assert_eq!(context_menu::take_request(&ctx), None);
+        let kept = List::open(&ctx, id, 4);
+        assert!(
+            kept.look(1).selected && kept.look(3).selected,
+            "a pick refused whole still changed the pick"
+        );
+    }
+
+    #[test]
+    fn a_posted_request_is_taken_once() {
+        let ctx = context();
+        let request = Request {
+            door: door(),
+            playlists: Vec::new(),
+            items: crate::verbs::track_items(
+                &[entry("0")],
+                None,
+                &Listing::Page,
+                Standing::Unknown,
+            ),
+            targets: vec![entry("0")],
+            rows: vec![0],
+            listing: Listing::Page,
+            page: Some(Page::Playlist("spotify:playlist:a".to_owned())),
+        };
+        context_menu::post(&ctx, request.clone());
+        assert_eq!(context_menu::take_request(&ctx), Some(request));
+        assert_eq!(
+            context_menu::take_request(&ctx),
+            None,
+            "a request is read once"
+        );
+    }
+
     #[test]
     fn an_offer_is_read_once() {
         let ctx = context();
@@ -454,46 +841,61 @@ mod tests {
     }
 
     #[test]
-    fn only_one_track_is_a_track_to_add() {
-        let one = entry("x");
-        let named = TrackEntry {
+    fn a_pick_of_tracks_travels_whole_and_in_order() {
+        let first = TrackEntry {
             uri: "spotify:track:4uLU6hMCjMI75M1A2tKUQC".to_owned(),
-            ..one.clone()
+            ..entry("a")
         };
-
-        let two_rows = Carry {
-            entries: vec![named.clone()],
+        let second = TrackEntry {
+            uri: "spotify:track:4uLU6hMCjMI75M1A2tKUQD".to_owned(),
+            ..first.clone()
+        };
+        let block = Carry {
+            entries: vec![first.clone(), second.clone()],
             rows: vec![1, 2],
             ..carry(Source::Queue, Vec::new())
         };
-        assert_eq!(two_rows.track(), None, "a block of two rows");
 
-        let no_entries = carry(Source::Queue, vec![3]);
-        assert_eq!(no_entries.track(), None, "no entries travel");
+        assert_eq!(
+            block.pick(),
+            Some(vec![first.uri.clone(), second.uri.clone()])
+        );
+        assert!(block.addable());
+    }
+
+    #[test]
+    fn a_playlist_an_episode_and_a_local_file_are_not_picks() {
+        let named = TrackEntry {
+            uri: "spotify:track:4uLU6hMCjMI75M1A2tKUQC".to_owned(),
+            ..entry("a")
+        };
 
         let playlist = Carry {
             rows: vec![1],
             playlist: Some("spotify:playlist:a".to_owned()),
             ..carry(Source::Playlist, Vec::new())
         };
-        assert_eq!(playlist.track(), None, "a playlist is no track");
+        assert_eq!(playlist.pick(), None, "a playlist is no pick");
+        assert!(!playlist.addable());
 
-        let episode = Carry {
-            rows: vec![1],
-            entries: vec![TrackEntry {
-                uri: "spotify:episode:1".to_owned(),
-                ..named.clone()
-            }],
-            ..carry(Source::Queue, Vec::new())
-        };
-        assert_eq!(episode.track(), None, "an episode is no track");
+        for (uri, why) in [
+            ("spotify:episode:1", "an episode is no track"),
+            ("spotify:local:A:B:C:1000", "a local file is no track"),
+        ] {
+            let carry = Carry {
+                rows: vec![1],
+                entries: vec![TrackEntry {
+                    uri: uri.to_owned(),
+                    ..named.clone()
+                }],
+                ..carry(Source::Queue, Vec::new())
+            };
+            assert_eq!(carry.pick(), None, "{why}");
+            assert!(!carry.addable(), "{why}");
+        }
 
-        let track = Carry {
-            rows: vec![1],
-            entries: vec![named.clone()],
-            ..carry(Source::Queue, Vec::new())
-        };
-        assert_eq!(track.track(), Some(&named));
+        let no_entries = carry(Source::Queue, vec![3]);
+        assert_eq!(no_entries.pick(), None, "the rows and the entries disagree");
     }
 
     #[test]
@@ -861,5 +1263,288 @@ mod tests {
 
         assert!(!carrying(&ctx));
         assert!(carried(&ctx).is_none());
+    }
+    #[test]
+    fn request_rows_and_targets_stay_parallel() {
+        let ctx = context();
+        let id = Id::unique("list");
+        let mut list = List::open(&ctx, id, 6);
+        list.press(1, Press::Replace);
+        list.press(3, Press::Toggle);
+        list.press(4, Press::Toggle);
+        list.menu(
+            &ctx,
+            door(),
+            3,
+            Gate::default(),
+            Open {
+                listing: Listing::Queue,
+                here: None,
+                likes: &Likes::default(),
+            },
+            entry_at,
+        );
+        list.finish(&ctx);
+
+        let request = context_menu::take_request(&ctx).expect("a request was posted");
+        assert_eq!(request.rows, vec![1, 3, 4]);
+        assert_eq!(uris(&request), vec!["u1", "u3", "u4"]);
+        assert_eq!(request.listing, Listing::Queue);
+    }
+
+    #[test]
+    fn forget_rows_shifts_the_lists_selection() {
+        let ctx = context();
+        let id = Id::unique("list");
+        let mut list = List::open(&ctx, id, 6);
+        list.press(1, Press::Replace);
+        list.press(3, Press::Toggle);
+        list.press(5, Press::Toggle);
+        list.finish(&ctx);
+
+        forget_rows(&ctx, id, &[1, 3]);
+
+        let list = List::open(&ctx, id, 6);
+        assert!(
+            list.look(3).selected,
+            "the row below the pick did not shift"
+        );
+        assert!(!list.look(1).selected && !list.look(5).selected);
+    }
+    #[test]
+    fn queue_menu_posts_a_queue_request_and_keeps_the_pick() {
+        let ctx = context();
+        let mut queue = queue_of(6, 0);
+        queue.press(2, Press::Replace);
+        queue.press(4, Press::Toggle);
+
+        queue_menu(
+            &mut queue,
+            &ctx,
+            door(),
+            2,
+            Gate::default(),
+            &Likes::default(),
+            None,
+        );
+
+        let request = context_menu::take_request(&ctx).expect("a request was posted");
+        assert_eq!(request.rows, vec![2, 4]);
+        assert_eq!(uris(&request), vec!["u2", "u4"]);
+        assert_eq!(request.listing, Listing::Queue);
+        assert_eq!(
+            request.items.last().map(|item| item.verb),
+            Some(crate::menu::Verb::Remove)
+        );
+        assert!(
+            request
+                .items
+                .iter()
+                .all(|item| item.verb != crate::menu::Verb::AddToQueue),
+            "the queue offered to add what is already there"
+        );
+        assert_eq!(
+            queue.acting_rows(None),
+            vec![2, 4],
+            "the pick was collapsed"
+        );
+    }
+
+    #[test]
+    fn queue_menu_is_refused_by_the_gate_and_changes_no_pick() {
+        for gate in [
+            Gate {
+                carrying: true,
+                writing: false,
+            },
+            Gate {
+                carrying: false,
+                writing: true,
+            },
+        ] {
+            let ctx = context();
+            let mut queue = queue_of(6, 0);
+            queue.press(2, Press::Replace);
+
+            queue_menu(&mut queue, &ctx, door(), 4, gate, &Likes::default(), None);
+
+            assert_eq!(context_menu::take_request(&ctx), None, "{gate:?}");
+            assert_eq!(queue.acting_rows(None), vec![2], "{gate:?}");
+        }
+    }
+
+    #[test]
+    fn queue_menu_on_the_current_entry_posts_nothing() {
+        let ctx = context();
+        let mut queue = queue_of(4, 1);
+
+        queue_menu(
+            &mut queue,
+            &ctx,
+            door(),
+            1,
+            Gate::default(),
+            &Likes::default(),
+            None,
+        );
+
+        assert_eq!(context_menu::take_request(&ctx), None);
+    }
+
+    #[test]
+    fn queue_menu_on_a_pick_the_queue_has_passed_posts_nothing() {
+        let ctx = context();
+        let mut queue = queue_of(6, 1);
+        queue.press(2, Press::Replace);
+        let _ = queue.next(&mut Transport::default());
+
+        queue_menu(
+            &mut queue,
+            &ctx,
+            door(),
+            2,
+            Gate::default(),
+            &Likes::default(),
+            None,
+        );
+
+        assert_eq!(
+            context_menu::take_request(&ctx),
+            None,
+            "a pick the queue has passed was offered"
+        );
+    }
+
+    #[test]
+    fn queue_cut_posts_the_pick_for_the_queue() {
+        let ctx = context();
+        let mut queue = queue_of(5, 0);
+        queue.press(1, Press::Replace);
+        queue.press(3, Press::Toggle);
+
+        queue_cut(&mut queue, &ctx, 3, Gate::default());
+
+        let cut = context_menu::take_cut(&ctx).expect("a cut was posted");
+        assert_eq!(cut.listing, Listing::Queue);
+        assert_eq!(cut.rows, vec![1, 3]);
+        assert_eq!(cut.entries.len(), 2);
+    }
+
+    #[test]
+    fn queue_cut_is_refused_by_the_gate() {
+        let ctx = context();
+        let mut queue = queue_of(4, 0);
+        queue.press(1, Press::Replace);
+
+        queue_cut(
+            &mut queue,
+            &ctx,
+            2,
+            Gate {
+                carrying: false,
+                writing: true,
+            },
+        );
+
+        assert_eq!(context_menu::take_cut(&ctx), None);
+        assert_eq!(queue.acting_rows(None), vec![1], "the pick changed");
+    }
+    /// A track with a page to open and a link to copy, which is an entry the
+    /// menu has verbs for.
+    fn named_entry(uri: &str) -> TrackEntry {
+        TrackEntry {
+            uri: uri.to_owned(),
+            album_uri: Some("spotify:album:a".to_owned()),
+            artist_uris: vec!["spotify:artist:b".to_owned()],
+            ..entry("named")
+        }
+    }
+
+    #[test]
+    fn current_menu_posts_the_playing_entry_with_no_removal() {
+        let ctx = context();
+        let mut transport = Transport::default();
+        let named = named_entry("spotify:track:a");
+        let mut queue = Queue::default();
+        queue.start(std::slice::from_ref(&named), 0, &mut transport);
+
+        current_menu(
+            &queue,
+            &ctx,
+            door(),
+            Gate::default(),
+            &Likes::default(),
+            None,
+        );
+
+        let request = context_menu::take_request(&ctx).expect("a request was posted");
+        assert_eq!(request.listing, Listing::Current);
+        assert_eq!(request.targets, vec![named]);
+        assert_eq!(request.rows.len(), request.targets.len(), "not parallel");
+        assert!(
+            request.items.iter().all(|item| {
+                item.verb != crate::menu::Verb::AddToQueue && item.verb != crate::menu::Verb::Remove
+            }),
+            "the current entry offered a list command"
+        );
+        assert!(
+            request
+                .items
+                .iter()
+                .any(|item| item.verb == crate::menu::Verb::GoToAlbum)
+        );
+    }
+
+    #[test]
+    fn current_menu_with_no_current_entry_or_no_verbs_posts_nothing() {
+        let ctx = context();
+        current_menu(
+            &Queue::default(),
+            &ctx,
+            door(),
+            Gate::default(),
+            &Likes::default(),
+            None,
+        );
+        assert_eq!(context_menu::take_request(&ctx), None, "an empty queue");
+
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        queue.start(&[entry("0")], 0, &mut transport);
+        current_menu(
+            &queue,
+            &ctx,
+            door(),
+            Gate::default(),
+            &Likes::default(),
+            None,
+        );
+        assert_eq!(
+            context_menu::take_request(&ctx),
+            None,
+            "an entry with no verbs"
+        );
+    }
+
+    #[test]
+    fn current_menu_is_refused_by_the_gate() {
+        let ctx = context();
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        queue.start(&[named_entry("spotify:track:a")], 0, &mut transport);
+
+        current_menu(
+            &queue,
+            &ctx,
+            door(),
+            Gate {
+                carrying: true,
+                writing: false,
+            },
+            &Likes::default(),
+            None,
+        );
+
+        assert_eq!(context_menu::take_request(&ctx), None);
     }
 }

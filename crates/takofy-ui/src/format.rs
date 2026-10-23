@@ -316,7 +316,14 @@ pub fn playlist_detail(entry: &PlaylistEntry) -> Option<String> {
 pub fn sidebar_notice(write: SidebarWrite) -> &'static str {
     match write {
         SidebarWrite::Reorder => "Could not move that playlist. Try again.",
-        SidebarWrite::Add => "Could not add that track. Try again.",
+        SidebarWrite::Add => "Could not add those tracks. Try again.",
+        SidebarWrite::Create => "Could not create that playlist. Try again.",
+        SidebarWrite::Link => "Created it, but could not add it to your list.",
+        SidebarWrite::Unfilled => "Created it, but could not add the tracks.",
+        SidebarWrite::Unnamed => "Created it, but could not keep its name.",
+        SidebarWrite::Remove => "Could not remove that from your library. Try again.",
+        SidebarWrite::Save => "Could not save that to your library. Try again.",
+        SidebarWrite::Rename => "Could not rename that playlist. Try again.",
     }
 }
 
@@ -514,14 +521,48 @@ mod tests {
     }
 
     #[test]
-    fn the_two_notices_name_what_could_not_be_done() {
+    fn the_notices_name_what_could_not_be_done() {
         assert_eq!(
             sidebar_notice(SidebarWrite::Reorder),
             "Could not move that playlist. Try again."
         );
         assert_eq!(
             sidebar_notice(SidebarWrite::Add),
-            "Could not add that track. Try again."
+            "Could not add those tracks. Try again."
+        );
+        assert_eq!(
+            sidebar_notice(SidebarWrite::Unfilled),
+            "Created it, but could not add the tracks."
+        );
+        assert_eq!(
+            sidebar_notice(SidebarWrite::Unnamed),
+            "Created it, but could not keep its name."
+        );
+        assert_eq!(
+            sidebar_notice(SidebarWrite::Rename),
+            "Could not rename that playlist. Try again."
+        );
+        assert_eq!(
+            sidebar_notice(SidebarWrite::Remove),
+            "Could not remove that from your library. Try again."
+        );
+    }
+
+    #[test]
+    fn sidebar_notice_words_for_create_and_link() {
+        assert_eq!(
+            sidebar_notice(SidebarWrite::Create),
+            "Could not create that playlist. Try again."
+        );
+        assert_eq!(
+            sidebar_notice(SidebarWrite::Link),
+            "Created it, but could not add it to your list.",
+            "the playlist exists, so the sentence says what is missing"
+        );
+        assert_ne!(
+            sidebar_notice(SidebarWrite::Create),
+            sidebar_notice(SidebarWrite::Link),
+            "the two failures are not the same failure"
         );
     }
 

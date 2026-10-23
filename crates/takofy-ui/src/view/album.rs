@@ -18,15 +18,21 @@ use crate::cover::{Art, Cover};
 use crate::format::{album_meta, format_position, total_duration_ms};
 use crate::layout::{Table, table as table_layout};
 use crate::library::{Library, Load};
+use crate::menu::LibraryItem;
 use crate::message::Command;
 use crate::player::Transport;
 use crate::queue::Queue;
 use crate::route::Page;
 use crate::scroll;
+use crate::sidebar_kind::SidebarKind;
 use crate::theme::{Tokens, extent};
 use crate::view::text as recipe;
 
+use crate::verbs;
+
 use super::carry::{self, Ghost};
+use super::context_menu;
+use super::heart;
 use super::hero;
 use super::skeleton;
 use super::track_list::{head, list_rect};
@@ -53,6 +59,10 @@ pub fn album_view(
         return None;
     };
     let uri = uri.clone();
+    // The page a row's menu is about, so a verb that leads here is omitted and a
+    // page change can close the menu.
+    let here = Page::Album(uri.clone());
+    let writing = library.write_in_flight();
 
     // No leading gap here: `tracks_view` adds the page's one gap before it
     // dispatches, and a second would start the album a step lower than every
@@ -62,6 +72,9 @@ pub fn album_view(
     // A link click is applied after the scroll area, because the matches below
     // borrow the album it has to move away from.
     let mut open: Option<Page> = None;
+    // The band's heart asks for the library, which the album is borrowed from.
+    // The value the heart asked for, and the name the write needs.
+    let mut save: Option<(String, bool)> = None;
 
     // The scroll area is salted with the album's own URI, so the offset it keeps
     // is this album's and not the playlist page's that shares the pane.
@@ -117,8 +130,45 @@ pub fn album_view(
                         shuffle: false,
                         cover,
                     };
-                    if hero::show(ui, &band, tokens) && !album.tracks.is_empty() {
+                    let saved = library.is_saved(&uri);
+                    let reply = hero::show_with(
+                        ui,
+                        &band,
+                        tokens,
+                        hero::Tools {
+                            title: hero::Title::Plain,
+                            more: Some(!writing),
+                            saved,
+                        },
+                    );
+                    if let Some(door) = reply.more_door {
+                        let item = LibraryItem {
+                            kind: SidebarKind::Albums,
+                            uri: uri.clone(),
+                            name: album.name.clone(),
+                        };
+                        context_menu::post(
+                            ui.ctx(),
+                            verbs::library_request(
+                                item,
+                                door,
+                                verbs::LibraryRights {
+                                    renamable: false,
+                                    removable: saved == Some(true),
+                                    saved,
+                                },
+                                Some(Page::Album(uri.clone())),
+                                crate::naming::Surface::Band,
+                            ),
+                        );
+                    }
+                    if reply.played && !album.tracks.is_empty() {
                         command = queue.start(&album.tracks, 0, transport);
+                    }
+                    if let Some(asked) = reply.saved {
+                        // The library is borrowed for the album for the whole
+                        // draw, so the write is asked for once the borrow ends.
+                        save = Some((album.name.clone(), asked));
                     }
 
                     super::inner(ui, |ui| {
@@ -144,6 +194,7 @@ pub fn album_view(
                             Id::unique(("album-tracks", album.uri.as_str())),
                             count,
                         );
+                        let gate = selection.gate(writing);
 
                         for (index, entry) in album.tracks.iter().enumerate() {
                             let rect = table_layout::row_rect(list, index, extent::ROW_H);
@@ -171,6 +222,8 @@ pub fn album_view(
                                 // The band already holds the record's one picture.
                                 cover: Cover::Missing,
                                 look: selection.look(index),
+                                menu: gate.allows(),
+                                liked: library.likes.state(&entry.uri),
                             };
                             // A row plays; its artist subline, when the album named
                             // a resolvable artist, opens that artist's page.
@@ -180,6 +233,27 @@ pub fn album_view(
                                 }
                                 Some(Click::Open(page)) => open = Some(page),
                                 Some(Click::Select(press)) => selection.press(index, press),
+                                Some(Click::Like(liked)) => {
+                                    heart::post(
+                                        ui.ctx(),
+                                        heart::Ask {
+                                            tracks: vec![entry.uri.clone()],
+                                            liked,
+                                        },
+                                    );
+                                }
+                                Some(Click::Menu(door)) => selection.menu(
+                                    ui.ctx(),
+                                    door,
+                                    index,
+                                    gate,
+                                    carry::Open {
+                                        listing: carry::Listing::Page,
+                                        here: Some(&here),
+                                        likes: &library.likes,
+                                    },
+                                    |row| album.tracks.get(row).cloned(),
+                                ),
                                 Some(Click::Lift) => {
                                     let ghost = Ghost::Table(row.lifted(columns));
                                     selection.lift(index, rect.size(), ghost, |row| {
@@ -200,6 +274,16 @@ pub fn album_view(
     }
     if let Some(page) = open {
         return library.open(page);
+    }
+    if let Some((name, asked)) = save {
+        let item = LibraryItem {
+            kind: SidebarKind::Albums,
+            uri: uri.clone(),
+            name,
+        };
+        if command.is_none() {
+            command = library.set_saved(&item, asked);
+        }
     }
     command
 }
@@ -304,6 +388,18 @@ mod tests {
     }
 
     /// A library on the album page with `detail` ready.
+    fn saved_album(uri: &str) -> takofy_model::SavedAlbum {
+        takofy_model::SavedAlbum {
+            uri: uri.to_owned(),
+            name: "Signal Decay".to_owned(),
+            named: true,
+            artists: "Band".to_owned(),
+            year: Some(2024),
+            cover: None,
+            tracks: Some(2),
+        }
+    }
+
     fn library_with(detail: AlbumDetail) -> Library {
         let mut library = Library::default();
         library.open(Page::Album(ALBUM.to_owned()));
@@ -354,7 +450,7 @@ mod tests {
                 shuffle: false,
                 cover: Cover::Missing,
             };
-            let _ = hero::show(ui, &band, &tokens);
+            let _ = hero::show_with(ui, &band, &tokens, hero::Tools::plain());
             crate::view::inner(ui, |ui| {
                 let columns =
                     table_layout::columns(ui.available_width(), Table::Full.columns().for_album());
@@ -364,6 +460,35 @@ mod tests {
             });
         });
         found.expect("the head and the list lay out")
+    }
+
+    /// The centre of the like column of the `index`-th row, solved the way the
+    /// page solves its columns.
+    fn heart_point_for(ctx: &Context, index: usize, count: usize) -> Pos2 {
+        let tokens = Tokens::DARK;
+        let mut found = None;
+        run(ctx, input(Vec::new()), |ui| {
+            ui.add_space(space::S3);
+            let band = hero::Band {
+                eyebrow: "Album",
+                title: "Signal Decay",
+                meta: Vec::new(),
+                description: "",
+                playable: true,
+                shuffle: false,
+                cover: Cover::Missing,
+            };
+            let _ = hero::show_with(ui, &band, &tokens, hero::Tools::plain());
+            crate::view::inner(ui, |ui| {
+                let columns =
+                    table_layout::columns(ui.available_width(), Table::Full.columns().for_album());
+                track_list::head(ui, columns, &tokens);
+                let list = track_list::list_rect(ui, count);
+                let row = table_layout::row_rect(list, index, extent::ROW_H);
+                found = Some(columns.at(row.min).like.center());
+            });
+        });
+        found.expect("the heart's column lays out")
     }
 
     /// The band's play tile, solved the way the page solves it.
@@ -384,7 +509,7 @@ mod tests {
                     shuffle: false,
                     cover: Cover::Missing,
                 };
-                let _ = hero::show(ui, &band, &tokens);
+                let _ = hero::show_with(ui, &band, &tokens, hero::Tools::plain());
                 let bottom = ui.cursor().min.y;
                 let height = PLAY + 2.0 * space::S4;
                 let row = Rect::from_min_size(
@@ -398,6 +523,94 @@ mod tests {
             });
         });
         found.expect("the band and its action row lay out")
+    }
+
+    /// The band heart's centre, solved the way the action row lays it out: the
+    /// tools hug the right edge, more last, so the heart sits one button and one
+    /// gap in from it.
+    fn band_heart_point(ctx: &Context) -> Pos2 {
+        let tokens = Tokens::DARK;
+        let mut found = None;
+        run(ctx, input(Vec::new()), |ui| {
+            ui.add_space(space::S3);
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                let top = ui.cursor().min;
+                let band = hero::Band {
+                    eyebrow: "Album",
+                    title: "Signal Decay",
+                    meta: Vec::new(),
+                    description: "",
+                    playable: true,
+                    shuffle: false,
+                    cover: Cover::Missing,
+                };
+                let _ = hero::show_with(ui, &band, &tokens, hero::Tools::plain());
+                let bottom = ui.cursor().min.y;
+                let height = PLAY + 2.0 * space::S4;
+                let row = Rect::from_min_size(
+                    Pos2::new(top.x, bottom - height),
+                    Vec2::new(ui.available_width(), height),
+                );
+                let right = row.right() - space::GUTTER;
+                let more = right - extent::BUTTON_LG;
+                let heart = more - space::S2 - extent::BUTTON_LG;
+                found = Some(Pos2::new(heart + extent::BUTTON_LG / 2.0, row.center().y));
+            });
+        });
+        found.expect("the band and its action row lay out")
+    }
+
+    /// A heart carries the value it was pressed into, so a saved album's heart
+    /// takes it out of the library rather than asking to save it again.
+    #[test]
+    fn a_saved_albums_band_heart_asks_to_unsave() {
+        let ctx = context();
+        let mut library = library_with(detail(vec![track(
+            "spotify:track:a",
+            "One",
+            "Band",
+            222_000,
+        )]));
+        library.apply(&Update::SavedAlbums(vec![saved_album("spotify:album:a")]));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+        let point = band_heart_point(&ctx);
+
+        let _ = frame(
+            &ctx,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let _ = frame(
+            &ctx,
+            vec![egui::Event::PointerMoved(point)],
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let command = click(
+            &ctx,
+            point,
+            1,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+
+        assert_eq!(
+            command,
+            Some(Command::SetSaved {
+                uri: "spotify:album:a".to_owned(),
+                saved: false,
+            }),
+            "a saved album's heart asked to save it again"
+        );
     }
 
     /// Clicks `pos` `times` times, one event per pass, and returns the last
@@ -425,6 +638,89 @@ mod tests {
         crate::view::carry::List::open(ctx, egui::Id::unique(("album-tracks", album)), 2)
             .look(index)
             .selected
+    }
+
+    #[test]
+    fn a_heart_click_posts_one_ask_with_the_rows_uri() {
+        let ctx = context();
+        let mut library = library_with(detail(vec![
+            track("spotify:track:a", "One", "Band", 222_000),
+            track("spotify:track:b", "Two", "Band", 198_000),
+        ]));
+        assert!(library.likes.request(true));
+        library.likes.apply(&crate::likes::Event::Set(Vec::new()));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+        let point = heart_point_for(&ctx, 1, 2);
+        // Warm up so the pointer is known to the hit test before the press.
+        let _ = frame(
+            &ctx,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let _ = frame(
+            &ctx,
+            vec![egui::Event::PointerMoved(point)],
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+
+        let command = click(
+            &ctx,
+            point,
+            1,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+
+        assert_eq!(command, None, "a heart is not a command of its own");
+        let ask = heart::take(&ctx).expect("an ask was posted");
+        assert_eq!(ask.tracks, vec!["spotify:track:b".to_owned()]);
+        assert!(ask.liked, "an unsaved row asks to be saved");
+    }
+
+    #[test]
+    fn a_right_click_posts_the_albums_menu() {
+        let ctx = context();
+        let mut library = library_with(detail(vec![
+            track("spotify:track:a", "One", "Band", 222_000),
+            track("spotify:track:b", "Two", "Band", 198_000),
+        ]));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+        let rect = row_rect_for(&ctx, 1, 2);
+
+        for event in crate::view::test_support::secondary_click_events(rect.center()) {
+            let _ = frame(
+                &ctx,
+                vec![event],
+                &mut library,
+                &mut transport,
+                &mut queue,
+                &mut art,
+            );
+        }
+        let request = crate::view::context_menu::take_request(&ctx)
+            .expect("a right-click on an album row posted a request");
+        assert_eq!(request.targets.len(), 1);
+        assert_eq!(request.targets[0].uri, "spotify:track:b");
+        assert_eq!(request.page, Some(Page::Album(ALBUM.to_owned())));
+        assert!(
+            !request
+                .items
+                .iter()
+                .any(|item| item.verb == crate::menu::Verb::GoToAlbum),
+            "the album this page already is is not one of its verbs"
+        );
     }
 
     #[test]

@@ -24,12 +24,14 @@ use crate::landing::Zone;
 use crate::layout::panel::CAPTION_H;
 use crate::layout::queue::ROW_H;
 use crate::layout::table;
+use crate::menu::{Anchor, Device, Door};
 use crate::queue::Queue;
 use crate::scroll;
 use crate::selection::Press;
 use crate::theme::{Tokens, space};
 
 use super::carry::{self, Carry, Source};
+use super::context_menu;
 use super::queue_row::{self, Row};
 use super::rows::Look;
 use super::text as recipe;
@@ -67,6 +69,10 @@ pub struct Reply {
     pub lift: Option<Lift>,
     /// The row that holds the keyboard.
     pub focused: Option<usize>,
+    /// The door that opened the row's menu: the row, and where it anchors.
+    pub menu: Option<(usize, Door)>,
+    /// The row a Delete press acted on.
+    pub remove: Option<usize>,
     /// The drop target the pane presents, where it presents one.
     pub zone: Option<Zone>,
 }
@@ -142,13 +148,32 @@ pub fn show(
                     if count == 0 {
                         empty(ui, list, tokens);
                     } else {
+                        // Read before the rows draw, so the one that holds the
+                        // keyboard can answer the menu key. The reply reports the
+                        // row that holds it after the click, so that is read below.
+                        let focused = focused_row(ui, queue);
                         for (row_index, (index, entry)) in queue.upcoming().enumerate() {
                             let rect = table::row_rect(list, row_index, ROW_H);
                             if !on_screen(visible, rect) {
                                 continue;
                             }
+                            // A queue row draws no `⋯`, so a right-click and the
+                            // context-menu key are its only two doors, and both
+                            // win over the row's own click.
+                            let door = super::context_menu::pointer_door(
+                                ui,
+                                rect,
+                                queue_row::id(ui, index),
+                                rect,
+                            )
+                            .or_else(|| key_door(ui, index, focused, rect));
                             let look = standing(queue, carry.as_deref(), index);
-                            match row(ui, rect, index, entry, queue, look, art, now, tokens) {
+                            let report = row(ui, rect, index, entry, queue, look, art, now, tokens);
+                            if let Some(door) = door {
+                                reply.menu = Some((index, door));
+                                continue;
+                            }
+                            match report {
                                 Some(Report::Play) => reply.play = Some(index),
                                 Some(Report::Press(press)) => reply.press = Some((index, press)),
                                 Some(Report::Lift(ghost)) => {
@@ -160,6 +185,15 @@ pub fn show(
                                 }
                                 None => {}
                             }
+                        }
+                        // Del belongs to a focused row, and only while the menu
+                        // is not holding the key: a consumed event is gone, so
+                        // the menu's own Del would starve behind it.
+                        if let Some(index) = focused
+                            && !context_menu::is_open(ui.ctx())
+                            && context_menu::take_delete(ui)
+                        {
+                            reply.remove = Some(index);
                         }
                         reply.focused = focused_row(ui, queue);
                     }
@@ -191,6 +225,19 @@ fn focused_row(ui: &Ui, queue: &Queue) -> Option<usize> {
     let focused = ui.memory(|memory| memory.focused())?;
     let first = queue.first_upcoming();
     (first..first + queue.upcoming().len()).find(|index| queue_row::id(ui, *index) == focused)
+}
+
+/// The queue's keyboard door: the context-menu key or Shift+F10 on the focused
+/// row, anchored under the row the way the `⋯` anchors elsewhere.
+fn key_door(ui: &Ui, index: usize, focused: Option<usize>, anchor: Rect) -> Option<Door> {
+    if focused != Some(index) {
+        return None;
+    }
+    context_menu::menu_key_pressed(ui).then_some(Door {
+        anchor: Anchor::Button(anchor),
+        opener: queue_row::id(ui, index),
+        device: Device::Keyboard,
+    })
 }
 
 /// Whether any of `rect` is inside `visible`.
@@ -244,7 +291,9 @@ fn row(
         Some(Click::Play) => Some(Report::Play),
         Some(Click::Select(press)) => Some(Report::Press(press)),
         Some(Click::Lift) => Some(Report::Lift(row.lifted())),
-        Some(Click::Open(_)) | None => None,
+        // A queue row never asks for a menu: its `⋯` is not drawn, and it has no
+        // heart.
+        Some(Click::Menu(_)) | Some(Click::Open(_)) | Some(Click::Like(_)) | None => None,
     }
 }
 
@@ -511,6 +560,7 @@ mod tests {
             (reply.play, reply.press, reply.lift, reply.focused),
             (None, None, None, None)
         );
+        assert_eq!((reply.menu, reply.remove), (None, None));
         let texts = drawn_texts(&output);
         assert!(texts.contains(&"NEXT IN QUEUE"), "{texts:?}");
         assert!(texts.contains(&EMPTY), "{texts:?}");
@@ -1218,5 +1268,209 @@ mod tests {
         assert_eq!(requested.len(), 1, "only the row with a cover asks for one");
         assert_eq!(cover_row(&requested[0]), 1);
         assert_eq!(art.look(tracks[1].cover.as_ref(), now), Cover::Loading);
+    }
+    /// Runs `events` one pass each and keeps the reply that reported a door or a
+    /// key.
+    fn feed_doors(
+        ctx: &Context,
+        pane: Rect,
+        queue: &Queue,
+        events: Vec<Event>,
+        mut reply: Reply,
+    ) -> Reply {
+        let tokens = Tokens::DARK;
+        let now = Instant::now();
+        let mut art = Art::default();
+        for event in events {
+            art.begin_frame();
+            let reply = &mut reply;
+            run(ctx, input(vec![event]), |ui| {
+                let next = show(ui, pane, queue, &mut art, now, &tokens);
+                if next.menu.is_some() || next.remove.is_some() || next.press.is_some() {
+                    *reply = next;
+                }
+            });
+        }
+        reply
+    }
+
+    /// A queue row's position, from the row it painted.
+    fn row_at(ctx: &Context, queue: &Queue, label: &str) -> Pos2 {
+        let mut art = Art::default();
+        let now = Instant::now();
+        let (_, output) = pass(ctx, PANE, queue, &mut art, now, Vec::new());
+        painted_at(&output, label).expect("the row is painted") + Vec2::new(4.0, 4.0)
+    }
+
+    #[test]
+    fn a_right_click_reports_the_rows_door() {
+        let ctx = context();
+        let queue = queue_of(6, 1);
+        let at = row_at(&ctx, &queue, "t4");
+
+        let reply = feed_doors(
+            &ctx,
+            PANE,
+            &queue,
+            crate::view::test_support::secondary_click_events(at).to_vec(),
+            Reply::default(),
+        );
+
+        let (row, door) = reply.menu.expect("a right-click is a door");
+        assert_eq!(row, 4);
+        assert_eq!(door.device, crate::menu::Device::Pointer);
+        assert!(
+            matches!(door.anchor, Anchor::Pointer(_)),
+            "the menu did not anchor where the click was"
+        );
+        assert_eq!(reply.press, None, "the door also picked the row");
+    }
+
+    #[test]
+    fn shift_f10_and_the_menu_key_are_the_focused_rows_door() {
+        for event in [
+            Event::Key {
+                key: egui::Key::F10,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::SHIFT,
+            },
+            Event::Key {
+                key: egui::Key::Menu,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::NONE,
+            },
+        ] {
+            let ctx = context();
+            let queue = queue_of(6, 1);
+            let at = row_at(&ctx, &queue, "t4");
+            let _ = click(&ctx, PANE, &queue, at);
+
+            let reply = feed_doors(&ctx, PANE, &queue, vec![event], Reply::default());
+
+            let (row, door) = reply.menu.expect("the key opened no door");
+            assert_eq!(row, 4);
+            assert_eq!(door.device, crate::menu::Device::Keyboard);
+            assert!(
+                matches!(door.anchor, Anchor::Button(_)),
+                "the keyboard's menu floated at the pointer"
+            );
+        }
+    }
+
+    #[test]
+    fn a_key_door_without_focus_opens_nothing() {
+        let ctx = context();
+        let queue = queue_of(6, 1);
+
+        let reply = feed_doors(
+            &ctx,
+            PANE,
+            &queue,
+            vec![Event::Key {
+                key: egui::Key::Menu,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::NONE,
+            }],
+            Reply::default(),
+        );
+
+        assert!(reply.menu.is_none());
+    }
+
+    #[test]
+    fn a_focused_row_reports_the_delete() {
+        let ctx = context();
+        let queue = queue_of(6, 1);
+        let at = row_at(&ctx, &queue, "t4");
+        let _ = click(&ctx, PANE, &queue, at);
+
+        let reply = feed_doors(
+            &ctx,
+            PANE,
+            &queue,
+            vec![Event::Key {
+                key: egui::Key::Delete,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::NONE,
+            }],
+            Reply::default(),
+        );
+
+        assert_eq!(reply.remove, Some(4));
+    }
+
+    #[test]
+    fn a_held_delete_reports_once() {
+        let ctx = context();
+        let queue = queue_of(6, 1);
+        let at = row_at(&ctx, &queue, "t4");
+        let _ = click(&ctx, PANE, &queue, at);
+
+        let mut reply = feed_doors(
+            &ctx,
+            PANE,
+            &queue,
+            vec![Event::Key {
+                key: egui::Key::Delete,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::NONE,
+            }],
+            Reply::default(),
+        );
+        assert_eq!(reply.remove, Some(4));
+
+        let mut art = Art::default();
+        let tokens = Tokens::DARK;
+        for _ in 0..3 {
+            art.begin_frame();
+            run(
+                &ctx,
+                input(vec![Event::Key {
+                    key: egui::Key::Delete,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: true,
+                    modifiers: Modifiers::NONE,
+                }]),
+                |ui| {
+                    reply = show(ui, PANE, &queue, &mut art, Instant::now(), &tokens);
+                },
+            );
+            assert_eq!(reply.remove, None, "a held Del reported again");
+        }
+    }
+
+    #[test]
+    fn the_queues_own_rows_end_at_the_current_entry_so_it_has_no_door() {
+        let ctx = context();
+        let queue = queue_of(6, 2);
+        let mut art = Art::default();
+        let now = Instant::now();
+        let (_, output) = pass(&ctx, PANE, &queue, &mut art, now, Vec::new());
+        assert!(
+            !painted_rows(&output).contains(&2),
+            "the current entry is drawn as a row"
+        );
+
+        // A right-click on the caption band names no row.
+        let at = painted_at(&output, "NEXT IN QUEUE").expect("the caption is painted");
+        let reply = feed_doors(
+            &ctx,
+            PANE,
+            &queue,
+            crate::view::test_support::secondary_click_events(at + Vec2::new(4.0, 4.0)).to_vec(),
+            Reply::default(),
+        );
+        assert!(reply.menu.is_none(), "the caption opened a menu");
     }
 }
