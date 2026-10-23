@@ -152,9 +152,7 @@ pub fn tracks_view(
                 hero::Tools {
                     title,
                     more: Some(more_live),
-                    // A playlist's own heart needs the rootlist add, which has no
-                    // command yet, so it stays present and inert.
-                    saved: None,
+                    saved: library.is_saved(&entry.uri),
                 },
             );
             library.renaming = renaming;
@@ -194,15 +192,24 @@ pub fn tracks_view(
                     ),
                 );
             }
+            if reply.saved.is_some() {
+                let item = LibraryItem {
+                    kind: SidebarKind::Playlists,
+                    uri: entry.uri.clone(),
+                    name: entry.name.clone(),
+                };
+                command = library.save_to_library(&item).or(command.take());
+            }
             if (reply.played || reply.shuffled)
                 && tracks.is_some()
                 && let Load::Ready(tracks) = &library.tracks
             {
-                command = if reply.shuffled {
+                command = (if reply.shuffled {
                     queue.start_with_shuffle(&tracks.tracks, 0, transport)
                 } else {
                     queue.start(&tracks.tracks, 0, transport)
-                };
+                })
+                .or(command.take());
             }
         }
 

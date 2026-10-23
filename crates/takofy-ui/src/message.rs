@@ -45,6 +45,13 @@ pub enum Command {
         revision: Revision,
         index: usize,
     },
+    /// Put one playlist at the front of the sidebar's list, based on `revision`.
+    ///
+    /// The rootlist only links; the playlist itself is untouched.
+    LinkPlaylist {
+        playlist: String,
+        revision: Revision,
+    },
     /// Write one album or show into the library, or out of it.
     ///
     /// An artist is not saved this way: it is followed, through
@@ -200,6 +207,14 @@ pub enum Update {
     },
     /// The playlist could not be unlinked, so it stays in the sidebar.
     PlaylistRemoveFailed { playlist: String },
+    /// A playlist re-joined the rootlist, and this is the revision the next write
+    /// must name.
+    PlaylistLinked {
+        playlist: String,
+        revision: Revision,
+    },
+    /// The playlist could not be put on the rootlist, so the library is as it was.
+    PlaylistLinkFailed { playlist: String },
     /// A saved album or show entered the library, or left it. The reply carried
     /// no body, so this is the write's own echo.
     Saved { uri: String, saved: bool },

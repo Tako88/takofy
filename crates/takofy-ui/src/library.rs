@@ -220,6 +220,8 @@ enum SidebarPending {
     Saved { uri: String, saved: bool },
     /// One playlist being renamed, which names no rootlist order.
     Rename { playlist: String },
+    /// One playlist being put back on the rootlist, and the row it names.
+    Link { playlist: String },
 }
 
 impl SidebarPending {
@@ -229,7 +231,10 @@ impl SidebarPending {
     /// it. Every other write either names the rootlist or is answered with the
     /// revision the read's access would replace, so both wait for it.
     fn holds_rootlist(&self) -> bool {
-        !matches!(self, Self::Saved { .. } | Self::Rename { .. })
+        !matches!(
+            self,
+            Self::Saved { .. } | Self::Rename { .. } | Self::Link { .. }
+        )
     }
 }
 
@@ -414,6 +419,32 @@ impl Library {
             // The row stays and the held revision goes: the write may have
             // landed with only its reply lost, so the next read is what heals
             // it.
+            Update::PlaylistLinked { playlist, revision } => {
+                if !matches!(
+                    &self.sidebar_pending,
+                    Some(SidebarPending::Link { playlist: pending }) if pending == playlist
+                ) {
+                    return;
+                }
+                self.sidebar_pending = None;
+                self.sidebar_notice = None;
+                if let Some(access) = &mut self.rootlist {
+                    access.revision = revision.clone();
+                }
+                // A link puts the row at the front, and the reply carries no row
+                // to draw, so the list is re-read rather than invented.
+                self.rootlist_stale = true;
+            }
+            Update::PlaylistLinkFailed { playlist } => {
+                if !matches!(
+                    &self.sidebar_pending,
+                    Some(SidebarPending::Link { playlist: pending }) if pending == playlist
+                ) {
+                    return;
+                }
+                self.sidebar_pending = None;
+                self.sidebar_notice = Some(SidebarWrite::Save);
+            }
             Update::PlaylistRemoveFailed { playlist } => {
                 let Some(SidebarPending::Remove {
                     playlist: pending, ..
@@ -1198,10 +1229,6 @@ impl Library {
     /// Removes `item` from the library, and asks for the one write that does it.
     ///
     /// Writes a library item in, the mirror of [`Self::remove_from_library`].
-    ///
-    /// A playlist is not here: putting one on the rootlist is the rootlist add,
-    /// which has no command of its own yet, so a playlist that is missing from
-    /// the library cannot be put there from its band.
     pub fn save_to_library(&mut self, item: &LibraryItem) -> Option<Command> {
         if self.is_saved(&item.uri) == Some(true) {
             return None;
@@ -1236,14 +1263,24 @@ impl Library {
                     followed: true,
                 }
             }
-            SidebarKind::Playlists => return None,
+            SidebarKind::Playlists => {
+                let revision = self.rootlist.as_ref()?.revision.clone();
+                Command::LinkPlaylist {
+                    playlist: item.uri.clone(),
+                    revision,
+                }
+            }
         };
-        if item.kind != SidebarKind::Artists {
-            self.sidebar_pending = Some(SidebarPending::Saved {
+        self.sidebar_pending = match item.kind {
+            SidebarKind::Playlists => Some(SidebarPending::Link {
+                playlist: item.uri.clone(),
+            }),
+            SidebarKind::Artists => None,
+            SidebarKind::Albums | SidebarKind::Podcasts => Some(SidebarPending::Saved {
                 uri: item.uri.clone(),
                 saved: true,
-            });
-        }
+            }),
+        };
         self.sidebar_notice = None;
         Some(command)
     }
@@ -7963,12 +8000,54 @@ mod tests {
     }
 
     #[test]
-    fn a_playlist_has_no_save_of_its_own_yet() {
+    fn a_playlist_is_put_back_on_the_rootlist_by_a_link() {
         let mut library = sidebar_library(&["a"], 0x07, true, None);
+        // A playlist the sidebar does not list: the only way one is missing from
+        // the library is that it was unlinked, and a band then offers the heart.
+        assert_eq!(library.is_saved("spotify:playlist:gone"), Some(false));
         assert_eq!(
-            library.save_to_library(&item(SidebarKind::Playlists, "a")),
-            None,
-            "the rootlist add has no command yet"
+            library.save_to_library(&item(SidebarKind::Playlists, "gone")),
+            Some(Command::LinkPlaylist {
+                playlist: "gone".to_owned(),
+                revision: revision(0x07),
+            })
+        );
+        assert!(library.write_in_flight(), "the link holds the list still");
+
+        library.apply(&Update::PlaylistLinked {
+            playlist: "gone".to_owned(),
+            revision: revision(0x08),
+        });
+
+        assert!(!library.write_in_flight());
+        assert_eq!(library.sidebar_notice, None);
+        assert_eq!(
+            library
+                .rootlist
+                .as_ref()
+                .map(|access| access.revision.clone()),
+            Some(revision(0x08)),
+            "the next write names the revision the link left"
+        );
+    }
+
+    #[test]
+    fn a_failed_link_says_so_and_leaves_the_list_alone() {
+        let mut library = sidebar_library(&["a"], 0x07, true, None);
+        library.save_to_library(&item(SidebarKind::Playlists, "gone"));
+        library.apply(&Update::PlaylistLinkFailed {
+            playlist: "gone".to_owned(),
+        });
+
+        assert_eq!(library.sidebar_notice, Some(SidebarWrite::Save));
+        assert!(!library.write_in_flight());
+        assert_eq!(
+            library
+                .rootlist
+                .as_ref()
+                .map(|access| access.revision.clone()),
+            Some(revision(0x07)),
+            "a failed link keeps the revision it had"
         );
     }
 

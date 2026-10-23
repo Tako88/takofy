@@ -438,6 +438,19 @@ pub(crate) fn start<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                         break;
                     }
                 }
+                Event::Command(Some(Command::LinkPlaylist { playlist, revision })) => {
+                    let step = link_playlist(
+                        &mut host,
+                        &mut stop_rx,
+                        &task_notifier,
+                        &playlist,
+                        &revision,
+                    )
+                    .await;
+                    if step.stopped() {
+                        break;
+                    }
+                }
                 Event::Command(Some(Command::SetSaved { uri, saved })) => {
                     let step =
                         set_saved(&mut host, &mut stop_rx, &task_notifier, &uri, saved).await;
@@ -1095,6 +1108,36 @@ async fn remove_playlist<H: SessionHost>(
         Some(Err(error)) => {
             log::warn!("playlist removal failed: {}", error.kind());
             notifier.send(Update::PlaylistRemoveFailed {
+                playlist: playlist.to_owned(),
+            });
+            Step::Done
+        }
+    }
+}
+
+/// Puts one playlist at the front of the rootlist and announces the reply.
+///
+/// The link answers the revision everything after it is based on, so the window
+/// keeps that rather than the one it sent.
+async fn link_playlist<H: SessionHost>(
+    host: &mut H,
+    stop: &mut StopReceiver<()>,
+    notifier: &Notifier,
+    playlist: &str,
+    revision: &Revision,
+) -> Step {
+    match stop_or(stop, host.link_playlist(revision, playlist)).await {
+        None => Step::Stopped,
+        Some(Ok(revision)) => {
+            notifier.send(Update::PlaylistLinked {
+                playlist: playlist.to_owned(),
+                revision,
+            });
+            Step::Done
+        }
+        Some(Err(error)) => {
+            log::warn!("playlist link failed: {}", error.kind());
+            notifier.send(Update::PlaylistLinkFailed {
                 playlist: playlist.to_owned(),
             });
             Step::Done
@@ -3623,6 +3666,44 @@ mod tests {
         };
 
         run_ordered(runtime, window, teardown);
+    }
+
+    #[test]
+    fn a_link_puts_the_playlist_on_the_rootlist_and_announces_the_new_revision() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+        let gone = "spotify:playlist:gone";
+
+        let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::LinkPlaylist {
+                    playlist: gone.to_owned(),
+                    revision: revision(0x01),
+                })
+                .expect("link");
+            ui_end.updates.recv().expect("linked")
+        });
+
+        assert!(matches!(
+            update,
+            Update::PlaylistLinked { playlist, .. } if playlist == gone
+        ));
+        assert_eq!(shared.link_writes.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            shared
+                .last_link
+                .lock()
+                .expect("lock")
+                .clone()
+                .map(|(_, playlist)| playlist),
+            Some(gone.to_owned())
+        );
     }
 
     #[test]
