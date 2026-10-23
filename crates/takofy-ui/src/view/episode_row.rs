@@ -89,11 +89,12 @@ pub fn show(ui: &mut Ui, rect: Rect, row: &Row<'_>, tokens: &Tokens) -> Option<C
     );
     let before = rows::dim(ui, row.look);
     rows::wash(ui, rect, hover, row.look, tokens);
-    // A ring on a carried row is noise: the pointer already holds it.
-    if response.has_focus() && !row.look.carrying {
-        controls::focus_ring(ui, rect, tokens);
-    }
     let (played, toggle) = paint(ui, rect, row, key, tokens);
+    // A ring on a carried row is noise: the pointer already holds it. After the
+    // hairline, so the row's own separator cannot cover the ring's bottom edge.
+    if !row.look.carrying {
+        controls::focus_ring(ui, response, rect, radius::SM, tokens);
+    }
     ui.set_opacity(before);
 
     // Keyboard activation is answered before the pointer's, so a click landing in
@@ -307,6 +308,7 @@ mod tests {
     use super::*;
     use crate::selection::Press;
     use crate::theme::{fonts, style};
+    use crate::view::test_support::{rings_in, tab};
 
     const PROBE: Rect = Rect {
         min: Pos2::new(10.0, 10.0),
@@ -366,6 +368,89 @@ mod tests {
             repeat: false,
             modifiers: egui::Modifiers::NONE,
         }
+    }
+
+    /// Runs one pass with the focus frame opened, returning what it painted.
+    fn paint(ctx: &Context, input: RawInput, mut draw: impl FnMut(&mut Ui)) -> egui::FullOutput {
+        let mut output = ctx.run_ui(input, |ui| {
+            crate::view::focus::begin_frame(ui.ctx());
+            draw(ui);
+        });
+        output.textures_delta.clear();
+        output
+    }
+
+    #[test]
+    fn a_clicked_episode_row_wears_no_ring() {
+        let ctx = context();
+        let row = row("A Title");
+        let tokens = Tokens::DARK;
+        let at = Pos2::new(300.0, 40.0);
+        let _ = paint(&ctx, input(Vec::new()), |ui| {
+            let _ = show(ui, PROBE, &row, &tokens);
+        });
+        for event in crate::view::test_support::click_events(at) {
+            let _ = paint(&ctx, input(vec![event]), |ui| {
+                let _ = show(ui, PROBE, &row, &tokens);
+            });
+        }
+        let output = paint(&ctx, input(Vec::new()), |ui| {
+            let _ = show(ui, PROBE, &row, &tokens);
+        });
+        assert!(
+            ctx.memory(|memory| memory.focused()).is_some(),
+            "the click took the keyboard"
+        );
+        assert!(
+            rings_in(&output).is_empty(),
+            "a clicked episode row wears no ring: {:?}",
+            rings_in(&output)
+        );
+    }
+
+    #[test]
+    fn a_tabbed_episode_ring_is_not_covered_by_its_hairline() {
+        let ctx = context();
+        let row = row("A Title");
+        let tokens = Tokens::DARK;
+        let _ = paint(&ctx, input(Vec::new()), |ui| {
+            let _ = show(ui, PROBE, &row, &tokens);
+        });
+        let [press, release] = tab();
+        let _ = paint(&ctx, input(vec![press]), |ui| {
+            let _ = show(ui, PROBE, &row, &tokens);
+        });
+        let output = paint(&ctx, input(vec![release]), |ui| {
+            let _ = show(ui, PROBE, &row, &tokens);
+        });
+
+        let rings = rings_in(&output);
+        assert_eq!(rings.len(), 1, "Tab rings the row: {rings:?}");
+        assert_eq!(
+            rings[0].bottom(),
+            PROBE.bottom(),
+            "the ring lies on the row's own bottom edge"
+        );
+
+        let shapes = || output.shapes.iter().map(|clipped| &clipped.shape);
+        let border = shapes()
+            .position(|shape| {
+                matches!(shape, Shape::Rect(rect)
+                    if (rect.rect.height() - stroke::HAIRLINE).abs() < 0.01
+                        && (rect.rect.bottom() - PROBE.bottom()).abs() < 0.01
+                        && rect.fill == tokens.palette.border)
+            })
+            .expect("the row paints its closing hairline");
+        let ring = shapes()
+            .position(|shape| {
+                matches!(shape, Shape::Rect(rect)
+                    if rect.stroke.width > 0.0 && rect.stroke.color == tokens.palette.accent)
+            })
+            .expect("the tabbed row wears its ring");
+        assert!(
+            ring > border,
+            "the hairline was painted over the ring's bottom edge"
+        );
     }
 
     #[test]

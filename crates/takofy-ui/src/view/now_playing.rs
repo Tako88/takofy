@@ -312,6 +312,7 @@ mod tests {
     use crate::message::{TransportUpdate, Update};
     use crate::selection::Press;
     use crate::theme::{fonts, style};
+    use crate::view::test_support::tab;
 
     const PROBE: Vec2 = Vec2::new(360.0, 700.0);
 
@@ -781,13 +782,7 @@ mod tests {
                 _ => false,
             })
         };
-        let tab = Event::Key {
-            key: egui::Key::Tab,
-            physical_key: None,
-            pressed: true,
-            repeat: false,
-            modifiers: egui::Modifiers::NONE,
-        };
+        let [tab, _] = tab();
         let lyrics_at = at + Vec2::new(2.0, 2.0);
 
         let mut reached_the_panel = false;

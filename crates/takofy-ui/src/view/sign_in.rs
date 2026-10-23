@@ -144,6 +144,7 @@ mod tests {
 
     use super::*;
     use crate::theme::{Tokens, fonts, style};
+    use crate::view::test_support::{rings_in, tab};
 
     /// A context with the app's fonts and style installed.
     fn context() -> Context {
@@ -154,9 +155,22 @@ mod tests {
         ctx
     }
 
-    fn run(ctx: &Context, input: RawInput, draw: impl FnMut(&mut Ui)) {
-        let mut output = ctx.run_ui(input, draw);
+    fn run(ctx: &Context, input: RawInput, mut draw: impl FnMut(&mut Ui)) {
+        let mut output = ctx.run_ui(input, |ui| {
+            crate::view::focus::begin_frame(ui.ctx());
+            draw(ui);
+        });
         output.textures_delta.clear();
+    }
+
+    /// Runs one pass and returns what it painted.
+    fn painted(ctx: &Context, input: RawInput, mut draw: impl FnMut(&mut Ui)) -> egui::FullOutput {
+        let mut output = ctx.run_ui(input, |ui| {
+            crate::view::focus::begin_frame(ui.ctx());
+            draw(ui);
+        });
+        output.textures_delta.clear();
+        output
     }
 
     fn window(width: f32, height: f32) -> RawInput {
@@ -241,6 +255,63 @@ mod tests {
                 command = show(ui, &mut state, &Tokens::DARK);
             });
         }
+
+        assert_eq!(command, Some(Command::Authorize));
+        assert_eq!(state, SignIn::Authorizing);
+    }
+
+    #[test]
+    fn a_tabbed_sign_in_control_wears_the_ring_and_a_clicked_one_does_not() {
+        let ctx = context();
+        let tokens = Tokens::DARK;
+        let mut state = SignIn::NeedsAuthorization;
+        let mut rect = Rect::NOTHING;
+        run(&ctx, window(900.0, 600.0), |ui| {
+            rect = card(ui, &mut state, &tokens)
+                .2
+                .expect("the prompt offers a control");
+        });
+
+        let mut command = None;
+        let mut draw = |ui: &mut Ui| {
+            if let Some(next) = show(ui, &mut state, &tokens) {
+                command = Some(next);
+            }
+        };
+
+        let [press, release] = tab();
+        run(&ctx, window(900.0, 600.0), &mut draw);
+        let mut input = window(900.0, 600.0);
+        input.events.push(press);
+        run(&ctx, input, &mut draw);
+        let mut input = window(900.0, 600.0);
+        input.events.push(release);
+        let output = painted(&ctx, input, &mut draw);
+        assert_eq!(
+            rings_in(&output),
+            [rect.expand(extent::FOCUS_OFFSET + stroke::HAIRLINE)],
+            "Tab rings the sign-in control"
+        );
+
+        let ring = rect.expand(extent::FOCUS_OFFSET + stroke::HAIRLINE);
+        let mut frames = Vec::new();
+        for event in [
+            Event::PointerMoved(rect.center()),
+            pointer_button(rect.center(), true),
+            pointer_button(rect.center(), false),
+        ] {
+            let mut input = window(900.0, 600.0);
+            input.events.push(event);
+            frames.push(rings_in(&painted(&ctx, input, &mut draw)));
+        }
+        drop(draw);
+
+        assert!(frames[0].contains(&ring), "a pointer move is not input");
+        assert!(!frames[1].contains(&ring), "the press hides the ring");
+        assert!(
+            !frames[2].contains(&ring),
+            "a clicked sign-in control wears no ring"
+        );
 
         assert_eq!(command, Some(Command::Authorize));
         assert_eq!(state, SignIn::Authorizing);

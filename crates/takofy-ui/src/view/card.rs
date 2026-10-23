@@ -68,9 +68,7 @@ pub fn show(ui: &mut Ui, rect: Rect, card: &Card<'_>, tokens: &Tokens) -> bool {
             egui::StrokeKind::Inside,
         );
     }
-    if response.has_focus() {
-        controls::focus_ring(ui, rect, tokens);
-    }
+    controls::focus_ring(ui, &response, rect, radius::MD, tokens);
 
     let inner = rect.shrink(space::S2);
     let art = Rect::from_min_size(inner.min, Vec2::splat(inner.width()));
@@ -162,7 +160,75 @@ fn line_height(ui: &Ui, font: &FontId) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    use egui::Vec2;
+
     use super::*;
+
+    fn context() -> egui::Context {
+        let tokens = Tokens::DARK;
+        let ctx = egui::Context::default();
+        ctx.set_fonts(crate::theme::fonts::definitions());
+        ctx.set_global_style(crate::theme::style(&tokens));
+        ctx
+    }
+
+    /// One card pass, returning the card's rect and what it painted. `focus`
+    /// puts the keyboard on the card before it draws.
+    fn card_frame(
+        ctx: &egui::Context,
+        events: Vec<egui::Event>,
+        focus: bool,
+    ) -> (Rect, egui::FullOutput) {
+        let tokens = Tokens::DARK;
+        let card = Card {
+            uri: "spotify:show:a",
+            name: "Field Notes",
+            kind: "Podcast",
+            cover: Cover::Missing,
+        };
+        let mut rect = Rect::ZERO;
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(600.0, 400.0))),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                crate::view::focus::begin_frame(ui.ctx());
+                let width = 176.0;
+                rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(width, width + extra_height(ui)));
+                if focus {
+                    let id = ui.scope_id().with(("library-card", card.uri));
+                    ui.ctx().memory_mut(|memory| memory.request_focus(id));
+                }
+                let _ = show(ui, rect, &card, &tokens);
+            },
+        );
+        output.textures_delta.clear();
+        (rect, output)
+    }
+
+    #[test]
+    fn a_clicked_card_wears_no_ring() {
+        let ctx = context();
+        let tokens = Tokens::DARK;
+        let (rect, framed) = card_frame(&ctx, Vec::new(), true);
+        assert_eq!(
+            crate::view::test_support::rings(&framed, &tokens).len(),
+            1,
+            "a focused card wears the ring"
+        );
+
+        let at = rect.min + Vec2::new(10.0, 10.0);
+        for event in crate::view::test_support::click_events(at) {
+            let _ = card_frame(&ctx, vec![event], false);
+        }
+        let (_, output) = card_frame(&ctx, Vec::new(), false);
+        assert!(
+            crate::view::test_support::rings(&output, &tokens).is_empty(),
+            "a clicked card wears no ring"
+        );
+    }
 
     #[test]
     fn a_card_is_announced_with_its_own_kind() {
