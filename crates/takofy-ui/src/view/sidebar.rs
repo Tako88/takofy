@@ -6,7 +6,9 @@
 use std::time::Instant;
 
 use egui::{Layout, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Ui, UiBuilder, Vec2};
-use takofy_model::{CoverUrl, FollowedArtist, FollowedShow, PlaylistEntry, SavedAlbum};
+use takofy_model::{
+    CoverUrl, FollowedArtist, FollowedShow, PLAYLIST_NAME_MAX, PlaylistEntry, SavedAlbum,
+};
 
 use crate::availability::Control;
 use crate::cover::{Art, Cover};
@@ -257,6 +259,7 @@ fn name_field(ui: &mut Ui, rect: Rect, library: &mut Library, tokens: &Tokens) {
                 weak_color: tokens.palette.text_subtle,
                 cursor: Stroke::new(stroke::HAIRLINE, tokens.palette.text),
                 align: egui::Align2::LEFT_CENTER,
+                limit: PLAYLIST_NAME_MAX,
             },
         )
     };
@@ -1153,6 +1156,7 @@ fn one(
                         weak_color: tokens.palette.text_subtle,
                         cursor: Stroke::new(stroke::HAIRLINE, tokens.palette.text),
                         align: egui::Align2::LEFT_CENTER,
+                        limit: PLAYLIST_NAME_MAX,
                     },
                 )
             };

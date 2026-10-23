@@ -6,7 +6,6 @@
 //! a key means.
 
 use egui::{Align2, Color32, FontId, Id, Margin, Rect, Stroke, Ui, UiBuilder};
-use takofy_model::PLAYLIST_NAME_MAX;
 
 use super::keys::{FIELD_FILTER, pressed_once};
 
@@ -24,6 +23,8 @@ pub(crate) struct Spec<'a> {
     pub weak_color: Color32,
     pub cursor: Stroke,
     pub align: Align2,
+    /// The most characters this field accepts; the caller names its own bound.
+    pub limit: usize,
 }
 
 /// What the keyboard and focus did this frame.
@@ -50,6 +51,7 @@ pub(crate) fn edit(ui: &mut Ui, spec: Spec<'_>) -> Out {
         weak_color,
         cursor,
         align,
+        limit,
     } = spec;
     if rect.width() <= 0.0 {
         return Out::default();
@@ -124,7 +126,7 @@ pub(crate) fn edit(ui: &mut Ui, spec: Spec<'_>) -> Out {
             .text_color(text_color)
             .event_filter(FIELD_FILTER)
             .hint_text(egui::RichText::new(hint))
-            .char_limit(PLAYLIST_NAME_MAX)
+            .char_limit(limit)
             .show(&mut child);
         focused = output.response.has_focus();
         lost_focus = output.response.lost_focus();

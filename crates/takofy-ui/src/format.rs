@@ -289,6 +289,15 @@ pub fn library_count(shown: usize, total: usize) -> String {
     }
 }
 
+/// A filtered playlist's count line: `12 of 62 tracks`.
+///
+/// The unit follows the total, not the shown count, so a one-track playlist
+/// reads `1 of 1 track` while a filter is on.
+pub fn filter_count_label(shown: usize, total: usize) -> String {
+    let noun = if total == 1 { "track" } else { "tracks" };
+    format!("{shown} of {total} {noun}")
+}
+
 /// A library row's second line: what the thing is, and whose it is.
 ///
 /// The reference writes `Playlist · Vela Moreno` for a playlist and the
@@ -993,6 +1002,14 @@ mod tests {
         assert_eq!(library_count(0, 0), "0 saved");
         assert_eq!(library_count(28, 28), "28 saved");
         assert_eq!(library_count(3, 28), "3 of 28");
+    }
+
+    #[test]
+    fn filter_count_labels() {
+        assert_eq!(filter_count_label(12, 62), "12 of 62 tracks");
+        assert_eq!(filter_count_label(1, 1), "1 of 1 track");
+        assert_eq!(filter_count_label(0, 62), "0 of 62 tracks");
+        assert_eq!(filter_count_label(1, 2), "1 of 2 tracks");
     }
 
     #[test]

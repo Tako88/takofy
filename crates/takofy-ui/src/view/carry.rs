@@ -381,6 +381,22 @@ impl List {
         }
     }
 
+    /// Drops every pick and the anchor that `keep` rejects.
+    ///
+    /// A filtered list calls this so a hidden row can never reach the Delete
+    /// gate or a menu. The stored selection is only rewritten when one fell.
+    ///
+    /// The playlist view that calls it lands in milestone 2, so the lib build
+    /// has no caller yet.
+    #[allow(dead_code)]
+    pub fn restrict(&mut self, keep: impl Fn(usize) -> bool) {
+        let before = self.selection.clone();
+        self.selection.retain(keep);
+        if self.selection != before {
+            self.changed = true;
+        }
+    }
+
     /// Applies a press to `row`.
     pub fn press(&mut self, row: usize, press: Press) {
         self.selection.press(row, press);
@@ -1151,6 +1167,40 @@ mod tests {
             !List::open(&ctx, id, 8).look(6).selected,
             "the dropped row must not come back with the long list"
         );
+    }
+
+    #[test]
+    fn restrict_prunes_a_stale_pick_and_marks_it_changed() {
+        let ctx = context();
+        let id = Id::unique("list");
+        let mut list = List::open(&ctx, id, 6);
+        list.press(1, Press::Replace);
+        list.press(4, Press::Toggle);
+        list.finish(&ctx);
+
+        let mut list = List::open(&ctx, id, 6);
+        list.restrict(|row| row != 4);
+
+        assert!(!list.look(4).selected, "a hidden row is dropped");
+        assert!(list.look(1).selected);
+        assert!(list.changed, "the drop is stored on finish");
+        list.finish(&ctx);
+        assert!(!List::open(&ctx, id, 6).look(4).selected);
+    }
+
+    #[test]
+    fn restrict_that_changes_nothing_leaves_changed_false() {
+        let ctx = context();
+        let id = Id::unique("list");
+        let mut list = List::open(&ctx, id, 6);
+        list.press(1, Press::Replace);
+        list.finish(&ctx);
+
+        let mut list = List::open(&ctx, id, 6);
+        list.restrict(|row| row != 4);
+
+        assert!(list.look(1).selected);
+        assert!(!list.changed, "a no-op restriction stores nothing");
     }
 
     #[test]
