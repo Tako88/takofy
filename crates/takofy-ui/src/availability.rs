@@ -213,7 +213,7 @@ pub fn availability(control: Control) -> Availability {
         Control::LibraryFilterArtists => Availability::Ready,
         Control::LibraryFilterAlbums => Availability::Ready,
         Control::LibraryFilterPodcasts => Availability::Ready, // #3
-        Control::LibraryMore => Availability::Waiting,         // #3
+        Control::LibraryMore => Availability::Ready,
         Control::LayoutGrid | Control::LayoutList => Availability::Ready,
         Control::ReleasePlay => Availability::Ready,
         Control::EpisodeToggle => Availability::Ready,
@@ -273,6 +273,7 @@ mod tests {
                     | Control::LibraryFilterArtists
                     | Control::LibraryFilterAlbums
                     | Control::LibraryFilterPodcasts
+                    | Control::LibraryMore
                     | Control::LayoutGrid
                     | Control::LayoutList
                     | Control::FilterPlaylists

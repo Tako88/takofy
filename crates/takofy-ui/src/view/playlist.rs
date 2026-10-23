@@ -852,7 +852,7 @@ impl MediaDraw<'_, '_> {
 
     /// One item's words and cover, owned so a borrow of the item is not needed.
     fn media_of(&mut self, item: &Item<'_>) -> MediaWords {
-        let (uri, name, kind, sub, size, round, cover) = match item {
+        let (uri, name, kind, sub, size, round, cover, shelf) = match item {
             Item::Playlist(entry) => (
                 &entry.uri,
                 &entry.name,
@@ -861,6 +861,7 @@ impl MediaDraw<'_, '_> {
                 media_size(RootKind::Playlists, entry.tracks),
                 false,
                 entry.cover_url(),
+                SidebarKind::Playlists,
             ),
             Item::Show(show) => (
                 &show.uri,
@@ -870,6 +871,7 @@ impl MediaDraw<'_, '_> {
                 media_size(RootKind::Podcasts, show.episodes),
                 false,
                 show.cover.as_ref(),
+                SidebarKind::Podcasts,
             ),
             Item::Artist(artist) => (
                 &artist.uri,
@@ -882,6 +884,7 @@ impl MediaDraw<'_, '_> {
                 ),
                 true,
                 artist.portrait.as_ref(),
+                SidebarKind::Artists,
             ),
             Item::Album(album) => (
                 &album.uri,
@@ -894,6 +897,7 @@ impl MediaDraw<'_, '_> {
                 media_size(RootKind::Albums, album.tracks.map(|count| count as usize)),
                 false,
                 album.cover.as_ref(),
+                SidebarKind::Albums,
             ),
         };
         MediaWords {
@@ -903,6 +907,7 @@ impl MediaDraw<'_, '_> {
             sub,
             size,
             round,
+            shelf,
             cover: self.art.look(cover, self.now),
         }
     }
@@ -916,6 +921,7 @@ struct MediaWords {
     sub: String,
     size: String,
     round: bool,
+    shelf: SidebarKind,
     cover: Cover,
 }
 
@@ -928,6 +934,7 @@ impl MediaWords {
             sub: &self.sub,
             size: &self.size,
             round: self.round,
+            shelf: self.shelf,
             cover: self.cover,
         }
     }
@@ -3228,6 +3235,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             sub: "Playlist · Vela Moreno",
             size: "62 songs",
             round: false,
+            shelf: SidebarKind::Playlists,
             cover: Cover::Missing,
         };
         let mut output = ctx.run_ui(input(Vec::new()), |ui| {
@@ -5013,6 +5021,36 @@ mod root_tests {
             year: None,
             cover: None,
             tracks: None,
+        }
+    }
+
+    /// Each of the four kinds knows the shelf it belongs to, so a menu built on
+    /// it never has to read the uri back.
+    #[test]
+    fn media_of_gives_each_item_its_shelf() {
+        let mut art = Art::default();
+        let tokens = Tokens::DARK;
+        let mut select = None;
+        let mut open = None;
+        let mut draw = MediaDraw {
+            art: &mut art,
+            now: Instant::now(),
+            tokens: &tokens,
+            select: &mut select,
+            open: &mut open,
+        };
+        let playlist = playlist("spotify:playlist:a", "A");
+        let show = show("spotify:show:a", "A");
+        let artist = followed_artist("spotify:artist:a", "A");
+        let album = saved_album("spotify:album:a", "A");
+        let cases = [
+            (Item::Playlist(&playlist), SidebarKind::Playlists),
+            (Item::Show(&show), SidebarKind::Podcasts),
+            (Item::Artist(&artist), SidebarKind::Artists),
+            (Item::Album(&album), SidebarKind::Albums),
+        ];
+        for (item, shelf) in cases {
+            assert_eq!(draw.media_of(&item).shelf, shelf);
         }
     }
 

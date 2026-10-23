@@ -10,6 +10,7 @@ use egui::{Pos2, Rect, Sense, Ui, Vec2};
 use crate::availability::Control;
 use crate::cover::Cover;
 use crate::icon::Icon;
+use crate::sidebar_kind::SidebarKind;
 use crate::theme::icon::Size;
 use crate::theme::{Tokens, extent, radius, space, stroke, text, tracking};
 
@@ -30,6 +31,9 @@ pub struct Media<'a> {
     pub size: &'a str,
     /// An artist's cover is a circle; everything else is a rounded square.
     pub round: bool,
+    /// The sidebar list this item belongs to, so a menu on it is built without
+    /// re-reading its uri.
+    pub shelf: SidebarKind,
     pub cover: Cover,
 }
 
@@ -373,6 +377,7 @@ mod tests {
             sub: "Album · Nils Aker",
             size,
             round,
+            shelf: SidebarKind::Albums,
             cover: Cover::Missing,
         }
     }
