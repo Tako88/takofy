@@ -30,10 +30,12 @@ use crate::view::text as recipe;
 
 use crate::verbs;
 
+use super::actionbar;
 use super::carry::{self, Ghost};
 use super::context_menu;
 use super::heart;
 use super::hero;
+use super::pin;
 use super::skeleton;
 use super::track_list::{head, list_rect};
 use super::track_row::{self, Click, Row, TitleCell, state_of};
@@ -124,24 +126,24 @@ pub fn album_view(
                         // An album's label and copyright are out of this slice, so
                         // there is no second byline to draw.
                         description: "",
-                        playable: !album.tracks.is_empty(),
-                        // The reference's album action bar has like and more, not
-                        // shuffle.
-                        shuffle: false,
                         cover,
                     };
+                    let _ = hero::show_with(ui, &band, tokens, hero::Title::Plain);
                     let saved = library.is_saved(&uri);
-                    let reply = hero::show_with(
+                    let acted = actionbar::show(
                         ui,
-                        &band,
-                        tokens,
-                        hero::Tools {
-                            title: hero::Title::Plain,
+                        &actionbar::Bar {
+                            title: Some(&album.name),
+                            playable: !album.tracks.is_empty(),
+                            // The reference's album action bar has like and more,
+                            // not shuffle.
+                            shuffle: false,
                             more: Some(!writing),
                             saved,
                         },
+                        tokens,
                     );
-                    if let Some(door) = reply.more_door {
+                    if let Some(door) = acted.more_door {
                         let item = LibraryItem {
                             kind: SidebarKind::Albums,
                             uri: uri.clone(),
@@ -162,10 +164,10 @@ pub fn album_view(
                             ),
                         );
                     }
-                    if reply.played && !album.tracks.is_empty() {
+                    if acted.played && !album.tracks.is_empty() {
                         command = queue.start(&album.tracks, 0, transport);
                     }
-                    if let Some(asked) = reply.saved {
+                    if let Some(asked) = acted.saved {
                         // The library is borrowed for the album for the whole
                         // draw, so the write is asked for once the borrow ends.
                         save = Some((album.name.clone(), asked));
@@ -195,10 +197,20 @@ pub fn album_view(
                             count,
                         );
                         let gate = selection.gate(writing);
+                        // The id the rows draw under, so a focused row is read from
+                        // the same `Ui` that drew them.
+                        let focused_now = ui.memory(|memory| memory.focused());
+                        let mut reveal = None;
 
                         for (index, entry) in album.tracks.iter().enumerate() {
                             let rect = table_layout::row_rect(list, index, extent::ROW_H);
                             if !visible.intersects(rect) {
+                                // A row the cull skipped draws nothing, so it has
+                                // no reveal of its own; one that holds the keyboard
+                                // is asked for once the loop is done.
+                                if focused_now == Some(track_row::id(ui, &entry.uri, index + 1)) {
+                                    reveal = Some(rect);
+                                }
                                 continue;
                             }
                             let duration = entry.duration_ms.map(format_position);
@@ -263,6 +275,15 @@ pub fn album_view(
                                 None => {}
                             }
                         }
+                        // A focused row the cull skipped is asked for again through
+                        // the seam, which shifts the request clear of the action row
+                        // pinned above the list; the row's own reveal knows nothing
+                        // of it and would leave the row behind it.
+                        if let Some(row) = reveal
+                            && row.top() < ui.clip_rect().top()
+                        {
+                            pin::reveal(ui, row);
+                        }
                         selection.finish(ui.ctx());
                     });
                 }
@@ -292,7 +313,10 @@ pub fn album_view(
 mod tests {
     use std::time::Instant;
 
-    use egui::{Context, Event, Pos2, RawInput, Rect, Vec2};
+    use egui::{
+        Context, Event, Modifiers, MouseWheelSource, MouseWheelUnit, Pos2, RawInput, Rect,
+        TouchPhase, Vec2,
+    };
     use takofy_model::{AlbumDetail, CoverUrl, PlaylistEntry, TrackEntry};
 
     use super::*;
@@ -418,6 +442,10 @@ mod tests {
         let tokens = Tokens::DARK;
         let mut command = None;
         let output = run(ctx, input(events), |ui| {
+            // A notch lands in the frame it arrives, as the window's own draw
+            // pass makes it: egui's spread of one notch over several frames
+            // would still be moving the list while a probe reads a row's place.
+            crate::scroll::instant(ui.ctx());
             if let Some(next) = album_view(
                 ui,
                 Table::Full,
@@ -446,11 +474,10 @@ mod tests {
                 title: "Signal Decay",
                 meta: Vec::new(),
                 description: "",
-                playable: true,
-                shuffle: false,
                 cover: Cover::Missing,
             };
-            let _ = hero::show_with(ui, &band, &tokens, hero::Tools::plain());
+            let _ = hero::show_with(ui, &band, &tokens, hero::Title::Plain);
+            actionbar::row_rect(ui);
             crate::view::inner(ui, |ui| {
                 let columns =
                     table_layout::columns(ui.available_width(), Table::Full.columns().for_album());
@@ -474,11 +501,10 @@ mod tests {
                 title: "Signal Decay",
                 meta: Vec::new(),
                 description: "",
-                playable: true,
-                shuffle: false,
                 cover: Cover::Missing,
             };
-            let _ = hero::show_with(ui, &band, &tokens, hero::Tools::plain());
+            let _ = hero::show_with(ui, &band, &tokens, hero::Title::Plain);
+            actionbar::row_rect(ui);
             crate::view::inner(ui, |ui| {
                 let columns =
                     table_layout::columns(ui.available_width(), Table::Full.columns().for_album());
@@ -491,70 +517,45 @@ mod tests {
         found.expect("the heart's column lays out")
     }
 
-    /// The band's play tile, solved the way the page solves it.
+    /// The action row's play tile, solved the way the page solves it.
     fn play_tile_rect_for(ctx: &Context) -> Rect {
         let tokens = Tokens::DARK;
         let mut found = None;
         run(ctx, input(Vec::new()), |ui| {
             ui.add_space(space::S3);
             egui::ScrollArea::vertical().show(ui, |ui| {
-                let width = ui.available_width();
-                let top = ui.cursor().min;
                 let band = hero::Band {
                     eyebrow: "Album",
                     title: "Signal Decay",
                     meta: Vec::new(),
                     description: "",
-                    playable: true,
-                    shuffle: false,
                     cover: Cover::Missing,
                 };
-                let _ = hero::show_with(ui, &band, &tokens, hero::Tools::plain());
-                let bottom = ui.cursor().min.y;
-                let height = PLAY + 2.0 * space::S4;
-                let row = Rect::from_min_size(
-                    Pos2::new(top.x, bottom - height),
-                    Vec2::new(width, height),
-                );
-                found = Some(Rect::from_min_size(
-                    Pos2::new(row.left() + space::GUTTER, row.center().y - PLAY / 2.0),
-                    Vec2::splat(PLAY),
-                ));
+                let _ = hero::show_with(ui, &band, &tokens, hero::Title::Plain);
+                let row = actionbar::row_rect(ui);
+                found = Some(crate::layout::actionbar::solve(row, false).play);
             });
         });
         found.expect("the band and its action row lay out")
     }
 
-    /// The band heart's centre, solved the way the action row lays it out: the
-    /// tools hug the right edge, more last, so the heart sits one button and one
-    /// gap in from it.
+    /// The action row heart's centre, solved by the row itself.
     fn band_heart_point(ctx: &Context) -> Pos2 {
         let tokens = Tokens::DARK;
         let mut found = None;
         run(ctx, input(Vec::new()), |ui| {
             ui.add_space(space::S3);
             egui::ScrollArea::vertical().show(ui, |ui| {
-                let top = ui.cursor().min;
                 let band = hero::Band {
                     eyebrow: "Album",
                     title: "Signal Decay",
                     meta: Vec::new(),
                     description: "",
-                    playable: true,
-                    shuffle: false,
                     cover: Cover::Missing,
                 };
-                let _ = hero::show_with(ui, &band, &tokens, hero::Tools::plain());
-                let bottom = ui.cursor().min.y;
-                let height = PLAY + 2.0 * space::S4;
-                let row = Rect::from_min_size(
-                    Pos2::new(top.x, bottom - height),
-                    Vec2::new(ui.available_width(), height),
-                );
-                let right = row.right() - space::GUTTER;
-                let more = right - extent::BUTTON_LG;
-                let heart = more - space::S2 - extent::BUTTON_LG;
-                found = Some(Pos2::new(heart + extent::BUTTON_LG / 2.0, row.center().y));
+                let _ = hero::show_with(ui, &band, &tokens, hero::Title::Plain);
+                let row = actionbar::row_rect(ui);
+                found = Some(crate::layout::actionbar::solve(row, false).heart.center());
             });
         });
         found.expect("the band and its action row lay out")
@@ -613,6 +614,73 @@ mod tests {
         );
     }
 
+    /// The action row's box, read from the surface it fills once it pins.
+    fn bar_rect(output: &egui::FullOutput) -> Option<Rect> {
+        let tokens = Tokens::DARK;
+        output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Rect(shape)
+                    if shape.fill == tokens.palette.surface
+                        && (shape.rect.height() - crate::theme::actionbar::STUCK_H).abs()
+                            < 0.01 =>
+                {
+                    Some(shape.rect)
+                }
+                _ => None,
+            })
+    }
+
+    /// One frame with the wheel moved by `points` at the foot of the list, which
+    /// is how the page scrolls.
+    fn wheel(
+        ctx: &Context,
+        points: f32,
+        library: &mut Library,
+        transport: &mut Transport,
+        queue: &mut Queue,
+        art: &mut Art,
+    ) -> egui::FullOutput {
+        let at = Pos2::new(PROBE.x / 2.0, PROBE.y - extent::ROW_H);
+        frame(
+            ctx,
+            vec![
+                Event::PointerMoved(at),
+                Event::MouseWheel {
+                    unit: MouseWheelUnit::Point,
+                    delta: Vec2::new(0.0, points),
+                    phase: TouchPhase::Move,
+                    source: MouseWheelSource::Unknown,
+                    modifiers: Modifiers::NONE,
+                },
+            ],
+            library,
+            transport,
+            queue,
+            art,
+        )
+        .1
+    }
+
+    /// Wheels until the action row pins, and answers that frame.
+    fn pinned_frame(
+        ctx: &Context,
+        library: &mut Library,
+        transport: &mut Transport,
+        queue: &mut Queue,
+        art: &mut Art,
+    ) -> egui::FullOutput {
+        let mut output = frame(ctx, Vec::new(), library, transport, queue, art).1;
+        for _ in 0..240 {
+            if bar_rect(&output).is_some() {
+                return output;
+            }
+            output = wheel(ctx, -extent::ROW_H, library, transport, queue, art);
+        }
+        panic!("the action row never pinned");
+    }
+
     /// Clicks `pos` `times` times, one event per pass, and returns the last
     /// command the view reported.
     fn click(
@@ -638,6 +706,328 @@ mod tests {
         crate::view::carry::List::open(ctx, egui::Id::unique(("album-tracks", album)), 2)
             .look(index)
             .selected
+    }
+
+    /// A record long enough to scroll the band away.
+    fn long_detail() -> AlbumDetail {
+        detail(
+            (0..40)
+                .map(|n| {
+                    track(
+                        &format!("spotify:track:{n}"),
+                        &format!("T{n}"),
+                        "Nils Aker",
+                        222_000,
+                    )
+                })
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn the_album_bar_pins_and_rows_clear_it() {
+        let ctx = context();
+        let mut library = library_with(long_detail());
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let _ = frame(
+            &ctx,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let pinned = pinned_frame(&ctx, &mut library, &mut transport, &mut queue, &mut art);
+        let bar = bar_rect(&pinned).expect("the action row is pinned");
+        assert!(
+            (bar.top() - 0.0).abs() < 0.01,
+            "the row sits at the viewport's top edge: {bar:?}"
+        );
+
+        let mut painted = 0;
+        for clipped in &pinned.shapes {
+            let egui::epaint::Shape::Text(text) = &clipped.shape else {
+                continue;
+            };
+            if !text.galley.text().starts_with('T') || text.galley.text() == "Tom Scott Media" {
+                continue;
+            }
+            painted += 1;
+            assert!(
+                clipped.clip_rect.top() >= bar.bottom() - 0.01,
+                "row `{}` may paint from {:?}, inside the pinned row {bar:?}",
+                text.galley.text(),
+                clipped.clip_rect
+            );
+        }
+        assert!(painted > 0, "the list is drawn under the pinned row");
+    }
+
+    #[test]
+    fn the_album_bar_title_is_the_pages_name() {
+        let ctx = context();
+        let mut library = library_with(long_detail());
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let _ = frame(
+            &ctx,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let pinned = pinned_frame(&ctx, &mut library, &mut transport, &mut queue, &mut art);
+        let bar = bar_rect(&pinned).expect("the action row is pinned");
+        let in_bar: Vec<Rect> = pinned
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Text(text) if text.galley.text() == "Signal Decay" => {
+                    Some(Rect::from_min_size(text.pos, text.galley.size()))
+                }
+                _ => None,
+            })
+            .filter(|rect| rect.top() >= bar.top() - 0.01 && rect.bottom() <= bar.bottom() + 0.01)
+            .collect();
+        assert_eq!(
+            in_bar.len(),
+            1,
+            "the pinned row paints the album's name once: {in_bar:?}"
+        );
+        assert!(
+            in_bar[0].left() > bar.left() + PLAY,
+            "the name stands beside the play tile: {:?}",
+            in_bar[0]
+        );
+    }
+
+    #[test]
+    fn a_focused_row_partly_under_the_bar_is_scrolled_clear_of_it() {
+        let ctx = context();
+        let mut library = library_with(long_detail());
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let _ = frame(
+            &ctx,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let pinned = pinned_frame(&ctx, &mut library, &mut transport, &mut queue, &mut art);
+        let bar = bar_rect(&pinned).expect("the action row is pinned");
+
+        // The first row the list draws is wholly below the pinned row, so a
+        // press on it lands on the row and not in the strip the row owns.
+        let title = text_rect(&pinned, "T0").expect("the row paints its title");
+        let _ = click(
+            &ctx,
+            Pos2::new(title.left() + 2.0, title.center().y),
+            1,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let focused = ctx
+            .memory(|memory| memory.focused())
+            .expect("the row took the keyboard");
+
+        // Walk the list up until the row's top is inside the strip the pinned
+        // row covers, then let what the reveal asked for settle.
+        let mut covered = false;
+        for _ in 0..80 {
+            let row = ctx.read_response(focused).expect("the row is drawn").rect;
+            if row.top() < bar.bottom() - 0.5 {
+                covered = true;
+                break;
+            }
+            let _ = wheel(
+                &ctx,
+                -6.0,
+                &mut library,
+                &mut transport,
+                &mut queue,
+                &mut art,
+            );
+        }
+        assert!(covered, "the row never slid under the pinned row");
+
+        let mut output = frame(
+            &ctx,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        )
+        .1;
+        let mut settled = false;
+        for _ in 0..240 {
+            if let Some(row) = ctx.read_response(focused)
+                && row.rect.top() >= bar.bottom() - 0.01
+            {
+                settled = true;
+                break;
+            }
+            output = frame(
+                &ctx,
+                Vec::new(),
+                &mut library,
+                &mut transport,
+                &mut queue,
+                &mut art,
+            )
+            .1;
+        }
+        assert_eq!(
+            ctx.memory(|memory| memory.focused()),
+            Some(focused),
+            "the row keeps the keyboard"
+        );
+        assert!(
+            settled,
+            "the focused row never came out from under the pinned row"
+        );
+        let bar = bar_rect(&output).expect("the row is still pinned");
+        let row = ctx
+            .read_response(focused)
+            .expect("the row is drawn again")
+            .rect;
+        assert!(
+            row.top() >= bar.bottom() - 0.01,
+            "the focused row rests below the pinned row: {row:?} against {bar:?}"
+        );
+    }
+
+    #[test]
+    fn a_focused_row_wholly_under_the_bar_is_still_brought_out() {
+        let ctx = context();
+        let mut library = library_with(long_detail());
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let _ = frame(
+            &ctx,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let pinned = pinned_frame(&ctx, &mut library, &mut transport, &mut queue, &mut art);
+        assert!(
+            bar_rect(&pinned).is_some(),
+            "the action row is pinned before the press"
+        );
+
+        // The first row the list draws, so a press on its title lands on the row
+        // and not in the strip the pinned row owns.
+        let title = text_rect(&pinned, "T0").expect("the row paints its title");
+        let _ = click(
+            &ctx,
+            Pos2::new(title.left() + 2.0, title.center().y),
+            1,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let focused = ctx
+            .memory(|memory| memory.focused())
+            .expect("the row took the keyboard");
+        // The press lands on whichever row was under the pointer when the click
+        // resolved, so the focused row is read from the frame it was drawn in.
+        let after = frame(
+            &ctx,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        )
+        .1;
+        let rect = ctx
+            .read_response(focused)
+            .expect("the focused row is drawn")
+            .rect;
+        let label = drawn_texts(&after)
+            .into_iter()
+            .find(|text| {
+                text.strip_prefix('T')
+                    .and_then(|tail| tail.parse::<usize>().ok())
+                    .is_some()
+                    && text_rect(&after, text).is_some_and(|box_| rect.contains_rect(box_))
+            })
+            .map(str::to_owned)
+            .expect("the focused row paints its title");
+
+        // One wheel jump of at least the pinned row and a whole row, and enough
+        // to leave this row wholly above the strip, so the frame after it draws
+        // nothing at the focused row: the cull skips it and `rows::body`, which
+        // is a drawn row's own reveal, never runs.
+        let strip = bar_rect(&after).expect("the row is pinned").bottom();
+        let jump = (rect.bottom() - strip).max(crate::theme::actionbar::STUCK_H) + extent::ROW_H;
+        let mut output = wheel(
+            &ctx,
+            -jump,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+
+        let mut culled = false;
+        let mut settled = false;
+        for _ in 0..240 {
+            let strip = bar_rect(&output).expect("the row is still pinned").bottom();
+            if text_rect(&output, &label).is_none() {
+                culled = true;
+            } else if culled
+                && ctx
+                    .read_response(focused)
+                    .is_some_and(|row| row.rect.top() >= strip - 0.01)
+            {
+                settled = true;
+                break;
+            }
+            output = frame(
+                &ctx,
+                Vec::new(),
+                &mut library,
+                &mut transport,
+                &mut queue,
+                &mut art,
+            )
+            .1;
+        }
+        assert!(
+            culled,
+            "the jump never put the focused row wholly under the pinned row"
+        );
+        assert!(
+            settled,
+            "the focused row never came out from under the pinned row"
+        );
+        let bar = bar_rect(&output).expect("the row is still pinned");
+        let row = ctx
+            .read_response(focused)
+            .expect("the row is drawn again")
+            .rect;
+        assert!(
+            row.top() >= bar.bottom() - 0.01,
+            "the focused row rests below the pinned row: {row:?} against {bar:?}"
+        );
     }
 
     #[test]

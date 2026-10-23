@@ -3,6 +3,7 @@
 //! The view reads the state machine and the tokens it is handed, and returns a
 //! command when the user asks for one. It never transitions state itself.
 
+mod actionbar;
 mod album;
 mod art;
 mod artist;
@@ -24,6 +25,7 @@ pub mod media;
 mod menu_box;
 mod name_field;
 pub mod now_playing;
+mod pin;
 pub mod playbar;
 pub mod playlist;
 mod playlist_filter;

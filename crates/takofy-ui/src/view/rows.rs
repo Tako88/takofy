@@ -9,6 +9,7 @@ use egui::{Id, PointerButton, Rect, Response, Sense, Ui};
 
 use crate::selection::Press;
 use crate::theme::{Tokens, ease, motion, opacity, radius};
+use crate::view::pin;
 
 /// How one row stands in its list this frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -42,8 +43,9 @@ pub fn body(ui: &mut Ui, rect: Rect, id: Id, look: Look) -> Body {
     if response.has_focus() && !look.carrying {
         // A row reachable by Tab has to come into view when it is reached. While
         // a block is carried the scroll is the pointer's, and revealing a row the
-        // list is already leaving would fight it.
-        response.scroll_to_me(None);
+        // list is already leaving would fight it. The seam shifts the request
+        // clear of whatever the page pins above the list.
+        pin::reveal(ui, rect);
     }
     let press = response
         .clicked_by(PointerButton::Primary)

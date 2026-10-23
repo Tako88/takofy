@@ -319,6 +319,31 @@ pub mod hero {
     pub const SCRIM_MID_STOP: f32 = 0.45;
 }
 
+/// The action row under a band: the row of things that act on the whole context.
+///
+/// The reference's `.actionbar` rests at `padding-block: var(--space-4)` around a
+/// 44-point play tile and condenses to `var(--space-2)` once it pins. The pinned
+/// height is the reference's `--actionbar-h`, 3.75 rem, which is the number it
+/// documents for anything sticky underneath to clear. The hairline a pinned row
+/// wears is painted inside that height rather than under it, so a row that clears
+/// the bar's bottom clears the rule as well.
+pub mod actionbar {
+    use super::{hero, space};
+
+    /// The row's block padding at rest, `space-4`.
+    pub const PAD_REST: f32 = space::S4;
+    /// The row's block padding once it pins, `space-2`.
+    pub const PAD_STUCK: f32 = space::S2;
+    /// The height the row holds in the page's flow: the resting row.
+    pub const REST_H: f32 = hero::PLAY + 2.0 * PAD_REST;
+    /// The height the row takes once it pins: `--actionbar-h`.
+    pub const STUCK_H: f32 = hero::PLAY + 2.0 * PAD_STUCK;
+    /// The gap after the play tile, `space-5`.
+    pub const GAP: f32 = space::S5;
+    /// The gap between two tools, `space-2`.
+    pub const TOOLS_GAP: f32 = space::S2;
+}
+
 /// The equaliser that stands in for a playing row's number.
 ///
 /// Three bars, each starting its pulse a little after the one before it, so the
@@ -678,6 +703,17 @@ mod tests {
     #[test]
     fn the_narrow_now_playing_is_narrower_than_the_wide_one() {
         const { assert!(extent::NOWPLAYING_NARROW_W < extent::NOWPLAYING_W) };
+    }
+
+    #[test]
+    fn the_stuck_actionbar_is_the_references_actionbar_h() {
+        // `--actionbar-h` is 3.75 rem at the 16-point base: the number the
+        // reference says anything sticky under the row clears.
+        assert_eq!(actionbar::STUCK_H, 60.0);
+        // At rest the row is the play tile inside `space-4` on both sides.
+        assert_eq!(actionbar::REST_H, 76.0);
+        assert_eq!(actionbar::REST_H, hero::PLAY + 2.0 * space::S4);
+        assert_eq!(actionbar::STUCK_H, hero::PLAY + 2.0 * space::S2);
     }
 
     #[test]
