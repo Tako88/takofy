@@ -949,18 +949,14 @@ impl Library {
             Update::Followed {
                 artist, followed, ..
             } => {
-                // A write of this page's own, rather than the page's opening
-                // probe: only a write leaves a row the sidebar cannot draw.
-                let ours = self.follow.asking() == Some(true)
-                    && self.follow.artist() == Some(artist.as_str());
                 self.follow.apply(update);
+                // The sidebar row's own removal is ended here; a press on the
+                // page or in a menu leaves nothing pending and is settled by the
+                // answer alone.
                 if !followed {
                     self.end_saved(artist, false);
-                } else if ours {
-                    // The same reason an album's add re-arms its read: the
-                    // sidebar's artist list only gains a row by being read again.
-                    self.followed_artists = Load::Idle;
                 }
+                self.settle_follow(artist, *followed);
             }
             Update::FollowFailed { artist, .. } => {
                 self.follow.apply(update);
@@ -1204,6 +1200,31 @@ impl Library {
             first_track_uri(&pending.before).map(str::to_owned),
             first_track_uri(&pending.after).map(str::to_owned),
         )
+    }
+
+    /// Brings the artist list in step with an answer about one artist.
+    ///
+    /// The list is a whole set read from the server, so an answer that disagrees
+    /// with it is the only thing worth acting on: a row the server says is gone
+    /// goes, and one it says should be there means the set is stale, which only a
+    /// read can fix. An answer that agrees changes nothing, so a page's opening
+    /// probe costs nothing.
+    fn settle_follow(&mut self, artist: &str, followed: bool) {
+        let Load::Ready(artists) = &self.followed_artists else {
+            return;
+        };
+        let held = artists.iter().any(|held| held.uri == artist);
+        match (followed, held) {
+            (false, true) => {
+                if let Load::Ready(artists) = &mut self.followed_artists {
+                    artists.retain(|held| held.uri != artist);
+                }
+            }
+            // A row the list does not hold needs its name and portrait, which
+            // only the read brings.
+            (true, false) => self.followed_artists = Load::Idle,
+            _ => {}
+        }
     }
 
     /// Lowers the sidebar's declared count for `playlist` by `gone` rows.
@@ -9547,20 +9568,146 @@ mod tests {
         assert_eq!(library.followed_artists, Load::Idle);
     }
 
+    /// The page's own press has to reach the list the sidebar draws; the page's
+    /// probe arrives in the same shape and must not.
     #[test]
-    fn the_pages_own_probe_does_not_re_arm_the_artist_read() {
+    fn a_press_of_follow_asks_for_the_artist_list_again() {
         let mut library = Library::default();
+        library.apply(&Update::Playlists(Vec::new()));
         library.apply(&Update::FollowedArtists(Vec::new()));
+        library
+            .sidebar_kind
+            .choose(crate::sidebar_kind::SidebarKind::Artists);
+        library.open(Page::Artist("spotify:artist:a".to_owned()));
+        library.apply(&Update::Artist(artist_detail("spotify:artist:a")));
+        library.apply(&Update::Followed {
+            artist: "spotify:artist:a".to_owned(),
+            followed: false,
+        });
+        assert!(library.follow.pressed().is_some(), "arrange: the press");
+
+        library.apply(&Update::Followed {
+            artist: "spotify:artist:a".to_owned(),
+            followed: true,
+        });
+
+        assert_eq!(
+            library.followed_artists_request(),
+            Some(Command::LoadFollowedArtists),
+            "a follow the user asked for must reach the list"
+        );
+    }
+
+    /// An unfollow names a row the list already holds, so the row goes at once.
+    #[test]
+    fn a_press_of_unfollow_drops_the_artist_from_the_list() {
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(Vec::new()));
+        library.apply(&Update::FollowedArtists(vec![followed_artist(
+            "spotify:artist:a",
+        )]));
+        library
+            .sidebar_kind
+            .choose(crate::sidebar_kind::SidebarKind::Artists);
+        library.open(Page::Artist("spotify:artist:a".to_owned()));
+        library.apply(&Update::Artist(artist_detail("spotify:artist:a")));
+        library.apply(&Update::Followed {
+            artist: "spotify:artist:a".to_owned(),
+            followed: true,
+        });
+        assert_eq!(
+            library.follow.pressed(),
+            Some(Command::SetFollow {
+                artist: "spotify:artist:a".to_owned(),
+                followed: false,
+            }),
+            "arrange: the press unfollows"
+        );
+
+        library.apply(&Update::Followed {
+            artist: "spotify:artist:a".to_owned(),
+            followed: false,
+        });
+
+        match &library.followed_artists {
+            Load::Ready(artists) => assert!(artists.is_empty(), "the row stayed"),
+            other => panic!("the list was dropped: {other:?}"),
+        }
+    }
+
+    /// An answer that agrees with the list is not a reason to read it again, so a
+    /// page's opening probe costs nothing.
+    #[test]
+    fn a_probe_that_agrees_with_the_list_re_arms_nothing() {
+        let mut library = Library::default();
+        library.apply(&Update::FollowedArtists(vec![followed_artist(
+            "spotify:artist:new",
+        )]));
         library.open(crate::route::Page::Artist("spotify:artist:new".to_owned()));
         library.apply(&Update::Artist(artist_detail("spotify:artist:new")));
+
         library.apply(&Update::Followed {
             artist: "spotify:artist:new".to_owned(),
             followed: true,
         });
+
         assert!(
             matches!(library.followed_artists, Load::Ready(_)),
-            "a probe re-armed the list for nothing"
+            "a list that already holds the artist was re-read for nothing"
         );
+    }
+
+    /// The opposite disagreement is a stale set, and only a read fixes it.
+    #[test]
+    fn a_probe_that_disagrees_asks_for_the_list() {
+        let mut library = Library::default();
+        library.apply(&Update::FollowedArtists(Vec::new()));
+        library.open(crate::route::Page::Artist("spotify:artist:new".to_owned()));
+        library.apply(&Update::Artist(artist_detail("spotify:artist:new")));
+
+        library.apply(&Update::Followed {
+            artist: "spotify:artist:new".to_owned(),
+            followed: true,
+        });
+
+        assert_eq!(
+            library.followed_artists,
+            Load::Idle,
+            "the server says followed and the list does not hold it"
+        );
+    }
+
+    /// A band's `…` menu writes without opening the page's Follow state, so the
+    /// answer is all there is to go on.
+    #[test]
+    fn a_menu_unfollow_with_nothing_pending_drops_the_row() {
+        let mut library = Library::default();
+        library.apply(&Update::FollowedArtists(vec![followed_artist(
+            "spotify:artist:a",
+        )]));
+
+        library.apply(&Update::Followed {
+            artist: "spotify:artist:a".to_owned(),
+            followed: false,
+        });
+
+        match &library.followed_artists {
+            Load::Ready(artists) => assert!(artists.is_empty(), "the row stayed"),
+            other => panic!("the list was dropped: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_menu_follow_with_nothing_pending_asks_for_the_list() {
+        let mut library = Library::default();
+        library.apply(&Update::FollowedArtists(Vec::new()));
+
+        library.apply(&Update::Followed {
+            artist: "spotify:artist:a".to_owned(),
+            followed: true,
+        });
+
+        assert_eq!(library.followed_artists, Load::Idle);
     }
 
     #[test]

@@ -74,11 +74,6 @@ impl Follow {
         self.pending.is_some()
     }
 
-    /// The value the in-flight write asked for, if one is in flight.
-    pub fn asking(&self) -> Option<bool> {
-        self.pending
-    }
-
     /// The failure the button's hint shows, if the last write failed.
     pub fn failed(&self) -> Option<Failure> {
         self.failed
