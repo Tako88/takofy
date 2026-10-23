@@ -284,12 +284,13 @@ fn listed<T>(load: &Load<Vec<T>>, uri: &str, of: impl Fn(&T) -> &str) -> bool {
 /// Either surface counts: the root's chip row and the sidebar's are two ways to
 /// ask for the same list.
 fn artists_chosen(root: RootKind, sidebar: SidebarKind) -> bool {
-    root == RootKind::Artists || sidebar == SidebarKind::Artists
+    // All draws every kind, so it needs the lists each chip would have read.
+    matches!(root, RootKind::All | RootKind::Artists) || sidebar == SidebarKind::Artists
 }
 
 /// Whether a chip naming albums is the one the user is looking at.
 fn albums_chosen(root: RootKind, sidebar: SidebarKind) -> bool {
-    root == RootKind::Albums || sidebar == SidebarKind::Albums
+    matches!(root, RootKind::All | RootKind::Albums) || sidebar == SidebarKind::Albums
 }
 
 impl Library {
@@ -3908,31 +3909,42 @@ mod tests {
             "a failed library never names a window"
         );
 
-        // Ready playlists alone are not a request: no chip names these lists
-        // yet, so both stay idle.
+        // All draws every kind, so a ready library under it asks for both.
         let mut ready = Library::default();
         ready.apply(&Update::Playlists(Vec::new()));
-        assert_eq!(ready.followed_artists_request(), None);
-        assert_eq!(ready.saved_albums_request(), None);
-        assert_eq!(ready.followed_artists, Load::Idle);
-        assert_eq!(ready.saved_albums, Load::Idle);
+        assert_eq!(
+            ready.followed_artists_request(),
+            Some(Command::LoadFollowedArtists)
+        );
+        assert_eq!(ready.saved_albums_request(), Some(Command::LoadSavedAlbums));
+
+        // A chip that draws only playlists names neither list, so both stay
+        // idle until one is chosen.
+        let mut narrowed = Library::default();
+        narrowed.apply(&Update::Playlists(Vec::new()));
+        narrowed.root_filter.choose(RootKind::Playlists);
+        assert_eq!(narrowed.followed_artists_request(), None);
+        assert_eq!(narrowed.saved_albums_request(), None);
+        assert_eq!(narrowed.followed_artists, Load::Idle);
+        assert_eq!(narrowed.saved_albums, Load::Idle);
     }
 
     /// The chip half of the two requests, tested where it can be reached: no
     /// chip naming artists or albums can be pressed until the controls act, so
     /// the condition is a function of the two chosen kinds.
     #[test]
-    fn only_a_chip_naming_the_list_asks_for_it() {
+    fn a_chip_naming_the_list_or_all_asks_for_it() {
         for root in crate::library_filter::ROW {
             for sidebar in crate::sidebar_kind::ROW {
+                let all = root == RootKind::All;
                 assert_eq!(
                     artists_chosen(root, sidebar),
-                    root == RootKind::Artists || sidebar == SidebarKind::Artists,
+                    all || root == RootKind::Artists || sidebar == SidebarKind::Artists,
                     "artists at {root:?} / {sidebar:?}"
                 );
                 assert_eq!(
                     albums_chosen(root, sidebar),
-                    root == RootKind::Albums || sidebar == SidebarKind::Albums,
+                    all || root == RootKind::Albums || sidebar == SidebarKind::Albums,
                     "albums at {root:?} / {sidebar:?}"
                 );
             }
@@ -9596,6 +9608,9 @@ mod tests {
             "spotify:playlist:a",
             "Alpha",
         )]));
+        library
+            .root_filter
+            .choose(crate::library_filter::RootKind::Playlists);
         library.open(Page::Playlist("spotify:playlist:a".to_owned()));
 
         assert_eq!(

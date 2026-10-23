@@ -626,42 +626,58 @@ mod tests {
     /// The artists and albums lists are want-driven like the shows: one send
     /// per chip press, and none before the chip is the chosen one.
     #[test]
-    fn logic_requests_the_artists_and_albums_only_once_their_chip_is_chosen() {
+    fn logic_requests_the_artists_and_albums_for_the_chip_that_names_them() {
         let mut library = Library::default();
         assert_eq!(library.followed_artists_request(), None);
         assert_eq!(library.saved_albums_request(), None);
 
-        // Ready playlists alone ask for nothing: the root still draws All.
+        // All draws every kind, so a ready library under it asks for both.
         library.apply(&Update::Playlists(Vec::new()));
-        assert_eq!(library.followed_artists_request(), None);
-        assert_eq!(library.saved_albums_request(), None);
-
-        assert!(
-            library
-                .root_filter
-                .choose(takofy_ui::library_filter::RootKind::Artists)
-        );
         assert_eq!(
             library.followed_artists_request(),
             Some(Command::LoadFollowedArtists)
-        );
-        assert_eq!(library.followed_artists, Load::Loading);
-        assert_eq!(
-            library.followed_artists_request(),
-            None,
-            "the load is in flight, so the next frame sends nothing"
-        );
-
-        assert!(
-            library
-                .root_filter
-                .choose(takofy_ui::library_filter::RootKind::Albums)
         );
         assert_eq!(
             library.saved_albums_request(),
             Some(Command::LoadSavedAlbums)
         );
-        assert_eq!(library.saved_albums_request(), None);
+
+        // A chip that draws only playlists names neither list, so a library
+        // that has not read them yet stays idle under it.
+        let mut narrowed = Library::default();
+        narrowed.apply(&Update::Playlists(Vec::new()));
+        assert!(
+            narrowed
+                .root_filter
+                .choose(takofy_ui::library_filter::RootKind::Playlists)
+        );
+        assert_eq!(narrowed.followed_artists_request(), None);
+        assert_eq!(narrowed.saved_albums_request(), None);
+
+        // A chip of its own asks for its own list, once.
+        let mut chip = Library::default();
+        chip.apply(&Update::Playlists(Vec::new()));
+        assert!(
+            chip.root_filter
+                .choose(takofy_ui::library_filter::RootKind::Artists)
+        );
+        assert_eq!(
+            chip.followed_artists_request(),
+            Some(Command::LoadFollowedArtists)
+        );
+        assert_eq!(chip.followed_artists, Load::Loading);
+        assert_eq!(
+            chip.followed_artists_request(),
+            None,
+            "the load is in flight, so the next frame sends nothing"
+        );
+
+        assert!(
+            chip.root_filter
+                .choose(takofy_ui::library_filter::RootKind::Albums)
+        );
+        assert_eq!(chip.saved_albums_request(), Some(Command::LoadSavedAlbums));
+        assert_eq!(chip.saved_albums_request(), None);
 
         // The sidebar's chips are the other surface that names the same lists.
         let mut sidebar = Library::default();

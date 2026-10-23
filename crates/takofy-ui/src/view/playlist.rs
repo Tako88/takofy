@@ -574,12 +574,21 @@ fn slice<T>(load: &Load<Vec<T>>) -> &[T] {
 
 /// The note under the root's cards for the chosen chip.
 ///
-/// A chip that draws a followed list says what its own read is doing; All and
-/// Podcasts say it for the shows, which is the list they have always drawn.
+/// A chip that draws one followed list says what that read is doing. All draws
+/// every one of them, so it names the first that is still owed, in the order the
+/// cards are drawn.
 fn note_for(library: &Library, chosen: RootKind) -> LoadNote {
     match chosen {
         RootKind::Playlists => LoadNote::None,
-        RootKind::All | RootKind::Podcasts => index_note(FollowedRead::Shows, &library.followed),
+        RootKind::All => [
+            index_note(FollowedRead::Shows, &library.followed),
+            index_note(FollowedRead::Artists, &library.followed_artists),
+            index_note(FollowedRead::Albums, &library.saved_albums),
+        ]
+        .into_iter()
+        .find(|note| *note != LoadNote::None)
+        .unwrap_or(LoadNote::None),
+        RootKind::Podcasts => index_note(FollowedRead::Shows, &library.followed),
         RootKind::Artists => index_note(FollowedRead::Artists, &library.followed_artists),
         RootKind::Albums => index_note(FollowedRead::Albums, &library.saved_albums),
     }
@@ -3009,14 +3018,46 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
 
     #[test]
     fn idle_view_all_shows_playlists_and_shows() {
+        // The four kinds in one column are pinned by `library_filter`; this is
+        // the root reading them together, and settling.
         let mut library = library_idle(vec![playlist("a", "A")]);
         library.apply(&Update::FollowedShows(vec![show("s", "S")]));
+        library.apply(&Update::FollowedArtists(Vec::new()));
+        library.apply(&Update::SavedAlbums(Vec::new()));
         let IdleView::Grid { items, note } = idle_view(&library) else {
             panic!("a ready root is a grid: {:?}", idle_view(&library));
         };
         assert_eq!(items.len(), 2, "playlists first, then shows");
         assert!(matches!(items[0], Item::Playlist(entry) if entry.uri == "a"));
         assert!(matches!(&items[1], Item::Show(entry) if entry.uri == "s"));
+        assert_eq!(note, LoadNote::None);
+    }
+
+    /// All draws four reads, so its note names the first still owed, in the
+    /// order the cards are drawn.
+    #[test]
+    fn idle_view_all_names_the_first_read_it_is_still_owed() {
+        let mut library = library_idle(vec![playlist("a", "A")]);
+        library.apply(&Update::FollowedShows(Vec::new()));
+        let IdleView::Grid { note, .. } = idle_view(&library) else {
+            panic!("a ready root is a grid: {:?}", idle_view(&library));
+        };
+        assert_eq!(
+            note,
+            LoadNote::Loading(FollowedRead::Artists),
+            "the shows are in, so the artists are the first owed"
+        );
+
+        library.apply(&Update::FollowedArtists(Vec::new()));
+        let IdleView::Grid { note, .. } = idle_view(&library) else {
+            panic!("a ready root is a grid: {:?}", idle_view(&library));
+        };
+        assert_eq!(note, LoadNote::Loading(FollowedRead::Albums));
+
+        library.apply(&Update::SavedAlbums(Vec::new()));
+        let IdleView::Grid { note, .. } = idle_view(&library) else {
+            panic!("a ready root is a grid: {:?}", idle_view(&library));
+        };
         assert_eq!(note, LoadNote::None);
     }
 
@@ -3041,6 +3082,8 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
 
         let mut settled = library_idle(Vec::new());
         settled.apply(&Update::FollowedShows(Vec::new()));
+        settled.apply(&Update::FollowedArtists(Vec::new()));
+        settled.apply(&Update::SavedAlbums(Vec::new()));
         assert_eq!(idle_view(&settled), IdleView::Empty(RootKind::All));
     }
 
