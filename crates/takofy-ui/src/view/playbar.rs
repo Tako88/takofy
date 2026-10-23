@@ -185,15 +185,17 @@ fn fullscreen_run(fullscreen: Option<bool>) -> Run {
 
 /// Whether a transport control can act this frame.
 ///
-/// Shuffle is inert while a block is carried: a drop is resolved against the
-/// rows it was picked from, and drawing the list again under it would refuse the
-/// user's drag silently.
+/// The modes are not transport actions: they describe what the queue will do
+/// when it plays, so an empty queue can still be told how to start. Shuffle is
+/// inert only while a block is carried: a drop is resolved against the rows it
+/// was picked from, and drawing the list again under it would refuse the user's
+/// drag silently.
 fn transport_live(control: Control, queue: &Queue, carrying: bool) -> bool {
     match control {
         Control::Previous => queue.can_previous(),
         Control::Next => queue.can_next(),
-        Control::Shuffle => queue.can_toggle() && !carrying,
-        Control::Repeat => queue.can_toggle(),
+        Control::Shuffle => !carrying,
+        Control::Repeat => true,
         _ => true,
     }
 }
@@ -2289,6 +2291,28 @@ mod tests {
         assert_eq!(labels(&mut queue), ["Shuffle on", "Repeat all"]);
         queue.cycle_repeat();
         assert_eq!(labels(&mut queue), ["Shuffle on", "Repeat one"]);
+    }
+
+    /// A mode is how the queue will play, so it can be set before there is
+    /// anything to play.
+    #[test]
+    fn the_modes_are_live_on_an_empty_queue() {
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        let mut queue = Queue::default();
+        assert!(!queue.can_toggle(), "arrange: nothing is loaded");
+
+        let commands = click_control(&ctx, &tokens, &mut queue, Playbar::Full, Control::Shuffle);
+        assert!(queue.shuffle(), "shuffle was inert with nothing playing");
+        assert!(commands.iter().all(Option::is_none));
+
+        let commands = click_control(&ctx, &tokens, &mut queue, Playbar::Full, Control::Repeat);
+        assert_eq!(
+            queue.repeat(),
+            crate::repeat::Repeat::All,
+            "repeat was inert with nothing playing"
+        );
+        assert!(commands.iter().all(Option::is_none));
     }
 
     #[test]
