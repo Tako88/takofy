@@ -370,6 +370,7 @@ fn fans(
             sub: "Artist",
             size: "",
             round: true,
+            shelf: SidebarKind::Artists,
             cover: art.look(card.portrait.as_ref(), now),
         };
         if media::tile(ui, rect, &media, tokens) {

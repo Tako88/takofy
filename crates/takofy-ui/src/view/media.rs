@@ -10,10 +10,14 @@ use egui::{Pos2, Rect, Sense, Ui, Vec2};
 use crate::availability::Control;
 use crate::cover::Cover;
 use crate::icon::Icon;
+use crate::menu::{Anchor, Device, Door};
+use crate::sidebar_kind::SidebarKind;
 use crate::theme::icon::Size;
 use crate::theme::{Tokens, extent, radius, space, stroke, text, tracking};
 
 use super::art;
+use super::carry;
+use super::context_menu;
 use super::controls;
 use super::text as recipe;
 
@@ -30,6 +34,9 @@ pub struct Media<'a> {
     pub size: &'a str,
     /// An artist's cover is a circle; everything else is a rounded square.
     pub round: bool,
+    /// The sidebar list this item belongs to, so a menu on it is built without
+    /// re-reading its uri.
+    pub shelf: SidebarKind,
     pub cover: Cover,
 }
 
@@ -214,11 +221,22 @@ pub fn head(ui: &mut Ui, rect: Rect, tokens: &Tokens) {
     );
 }
 
+/// What one list row reports: the row itself was chosen, or a menu was asked for.
+///
+/// A row has two things to say, so it reports one or the other; a tile keeps a
+/// plain flag, because the grid's cards carry no `⋯`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Press {
+    /// The row's own body was chosen.
+    Open,
+    /// One of the row's doors asked for its menu.
+    Menu(Door),
+}
+
 /// One list row: the cover, the words, the type, the size and the more button.
 ///
-/// Returns whether the row itself was clicked. The more button is its own
-/// control, so a click there never falls through to the row.
-pub fn row(ui: &mut Ui, rect: Rect, media: &Media<'_>, tokens: &Tokens) -> bool {
+/// The `⋯` is its own control, so a press on it never falls through to the row.
+pub fn row(ui: &mut Ui, rect: Rect, media: &Media<'_>, tokens: &Tokens) -> Option<Press> {
     let columns = columns(rect);
     let response = ui.interact(
         rect,
@@ -302,9 +320,14 @@ pub fn row(ui: &mut Ui, rect: Rect, media: &Media<'_>, tokens: &Tokens) -> bool 
         );
     }
 
-    // The menu waits for the folders that make it useful, so it is drawn in its
-    // waiting form and takes its own clicks.
-    let _ = controls::icon_button_keyed(
+    // The menu's door, drawn where the `⋯` sits. It says its menu is up for
+    // either opener: its own press, or a right-click and the keyboard from the
+    // row.
+    let live = !carry::carrying(ui.ctx());
+    let id = controls::slot_id(ui, Control::LibraryMore, media.uri);
+    let opener = context_menu::open_opener(ui.ctx());
+    let open = opener.is_some_and(|opener| opener == id || opener == response.id);
+    let slot = controls::icon_button_open(
         ui,
         tokens,
         Control::LibraryMore,
@@ -313,13 +336,51 @@ pub fn row(ui: &mut Ui, rect: Rect, media: &Media<'_>, tokens: &Tokens) -> bool 
         Icon::More,
         Size::MD,
         &format!("More options for {}", media.name),
-        false,
+        live,
+        open,
     );
+    let _ = ui.ctx().accesskit_node_builder(slot.response.id, |node| {
+        node.set_expanded(open);
+        node.set_has_popup(egui::accesskit::HasPopup::Menu);
+    });
 
     let on_more = response
         .interact_pointer_pos()
         .is_some_and(|at| columns.more.contains(at));
-    response.clicked() && !on_more
+
+    // The three doors report a menu before the row reports itself: a menu opens
+    // on the row the user pointed at, and never also selects or opens it.
+    if live
+        && let Some(door) = context_menu::button_door(ui, &slot, columns.more, id)
+            .or_else(|| key_door(ui, &response, &slot, columns.more))
+            .or_else(|| context_menu::pointer_door(ui, rect, response.id, columns.more))
+    {
+        return Some(Press::Menu(door));
+    }
+
+    (response.clicked() && !on_more).then_some(Press::Open)
+}
+
+/// The keyboard's door: the context-menu key or Shift+F10, on the focused row or
+/// its focused `⋯`.
+///
+/// A repeated press while the menu is already open posts the same door again,
+/// re-anchoring the menu rather than closing it. The track row's door does the
+/// same, so the two lists answer the key alike.
+fn key_door(ui: &Ui, row: &egui::Response, more: &controls::Slot, anchor: Rect) -> Option<Door> {
+    let (row_focused, more_focused) = (row.has_focus(), more.response.has_focus());
+    if !row_focused && !more_focused {
+        return None;
+    }
+    context_menu::menu_key_pressed(ui).then_some(Door {
+        anchor: Anchor::Button(anchor),
+        opener: if more_focused {
+            more.response.id
+        } else {
+            row.id
+        },
+        device: Device::Keyboard,
+    })
 }
 
 /// What a screen reader says for one item: its name and what it is.
@@ -356,7 +417,8 @@ pub fn art_rect(rect: Rect) -> Rect {
 mod tests {
     use super::*;
     use crate::theme::{fonts, style};
-    use egui::{Color32, Event};
+    use crate::view::test_support::{click_events, secondary_click_events};
+    use egui::{Color32, Event, Key, Modifiers};
 
     fn context() -> egui::Context {
         let ctx = egui::Context::default();
@@ -373,6 +435,7 @@ mod tests {
             sub: "Album · Nils Aker",
             size,
             round,
+            shelf: SidebarKind::Albums,
             cover: Cover::Missing,
         }
     }
@@ -541,6 +604,264 @@ mod tests {
             row_fills(None).is_empty(),
             "a list row with the pointer away washed"
         );
+    }
+
+    /// The rect the pointer tests draw their row into.
+    fn row_rect() -> Rect {
+        Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, extent::ROW_H))
+    }
+
+    fn input_with(events: Vec<Event>) -> egui::RawInput {
+        egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 200.0))),
+            events,
+            ..Default::default()
+        }
+    }
+
+    /// One pass per event, collecting what the row reported each time.
+    fn run(ctx: &egui::Context, item: &Media<'_>, events: &[Event]) -> Vec<Option<Press>> {
+        let tokens = Tokens::DARK;
+        let rect = row_rect();
+        let mut output = ctx.run_ui(input_with(Vec::new()), |ui| {
+            let _ = row(ui, rect, item, &tokens);
+        });
+        output.textures_delta.clear();
+
+        let mut answers = Vec::new();
+        for event in events {
+            let mut answer = None;
+            let mut output = ctx.run_ui(input_with(vec![event.clone()]), |ui| {
+                answer = row(ui, rect, item, &tokens);
+            });
+            output.textures_delta.clear();
+            answers.push(answer);
+        }
+        answers
+    }
+
+    /// The one menu door a run reported.
+    fn door(answers: &[Option<Press>]) -> Option<Door> {
+        answers.iter().flatten().find_map(|press| match press {
+            Press::Menu(door) => Some(*door),
+            Press::Open => None,
+        })
+    }
+
+    /// Whether the run reported the row itself.
+    fn opened(answers: &[Option<Press>]) -> bool {
+        answers.iter().flatten().any(|press| *press == Press::Open)
+    }
+
+    /// The row's own widget id, which the pointer and key doors open from.
+    fn row_id(ctx: &egui::Context, item: &Media<'_>) -> egui::Id {
+        let mut id = None;
+        let mut output = ctx.run_ui(input_with(Vec::new()), |ui| {
+            id = Some(ui.scope_id().with(("library-media-row", item.uri)));
+            let _ = row(ui, row_rect(), item, &Tokens::DARK);
+        });
+        output.textures_delta.clear();
+        id.expect("a frame ran")
+    }
+
+    /// The `⋯`'s own slot id, which its own press opens from.
+    fn more_id(ctx: &egui::Context, item: &Media<'_>) -> egui::Id {
+        let mut id = None;
+        let mut output = ctx.run_ui(input_with(Vec::new()), |ui| {
+            id = Some(controls::slot_id(ui, Control::LibraryMore, item.uri));
+            let _ = row(ui, row_rect(), item, &Tokens::DARK);
+        });
+        output.textures_delta.clear();
+        id.expect("a frame ran")
+    }
+
+    #[test]
+    fn a_press_on_the_more_opens_a_button_door_and_not_the_row() {
+        let ctx = context();
+        let item = media("spotify:album:a", false, "11 tracks");
+        let more = columns(row_rect()).more;
+        let answers = run(&ctx, &item, &click_events(more.center()));
+
+        let door = door(&answers).expect("the `⋯` opened a menu");
+        assert_eq!(
+            door.anchor,
+            Anchor::Button(more),
+            "the menu hangs off the `⋯`"
+        );
+        assert_eq!(door.device, Device::Pointer);
+        assert_eq!(door.opener, more_id(&ctx, &item));
+        assert!(
+            !opened(&answers),
+            "the press on the `⋯` also opened the row: {answers:?}"
+        );
+    }
+
+    #[test]
+    fn a_press_on_the_body_opens_the_row_and_reports_no_door() {
+        let ctx = context();
+        let item = media("spotify:album:a", false, "11 tracks");
+        let body = columns(row_rect()).body;
+        let answers = run(&ctx, &item, &click_events(body.center()));
+
+        assert!(opened(&answers), "the body opened nothing: {answers:?}");
+        assert_eq!(door(&answers), None, "the body opened a menu too");
+    }
+
+    #[test]
+    fn a_right_click_on_the_body_opens_at_the_pointer_from_the_row() {
+        let ctx = context();
+        let item = media("spotify:album:a", false, "11 tracks");
+        let at = columns(row_rect()).body.center();
+        let answers = run(&ctx, &item, &secondary_click_events(at));
+
+        let menu = door(&answers).expect("a right-click opened no menu");
+        let Anchor::Pointer(where_) = menu.anchor else {
+            panic!("a right-click anchored to the `⋯`: {:?}", menu.anchor);
+        };
+        assert!(
+            (where_ - at).length() < 0.01,
+            "a right-click at {at:?} opened at {where_:?}"
+        );
+        assert_eq!(menu.device, Device::Pointer);
+        assert_eq!(menu.opener, row_id(&ctx, &item));
+        assert!(!opened(&answers), "a right-click also opened the row");
+    }
+
+    #[test]
+    fn a_right_click_on_the_more_opens_at_the_pointer_from_the_row() {
+        let ctx = context();
+        let item = media("spotify:album:a", false, "11 tracks");
+        let at = columns(row_rect()).more.center();
+        let answers = run(&ctx, &item, &secondary_click_events(at));
+
+        let menu = door(&answers).expect("a right-click on the `⋯` opened no menu");
+        let Anchor::Pointer(where_) = menu.anchor else {
+            panic!("a right-click on the `⋯` anchored to it: {:?}", menu.anchor);
+        };
+        assert!((where_ - at).length() < 0.01);
+        assert_eq!(
+            menu.opener,
+            row_id(&ctx, &item),
+            "the pointer door on the `⋯` names the row"
+        );
+        assert_ne!(menu.opener, more_id(&ctx, &item));
+    }
+
+    #[test]
+    fn enter_on_the_focused_more_opens_with_the_keyboard_and_a_held_enter_does_not() {
+        let ctx = context();
+        let item = media("spotify:album:a", false, "11 tracks");
+        let more = columns(row_rect()).more;
+        // The click gives the `⋯` the keyboard, as a pointer press does.
+        let first = run(&ctx, &item, &click_events(more.center()));
+        assert_eq!(
+            door(&first).map(|door| door.device),
+            Some(Device::Pointer),
+            "the click did not open the menu"
+        );
+
+        let enter = |pressed: bool| Event::Key {
+            key: Key::Enter,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        };
+        let answers = run(&ctx, &item, &[enter(true)]);
+        let menu = door(&answers).expect("Enter on the focused `⋯` opened no menu");
+        assert_eq!(menu.device, Device::Keyboard);
+        assert_eq!(menu.opener, more_id(&ctx, &item));
+        assert_eq!(menu.anchor, Anchor::Button(more));
+
+        // Still held: egui marks a press with no release before it a repeat.
+        let held = run(&ctx, &item, &[enter(true)]);
+        assert_eq!(door(&held), None, "a held Enter reopened the menu");
+        assert!(
+            held.iter().flatten().next().is_none(),
+            "a held Enter reported {held:?}"
+        );
+    }
+
+    #[test]
+    fn the_menu_key_opens_from_either_focus_and_nothing_when_none_holds_it() {
+        let press = |key: Key, modifiers: Modifiers| Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        };
+
+        // The body click is what gives the row the keyboard.
+        let ctx = context();
+        let item = media("spotify:album:a", false, "11 tracks");
+        let first = run(
+            &ctx,
+            &item,
+            &click_events(columns(row_rect()).body.center()),
+        );
+        assert!(opened(&first), "the row never took the keyboard: {first:?}");
+        let from_row = run(&ctx, &item, &[press(Key::Menu, Modifiers::NONE)]);
+        let menu = door(&from_row).expect("the menu key on the focused row opened nothing");
+        assert_eq!(menu.device, Device::Keyboard);
+        assert_eq!(menu.opener, row_id(&ctx, &item));
+        let shift_f10 = run(&ctx, &item, &[press(Key::F10, Modifiers::SHIFT)]);
+        assert_eq!(
+            door(&shift_f10).map(|door| door.device),
+            Some(Device::Keyboard),
+            "Shift+F10 on the focused row opened nothing"
+        );
+
+        // The `⋯` takes the keyboard from its own press.
+        let more = context();
+        let _ = run(
+            &more,
+            &item,
+            &click_events(columns(row_rect()).more.center()),
+        );
+        let from_more = run(&more, &item, &[press(Key::Menu, Modifiers::NONE)]);
+        let menu = door(&from_more).expect("the menu key on the focused `⋯` opened nothing");
+        assert_eq!(menu.opener, more_id(&more, &item));
+
+        // Nothing focused: the key is not the row's to take.
+        let bare = context();
+        let answers = run(&bare, &item, &[press(Key::Menu, Modifiers::NONE)]);
+        assert_eq!(door(&answers), None, "an unfocused row took the menu key");
+    }
+
+    #[test]
+    fn a_press_on_the_more_whose_menu_is_open_posts_no_door_and_opens_nothing() {
+        let ctx = context();
+        let item = media("spotify:album:a", false, "11 tracks");
+        context_menu::note_open(&ctx, Some(more_id(&ctx, &item)));
+        let answers = run(
+            &ctx,
+            &item,
+            &click_events(columns(row_rect()).more.center()),
+        );
+
+        assert_eq!(
+            door(&answers),
+            None,
+            "the open `⋯` posted a request instead of closing"
+        );
+        assert!(!opened(&answers), "closing the menu also opened the row");
+    }
+
+    #[test]
+    fn a_carried_row_has_a_waiting_more_and_opens_nothing() {
+        let ctx = context();
+        let item = media("spotify:album:a", false, "11 tracks");
+        egui::DragAndDrop::set_payload(&ctx, ());
+        let answers = run(
+            &ctx,
+            &item,
+            &click_events(columns(row_rect()).more.center()),
+        );
+        egui::DragAndDrop::clear_payload(&ctx);
+
+        assert_eq!(door(&answers), None, "a carried row opened a menu");
+        assert!(!opened(&answers), "a carried row's `⋯` opened the row");
     }
 
     #[test]

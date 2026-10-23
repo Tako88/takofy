@@ -19,7 +19,7 @@ use crate::landing::Zone;
 use crate::layout::{Table, cards, table as table_layout};
 use crate::library::{BandCover, Library, Load, MediaLayout, band_cover};
 use crate::library_filter::{self, Item, RootKind};
-use crate::menu::{Cut, LibraryItem};
+use crate::menu::{Cut, Door, LibraryItem};
 use crate::message::{Command, Failure};
 use crate::naming::Surface;
 use crate::player::Transport;
@@ -684,6 +684,7 @@ fn idle(
                                 art,
                                 now,
                                 tokens,
+                                library: &*library,
                                 select: &mut select,
                                 open: &mut open,
                             },
@@ -823,8 +824,11 @@ fn list(ui: &mut Ui, items: &[Item<'_>], draw: &mut MediaDraw<'_, '_>) {
             continue;
         }
         let media = draw.media_of(item);
-        if media::row(ui, rect, &media.as_media(), draw.tokens) {
-            draw.activate(item, &media.uri);
+        let words = media.as_media();
+        match media::row(ui, rect, &words, draw.tokens) {
+            Some(media::Press::Open) => draw.activate(item, &media.uri),
+            Some(media::Press::Menu(door)) => draw.post_menu(ui.ctx(), &media, door),
+            None => {}
         }
     }
 }
@@ -834,6 +838,7 @@ struct MediaDraw<'a, 'b> {
     art: &'a mut Art,
     now: Instant,
     tokens: &'a Tokens,
+    library: &'b Library,
     select: &'b mut Option<String>,
     open: &'b mut Option<Page>,
 }
@@ -850,9 +855,39 @@ impl MediaDraw<'_, '_> {
         }
     }
 
+    /// The menu a row's `⋯` asked for: the sidebar row's own verbs, built for
+    /// the item it names.
+    fn post_menu(&self, ctx: &egui::Context, media: &MediaWords, door: Door) {
+        let item = LibraryItem {
+            kind: media.shelf,
+            uri: media.uri.clone(),
+            name: media.name.clone(),
+        };
+        let rights = LibraryRights {
+            // The name field lives in the sidebar, so the root offers no rename.
+            renamable: false,
+            removable: self.library.can_remove(media.shelf),
+            // Every root row comes from a loaded list, so there is nothing to
+            // put back.
+            saved: Some(true),
+        };
+        // The page is `None` at the root, and is read anyway so the request stays
+        // right if the root is ever drawn over a page.
+        context_menu::post(
+            ctx,
+            verbs::library_request(
+                item,
+                door,
+                rights,
+                self.library.page().cloned(),
+                Surface::Row,
+            ),
+        );
+    }
+
     /// One item's words and cover, owned so a borrow of the item is not needed.
     fn media_of(&mut self, item: &Item<'_>) -> MediaWords {
-        let (uri, name, kind, sub, size, round, cover) = match item {
+        let (uri, name, kind, sub, size, round, cover, shelf) = match item {
             Item::Playlist(entry) => (
                 &entry.uri,
                 &entry.name,
@@ -861,6 +896,7 @@ impl MediaDraw<'_, '_> {
                 media_size(RootKind::Playlists, entry.tracks),
                 false,
                 entry.cover_url(),
+                SidebarKind::Playlists,
             ),
             Item::Show(show) => (
                 &show.uri,
@@ -870,6 +906,7 @@ impl MediaDraw<'_, '_> {
                 media_size(RootKind::Podcasts, show.episodes),
                 false,
                 show.cover.as_ref(),
+                SidebarKind::Podcasts,
             ),
             Item::Artist(artist) => (
                 &artist.uri,
@@ -882,6 +919,7 @@ impl MediaDraw<'_, '_> {
                 ),
                 true,
                 artist.portrait.as_ref(),
+                SidebarKind::Artists,
             ),
             Item::Album(album) => (
                 &album.uri,
@@ -894,6 +932,7 @@ impl MediaDraw<'_, '_> {
                 media_size(RootKind::Albums, album.tracks.map(|count| count as usize)),
                 false,
                 album.cover.as_ref(),
+                SidebarKind::Albums,
             ),
         };
         MediaWords {
@@ -903,6 +942,7 @@ impl MediaDraw<'_, '_> {
             sub,
             size,
             round,
+            shelf,
             cover: self.art.look(cover, self.now),
         }
     }
@@ -916,6 +956,7 @@ struct MediaWords {
     sub: String,
     size: String,
     round: bool,
+    shelf: SidebarKind,
     cover: Cover,
 }
 
@@ -928,6 +969,7 @@ impl MediaWords {
             sub: &self.sub,
             size: &self.size,
             round: self.round,
+            shelf: self.shelf,
             cover: self.cover,
         }
     }
@@ -3228,6 +3270,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             sub: "Playlist · Vela Moreno",
             size: "62 songs",
             round: false,
+            shelf: SidebarKind::Playlists,
             cover: Cover::Missing,
         };
         let mut output = ctx.run_ui(input(Vec::new()), |ui| {
@@ -4822,12 +4865,13 @@ mod root_tests {
     use std::time::Instant;
 
     use egui::{Context, Event, Pos2, RawInput, Rect, Vec2};
-    use takofy_model::{CoverUrl, Episode, FollowedShow, PlaylistEntry};
+    use takofy_model::{CoverUrl, Episode, FollowedShow, PlaylistAccess, PlaylistEntry, Revision};
 
     use super::*;
+    use crate::menu::{Anchor, Device, Kind, Listing, Request};
     use crate::message::{Failure, Update};
     use crate::theme::{extent, fonts, style};
-    use crate::view::test_support::click_events;
+    use crate::view::test_support::{click_events, secondary_click_events};
 
     const PROBE: Vec2 = Vec2::new(900.0, 800.0);
     const NOW_MS: u64 = 1_761_134_400_000;
@@ -5014,6 +5058,341 @@ mod root_tests {
             cover: None,
             tracks: None,
         }
+    }
+
+    /// Each of the four kinds knows the shelf it belongs to, so a menu built on
+    /// it never has to read the uri back.
+    #[test]
+    fn media_of_gives_each_item_its_shelf() {
+        let mut art = Art::default();
+        let tokens = Tokens::DARK;
+        let mut select = None;
+        let mut open = None;
+        let library = Library::default();
+        let mut draw = MediaDraw {
+            art: &mut art,
+            now: Instant::now(),
+            tokens: &tokens,
+            library: &library,
+            select: &mut select,
+            open: &mut open,
+        };
+        let playlist = playlist("spotify:playlist:a", "A");
+        let show = show("spotify:show:a", "A");
+        let artist = followed_artist("spotify:artist:a", "A");
+        let album = saved_album("spotify:album:a", "A");
+        let cases = [
+            (Item::Playlist(&playlist), SidebarKind::Playlists),
+            (Item::Show(&show), SidebarKind::Podcasts),
+            (Item::Artist(&artist), SidebarKind::Artists),
+            (Item::Album(&album), SidebarKind::Albums),
+        ];
+        for (item, shelf) in cases {
+            assert_eq!(draw.media_of(&item).shelf, shelf);
+        }
+    }
+
+    /// A rootlist, which a playlist row needs before it can be removed.
+    fn rootlist(editable: bool) -> PlaylistAccess {
+        PlaylistAccess {
+            revision: Revision::from_wire(b"root-1").expect("a revision"),
+            editable,
+        }
+    }
+
+    /// The rect the `index`-th list row is drawn into, solved the way the view
+    /// solves it: the head, the chips, then the rows.
+    fn row_rect_for(ctx: &Context, index: usize) -> Rect {
+        let tokens = Tokens::DARK;
+        let mut found = None;
+        let mut output = ctx.run_ui(input(Vec::new()), |ui| {
+            ui.add_space(space::S3);
+            crate::view::inner(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        crate::view::inner(ui, |ui| {
+                            page_head(ui, "", &tokens);
+                            let _ = filter_row::show_with(
+                                ui,
+                                &tokens,
+                                &library_filter::ROW,
+                                RootKind::All,
+                                RootKind::control,
+                                root_filter_label,
+                                filter_row::RowSlot::Trailing(view_toggle::reserved()),
+                            );
+                            let width = ui.available_width();
+                            let height = space::S2 + media::head_height(ui) + space::S2;
+                            let _ =
+                                ui.allocate_exact_size(vec2(width, height), egui::Sense::hover());
+                            let top = ui.cursor().min.y;
+                            found = Some(Rect::from_min_size(
+                                Pos2::new(ui.cursor().min.x, top + index as f32 * extent::ROW_H),
+                                vec2(width, extent::ROW_H),
+                            ));
+                        });
+                    });
+            });
+        });
+        output.textures_delta.clear();
+        found.expect("the root lays out")
+    }
+
+    /// One click's passes, and the request the frame posted for it.
+    fn click_for_menu(
+        ctx: &Context,
+        events: [Event; 3],
+        library: &mut Library,
+        art: &mut Art,
+    ) -> Option<Request> {
+        let tokens = Tokens::DARK;
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut request = None;
+        for event in events {
+            let library = &mut *library;
+            let mut output = ctx.run_ui(input(vec![event]), |ui| {
+                let _ = tracks_view(
+                    ui,
+                    Table::Full,
+                    library,
+                    &mut transport,
+                    &mut queue,
+                    art,
+                    Instant::now(),
+                    NOW_MS,
+                    &tokens,
+                );
+            });
+            output.textures_delta.clear();
+            if let Some(posted) = context_menu::take_request(ctx) {
+                request = Some(posted);
+            }
+        }
+        request
+    }
+
+    /// The `⋯` of the root's one list row, pressed, and the request it posted.
+    fn press_the_more(ctx: &Context, library: &mut Library, art: &mut Art) -> Option<Request> {
+        let more = media::columns(row_rect_for(ctx, 0)).more.center();
+        click_for_menu(ctx, click_events(more), library, art)
+    }
+
+    /// Presses the `⋯` on the root's one list row and checks the menu it posted.
+    fn expect_row_menu(kind: SidebarKind, uri: &str, name: &str, library: &mut Library) {
+        let ctx = context();
+        let mut art = Art::default();
+        library.layout = MediaLayout::List;
+        let _ = frame(&ctx, library, &mut art);
+
+        let request = press_the_more(&ctx, library, &mut art).expect("the `⋯` posted no request");
+        assert_eq!(
+            request.listing,
+            Listing::Library(LibraryItem {
+                kind,
+                uri: uri.to_owned(),
+                name: name.to_owned(),
+            })
+        );
+        let labels: Vec<&str> = request
+            .items
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect();
+        assert_eq!(labels, vec!["Copy link", "Remove from library"]);
+        assert!(
+            !labels.contains(&"Rename"),
+            "the root never offers a rename: {labels:?}"
+        );
+        assert_eq!(
+            request.items.last().map(|item| item.kind),
+            Some(Kind::Destructive),
+            "the removal is the destructive row, drawn last"
+        );
+        assert_eq!(request.page, None, "the root posts no page");
+        assert!(request.targets.is_empty() && request.rows.is_empty());
+        assert!(
+            matches!(request.door.anchor, Anchor::Button(_)),
+            "the `⋯`'s own press hangs the menu off itself: {:?}",
+            request.door.anchor
+        );
+        assert_eq!(request.door.device, Device::Pointer);
+        assert!(library.selected().is_none(), "the press also selected");
+        assert!(library.page().is_none(), "the press also opened a page");
+    }
+
+    #[test]
+    fn a_playlist_row_more_posts_the_sidebar_rows_menu() {
+        let mut library = library(vec![playlist("spotify:playlist:a", "Evening")], vec![]);
+        library.root_filter.choose(RootKind::Playlists);
+        library.apply(&Update::RootlistAccess(rootlist(true)));
+        expect_row_menu(
+            SidebarKind::Playlists,
+            "spotify:playlist:a",
+            "Evening",
+            &mut library,
+        );
+    }
+
+    #[test]
+    fn a_podcast_row_more_posts_the_sidebar_rows_menu() {
+        let mut library = library(vec![], vec![show("spotify:show:s", "Show One")]);
+        library.root_filter.choose(RootKind::Podcasts);
+        expect_row_menu(
+            SidebarKind::Podcasts,
+            "spotify:show:s",
+            "Show One",
+            &mut library,
+        );
+    }
+
+    #[test]
+    fn an_artist_row_more_posts_the_sidebar_rows_menu() {
+        let mut library = library(vec![], vec![]);
+        library.root_filter.choose(RootKind::Artists);
+        library.apply(&Update::FollowedArtists(vec![followed_artist(
+            "spotify:artist:a",
+            "Nils Aker",
+        )]));
+        expect_row_menu(
+            SidebarKind::Artists,
+            "spotify:artist:a",
+            "Nils Aker",
+            &mut library,
+        );
+    }
+
+    #[test]
+    fn an_album_row_more_posts_the_sidebar_rows_menu() {
+        let mut library = library(vec![], vec![]);
+        library.root_filter.choose(RootKind::Albums);
+        library.apply(&Update::SavedAlbums(vec![saved_album(
+            "spotify:album:a",
+            "Slow Tide",
+        )]));
+        expect_row_menu(
+            SidebarKind::Albums,
+            "spotify:album:a",
+            "Slow Tide",
+            &mut library,
+        );
+    }
+
+    #[test]
+    fn a_playlist_row_the_user_cannot_write_offers_only_its_link() {
+        let mut library = library(vec![playlist("spotify:playlist:a", "Evening")], vec![]);
+        library.root_filter.choose(RootKind::Playlists);
+        library.apply(&Update::RootlistAccess(rootlist(false)));
+        let ctx = context();
+        let mut art = Art::default();
+        library.layout = MediaLayout::List;
+        let _ = frame(&ctx, &mut library, &mut art);
+
+        let request =
+            press_the_more(&ctx, &mut library, &mut art).expect("the `⋯` posted no request");
+        let labels: Vec<&str> = request
+            .items
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect();
+        assert_eq!(
+            labels,
+            vec!["Copy link"],
+            "a row that cannot be removed keeps its link"
+        );
+    }
+
+    #[test]
+    fn a_right_click_on_a_playlist_row_posts_the_same_request_at_the_pointer() {
+        let mut library = library(vec![playlist("spotify:playlist:a", "Evening")], vec![]);
+        library.root_filter.choose(RootKind::Playlists);
+        library.apply(&Update::RootlistAccess(rootlist(true)));
+        let ctx = context();
+        let mut art = Art::default();
+        library.layout = MediaLayout::List;
+        let _ = frame(&ctx, &mut library, &mut art);
+
+        let by_more =
+            press_the_more(&ctx, &mut library, &mut art).expect("the `⋯` posted no request");
+        let body = media::columns(row_rect_for(&ctx, 0)).body.center();
+        let by_right = click_for_menu(&ctx, secondary_click_events(body), &mut library, &mut art)
+            .expect("a right-click posted no request");
+
+        assert_eq!(by_right.listing, by_more.listing);
+        assert_eq!(by_right.items, by_more.items);
+        assert_eq!(by_right.page, by_more.page);
+        let Anchor::Pointer(at) = by_right.door.anchor else {
+            panic!(
+                "a right-click anchored to the `⋯`: {:?}",
+                by_right.door.anchor
+            );
+        };
+        assert!(
+            (at - body).length() < 0.01,
+            "a right-click at {body:?} opened at {at:?}"
+        );
+        assert_ne!(
+            by_right.door.opener, by_more.door.opener,
+            "the pointer door names the row, not the `⋯`"
+        );
+    }
+
+    /// A tile has neither a row nor a `⋯`, so no press on it posts a menu: both
+    /// buttons do what a tile does, which is activate.
+    #[test]
+    fn a_grid_tile_posts_no_menu_on_a_click_or_a_right_click() {
+        let ctx = context();
+        let mut art = Art::default();
+        let gridded = || {
+            let mut library = library(vec![playlist("spotify:playlist:a", "Evening")], vec![]);
+            library.root_filter.choose(RootKind::Playlists);
+            library.apply(&Update::RootlistAccess(rootlist(true)));
+            library.layout = MediaLayout::Grid;
+            library
+        };
+
+        // The tile the grid solved, and the name it painted inside it: the press
+        // lands on a drawn tile and not on the gap a row's `⋯` would fill.
+        let mut library = gridded();
+        let before = frame(&ctx, &mut library, &mut art);
+        let card = card_rect_for(&ctx, 0, 1);
+        let name = text_rect(&before, "Evening").expect("the grid paints the tile's name");
+        assert!(
+            card.contains_rect(name),
+            "the tile's name {name:?} sits outside its card {card:?}"
+        );
+
+        let command = click(&ctx, card.center(), &mut library, &mut art);
+        assert_eq!(
+            command,
+            Some(Command::LoadTracks {
+                playlist: "spotify:playlist:a".to_owned()
+            }),
+            "a tile press selects its playlist, as it always did"
+        );
+        assert_eq!(library.selected(), Some("spotify:playlist:a"));
+        assert_eq!(
+            context_menu::take_request(&ctx),
+            None,
+            "a tile press posted a row menu"
+        );
+
+        // The right-click is its own press on a fresh library, and it must leave
+        // the selection alone.
+        let mut library = gridded();
+        let _ = frame(&ctx, &mut library, &mut art);
+        let request = click_for_menu(
+            &ctx,
+            secondary_click_events(card.center()),
+            &mut library,
+            &mut art,
+        );
+        assert_eq!(request, None, "a right-click on a tile posted a row menu");
+        assert!(
+            library.selected().is_none() && library.page().is_none(),
+            "a right-click on a tile activated it"
+        );
     }
 
     #[test]
