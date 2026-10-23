@@ -162,7 +162,7 @@ pub fn availability(control: Control) -> Availability {
         Control::FilterAlbums => Availability::Ready,
         Control::FilterPodcasts => Availability::Ready, // #3
         Control::SearchField => Availability::Ready,
-        Control::TrailHome => Availability::Waiting, // #17
+        Control::TrailHome => Availability::Ready,
         Control::NowPlayingMore => Availability::Ready, // #16
 
         // Transport and seek are their own issue.
@@ -237,6 +237,7 @@ mod tests {
                 Control::DrawerToggle
                     | Control::NavHome
                     | Control::LibraryCreate
+                    | Control::TrailHome
                     | Control::TrailPlaylists
                     | Control::HistoryBack
                     | Control::HistoryForward
