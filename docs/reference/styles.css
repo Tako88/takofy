@@ -581,20 +581,25 @@ svg {
   flex: 1 1 auto;
 }
 
-/* A list's tool row. The field is a tool here, not a band: it takes a column at
-   the right edge and the count keeps the left, so a filtered list still says how
-   many rows it is showing. The space under it is padding rather than margin,
-   because the row is sticky and its background has to cover that space. */
-.list-tools {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: var(--space-4);
-  padding-bottom: var(--space-2);
+/* On the playlist the field rides in the action row instead of a tool row of its
+   own, so it is reachable at every scroll position without a second sticky band.
+   There it loses its rule: the row already draws one, and two hairlines fourteen
+   pixels apart read as a defect. The rule returns the moment the field is the
+   thing in use. */
+.actionbar__tools--filter .filter-field {
+  flex: 0 0 11rem;
+  align-self: stretch;
 }
 
-.list-tools .filter-field {
-  flex: 0 1 15rem;
+/* The bar condenses when it sticks and draws its own hairline under it. Two rules
+   eight pixels apart would read as a defect, so in that state the row's rule is
+   the field's rule — until the field is the thing in use. */
+.actionbar.is-stuck .actionbar__tools--filter .filter-field {
+  border-bottom-color: transparent;
+}
+
+.actionbar.is-stuck .actionbar__tools--filter .filter-field:focus-within {
+  border-bottom-color: var(--color-text);
 }
 
 /* Where the list already has a heading, a field can join that line instead of
@@ -964,6 +969,33 @@ svg {
 
 .section__link:hover {
   color: var(--color-text);
+}
+
+/* A band's reveal: a full-width row at its foot, in the same sentence voice as a
+   menu's floor action — a row you act on, not a label. One-way by design: it is
+   a request to see the rest, so it takes itself away when there is no rest. */
+.list-more {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  min-height: 2.75rem;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  text-align: left;
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+
+.list-more:hover,
+.list-more:focus-visible {
+  background: var(--color-row-hover);
+  color: var(--color-text);
+}
+
+.list-more .icon {
+  width: 0.875rem;
+  height: 0.875rem;
 }
 
 .card-grid {
@@ -3162,7 +3194,6 @@ svg {
 .search-rail {
   position: relative;
   max-width: 20rem;
-  --search-type: none;
 }
 
 .search-menu__row {
@@ -3203,16 +3234,29 @@ svg {
   font-size: var(--text-xs);
 }
 
-/* The kind tag is the one cell that survives a narrow rail — and the first to
-   go when there is no room for it. */
-.search-menu__type {
-  display: var(--search-type, block);
+/* The menu is grouped by kind, and the heading is where the kind lives: a mono
+   caps label with that group's total in the right slot — the same head grammar
+   every section of the app uses. So the row no longer repeats its kind as a
+   tag, and nothing competes with the name for the eye. */
+.search-menu__group-label {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin: 0;
+  padding: var(--space-2) var(--space-3) var(--space-1);
   color: var(--color-text-subtle);
   font-family: var(--font-mono);
   font-size: var(--text-2xs);
   font-weight: var(--weight-medium);
   letter-spacing: var(--tracking-caps);
   text-transform: uppercase;
+}
+
+/* Groups are separated by the same hairline the action row uses, so the whole
+   list reads as bands rather than as one undifferentiated run. */
+.search-menu__group + .search-menu__group {
+  border-top: 1px solid var(--color-border);
 }
 
 .search-menu__go,
@@ -3238,13 +3282,13 @@ svg {
   position: relative;
 }
 
-.menu > li.is-hover,
-.menu__body > li.is-hover {
+/* A grouped menu keeps its rows one level deeper, inside a kind's group, so the
+   two tiers reach in rather than being restated. */
+:is(.menu, .menu__body, .search-menu__rows) > li.is-hover {
   background: rgba(242, 240, 234, 0.04);
 }
 
-.menu > li.is-hover::before,
-.menu__body > li.is-hover::before {
+:is(.menu, .menu__body, .search-menu__rows) > li.is-hover::before {
   content: "";
   position: absolute;
   left: 0;
@@ -3257,39 +3301,23 @@ svg {
 
 /* On a lit row the subtle tier loses its contrast, so the second line steps up
    one tier with it — in every menu. */
-.menu > li.is-active .search-menu__sub,
-.menu > li.is-active .search-menu__type,
-.menu > li.is-active .menu__key,
-.menu > li.is-hover .search-menu__sub,
-.menu > li.is-hover .search-menu__type,
-.menu > li.is-hover .menu__key,
-.menu__body > li.is-active .menu__key,
-.menu__body > li.is-hover .menu__key {
+:is(.menu > li, .menu__body > li, .search-menu__rows > li):is(.is-active, .is-hover) :is(.search-menu__sub, .menu__key) {
   color: var(--color-text-muted);
 }
 
-.menu > li.is-active,
-.menu__body > li.is-active {
+:is(.menu, .menu__body, .search-menu__rows) > li.is-active {
   background: var(--color-surface-hover);
   box-shadow: inset 2px 0 0 var(--color-text);
-}
-
-.search-menu__row.is-active .search-menu__type {
-  display: none;
 }
 
 .search-menu__row.is-active .search-menu__go {
   display: grid;
 }
 
-/* The track you are hearing keeps the accent rule and trades its kind for the
-   equaliser; identity beats focus, so this rule sits last. */
+/* The track you are hearing keeps the accent rule and trades its action glyph
+   for the equaliser; identity beats focus, so this rule sits last. */
 .search-menu__row.is-playing {
   box-shadow: inset 2px 0 0 var(--color-accent);
-}
-
-.search-menu__row.is-playing .search-menu__type {
-  display: none;
 }
 
 .search-menu__row.is-playing .search-menu__eq {
@@ -3297,7 +3325,9 @@ svg {
   place-items: center;
 }
 
-/* The floor of the list is an action, not a result: same 44px row, mono voice. */
+/* The floor of the list is an action, and neither a result nor a heading: it
+   speaks in the app's sentence case at row size, with the query in bone, so the
+   one route to the results page cannot be mistaken for a fourth band label. */
 .search-menu__all {
   display: flex;
   align-items: center;
@@ -3305,11 +3335,7 @@ svg {
   gap: var(--space-3);
   border-top: 1px solid var(--color-border);
   color: var(--color-text-muted);
-  font-family: var(--font-mono);
-  font-size: var(--text-2xs);
-  font-weight: var(--weight-medium);
-  letter-spacing: var(--tracking-wide);
-  text-transform: uppercase;
+  font-size: var(--text-sm);
 }
 
 .search-menu__all b {
@@ -3490,21 +3516,30 @@ svg {
   padding-bottom: 9rem;
 }
 
-/* Results are one mixed list. The album column is meaningless across kinds, so
-   the artist moves under the title and a kind tag takes the saved-for column. */
+/* A results block holds one kind only, so each block speaks its own component's
+   grammar: the track block gets the artist and the album columns back, and the
+   release and artist blocks are grids of cards. Its rows bleed by their own
+   gutter, so the list shares the card grid's content axis instead of sitting
+   12px inside it. */
 .tracks--results {
-  --track-cols: 2.25rem minmax(0, 1fr) 5rem 1.75rem 1.75rem;
+  --track-cols: 2.25rem minmax(0, 1.35fr) minmax(0, 0.9fr) minmax(0, 0.9fr) 1.75rem 3.5rem
+    1.75rem;
+  --track-gap: var(--space-3);
+  margin-inline: calc(var(--space-3) * -1);
 }
 
-.tracks--results .track-row[data-kind="artist"] .track-row__art {
-  border-radius: 50%;
+.tracks--results .list-more {
+  padding-inline: var(--space-3);
 }
 
-/* The kind cell speaks in the same mono caps as the menu's kind tag, so the
-   column reads the same before and after you leave the menu. */
-.tracks--results .track-row__meta {
-  letter-spacing: var(--tracking-wide);
-  text-transform: uppercase;
+/* Inside a specimen frame the band headings step down one rank: they are the
+   bands of a view drawn at sheet scale, not sections of the sheet itself. */
+.states__stage .section__title {
+  font-size: var(--text-md);
+}
+
+.states__stage .section__head {
+  margin-bottom: var(--space-3);
 }
 
 /* Populated topbar for the layering specimen: a hairline the menu crosses. */
@@ -3518,15 +3553,20 @@ svg {
 }
 
 .search-stage__page {
-  min-height: 17rem;
+  /* Tall enough to hold the menu that floats over it: seven 44px rows, three
+     band labels and the action row. */
+  min-height: 28rem;
   padding: var(--space-4);
 }
 
+/* The covers the menu is meant to float over sit clear of its footprint on the
+   right, so the layering is something to see rather than something to read. */
 .search-stage__cards {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(8rem, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--space-3);
-  max-width: 34rem;
+  max-width: 18rem;
+  margin-left: auto;
 }
 
 .search-stage__card {
@@ -3923,8 +3963,14 @@ svg {
     --track-cols: 2.25rem minmax(0, 1.4fr) minmax(0, 1fr) 5.5rem 1.75rem 3.5rem 1.75rem;
   }
 
+  .tracks--results {
+    --track-cols: 2.25rem minmax(0, 1.35fr) minmax(0, 0.9fr) 1.75rem 3.5rem 1.75rem;
+  }
+
   .tracks--playlist .track-row__album,
-  .tracks--playlist .tracklist__head-album {
+  .tracks--playlist .tracklist__head-album,
+  .tracks--results .track-row__album,
+  .tracks--results .tracklist__head-album {
     display: none;
   }
 }
@@ -4130,6 +4176,24 @@ svg {
     padding-inline: var(--space-4);
   }
 
+  /* Play, a field and four 34px icons do not fit a phone's bar: the field takes
+     what the icons leave, and the two controls the playbar already carries step
+     out of this row. */
+  .actionbar__tools--filter .filter-field {
+    flex: 1 1 auto;
+    max-width: none;
+  }
+
+  .actionbar__tool--optional {
+    display: none;
+  }
+
+  /* The condensed title would wrap to three lines beside the field, and at this
+     width the field is worth more than the playlist's name repeated. */
+  body[data-page="playlist"] .actionbar.is-stuck .actionbar__title {
+    display: none;
+  }
+
   .topbar {
     gap: var(--space-2);
     padding: 0 var(--space-4);
@@ -4163,30 +4227,31 @@ svg {
     margin-left: auto;
   }
 
-  /* A playlist is the one list where the artist cannot simply be dropped, so it
-     wraps under the title, indented to the title's text axis. */
-  .tracks--playlist .track-row {
+  /* A playlist and a track-results block are the one kind of list where the
+     artist cannot simply be dropped, so it wraps under the title, indented to
+     the title's text axis. */
+  :is(.tracks--playlist, .tracks--results) .track-row {
     flex-wrap: wrap;
     row-gap: 0;
   }
 
-  .tracks--playlist .track-row__index {
+  :is(.tracks--playlist, .tracks--results) .track-row__index {
     order: 0;
   }
 
-  .tracks--playlist .track-row__title {
+  :is(.tracks--playlist, .tracks--results) .track-row__title {
     order: 1;
   }
 
-  .tracks--playlist .track-row__duration {
+  :is(.tracks--playlist, .tracks--results) .track-row__duration {
     order: 2;
   }
 
-  .tracks--playlist .track-row__actions {
+  :is(.tracks--playlist, .tracks--results) .track-row__actions {
     order: 3;
   }
 
-  .tracks--playlist .track-row__artist {
+  :is(.tracks--playlist, .tracks--results) .track-row__artist {
     order: 4;
     flex: 1 1 100%;
     /* Lands on the title's text axis: index (1.75rem) + gap + artwork (2.25rem)
@@ -4266,10 +4331,22 @@ svg {
     display: block;
   }
 
-  /* At rail width the kind tag has no room; the row keeps its cover, title and
-     action glyph, so nothing about the row's grammar changes. */
-  .search-menu__type {
-    --search-type: none;
+  /* A results band's second slot is a size readout, not a meta phrase: one
+     number is not something to wrap under the heading, so the band keeps its
+     two ends where every other view keeps them. */
+  .states__stage .section__head {
+    display: flex;
+  }
+
+  /* At rail width there is no page beside the menu to float over, so the mock
+     page goes and the menu takes its place in the flow. */
+  .search-stage .search-menu {
+    position: static;
+    margin-top: 6px;
+  }
+
+  .search-stage__page {
+    display: none;
   }
 
   .states-page .states__meta {
@@ -4351,10 +4428,9 @@ svg {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  /* The count and a fixed-width field do not fit one line at rail width, so the
-     field takes what the count leaves. */
-  .list-tools .filter-field {
-    flex: 1 1 auto;
+  /* The count is the first thing to give: the field is the tool here. */
+  .actionbar__tools--filter .filter-count {
+    display: none;
   }
 
   /* A submenu hangs off its row on a desktop. In a phone-width frame there is no
