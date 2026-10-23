@@ -16,6 +16,7 @@ use egui::{Id, Sense, Ui};
 
 use crate::cover::{Art, Cover};
 use crate::format::{album_meta, format_position, total_duration_ms};
+use crate::layout::actionbar::Kind;
 use crate::layout::{Table, table as table_layout};
 use crate::library::{Library, Load};
 use crate::menu::LibraryItem;
@@ -140,7 +141,9 @@ pub fn album_view(
                             shuffle: false,
                             more: Some(!writing),
                             saved,
+                            kind: Kind::Other,
                         },
+                        None,
                         tokens,
                     );
                     if let Some(door) = acted.more_door {
@@ -533,7 +536,17 @@ mod tests {
                 };
                 let _ = hero::show_with(ui, &band, &tokens, hero::Title::Plain);
                 let row = actionbar::row_rect(ui);
-                found = Some(crate::layout::actionbar::solve(row, false).play);
+                found = Some(
+                    crate::layout::actionbar::solve(
+                        row,
+                        Kind::Other,
+                        crate::layout::actionbar::Parts {
+                            shuffle: false,
+                            field: false,
+                        },
+                    )
+                    .play,
+                );
             });
         });
         found.expect("the band and its action row lay out")
@@ -555,7 +568,19 @@ mod tests {
                 };
                 let _ = hero::show_with(ui, &band, &tokens, hero::Title::Plain);
                 let row = actionbar::row_rect(ui);
-                found = Some(crate::layout::actionbar::solve(row, false).heart.center());
+                found = Some(
+                    crate::layout::actionbar::solve(
+                        row,
+                        Kind::Other,
+                        crate::layout::actionbar::Parts {
+                            shuffle: false,
+                            field: false,
+                        },
+                    )
+                    .heart
+                    .expect("an album's row keeps its heart")
+                    .center(),
+                );
             });
         });
         found.expect("the band and its action row lay out")

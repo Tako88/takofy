@@ -26,11 +26,11 @@ pub(crate) fn inset(ctx: &egui::Context) -> f32 {
     ctx.data(|data| data.get_temp(id()).unwrap_or(0.0))
 }
 
-/// Records how far the pinned rows reach below the viewport's top.
+/// Records how far this frame's pinned bar reaches below the viewport's top.
 ///
-/// This overwrites what the frame had recorded: a row that pins under another
-/// reads `inset` and adds whatever it covers, so the seam always says the whole
-/// of what a reveal has to clear.
+/// The bar is the only writer and [`reveal`] the only reader: every row that has
+/// to be brought into view clears the bar's own reach, and nothing else adds to
+/// it.
 pub(crate) fn set(ctx: &egui::Context, inset: f32) {
     ctx.data_mut(|data| data.insert_temp(id(), inset.max(0.0)));
 }

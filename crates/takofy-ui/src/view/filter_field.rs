@@ -1,5 +1,5 @@
-//! The filter field: the one name field the rail's head and a list's tools row
-//! both draw.
+//! The filter field: the one name field the rail's head and a playlist's action
+//! row both draw.
 //!
 //! It is underlined rather than boxed, so the boxed things around it keep their
 //! own weight: a magnifier, the editable text, a clear control, and a bottom
@@ -9,7 +9,7 @@
 //! placeholder is the library's own count, which changes under the field.
 //!
 //! The caller owns what is around the field: the row, the pin, the count beside
-//! it, and the copy of the count it announces.
+//! it, the rule under it, and the copy of the count it announces.
 
 use egui::{Align2, Rect, Sense, Stroke, Ui, WidgetInfo, vec2};
 
@@ -19,6 +19,20 @@ use crate::theme::{MonoWeight, Tokens, Weight, fonts, radius, space, stroke, tex
 
 use super::name_field;
 use super::text as recipe;
+
+/// How the field's bottom hairline reads while the field is not focused.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum Rule {
+    /// The hairline is painted at rest in the border ink, as the rail's is: the
+    /// field is the only thing in its slot and the line says where it ends.
+    Resting,
+    /// The hairline is painted only while the field holds the keyboard.
+    ///
+    /// A stuck action row already wears an edge across its whole width, and a
+    /// second line under the field on top of it would read as a box the field
+    /// does not have.
+    FocusOnly,
+}
 
 /// What the caller hands the field for one frame.
 pub(super) struct Field<'a> {
@@ -34,6 +48,8 @@ pub(super) struct Field<'a> {
     pub(super) placeholder: &'a str,
     /// What a screen reader calls the field.
     pub(super) label: &'static str,
+    /// How the bottom hairline reads while the field is unfocused.
+    pub(super) rule: Rule,
 }
 
 /// What one frame of the field leaves its caller.
@@ -53,6 +69,7 @@ pub(super) fn show(ui: &mut Ui, field: Field<'_>, tokens: &Tokens) -> Edited {
         limit,
         placeholder,
         label,
+        rule,
     } = field;
     // The text this frame started with, so the caller can tell a keystroke from
     // a redraw. The field caps its own input at `limit`, so this stays small.
@@ -187,21 +204,24 @@ pub(super) fn show(ui: &mut Ui, field: Field<'_>, tokens: &Tokens) -> Edited {
     // Border only, and the bottom hairline is the whole border: no fill, no
     // glow, and no width change. The colour is the focus the frame ends with, so
     // a clear click that took the keyboard, and an Escape that gave it back,
-    // both show on their own frame.
+    // both show on their own frame. A field whose rule is focus-only paints
+    // nothing at all at rest, and the row it sits in carries the edge instead.
     let focused = ui.memory(|memory| memory.has_focus(id));
-    let border = if focused {
-        tokens.palette.text
-    } else {
-        tokens.palette.border
+    let line = match (rule, focused) {
+        (_, true) => Some(tokens.palette.text),
+        (Rule::Resting, false) => Some(tokens.palette.border),
+        (Rule::FocusOnly, false) => None,
     };
-    ui.painter().rect_filled(
-        Rect::from_min_size(
-            egui::Pos2::new(rect.left(), rect.bottom() - stroke::HAIRLINE),
-            vec2(rect.width(), stroke::HAIRLINE),
-        ),
-        0.0,
-        border,
-    );
+    if let Some(ink) = line {
+        ui.painter().rect_filled(
+            Rect::from_min_size(
+                egui::Pos2::new(rect.left(), rect.bottom() - stroke::HAIRLINE),
+                vec2(rect.width(), stroke::HAIRLINE),
+            ),
+            0.0,
+            ink,
+        );
+    }
 
     Edited {
         changed: before != *text,
@@ -237,6 +257,16 @@ mod tests {
         events: Vec<egui::Event>,
         text: &mut String,
     ) -> (egui::FullOutput, Edited) {
+        frame_with(ctx, Rule::Resting, events, text)
+    }
+
+    /// One frame of the field alone under `rule`, with `events` in the pass.
+    fn frame_with(
+        ctx: &egui::Context,
+        rule: Rule,
+        events: Vec<egui::Event>,
+        text: &mut String,
+    ) -> (egui::FullOutput, Edited) {
         let tokens = Tokens::DARK;
         let mut edited = Edited::default();
         let mut output = ctx.run_ui(
@@ -255,6 +285,7 @@ mod tests {
                         limit: QUERY_MAX,
                         placeholder: "2 saved",
                         label: "Filter your library",
+                        rule,
                     },
                     &tokens,
                 );
@@ -262,6 +293,23 @@ mod tests {
         );
         output.textures_delta.clear();
         (output, edited)
+    }
+
+    /// The ink of the hairline painted under the field, if there is one.
+    fn hairline(output: &egui::FullOutput) -> Option<egui::Color32> {
+        output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Rect(shape)
+                    if (shape.rect.height() - stroke::HAIRLINE).abs() < 0.01
+                        && (shape.rect.bottom() - RECT.bottom()).abs() < 0.01
+                        && (shape.rect.width() - RECT.width()).abs() < 0.01 =>
+                {
+                    Some(shape.fill)
+                }
+                _ => None,
+            })
     }
 
     /// Whether a line of text was painted at all.
@@ -348,5 +396,70 @@ mod tests {
         );
         assert!(edited.changed, "the Escape clear did not report itself");
         assert!(text.is_empty(), "the Escape left the text");
+    }
+
+    #[test]
+    fn focus_only_paints_no_line_at_rest_and_an_ink_line_when_focused() {
+        let ctx = context();
+        let tokens = Tokens::DARK;
+        let mut text = String::new();
+
+        let (output, _) = frame_with(&ctx, Rule::FocusOnly, Vec::new(), &mut text);
+        assert_eq!(
+            hairline(&output),
+            None,
+            "an unfocused field under a stuck row paints no line of its own"
+        );
+
+        for event in crate::view::test_support::click_events(RECT.center()) {
+            let _ = frame_with(&ctx, Rule::FocusOnly, vec![event], &mut text);
+        }
+        assert!(ctx.text_edit_focused(), "the click focused the field");
+        let (output, _) = frame_with(&ctx, Rule::FocusOnly, Vec::new(), &mut text);
+        assert_eq!(
+            hairline(&output),
+            Some(tokens.palette.text),
+            "a focused field says so in full ink, whatever its resting rule"
+        );
+
+        // And the line goes again when the field gives the keyboard back.
+        let _ = frame_with(
+            &ctx,
+            Rule::FocusOnly,
+            vec![egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            &mut text,
+        );
+        let (output, _) = frame_with(&ctx, Rule::FocusOnly, Vec::new(), &mut text);
+        assert_eq!(hairline(&output), None, "the line leaves with the focus");
+    }
+
+    #[test]
+    fn resting_rule_is_unchanged() {
+        let ctx = context();
+        let tokens = Tokens::DARK;
+        let mut text = String::new();
+
+        let (output, _) = frame_with(&ctx, Rule::Resting, Vec::new(), &mut text);
+        assert_eq!(
+            hairline(&output),
+            Some(tokens.palette.border),
+            "a resting field is still underlined in the border ink"
+        );
+
+        for event in crate::view::test_support::click_events(RECT.center()) {
+            let _ = frame_with(&ctx, Rule::Resting, vec![event], &mut text);
+        }
+        let (output, _) = frame_with(&ctx, Rule::Resting, Vec::new(), &mut text);
+        assert_eq!(
+            hairline(&output),
+            Some(tokens.palette.text),
+            "and still goes to full ink under the keyboard"
+        );
     }
 }

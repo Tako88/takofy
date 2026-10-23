@@ -342,6 +342,11 @@ pub mod actionbar {
     pub const GAP: f32 = space::S5;
     /// The gap between two tools, `space-2`.
     pub const TOOLS_GAP: f32 = space::S2;
+    /// The width the playlist's filter field asks for in the row, 11 rem.
+    pub const FIELD_W: f32 = 176.0;
+    /// The narrowest the field is drawn. Below this there is no field, so an
+    /// unseen query never narrows the list.
+    pub const FIELD_MIN_W: f32 = 120.0;
 }
 
 /// The equaliser that stands in for a playing row's number.
@@ -714,6 +719,10 @@ mod tests {
         assert_eq!(actionbar::REST_H, 76.0);
         assert_eq!(actionbar::REST_H, hero::PLAY + 2.0 * space::S4);
         assert_eq!(actionbar::STUCK_H, hero::PLAY + 2.0 * space::S2);
+        // The field is the reference's 11 rem, and its floor is a third of the
+        // row it sits in: the sweep test is what makes the floor safe.
+        assert_eq!(actionbar::FIELD_W, 176.0);
+        assert_eq!(actionbar::FIELD_MIN_W, 120.0);
     }
 
     #[test]

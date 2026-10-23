@@ -1,5 +1,5 @@
-//! The row of actions under a band: play, the context's name once the row pins,
-//! and the tools that act on the whole context.
+//! The row of actions under a band: play, the page's filter field, the context's
+//! name once the row pins, and the tools that act on the whole context.
 //!
 //! The row is one component for every page that heads a list with a band. It
 //! holds its resting height in the page's flow and pins to the top of the page's
@@ -10,17 +10,23 @@
 //! has no backdrop filter, and the row is drawn before the rows it would veil, so
 //! a translucent fill would show the page behind the row rather than the rows'
 //! ink. The rule carries the edge instead.
+//!
+//! The filter field is part of the row because the row is the only thing on the
+//! page that stays still: a field left in the flow scrolls away exactly when the
+//! list under it has grown long enough to need one.
 
 use egui::{FontId, Pos2, Rect, Sense, Ui, vec2};
 
 use crate::availability::Control;
 use crate::icon::Icon;
 use crate::layout;
+use crate::layout::actionbar::Kind;
 use crate::menu::Door;
 use crate::theme::icon::Size;
 use crate::theme::{Tokens, Weight, actionbar, fonts, stroke, text, tracking};
 
-use super::{context_menu, controls, pin, text as recipe};
+use super::filter_field::Rule;
+use super::{context_menu, controls, pin, playlist_filter, text as recipe};
 
 /// What the row acts on, and what it is called.
 pub struct Bar<'a> {
@@ -35,6 +41,8 @@ pub struct Bar<'a> {
     pub more: Option<bool>,
     /// Whether this context is in the library, or `None` while no list can say.
     pub saved: Option<bool>,
+    /// Which page the row heads, and what its row leaves room for.
+    pub kind: Kind,
 }
 
 /// What drawing the row reported.
@@ -44,6 +52,10 @@ pub struct Reply {
     pub more_door: Option<Door>,
     /// The value the heart asks for, when it was pressed.
     pub saved: Option<bool>,
+    /// The true rows the field's query leaves, when the field was drawn and the
+    /// query is not empty. `None` means the whole list, including when the row
+    /// had no room for a field: a query nobody can see never narrows the list.
+    pub hits: Option<Vec<usize>>,
 }
 
 impl Reply {
@@ -53,6 +65,7 @@ impl Reply {
             shuffled: false,
             more_door: None,
             saved: None,
+            hits: None,
         }
     }
 }
@@ -71,7 +84,12 @@ pub(super) fn row_rect(ui: &mut Ui) -> Rect {
 }
 
 /// Draws the row and reports what its controls did.
-pub(super) fn show(ui: &mut Ui, bar: &Bar<'_>, tokens: &Tokens) -> Reply {
+pub(super) fn show(
+    ui: &mut Ui,
+    bar: &Bar<'_>,
+    mut filter: Option<playlist_filter::Filter<'_>>,
+    tokens: &Tokens,
+) -> Reply {
     let flow = row_rect(ui);
     let clip_top = ui.clip_rect().top();
     let (rect, stuck) = layout::actionbar::pin(flow, clip_top);
@@ -93,10 +111,14 @@ pub(super) fn show(ui: &mut Ui, bar: &Bar<'_>, tokens: &Tokens) -> Reply {
         );
     }
 
-    let placed = layout::actionbar::solve(rect, bar.shuffle);
-    if stuck && let Some(title) = bar.title {
-        paint_title(ui, rect, &placed, title, tokens);
-    }
+    let placed = layout::actionbar::solve(
+        rect,
+        bar.kind,
+        layout::actionbar::Parts {
+            shuffle: bar.shuffle,
+            field: filter.is_some(),
+        },
+    );
 
     let mut reply = Reply::quiet();
     // The name is part of the row only while it pins; at rest the play tile's
@@ -112,6 +134,41 @@ pub(super) fn show(ui: &mut Ui, bar: &Bar<'_>, tokens: &Tokens) -> Reply {
         bar.playable,
     );
     reply.played = slot.response.clicked();
+
+    // The field is drawn on the row's own canvas and takes the row's own rule:
+    // a stuck row already says where it ends, so the field's underline would be a
+    // second edge on the same line. It is created before the tools because the
+    // reference's DOM order puts it there, and Tab walks the row in that order.
+    let rule = if stuck {
+        Rule::FocusOnly
+    } else {
+        Rule::Resting
+    };
+    if let (Some(filter), Some(field)) = (filter.as_mut(), placed.field) {
+        reply.hits = playlist_filter::show(ui, filter, field, rule, tokens);
+    }
+
+    // The count follows the field, because the page has to know how many rows
+    // the query left before it can say how many there are. Nothing placed before
+    // this moves: the field and the tools are anchored, and the name elides.
+    let mut count = None;
+    if let (Some(hits), Some(filter)) = (&reply.hits, &filter) {
+        let total = filter.entries.len();
+        let label = playlist_filter::count_label(ui, hits.len(), total, tokens);
+        count = layout::actionbar::count(&placed, bar.kind, label.size().x);
+        if let Some(rect) = count {
+            playlist_filter::paint_count(ui, rect, label, tokens);
+        }
+        playlist_filter::announce(ui, hits.len(), total);
+    }
+
+    if stuck
+        && let Some(title) = bar.title
+        && let Some(label_box) =
+            layout::actionbar::title(rect, &placed, count, bar.kind, filter.is_some())
+    {
+        paint_title(ui, label_box, title, tokens);
+    }
 
     // The tools are drawn in the reference's DOM order, which is left to right
     // inside the row: shuffle, then the heart, then the menu.
@@ -129,33 +186,35 @@ pub(super) fn show(ui: &mut Ui, bar: &Bar<'_>, tokens: &Tokens) -> Reply {
         reply.shuffled = slot.response.clicked();
     }
 
-    let heart = heart(bar.saved);
-    let slot = if heart.lit {
-        controls::icon_button_on(
-            ui,
-            tokens,
-            Control::HeroLike,
-            (),
-            placed.heart,
-            Icon::Heart,
-            Size::MD,
-            heart.label,
-            heart.live,
-        )
-    } else {
-        controls::icon_button(
-            ui,
-            tokens,
-            Control::HeroLike,
-            placed.heart,
-            Icon::Heart,
-            Size::MD,
-            heart.label,
-            heart.live,
-        )
-    };
-    if slot.response.clicked() {
-        reply.saved = bar.saved.map(|saved| !saved);
+    if let Some(rect) = placed.heart {
+        let heart = heart(bar.saved);
+        let slot = if heart.lit {
+            controls::icon_button_on(
+                ui,
+                tokens,
+                Control::HeroLike,
+                (),
+                rect,
+                Icon::Heart,
+                Size::MD,
+                heart.label,
+                heart.live,
+            )
+        } else {
+            controls::icon_button(
+                ui,
+                tokens,
+                Control::HeroLike,
+                rect,
+                Icon::Heart,
+                Size::MD,
+                heart.label,
+                heart.live,
+            )
+        };
+        if slot.response.clicked() {
+            reply.saved = bar.saved.map(|saved| !saved);
+        }
     }
 
     let live = bar.more.unwrap_or(false);
@@ -187,16 +246,7 @@ pub(super) fn show(ui: &mut Ui, bar: &Bar<'_>, tokens: &Tokens) -> Reply {
 }
 
 /// The context's name, at the row's leading edge after the play tile.
-fn paint_title(
-    ui: &Ui,
-    bar: Rect,
-    placed: &layout::actionbar::Placed,
-    title: &str,
-    tokens: &Tokens,
-) {
-    let Some(label_box) = layout::actionbar::title(bar, placed) else {
-        return;
-    };
+fn paint_title(ui: &Ui, label_box: Rect, title: &str, tokens: &Tokens) {
     let line = recipe::line(
         ui,
         title,
@@ -246,15 +296,24 @@ fn heart(saved: Option<bool>) -> Heart {
 
 #[cfg(test)]
 mod tests {
-    use egui::{Context, Event, Pos2, RawInput, Rect, Vec2};
+    use egui::{Context, Event, FontId, Pos2, RawInput, Rect, Vec2};
+    use takofy_model::TrackEntry;
 
     use super::*;
+    use crate::layout::Table;
+    use crate::layout::actionbar::{Form, Parts, Placed, solve};
     use crate::theme::{Tokens, fonts, hero, style};
+    use crate::track_filter::TrackFilter;
     use crate::view::test_support::click_events;
 
     const VIEWPORT: Vec2 = Vec2::new(900.0, 400.0);
+    /// Wide enough that the rail stands aside, which is the only way the count
+    /// is drawn at all.
+    const WIDE: Vec2 = Vec2::new(1000.0, 400.0);
     /// How much list there is above the row, so scrolling can pin it.
     const FILLER: f32 = 200.0;
+    /// The playlist the fixture's query belongs to.
+    const PLAYLIST: &str = "spotify:playlist:a";
 
     fn context() -> Context {
         let tokens = Tokens::DARK;
@@ -264,21 +323,74 @@ mod tests {
         ctx
     }
 
-    fn input(events: Vec<Event>) -> RawInput {
+    fn input(size: Vec2, events: Vec<Event>) -> RawInput {
         RawInput {
-            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, VIEWPORT)),
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
             events,
             ..Default::default()
         }
     }
 
-    fn bar() -> Bar<'static> {
+    /// The kind a playlist page has in a window of `size`.
+    fn kind(size: Vec2) -> Kind {
+        Kind::Playlist(Form::at(size.x, Table::Full))
+    }
+
+    /// The row the tests draw, named and saved unless a test says otherwise.
+    fn bar(kind: Kind) -> Bar<'static> {
         Bar {
             title: Some("Late Night Drive"),
             playable: true,
             shuffle: true,
             more: Some(true),
             saved: Some(true),
+            kind,
+        }
+    }
+
+    /// Three rows a query can narrow, and the query state that narrows them.
+    struct Rows {
+        state: TrackFilter,
+        entries: Vec<TrackEntry>,
+    }
+
+    impl Rows {
+        fn new() -> Rows {
+            Rows {
+                state: TrackFilter::default(),
+                entries: (0..3)
+                    .map(|index| TrackEntry {
+                        uri: format!("t{index}"),
+                        title: format!("t{index}"),
+                        artists: if index == 1 {
+                            "Midnight Artist".to_owned()
+                        } else {
+                            "Vela Moreno".to_owned()
+                        },
+                        album: None,
+                        album_uri: None,
+                        artist_uris: Vec::new(),
+                        added_at: None,
+                        duration_ms: None,
+                        named: true,
+                        cover: None,
+                    })
+                    .collect(),
+            }
+        }
+
+        fn narrowed() -> Rows {
+            let mut rows = Rows::new();
+            rows.state.edit(PLAYLIST).push_str("midnight");
+            rows
+        }
+
+        fn filter(&mut self) -> playlist_filter::Filter<'_> {
+            playlist_filter::Filter {
+                state: &mut self.state,
+                playlist: PLAYLIST,
+                entries: &self.entries,
+            }
         }
     }
 
@@ -290,14 +402,60 @@ mod tests {
         flow: Rect,
     }
 
-    // The row draws nothing else, so a probe that reads its place in the flow is
-    // the layout's own answer rather than a re-derivation of the row's height.
+    impl Frame {
+        /// The row's drawn box: the fill it paints when it pins, and its place in
+        /// the flow when it did not.
+        fn rect(&self) -> Rect {
+            fills(&self.output, Tokens::DARK.palette.surface)
+                .into_iter()
+                .find(|(_, rect)| (rect.height() - actionbar::STUCK_H).abs() < 0.01)
+                .map_or(self.flow, |(_, rect)| rect)
+        }
+    }
+
+    fn frame_in(
+        ctx: &Context,
+        size: Vec2,
+        offset: f32,
+        events: Vec<Event>,
+        filter: Option<playlist_filter::Filter<'_>>,
+    ) -> Frame {
+        frame_of(ctx, &bar(kind(size)), size, offset, events, filter)
+    }
+
     fn frame(ctx: &Context, offset: f32, events: Vec<Event>) -> Frame {
+        frame_in(ctx, VIEWPORT, offset, events, None)
+    }
+
+    /// One frame of a row of the caller's own making.
+    fn frame_of(
+        ctx: &Context,
+        bar: &Bar<'_>,
+        size: Vec2,
+        offset: f32,
+        events: Vec<Event>,
+        filter: Option<playlist_filter::Filter<'_>>,
+    ) -> Frame {
+        frame_of_probed(ctx, bar, size, offset, events, filter, |_| ()).0
+    }
+
+    /// One frame of a row, plus whatever `probe` reads from the row's own `Ui`
+    /// once every widget is drawn.
+    fn frame_of_probed<R>(
+        ctx: &Context,
+        bar: &Bar<'_>,
+        size: Vec2,
+        offset: f32,
+        events: Vec<Event>,
+        mut filter: Option<playlist_filter::Filter<'_>>,
+        probe: impl FnOnce(&egui::Ui) -> R,
+    ) -> (Frame, R) {
         let tokens = Tokens::DARK;
-        let bar = bar();
         let mut reply = Reply::quiet();
         let mut flow = Rect::ZERO;
-        let mut output = ctx.run_ui(input(events), |ui| {
+        let mut read = None;
+        let mut probe = Some(probe);
+        let mut output = ctx.run_ui(input(size, events), |ui| {
             egui::ScrollArea::vertical()
                 .id_salt("bar")
                 .vertical_scroll_offset(offset)
@@ -309,18 +467,34 @@ mod tests {
                     ui.spacing_mut().item_spacing.y = 0.0;
                     ui.add_space(FILLER);
                     let top = ui.cursor().min;
-                    reply = show(ui, &bar, &tokens);
+                    reply = show(ui, bar, filter.take(), &tokens);
                     let bottom = ui.cursor().min.y;
                     flow =
                         Rect::from_min_size(top, Vec2::new(ui.available_width(), bottom - top.y));
+                    read = Some(probe.take().expect("the probe reads once")(ui));
                 });
         });
         output.textures_delta.clear();
-        Frame {
-            reply,
-            output,
-            flow,
-        }
+        (
+            Frame {
+                reply,
+                output,
+                flow,
+            },
+            read.expect("the row's frame ran"),
+        )
+    }
+
+    /// One frame of a row, plus whatever `probe` reads from its `Ui`.
+    fn frame_probed<R>(
+        ctx: &Context,
+        size: Vec2,
+        offset: f32,
+        events: Vec<Event>,
+        filter: Option<playlist_filter::Filter<'_>>,
+        probe: impl FnOnce(&egui::Ui) -> R,
+    ) -> (Frame, R) {
+        frame_of_probed(ctx, &bar(kind(size)), size, offset, events, filter, probe)
     }
 
     /// The rects the frame filled with `fill`.
@@ -349,6 +523,42 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    /// The one box a text shape with `label` was painted in.
+    fn text_rect(output: &egui::FullOutput, label: &str) -> Option<Rect> {
+        text_at(output, label).first().map(|(_, rect)| *rect)
+    }
+
+    /// The field's own bottom hairline, its box and the ink it carries.
+    fn field_line(output: &egui::FullOutput) -> Option<(Rect, egui::Color32)> {
+        let tokens = Tokens::DARK;
+        output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Rect(shape)
+                    if (shape.rect.height() - stroke::HAIRLINE).abs() < 0.01
+                        && (shape.rect.width() - actionbar::FIELD_W).abs() < 0.01
+                        && (shape.fill == tokens.palette.border
+                            || shape.fill == tokens.palette.text) =>
+                {
+                    Some((shape.rect, shape.fill))
+                }
+                _ => None,
+            })
+    }
+
+    /// The row's children, solved from the row's own drawn box.
+    fn placed(frame: &Frame, size: Vec2) -> Placed {
+        solve(
+            frame.rect(),
+            kind(size),
+            Parts {
+                shuffle: true,
+                field: true,
+            },
+        )
     }
 
     #[test]
@@ -436,7 +646,14 @@ mod tests {
     fn the_fill_is_painted_before_the_widgets() {
         let ctx = context();
         let tokens = Tokens::DARK;
-        let pinned = frame(&ctx, FILLER + 50.0, Vec::new());
+        let mut rows = Rows::narrowed();
+        let pinned = frame_in(
+            &ctx,
+            VIEWPORT,
+            FILLER + 50.0,
+            Vec::new(),
+            Some(rows.filter()),
+        );
         let band_at = fills(&pinned.output, tokens.palette.surface)
             .first()
             .map(|(at, _)| *at)
@@ -449,8 +666,35 @@ mod tests {
             .first()
             .map(|(at, _)| *at)
             .expect("the pinned row paints the context's name");
+        let field_at = text_at(&pinned.output, "midnight")
+            .first()
+            .map(|(at, _)| *at)
+            .expect("the field paints its query");
         assert!(band_at < play_at, "the fill is under the play tile");
         assert!(band_at < title_at, "the fill is under the name");
+        assert!(band_at < field_at, "the fill is under the field's text");
+
+        // And the placeholder too, on a row with no query in it.
+        let mut quiet = Rows::new();
+        let pinned = frame_in(
+            &ctx,
+            VIEWPORT,
+            FILLER + 50.0,
+            Vec::new(),
+            Some(quiet.filter()),
+        );
+        let band_at = fills(&pinned.output, tokens.palette.surface)
+            .first()
+            .map(|(at, _)| *at)
+            .expect("the pinned row fills its box");
+        let placeholder_at = text_at(&pinned.output, "FILTER")
+            .first()
+            .map(|(at, _)| *at)
+            .expect("the field paints its placeholder");
+        assert!(
+            band_at < placeholder_at,
+            "the fill is under the field's placeholder"
+        );
     }
 
     #[test]
@@ -501,8 +745,8 @@ mod tests {
     fn play_shuffle_heart_more_report_their_presses() {
         let ctx = context();
         let rested = frame(&ctx, 0.0, Vec::new());
-        let placed = layout::actionbar::solve(rested.flow, true);
-        let shuffle = placed.shuffle.expect("a playlist's row has a shuffle");
+        let tiles = placed(&rested, VIEWPORT);
+        let shuffle = tiles.shuffle.expect("a playlist's row has a shuffle");
 
         let at = |target: Pos2| {
             let mut last = Reply::quiet();
@@ -512,15 +756,15 @@ mod tests {
             last
         };
 
-        assert!(at(placed.play.center()).played, "play reports its press");
+        assert!(at(tiles.play.center()).played, "play reports its press");
         assert!(at(shuffle.center()).shuffled, "shuffle reports its press");
         assert_eq!(
-            at(placed.heart.center()).saved,
+            at(tiles.heart.expect("a wide row keeps its heart").center()).saved,
             Some(false),
             "a saved context's heart asks to unsave it"
         );
         assert!(
-            at(placed.more.center()).more_door.is_some(),
+            at(tiles.more.center()).more_door.is_some(),
             "the menu reports its door"
         );
         assert!(
@@ -552,22 +796,14 @@ mod tests {
     #[test]
     fn tab_order_is_play_shuffle_heart_more() {
         let ctx = context();
-        let tokens = Tokens::DARK;
-        let bar = bar();
-        let mut expected = Vec::new();
-        let mut output = ctx.run_ui(input(Vec::new()), |ui| {
-            egui::ScrollArea::vertical().id_salt("bar").show(ui, |ui| {
-                ui.add_space(FILLER);
-                let _ = show(ui, &bar, &tokens);
-                expected = vec![
-                    controls::slot_id(ui, Control::HeroPlay, ()),
-                    controls::slot_id(ui, Control::HeroShuffle, ()),
-                    controls::slot_id(ui, Control::HeroLike, ()),
-                    controls::slot_id(ui, Control::HeroMore, ()),
-                ];
-            });
+        let (_, expected) = frame_probed(&ctx, VIEWPORT, 0.0, Vec::new(), None, |ui| {
+            vec![
+                controls::slot_id(ui, Control::HeroPlay, ()),
+                controls::slot_id(ui, Control::HeroShuffle, ()),
+                controls::slot_id(ui, Control::HeroLike, ()),
+                controls::slot_id(ui, Control::HeroMore, ()),
+            ]
         });
-        output.textures_delta.clear();
 
         let [press, release] = crate::view::test_support::tab();
         let mut reached = Vec::new();
@@ -591,17 +827,341 @@ mod tests {
     }
 
     #[test]
+    fn the_field_is_drawn_in_the_bar_between_play_and_shuffle_in_tab_order() {
+        let ctx = context();
+        let mut rows = Rows::narrowed();
+        let (frame, expected) =
+            frame_probed(&ctx, VIEWPORT, 0.0, Vec::new(), Some(rows.filter()), |ui| {
+                vec![
+                    controls::slot_id(ui, Control::HeroPlay, ()),
+                    ui.scope_id().with("playlist-filter"),
+                    controls::slot_id(ui, Control::HeroShuffle, ()),
+                    controls::slot_id(ui, Control::HeroLike, ()),
+                    controls::slot_id(ui, Control::HeroMore, ()),
+                ]
+            });
+
+        // It is the row's own field, between the play tile and the tools.
+        let tiles = placed(&frame, VIEWPORT);
+        let field = tiles.field.expect("a wide row has a field");
+        assert_eq!(field.width(), actionbar::FIELD_W);
+        assert_eq!(field.height(), crate::theme::extent::BUTTON_LG);
+        assert!(field.left() > tiles.play.right());
+        assert!(field.right() <= tiles.shuffle.expect("shuffle").left());
+        assert_eq!(
+            text_at(&frame.output, "midnight").len(),
+            1,
+            "the row's one field paints the query"
+        );
+        assert_eq!(
+            frame.reply.hits.as_deref(),
+            Some(&[1][..]),
+            "the drawn query is applied"
+        );
+
+        // Tab walks the row in the reference's DOM order: play, field, shuffle,
+        // heart, more.
+        let [press, release] = crate::view::test_support::tab();
+        let mut reached = Vec::new();
+        for _ in 0..expected.len() {
+            let _ = frame_in(
+                &ctx,
+                VIEWPORT,
+                0.0,
+                vec![press.clone()],
+                Some(rows.filter()),
+            );
+            reached.push(ctx.memory(|memory| memory.focused()));
+            let _ = frame_in(
+                &ctx,
+                VIEWPORT,
+                0.0,
+                vec![release.clone()],
+                Some(rows.filter()),
+            );
+        }
+        let reached: Vec<&str> = reached
+            .iter()
+            .map(|id| match *id {
+                None => "nothing",
+                Some(id) if id == expected[0] => "play",
+                Some(id) if id == expected[1] => "field",
+                Some(id) if id == expected[2] => "shuffle",
+                Some(id) if id == expected[3] => "heart",
+                Some(id) if id == expected[4] => "more",
+                Some(_) => "something else",
+            })
+            .collect();
+        assert_eq!(
+            reached,
+            ["play", "field", "shuffle", "heart", "more"],
+            "the field is a Tab stop between the play tile and the shuffle"
+        );
+    }
+
+    #[test]
+    fn a_stuck_unfocused_field_paints_no_hairline_and_the_bar_edge_stands_in() {
+        let ctx = context();
+        let tokens = Tokens::DARK;
+        let mut rows = Rows::narrowed();
+
+        // At rest the field is in the flow and wears its own line.
+        let rested = frame_in(&ctx, VIEWPORT, 0.0, Vec::new(), Some(rows.filter()));
+        let (line, ink) = field_line(&rested.output).expect("a resting field is underlined");
+        assert_eq!(ink, tokens.palette.border);
+        assert!(
+            (line.bottom() - placed(&rested, VIEWPORT).field.expect("field").bottom()).abs() < 0.01,
+            "the line is the field's bottom: {line:?}"
+        );
+
+        // Stuck and unfocused it paints none, and the row's own edge carries the
+        // line instead.
+        let pinned = frame_in(
+            &ctx,
+            VIEWPORT,
+            FILLER + 50.0,
+            Vec::new(),
+            Some(rows.filter()),
+        );
+        assert_eq!(
+            field_line(&pinned.output),
+            None,
+            "a stuck unfocused field paints no line of its own"
+        );
+        let bar = pinned.rect();
+        let edge = fills(&pinned.output, tokens.palette.border)
+            .into_iter()
+            .find(|(_, rect)| {
+                (rect.height() - stroke::HAIRLINE).abs() < 0.01
+                    && (rect.bottom() - bar.bottom()).abs() < 0.01
+                    && (rect.width() - bar.width()).abs() < 0.01
+            })
+            .map(|(_, rect)| rect)
+            .expect("the stuck row wears its own edge");
+        let field = placed(&pinned, VIEWPORT).field.expect("field");
+        assert!(
+            edge.width() > field.width(),
+            "the edge is the row's, not the field's underline: {edge:?} against {field:?}"
+        );
+
+        // Under the keyboard the line returns, in full ink.
+        for event in click_events(field.center()) {
+            let _ = frame_in(
+                &ctx,
+                VIEWPORT,
+                FILLER + 50.0,
+                vec![event],
+                Some(rows.filter()),
+            );
+        }
+        let typed = frame_in(
+            &ctx,
+            VIEWPORT,
+            FILLER + 50.0,
+            Vec::new(),
+            Some(rows.filter()),
+        );
+        assert_eq!(
+            field_line(&typed.output).map(|(_, ink)| ink),
+            Some(tokens.palette.text),
+            "a focused field says so in full ink while the row is stuck"
+        );
+    }
+
+    #[test]
+    fn the_count_sits_one_tools_gap_left_of_the_field() {
+        let ctx = context();
+        let mut rows = Rows::narrowed();
+        let frame = frame_in(&ctx, WIDE, 0.0, Vec::new(), Some(rows.filter()));
+        assert_eq!(
+            frame.reply.hits.as_deref(),
+            Some(&[1][..]),
+            "one of the three rows matches"
+        );
+
+        let field = placed(&frame, WIDE).field.expect("a wide row has a field");
+        let count = text_rect(&frame.output, "1 OF 3 TRACKS").expect("the count is painted");
+        assert!(
+            (count.right() - (field.left() - actionbar::TOOLS_GAP)).abs() < 0.01,
+            "the count sits one tools gap left of the field: {count:?} against {field:?}"
+        );
+        assert!(
+            (count.center().y - field.center().y).abs() < 0.01,
+            "the count is on the field's own line: {count:?} against {field:?}"
+        );
+
+        // With no query the count goes, and the field says so with its
+        // placeholder instead.
+        let mut quiet = Rows::new();
+        let frame = frame_in(&ctx, WIDE, 0.0, Vec::new(), Some(quiet.filter()));
+        assert_eq!(frame.reply.hits, None);
+        assert!(text_rect(&frame.output, "FILTER").is_some());
+        assert_eq!(
+            text_at(&frame.output, "3 OF 3 TRACKS").len(),
+            0,
+            "an unfiltered list paints no count"
+        );
+    }
+
+    #[test]
+    fn the_status_node_is_polite_carries_the_unshortened_label_and_exists_only_while_filtering() {
+        let ctx = context();
+        ctx.enable_accesskit();
+        let mut rows = Rows::narrowed();
+        let (filtered, read) =
+            frame_probed(&ctx, WIDE, 0.0, Vec::new(), Some(rows.filter()), |ui| {
+                ui.ctx()
+                    .accesskit_node_builder(ui.scope_id().with("track-count"), |node| {
+                        (node.role(), node.live(), node.label().map(str::to_owned))
+                    })
+                    .expect("the count has a status node")
+            });
+        assert_eq!(read.0, egui::Role::Status);
+        assert_eq!(read.1, Some(egui::accesskit::Live::Polite));
+        assert_eq!(
+            read.2.as_deref(),
+            Some("1 of 3 tracks"),
+            "the node says the count in the field's own words, not the painted glyphs"
+        );
+        assert!(
+            text_rect(&filtered.output, "1 OF 3 TRACKS").is_some(),
+            "and the painted count is the upper-cased one"
+        );
+
+        let mut quiet = Rows::new();
+        let (_, stray) = frame_probed(&ctx, WIDE, 0.0, Vec::new(), Some(quiet.filter()), |ui| {
+            ui.ctx()
+                .has_accesskit_node(ui.scope_id().with("track-count"))
+        });
+        assert!(!stray, "an unfiltered list announces nothing");
+    }
+
+    #[test]
+    fn a_bar_with_no_room_for_the_field_applies_no_query() {
+        let ctx = context();
+        // Narrow enough that the field has less than its floor between the play
+        // tile and the tools, so it is not drawn at all.
+        let size = Vec2::new(310.0, 400.0);
+        let mut rows = Rows::narrowed();
+        let frame = frame_in(&ctx, size, 0.0, Vec::new(), Some(rows.filter()));
+
+        assert!(
+            placed(&frame, size).field.is_none(),
+            "the field is not drawn in a row this narrow"
+        );
+        assert_eq!(
+            frame.reply.hits, None,
+            "a query nobody can see never narrows the list"
+        );
+        assert!(
+            text_at(&frame.output, "midnight").is_empty()
+                && text_at(&frame.output, "FILTER").is_empty(),
+            "nor is there a field to paint it in: {:?}",
+            text_at(&frame.output, "midnight")
+        );
+    }
+
+    #[test]
+    fn the_playlist_bar_without_an_entry_draws_with_inert_heart_and_more() {
+        let ctx = context();
+        let mut rows = Rows::narrowed();
+        // A playlist the library cannot name: nothing to call it, nothing to say
+        // about the heart, and no menu to open.
+        let unnamed = Bar {
+            title: None,
+            playable: true,
+            shuffle: true,
+            more: None,
+            saved: None,
+            kind: kind(VIEWPORT),
+        };
+
+        let rested = frame_of(
+            &ctx,
+            &unnamed,
+            VIEWPORT,
+            0.0,
+            Vec::new(),
+            Some(rows.filter()),
+        );
+        let tiles = placed(&rested, VIEWPORT);
+        assert_eq!(
+            text_at(&rested.output, "midnight").len(),
+            1,
+            "the field is drawn for a page with no name"
+        );
+        assert_eq!(
+            rested.reply.hits.as_deref(),
+            Some(&[1][..]),
+            "and its query still narrows the list"
+        );
+        assert!(
+            text_at(&rested.output, "Late Night Drive").is_empty(),
+            "there is no name to paint"
+        );
+        let heart = tiles.heart.expect("the heart is present");
+        let more = tiles.more;
+
+        // Both are present and both are inert: no list could say what the
+        // context's saved state is, and the menu has nothing to offer.
+        let mut last = Reply::quiet();
+        for event in click_events(heart.center()) {
+            last = frame_of(
+                &ctx,
+                &unnamed,
+                VIEWPORT,
+                0.0,
+                vec![event],
+                Some(rows.filter()),
+            )
+            .reply;
+        }
+        assert_eq!(last.saved, None, "an unknown heart asks for nothing");
+        assert!(!last.played, "a press on the heart is not a press on play");
+
+        let mut last = Reply::quiet();
+        for event in click_events(more.center()) {
+            last = frame_of(
+                &ctx,
+                &unnamed,
+                VIEWPORT,
+                0.0,
+                vec![event],
+                Some(rows.filter()),
+            )
+            .reply;
+        }
+        assert!(last.more_door.is_none(), "an inert menu posts no door");
+        assert!(!last.played, "a press on the menu is not a press on play");
+
+        // The play tile still works on the tracks the page has.
+        let mut last = Reply::quiet();
+        for event in click_events(tiles.play.center()) {
+            last = frame_of(
+                &ctx,
+                &unnamed,
+                VIEWPORT,
+                0.0,
+                vec![event],
+                Some(rows.filter()),
+            )
+            .reply;
+        }
+        assert!(last.played, "a page with no name still plays its tracks");
+    }
+
+    #[test]
     fn rows_never_paint_over_the_pinned_bar() {
         let ctx = context();
         let tokens = Tokens::DARK;
-        let bar = bar();
-        let mut output = ctx.run_ui(input(Vec::new()), |ui| {
+        let bar = bar(kind(VIEWPORT));
+        let mut output = ctx.run_ui(input(VIEWPORT, Vec::new()), |ui| {
             egui::ScrollArea::vertical()
                 .id_salt("bar")
                 .vertical_scroll_offset(FILLER + 50.0)
                 .show(ui, |ui| {
                     ui.add_space(FILLER);
-                    let _ = show(ui, &bar, &tokens);
+                    let _ = show(ui, &bar, None, &tokens);
                     // A row where the list would start, which the pinned row now
                     // covers.
                     ui.painter().text(
@@ -636,7 +1196,7 @@ mod tests {
     fn a_press_in_the_pinned_strip_reaches_no_row() {
         let ctx = context();
         let tokens = Tokens::DARK;
-        let bar = bar();
+        let bar = bar(kind(VIEWPORT));
         let id = egui::Id::unique("row-under-the-bar");
         let at = Pos2::new(400.0, 20.0);
         let mut clicked = false;
@@ -645,13 +1205,13 @@ mod tests {
             vec![crate::view::test_support::button(at, true)],
             vec![crate::view::test_support::button(at, false)],
         ] {
-            let mut output = ctx.run_ui(input(events), |ui| {
+            let mut output = ctx.run_ui(input(VIEWPORT, events), |ui| {
                 egui::ScrollArea::vertical()
                     .id_salt("bar")
                     .vertical_scroll_offset(FILLER + 50.0)
                     .show(ui, |ui| {
                         ui.add_space(FILLER);
-                        let _ = show(ui, &bar, &tokens);
+                        let _ = show(ui, &bar, None, &tokens);
                         let body = ui.interact(
                             Rect::from_min_size(
                                 Pos2::ZERO,

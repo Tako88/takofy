@@ -226,6 +226,7 @@ fn head(
                 limit: QUERY_MAX,
                 placeholder: &placeholder,
                 label: "Filter your library",
+                rule: filter_field::Rule::Resting,
             },
             tokens,
         );

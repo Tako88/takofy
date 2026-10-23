@@ -18,6 +18,7 @@ use takofy_model::Episode;
 
 use crate::cover::Art;
 use crate::format::{episode_meta, plain_description, show_meta, total_label};
+use crate::layout::actionbar::Kind;
 use crate::layout::{episode as episode_layout, table as table_layout};
 use crate::library::{Library, Load};
 use crate::menu::LibraryItem;
@@ -129,7 +130,9 @@ pub fn show_view(
                             shuffle: false,
                             more: Some(true),
                             saved,
+                            kind: Kind::Other,
                         },
+                        None,
                         tokens,
                     );
                     if let Some(door) = acted.more_door {
@@ -510,7 +513,17 @@ mod tests {
                 };
                 let _ = hero::show_with(ui, &band, &tokens, hero::Title::Plain);
                 let row = actionbar::row_rect(ui);
-                found = Some(crate::layout::actionbar::solve(row, false).play);
+                found = Some(
+                    crate::layout::actionbar::solve(
+                        row,
+                        Kind::Other,
+                        crate::layout::actionbar::Parts {
+                            shuffle: false,
+                            field: false,
+                        },
+                    )
+                    .play,
+                );
             });
         });
         found.expect("the band and its action row lay out")
