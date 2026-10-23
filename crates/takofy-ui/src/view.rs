@@ -12,6 +12,7 @@ mod carry;
 mod context_menu;
 pub mod controls;
 mod episode_row;
+mod filter_field;
 mod filter_row;
 mod focus;
 mod ghost;

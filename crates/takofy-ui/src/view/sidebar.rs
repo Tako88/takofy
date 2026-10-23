@@ -22,6 +22,7 @@ use crate::library::{Library, Load};
 use crate::menu::{Door, LibraryItem};
 use crate::message::{Command, Failure};
 use crate::naming::{Renaming, Surface};
+use crate::rail_filter;
 use crate::route::Page;
 use crate::sidebar_kind::{self, SidebarKind};
 use crate::signin::failure_message;
@@ -29,11 +30,13 @@ use crate::theme::icon::Size;
 use crate::theme::{
     MonoWeight, Tokens, Weight, extent, fonts, radius, space, stroke, text, tracking,
 };
+use crate::track_filter::QUERY_MAX;
 
 use super::art;
 use super::carry::{self, Carry, ColumnOffer, Ghost, Source};
 use super::context_menu;
 use super::controls;
+use super::filter_field;
 use super::name_field;
 use super::queue_row;
 use super::rows::{self, Look};
@@ -82,13 +85,33 @@ fn draw(
 ) -> Option<Command> {
     let band = ui.available_rect_before_wrap();
     let y = filters(ui, library, tokens, band);
-    let y = head(ui, library, tokens, band, y, drag);
+    let head = head(ui, library, tokens, band, y, drag);
+
+    // The survivors are read from the same list the rows draw, after the field
+    // has taken this frame's keystroke, clear or Escape.
+    let kept = rail_kept(library);
+    // A rename field on a row the query hides would keep asking for the
+    // keyboard, and a keystroke that leaves its row drawn still moves the list
+    // under it: either way the field goes.
+    if head.changed
+        || kept
+            .as_deref()
+            .is_some_and(|kept| rename_hidden(library, kept))
+    {
+        library.dismiss_row_rename();
+    }
+    // The count is one string in two places: the field's resting line, and a
+    // polite status node. Sighted users see it whenever the field is empty; a
+    // screen reader hears it when it changes, which is not every keystroke.
+    let (kind_shown, total) = counts(library);
+    let shown = kept.as_ref().map_or(kind_shown, Vec::len);
+    announce(ui, shown, total, head.field);
 
     let list = Rect::from_min_size(
-        Pos2::new(band.left() + space::S2, y),
-        Vec2::new(band.width() - 2.0 * space::S2, band.bottom() - y),
+        Pos2::new(band.left() + space::S2, head.top),
+        Vec2::new(band.width() - 2.0 * space::S2, band.bottom() - head.top),
     );
-    rows(ui, list, library, art, now, tokens, drag)
+    rows(ui, list, library, art, now, tokens, drag, kept.as_deref())
 }
 
 /// The four filters, in a fixed 2x2 block at the top of the sidebar.
@@ -127,13 +150,27 @@ fn filters(ui: &mut Ui, library: &mut Library, tokens: &Tokens, band: Rect) -> f
     origin.y + placed.height + space::S3
 }
 
-/// The rule, the library's size and the button that creates a playlist.
+/// What the head leaves the rest of the frame.
+struct Head {
+    /// Where the list under it starts.
+    top: f32,
+    /// The filter field's widget id, when the field was drawn this frame.
+    ///
+    /// `None` while the create field holds the slot, so the announcement below
+    /// never builds a node for a field that is not on screen.
+    field: Option<egui::Id>,
+    /// Whether this frame moved the query.
+    changed: bool,
+}
+
+/// The rule, the name filter and the button that creates a playlist.
 ///
-/// The count and the name field share one row: the button swaps the label for a
-/// field rather than opening a second surface, and becomes the cancel that
-/// closes it. The drawer's form discards its command, so neither is live there —
-/// a press that started a write would leave the sidebar waiting for a reply
-/// nobody asked for.
+/// The field and the new playlist's name share one slot: the button swaps the
+/// field for the create field rather than opening a second surface, and becomes
+/// the cancel that closes it. The drawer's form discards its command, so the
+/// button is not live there — a press that started a write would leave the
+/// sidebar waiting for a reply nobody asked for. The filter itself is live in
+/// the drawer: narrowing a list in memory writes nothing.
 fn head(
     ui: &mut Ui,
     library: &mut Library,
@@ -141,7 +178,7 @@ fn head(
     band: Rect,
     top: f32,
     drag: bool,
-) -> f32 {
+) -> Head {
     rule(
         ui,
         Rect::from_min_size(
@@ -164,12 +201,37 @@ fn head(
         Vec2::splat(extent::BUTTON),
     );
 
-    if open {
-        let field = Rect::from_min_max(row.min, Pos2::new(create.left() - space::S2, row.bottom()));
-        name_field(ui, field, library, tokens);
+    // The field takes what the button leaves, which is the reference's line for
+    // the rail: the count used to sit in this slot, and now the field does.
+    let slot = Rect::from_min_max(row.min, Pos2::new(create.left() - space::S2, row.bottom()));
+    let mut changed = false;
+    let field = if open {
+        // A created playlist would be hidden by a query that does not match the
+        // name being typed. The create field and the filter field share one
+        // slot, because the head row holds one field at a time, so opening the
+        // create field clears the query rather than drawing two fields.
+        library.rail_filter.clear();
+        name_field(ui, slot, library, tokens);
+        None
     } else {
-        count_label(ui, row, library, tokens);
-    }
+        let (shown, total) = counts(library);
+        let placeholder = library_count(shown, total);
+        let id = ui.scope_id().with("library-filter");
+        let edited = filter_field::show(
+            ui,
+            filter_field::Field {
+                id,
+                rect: slot,
+                text: library.rail_filter.edit(),
+                limit: QUERY_MAX,
+                placeholder: &placeholder,
+                label: "Filter your library",
+            },
+            tokens,
+        );
+        changed = edited.changed;
+        Some(id)
+    };
 
     let (icon, label, live) = if open {
         let writing = library.naming.writing();
@@ -201,24 +263,11 @@ fn head(
         library.naming.button_focus_taken();
     }
 
-    row.bottom() + space::S2
-}
-
-/// How many things the sidebar lists, in the head's own words.
-fn count_label(ui: &mut Ui, row: Rect, library: &Library, tokens: &Tokens) {
-    let (shown, total) = counts(library);
-    let label = recipe::spaced(
-        ui,
-        &library_count(shown, total),
-        egui::FontId::new(text::XXS, fonts::mono(MonoWeight::Medium)),
-        tokens.palette.text_subtle,
-        recipe::tracking_pts(text::XXS, tracking::CAPS),
-    );
-    ui.painter().galley(
-        Pos2::new(row.left(), row.center().y - label.size().y / 2.0),
-        label,
-        tokens.palette.text_subtle,
-    );
+    Head {
+        top: row.bottom() + space::S2,
+        field,
+        changed,
+    }
 }
 
 /// The new playlist's name, in the count's place.
@@ -308,6 +357,29 @@ pub(crate) fn take_submit(ctx: &egui::Context) -> bool {
     ctx.data_mut(|data| data.remove_temp::<bool>(submit_id()).unwrap_or(false))
 }
 
+/// Announces how many rows the rail shows, in the field's own resting words.
+///
+/// egui has no live region, so this is the smallest honest mechanism: a
+/// `Role::Status` node the platform adapters treat as a polite live region, and
+/// the same string on the field's own node as its placeholder. It is announced
+/// when the node's name changes — a keystroke that leaves the count alone says
+/// nothing — and when the node first appears. It is not an ARIA emulation.
+fn announce(ui: &Ui, shown: usize, total: usize, field: Option<egui::Id>) {
+    let text = library_count(shown, total);
+    let ctx = ui.ctx();
+    let _ = ctx.accesskit_node_builder(ui.scope_id().with("library-count"), |node| {
+        node.set_role(egui::Role::Status);
+        node.set_live(egui::accesskit::Live::Polite);
+        node.set_label(text.as_str());
+    });
+    if let Some(id) = field {
+        // Only when the field drew: a node for an id that is not on screen would
+        // be a stray in the tree while the create field holds the slot.
+        // Written after the edit, so it wins over the empty hint egui filled in.
+        let _ = ctx.accesskit_node_builder(id, |node| node.set_placeholder(text.as_str()));
+    }
+}
+
 /// How many things the sidebar lists, and how many the chosen filter shows.
 fn counts(library: &Library) -> (usize, usize) {
     let playlists = match &library.playlists {
@@ -333,6 +405,57 @@ fn counts(library: &Library) -> (usize, usize) {
         SidebarKind::Albums => albums,
     };
     (shown, playlists + shows + artists + albums)
+}
+
+/// The true rows the rail's query leaves, ascending; `None` when it leaves the
+/// whole list.
+///
+/// It reads the same `Load::Ready` list the rows draw, so what the count says,
+/// what the empty line would describe and what is painted are one set.
+fn rail_kept(library: &Library) -> Option<Vec<usize>> {
+    let needle = library.rail_filter.needle()?;
+    Some(match library.sidebar_kind.chosen() {
+        SidebarKind::Playlists => kept_in(&library.playlists, &needle),
+        SidebarKind::Podcasts => kept_in(&library.followed, &needle),
+        SidebarKind::Artists => kept_in(&library.followed_artists, &needle),
+        SidebarKind::Albums => kept_in(&library.saved_albums, &needle),
+    })
+}
+
+/// The ascending true rows of one list whose name contains `needle`.
+fn kept_in<T: ListItem>(list: &Load<Vec<T>>, needle: &str) -> Vec<usize> {
+    match list {
+        Load::Ready(items) => rail_filter::keep(items.iter().map(ListItem::name), needle),
+        Load::Idle | Load::Loading | Load::Failed(_) => Vec::new(),
+    }
+}
+
+/// Whether an open row rename's row is not among the query's survivors.
+///
+/// A field on a hidden row would keep asking for the keyboard while there is
+/// nothing on screen to type into.
+fn rename_hidden(library: &Library, kept: &[usize]) -> bool {
+    if !library.renaming.is_open() || library.renaming.surface() != Surface::Row {
+        return false;
+    }
+    let uri = library.renaming.uri();
+    let survives = match library.sidebar_kind.chosen() {
+        SidebarKind::Playlists => kept_holds(&library.playlists, kept, uri),
+        SidebarKind::Podcasts => kept_holds(&library.followed, kept, uri),
+        SidebarKind::Artists => kept_holds(&library.followed_artists, kept, uri),
+        SidebarKind::Albums => kept_holds(&library.saved_albums, kept, uri),
+    };
+    !survives
+}
+
+/// Whether `uri` is one of the rows `kept` names.
+fn kept_holds<T: ListItem>(list: &Load<Vec<T>>, kept: &[usize], uri: &str) -> bool {
+    match list {
+        Load::Ready(items) => kept
+            .iter()
+            .any(|&row| items.get(row).is_some_and(|item| item.uri() == uri)),
+        Load::Idle | Load::Loading | Load::Failed(_) => false,
+    }
 }
 
 /// What a list draws: the items, or the state of the loads behind them.
@@ -495,6 +618,8 @@ struct Draw<'a> {
     reveal: bool,
     /// The open rename field, taken from the library for this frame's list.
     renaming: Renaming,
+    /// The true rows the query left, ascending; `None` when it left every row.
+    kept: Option<&'a [usize]>,
 }
 
 /// What a press in a list asks the window to do.
@@ -536,7 +661,22 @@ fn list_rows<T: ListItem + Clone>(
         }
         ListView::List(items) => {
             let mut pressed: Option<String> = None;
-            let entries = items.to_vec();
+            // The drawn slots and the true rows they stand for. A query narrows
+            // `positions`; every write this frame makes names
+            // `positions[index]`, because a slot's number is not the playlist's
+            // index while the list is narrowed.
+            let positions: Vec<usize> = match draw.kept {
+                Some(kept) => kept
+                    .iter()
+                    .copied()
+                    .filter(|&row| row < items.len())
+                    .collect(),
+                None => (0..items.len()).collect(),
+            };
+            let entries: Vec<T> = positions.iter().map(|&row| items[row].clone()).collect();
+            // A query that happened to match every row draws the whole list, so
+            // its slots are still the true indices and it is not a narrowing.
+            let narrowed = positions.len() != items.len();
             let mut lifted_carry: Option<Carry> = None;
             let mut opened: Option<(LibraryItem, Door, bool)> = None;
             // The first drawn row and the index it holds, so the offer describes
@@ -578,13 +718,15 @@ fn list_rows<T: ListItem + Clone>(
                                 draw.drag && draw.renaming.is_open_on(item.uri(), Surface::Row);
                             edit_drawn |= edit;
                             let cover = draw.art.look(item.cover(), draw.now);
+                            // The playlist this drawn slot stands for.
+                            let true_row = positions[index];
                             let row = LibraryRow {
                                 id: ids.id(ui, item.uri()),
                                 name: item.name(),
                                 kind: &kind,
                                 cover,
                                 selected: current == Some(item.uri()),
-                                lifted: lifted.contains(&index),
+                                lifted: lifted.contains(&true_row),
                                 edit,
                             };
                             let drawn = one(
@@ -611,7 +753,7 @@ fn list_rows<T: ListItem + Clone>(
                             }
                             // Only the playlists are a column a drag can lift;
                             // every other kind draws exactly as it always did.
-                            if drawn.lift && ids.lifts && draw.lift {
+                            if drawn.lift && ids.lifts && draw.lift && !narrowed {
                                 let ghost = queue_row::Lifted::new(
                                     item.name().to_owned(),
                                     kind.clone(),
@@ -620,7 +762,7 @@ fn list_rows<T: ListItem + Clone>(
                                 );
                                 lifted_carry = Some(Carry {
                                     source: Source::Playlist,
-                                    rows: vec![index],
+                                    rows: vec![true_row],
                                     entries: Vec::new(),
                                     playlist: Some(item.uri().to_owned()),
                                     size: place.size(),
@@ -667,9 +809,14 @@ fn list_rows<T: ListItem + Clone>(
                     Pos2::new(place.left(), place.top() - first as f32 * pitch),
                     Vec2::new(place.width(), entries.len() as f32 * pitch),
                 );
+                // A slot's number is the playlist's index only while the drawn
+                // set is the whole list, so the map is carried exactly when it
+                // is not.
+                let rows = narrowed.then_some(positions);
                 carry::offer_column(
                     ui.ctx(),
                     ColumnOffer {
+                        rows,
                         zone: Zone {
                             hit: rect,
                             list,
@@ -811,6 +958,10 @@ fn page_uris(library: &Library, kind: PageKind) -> Option<&str> {
 }
 
 /// The list the chosen kind shows, or the state of the load that fetches it.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the frame's own facts about one list, plus what the query left"
+)]
 fn rows(
     ui: &mut Ui,
     rect: Rect,
@@ -819,6 +970,7 @@ fn rows(
     now: Instant,
     tokens: &Tokens,
     drag: bool,
+    kept: Option<&[usize]>,
 ) -> Option<Command> {
     if rect.height() < ROW_H {
         return None;
@@ -861,10 +1013,15 @@ fn rows(
         renamable,
         here: library.page().cloned(),
         drag,
+        // A narrowed row's lift could only start a reorder, and a narrowed
+        // column refuses every reorder: the rail already withholds a lift when
+        // the order is not its to change, and this is the same vocabulary. A
+        // query that matches every row narrows nothing, so its lift is kept.
         lift: drag && library.rootlist_movable(),
         offer: drag,
         reveal: std::mem::take(&mut library.reveal_top),
         renaming,
+        kept,
     };
     let (action, open) = match library.sidebar_kind.chosen() {
         SidebarKind::Playlists => (
@@ -1922,6 +2079,37 @@ mod tests {
         art: &mut Art,
         drag: bool,
     ) -> (egui::FullOutput, Option<Command>) {
+        let frame = frame_of(ctx, events, library, art, drag);
+        (frame.output, frame.command)
+    }
+
+    /// What one frame of the rail leaves behind.
+    struct Frame {
+        output: egui::FullOutput,
+        command: Option<Command>,
+    }
+
+    /// One frame of either form, with the head's ids read out.
+    fn frame_of(
+        ctx: &egui::Context,
+        events: Vec<Event>,
+        library: &mut Library,
+        art: &mut Art,
+        drag: bool,
+    ) -> Frame {
+        frame_probing(ctx, events, library, art, drag, |_| ()).0
+    }
+
+    /// One frame of either form, read inside the pass so its AccessKit nodes are
+    /// still standing.
+    fn frame_probing<T>(
+        ctx: &egui::Context,
+        events: Vec<Event>,
+        library: &mut Library,
+        art: &mut Art,
+        drag: bool,
+        probe: impl FnOnce(&egui::Ui) -> T,
+    ) -> (Frame, T) {
         let input = egui::RawInput {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(254.0, 800.0))),
             events,
@@ -1929,6 +2117,8 @@ mod tests {
         };
         let tokens = Tokens::DARK;
         let mut command = None;
+        let mut probed = None;
+        let mut probe = Some(probe);
         let mut output = ctx.run_ui(input, |ui| {
             crate::view::focus::begin_frame(ui.ctx());
             let next = if drag {
@@ -1939,9 +2129,15 @@ mod tests {
             if let Some(next) = next {
                 command = Some(next);
             }
+            if let Some(probe) = probe.take() {
+                probed = Some(probe(ui));
+            }
         });
         output.textures_delta.clear();
-        (output, command)
+        (
+            Frame { output, command },
+            probed.expect("the probe runs once"),
+        )
     }
 
     /// Drags from a row's line towards the middle of the list, stopping with the
@@ -2942,6 +3138,749 @@ mod tests {
             ["Copy link", "Remove from library"],
             "an unowned playlist was not offered its removal"
         );
+    }
+
+    // ---- the rail's filter field ----
+
+    /// The hairlines a frame painted that could be the rail filter's underline:
+    /// the field's own width, an ink that means focused or not.
+    fn filter_hairlines(output: &egui::FullOutput) -> Vec<(Rect, Color32)> {
+        let tokens = Tokens::DARK;
+        output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Rect(shape)
+                    if (shape.rect.height() - stroke::HAIRLINE).abs() < 0.01
+                        && shape.rect.width() > 80.0
+                        && shape.rect.width() < 200.0
+                        && (shape.fill == tokens.palette.border
+                            || shape.fill == tokens.palette.text) =>
+                {
+                    Some((shape.rect, shape.fill))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The rail filter's box, read from the hairline under it.
+    fn filter_field_of(output: &egui::FullOutput) -> Rect {
+        let (hairline, _) = filter_hairlines(output)
+            .into_iter()
+            .next()
+            .expect("the rail filter paints its bottom hairline");
+        Rect::from_min_max(
+            Pos2::new(hairline.left(), hairline.bottom() - extent::BUTTON),
+            Pos2::new(hairline.right(), hairline.bottom()),
+        )
+    }
+
+    /// A library whose playlists are the names, each ready and drawable.
+    fn named_playlists(names: &[&str]) -> Library {
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(
+            names
+                .iter()
+                .map(|name| playlist(&format!("spotify:playlist:{name}"), name))
+                .collect(),
+        ));
+        library
+    }
+
+    /// The names a frame painted, in the rows' own order.
+    fn painted_rows(output: &egui::FullOutput, names: &[&str]) -> Vec<String> {
+        let mut drawn: Vec<(f32, String)> = names
+            .iter()
+            .filter_map(|name| {
+                output
+                    .shapes
+                    .iter()
+                    .find_map(|clipped| match &clipped.shape {
+                        egui::epaint::Shape::Text(text) if text.galley.text() == *name => {
+                            Some((text.pos.y, (*name).to_owned()))
+                        }
+                        _ => None,
+                    })
+            })
+            .collect();
+        drawn.sort_by(|left, right| left.0.total_cmp(&right.0));
+        drawn.into_iter().map(|(_, name)| name).collect()
+    }
+
+    /// The tiles a frame painted stepped back because their row is carried.
+    fn lifted_tiles(output: &egui::FullOutput) -> Vec<Rect> {
+        let tokens = Tokens::DARK;
+        let dim = tokens
+            .palette
+            .surface_sunken
+            .gamma_multiply(crate::theme::opacity::LIFTED);
+        output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Rect(shape) if shape.fill == dim => Some(shape.rect),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Clicks the rail's field and types `text` into it, answering the frame the
+    /// keystroke landed on.
+    fn type_in_rail(
+        ctx: &egui::Context,
+        text: &str,
+        library: &mut Library,
+        art: &mut Art,
+    ) -> egui::FullOutput {
+        let (output, _) = run_column(ctx, Vec::new(), library, art);
+        let field = filter_field_of(&output);
+        for event in click_events(field.center()) {
+            let _ = run_column(ctx, vec![event], library, art);
+        }
+        assert!(
+            ctx.text_edit_focused(),
+            "the click focused the rail's field"
+        );
+        let (output, _) = run_column(ctx, vec![Event::Text(text.to_owned())], library, art);
+        output
+    }
+
+    #[test]
+    fn typing_narrows_the_rows_in_the_same_frame() {
+        let ctx = context();
+        let mut library = named_playlists(&["Midnight City", "Outro", "Midnight Sun"]);
+        let mut art = Art::default();
+
+        let output = type_in_rail(&ctx, "midnight", &mut library, &mut art);
+
+        assert_eq!(
+            painted_rows(&output, &["Midnight City", "Outro", "Midnight Sun"]),
+            ["Midnight City", "Midnight Sun"],
+            "the keystroke frame already draws only the matches"
+        );
+        let pitch = ROW_H + space::PX;
+        let first = row_top(&output, "Midnight City", "Playlist");
+        let second = row_top(&output, "Midnight Sun", "Playlist");
+        assert!(
+            (second - first - pitch).abs() < 0.01,
+            "the survivors close up into consecutive slots: {first} then {second}"
+        );
+    }
+
+    #[test]
+    fn the_two_axes_compose() {
+        let ctx = context();
+        // The matching playlist and the matching artist sit at different true
+        // indices, so reading the wrong kind's list cannot pass.
+        let mut library = named_playlists(&["Vela", "Artemis"]);
+        library.apply(&Update::FollowedArtists(vec![
+            followed_artist("spotify:artist:1", "Artemis"),
+            followed_artist("spotify:artist:2", "Vela Moreno"),
+        ]));
+        assert!(library.choose_kind(SidebarKind::Artists));
+        let mut art = Art::default();
+
+        let output = type_in_rail(&ctx, "art", &mut library, &mut art);
+
+        assert!(
+            painted(&output, "Artemis"),
+            "the chosen kind's matching row is drawn"
+        );
+        assert!(
+            !painted(&output, "Vela Moreno"),
+            "a row of the chosen kind that does not match is hidden"
+        );
+    }
+
+    #[test]
+    fn matching_is_case_insensitive_over_the_name_only() {
+        let ctx = context();
+        // The artist's kind line is "Artist", which a name-only match ignores.
+        let mut library = named_playlists(&[]);
+        library.apply(&Update::FollowedArtists(vec![followed_artist(
+            "spotify:artist:a",
+            "Vela",
+        )]));
+        assert!(library.choose_kind(SidebarKind::Artists));
+        let mut art = Art::default();
+
+        let output = type_in_rail(&ctx, "art", &mut library, &mut art);
+
+        assert!(
+            !painted(&output, "Vela"),
+            "the kind line is not what the query matches"
+        );
+
+        // And a name matches whatever its case.
+        let ctx = context();
+        let mut library = named_playlists(&[]);
+        library.apply(&Update::FollowedArtists(vec![followed_artist(
+            "spotify:artist:a",
+            "Artemis",
+        )]));
+        assert!(library.choose_kind(SidebarKind::Artists));
+        library.rail_filter.edit().push_str("ARTE");
+        let (output, _) = run_column(&ctx, Vec::new(), &mut library, &mut art);
+        assert!(painted(&output, "Artemis"), "the query folds case");
+    }
+
+    #[test]
+    fn a_blank_query_narrows_nothing() {
+        let ctx = context();
+        let mut library = named_playlists(&["Alpha", "Bravo"]);
+        library.rail_filter.edit().push_str("   ");
+        let mut art = Art::default();
+
+        let (output, _) = run_column(&ctx, Vec::new(), &mut library, &mut art);
+
+        assert_eq!(
+            painted_rows(&output, &["Alpha", "Bravo"]),
+            ["Alpha", "Bravo"],
+            "whitespace is no filter"
+        );
+        assert_eq!(
+            carry::take_column_offer(&ctx).and_then(|offer| offer.rows),
+            None,
+            "a blank query leaves the column whole"
+        );
+    }
+
+    #[test]
+    fn clearing_restores_every_row() {
+        let ctx = context();
+        let mut library = named_playlists(&["Midnight City", "Outro"]);
+        let mut art = Art::default();
+        let _ = type_in_rail(&ctx, "mid", &mut library, &mut art);
+
+        library.rail_filter.clear();
+        let (output, _) = run_column(&ctx, Vec::new(), &mut library, &mut art);
+
+        assert_eq!(
+            painted_rows(&output, &["Midnight City", "Outro"]),
+            ["Midnight City", "Outro"],
+            "the whole list is back"
+        );
+    }
+
+    #[test]
+    fn a_narrowed_list_offers_only_what_it_draws() {
+        let ctx = context();
+        let mut library =
+            movable_playlists(&["Midnight City", "Outro", "Midnight Sun"], 7, true, None);
+        library.rail_filter.edit().push_str("midnight");
+        let mut art = Art::default();
+
+        let (output, _) = run_column(&ctx, Vec::new(), &mut library, &mut art);
+
+        let offer = carry::take_column_offer(&ctx).expect("the column offers itself");
+        assert_eq!(offer.zone.count, 2, "only the drawn rows are offered");
+        let first = row_top(&output, "Midnight City", "Playlist");
+        assert!(
+            (offer.zone.list.top() - first).abs() < 0.01,
+            "the rows box starts at the first drawn row: {} vs {first}",
+            offer.zone.list.top()
+        );
+    }
+
+    #[test]
+    fn a_narrowed_offer_carries_the_true_rows() {
+        let ctx = context();
+        let mut library =
+            movable_playlists(&["Midnight City", "Outro", "Midnight Sun"], 7, true, None);
+        library.rail_filter.edit().push_str("midnight");
+        let mut art = Art::default();
+
+        let _ = run_column(&ctx, Vec::new(), &mut library, &mut art);
+
+        let offer = carry::take_column_offer(&ctx).expect("the column offers itself");
+        assert_eq!(
+            offer.rows,
+            Some(vec![0, 2]),
+            "the offer names the playlists the slots stand for"
+        );
+        assert_eq!(offer.source_row(1), Some(2));
+    }
+
+    #[test]
+    fn an_unnarrowed_offer_carries_no_rows() {
+        let ctx = context();
+        let mut library = movable_playlists(&["Alpha", "Bravo"], 7, true, None);
+        let mut art = Art::default();
+
+        let _ = run_column(&ctx, Vec::new(), &mut library, &mut art);
+
+        let offer = carry::take_column_offer(&ctx).expect("the column offers itself");
+        assert_eq!(offer.rows, None, "a whole list needs no map");
+    }
+
+    #[test]
+    fn a_narrowed_playlist_row_does_not_lift() {
+        let ctx = context();
+        let mut library = movable_playlists(&["Midnight City", "Outro"], 7, true, None);
+        library.rail_filter.edit().push_str("midnight");
+        let mut art = Art::default();
+        let (output, _) = run_column(&ctx, Vec::new(), &mut library, &mut art);
+        let from = name_line(&output, "Midnight City");
+
+        let _ = hold_from(&ctx, from, &mut library, &mut art, true);
+
+        assert!(
+            carry::carried(&ctx).is_none(),
+            "a narrowed rail row has no reorder it could land"
+        );
+    }
+
+    #[test]
+    fn an_unnarrowed_row_still_lifts_with_its_true_index() {
+        let ctx = context();
+        let mut library = movable_playlists(&["Alpha", "Bravo"], 7, true, None);
+        let mut art = Art::default();
+        let (output, _) = run_column(&ctx, Vec::new(), &mut library, &mut art);
+        let from = name_line(&output, "Bravo");
+
+        let _ = hold_from(&ctx, from, &mut library, &mut art, true);
+
+        let carry = carry::carried(&ctx).expect("the unnarrowed row lifts");
+        assert_eq!(carry.rows, vec![1], "the carry names the row's true index");
+    }
+
+    #[test]
+    fn a_row_lifted_before_narrowing_carries_its_true_index_and_dims_the_right_row() {
+        let ctx = context();
+        let mut library = movable_playlists(&["Alpha", "Bravo", "Midnight Sun"], 7, true, None);
+        let mut art = Art::default();
+        let (output, _) = run_column(&ctx, Vec::new(), &mut library, &mut art);
+        let from = name_line(&output, "Midnight Sun");
+
+        let _ = hold_from(&ctx, from, &mut library, &mut art, true);
+        let carry = carry::carried(&ctx).expect("the row lifts");
+        assert_eq!(carry.rows, vec![2]);
+
+        // The query leaves only the lifted row, which now draws in the first
+        // slot: the dim follows the playlist, not the slot it moved to.
+        library.rail_filter.edit().push_str("midnight");
+        let (output, _) = run_column(&ctx, Vec::new(), &mut library, &mut art);
+
+        assert_eq!(
+            painted_rows(&output, &["Alpha", "Bravo", "Midnight Sun"]),
+            ["Midnight Sun"],
+            "only the lifted row survives the query"
+        );
+        assert_eq!(
+            lifted_tiles(&output).len(),
+            1,
+            "the surviving row is the one stepped back: {:?}",
+            lifted_tiles(&output)
+        );
+    }
+
+    #[test]
+    fn a_query_matching_nothing_draws_no_rows_and_offers_nothing() {
+        let ctx = context();
+        let mut library = movable_playlists(&["Alpha", "Bravo"], 7, true, None);
+        library.rail_filter.edit().push_str("zzz");
+        let mut art = Art::default();
+
+        let (output, _) = run_column(&ctx, Vec::new(), &mut library, &mut art);
+
+        assert_eq!(
+            painted_rows(&output, &["Alpha", "Bravo"]),
+            Vec::<String>::new(),
+            "no row matches"
+        );
+        assert_eq!(
+            carry::take_column_offer(&ctx),
+            None,
+            "an empty list offers no rows"
+        );
+    }
+
+    #[test]
+    fn the_query_survives_a_reload_and_a_loading_frame() {
+        let ctx = context();
+        let mut library = movable_playlists(&["Midnight City", "Outro"], 7, true, None);
+        let mut art = Art::default();
+        let _ = type_in_rail(&ctx, "mid", &mut library, &mut art);
+
+        library.apply(&Update::Playlists(vec![
+            playlist("spotify:playlist:Midnight City", "Midnight City"),
+            playlist("spotify:playlist:Outro", "Outro"),
+        ]));
+        let (output, _) = run_column(&ctx, Vec::new(), &mut library, &mut art);
+        assert_eq!(library.rail_filter.query(), "mid", "a reload keeps it");
+        assert_eq!(
+            painted_rows(&output, &["Midnight City", "Outro"]),
+            ["Midnight City"],
+            "and the narrowed rows come back with the reply"
+        );
+
+        library.playlists = Load::Loading;
+        let _ = run_column(&ctx, Vec::new(), &mut library, &mut art);
+        assert_eq!(
+            library.rail_filter.query(),
+            "mid",
+            "a loading frame keeps the query too"
+        );
+        library.playlists = Load::Ready(vec![
+            playlist("spotify:playlist:Midnight City", "Midnight City"),
+            playlist("spotify:playlist:Outro", "Outro"),
+        ]);
+        let (output, _) = run_column(&ctx, Vec::new(), &mut library, &mut art);
+        assert_eq!(
+            painted_rows(&output, &["Midnight City", "Outro"]),
+            ["Midnight City"],
+            "the narrowed list is still narrowed after the load"
+        );
+    }
+
+    #[test]
+    fn changing_the_query_dismisses_a_row_rename() {
+        let ctx = context();
+        let mut library = movable_playlists(&["Alpha", "Bravo"], 7, true, None);
+        library.renaming.open(
+            "spotify:playlist:Bravo",
+            "Bravo",
+            crate::naming::Surface::Row,
+        );
+        let mut art = Art::default();
+        let (output, _) = run_column(&ctx, Vec::new(), &mut library, &mut art);
+        assert!(filter_hairlines(&output).len() == 1, "the field is drawn");
+
+        let _ = type_in_rail(&ctx, "a", &mut library, &mut art);
+
+        assert!(
+            !library.renaming.is_open(),
+            "a keystroke in the rail closed the rename it would hide"
+        );
+    }
+
+    #[test]
+    fn a_rename_on_a_row_the_query_hides_is_dismissed() {
+        let ctx = context();
+        let mut library = movable_playlists(&["Alpha", "Bravo"], 7, true, None);
+        library.renaming.open(
+            "spotify:playlist:Bravo",
+            "Bravo",
+            crate::naming::Surface::Row,
+        );
+        // The query is already there when the frame begins, so this is not a
+        // keystroke: the hidden row is enough to close the field.
+        library.rail_filter.edit().push_str("alpha");
+        let mut art = Art::default();
+
+        let _ = run_column(&ctx, Vec::new(), &mut library, &mut art);
+
+        assert!(
+            !library.renaming.is_open(),
+            "the rename's row is not among the survivors, so the field goes"
+        );
+        assert_eq!(library.rail_filter.query(), "alpha");
+    }
+
+    /// The count's own words, read from its status node inside the pass.
+    fn status_label(ctx: &egui::Context, library: &mut Library, art: &mut Art) -> Option<String> {
+        let (_, label) = frame_probing(ctx, Vec::new(), library, art, true, |ui| {
+            ui.ctx()
+                .accesskit_node_builder(ui.scope_id().with("library-count"), |node| {
+                    node.label().map(str::to_owned)
+                })
+                .flatten()
+        });
+        label
+    }
+
+    #[test]
+    fn the_status_node_carries_the_count_politely() {
+        let ctx = context();
+        ctx.enable_accesskit();
+        let mut library = movable_playlists(&["Alpha", "Bravo"], 7, true, None);
+        let mut art = Art::default();
+
+        let (_, read) = frame_probing(&ctx, Vec::new(), &mut library, &mut art, true, |ui| {
+            ui.ctx()
+                .accesskit_node_builder(ui.scope_id().with("library-count"), |node| {
+                    (node.role(), node.live(), node.label().map(str::to_owned))
+                })
+                .expect("the count has a status node")
+        });
+
+        assert_eq!(read.0, egui::Role::Status);
+        assert_eq!(read.1, Some(egui::accesskit::Live::Polite));
+        assert_eq!(
+            read.2.as_deref(),
+            Some("2 saved"),
+            "the rest string is the reference's own words"
+        );
+    }
+
+    #[test]
+    fn the_status_node_says_n_of_total_while_narrowed() {
+        let ctx = context();
+        ctx.enable_accesskit();
+        let mut library = movable_playlists(&["Midnight City", "Outro", "Bravo"], 7, true, None);
+        library.rail_filter.edit().push_str("mid");
+        let mut art = Art::default();
+
+        assert_eq!(
+            status_label(&ctx, &mut library, &mut art).as_deref(),
+            Some("1 of 3"),
+            "the announced string counts both axes"
+        );
+    }
+
+    #[test]
+    fn the_status_node_follows_a_chip_change() {
+        let ctx = context();
+        ctx.enable_accesskit();
+        let mut library = movable_playlists(&["Alpha", "Bravo"], 7, true, None);
+        library.apply(&Update::FollowedArtists(vec![followed_artist(
+            "spotify:artist:a",
+            "An artist",
+        )]));
+        let mut art = Art::default();
+
+        assert_eq!(
+            status_label(&ctx, &mut library, &mut art).as_deref(),
+            Some("2 of 3")
+        );
+
+        assert!(library.choose_kind(SidebarKind::Artists));
+        assert_eq!(
+            status_label(&ctx, &mut library, &mut art).as_deref(),
+            Some("1 of 3"),
+            "the chosen kind is what the count counts"
+        );
+    }
+
+    #[test]
+    fn the_fields_placeholder_property_matches_the_status_string() {
+        let ctx = context();
+        ctx.enable_accesskit();
+        let mut library = movable_playlists(&["Midnight City", "Outro"], 7, true, None);
+        let mut art = Art::default();
+
+        // The field's own resting line, and the same string on its node.
+        let read = |library: &mut Library, art: &mut Art| {
+            frame_probing(&ctx, Vec::new(), library, art, true, |ui| {
+                let count = ui
+                    .ctx()
+                    .accesskit_node_builder(ui.scope_id().with("library-count"), |node| {
+                        node.label().map(str::to_owned)
+                    });
+                let field = ui
+                    .ctx()
+                    .accesskit_node_builder(ui.scope_id().with("library-filter"), |node| {
+                        node.placeholder().map(str::to_owned)
+                    });
+                (count.flatten(), field.flatten())
+            })
+            .1
+        };
+
+        let (count, field) = read(&mut library, &mut art);
+        assert_eq!(count.as_deref(), Some("2 saved"));
+        assert_eq!(field, count, "the two are one string");
+
+        library.rail_filter.edit().push_str("mid");
+        let (count, field) = read(&mut library, &mut art);
+        assert_eq!(count.as_deref(), Some("1 of 2"));
+        assert_eq!(field, count, "the two are one string while narrowed too");
+    }
+
+    #[test]
+    fn a_status_node_exists_while_the_create_field_is_open_but_the_field_gets_no_stray_node() {
+        let ctx = context();
+        ctx.enable_accesskit();
+        let mut library = movable_playlists(&["Alpha", "Bravo"], 7, true, None);
+        library.naming.open();
+        let mut art = Art::default();
+
+        let (_, (status, stray)) =
+            frame_probing(&ctx, Vec::new(), &mut library, &mut art, true, |ui| {
+                let status = ui
+                    .ctx()
+                    .accesskit_node_builder(ui.scope_id().with("library-count"), |node| {
+                        node.label().map(str::to_owned)
+                    })
+                    .flatten();
+                let stray = ui
+                    .ctx()
+                    .has_accesskit_node(ui.scope_id().with("library-filter"));
+                (status, stray)
+            });
+
+        assert_eq!(
+            status.as_deref(),
+            Some("2 saved"),
+            "the count is announced whether or not the field is drawn"
+        );
+        assert!(!stray, "the undrawn field was given a node of its own");
+    }
+
+    #[test]
+    fn the_head_draws_the_resting_count_as_the_placeholder() {
+        let ctx = context();
+        let mut library = movable_playlists(&["A", "B"], 7, true, None);
+        let mut art = Art::default();
+        let (output, _) = run_column(&ctx, Vec::new(), &mut library, &mut art);
+
+        let field = filter_field_of(&output);
+        let (pos, _) = painted_text(&output, "2 SAVED");
+        assert!(
+            field.contains(pos),
+            "the count is the field's resting line: {pos:?} in {field:?}"
+        );
+        assert!(
+            pos.x >= field.left() + Size::SM.side,
+            "the line starts past the magnifier's glyph: {}",
+            pos.x
+        );
+    }
+
+    #[test]
+    fn the_placeholder_names_the_kind_count_when_a_chip_narrows() {
+        let ctx = context();
+        let mut library = movable_playlists(&["A", "B"], 7, true, None);
+        library.apply(&Update::FollowedShows(vec![followed_show(
+            "spotify:show:s",
+            "A show",
+        )]));
+        library.apply(&Update::FollowedArtists(vec![followed_artist(
+            "spotify:artist:a",
+            "An artist",
+        )]));
+        assert_eq!(library.sidebar_kind.chosen(), SidebarKind::Playlists);
+        let mut art = Art::default();
+        let (output, _) = run_column(&ctx, Vec::new(), &mut library, &mut art);
+
+        assert!(
+            painted(&output, "2 OF 4"),
+            "the resting line names what the chip shows: {:?}",
+            drawn_text(&output)
+        );
+        assert!(
+            !painted(&output, "4 SAVED"),
+            "the total is not the whole story"
+        );
+    }
+
+    #[test]
+    fn the_old_count_line_is_gone() {
+        let ctx = context();
+        let mut library = movable_playlists(&["A", "B"], 7, true, None);
+        let mut art = Art::default();
+        let (output, _) = run_column(&ctx, Vec::new(), &mut library, &mut art);
+
+        let texts = drawn_text(&output);
+        assert!(
+            !texts.contains(&"2 saved".to_owned()),
+            "the head still draws a second copy of the count: {texts:?}"
+        );
+        assert!(texts.contains(&"2 SAVED".to_owned()));
+    }
+
+    #[test]
+    fn the_placeholder_disappears_the_moment_text_exists() {
+        let ctx = context();
+        let mut library = movable_playlists(&["A", "B"], 7, true, None);
+        let mut art = Art::default();
+        let (output, _) = run_column(&ctx, Vec::new(), &mut library, &mut art);
+        let field = filter_field_of(&output);
+
+        for event in click_events(field.center()) {
+            let _ = run_column(&ctx, vec![event], &mut library, &mut art);
+        }
+        assert!(
+            ctx.text_edit_focused(),
+            "the click focused the rail's field"
+        );
+
+        let (output, _) = run_column(
+            &ctx,
+            vec![Event::Text("a".to_owned())],
+            &mut library,
+            &mut art,
+        );
+
+        assert_eq!(library.rail_filter.query(), "a");
+        assert!(
+            !painted(&output, "2 SAVED"),
+            "the placeholder is still painted over the text"
+        );
+    }
+
+    #[test]
+    fn the_field_takes_what_the_create_button_leaves() {
+        let ctx = context();
+        let mut library = movable_playlists(&["A", "B"], 7, true, None);
+        let mut art = Art::default();
+        let (output, _) = run_column(&ctx, Vec::new(), &mut library, &mut art);
+
+        let field = filter_field_of(&output);
+        let row_left = rail().left() + space::S4;
+        let create_left = rail().right() - space::S4 - extent::BUTTON;
+
+        assert!(
+            (field.left() - row_left).abs() < 0.01,
+            "the field starts at the row's left: {} vs {row_left}",
+            field.left()
+        );
+        assert!(
+            (field.right() + space::S2 - create_left).abs() < 0.01,
+            "the field takes what the button leaves: {} vs {create_left}",
+            field.right()
+        );
+        assert!(
+            (field.height() - extent::BUTTON).abs() < 0.01,
+            "the field is one button tall: {}",
+            field.height()
+        );
+    }
+
+    #[test]
+    fn opening_the_create_field_swaps_the_filter_field_out_and_clears_the_query() {
+        let ctx = context();
+        let mut library = movable_playlists(&["A", "B"], 7, true, None);
+        library.rail_filter.edit().push_str("zzz");
+        let mut art = Art::default();
+        let (output, _) = run_column(&ctx, Vec::new(), &mut library, &mut art);
+        assert!(
+            painted(&output, "zzz"),
+            "the query is drawn before the create field opens"
+        );
+
+        library.naming.open();
+        let (output, _) = run_column(&ctx, Vec::new(), &mut library, &mut art);
+
+        assert!(
+            library.rail_filter.query().is_empty(),
+            "the create field's opening clears the query"
+        );
+        assert!(
+            filter_hairlines(&output).is_empty(),
+            "the filter field is not drawn beside the new playlist's name"
+        );
+    }
+
+    #[test]
+    fn closing_the_create_field_restores_the_filter_field() {
+        let ctx = context();
+        let mut library = movable_playlists(&["A", "B"], 7, true, None);
+        let mut art = Art::default();
+        library.naming.open();
+        let (open, _) = run_column(&ctx, Vec::new(), &mut library, &mut art);
+        assert!(filter_hairlines(&open).is_empty(), "the field is out");
+
+        library.naming.cancel();
+        let (output, _) = run_column(&ctx, Vec::new(), &mut library, &mut art);
+
+        assert_eq!(
+            filter_hairlines(&output).len(),
+            1,
+            "the filter field came back"
+        );
+        assert!(painted(&output, "2 SAVED"), "and its resting line with it");
     }
 
     #[test]

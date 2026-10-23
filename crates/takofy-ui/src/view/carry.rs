@@ -103,6 +103,25 @@ pub struct ColumnOffer {
     pub zone: Zone,
     /// The height a row is drawn at, which is the fill's height.
     pub drawn: f32,
+    /// The true row each drawn slot stands for, when a query narrowed the list.
+    ///
+    /// `None` when the drawn set is the whole list, so an unnarrowed column
+    /// costs no lookup and a reorder reads the same index it always did.
+    pub rows: Option<Vec<usize>>,
+}
+
+impl ColumnOffer {
+    /// The true row behind a drawn slot, or `None` when the slot names no row.
+    ///
+    /// Every write a drop makes goes through this: a narrowed column's slot is
+    /// not the playlist's index, and adding to, or moving, the slot's number
+    /// would name another playlist.
+    pub fn source_row(&self, slot_row: usize) -> Option<usize> {
+        match &self.rows {
+            None => Some(slot_row),
+            Some(rows) => rows.get(slot_row).copied(),
+        }
+    }
 }
 
 /// The rows an editable page offers as a drop target this frame.
@@ -820,6 +839,7 @@ mod tests {
             ColumnOffer {
                 zone: zone(),
                 drawn: extent::ROW_H,
+                rows: None,
             },
         );
 
@@ -828,6 +848,7 @@ mod tests {
             Some(ColumnOffer {
                 zone: zone(),
                 drawn: extent::ROW_H,
+                rows: None,
             })
         );
         assert_eq!(take_column_offer(&ctx), None, "an offer is read once");
@@ -841,6 +862,7 @@ mod tests {
             ColumnOffer {
                 zone: zone(),
                 drawn: extent::ROW_H,
+                rows: None,
             },
         );
         let _ = take_column_offer(&ctx);
@@ -849,6 +871,42 @@ mod tests {
             take_column_offer(&ctx),
             None,
             "a frame that offers nothing offers nothing"
+        );
+    }
+
+    /// The column's offer of the rows a query left, drawn at the test zone.
+    fn column_offer(rows: Option<Vec<usize>>) -> ColumnOffer {
+        ColumnOffer {
+            zone: zone(),
+            drawn: extent::ROW_H,
+            rows,
+        }
+    }
+
+    #[test]
+    fn source_row_is_identity_without_rows() {
+        let offer = column_offer(None);
+
+        assert_eq!(offer.source_row(0), Some(0));
+        assert_eq!(offer.source_row(5), Some(5), "a whole list maps to itself");
+    }
+
+    #[test]
+    fn source_row_maps_a_slot_to_its_true_row() {
+        let offer = column_offer(Some(vec![3, 7]));
+
+        assert_eq!(offer.source_row(0), Some(3), "the first drawn row");
+        assert_eq!(offer.source_row(1), Some(7), "the second drawn row");
+    }
+
+    #[test]
+    fn source_row_past_the_end_is_none() {
+        let offer = column_offer(Some(vec![3, 7]));
+
+        assert_eq!(
+            offer.source_row(2),
+            None,
+            "a slot the offer does not hold names no row"
         );
     }
 

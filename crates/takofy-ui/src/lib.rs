@@ -22,6 +22,7 @@ pub mod naming;
 pub mod player;
 pub mod prefs;
 pub mod queue;
+pub mod rail_filter;
 pub mod releases;
 pub mod removal;
 pub mod reorder;

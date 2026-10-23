@@ -776,7 +776,10 @@ fn rootlist_target(
     pointer: Option<Pos2>,
 ) -> Option<Target> {
     let column = column?;
-    if !library.rootlist_movable() {
+    // A narrowed column draws some of its rows: the boundary the pointer names
+    // is a drawn slot's, and moving the playlist that slot stands for would move
+    // the neighbours the query hid with it.
+    if column.rows.is_some() || !library.rootlist_movable() {
         return None;
     }
     let at = landing::resolve(pointer, Some(&column.zone))?;
@@ -801,7 +804,12 @@ fn add_target(
         return None;
     }
     let slot = landing::slot_at(pointer, Some(&column.zone), column.drawn)?;
-    library.addable(slot.row).then_some(Target::Add(slot))
+    // The drawn slot is not the playlist's index in a narrowed column, so every
+    // write the drop makes names the true row the slot stands for.
+    let row = column.source_row(slot.row)?;
+    library
+        .addable(row)
+        .then_some(Target::Add(landing::Slot { row, ..slot }))
 }
 
 /// Moves a dropped playlist in the sidebar, and asks for one rootlist write.
@@ -4328,6 +4336,33 @@ mod tests {
         egui::pos2(area.left() + 100.0, y)
     }
 
+    /// The rail filter's box, read from the hairline under it inside `area`.
+    fn rail_filter_rect(output: &egui::FullOutput, area: Rect) -> Rect {
+        let tokens = Tokens::DARK;
+        let (hairline, _) = output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(shape)
+                    if (shape.rect.height() - stroke::HAIRLINE).abs() < 0.01
+                        && shape.rect.width() > 80.0
+                        && shape.rect.width() < 200.0
+                        && area.contains_rect(shape.rect)
+                        && (shape.fill == tokens.palette.border
+                            || shape.fill == tokens.palette.text) =>
+                {
+                    Some((shape.rect, shape.fill))
+                }
+                _ => None,
+            })
+            .next()
+            .expect("the rail filter paints its hairline");
+        Rect::from_min_max(
+            egui::pos2(hairline.left(), hairline.bottom() - extent::BUTTON),
+            egui::pos2(hairline.right(), hairline.bottom()),
+        )
+    }
+
     /// The box a sidebar row's fill covers, from the row's own painted line.
     fn sidebar_row_rect(
         window: &Window,
@@ -5669,6 +5704,58 @@ mod tests {
     }
 
     #[test]
+    fn a_query_that_matches_every_row_still_reorders() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        sidebar_playlists(
+            &mut window,
+            &[("Midnight City", None), ("Midnight Sun", None)],
+            Some(rootlist_access(true)),
+        );
+        // The query matches every row, so the drawn set is the whole list: its
+        // slots are true indices and the lift must not be withheld.
+        window.library.rail_filter.edit().push_str("midnight");
+
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let from = row_line(&frame, sidebar_rect(&window), "Midnight City");
+        let to = sidebar_boundary(
+            &window,
+            &frame,
+            &["Midnight City", "Midnight Sun"],
+            "Playlist",
+            2,
+        );
+
+        let (_, held) = window.hold_drag(&mut transport, &mut queue, from, to);
+        assert!(
+            carry::carried(&window.ctx).is_some(),
+            "a query that matches every row still lets the row lift"
+        );
+        assert!(
+            marker(&held).is_some(),
+            "a reorder that can land draws its rule"
+        );
+
+        let (command, _) = window.frame(&mut transport, &mut queue, vec![window.release(to)]);
+
+        assert_eq!(
+            command,
+            Some(Command::MovePlaylist {
+                revision: revision("root-1"),
+                from: 0,
+                to: 2,
+            }),
+            "the whole-list query blocked the reorder"
+        );
+        assert_eq!(
+            sidebar_order(&window),
+            ["Midnight Sun", "Midnight City"],
+            "the playlist did not move"
+        );
+    }
+
+    #[test]
     fn dragging_a_playlist_to_the_top_writes_gap_zero() {
         let mut transport = Transport::default();
         let mut queue = Queue::default();
@@ -6116,6 +6203,113 @@ mod tests {
             "the row under the pointer takes the fill"
         );
         assert!(marker(&frame).is_none(), "an add draws no rule");
+    }
+
+    /// A pick of one real track, which an add can take whole.
+    fn a_pick(uri: &str) -> TrackEntry {
+        TrackEntry {
+            uri: uri.to_owned(),
+            title: "A Title".to_owned(),
+            artists: "A Band".to_owned(),
+            album: None,
+            album_uri: None,
+            artist_uris: Vec::new(),
+            added_at: None,
+            duration_ms: None,
+            named: true,
+            cover: None,
+        }
+    }
+
+    /// The column's offer of two drawn rows standing for true rows 3 and 7.
+    fn narrowed_column(drawn: f32) -> ColumnOffer {
+        let zone = crate::landing::Zone {
+            hit: Rect::from_min_size(Pos2::new(10.0, 200.0), Vec2::new(200.0, 8.0 * drawn)),
+            list: Rect::from_min_size(Pos2::new(10.0, 200.0), Vec2::new(200.0, 8.0 * drawn)),
+            row_h: drawn,
+            first: 0,
+            count: 2,
+        };
+        ColumnOffer {
+            zone,
+            drawn,
+            rows: Some(vec![3, 7]),
+        }
+    }
+
+    /// Eight playlists, all of them able to take a track.
+    fn eight_playlists(window: &mut Window) {
+        sidebar_playlists(
+            window,
+            &[
+                ("a", Some(0)),
+                ("b", Some(1)),
+                ("c", Some(2)),
+                ("d", Some(3)),
+                ("e", Some(4)),
+                ("f", Some(5)),
+                ("g", Some(6)),
+                ("h", Some(7)),
+            ],
+            Some(rootlist_access(true)),
+        );
+    }
+
+    #[test]
+    fn a_narrowed_offer_adds_to_the_true_playlist() {
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        eight_playlists(&mut window);
+        let column = narrowed_column(sidebar::ROW_H);
+        let carry = Carry {
+            entries: vec![a_pick(TRACK_A)],
+            rows: vec![0],
+            ..carried_rows(egui::Id::unique("list"), vec![0])
+        };
+        // The pointer is over the second row the column drew.
+        let pointer = Some(Pos2::new(
+            column.zone.list.left() + 20.0,
+            column.zone.list.top() + column.zone.row_h * 1.5,
+        ));
+
+        let target = add_target(&carry, Some(&column), &window.library, pointer)
+            .expect("the row under the pointer takes the add");
+
+        let Target::Add(slot) = target else {
+            panic!("a drop on a row is an add, not {target:?}");
+        };
+        assert_eq!(
+            slot.row, 7,
+            "the drawn slot names the playlist it stands for"
+        );
+        let drawn = crate::landing::slot_at(pointer, Some(&column.zone), column.drawn)
+            .expect("the drawn row");
+        assert_eq!(
+            slot.rect, drawn.rect,
+            "the highlight stays on the row that was drawn"
+        );
+    }
+
+    #[test]
+    fn a_narrowed_offer_refuses_a_rootlist_move() {
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        eight_playlists(&mut window);
+        let column = narrowed_column(sidebar::ROW_H);
+        let carry = Carry {
+            rows: vec![3],
+            playlist: Some("playlist:d".to_owned()),
+            ..carried_rows(egui::Id::unique("list"), vec![0])
+        };
+        // Between the two drawn rows: a boundary a reorder would land on.
+        let pointer = Some(Pos2::new(
+            column.zone.list.left() + 20.0,
+            column.zone.list.top() + column.zone.row_h + 1.0,
+        ));
+
+        assert_eq!(
+            rootlist_target(&carry, Some(&column), &window.library, pointer),
+            None,
+            "a narrowed column would move the wrong playlist"
+        );
     }
 
     #[test]
@@ -9930,6 +10124,178 @@ mod tests {
     }
 
     #[test]
+    fn typing_in_the_rail_field_reaches_neither_the_transport_nor_a_cut() {
+        let mut transport = playing(cover("a"));
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1"]);
+        sidebar_playlists(
+            &mut window,
+            &[("a", Some(0)), ("b", Some(1))],
+            Some(rootlist_access(true)),
+        );
+        liked(&mut window, &[]);
+        let _ = click_page_row(&mut window, &mut transport, &mut queue, "p0");
+
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let field = rail_filter_rect(&frame, sidebar_rect(&window));
+        let _ = window.click(&mut transport, &mut queue, field.center());
+        // The field's own key filter is stored a frame after the focus lands.
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            window.ctx.text_edit_focused(),
+            "the click did not focus the rail's field"
+        );
+        type_text(&mut window, &mut transport, &mut queue, "a");
+        assert_eq!(
+            window.library.rail_filter.query(),
+            "a",
+            "the typed character did not reach the rail's query"
+        );
+
+        assert_eq!(
+            window
+                .frame(
+                    &mut transport,
+                    &mut queue,
+                    vec![key(egui::Key::Space, true)]
+                )
+                .0,
+            None,
+            "a space reached the transport through the rail's field"
+        );
+        assert_eq!(
+            window
+                .frame(
+                    &mut transport,
+                    &mut queue,
+                    vec![key(egui::Key::Delete, true)]
+                )
+                .0,
+            None,
+            "Del cut a row while the rail's field had the keyboard"
+        );
+        crate::view::heart::post(
+            &window.ctx,
+            crate::view::heart::Ask {
+                tracks: vec!["spotify:track:a".to_owned()],
+                liked: true,
+            },
+        );
+        assert_eq!(
+            window.frame(&mut transport, &mut queue, Vec::new()).0,
+            None,
+            "a heart wrote while the rail's field had the keyboard"
+        );
+        assert_eq!(window.library.likes.state("spotify:track:a"), Some(false));
+        assert_eq!(page_rows(&window), vec!["list:p0", "list:p1"]);
+    }
+
+    #[test]
+    fn a_drop_on_a_narrowed_rail_row_adds_to_that_playlist() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        page_of_tracks(&mut window, &[TRACK_A]);
+        sidebar_playlists(
+            &mut window,
+            &[
+                ("Alpha", Some(0)),
+                ("Bravo", Some(1)),
+                ("Midnight City", Some(2)),
+                ("Midnight Sun", Some(3)),
+            ],
+            Some(rootlist_access(true)),
+        );
+        window.library.rail_filter.edit().push_str("midnight");
+
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let from = row_line(&frame, view_rect(&window), TRACK_A);
+        // The first drawn row stands for the third playlist.
+        let row = sidebar_row_rect(&window, &frame, "Midnight City", "Playlist · 2 tracks");
+        let (_, held) = window.hold_drag(&mut transport, &mut queue, from, row.center());
+        assert!(marker(&held).is_none(), "an add draws no rule");
+
+        let (command, _) = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![window.release(row.center())],
+        );
+
+        assert_eq!(
+            command,
+            Some(Command::AddTracks {
+                playlist: "playlist:Midnight City".to_owned(),
+                revision: revision("root-1"),
+                from_index: 2,
+                tracks: vec![TRACK_A.to_owned()],
+            }),
+            "the drop names the playlist the drawn row stands for"
+        );
+    }
+
+    #[test]
+    fn a_drop_between_narrowed_rows_reorders_nothing() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        page_of_tracks(&mut window, &[TRACK_A]);
+        sidebar_playlists(
+            &mut window,
+            &[
+                ("Alpha", Some(0)),
+                ("Midnight City", Some(1)),
+                ("Midnight Sun", Some(2)),
+            ],
+            Some(rootlist_access(true)),
+        );
+
+        // The rail row lifts while the column is whole, which is the only way a
+        // reorder can be started at all. Row 0 is not next to the gap the drop
+        // below lands on, so nothing but the narrowing refuses the move.
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let lifted = sidebar_row_rect(&window, &frame, "Alpha", "Playlist · 1 track");
+        let (_, _) = window.hold_drag(
+            &mut transport,
+            &mut queue,
+            lifted.center(),
+            lifted.center() + Vec2::new(0.0, 20.0),
+        );
+        let carry = carry::carried(&window.ctx).expect("the rail row lifts");
+        assert_eq!(carry.source, Source::Playlist);
+        assert_eq!(carry.rows, vec![0]);
+
+        // The query narrows the list under the carry: the two drawn rows stand
+        // for playlists 1 and 2, so the gap below them is a boundary of a list
+        // the user is no longer looking at.
+        window.library.rail_filter.edit().push_str("midnight");
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let boundary = sidebar_boundary(
+            &window,
+            &frame,
+            &["Midnight City", "Midnight Sun"],
+            "Playlist · 1 track",
+            2,
+        );
+
+        let (_, held) = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![egui::Event::PointerMoved(boundary)],
+        );
+        let (command, _) = window.frame(&mut transport, &mut queue, vec![window.release(boundary)]);
+
+        assert!(
+            marker(&held).is_none(),
+            "a narrowed column draws no reorder rule"
+        );
+        assert_eq!(
+            command, None,
+            "a narrowed column moved the playlist its slot happened to name"
+        );
+    }
+
+    #[test]
     fn space_del_and_hearts_do_nothing_while_the_field_has_the_keyboard() {
         let mut transport = playing(cover("a"));
         let mut queue = Queue::default();
@@ -9987,12 +10353,15 @@ mod tests {
         creatable_sidebar(&mut window);
 
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        assert!(painted_at(&frame, "2 saved").is_some());
+        assert!(
+            text_in(&frame, "2 SAVED", sidebar_rect(&window)).is_some(),
+            "the field's resting line is missing"
+        );
 
         open_naming(&mut window, &mut transport, &mut queue);
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
         assert!(
-            painted_at(&frame, "2 saved").is_none(),
+            text_in(&frame, "2 SAVED", sidebar_rect(&window)).is_none(),
             "the count stayed beside the field"
         );
 
@@ -10003,7 +10372,7 @@ mod tests {
         );
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
         assert!(
-            painted_at(&frame, "2 saved").is_some(),
+            text_in(&frame, "2 SAVED", sidebar_rect(&window)).is_some(),
             "the count did not come back"
         );
     }
@@ -10228,6 +10597,26 @@ mod tests {
     }
 
     #[test]
+    fn a_naming_session_does_not_clear_the_query_in_the_drawer() {
+        let ctx = column_context();
+        let mut art = Art::default();
+        let mut library = column_library(&["Midnight City", "Outro"], true);
+        library.rail_filter.edit().push_str("midnight");
+        // The drawer's create button is inert, so the head keeps the filter
+        // field on screen even while a naming session is open.
+        library.naming.open();
+
+        let _ = column_frame(&ctx, &mut library, &mut art, Vec::new(), false);
+
+        assert!(library.naming.is_open());
+        assert_eq!(
+            library.rail_filter.query(),
+            "midnight",
+            "the drawer's naming session cleared the query with the column's slot"
+        );
+    }
+
+    #[test]
     fn the_plus_is_inert_when_creatable_is_false() {
         let ctx = column_context();
         let mut art = Art::default();
@@ -10369,7 +10758,10 @@ mod tests {
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
         creatable_sidebar(&mut window);
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        assert!(painted_at(&frame, "2 saved").is_some());
+        assert!(
+            text_in(&frame, "2 SAVED", sidebar_rect(&window)).is_some(),
+            "the field's resting line is missing"
+        );
 
         window.library.naming.open();
         window.library.naming.edit().push_str("Night Drive");
@@ -10381,7 +10773,7 @@ mod tests {
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
 
         assert!(
-            painted_at(&frame, "3 saved").is_some(),
+            text_in(&frame, "3 SAVED", sidebar_rect(&window)).is_some(),
             "the head did not count the new row"
         );
     }
