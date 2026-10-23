@@ -4734,6 +4734,44 @@ mod tests {
     }
 
     #[test]
+    fn a_like_confirmation_ends_the_write_and_leaves_the_heart_on() {
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(Vec::new()));
+        assert_eq!(library.likes_request(), Some(Command::LoadLikedTracks));
+        library.apply(&Update::LikedTracks(Vec::new()));
+        let track = "spotify:track:a".to_owned();
+        assert!(
+            library.set_liked(vec![track.clone()], true).is_some(),
+            "arrange: the like must be in flight"
+        );
+        // A sweep asked for after the click is answered after it: it carries the
+        // set from before the write, so adopting it would wipe the confirmed like.
+        let _ = library.reload();
+        library.apply(&Update::Playlists(Vec::new()));
+        assert_eq!(
+            library.likes_request(),
+            Some(Command::LoadLikedTracks),
+            "arrange: the sweep must be in flight"
+        );
+
+        library.apply(&Update::Liked {
+            tracks: vec![track.clone()],
+            liked: true,
+        });
+        library.apply(&Update::LikedTracks(Vec::new()));
+
+        assert_eq!(
+            library.likes.state(&track),
+            Some(true),
+            "a confirmed like outlives a read issued before its write landed"
+        );
+        assert!(
+            library.set_liked(vec![track], false).is_some(),
+            "the confirmation never ended the write, so the heart could not be flipped again"
+        );
+    }
+
+    #[test]
     fn a_failure_sentence_does_not_survive_a_page_change() {
         let mut library = Library::default();
         library.apply(&Update::Playlists(Vec::new()));
@@ -6576,6 +6614,37 @@ mod tests {
         assert!(
             !library.cover_refresh.answer("a"),
             "a removed playlist must not still be awaiting a cover"
+        );
+    }
+
+    #[test]
+    fn a_removed_playlist_takes_its_cached_cover_with_it() {
+        let context = cover_url("context");
+        let mut library = sidebar_library(&["a", "b"], 0x07, true, None);
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: Vec::new(),
+            cover: Some(context),
+            access: None,
+        });
+        assert!(
+            library.context_covers.contains_key("a"),
+            "arrange: the reply must cache a cover for the row"
+        );
+
+        assert!(
+            library
+                .remove_from_library(&item(SidebarKind::Playlists, "a"))
+                .is_some()
+        );
+        library.apply(&Update::PlaylistRemoved {
+            playlist: "a".to_owned(),
+            revision: revision(0x09),
+        });
+
+        assert!(
+            !library.context_covers.contains_key("a"),
+            "a cached cover outlived the row it belonged to"
         );
     }
 
@@ -9601,6 +9670,32 @@ mod tests {
     }
 
     #[test]
+    fn a_link_invents_no_row_and_asks_for_the_list() {
+        let mut library = sidebar_library(&["a"], 0x07, true, None);
+        assert!(
+            library
+                .save_to_library(&item(SidebarKind::Playlists, "gone"))
+                .is_some()
+        );
+
+        library.apply(&Update::PlaylistLinked {
+            playlist: "gone".to_owned(),
+            revision: revision(0x08),
+        });
+
+        assert_eq!(
+            sidebar_order(&library),
+            names(&["a"]),
+            "the reply names no row, so the sidebar cannot draw one from it"
+        );
+        assert_eq!(
+            library.rootlist_request(),
+            Some(Command::ReloadLibrary),
+            "the linked row comes back by re-reading the list, not by inventing one"
+        );
+    }
+
+    #[test]
     fn a_failed_link_says_so_and_leaves_the_list_alone() {
         let mut library = sidebar_library(&["a"], 0x07, true, None);
         library.save_to_library(&item(SidebarKind::Playlists, "gone"));
@@ -9822,6 +9917,40 @@ mod tests {
         assert!(!library.renaming.is_open());
         assert!(!library.write_in_flight());
         assert_eq!(library.sidebar_notice, None);
+    }
+
+    #[test]
+    fn a_rename_leaves_the_cover_the_band_and_the_row_already_showed() {
+        let first = cover_url("first");
+        let mut library = covered_page(&first, &["spotify:track:t0"]);
+        rename_pending(&mut library, "a", crate::naming::Surface::Band);
+
+        library.apply(&Update::PlaylistRenamed {
+            playlist: "a".to_owned(),
+            name: "New Name".to_owned(),
+            revision: revision(0x09),
+        });
+
+        let entry = library.selected_entry().expect("the band's entry");
+        assert_eq!(
+            entry.name, "New Name",
+            "the band titles the playlist from a name the rename did not write"
+        );
+        assert_eq!(
+            band_cover(entry, settled(&library)),
+            BandCover::Entry(Some(&first)),
+            "a rename names the playlist, so it cannot change the picture beside the name"
+        );
+        assert_eq!(
+            entry_cover(&library, "a"),
+            Some(PlaylistCover::derived(first)),
+            "the sidebar row and the library card keep the cover they showed"
+        );
+        assert_eq!(
+            library.tracks_request(),
+            None,
+            "a rename marks no cover due, so it asks for no read of the page"
+        );
     }
 
     #[test]
