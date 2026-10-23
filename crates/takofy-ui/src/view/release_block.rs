@@ -51,6 +51,8 @@ pub struct Block<'a> {
     pub writing: bool,
     /// The liked-songs set, so a row's menu knows its library row.
     pub likes: &'a Likes,
+    /// Whether this release is in the library, or `None` while no list can say.
+    pub saved: Option<bool>,
 }
 
 /// The height a block occupies: its hairline, the head, the gap under it, one
@@ -73,6 +75,8 @@ pub fn height(count: usize) -> f32 {
 pub struct Clicked {
     /// The block's own play control: the release from its first track.
     pub played: bool,
+    /// The heart was pressed: the value it asks the library for.
+    pub saved: Option<bool>,
     /// A row's double click, as an index into the release's tracks.
     pub row: Option<usize>,
 }
@@ -142,17 +146,46 @@ fn body(
             pos2(right - extent::BUTTON_LG, centre - extent::BUTTON_LG / 2.0),
             Vec2::splat(extent::BUTTON_LG),
         );
-        controls::icon_button_keyed(
-            ui,
-            tokens,
-            control,
-            release.uri.as_str(),
-            rect,
-            icon,
-            Size::MD,
-            label,
-            false,
-        );
+        let (label, live, lit) = match control {
+            Control::ReleaseLike => (
+                if block.saved == Some(true) {
+                    "Remove from your library"
+                } else {
+                    label
+                },
+                block.saved.is_some(),
+                block.saved == Some(true),
+            ),
+            _ => (label, false, false),
+        };
+        let slot = if lit {
+            controls::icon_button_on(
+                ui,
+                tokens,
+                control,
+                release.uri.as_str(),
+                rect,
+                icon,
+                Size::MD,
+                label,
+                live,
+            )
+        } else {
+            controls::icon_button_keyed(
+                ui,
+                tokens,
+                control,
+                release.uri.as_str(),
+                rect,
+                icon,
+                Size::MD,
+                label,
+                live,
+            )
+        };
+        if control == Control::ReleaseLike && slot.response.clicked() {
+            clicked.saved = block.saved.map(|saved| !saved);
+        }
         right = rect.left() - space::S2;
     }
     let play = Rect::from_min_size(
@@ -357,6 +390,7 @@ mod tests {
             here: None,
             writing: false,
             likes: &likes,
+            saved: None,
         };
 
         let mut measured = None;
@@ -372,6 +406,123 @@ mod tests {
         });
         output.textures_delta.clear();
         measured.expect("the block lays out")
+    }
+
+    /// The centre of the one glyph painted in the accent, if any.
+    ///
+    /// The icons are stroked, not filled, so the accent is the stroke's colour.
+    fn accent_centre(output: &egui::FullOutput, tokens: &Tokens) -> Option<Pos2> {
+        output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::Shape::Path(path)
+                    if matches!(
+                        path.stroke.color,
+                        egui::epaint::ColorMode::Solid(color) if color == tokens.palette.accent
+                    ) =>
+                {
+                    Some(clipped.shape.visual_bounding_rect().center())
+                }
+                _ => None,
+            })
+    }
+
+    /// One block drawn at a known saved state, as the frame painted it.
+    fn drawn(saved: bool, events: Vec<egui::Event>) -> egui::FullOutput {
+        let ctx = context();
+        let tokens = Tokens::DARK;
+        let transport = Transport::default();
+        let release = release(0);
+        let likes = Likes::default();
+        let mut output = ctx.run_ui(
+            RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 2000.0))),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                let block = Block {
+                    release: &release,
+                    labels: Labels::Idle,
+                    cover: Cover::Missing,
+                    on_screen: true,
+                    playable: false,
+                    here: None,
+                    writing: false,
+                    likes: &likes,
+                    saved: Some(saved),
+                };
+                let _ = show(ui, Table::Full, &block, &transport, &tokens);
+            },
+        );
+        output.textures_delta.clear();
+        output
+    }
+
+    #[test]
+    fn a_saved_release_paints_its_heart_in_the_accent_and_an_unsaved_one_does_not() {
+        let tokens = Tokens::DARK;
+        let saved = drawn(true, Vec::new());
+        assert!(
+            accent_centre(&saved, &tokens).is_some(),
+            "a saved release's heart is not filled"
+        );
+
+        let unsaved = drawn(false, Vec::new());
+        assert!(
+            accent_centre(&unsaved, &tokens).is_none(),
+            "an unsaved release's heart took the accent"
+        );
+    }
+
+    #[test]
+    fn a_press_on_the_blocks_heart_asks_for_the_other_state() {
+        let ctx = context();
+        let tokens = Tokens::DARK;
+        let at =
+            accent_centre(&drawn(true, Vec::new()), &tokens).expect("the saved heart is painted");
+        let transport = Transport::default();
+        let release = release(0);
+        let likes = Likes::default();
+        let mut clicked = Clicked {
+            played: false,
+            saved: None,
+            row: None,
+        };
+
+        let input = |events| RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 2000.0))),
+            events,
+            ..Default::default()
+        };
+        let mut warm = ctx.run_ui(input(Vec::new()), |_ui| {});
+        warm.textures_delta.clear();
+        let mut arrived = ctx.run_ui(input(vec![egui::Event::PointerMoved(at)]), |_ui| {});
+        arrived.textures_delta.clear();
+        for event in crate::view::test_support::click_events(at) {
+            let mut output = ctx.run_ui(input(vec![event]), |ui| {
+                let block = Block {
+                    release: &release,
+                    labels: Labels::Idle,
+                    cover: Cover::Missing,
+                    on_screen: true,
+                    playable: false,
+                    here: None,
+                    writing: false,
+                    likes: &likes,
+                    saved: Some(true),
+                };
+                clicked = show(ui, Table::Full, &block, &transport, &tokens);
+            });
+            output.textures_delta.clear();
+        }
+
+        assert_eq!(
+            clicked.saved,
+            Some(false),
+            "a saved release's heart asks to take it out"
+        );
     }
 
     /// The page culls with [`height`] and then draws at the cursor, so the two
@@ -418,6 +569,7 @@ mod tests {
             here: None,
             writing: false,
             likes: &likes,
+            saved: None,
         };
         let input = RawInput {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 800.0))),
@@ -473,6 +625,7 @@ mod tests {
                 here: Some(&here),
                 writing: false,
                 likes: &likes,
+                saved: None,
             };
             let mut drawn = ctx.run_ui(
                 RawInput {

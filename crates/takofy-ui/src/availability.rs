@@ -194,8 +194,8 @@ pub fn availability(control: Control) -> Availability {
 
         // The hero's tools have no command yet. Its play has one, so the view
         // is Ready and the moment decides whether it can act.
-        Control::HeroShuffle => Availability::Waiting,
-        Control::HeroLike => Availability::Ready, // #35
+        Control::HeroShuffle => Availability::Ready, // #35
+        Control::HeroLike => Availability::Ready,    // #35
         Control::HeroMore => Availability::Ready,
         Control::HeroPlay => Availability::Ready,
         Control::CardPlay => Availability::Waiting,
@@ -217,7 +217,7 @@ pub fn availability(control: Control) -> Availability {
         Control::LayoutGrid | Control::LayoutList => Availability::Ready,
         Control::ReleasePlay => Availability::Ready,
         Control::EpisodeToggle => Availability::Ready,
-        Control::ReleaseLike => Availability::Waiting,
+        Control::ReleaseLike => Availability::Ready, // #35
         Control::ReleaseMore => Availability::Waiting,
 
         // The sign-in card's one control; the state decides whether it acts.
@@ -254,9 +254,11 @@ mod tests {
                     | Control::HeroPlay
                     | Control::HeroMore
                     | Control::HeroLike
+                    | Control::HeroShuffle
                     | Control::Follow
                     | Control::DiscographyFilter
                     | Control::ReleasePlay
+                    | Control::ReleaseLike
                     | Control::EpisodeToggle
                     | Control::TrackMore
                     | Control::TrackLike

@@ -25,12 +25,14 @@ use crate::format::{discography_meta, format_position};
 use crate::layout::{Table, cards, table as table_layout};
 use crate::library::{Library, Load};
 use crate::likes::Likes;
+use crate::menu::LibraryItem;
 use crate::message::Command;
 use crate::player::Transport;
 use crate::queue::Queue;
 use crate::releases::Labels;
 use crate::route::Page;
 use crate::scroll;
+use crate::sidebar_kind::SidebarKind;
 use crate::theme::{Tokens, extent, space};
 use crate::view::text as recipe;
 
@@ -79,6 +81,20 @@ pub fn artist_view(
     // A card press names an artist; opening it needs the library, which the page
     // has borrowed for the whole draw, so it waits for the scroll area to close.
     let mut open: Option<String> = None;
+    // A release's heart asks the library for the release, which the page has
+    // borrowed; it is applied once the scroll area closes.
+    let mut save: Option<(String, String)> = None;
+    // Every release's saved state, read once: the blocks draw inside the borrow.
+    let saved: Vec<(String, Option<bool>)> = library
+        .current_artist()
+        .map(|artist| {
+            artist
+                .releases
+                .iter()
+                .map(|release| (release.uri.clone(), library.is_saved(&release.uri)))
+                .collect()
+        })
+        .unwrap_or_default();
 
     // The scroll offset is this artist's, not the album's or the playlist's that
     // share the pane.
@@ -188,6 +204,7 @@ pub fn artist_view(
                                         here: Some(&here),
                                         writing,
                                         likes: page.likes,
+                                        saved: saved_of(&saved, &release.uri),
                                     };
                                     let _ =
                                         release_block::show(ui, table, &block, transport, tokens);
@@ -204,6 +221,7 @@ pub fn artist_view(
                                     here: Some(&here),
                                     writing,
                                     likes: page.likes,
+                                    saved: saved_of(&saved, &release.uri),
                                 };
                                 let clicked =
                                     release_block::show(ui, table, &block, transport, tokens);
@@ -218,6 +236,9 @@ pub fn artist_view(
                                 }
                                 if let (Some(index), Some(tracks)) = (clicked.row, ready) {
                                     command = queue.start(tracks, index, transport);
+                                }
+                                if clicked.saved.is_some() {
+                                    save = Some((release.uri.clone(), release.name.clone()));
                                 }
                             }
                         }
@@ -236,7 +257,25 @@ pub fn artist_view(
     if let Some(artist) = open {
         command = library.open(Page::Artist(artist));
     }
+    if let Some((uri, name)) = save
+        && command.is_none()
+    {
+        let item = LibraryItem {
+            kind: SidebarKind::Albums,
+            uri,
+            name,
+        };
+        command = library.save_to_library(&item);
+    }
     command
+}
+
+/// One release's saved state, as the page read it before the draw.
+fn saved_of(saved: &[(String, Option<bool>)], uri: &str) -> Option<bool> {
+    saved
+        .iter()
+        .find(|(release, _)| release == uri)
+        .and_then(|(_, saved)| *saved)
 }
 
 /// The likeness row: the artists this one is heard with, as round cards.
@@ -1496,6 +1535,7 @@ mod tests {
                         here: None,
                         writing: false,
                         likes: &likes,
+                        saved: None,
                     };
                     let out =
                         super::release_block::show(ui, Table::Full, &block, &transport, &tokens);

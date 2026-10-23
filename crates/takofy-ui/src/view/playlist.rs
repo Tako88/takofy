@@ -194,11 +194,15 @@ pub fn tracks_view(
                     ),
                 );
             }
-            if reply.played
+            if (reply.played || reply.shuffled)
                 && tracks.is_some()
                 && let Load::Ready(tracks) = &library.tracks
             {
-                command = queue.start(&tracks.tracks, 0, transport);
+                command = if reply.shuffled {
+                    queue.start_with_shuffle(&tracks.tracks, 0, transport)
+                } else {
+                    queue.start(&tracks.tracks, 0, transport)
+                };
             }
         }
 

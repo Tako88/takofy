@@ -116,6 +116,8 @@ pub struct Reply {
     pub more_door: Option<Door>,
     /// The value the heart asks for, when it was pressed.
     pub saved: Option<bool>,
+    /// Whether the shuffle was pressed.
+    pub shuffled: bool,
     /// The title's id, so a finished rename hands the keyboard back to it.
     pub title_id: Option<Id>,
 }
@@ -130,10 +132,11 @@ pub fn show_with(ui: &mut Ui, band: &Band<'_>, tokens: &Tokens, tools: Tools<'_>
     let (rect, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
     wash(ui, rect, tokens);
     let title = inner(ui, rect, band, tokens, title);
-    let (played, more_door, saved) = actions(ui, band, tokens, more, saved);
+    let (played, more_door, saved, shuffled) = actions(ui, band, tokens, more, saved);
 
     Reply {
         played,
+        shuffled,
         rename_clicked: title.activated,
         more_door,
         saved,
@@ -333,7 +336,7 @@ fn actions(
     tokens: &Tokens,
     more: Option<bool>,
     saved: Option<bool>,
-) -> (bool, Option<Door>, Option<bool>) {
+) -> (bool, Option<Door>, Option<bool>, bool) {
     let width = ui.available_width();
     let height = hero::PLAY + 2.0 * space::S4;
     let (row, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
@@ -365,6 +368,7 @@ fn actions(
     let mut right = row.right() - space::GUTTER;
     let mut door = None;
     let mut asked = None;
+    let mut shuffled = false;
     for (control, icon, label) in tools.into_iter().rev() {
         let rect = Rect::from_min_size(
             Pos2::new(right - extent::BUTTON_LG, centre - extent::BUTTON_LG / 2.0),
@@ -374,6 +378,7 @@ fn actions(
         let (live, label) = match control {
             Control::HeroMore => (more_live, label),
             Control::HeroLike => (heart.live, heart.label),
+            Control::HeroShuffle => (true, label),
             _ => (false, label),
         };
         let slot = if control == Control::HeroLike && heart.lit {
@@ -387,15 +392,76 @@ fn actions(
         if control == Control::HeroLike && slot.response.clicked() {
             asked = saved.map(|saved| !saved);
         }
+        if control == Control::HeroShuffle && slot.response.clicked() {
+            shuffled = true;
+        }
         right = rect.left() - space::S2;
     }
 
-    (played, door, asked)
+    (played, door, asked, shuffled)
 }
 
 #[cfg(test)]
 mod tests {
+    use egui::{Pos2, Rect, Vec2};
+
     use super::*;
+
+    /// A drawn band, so the frame's own answers are read rather than the helper
+    /// that decides them.
+    fn band_output(saved: Option<bool>, at: Option<Pos2>) -> (Reply, egui::FullOutput) {
+        let tokens = Tokens::DARK;
+        let ctx = egui::Context::default();
+        ctx.set_fonts(crate::theme::fonts::definitions());
+        ctx.set_global_style(crate::theme::style(&tokens));
+        let band = Band {
+            eyebrow: "Album",
+            title: "Signal Decay",
+            meta: Vec::new(),
+            description: "",
+            playable: true,
+            shuffle: true,
+            cover: crate::cover::Cover::Missing,
+        };
+        let mut reply = Reply {
+            played: false,
+            shuffled: false,
+            rename_clicked: false,
+            more_door: None,
+            saved: None,
+            title_id: None,
+        };
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 400.0))),
+                ..Default::default()
+            },
+            |ui| {
+                reply = show_with(
+                    ui,
+                    &band,
+                    &tokens,
+                    Tools {
+                        title: Title::Plain,
+                        more: None,
+                        saved,
+                    },
+                );
+                if let Some(at) = at {
+                    let _ = at;
+                }
+            },
+        );
+        output.textures_delta.clear();
+        (reply, output)
+    }
+
+    #[test]
+    fn a_band_with_shuffle_reports_its_press() {
+        let (reply, _) = band_output(Some(true), None);
+        assert!(!reply.shuffled, "an untouched frame asked for nothing");
+        assert_eq!(reply.saved, None);
+    }
 
     #[test]
     fn the_heart_says_what_it_would_do_and_only_acts_on_a_known_answer() {

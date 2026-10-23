@@ -91,6 +91,20 @@ impl Queue {
     /// The modes survive: with shuffle on, the clicked row plays first and the
     /// rest are drawn again, and the list's own order is what turning shuffle off
     /// puts back.
+    /// Starts a list with shuffle on, drawing the rest of it in a new order.
+    ///
+    /// Shuffle is a mode, so it stays on afterwards: a band's shuffle is the same
+    /// switch as the playbar's, not a one-off.
+    pub fn start_with_shuffle(
+        &mut self,
+        tracks: &[TrackEntry],
+        index: usize,
+        transport: &mut Transport,
+    ) -> Option<Command> {
+        self.shuffle = true;
+        self.start(tracks, index, transport)
+    }
+
     pub fn start(
         &mut self,
         tracks: &[TrackEntry],
@@ -1620,6 +1634,30 @@ mod tests {
 
         assert_eq!(order(&first), order(&second));
         assert_ne!(order(&first), order(&other));
+    }
+
+    /// The band's shuffle is the mode switch, not a one-off: it starts the list
+    /// in a new order and leaves shuffle on for whatever plays next.
+    #[test]
+    fn start_with_shuffle_turns_the_mode_on_and_keeps_it_on() {
+        let mut queue = Queue::default();
+        let mut transport = Transport::default();
+        let list = tracks(8);
+        assert!(!queue.shuffle());
+
+        assert_eq!(
+            queue.start_with_shuffle(&list, 0, &mut transport),
+            Some(play("t0"))
+        );
+
+        assert!(queue.shuffle(), "the switch stayed on");
+        assert_eq!(queue.index, Some(0), "the first row is what plays");
+        assert_ne!(
+            &order(&queue)[1..],
+            &uris(&["t1", "t2", "t3", "t4", "t5", "t6", "t7"]),
+            "the coming rows are not the list's order"
+        );
+        assert!(holds_exactly(&queue, 8));
     }
 
     #[test]
