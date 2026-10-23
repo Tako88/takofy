@@ -289,6 +289,15 @@ pub fn library_count(shown: usize, total: usize) -> String {
     }
 }
 
+/// The rail's empty line when a query left no row: `Nothing matches “har”`.
+///
+/// The query is the user's own words, so it keeps its case and is trimmed: a
+/// trailing space is not part of what they asked for. The quotes are the
+/// reference's curly pair, as the search menu's line uses.
+pub fn rail_nothing(query: &str) -> String {
+    format!("Nothing matches “{}”", query.trim())
+}
+
 /// A filtered playlist's count line: `12 of 62 tracks`.
 ///
 /// The unit follows the total, not the shown count, so a one-track playlist
@@ -1002,6 +1011,31 @@ mod tests {
         assert_eq!(library_count(0, 0), "0 saved");
         assert_eq!(library_count(28, 28), "28 saved");
         assert_eq!(library_count(3, 28), "3 of 28");
+    }
+
+    #[test]
+    fn nothing_matches_names_the_trimmed_query() {
+        assert_eq!(rail_nothing("har"), "Nothing matches “har”");
+        assert_eq!(rail_nothing("  har  "), "Nothing matches “har”");
+    }
+
+    #[test]
+    fn the_quote_marks_are_the_curly_pair() {
+        let line = rail_nothing("har");
+
+        assert!(line.contains('“') && line.contains('”'), "{line}");
+        assert!(
+            !line.contains('"'),
+            "straight quotes are not the reference's"
+        );
+    }
+
+    #[test]
+    fn the_query_keeps_its_case() {
+        assert_eq!(
+            rail_nothing("Midnight City"),
+            "Nothing matches “Midnight City”"
+        );
     }
 
     #[test]

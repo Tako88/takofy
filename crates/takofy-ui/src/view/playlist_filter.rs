@@ -10,18 +10,14 @@
 //! interacted at the clip top instead, so the list's geometry is unchanged and
 //! there is never a second field.
 
-use egui::{Align2, FontId, Pos2, Rect, Sense, Stroke, Ui, WidgetInfo, vec2};
+use egui::{FontId, Pos2, Rect, Ui, vec2};
 use takofy_model::TrackEntry;
 
 use crate::format::filter_count_label;
-use crate::icon::{self, Icon};
-use crate::theme::icon::Size;
-use crate::theme::{
-    MonoWeight, Tokens, Weight, extent, fonts, radius, space, stroke, text, tracking,
-};
+use crate::theme::{MonoWeight, Tokens, extent, fonts, space, stroke, text, tracking};
 use crate::track_filter::{self, QUERY_MAX, TrackFilter};
 
-use super::name_field;
+use super::filter_field;
 use super::text as recipe;
 
 /// The widest the field grows on a row with room to spare.
@@ -126,153 +122,17 @@ pub(super) fn show(
         vec2(width, row.height()),
     );
     let id = ui.scope_id().with("playlist-filter");
-
-    let glyph = Rect::from_min_size(
-        Pos2::new(
-            field.left() + space::S1,
-            field.center().y - Size::SM.side / 2.0,
-        ),
-        vec2(Size::SM.side, Size::SM.side),
-    );
-    icon::paint(
-        ui.painter(),
-        Icon::Search,
-        glyph,
-        Size::SM,
-        tokens.palette.text_subtle,
-    );
-
-    {
-        let text = filter.edit(playlist);
-        // The clear control's box: the field's right padding and the 12px glyph.
-        let clear = Rect::from_min_max(
-            Pos2::new(
-                field.right() - space::S3 - Size::SM.side - space::S1,
-                field.top(),
-            ),
-            Pos2::new(field.right() - space::S1, field.bottom()),
-        );
-        // The click is read before the edit, because the edit takes the box back
-        // the moment the text empties. The box is laid out every frame and it is
-        // not a tab stop: while the text is empty the edit covers it and wins the
-        // pointer, so a click there still focuses the field.
-        let hit = ui.interact(clear, id.with("clear"), Sense::CLICK);
-        let clear_clicked = !text.is_empty() && hit.clicked();
-        if clear_clicked {
-            text.clear();
-        }
-
-        // The clear control keeps its own box whenever the field can be typed
-        // into, so a character typed on this frame never runs under the glyph.
-        let pressed = ui.input(|input| {
-            input.pointer.primary_pressed()
-                && input
-                    .pointer
-                    .interact_pos()
-                    .is_some_and(|at| field.contains(at))
-        });
-        let typable = !text.is_empty() || pressed || ui.memory(|memory| memory.has_focus(id));
-        let edit_rect = if typable {
-            Rect::from_min_max(
-                field.min,
-                Pos2::new(clear.left() - space::S2, field.bottom()),
-            )
-        } else {
-            field
-        };
-        let out = name_field::edit(
-            ui,
-            name_field::Spec {
-                id,
-                rect: edit_rect,
-                text,
-                writing: false,
-                wants_focus: clear_clicked || pressed,
-                font: FontId::new(text::XS, fonts::sans(Weight::Regular)),
-                hint: "",
-                inset: egui::Margin {
-                    left: (Size::SM.side + space::S2) as i8,
-                    right: (Size::SM.side + space::S2) as i8,
-                    top: 0,
-                    bottom: 0,
-                },
-                text_color: tokens.palette.text,
-                weak_color: tokens.palette.text_subtle,
-                cursor: Stroke::new(stroke::HAIRLINE, tokens.palette.text),
-                align: Align2::LEFT_CENTER,
-                limit: QUERY_MAX,
-            },
-        );
-        ui.ctx().accesskit_node_builder(id, |node| {
-            node.set_role(egui::Role::SearchInput);
-            node.set_label("Filter this playlist");
-        });
-        if clear_clicked {
-            // The click lands on the clear control, not the edit, so the edit's
-            // own request is undone by the pointer. Take the keyboard back with
-            // the filter the field's first Escape and arrows need.
-            ui.memory_mut(|memory| {
-                memory.request_focus(id);
-                memory.set_focus_lock_filter(id, super::keys::FIELD_FILTER);
-            });
-        }
-        if out.escape {
-            text.clear();
-            ui.memory_mut(|memory| memory.surrender_focus(id));
-        }
-
-        // The chrome is decided from the text the frame ends with, so no frame
-        // paints a placeholder over the character just typed, or a clear control
-        // over the field it has just emptied.
-        if text.is_empty() {
-            let placeholder = recipe::spaced(
-                ui,
-                "FILTER",
-                FontId::new(text::XXS, fonts::mono(MonoWeight::Regular)),
-                tokens.palette.text_subtle,
-                recipe::tracking_pts(text::XXS, tracking::CAPS),
-            );
-            ui.painter().galley(
-                Pos2::new(
-                    field.left() + Size::SM.side + space::S2,
-                    field.center().y - placeholder.size().y / 2.0,
-                ),
-                placeholder,
-                tokens.palette.text_subtle,
-            );
-        } else {
-            if hit.hovered() {
-                ui.painter()
-                    .rect_filled(clear, radius::XS, tokens.palette.surface_hover);
-            }
-            let ink = if hit.hovered() {
-                tokens.palette.text
-            } else {
-                tokens.palette.text_subtle
-            };
-            let mark = Rect::from_center_size(clear.center(), vec2(Size::SM.side, Size::SM.side));
-            icon::paint(ui.painter(), Icon::Close, mark, Size::SM, ink);
-            hit.widget_info(|| WidgetInfo::labeled(egui::Role::Button, true, "Clear filter"));
-        }
-    }
-
-    // Border only, and the bottom hairline is the whole border: no fill, no
-    // glow, and no width change. The colour is the focus the frame ends with, so
-    // a clear click that took the keyboard, and an Escape that gave it back,
-    // both show on their own frame.
-    let focused = ui.memory(|memory| memory.has_focus(id));
-    let border = if focused {
-        tokens.palette.text
-    } else {
-        tokens.palette.border
-    };
-    ui.painter().rect_filled(
-        Rect::from_min_size(
-            Pos2::new(field.left(), field.bottom() - stroke::HAIRLINE),
-            vec2(field.width(), stroke::HAIRLINE),
-        ),
-        0.0,
-        border,
+    filter_field::show(
+        ui,
+        filter_field::Field {
+            id,
+            rect: field,
+            text: filter.edit(playlist),
+            limit: QUERY_MAX,
+            placeholder: "FILTER",
+            label: "Filter this playlist",
+        },
+        tokens,
     );
 
     let hits = filter
