@@ -195,7 +195,7 @@ pub fn availability(control: Control) -> Availability {
         // The hero's tools have no command yet. Its play has one, so the view
         // is Ready and the moment decides whether it can act.
         Control::HeroShuffle => Availability::Waiting,
-        Control::HeroLike => Availability::Waiting,
+        Control::HeroLike => Availability::Ready, // #35
         Control::HeroMore => Availability::Ready,
         Control::HeroPlay => Availability::Ready,
         Control::CardPlay => Availability::Waiting,
@@ -253,6 +253,7 @@ mod tests {
                     | Control::Fullscreen
                     | Control::HeroPlay
                     | Control::HeroMore
+                    | Control::HeroLike
                     | Control::Follow
                     | Control::DiscographyFilter
                     | Control::ReleasePlay

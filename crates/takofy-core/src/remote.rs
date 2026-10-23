@@ -491,13 +491,27 @@ pub(crate) async fn write_rootlist_remove(
 ///
 /// The reply is empty, so silence is not proof: the caller's confirmation is the
 /// next read. The write is idempotent, so it keeps the client's retry budget.
-pub(crate) async fn write_saved_removal(session: &Session, uri: &str) -> Result<(), FollowedError> {
+pub(crate) async fn write_saved(
+    session: &Session,
+    uri: &str,
+    saved: bool,
+) -> Result<(), FollowedError> {
     let set = collection::saved_set(uri)?;
     let headers = collection_headers().ok_or_else(|| {
         FollowedError::Source("the collection media type is not a valid header".to_owned())
     })?;
     let username = session.username();
-    let body = collection::items_body(&username, set, &[uri], None, true, &client_update_id());
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs() as i64);
+    let body = collection::items_body(
+        &username,
+        set,
+        &[uri],
+        saved.then_some(now),
+        !saved,
+        &client_update_id(),
+    );
     session
         .spclient()
         .request(

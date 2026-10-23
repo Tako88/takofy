@@ -49,6 +49,38 @@ pub struct Band<'a> {
     pub cover: Cover,
 }
 
+/// How the band's heart reads, given what the library says about the context.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct Heart {
+    label: &'static str,
+    /// Whether it can act: no list could say, so nothing is offered.
+    live: bool,
+    /// Whether the glyph is the filled, saved one.
+    lit: bool,
+}
+
+/// The heart's three answers, in one place so the label and the glyph cannot
+/// disagree about whether the context is in the library.
+fn heart(saved: Option<bool>) -> Heart {
+    match saved {
+        Some(true) => Heart {
+            label: "Remove from your library",
+            live: true,
+            lit: true,
+        },
+        Some(false) => Heart {
+            label: "Save to your library",
+            live: true,
+            lit: false,
+        },
+        None => Heart {
+            label: "Save to your library",
+            live: false,
+            lit: false,
+        },
+    }
+}
+
 /// What the title can do this frame.
 pub enum Title<'a> {
     Plain,
@@ -57,19 +89,24 @@ pub enum Title<'a> {
 }
 
 /// The band's optional tools.
+impl Tools<'_> {
+    /// A band with no tools: what a test draws when it is about the band itself.
+    #[cfg(test)]
+    pub fn plain() -> Tools<'static> {
+        Tools {
+            title: Title::Plain,
+            more: None,
+            saved: None,
+        }
+    }
+}
+
 pub struct Tools<'a> {
     pub title: Title<'a>,
     /// Whether the "…" can act. `None` keeps it present and inert.
     pub more: Option<bool>,
-}
-
-impl Tools<'_> {
-    pub fn none() -> Tools<'static> {
-        Tools {
-            title: Title::Plain,
-            more: None,
-        }
-    }
+    /// Whether this context is in the library, or `None` while no list can say.
+    pub saved: Option<bool>,
 }
 
 /// What drawing the band reported.
@@ -77,23 +114,15 @@ pub struct Reply {
     pub played: bool,
     pub rename_clicked: bool,
     pub more_door: Option<Door>,
+    /// The value the heart asks for, when it was pressed.
+    pub saved: Option<bool>,
     /// The title's id, so a finished rename hands the keyboard back to it.
     pub title_id: Option<Id>,
 }
 
-/// Draws the band and its action row, and reports a request to play the context.
-///
-/// The band takes the width it is given and starts at the cursor, so the caller
-/// decides where it sits; the painter decides only how it looks. The column of
-/// words is stacked up from the band's floor, so a title that changes size with
-/// the window does not move where the band ends.
-pub fn show(ui: &mut Ui, band: &Band<'_>, tokens: &Tokens) -> bool {
-    show_with(ui, band, tokens, Tools::none()).played
-}
-
 /// Draws the band with the tools the page has, and reports what they did.
 pub fn show_with(ui: &mut Ui, band: &Band<'_>, tokens: &Tokens, tools: Tools<'_>) -> Reply {
-    let Tools { title, more } = tools;
+    let Tools { title, more, saved } = tools;
     let width = ui.available_width();
     // The art is taller than the band's own minimum, and the padding sits inside
     // the band, so the art plus that padding is what the band comes to.
@@ -101,12 +130,13 @@ pub fn show_with(ui: &mut Ui, band: &Band<'_>, tokens: &Tokens, tools: Tools<'_>
     let (rect, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
     wash(ui, rect, tokens);
     let title = inner(ui, rect, band, tokens, title);
-    let (played, more_door) = actions(ui, band, tokens, more);
+    let (played, more_door, saved) = actions(ui, band, tokens, more, saved);
 
     Reply {
         played,
         rename_clicked: title.activated,
         more_door,
+        saved,
         title_id: title.id,
     }
 }
@@ -302,7 +332,8 @@ fn actions(
     band: &Band<'_>,
     tokens: &Tokens,
     more: Option<bool>,
-) -> (bool, Option<Door>) {
+    saved: Option<bool>,
+) -> (bool, Option<Door>, Option<bool>) {
     let width = ui.available_width();
     let height = hero::PLAY + 2.0 * space::S4;
     let (row, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
@@ -333,18 +364,56 @@ fn actions(
     let more_live = more.unwrap_or(false);
     let mut right = row.right() - space::GUTTER;
     let mut door = None;
+    let mut asked = None;
     for (control, icon, label) in tools.into_iter().rev() {
         let rect = Rect::from_min_size(
             Pos2::new(right - extent::BUTTON_LG, centre - extent::BUTTON_LG / 2.0),
             Vec2::splat(extent::BUTTON_LG),
         );
-        let live = control == Control::HeroMore && more_live;
-        let slot = controls::icon_button(ui, tokens, control, rect, icon, Size::MD, label, live);
+        let heart = heart(saved);
+        let (live, label) = match control {
+            Control::HeroMore => (more_live, label),
+            Control::HeroLike => (heart.live, heart.label),
+            _ => (false, label),
+        };
+        let slot = if control == Control::HeroLike && heart.lit {
+            controls::icon_button_on(ui, tokens, control, (), rect, icon, Size::MD, label, live)
+        } else {
+            controls::icon_button(ui, tokens, control, rect, icon, Size::MD, label, live)
+        };
         if control == Control::HeroMore {
             door = context_menu::button_door(ui, &slot, rect, slot.response.id);
+        }
+        if control == Control::HeroLike && slot.response.clicked() {
+            asked = saved.map(|saved| !saved);
         }
         right = rect.left() - space::S2;
     }
 
-    (played, door)
+    (played, door, asked)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_heart_says_what_it_would_do_and_only_acts_on_a_known_answer() {
+        let saved = heart(Some(true));
+        assert_eq!(saved.label, "Remove from your library");
+        assert!(saved.lit, "a saved context's heart is filled");
+        assert!(saved.live);
+
+        let unsaved = heart(Some(false));
+        assert_eq!(unsaved.label, "Save to your library");
+        assert!(!unsaved.lit);
+        assert!(unsaved.live);
+
+        let unknown = heart(None);
+        assert!(
+            !unknown.live,
+            "no list could say, so the heart offers nothing"
+        );
+        assert!(!unknown.lit);
+    }
 }

@@ -10434,15 +10434,17 @@ mod tests {
                     revision: revision("root-1"),
                     index: 0,
                 },
-                SidebarKind::Albums => Command::RemoveSaved {
+                SidebarKind::Albums => Command::SetSaved {
                     uri: "spotify:album:r".to_owned(),
+                    saved: false,
                 },
                 SidebarKind::Artists => Command::SetFollow {
                     artist: "spotify:artist:a".to_owned(),
                     followed: false,
                 },
-                SidebarKind::Podcasts => Command::RemoveSaved {
+                SidebarKind::Podcasts => Command::SetSaved {
                     uri: "spotify:show:s".to_owned(),
+                    saved: false,
                 },
             };
             assert_eq!(command, Some(expected), "{kind:?}");

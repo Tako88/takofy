@@ -45,11 +45,11 @@ pub enum Command {
         revision: Revision,
         index: usize,
     },
-    /// Write one saved album or show out of the library.
+    /// Write one album or show into the library, or out of it.
     ///
-    /// An artist is not removed this way: it is unfollowed, through
+    /// An artist is not saved this way: it is followed, through
     /// [`Command::SetFollow`].
-    RemoveSaved { uri: String },
+    SetSaved { uri: String, saved: bool },
     /// Append tracks to a playlist, in the order given, based on `revision`.
     AddTracks {
         playlist: String,
@@ -200,11 +200,11 @@ pub enum Update {
     },
     /// The playlist could not be unlinked, so it stays in the sidebar.
     PlaylistRemoveFailed { playlist: String },
-    /// A saved album or show left the library. The reply carried no body, so
-    /// this is the write's own echo.
-    SavedRemoved { uri: String },
-    /// The saved album or show could not be written out, so it stays.
-    SavedRemoveFailed { uri: String },
+    /// A saved album or show entered the library, or left it. The reply carried
+    /// no body, so this is the write's own echo.
+    Saved { uri: String, saved: bool },
+    /// The saved album or show could not be written, so it is where it was.
+    SavedFailed { uri: String, saved: bool },
     /// A track was appended to a playlist, and this is the revision the next
     /// write must name.
     TrackAdded {

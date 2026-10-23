@@ -18,11 +18,13 @@ use crate::cover::{Art, Cover};
 use crate::format::{album_meta, format_position, total_duration_ms};
 use crate::layout::{Table, table as table_layout};
 use crate::library::{Library, Load};
+use crate::menu::LibraryItem;
 use crate::message::Command;
 use crate::player::Transport;
 use crate::queue::Queue;
 use crate::route::Page;
 use crate::scroll;
+use crate::sidebar_kind::SidebarKind;
 use crate::theme::{Tokens, extent};
 use crate::view::text as recipe;
 
@@ -67,6 +69,8 @@ pub fn album_view(
     // A link click is applied after the scroll area, because the matches below
     // borrow the album it has to move away from.
     let mut open: Option<Page> = None;
+    // The band's heart asks for the library, which the album is borrowed from.
+    let mut save: Option<String> = None;
 
     // The scroll area is salted with the album's own URI, so the offset it keeps
     // is this album's and not the playlist page's that shares the pane.
@@ -122,8 +126,23 @@ pub fn album_view(
                         shuffle: false,
                         cover,
                     };
-                    if hero::show(ui, &band, tokens) && !album.tracks.is_empty() {
+                    let reply = hero::show_with(
+                        ui,
+                        &band,
+                        tokens,
+                        hero::Tools {
+                            title: hero::Title::Plain,
+                            more: None,
+                            saved: library.is_saved(&uri),
+                        },
+                    );
+                    if reply.played && !album.tracks.is_empty() {
                         command = queue.start(&album.tracks, 0, transport);
+                    }
+                    if reply.saved.is_some() {
+                        // The library is borrowed for the album for the whole
+                        // draw, so the write is asked for once the borrow ends.
+                        save = Some(album.name.clone());
                     }
 
                     super::inner(ui, |ui| {
@@ -229,6 +248,16 @@ pub fn album_view(
     }
     if let Some(page) = open {
         return library.open(page);
+    }
+    if let Some(name) = save {
+        let item = LibraryItem {
+            kind: SidebarKind::Albums,
+            uri: uri.clone(),
+            name,
+        };
+        if command.is_none() {
+            command = library.save_to_library(&item);
+        }
     }
     command
 }
@@ -383,7 +412,7 @@ mod tests {
                 shuffle: false,
                 cover: Cover::Missing,
             };
-            let _ = hero::show(ui, &band, &tokens);
+            let _ = hero::show_with(ui, &band, &tokens, hero::Tools::plain());
             crate::view::inner(ui, |ui| {
                 let columns =
                     table_layout::columns(ui.available_width(), Table::Full.columns().for_album());
@@ -411,7 +440,7 @@ mod tests {
                 shuffle: false,
                 cover: Cover::Missing,
             };
-            let _ = hero::show(ui, &band, &tokens);
+            let _ = hero::show_with(ui, &band, &tokens, hero::Tools::plain());
             crate::view::inner(ui, |ui| {
                 let columns =
                     table_layout::columns(ui.available_width(), Table::Full.columns().for_album());
@@ -442,7 +471,7 @@ mod tests {
                     shuffle: false,
                     cover: Cover::Missing,
                 };
-                let _ = hero::show(ui, &band, &tokens);
+                let _ = hero::show_with(ui, &band, &tokens, hero::Tools::plain());
                 let bottom = ui.cursor().min.y;
                 let height = PLAY + 2.0 * space::S4;
                 let row = Rect::from_min_size(

@@ -72,7 +72,7 @@ pub fn artist_view(
     let writing = library.write_in_flight();
     // The sidebar's removal of this artist is already in flight; a follow write
     // now would land in order with it and leave the row and the label apart.
-    let removal_pending = library.saved_removal_pending(&uri);
+    let removal_pending = library.saved_pending(&uri, false);
 
     let mut command = None;
     let mut retry = false;

@@ -438,8 +438,9 @@ pub(crate) fn start<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                         break;
                     }
                 }
-                Event::Command(Some(Command::RemoveSaved { uri })) => {
-                    let step = remove_saved(&mut host, &mut stop_rx, &task_notifier, &uri).await;
+                Event::Command(Some(Command::SetSaved { uri, saved })) => {
+                    let step =
+                        set_saved(&mut host, &mut stop_rx, &task_notifier, &uri, saved).await;
                     if step.stopped() {
                         break;
                     }
@@ -1101,28 +1102,31 @@ async fn remove_playlist<H: SessionHost>(
     }
 }
 
-/// Writes one saved album or show out and echoes the URI it was asked for.
+/// Writes one album or show in or out, and echoes the URI it was asked for.
 ///
 /// The reply carries no body, so the echo is the whole confirmation the window
 /// gets until its next read.
-async fn remove_saved<H: SessionHost>(
+async fn set_saved<H: SessionHost>(
     host: &mut H,
     stop: &mut StopReceiver<()>,
     notifier: &Notifier,
     uri: &str,
+    saved: bool,
 ) -> Step {
-    match stop_or(stop, host.remove_saved(uri)).await {
+    match stop_or(stop, host.set_saved(uri, saved)).await {
         None => Step::Stopped,
         Some(Ok(())) => {
-            notifier.send(Update::SavedRemoved {
+            notifier.send(Update::Saved {
                 uri: uri.to_owned(),
+                saved,
             });
             Step::Done
         }
         Some(Err(error)) => {
-            log::warn!("saved removal failed: {}", error.kind());
-            notifier.send(Update::SavedRemoveFailed {
+            log::warn!("saved write failed: {}", error.kind());
+            notifier.send(Update::SavedFailed {
                 uri: uri.to_owned(),
+                saved,
             });
             Step::Done
         }
@@ -2097,7 +2101,7 @@ mod tests {
         last_remove: Mutex<Option<(String, Revision, Vec<Removal>)>>,
         last_root_move: Mutex<Option<(Revision, usize, usize)>>,
         last_playlist_remove: Mutex<Option<(Revision, usize)>>,
-        last_saved_remove: Mutex<Option<String>>,
+        last_saved_remove: Mutex<Option<(String, bool)>>,
         last_add: Mutex<Option<AddWrite>>,
         last_rename: Mutex<Option<RenameWrite>>,
         last_create: Mutex<Option<String>>,
@@ -2641,11 +2645,15 @@ mod tests {
             }
         }
 
-        fn remove_saved(&self, uri: &str) -> impl Future<Output = Result<(), SessionError>> + Send {
+        fn set_saved(
+            &self,
+            uri: &str,
+            saved: bool,
+        ) -> impl Future<Output = Result<(), SessionError>> + Send {
             self.shared
                 .remove_saved_writes
                 .fetch_add(1, Ordering::SeqCst);
-            *self.shared.last_saved_remove.lock().expect("lock") = Some(uri.to_owned());
+            *self.shared.last_saved_remove.lock().expect("lock") = Some((uri.to_owned(), saved));
             if let Some(tx) = self
                 .shared
                 .remove_saved_started
@@ -3618,7 +3626,7 @@ mod tests {
     }
 
     #[test]
-    fn a_saved_removal_announces_the_uri_it_was_asked_for() {
+    fn a_saved_write_announces_the_uri_and_the_direction_it_was_asked_for() {
         let store = Arc::new(MemoryStore::seeded("stored"));
         let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
         let list = vec![playlist("spotify:playlist:a", "A")];
@@ -3631,29 +3639,31 @@ mod tests {
             let _ = expect_updates(&ui_end, 2);
             ui_end
                 .commands
-                .send(Command::RemoveSaved {
+                .send(Command::SetSaved {
                     uri: album.to_owned(),
+                    saved: true,
                 })
-                .expect("remove");
-            ui_end.updates.recv().expect("removed")
+                .expect("save");
+            ui_end.updates.recv().expect("saved")
         });
 
         assert_eq!(
             update,
-            Update::SavedRemoved {
-                uri: album.to_owned()
+            Update::Saved {
+                uri: album.to_owned(),
+                saved: true,
             },
             "the reply is empty, so the window hears what it asked for"
         );
         assert_eq!(shared.remove_saved_writes.load(Ordering::SeqCst), 1);
         assert_eq!(
             shared.last_saved_remove.lock().expect("lock").clone(),
-            Some(album.to_owned())
+            Some((album.to_owned(), true))
         );
     }
 
     #[test]
-    fn a_failed_saved_removal_is_announced() {
+    fn a_failed_saved_write_is_announced() {
         let store = Arc::new(MemoryStore::seeded("stored"));
         let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
         let list = vec![playlist("spotify:playlist:a", "A")];
@@ -3667,8 +3677,9 @@ mod tests {
             let _ = expect_updates(&ui_end, 2);
             ui_end
                 .commands
-                .send(Command::RemoveSaved {
+                .send(Command::SetSaved {
                     uri: show.to_owned(),
+                    saved: false,
                 })
                 .expect("remove");
             ui_end.updates.recv().expect("remove failed")
@@ -3676,8 +3687,9 @@ mod tests {
 
         assert_eq!(
             update,
-            Update::SavedRemoveFailed {
-                uri: show.to_owned()
+            Update::SavedFailed {
+                uri: show.to_owned(),
+                saved: false,
             }
         );
         assert_eq!(shared.remove_saved_writes.load(Ordering::SeqCst), 1);
@@ -3701,8 +3713,9 @@ mod tests {
             let _ = expect_updates(&ui_end, 2);
             ui_end
                 .commands
-                .send(Command::RemoveSaved {
+                .send(Command::SetSaved {
                     uri: "spotify:album:4uLU6hMCjMI75M1A2tKUQC".to_owned(),
+                    saved: false,
                 })
                 .expect("remove");
             started_rx.recv().expect("remove started");

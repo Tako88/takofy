@@ -48,8 +48,8 @@ impl SignIn {
                 | Update::PlaylistMoveFailed
                 | Update::PlaylistRemoved { .. }
                 | Update::PlaylistRemoveFailed { .. }
-                | Update::SavedRemoved { .. }
-                | Update::SavedRemoveFailed { .. }
+                | Update::Saved { .. }
+                | Update::SavedFailed { .. }
                 | Update::TrackAdded { .. }
                 | Update::AddFailed { .. }
                 | Update::PlaylistCreated { .. }

@@ -108,8 +108,12 @@ pub(crate) trait SessionHost: Send + 'static {
         index: usize,
     ) -> impl Future<Output = Result<Revision, SessionError>> + Send;
 
-    /// Writes one saved album or show out of the library.
-    fn remove_saved(&self, uri: &str) -> impl Future<Output = Result<(), SessionError>> + Send;
+    /// Writes one album or show into the library, or out of it.
+    fn set_saved(
+        &self,
+        uri: &str,
+        saved: bool,
+    ) -> impl Future<Output = Result<(), SessionError>> + Send;
 
     /// Appends tracks to a playlist as one write, answering the revision to
     /// hold next.
@@ -339,9 +343,12 @@ impl SessionHost for LiveSession {
         }
     }
 
-    async fn remove_saved(&self, uri: &str) -> Result<(), SessionError> {
+    async fn set_saved(&self, uri: &str, saved: bool) -> Result<(), SessionError> {
         match &self.engine {
-            Some(engine) => engine.remove_saved(uri).await.map_err(SessionError::Engine),
+            Some(engine) => engine
+                .set_saved(uri, saved)
+                .await
+                .map_err(SessionError::Engine),
             None => Err(SessionError::NotConnected),
         }
     }

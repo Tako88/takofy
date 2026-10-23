@@ -195,6 +195,8 @@ pub struct Library {
     sidebar_pending: Option<SidebarPending>,
     /// Why the last sidebar write failed, until a gesture or a read clears it.
     pub sidebar_notice: Option<SidebarWrite>,
+    /// The last saved write's answer, until a list that would know better lands.
+    saved_echo: Option<(String, bool)>,
     /// The library head's new-playlist field.
     pub naming: Naming,
     /// The in-place rename field, on a sidebar row or a playlist band.
@@ -214,8 +216,8 @@ enum SidebarPending {
     Create,
     /// One playlist being unlinked from the rootlist, and the row it named.
     Remove { playlist: String, index: usize },
-    /// One saved album, show or artist being written out of its set.
-    RemoveSaved { uri: String },
+    /// One album or show being written into its set, or out of it.
+    Saved { uri: String, saved: bool },
     /// One playlist being renamed, which names no rootlist order.
     Rename { playlist: String },
 }
@@ -227,7 +229,7 @@ impl SidebarPending {
     /// it. Every other write either names the rootlist or is answered with the
     /// revision the read's access would replace, so both wait for it.
     fn holds_rootlist(&self) -> bool {
-        !matches!(self, Self::RemoveSaved { .. } | Self::Rename { .. })
+        !matches!(self, Self::Saved { .. } | Self::Rename { .. })
     }
 }
 
@@ -246,6 +248,8 @@ pub enum SidebarWrite {
     Unfilled,
     /// A playlist was created but the rename that names it did not land.
     Unnamed,
+    /// An album or show could not be saved into the library.
+    Save,
     /// A thing could not be removed from the library.
     Remove,
     /// A playlist could not be renamed.
@@ -427,13 +431,17 @@ impl Library {
             }
             // The collection reply carries no body, so this echo is the whole
             // confirmation.
-            Update::SavedRemoved { uri } => self.end_saved_removal(uri),
-            Update::SavedRemoveFailed { uri } => {
-                if !self.saved_removal_pending(uri) {
+            Update::Saved { uri, saved } => self.end_saved(uri, *saved),
+            Update::SavedFailed { uri, saved } => {
+                if !self.saved_pending(uri, *saved) {
                     return;
                 }
                 self.sidebar_pending = None;
-                self.sidebar_notice = Some(SidebarWrite::Remove);
+                self.sidebar_notice = Some(if *saved {
+                    SidebarWrite::Save
+                } else {
+                    SidebarWrite::Remove
+                });
             }
             // Length and revision always move together, so an add never names a
             // revision whose length it has already counted.
@@ -748,6 +756,7 @@ impl Library {
             // accepted whenever it arrives, whatever page is on screen.
             Update::FollowedShows(shows) => {
                 self.followed = Load::Ready(shows.clone());
+                self.saved_echo = None;
             }
             Update::FollowedShowsFailed(failure) => {
                 self.followed = Load::Failed(*failure);
@@ -760,6 +769,7 @@ impl Library {
             }
             Update::SavedAlbums(albums) => {
                 self.saved_albums = Load::Ready(albums.clone());
+                self.saved_echo = None;
             }
             Update::SavedAlbumsFailed(failure) => {
                 self.saved_albums = Load::Failed(*failure);
@@ -810,12 +820,12 @@ impl Library {
             } => {
                 self.follow.apply(update);
                 if !followed {
-                    self.end_saved_removal(artist);
+                    self.end_saved(artist, false);
                 }
             }
             Update::FollowFailed { artist, .. } => {
                 self.follow.apply(update);
-                if self.saved_removal_pending(artist) {
+                if self.saved_pending(artist, false) {
                     self.sidebar_pending = None;
                     self.sidebar_notice = Some(SidebarWrite::Remove);
                 }
@@ -875,22 +885,62 @@ impl Library {
         }
     }
 
-    /// Whether a sidebar write of `uri`'s saved removal is in flight.
+    /// Whether a saved write of `uri` is in flight, in this direction.
     ///
-    /// A page's own write asks this before sending: two writes for one artist
-    /// would land in order and leave its row and its label disagreeing.
-    pub fn saved_removal_pending(&self, uri: &str) -> bool {
-        matches!(&self.sidebar_pending, Some(SidebarPending::RemoveSaved { uri: pending }) if pending == uri)
+    /// A page's own write asks this before sending: two writes for one saved
+    /// thing would land in order and leave its row and its label disagreeing.
+    pub fn saved_pending(&self, uri: &str, saved: bool) -> bool {
+        matches!(
+            &self.sidebar_pending,
+            Some(SidebarPending::Saved { uri: pending, saved: pending_saved })
+                if pending == uri && *pending_saved == saved
+        )
     }
 
-    /// Ends a saved removal, dropping the row it named from whichever list holds
-    /// it.
-    fn end_saved_removal(&mut self, uri: &str) {
-        if !self.saved_removal_pending(uri) {
+    /// Whether the library has `uri`, as the last read or the last write said.
+    ///
+    /// The write's echo outlives the list it would change: an add names no card,
+    /// so the list cannot gain the row until its next read, and the heart would
+    /// fall back off in between.
+    pub fn is_saved(&self, uri: &str) -> Option<bool> {
+        if let Some((echoed, saved)) = &self.saved_echo
+            && echoed == uri
+        {
+            return Some(*saved);
+        }
+        let kind = uri.strip_prefix("spotify:")?.split_once(':')?.0;
+        let (here, ready) = match kind {
+            "album" => (
+                listed(&self.saved_albums, uri, |album| &album.uri),
+                matches!(self.saved_albums, Load::Ready(_)),
+            ),
+            "show" => (
+                listed(&self.followed, uri, |show| &show.uri),
+                matches!(self.followed, Load::Ready(_)),
+            ),
+            "playlist" => (
+                listed(&self.playlists, uri, |entry| &entry.uri),
+                !matches!(self.playlists, Load::Idle | Load::Loading),
+            ),
+            _ => return None,
+        };
+        if here {
+            return Some(true);
+        }
+        ready.then_some(false)
+    }
+
+    /// Ends a saved write: a removal drops the row, an add remembers it.
+    fn end_saved(&mut self, uri: &str, saved: bool) {
+        if !self.saved_pending(uri, saved) {
             return;
         }
         self.sidebar_pending = None;
         self.sidebar_notice = None;
+        self.saved_echo = Some((uri.to_owned(), saved));
+        if saved {
+            return;
+        }
         if let Load::Ready(albums) = &mut self.saved_albums {
             albums.retain(|album| album.uri != uri);
         }
@@ -1147,6 +1197,57 @@ impl Library {
 
     /// Removes `item` from the library, and asks for the one write that does it.
     ///
+    /// Writes a library item in, the mirror of [`Self::remove_from_library`].
+    ///
+    /// A playlist is not here: putting one on the rootlist is the rootlist add,
+    /// which has no command of its own yet, so a playlist that is missing from
+    /// the library cannot be put there from its band.
+    pub fn save_to_library(&mut self, item: &LibraryItem) -> Option<Command> {
+        if self.is_saved(&item.uri) == Some(true) {
+            return None;
+        }
+        let command = match item.kind {
+            SidebarKind::Albums => {
+                if !matches!(self.saved_albums, Load::Ready(_)) {
+                    return None;
+                }
+                Command::SetSaved {
+                    uri: item.uri.clone(),
+                    saved: true,
+                }
+            }
+            SidebarKind::Podcasts => {
+                if !matches!(self.followed, Load::Ready(_)) {
+                    return None;
+                }
+                Command::SetSaved {
+                    uri: item.uri.clone(),
+                    saved: true,
+                }
+            }
+            SidebarKind::Artists => {
+                // A page's own follow write is already in flight; a second one
+                // for the same artist would race it.
+                if self.follow.artist() == Some(item.uri.as_str()) && self.follow.pending() {
+                    return None;
+                }
+                Command::SetFollow {
+                    artist: item.uri.clone(),
+                    followed: true,
+                }
+            }
+            SidebarKind::Playlists => return None,
+        };
+        if item.kind != SidebarKind::Artists {
+            self.sidebar_pending = Some(SidebarPending::Saved {
+                uri: item.uri.clone(),
+                saved: true,
+            });
+        }
+        self.sidebar_notice = None;
+        Some(command)
+    }
+
     /// Nothing leaves the sidebar here: the row goes when the reply confirms,
     /// because a removal that never landed has to come back.
     pub fn remove_from_library(&mut self, item: &LibraryItem) -> Option<Command> {
@@ -1172,16 +1273,18 @@ impl Library {
                 if !listed(&self.saved_albums, &item.uri, |album| &album.uri) {
                     return None;
                 }
-                Command::RemoveSaved {
+                Command::SetSaved {
                     uri: item.uri.clone(),
+                    saved: false,
                 }
             }
             SidebarKind::Podcasts => {
                 if !listed(&self.followed, &item.uri, |show| &show.uri) {
                     return None;
                 }
-                Command::RemoveSaved {
+                Command::SetSaved {
                     uri: item.uri.clone(),
+                    saved: false,
                 }
             }
             SidebarKind::Artists => {
@@ -1205,8 +1308,9 @@ impl Library {
                 index: index?,
             }),
             SidebarKind::Albums | SidebarKind::Artists | SidebarKind::Podcasts => {
-                Some(SidebarPending::RemoveSaved {
+                Some(SidebarPending::Saved {
                     uri: item.uri.clone(),
+                    saved: false,
                 })
             }
         };
@@ -7747,8 +7851,9 @@ mod tests {
             let mut library = saved_library();
             assert_eq!(
                 library.remove_from_library(&item(kind, uri)),
-                Some(Command::RemoveSaved {
-                    uri: uri.to_owned()
+                Some(Command::SetSaved {
+                    uri: uri.to_owned(),
+                    saved: false,
                 }),
                 "{kind:?}"
             );
@@ -7758,8 +7863,9 @@ mod tests {
                 "{kind:?} changed its list before the write was confirmed"
             );
 
-            library.apply(&Update::SavedRemoved {
+            library.apply(&Update::Saved {
                 uri: uri.to_owned(),
+                saved: false,
             });
 
             let left = match dropped {
@@ -7779,6 +7885,94 @@ mod tests {
     }
 
     #[test]
+    fn a_save_asks_for_the_write_and_is_confirmed_by_its_echo() {
+        let mut library = saved_library();
+        // An album the library does not have: the page's band offers the heart
+        // for it, and the list is ready, so the answer is a known "not saved".
+        assert_eq!(library.is_saved("spotify:album:new"), Some(false));
+        assert_eq!(
+            library.save_to_library(&item(SidebarKind::Albums, "spotify:album:new")),
+            Some(Command::SetSaved {
+                uri: "spotify:album:new".to_owned(),
+                saved: true,
+            })
+        );
+        assert!(library.saved_pending("spotify:album:new", true));
+        assert_eq!(
+            library.is_saved("spotify:album:new"),
+            Some(false),
+            "the list has not changed yet"
+        );
+
+        library.apply(&Update::Saved {
+            uri: "spotify:album:new".to_owned(),
+            saved: true,
+        });
+
+        assert_eq!(
+            library.is_saved("spotify:album:new"),
+            Some(true),
+            "the echo outlives the list an add cannot join"
+        );
+        assert!(!library.write_in_flight());
+        assert_eq!(library.sidebar_notice, None);
+    }
+
+    #[test]
+    fn a_fresh_list_ends_the_echo_it_stood_in_for() {
+        let mut library = saved_library();
+        library.save_to_library(&item(SidebarKind::Albums, "spotify:album:new"));
+        library.apply(&Update::Saved {
+            uri: "spotify:album:new".to_owned(),
+            saved: true,
+        });
+        assert_eq!(library.is_saved("spotify:album:new"), Some(true));
+
+        library.apply(&Update::SavedAlbums(Vec::new()));
+
+        assert_eq!(
+            library.is_saved("spotify:album:new"),
+            Some(false),
+            "a read is what the echo was standing in for"
+        );
+    }
+
+    #[test]
+    fn a_failed_save_keeps_the_heart_off_and_says_so() {
+        let mut library = saved_library();
+        library.save_to_library(&item(SidebarKind::Albums, "spotify:album:new"));
+        library.apply(&Update::SavedFailed {
+            uri: "spotify:album:new".to_owned(),
+            saved: true,
+        });
+
+        assert_eq!(library.is_saved("spotify:album:new"), Some(false));
+        assert_eq!(library.sidebar_notice, Some(SidebarWrite::Save));
+        assert!(!library.write_in_flight());
+    }
+
+    #[test]
+    fn an_item_the_library_has_is_not_saved_again() {
+        let mut library = saved_library();
+        assert_eq!(library.is_saved("spotify:album:r"), Some(true));
+        assert_eq!(
+            library.save_to_library(&item(SidebarKind::Albums, "spotify:album:r")),
+            None
+        );
+        assert!(!library.write_in_flight());
+    }
+
+    #[test]
+    fn a_playlist_has_no_save_of_its_own_yet() {
+        let mut library = sidebar_library(&["a"], 0x07, true, None);
+        assert_eq!(
+            library.save_to_library(&item(SidebarKind::Playlists, "a")),
+            None,
+            "the rootlist add has no command yet"
+        );
+    }
+
+    #[test]
     fn a_failed_saved_removal_keeps_the_row_and_says_so() {
         let mut library = saved_library();
         assert!(
@@ -7786,8 +7980,9 @@ mod tests {
                 .remove_from_library(&item(SidebarKind::Albums, "spotify:album:r"))
                 .is_some()
         );
-        library.apply(&Update::SavedRemoveFailed {
+        library.apply(&Update::SavedFailed {
             uri: "spotify:album:r".to_owned(),
+            saved: false,
         });
 
         match &library.saved_albums {

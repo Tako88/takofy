@@ -322,6 +322,7 @@ pub fn sidebar_notice(write: SidebarWrite) -> &'static str {
         SidebarWrite::Unfilled => "Created it, but could not add the tracks.",
         SidebarWrite::Unnamed => "Created it, but could not keep its name.",
         SidebarWrite::Remove => "Could not remove that from your library. Try again.",
+        SidebarWrite::Save => "Could not save that to your library. Try again.",
         SidebarWrite::Rename => "Could not rename that playlist. Try again.",
     }
 }

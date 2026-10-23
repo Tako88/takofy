@@ -152,6 +152,9 @@ pub fn tracks_view(
                 hero::Tools {
                     title,
                     more: Some(more_live),
+                    // A playlist's own heart needs the rootlist add, which has no
+                    // command yet, so it stays present and inert.
+                    saved: None,
                 },
             );
             library.renaming = renaming;
@@ -1568,7 +1571,7 @@ mod tests {
                     shuffle: true,
                     cover: Cover::Missing,
                 };
-                let _ = hero::show(ui, &band, &tokens);
+                let _ = hero::show_with(ui, &band, &tokens, hero::Tools::plain());
                 crate::view::inner(ui, |ui| {
                     let width = ui.available_width();
                     let columns = table_layout::columns(width, table.columns());
@@ -1603,7 +1606,7 @@ mod tests {
                     shuffle: true,
                     cover: Cover::Missing,
                 };
-                let _ = hero::show(ui, &band, &tokens);
+                let _ = hero::show_with(ui, &band, &tokens, hero::Tools::plain());
                 let bottom = ui.cursor().min.y;
                 let height = PLAY + 2.0 * space::S4;
                 let row =
@@ -4231,7 +4234,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
                     shuffle: true,
                     cover: Cover::Missing,
                 };
-                let _ = hero::show(ui, &band, &tokens);
+                let _ = hero::show_with(ui, &band, &tokens, hero::Tools::plain());
             },
         );
         let band_top = band_top.expect("the band starts at the cursor");
