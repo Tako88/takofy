@@ -13,6 +13,7 @@ mod context_menu;
 pub mod controls;
 mod episode_row;
 mod filter_row;
+mod focus;
 mod ghost;
 mod heart;
 mod hero;
@@ -96,6 +97,8 @@ pub(crate) fn inner<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
 pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Command> {
     // Before anything scrolls: the wheel moves the page in the frame it arrives.
     crate::scroll::instant(ui.ctx());
+    // Before anything reads a key: whether focus is visible is this frame's.
+    focus::begin_frame(ui.ctx());
 
     match *screen.state {
         // Starting, authorizing and a prompt are one card: with words when there

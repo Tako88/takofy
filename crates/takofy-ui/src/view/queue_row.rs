@@ -71,8 +71,8 @@ pub fn show(ui: &mut Ui, rect: Rect, row: &Row<'_>, tokens: &Tokens) -> Option<C
     let before = rows::dim(ui, row.look);
     rows::wash(ui, rect, hover, row.look, tokens);
     // A ring on a carried row is noise: the pointer already holds it.
-    if response.has_focus() && !row.look.carrying {
-        controls::focus_ring(ui, rect, tokens);
+    if !row.look.carrying {
+        controls::focus_ring(ui, response, rect, radius::SM, tokens);
     }
     paint(ui, rect, row, None, tokens);
     ui.set_opacity(before);
@@ -256,6 +256,7 @@ mod tests {
     use super::*;
     use crate::selection::Press;
     use crate::theme::{fonts, style};
+    use crate::view::test_support::tab;
 
     const PROBE: Rect = Rect {
         min: Pos2::new(10.0, 10.0),
@@ -477,7 +478,8 @@ mod tests {
         });
         let mut expected = None;
         let mut focused = None;
-        run(&ctx, input(vec![tab()]), |ui| {
+        let [press, _] = tab();
+        run(&ctx, input(vec![press]), |ui| {
             expected = Some(super::id(ui, row.index));
             let _ = show(ui, PROBE, &row, &Tokens::DARK);
             focused = ui.memory(|memory| memory.focused());
@@ -496,16 +498,6 @@ mod tests {
             }],
         );
         assert_eq!(answer, Some(Click::Play), "Enter plays the entry");
-    }
-
-    fn tab() -> Event {
-        Event::Key {
-            key: egui::Key::Tab,
-            physical_key: None,
-            pressed: true,
-            repeat: false,
-            modifiers: Modifiers::NONE,
-        }
     }
 
     #[test]

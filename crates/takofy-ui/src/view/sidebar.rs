@@ -1009,9 +1009,7 @@ fn row_chrome(
             .rect_filled(rect, radius::SM, tokens.palette.row_hover);
     }
 
-    if response.has_focus() {
-        controls::focus_ring(ui, rect, tokens);
-    }
+    controls::focus_ring(ui, &response, rect, radius::SM, tokens);
 
     response
 }
@@ -1280,7 +1278,7 @@ mod tests {
     use crate::message::{Failure, Update};
     use crate::theme::{fonts, style};
     use crate::view::context_menu;
-    use crate::view::test_support::click_events;
+    use crate::view::test_support::{click_events, rings_in};
 
     /// The chip rect and label rect the real sidebar paints, per label.
     ///
@@ -1621,6 +1619,7 @@ mod tests {
         let tokens = Tokens::DARK;
         let mut command = None;
         let mut output = ctx.run_ui(input, |ui| {
+            crate::view::focus::begin_frame(ui.ctx());
             if let Some(next) = show(ui, library, art, Instant::now(), &tokens) {
                 command = Some(next);
             }
@@ -1704,6 +1703,72 @@ mod tests {
             repeat,
             modifiers: egui::Modifiers::NONE,
         }
+    }
+
+    /// The rail's box on the frame's screen.
+    fn rail() -> Rect {
+        Rect::from_min_size(Pos2::ZERO, Vec2::new(254.0, 800.0))
+    }
+
+    #[test]
+    fn a_clicked_rail_row_wears_no_ring_and_keeps_the_keyboard() {
+        let ctx = context();
+        let mut library = movable_playlists(&["A", "B"], 7, true, None);
+        let mut art = Art::default();
+        let (output, _) = run(&ctx, Vec::new(), &mut library, &mut art);
+        let at = name_line(&output, "A");
+        let _ = click(&ctx, at, &mut library, &mut art);
+
+        let (output, _) = run(&ctx, Vec::new(), &mut library, &mut art);
+        let focused = ctx
+            .memory(|memory| memory.focused())
+            .expect("the click took the keyboard");
+        let row = ctx
+            .read_response(focused)
+            .expect("the row was laid out")
+            .rect;
+        assert!(
+            row.contains(at),
+            "the keyboard went to another row: {row:?}"
+        );
+        assert!(
+            rings_in(&output).is_empty(),
+            "a clicked rail row wears no ring: {:?}",
+            rings_in(&output)
+        );
+    }
+
+    #[test]
+    fn tab_rings_the_rail_row_inside_it() {
+        let ctx = context();
+        let mut library = movable_playlists(&["A", "B"], 7, true, None);
+        let mut art = Art::default();
+        let (output, _) = run(&ctx, Vec::new(), &mut library, &mut art);
+        let at = name_line(&output, "A");
+        let _ = click(&ctx, at, &mut library, &mut art);
+
+        let _ = run(
+            &ctx,
+            vec![press(egui::Key::Tab, false)],
+            &mut library,
+            &mut art,
+        );
+        let (output, _) = run(&ctx, Vec::new(), &mut library, &mut art);
+
+        let focused = ctx
+            .memory(|memory| memory.focused())
+            .expect("Tab put the keyboard somewhere");
+        let row = ctx
+            .read_response(focused)
+            .expect("the row was laid out")
+            .rect;
+        let rings = rings_in(&output);
+        assert_eq!(rings.len(), 1, "Tab rings one rail row: {rings:?}");
+        assert_eq!(rings[0], row, "the ring lies on the row's own edge");
+        assert!(
+            rail().contains_rect(row),
+            "the ringed row left the rail: {row:?}"
+        );
     }
 
     #[test]
@@ -1861,6 +1926,7 @@ mod tests {
         let tokens = Tokens::DARK;
         let mut command = None;
         let mut output = ctx.run_ui(input, |ui| {
+            crate::view::focus::begin_frame(ui.ctx());
             let next = if drag {
                 column(ui, library, art, Instant::now(), &tokens)
             } else {

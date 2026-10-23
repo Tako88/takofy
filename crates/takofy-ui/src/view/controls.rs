@@ -5,8 +5,9 @@
 //! senses hover only, never joins the tab order, and announces itself disabled
 //! with its label through `WidgetInfo`.
 //!
-//! The focus ring is drawn here too, because every control wants the same one
-//! and only the slot knows the control has focus.
+//! The focus ring is drawn here too, because every control and row wants the
+//! same one. It shows only after keyboard input, so a clicked control leaves no
+//! ring behind it.
 
 use std::hash::Hash;
 use std::sync::Arc;
@@ -14,8 +15,8 @@ use std::sync::Arc;
 use egui::emath::GuiRounding;
 use egui::text::LayoutJob;
 use egui::{
-    Color32, FontId, Galley, Rect, Response, Role, Sense, Stroke, StrokeKind, TextFormat, Ui, Vec2,
-    WidgetInfo, pos2,
+    Color32, CornerRadius, FontId, Galley, Rect, Response, Role, Sense, Stroke, StrokeKind,
+    TextFormat, Ui, Vec2, WidgetInfo, pos2,
 };
 
 use crate::availability::{Availability, Control, availability};
@@ -116,8 +117,14 @@ pub fn slot_keyed(
         0.0
     };
 
-    if ready && response.has_focus() {
-        focus_ring(ui, rect, tokens);
+    if ready {
+        focus_ring(
+            ui,
+            &response,
+            rect.expand(extent::FOCUS_OFFSET + stroke::HAIRLINE),
+            radius::SM,
+            tokens,
+        );
     }
 
     if ready && response.hovered() {
@@ -178,16 +185,20 @@ fn foreground(tokens: &Tokens, ready: bool, mix: f32) -> Color32 {
     }
 }
 
-/// The ring a focused control wears.
+/// The ring a keyboard-focused row, tile or control wears.
 ///
-/// Shared, because a library row is focusable too and rows are not controls: they
-/// are one per playlist, so they cannot come from the availability table.
-pub fn focus_ring(ui: &Ui, rect: Rect, tokens: &Tokens) {
+/// Inside `rect`, so it lies on the widget's own edge and a scroll area or
+/// region clip cuts it with the widget rather than over its neighbours. `radius`
+/// is the widget's own corner, so the ring follows the shape it rings.
+pub fn focus_ring(ui: &Ui, response: &Response, rect: Rect, radius: CornerRadius, tokens: &Tokens) {
+    if !super::focus::visible(ui.ctx(), response.id) {
+        return;
+    }
     ui.painter().rect_stroke(
-        rect.expand(extent::FOCUS_OFFSET),
-        radius::SM,
+        rect,
+        radius,
         Stroke::new(stroke::HAIRLINE, tokens.palette.accent),
-        StrokeKind::Outside,
+        StrokeKind::Inside,
     );
 }
 
@@ -707,7 +718,8 @@ pub fn fraction_at(pointer_x: f32, left: f32, width: f32) -> f32 {
 mod tests {
     use super::*;
     use crate::theme::Tokens;
-    use egui::{Context, Event, Modifiers, Pos2, RawInput, Rect, Ui, Vec2};
+    use crate::view::test_support::{ring_shapes, rings_in, tab};
+    use egui::{Context, Event, Pos2, RawInput, Rect, Ui, Vec2};
 
     fn input(events: Vec<Event>) -> RawInput {
         RawInput {
@@ -717,10 +729,32 @@ mod tests {
         }
     }
 
-    /// Runs one pass and consumes the font-atlas delta it may have produced.
-    fn run(ctx: &Context, input: RawInput, draw: impl FnMut(&mut Ui)) {
-        let mut output = ctx.run_ui(input, draw);
+    /// Runs one pass with the focus frame opened, returning what it painted.
+    fn painted(ctx: &Context, input: RawInput, mut draw: impl FnMut(&mut Ui)) -> egui::FullOutput {
+        let mut output = ctx.run_ui(input, |ui| {
+            crate::view::focus::begin_frame(ui.ctx());
+            draw(ui);
+        });
         output.textures_delta.clear();
+        output
+    }
+
+    /// Runs one pass and drops what it painted.
+    fn run(ctx: &Context, input: RawInput, draw: impl FnMut(&mut Ui)) {
+        let _ = painted(ctx, input, draw);
+    }
+
+    /// The slot every ring test draws: one ready toggle in `rect`.
+    fn toggle(ui: &mut Ui, rect: Rect) -> Slot {
+        slot(
+            ui,
+            Control::DrawerToggle,
+            Role::Button,
+            rect,
+            "Toggle",
+            &Tokens::DARK,
+            true,
+        )
     }
 
     fn cell(index: f32) -> Rect {
@@ -767,6 +801,104 @@ mod tests {
         let sense = sense.expect("the slot drew");
         assert!(sense.senses_click());
         assert!(sense.is_focusable());
+    }
+
+    #[test]
+    fn a_row_ring_stays_inside_its_row() {
+        let ctx = Context::default();
+        let row = Rect::from_min_size(Pos2::new(20.0, 20.0), Vec2::new(200.0, 40.0));
+        let output = painted(&ctx, input(Vec::new()), |ui| {
+            let response = ui.interact(row, egui::Id::unique("row"), Sense::click());
+            response.request_focus();
+            focus_ring(ui, &response, row, radius::SM, &Tokens::DARK);
+        });
+        let rings = rings_in(&output);
+        assert_eq!(rings, [row], "the ring lies on the row's own edge");
+    }
+
+    #[test]
+    fn a_rings_corners_follow_the_radius_it_is_given() {
+        let ctx = Context::default();
+        let rect = cell(0.0);
+        let output = painted(&ctx, input(Vec::new()), |ui| {
+            let response = ui.interact(rect, egui::Id::unique("tile"), Sense::click());
+            response.request_focus();
+            focus_ring(ui, &response, rect, radius::MD, &Tokens::DARK);
+        });
+        let strokes = ring_shapes(&output, &Tokens::DARK);
+        assert_eq!(strokes.len(), 1, "one focused widget wears one ring");
+        assert_eq!(strokes[0].corner_radius, radius::MD);
+        assert_eq!(strokes[0].stroke_kind, StrokeKind::Inside);
+    }
+
+    #[test]
+    fn a_controls_ring_keeps_its_offset_from_the_control() {
+        let ctx = Context::default();
+        let rect = cell(0.0);
+        let output = painted(&ctx, input(Vec::new()), |ui| {
+            let id = slot_id(ui, Control::DrawerToggle, ());
+            ui.ctx().memory_mut(|memory| memory.request_focus(id));
+            let _ = toggle(ui, rect);
+        });
+        let rings = rings_in(&output);
+        assert_eq!(rings.len(), 1, "the focused control wears one ring");
+        assert_eq!(
+            rings[0],
+            rect.expand(extent::FOCUS_OFFSET + stroke::HAIRLINE),
+            "the ring keeps the band the control always had"
+        );
+    }
+
+    #[test]
+    fn a_clicked_control_wears_no_ring() {
+        let ctx = Context::default();
+        let rect = cell(0.0);
+        let at = rect.center();
+        let _ = painted(&ctx, input(Vec::new()), |ui| {
+            let _ = toggle(ui, rect);
+        });
+        let mut focused = None;
+        for event in crate::view::test_support::click_events(at) {
+            let _ = painted(&ctx, input(vec![event]), |ui| {
+                let clicked = toggle(ui, rect);
+                if clicked.response.clicked() {
+                    clicked.response.request_focus();
+                }
+                focused = Some(clicked.response.id);
+            });
+        }
+        assert_eq!(
+            ctx.memory(|memory| memory.focused()),
+            focused,
+            "the click took the keyboard"
+        );
+        let output = painted(&ctx, input(Vec::new()), |ui| {
+            let _ = toggle(ui, rect);
+        });
+        assert!(
+            rings_in(&output).is_empty(),
+            "a clicked control wears no ring"
+        );
+    }
+
+    #[test]
+    fn a_tabbed_control_wears_the_ring() {
+        let ctx = Context::default();
+        let rect = cell(0.0);
+        let draw = |ui: &mut Ui| {
+            let _ = toggle(ui, rect);
+        };
+        let _ = painted(&ctx, input(Vec::new()), draw);
+        let [press, release] = tab();
+        let _ = painted(&ctx, input(vec![press]), draw);
+        let output = painted(&ctx, input(vec![release]), draw);
+
+        let rings = rings_in(&output);
+        assert_eq!(rings.len(), 1, "the tabbed control wears the ring");
+        assert_eq!(
+            rings[0],
+            rect.expand(extent::FOCUS_OFFSET + stroke::HAIRLINE)
+        );
     }
 
     /// A control whose view exists can still be unable to act — nothing is queued,
@@ -884,13 +1016,7 @@ mod tests {
             (Control::Miniplayer, "Miniplayer"),
             (Control::TrailPlaylists, "Playlists"),
         ];
-        let tab = Event::Key {
-            key: egui::Key::Tab,
-            physical_key: None,
-            pressed: true,
-            repeat: false,
-            modifiers: Modifiers::NONE,
-        };
+        let [tab, _] = tab();
 
         // Focus traversal reads the previous pass, and one Tab pass per widget.
         run(&ctx, input(Vec::new()), |_ui| {});

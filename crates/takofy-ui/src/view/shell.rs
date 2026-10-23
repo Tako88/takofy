@@ -33,6 +33,9 @@ use super::{
 /// The signed-in shell: three columns over a playbar, each panel a hairline box
 /// on the window background.
 pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Command> {
+    // Before any key is taken out of the input: whether focus is visible is this
+    // frame's. `Window::frame` calls here without `view::show`, so both do it.
+    super::focus::begin_frame(ui.ctx());
     // Before any region draws: see `take_space`.
     let space = take_space(ui);
 
@@ -1450,6 +1453,14 @@ mod tests {
         let regions = layout::regions_with(content.width(), window.pane);
         let shell = layout::shell_for(&regions);
         layout::grid_for(content, &shell).topbar
+    }
+
+    /// The drawer's box, solved the same way the shell solves it.
+    fn drawer_rect(window: &Window) -> Rect {
+        let content = Rect::from_min_size(egui::Pos2::ZERO, window.size);
+        let regions = layout::regions_with(content.width(), window.pane);
+        let shell = layout::shell_for(&regions);
+        layout::grid_for(content, &shell).drawer
     }
 
     /// The view's rect, solved the same way the shell solves it. A same-frame
@@ -3282,6 +3293,68 @@ mod tests {
     }
 
     #[test]
+    fn the_drawers_ring_never_crosses_the_rails_edge() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(800.0, 900.0));
+        window.library.apply(&Update::Playlists(vec![
+            PlaylistEntry {
+                uri: "spotify:playlist:a".to_owned(),
+                name: "A".to_owned(),
+                named: true,
+                cover: None,
+                description: None,
+                owner: None,
+                tracks: None,
+                access: None,
+            },
+            PlaylistEntry {
+                uri: "spotify:playlist:b".to_owned(),
+                name: "B".to_owned(),
+                named: true,
+                cover: None,
+                description: None,
+                owner: None,
+                tracks: None,
+                access: None,
+            },
+        ]));
+
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let toggle = topbar_buttons(&frame)[0];
+        let _ = window.click(&mut transport, &mut queue, toggle.center());
+        assert_eq!(window.drawer, Drawer::Open);
+
+        let drawer = drawer_rect(&window);
+        let mut row = None;
+        for _ in 0..32 {
+            let _ = press(&mut window, &mut transport, &mut queue, egui::Key::Tab);
+            let Some(focused) = window.ctx.memory(|memory| memory.focused()) else {
+                continue;
+            };
+            let Some(rect) = window.ctx.read_response(focused).map(|drawn| drawn.rect) else {
+                continue;
+            };
+            if drawer.contains_rect(rect) && (rect.height() - sidebar::ROW_H).abs() < 0.6 {
+                row = Some(rect);
+                break;
+            }
+        }
+        let row = row.expect("Tab reached a rail row in the drawer");
+
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let rings = crate::view::test_support::rings(&frame, &Tokens::DARK);
+        assert!(!rings.is_empty(), "the tabbed rail row wears the ring");
+        for ring in &rings {
+            assert!(
+                drawer.contains_rect(*ring),
+                "a ring crossed the drawer's edge: {ring:?} in {drawer:?}"
+            );
+        }
+        assert!(drawer.contains_rect(row), "the ringed row left the drawer");
+    }
+
+    #[test]
     fn escape_belongs_to_the_drawer_only_when_search_has_nothing_to_undo() {
         let mut transport = Transport::default();
         let mut queue = Queue::default();
@@ -4479,19 +4552,9 @@ mod tests {
     /// The box a queue row's focus ring was drawn around, if one was.
     fn ringed_row(output: &egui::FullOutput) -> Option<Rect> {
         let tokens = Tokens::DARK;
-        let height = QUEUE_ROW_H + 2.0 * extent::FOCUS_OFFSET;
-        output
-            .shapes
-            .iter()
-            .find_map(|clipped| match &clipped.shape {
-                egui::Shape::Rect(shape)
-                    if shape.stroke.color == tokens.palette.accent
-                        && (shape.rect.height() - height).abs() < 0.6 =>
-                {
-                    Some(shape.rect)
-                }
-                _ => None,
-            })
+        crate::view::test_support::rings(output, &tokens)
+            .into_iter()
+            .find(|ring| (ring.height() - QUEUE_ROW_H).abs() < 0.6)
     }
 
     /// A playlist page with one row per title, so a track can be dragged out of
@@ -4619,7 +4682,7 @@ mod tests {
     }
 
     #[test]
-    fn a_click_on_a_queue_row_keeps_the_keyboard() {
+    fn a_click_on_a_queue_row_keeps_the_keyboard_without_a_ring() {
         let mut transport = playing(cover("abc"));
         let mut queue = queue_of(4, &mut transport);
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
@@ -4632,8 +4695,137 @@ mod tests {
 
         let _ = window.click(&mut transport, &mut queue, at);
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let ring = ringed_row(&frame).expect("the clicked row holds the keyboard");
-        assert!(ring.contains(at), "the ring is not on the row clicked");
+        let id = window
+            .ctx
+            .memory(|memory| memory.focused())
+            .expect("the clicked row holds the keyboard");
+        let row = window
+            .ctx
+            .read_response(id)
+            .expect("the row was laid out")
+            .rect;
+        assert!(
+            row.contains(at),
+            "the keyboard went to another row: {row:?}"
+        );
+        assert_eq!(row.height(), QUEUE_ROW_H, "the keyboard is on a row");
+        assert!(ringed_row(&frame).is_none(), "a clicked row wears no ring");
+    }
+
+    #[test]
+    fn a_clicked_queue_row_wears_no_ring() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let at = row_line(&frame, pane_rect_when_shown(&window), "t2");
+
+        let _ = window.click(&mut transport, &mut queue, at);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            window.ctx.memory(|memory| memory.focused()).is_some(),
+            "the click took the keyboard"
+        );
+        assert!(
+            ringed_row(&frame).is_none(),
+            "a clicked queue row wears no ring"
+        );
+    }
+
+    #[test]
+    fn tab_rings_the_row_inside_the_list() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(5, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let pane = pane_rect_when_shown(&window);
+        clicked_row(&mut window, &mut queue, &mut transport, pane, "t2");
+
+        // Tab walks out of the row's own controls and onto the rows below it.
+        let mut row = None;
+        for _ in 0..8 {
+            let _ = press(&mut window, &mut transport, &mut queue, egui::Key::Tab);
+            let focused = window
+                .ctx
+                .memory(|memory| memory.focused())
+                .expect("Tab keeps the keyboard");
+            let rect = window
+                .ctx
+                .read_response(focused)
+                .expect("the row was laid out")
+                .rect;
+            if (rect.height() - QUEUE_ROW_H).abs() < 0.6 {
+                row = Some(rect);
+                break;
+            }
+        }
+        let row = row.expect("Tab reached a queue row");
+
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let rings = crate::view::test_support::rings(&frame, &Tokens::DARK);
+        assert_eq!(rings.len(), 1, "the tabbed row wears the ring: {rings:?}");
+        assert!(
+            row.contains_rect(rings[0]),
+            "the ring left the row: {:?} in {row:?}",
+            rings[0]
+        );
+        assert!(pane.contains_rect(row), "the row left the list: {row:?}");
+    }
+
+    #[test]
+    fn a_click_on_empty_space_then_tab_rings_the_next_widget() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+
+        let empty = view_rect(&window).center();
+        let _ = window.click(&mut transport, &mut queue, empty);
+        let _ = press(&mut window, &mut transport, &mut queue, egui::Key::Tab);
+
+        let focused = window
+            .ctx
+            .memory(|memory| memory.focused())
+            .expect("Tab took the keyboard");
+        let rect = window
+            .ctx
+            .read_response(focused)
+            .expect("the widget was laid out")
+            .rect;
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let rings = crate::view::test_support::rings(&frame, &Tokens::DARK);
+        assert_eq!(rings.len(), 1, "one widget wears the ring: {rings:?}");
+        let control_ring = rect.expand(extent::FOCUS_OFFSET + stroke::HAIRLINE);
+        assert!(
+            rings[0] == rect || rings[0] == control_ring,
+            "the ring is not the widget Tab reached: {rings:?} for {rect:?}"
+        );
+    }
+
+    #[test]
+    fn a_click_then_space_wears_no_ring_on_the_clicked_widget() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let at = row_line(&frame, pane_rect_when_shown(&window), "t2");
+        let _ = window.click(&mut transport, &mut queue, at);
+
+        let _ = press(&mut window, &mut transport, &mut queue, egui::Key::Space);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            ringed_row(&frame).is_none(),
+            "a key after a click reveals no ring on the clicked widget"
+        );
+        let focused = window
+            .ctx
+            .memory(|memory| memory.focused())
+            .expect("the click took the keyboard");
+        let row = window
+            .ctx
+            .read_response(focused)
+            .expect("the row was laid out")
+            .rect;
+        assert!(row.contains(at), "the keyboard left the clicked row");
     }
 
     #[test]
@@ -7396,10 +7588,22 @@ mod tests {
         let (_, second) = window.frame(&mut transport, &mut queue, Vec::new());
         let at = text_in(&first, "t2", pane).expect("the landed row is drawn");
         let after = text_in(&second, "t2", pane).expect("the landed row is still drawn");
-        let ring = ringed_row(&second).expect("the landed row takes the keyboard");
+        let id = window
+            .ctx
+            .memory(|memory| memory.focused())
+            .expect("the landed row takes the keyboard");
+        let row = window
+            .ctx
+            .read_response(id)
+            .expect("the landed row was laid out")
+            .rect;
         assert!(
-            ring.contains(after.center()),
-            "the keyboard went somewhere else: {ring:?}"
+            row.contains(after.center()),
+            "the keyboard went somewhere else: {row:?}"
+        );
+        assert!(
+            ringed_row(&second).is_none(),
+            "a pointer drop shows no ring"
         );
         assert!(
             pane.contains_rect(at),
@@ -7652,6 +7856,49 @@ mod tests {
                 uri: "t2".to_owned()
             }),
             "Enter plays the row the repeat moved"
+        );
+    }
+
+    #[test]
+    fn alt_arrow_at_the_boundary_row_does_not_move_focus_and_shows_no_ring() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(5, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let pane = pane_rect_when_shown(&window);
+        // The pane lists what follows the current entry, so t1 is its first row
+        // and the top of what Alt+↑ can move.
+        clicked_row(&mut window, &mut queue, &mut transport, pane, "t1");
+
+        let _ = chord(
+            &mut window,
+            &mut transport,
+            &mut queue,
+            egui::Key::ArrowUp,
+            egui::Modifiers::ALT,
+        );
+        assert_eq!(
+            entries(&queue),
+            ["t0", "t1", "t2", "t3", "t4"],
+            "the first row of the list has nowhere to go"
+        );
+
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            ringed_row(&frame).is_none(),
+            "focus did not move, so the ring stays hidden"
+        );
+        assert_eq!(
+            chord(
+                &mut window,
+                &mut transport,
+                &mut queue,
+                egui::Key::Enter,
+                egui::Modifiers::NONE
+            ),
+            Some(Command::Play {
+                uri: "t1".to_owned()
+            }),
+            "the keyboard is still on the row that was clicked"
         );
     }
 

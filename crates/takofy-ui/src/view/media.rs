@@ -125,9 +125,7 @@ pub fn tile(ui: &mut Ui, rect: Rect, media: &Media<'_>, tokens: &Tokens) -> bool
             egui::StrokeKind::Inside,
         );
     }
-    if response.has_focus() {
-        controls::focus_ring(ui, rect, tokens);
-    }
+    controls::focus_ring(ui, &response, rect, radius::MD, tokens);
 
     let inner = rect.shrink(space::S2);
     let art = Rect::from_min_size(inner.min, Vec2::splat(inner.width()));
@@ -253,9 +251,7 @@ pub fn row(ui: &mut Ui, rect: Rect, media: &Media<'_>, tokens: &Tokens) -> Optio
         ui.painter()
             .rect_filled(rect, radius::SM, tokens.palette.row_hover);
     }
-    if response.has_focus() {
-        controls::focus_ring(ui, rect, tokens);
-    }
+    controls::focus_ring(ui, &response, rect, radius::SM, tokens);
 
     let radius = if media.round {
         radius::PILL
@@ -417,7 +413,7 @@ pub fn art_rect(rect: Rect) -> Rect {
 mod tests {
     use super::*;
     use crate::theme::{fonts, style};
-    use crate::view::test_support::{click_events, secondary_click_events};
+    use crate::view::test_support::{click_events, rings_in, secondary_click_events};
     use egui::{Color32, Event, Key, Modifiers};
 
     fn context() -> egui::Context {
@@ -554,6 +550,95 @@ mod tests {
         assert!(
             !texts.iter().any(|text| text.contains("0 ")),
             "an artist's size cell draws nothing: {texts:?}"
+        );
+    }
+
+    /// One tile pass, returning the tile's rect and what it painted.
+    fn tile_frame(ctx: &egui::Context, events: Vec<Event>) -> (Rect, egui::FullOutput) {
+        let tokens = Tokens::DARK;
+        let mut rect = Rect::ZERO;
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(600.0, 400.0))),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                crate::view::focus::begin_frame(ui.ctx());
+                let width = 176.0;
+                rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(width, width + extra_height(ui)));
+                let _ = tile(
+                    ui,
+                    rect,
+                    &media("spotify:album:a", false, "11 tracks"),
+                    &tokens,
+                );
+            },
+        );
+        output.textures_delta.clear();
+        (rect, output)
+    }
+
+    /// One list-row pass, returning the row's rect and what it painted.
+    fn row_frame(ctx: &egui::Context, events: Vec<Event>) -> (Rect, egui::FullOutput) {
+        let tokens = Tokens::DARK;
+        let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, extent::ROW_H));
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 200.0))),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                crate::view::focus::begin_frame(ui.ctx());
+                let _ = row(
+                    ui,
+                    rect,
+                    &media("spotify:album:a", false, "11 tracks"),
+                    &tokens,
+                );
+            },
+        );
+        output.textures_delta.clear();
+        (rect, output)
+    }
+
+    #[test]
+    fn a_clicked_tile_wears_no_ring() {
+        let ctx = context();
+        let (rect, _) = tile_frame(&ctx, Vec::new());
+        for event in click_events(rect.center()) {
+            let _ = tile_frame(&ctx, vec![event]);
+        }
+        let (_, output) = tile_frame(&ctx, Vec::new());
+        assert!(
+            ctx.memory(|memory| memory.focused()).is_some(),
+            "the click took the keyboard"
+        );
+        assert!(
+            rings_in(&output).is_empty(),
+            "a clicked tile wears no ring: {:?}",
+            rings_in(&output)
+        );
+    }
+
+    #[test]
+    fn a_clicked_list_row_wears_no_ring() {
+        let ctx = context();
+        let (rect, _) = row_frame(&ctx, Vec::new());
+        let at = Pos2::new(rect.width() / 2.0, rect.height() / 2.0);
+        for event in click_events(at) {
+            let _ = row_frame(&ctx, vec![event]);
+        }
+        let (_, output) = row_frame(&ctx, Vec::new());
+        assert!(
+            ctx.memory(|memory| memory.focused()).is_some(),
+            "the click took the keyboard"
+        );
+        assert!(
+            rings_in(&output).is_empty(),
+            "a clicked list row wears no ring: {:?}",
+            rings_in(&output)
         );
     }
 
