@@ -85,7 +85,8 @@ pub fn artist_view(
     let mut open: Option<String> = None;
     // A release's heart asks the library for the release, which the page has
     // borrowed; it is applied once the scroll area closes.
-    let mut save: Option<(String, String)> = None;
+    // The release the heart named, its name, and the value it asked for.
+    let mut save: Option<(String, String, bool)> = None;
     // Every release's saved state, read once: the blocks draw inside the borrow.
     let saved: Vec<(String, Option<bool>)> = library
         .current_artist()
@@ -259,8 +260,8 @@ pub fn artist_view(
                                 if let (Some(index), Some(tracks)) = (clicked.row, ready) {
                                     command = queue.start(tracks, index, transport);
                                 }
-                                if clicked.saved.is_some() {
-                                    save = Some((release.uri.clone(), release.name.clone()));
+                                if let Some(asked) = clicked.saved {
+                                    save = Some((release.uri.clone(), release.name.clone(), asked));
                                 }
                                 if let Some(door) = clicked.more {
                                     let item = LibraryItem {
@@ -303,7 +304,7 @@ pub fn artist_view(
     if let Some(artist) = open {
         command = library.open(Page::Artist(artist));
     }
-    if let Some((uri, name)) = save
+    if let Some((uri, name, asked)) = save
         && command.is_none()
     {
         let item = LibraryItem {
@@ -311,7 +312,7 @@ pub fn artist_view(
             uri,
             name,
         };
-        command = library.save_to_library(&item);
+        command = library.set_saved(&item, asked);
     }
     command
 }

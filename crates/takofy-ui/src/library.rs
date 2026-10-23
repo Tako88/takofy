@@ -1450,6 +1450,19 @@ impl Library {
     /// Removes `item` from the library, and asks for the one write that does it.
     ///
     /// Writes a library item in, the mirror of [`Self::remove_from_library`].
+    /// Applies the direction a heart asked for.
+    ///
+    /// A heart carries the value it was pressed into, so the library is told
+    /// rather than left to infer it from a state that may have moved since the
+    /// frame was drawn.
+    pub fn set_saved(&mut self, item: &LibraryItem, saved: bool) -> Option<Command> {
+        if saved {
+            self.save_to_library(item)
+        } else {
+            self.remove_from_library(item)
+        }
+    }
+
     pub fn save_to_library(&mut self, item: &LibraryItem) -> Option<Command> {
         if self.is_saved(&item.uri) == Some(true) {
             return None;
@@ -9529,6 +9542,40 @@ mod tests {
     /// add names no card, so the list cannot gain the row on its own.
     /// An artist page draws a heart on each of its releases, and only the whole
     /// set can say what they are, so the page asks for it.
+    /// A heart carries the value it was pressed into, so the library is told the
+    /// direction instead of inferring it from a state that may have moved.
+    #[test]
+    fn a_heart_that_asks_to_save_writes_one_save() {
+        let mut library = saved_library();
+        let item = item(SidebarKind::Albums, "spotify:album:new");
+
+        assert_eq!(
+            library.set_saved(&item, true),
+            Some(Command::SetSaved {
+                uri: "spotify:album:new".to_owned(),
+                saved: true,
+            }),
+            "an unsaved album's heart must save it"
+        );
+    }
+
+    #[test]
+    fn a_heart_that_asks_to_unsave_writes_one_removal() {
+        let mut library = saved_library();
+        let item = item(SidebarKind::Albums, "spotify:album:new");
+        library.apply(&Update::SavedAlbums(vec![saved_album("spotify:album:new")]));
+        assert_eq!(library.is_saved("spotify:album:new"), Some(true));
+
+        assert_eq!(
+            library.set_saved(&item, false),
+            Some(Command::SetSaved {
+                uri: "spotify:album:new".to_owned(),
+                saved: false,
+            }),
+            "a saved album's heart asked to save it again"
+        );
+    }
+
     #[test]
     fn an_artist_page_wants_the_saved_albums() {
         let mut library = Library::default();

@@ -73,7 +73,8 @@ pub fn album_view(
     // borrow the album it has to move away from.
     let mut open: Option<Page> = None;
     // The band's heart asks for the library, which the album is borrowed from.
-    let mut save: Option<String> = None;
+    // The value the heart asked for, and the name the write needs.
+    let mut save: Option<(String, bool)> = None;
 
     // The scroll area is salted with the album's own URI, so the offset it keeps
     // is this album's and not the playlist page's that shares the pane.
@@ -164,10 +165,10 @@ pub fn album_view(
                     if reply.played && !album.tracks.is_empty() {
                         command = queue.start(&album.tracks, 0, transport);
                     }
-                    if reply.saved.is_some() {
+                    if let Some(asked) = reply.saved {
                         // The library is borrowed for the album for the whole
                         // draw, so the write is asked for once the borrow ends.
-                        save = Some(album.name.clone());
+                        save = Some((album.name.clone(), asked));
                     }
 
                     super::inner(ui, |ui| {
@@ -274,14 +275,14 @@ pub fn album_view(
     if let Some(page) = open {
         return library.open(page);
     }
-    if let Some(name) = save {
+    if let Some((name, asked)) = save {
         let item = LibraryItem {
             kind: SidebarKind::Albums,
             uri: uri.clone(),
             name,
         };
         if command.is_none() {
-            command = library.save_to_library(&item);
+            command = library.set_saved(&item, asked);
         }
     }
     command
@@ -387,6 +388,18 @@ mod tests {
     }
 
     /// A library on the album page with `detail` ready.
+    fn saved_album(uri: &str) -> takofy_model::SavedAlbum {
+        takofy_model::SavedAlbum {
+            uri: uri.to_owned(),
+            name: "Signal Decay".to_owned(),
+            named: true,
+            artists: "Band".to_owned(),
+            year: Some(2024),
+            cover: None,
+            tracks: Some(2),
+        }
+    }
+
     fn library_with(detail: AlbumDetail) -> Library {
         let mut library = Library::default();
         library.open(Page::Album(ALBUM.to_owned()));
@@ -510,6 +523,94 @@ mod tests {
             });
         });
         found.expect("the band and its action row lay out")
+    }
+
+    /// The band heart's centre, solved the way the action row lays it out: the
+    /// tools hug the right edge, more last, so the heart sits one button and one
+    /// gap in from it.
+    fn band_heart_point(ctx: &Context) -> Pos2 {
+        let tokens = Tokens::DARK;
+        let mut found = None;
+        run(ctx, input(Vec::new()), |ui| {
+            ui.add_space(space::S3);
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                let top = ui.cursor().min;
+                let band = hero::Band {
+                    eyebrow: "Album",
+                    title: "Signal Decay",
+                    meta: Vec::new(),
+                    description: "",
+                    playable: true,
+                    shuffle: false,
+                    cover: Cover::Missing,
+                };
+                let _ = hero::show_with(ui, &band, &tokens, hero::Tools::plain());
+                let bottom = ui.cursor().min.y;
+                let height = PLAY + 2.0 * space::S4;
+                let row = Rect::from_min_size(
+                    Pos2::new(top.x, bottom - height),
+                    Vec2::new(ui.available_width(), height),
+                );
+                let right = row.right() - space::GUTTER;
+                let more = right - extent::BUTTON_LG;
+                let heart = more - space::S2 - extent::BUTTON_LG;
+                found = Some(Pos2::new(heart + extent::BUTTON_LG / 2.0, row.center().y));
+            });
+        });
+        found.expect("the band and its action row lay out")
+    }
+
+    /// A heart carries the value it was pressed into, so a saved album's heart
+    /// takes it out of the library rather than asking to save it again.
+    #[test]
+    fn a_saved_albums_band_heart_asks_to_unsave() {
+        let ctx = context();
+        let mut library = library_with(detail(vec![track(
+            "spotify:track:a",
+            "One",
+            "Band",
+            222_000,
+        )]));
+        library.apply(&Update::SavedAlbums(vec![saved_album("spotify:album:a")]));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+        let point = band_heart_point(&ctx);
+
+        let _ = frame(
+            &ctx,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let _ = frame(
+            &ctx,
+            vec![egui::Event::PointerMoved(point)],
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let command = click(
+            &ctx,
+            point,
+            1,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+
+        assert_eq!(
+            command,
+            Some(Command::SetSaved {
+                uri: "spotify:album:a".to_owned(),
+                saved: false,
+            }),
+            "a saved album's heart asked to save it again"
+        );
     }
 
     /// Clicks `pos` `times` times, one event per pass, and returns the last

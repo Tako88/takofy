@@ -66,7 +66,8 @@ pub fn show_view(
     let mut command = None;
     let mut retry = false;
     // The band's heart asks for the library, which the show is borrowed from.
-    let mut save: Option<String> = None;
+    // The value the heart asked for, and the name the write needs.
+    let mut save: Option<(String, bool)> = None;
 
     // The scroll offset is this show's, not the album's or the playlist's that
     // share the pane.
@@ -153,10 +154,10 @@ pub fn show_view(
                     if reply.played && !detail.episodes.is_empty() {
                         command = queue.start(&entries(detail), 0, transport);
                     }
-                    if reply.saved.is_some() {
+                    if let Some(asked) = reply.saved {
                         // The library is borrowed for the show for the whole draw,
                         // so the write is asked for once the borrow ends.
-                        save = Some(detail.show.name.clone());
+                        save = Some((detail.show.name.clone(), asked));
                     }
 
                     super::inner(ui, |ui| {
@@ -224,14 +225,14 @@ pub fn show_view(
     if retry {
         return library.open(Page::Show(uri));
     }
-    if let Some(name) = save {
+    if let Some((name, asked)) = save {
         let item = LibraryItem {
             kind: SidebarKind::Podcasts,
             uri: uri.clone(),
             name,
         };
         if command.is_none() {
-            command = library.save_to_library(&item);
+            command = library.set_saved(&item, asked);
         }
     }
     command
