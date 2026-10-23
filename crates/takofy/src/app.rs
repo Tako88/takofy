@@ -156,6 +156,11 @@ impl eframe::App for TakofyApp {
         if let Some(command) = self.library.related_request() {
             let _ = self.ui_end.commands.send(command);
         }
+        // A row edit can leave several playlists' covers wrong at once, and the
+        // loop may not run again this frame, so every due read goes out now.
+        while let Some(command) = self.library.tracks_request() {
+            let _ = self.ui_end.commands.send(command);
+        }
         // The search reads are want-driven like the lists above: the menu while
         // the field is open, the page while it is on screen.
         self.request_search();

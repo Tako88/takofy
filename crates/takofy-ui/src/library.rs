@@ -8,10 +8,11 @@ use std::collections::HashMap;
 use std::ops::Range;
 
 use takofy_model::{
-    AlbumDetail, ArtistDetail, CoverUrl, FollowedArtist, FollowedShow, PlaylistAccess,
-    PlaylistEntry, Revision, SavedAlbum, ShowDetail, TrackEntry,
+    AlbumDetail, ArtistDetail, CoverOrigin, CoverUrl, FollowedArtist, FollowedShow, PlaylistAccess,
+    PlaylistCover, PlaylistEntry, Revision, SavedAlbum, ShowDetail, TrackEntry,
 };
 
+use crate::cover_refresh::{CoverRefresh, first_track_uri};
 use crate::discography::Filter;
 use crate::follow::Follow;
 use crate::library_filter::{RootFilter, RootKind};
@@ -88,7 +89,7 @@ pub enum BandCover<'a> {
 /// disagree with it.
 pub fn band_cover(entry: &PlaylistEntry, settled: bool) -> BandCover<'_> {
     if settled {
-        BandCover::Entry(entry.cover.as_ref())
+        BandCover::Entry(entry.cover_url())
     } else {
         BandCover::Pending
     }
@@ -175,6 +176,11 @@ pub struct Library {
     /// Context images, keyed by the playlist that owns them, so an upgrade that
     /// arrives before the playlists list is ready is not lost.
     context_covers: HashMap<String, CoverUrl>,
+    /// Which derived covers a row edit has invalidated, and the asks in flight.
+    ///
+    /// A cover read says nothing about why the cover it carries is what it is,
+    /// so a reply may only clear one when it answers an ask this holds.
+    cover_refresh: CoverRefresh,
     /// The write in flight: its playlist, the rows before it and the rows after.
     ///
     /// While one is set, no read's order is adopted for that playlist. A read
@@ -315,14 +321,26 @@ impl Library {
             Update::Playlists(playlists) => {
                 let mut playlists = playlists.clone();
                 for entry in &mut playlists {
+                    // A cached context image is a derived cover, so it may fill a
+                    // hole or replace another derived one, never a chosen picture.
+                    let chosen = entry
+                        .cover
+                        .as_ref()
+                        .is_some_and(|cover| cover.origin == CoverOrigin::Chosen);
+                    if chosen {
+                        continue;
+                    }
                     if let Some(cover) = self.context_covers.get(&entry.uri) {
-                        entry.cover = Some(cover.clone());
+                        entry.cover = Some(PlaylistCover::derived(cover.clone()));
                     }
                 }
-                self.context_covers
-                    .retain(|uri, _| playlists.iter().any(|entry| entry.uri == *uri));
-                let present = |uri: &str| playlists.iter().any(|entry| entry.uri == uri);
-                self.prune_playlist_pages(&present);
+                let present: Vec<String> =
+                    playlists.iter().map(|entry| entry.uri.clone()).collect();
+                self.context_covers.retain(|uri, _| present.contains(uri));
+                let listed = |uri: &str| present.iter().any(|listed| listed == uri);
+                self.prune_playlist_pages(&listed);
+                // A playlist the read no longer lists is never asked for again.
+                self.cover_refresh.retain(&present);
                 self.playlists = Load::Ready(playlists);
                 // A list is not movable until its own access arrives, so a read
                 // can never be reordered on the previous read's revision.
@@ -413,6 +431,7 @@ impl Library {
                     playlists.remove(index);
                 }
                 self.context_covers.remove(playlist);
+                self.cover_refresh.forget(playlist);
                 // The removed playlist may be the page on screen; the rule a
                 // playlists read applies is the one that takes it home.
                 let remaining: Vec<String> = match &self.playlists {
@@ -507,6 +526,18 @@ impl Library {
                 }
                 let count = *count;
                 self.sidebar_pending = None;
+                // An add names the append index, so it cannot change the first
+                // track of a list that already has one: a row showing a cover
+                // keeps it. A row with no cover is the one the add may have
+                // given a picture, and nothing else would ask for it.
+                let uncovered = matches!(
+                    &self.playlists,
+                    Load::Ready(playlists)
+                        if playlists
+                            .iter()
+                            .find(|entry| entry.uri == *playlist)
+                            .is_some_and(|entry| entry.cover.is_none())
+                );
                 if let Load::Ready(playlists) = &mut self.playlists
                     && let Some(entry) = playlists.iter_mut().find(|entry| entry.uri == *playlist)
                 {
@@ -515,10 +546,21 @@ impl Library {
                     }
                     entry.tracks = entry.tracks.map(|held| held.saturating_add(count));
                 }
+                if uncovered {
+                    self.drop_derived_cover(playlist);
+                }
                 // A page held for that playlist was read before the add, so it
                 // shows the rows and names the revision of a list one track
-                // shorter: dropping it makes the next visit reload.
-                if matches!(&self.tracks, Load::Ready(tracks) if tracks.playlist == *playlist) {
+                // shorter: dropping it makes the next visit reload. A read
+                // already in flight still lands as the page if it answers
+                // first, and names that older revision; a write started from
+                // it is refused on the revision conflict.
+                let held = match &self.tracks {
+                    Load::Ready(tracks) => tracks.playlist == *playlist,
+                    Load::Loading => self.wanted.as_deref() == Some(playlist.as_str()),
+                    Load::Idle | Load::Failed(_) => false,
+                };
+                if held {
                     self.tracks = Load::Idle;
                     self.wanted = None;
                 }
@@ -675,13 +717,38 @@ impl Library {
             } => {
                 // The cover upgrade is keyed by the update's own playlist, never
                 // the selected one, so a reply for A cannot land on B.
-                if let Some(cover) = cover {
-                    self.context_covers.insert(playlist.clone(), cover.clone());
-                    if let Load::Ready(playlists) = &mut self.playlists
-                        && let Some(entry) =
-                            playlists.iter_mut().find(|entry| entry.uri == *playlist)
-                    {
-                        entry.cover = Some(cover.clone());
+                let authoritative = self.cover_refresh.answer(playlist);
+                let entry = match &mut self.playlists {
+                    Load::Ready(playlists) => {
+                        playlists.iter_mut().find(|entry| entry.uri == *playlist)
+                    }
+                    Load::Idle | Load::Loading | Load::Failed(_) => None,
+                };
+                // A chosen picture is the user's own, so no read replaces or
+                // clears it, and nothing cached may be drawn over it later.
+                let chosen = entry.as_ref().is_some_and(|entry| {
+                    entry
+                        .cover
+                        .as_ref()
+                        .is_some_and(|cover| cover.origin == CoverOrigin::Chosen)
+                });
+                if !chosen {
+                    match cover {
+                        Some(cover) => {
+                            self.context_covers.insert(playlist.clone(), cover.clone());
+                            if let Some(entry) = entry {
+                                entry.cover = Some(PlaylistCover::derived(cover.clone()));
+                            }
+                        }
+                        // Only the reply to an ask may clear a cover: any other read
+                        // says nothing about why the cover it lacks was dropped.
+                        None if authoritative => {
+                            self.context_covers.remove(playlist);
+                            if let Some(entry) = entry {
+                                entry.cover = None;
+                            }
+                        }
+                        None => {}
                     }
                 }
                 if self.wanted.as_deref() == Some(playlist.as_str()) {
@@ -711,13 +778,24 @@ impl Library {
                 }
             }
             Update::TracksFailed { playlist, failure } => {
+                // A failed read still answers the ask, so the count keeps step
+                // with the replies actually coming; otherwise a later ask never
+                // reaches zero and an emptied playlist's `None` never clears its
+                // cover.
+                self.cover_refresh.answer(playlist);
                 if self.wanted.as_deref() == Some(playlist.as_str()) {
                     self.tracks = Load::Failed(*failure);
                 }
             }
             // The reply ends the write and names the revision the next one uses.
             Update::TrackMoved { playlist, revision } => {
-                self.end_page_write(playlist, revision);
+                let (before, after) = self.pending_first_tracks(playlist);
+                if !self.end_page_write(playlist, revision) {
+                    return;
+                }
+                if before != after {
+                    self.drop_derived_cover(playlist);
+                }
             }
             // A removal's reply is a move's, plus the count it took out.
             Update::TracksRemoved { playlist, revision } => {
@@ -728,10 +806,16 @@ impl Library {
                     .map_or(0, |pending| {
                         pending.before.len().saturating_sub(pending.after.len())
                     });
+                // Read before the reply clears the write: these rows are the
+                // only record of which track the list showed first.
+                let (before, after) = self.pending_first_tracks(playlist);
                 if !self.end_page_write(playlist, revision) {
                     return;
                 }
                 self.lower_page_count(playlist, gone);
+                if before != after {
+                    self.drop_derived_cover(playlist);
+                }
             }
             // A failed write puts the rows back where they were, and says so.
             Update::MoveFailed { playlist, failure }
@@ -1075,6 +1159,51 @@ impl Library {
             access.revision = revision.clone();
         }
         true
+    }
+
+    /// Drops `playlist`'s derived cover and queues the read that replaces it.
+    ///
+    /// A chosen picture is the user's own, so no row edit invalidates it. The
+    /// cached context image goes with the cover it was drawn from, and the ask
+    /// is only queued: one drain turns it into a read.
+    fn drop_derived_cover(&mut self, playlist: &str) {
+        let entry = match &mut self.playlists {
+            Load::Ready(playlists) => playlists.iter_mut().find(|entry| entry.uri == playlist),
+            Load::Idle | Load::Loading | Load::Failed(_) => None,
+        };
+        if entry.as_ref().is_some_and(|entry| {
+            entry
+                .cover
+                .as_ref()
+                .is_some_and(|cover| cover.origin == CoverOrigin::Chosen)
+        }) {
+            return;
+        }
+        self.context_covers.remove(playlist);
+        if let Some(entry) = entry {
+            entry.cover = None;
+        }
+        self.cover_refresh.drop_for(playlist);
+    }
+
+    /// The first track of the page write in flight for `playlist`, before and
+    /// after the write.
+    ///
+    /// Both are read before the reply ends the write, because that is when the
+    /// rows it held are dropped. A reply with no write pending names no row, so
+    /// it can change nothing.
+    fn pending_first_tracks(&self, playlist: &str) -> (Option<String>, Option<String>) {
+        let Some(pending) = self
+            .pending
+            .as_ref()
+            .filter(|pending| pending.playlist == playlist)
+        else {
+            return (None, None);
+        };
+        (
+            first_track_uri(&pending.before).map(str::to_owned),
+            first_track_uri(&pending.after).map(str::to_owned),
+        )
     }
 
     /// Lowers the sidebar's declared count for `playlist` by `gone` rows.
@@ -1813,6 +1942,9 @@ impl Library {
     fn load(&mut self, playlist: &str) -> Command {
         self.wanted = Some(playlist.to_owned());
         self.tracks = Load::Loading;
+        // A navigation to a playlist whose cover is due doubles as its ask: the
+        // page read answers the cover too, so no second read is issued.
+        self.cover_refresh.asked(playlist);
         Command::LoadTracks {
             playlist: playlist.to_owned(),
         }
@@ -1958,6 +2090,44 @@ impl Library {
             return None;
         }
         Some(self.reload())
+    }
+
+    /// The command that reads a playlist's cover again, if one is due.
+    ///
+    /// A page whose playlist has no rows loaded is asked for itself: a write can
+    /// leave the open page blank, and only the page's own read would ever fill
+    /// it. That ask is the read the page needs anyway, so it goes through
+    /// [`Self::load`] and doubles as the cover ask.
+    ///
+    /// A read for any other due playlist is a bare `LoadTracks`: its reply
+    /// writes that playlist's cover only, because the rows are written for the
+    /// wanted playlist alone. It therefore leaves the want and the page on
+    /// screen exactly as they are. The page on screen is kept out of the asks
+    /// only while its own read is in flight, because that reply answers its
+    /// cover; a settled page has no reply coming, so its dropped cover must be
+    /// asked for like any other.
+    pub fn tracks_request(&mut self) -> Option<Command> {
+        if let Some(Page::Playlist(playlist)) = self.history.current() {
+            let playlist = playlist.clone();
+            if listed(&self.playlists, &playlist, |entry| &entry.uri)
+                && matches!(self.tracks, Load::Idle)
+                && self.wanted.as_deref() != Some(playlist.as_str())
+            {
+                return Some(self.load(&playlist));
+            }
+        }
+        let present: Vec<String> = match &self.playlists {
+            Load::Ready(playlists) => playlists.iter().map(|entry| entry.uri.clone()).collect(),
+            Load::Idle | Load::Loading | Load::Failed(_) => Vec::new(),
+        };
+        let keep = match (self.selected(), &self.tracks) {
+            (Some(page), Load::Loading) if self.wanted.as_deref() == Some(page) => {
+                Some(page.to_owned())
+            }
+            _ => None,
+        };
+        let playlist = self.cover_refresh.take_due(&present, keep.as_deref())?;
+        Some(Command::LoadTracks { playlist })
     }
 
     /// The command that starts the likeness load, if one is due.
@@ -2220,7 +2390,8 @@ impl Library {
 mod tests {
     use takofy_model::{
         AddedAt, AlbumDetail, ArtistDetail, CoverUrl, Episode, FollowedShow, Move, PlaylistAccess,
-        PlaylistEntry, ReleaseKind, Removal, Revision, Show, ShowDetail, TrackEntry, TrackLyrics,
+        PlaylistCover, PlaylistEntry, ReleaseKind, Removal, Revision, Show, ShowDetail, TrackEntry,
+        TrackLyrics,
     };
 
     use super::*;
@@ -2461,16 +2632,69 @@ mod tests {
     }
 
     fn playlist_with_cover(uri: &str, name: &str, cover: CoverUrl) -> PlaylistEntry {
+        covered(uri, name, PlaylistCover::derived(cover))
+    }
+
+    fn playlist_with_chosen_cover(uri: &str, name: &str, cover: CoverUrl) -> PlaylistEntry {
+        covered(uri, name, PlaylistCover::chosen(cover))
+    }
+
+    fn covered(uri: &str, name: &str, cover: PlaylistCover) -> PlaylistEntry {
         PlaylistEntry {
-            uri: uri.to_owned(),
-            name: name.to_owned(),
-            named: true,
             cover: Some(cover),
-            description: None,
-            owner: None,
-            tracks: None,
-            access: None,
+            ..playlist(uri, name)
         }
+    }
+
+    /// The cover the sidebar row for `uri` holds.
+    fn entry_cover(library: &Library, uri: &str) -> Option<PlaylistCover> {
+        sidebar_entry(library, uri).and_then(|entry| entry.cover)
+    }
+
+    /// A library whose open page is `a`, showing `uris`, with `cover` on `a`'s
+    /// sidebar row.
+    fn covered_page(cover: &CoverUrl, uris: &[&str]) -> Library {
+        let mut library = page_with("a", uris, access(0x01, true));
+        library.playlists = Load::Ready(vec![with_access(
+            playlist_with_cover("a", "A", cover.clone()),
+            0x07,
+            true,
+            Some(uris.len()),
+        )]);
+        library
+    }
+
+    /// Whether the band would treat the open page as settled this frame.
+    fn settled(library: &Library) -> bool {
+        !matches!(library.tracks, Load::Loading)
+    }
+
+    /// A library whose open page is `a` and whose rows were dropped by an add
+    /// that landed while `a`'s own read was still in flight.
+    ///
+    /// The add is begun while another playlist is on screen, because the open
+    /// playlist is not an add target.
+    fn page_dropped_by_an_add(cover: Option<&CoverUrl>) -> Library {
+        let mut library = sidebar_library(&["a", "b"], 0x07, true, Some(1));
+        let listed = match cover {
+            Some(cover) => playlist_with_cover("a", "A", cover.clone()),
+            None => playlist("a", "A"),
+        };
+        library.playlists = Load::Ready(vec![
+            with_access(listed, 0x07, true, Some(1)),
+            with_access(playlist("b", "B"), 0x07, true, Some(1)),
+        ]);
+        library.select("b");
+        assert!(
+            library.add_tracks(0, &pick(&["spotify:track:x"])).is_some(),
+            "arrange: the add must be in flight"
+        );
+        library.select("a");
+        library.apply(&Update::TrackAdded {
+            playlist: "a".to_owned(),
+            revision: revision(0x08),
+        });
+        library
     }
 
     #[test]
@@ -4510,6 +4734,44 @@ mod tests {
     }
 
     #[test]
+    fn a_like_confirmation_ends_the_write_and_leaves_the_heart_on() {
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(Vec::new()));
+        assert_eq!(library.likes_request(), Some(Command::LoadLikedTracks));
+        library.apply(&Update::LikedTracks(Vec::new()));
+        let track = "spotify:track:a".to_owned();
+        assert!(
+            library.set_liked(vec![track.clone()], true).is_some(),
+            "arrange: the like must be in flight"
+        );
+        // A sweep asked for after the click is answered after it: it carries the
+        // set from before the write, so adopting it would wipe the confirmed like.
+        let _ = library.reload();
+        library.apply(&Update::Playlists(Vec::new()));
+        assert_eq!(
+            library.likes_request(),
+            Some(Command::LoadLikedTracks),
+            "arrange: the sweep must be in flight"
+        );
+
+        library.apply(&Update::Liked {
+            tracks: vec![track.clone()],
+            liked: true,
+        });
+        library.apply(&Update::LikedTracks(Vec::new()));
+
+        assert_eq!(
+            library.likes.state(&track),
+            Some(true),
+            "a confirmed like outlives a read issued before its write landed"
+        );
+        assert!(
+            library.set_liked(vec![track], false).is_some(),
+            "the confirmation never ended the write, so the heart could not be flipped again"
+        );
+    }
+
+    #[test]
     fn a_failure_sentence_does_not_survive_a_page_change() {
         let mut library = Library::default();
         library.apply(&Update::Playlists(Vec::new()));
@@ -6058,7 +6320,7 @@ mod tests {
     }
 
     #[test]
-    fn a_tracks_without_a_cover_leaves_the_entry_alone() {
+    fn a_non_awaited_none_cover_leaves_the_entry_alone() {
         let first = cover_url("first");
         let mut library = Library::default();
         library.apply(&Update::Playlists(vec![playlist_with_cover(
@@ -6075,7 +6337,8 @@ mod tests {
 
         assert_eq!(
             library.playlists,
-            Load::Ready(vec![playlist_with_cover("a", "A", first)])
+            Load::Ready(vec![playlist_with_cover("a", "A", first)]),
+            "a read that answers no ask cannot say why a cover is missing, so it clears none"
         );
     }
 
@@ -6160,6 +6423,1141 @@ mod tests {
 
         assert!(library.context_covers.is_empty(), "the key must be pruned");
         assert_eq!(library.playlists, Load::Ready(vec![playlist("b", "B")]));
+    }
+
+    #[test]
+    fn a_non_awaited_some_cover_is_stored_as_derived() {
+        let context = cover_url("context");
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(vec![playlist("a", "A")]));
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: vec![track("t")],
+            cover: Some(context.clone()),
+            access: None,
+        });
+
+        assert_eq!(
+            library.playlists,
+            Load::Ready(vec![playlist_with_cover("a", "A", context)]),
+            "a read that answers no ask still stores its cover, as derived"
+        );
+    }
+
+    #[test]
+    fn a_non_awaited_some_cover_never_replaces_a_chosen_one() {
+        let chosen = cover_url("chosen");
+        let context = cover_url("context");
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(vec![playlist_with_chosen_cover(
+            "a",
+            "A",
+            chosen.clone(),
+        )]));
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: vec![track("t")],
+            cover: Some(context),
+            access: None,
+        });
+
+        assert_eq!(
+            library.playlists,
+            Load::Ready(vec![playlist_with_chosen_cover("a", "A", chosen)]),
+            "a chosen picture is the user's own, so a read must not replace it"
+        );
+    }
+
+    #[test]
+    fn an_awaited_some_cover_is_stored_as_derived() {
+        let context = cover_url("context");
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(vec![playlist("a", "A")]));
+        // The row edit that drops a cover is what marks it due; seeding the ask
+        // here keeps the reply rule under test on its own.
+        library.cover_refresh.drop_for("a");
+        library.select("a");
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: vec![track("t")],
+            cover: Some(context.clone()),
+            access: None,
+        });
+
+        assert!(
+            !library.cover_refresh.answer("a"),
+            "the reply must consume the ask, or an unawaited reply would look awaited"
+        );
+        assert_eq!(
+            library.playlists,
+            Load::Ready(vec![playlist_with_cover("a", "A", context)]),
+            "a cover that answers an ask is stored as derived"
+        );
+    }
+
+    #[test]
+    fn an_awaited_none_cover_clears_a_derived_cover_and_its_cache_entry() {
+        let first = cover_url("first");
+        let context = cover_url("context");
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(vec![playlist_with_cover(
+            "a", "A", first,
+        )]));
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: vec![track("t")],
+            cover: Some(context),
+            access: None,
+        });
+        assert!(
+            library.context_covers.contains_key("a"),
+            "the arrange step must cache a context image"
+        );
+
+        library.cover_refresh.drop_for("a");
+        library.select("a");
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: Vec::new(),
+            cover: None,
+            access: None,
+        });
+
+        assert_eq!(
+            library.playlists,
+            Load::Ready(vec![playlist("a", "A")]),
+            "the reply to an ask with no cover clears the derived one"
+        );
+        assert!(
+            !library.context_covers.contains_key("a"),
+            "the cached image goes with the cover it was drawn from"
+        );
+    }
+
+    #[test]
+    fn an_awaited_none_cover_never_clears_a_chosen_one() {
+        let chosen = cover_url("chosen");
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(vec![playlist_with_chosen_cover(
+            "a",
+            "A",
+            chosen.clone(),
+        )]));
+        library.cover_refresh.drop_for("a");
+        library.select("a");
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: Vec::new(),
+            cover: None,
+            access: None,
+        });
+
+        assert!(
+            !library.cover_refresh.answer("a"),
+            "the ask was answered, so the chosen guard is what kept the cover"
+        );
+        assert_eq!(
+            library.playlists,
+            Load::Ready(vec![playlist_with_chosen_cover("a", "A", chosen)]),
+            "a reply to an ask must not clear a chosen picture"
+        );
+    }
+
+    #[test]
+    fn a_listing_reload_does_not_overlay_a_cached_cover_onto_a_chosen_entry() {
+        let context = cover_url("context");
+        let chosen = cover_url("chosen");
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(vec![playlist("a", "A")]));
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: vec![track("t")],
+            cover: Some(context),
+            access: None,
+        });
+        library.apply(&Update::Playlists(vec![playlist_with_chosen_cover(
+            "a",
+            "A",
+            chosen.clone(),
+        )]));
+
+        assert_eq!(
+            library.playlists,
+            Load::Ready(vec![playlist_with_chosen_cover("a", "A", chosen)]),
+            "a reload must not draw a cached derived image over a chosen picture"
+        );
+    }
+
+    #[test]
+    fn a_removed_playlist_is_forgotten_by_cover_refresh() {
+        let mut library = sidebar_library(&["a", "b"], 0x07, true, None);
+        library.cover_refresh.drop_for("a");
+        library.cover_refresh.asked("a");
+        library.cover_refresh.drop_for("a");
+        assert!(
+            library
+                .remove_from_library(&item(SidebarKind::Playlists, "a"))
+                .is_some()
+        );
+        library.apply(&Update::PlaylistRemoved {
+            playlist: "a".to_owned(),
+            revision: revision(0x09),
+        });
+
+        assert!(
+            library
+                .cover_refresh
+                .take_due(&names(&["a"]), None)
+                .is_none(),
+            "a removed playlist must not stay due for a cover"
+        );
+        assert!(
+            !library.cover_refresh.answer("a"),
+            "a removed playlist must not still be awaiting a cover"
+        );
+    }
+
+    #[test]
+    fn a_removed_playlist_takes_its_cached_cover_with_it() {
+        let context = cover_url("context");
+        let mut library = sidebar_library(&["a", "b"], 0x07, true, None);
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: Vec::new(),
+            cover: Some(context),
+            access: None,
+        });
+        assert!(
+            library.context_covers.contains_key("a"),
+            "arrange: the reply must cache a cover for the row"
+        );
+
+        assert!(
+            library
+                .remove_from_library(&item(SidebarKind::Playlists, "a"))
+                .is_some()
+        );
+        library.apply(&Update::PlaylistRemoved {
+            playlist: "a".to_owned(),
+            revision: revision(0x09),
+        });
+
+        assert!(
+            !library.context_covers.contains_key("a"),
+            "a cached cover outlived the row it belonged to"
+        );
+    }
+
+    #[test]
+    fn a_playlists_read_prunes_cover_refresh() {
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(vec![
+            playlist("a", "A"),
+            playlist("b", "B"),
+        ]));
+        library.cover_refresh.drop_for("b");
+        library.apply(&Update::Playlists(vec![playlist("a", "A")]));
+
+        assert!(
+            library
+                .cover_refresh
+                .take_due(&names(&["b"]), None)
+                .is_none(),
+            "a playlist the read no longer lists must not stay due"
+        );
+    }
+
+    #[test]
+    fn a_due_playlist_selected_answers_its_own_cover() {
+        let first = cover_url("first");
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(vec![playlist_with_cover(
+            "a", "A", first,
+        )]));
+        library.cover_refresh.drop_for("a");
+        library.select("a");
+
+        // Only the reply to an ask clears a cover, so this clear proves the
+        // navigation's own read was adopted as the answer.
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: Vec::new(),
+            cover: None,
+            access: None,
+        });
+
+        assert_eq!(
+            library.playlists,
+            Load::Ready(vec![playlist("a", "A")]),
+            "the read a navigation issued answers its own ask"
+        );
+    }
+
+    #[test]
+    fn a_failed_read_releases_the_ask() {
+        let first = cover_url("first");
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(vec![playlist_with_cover(
+            "a",
+            "A",
+            first.clone(),
+        )]));
+        library.cover_refresh.drop_for("a");
+        library.select("a");
+        library.apply(&Update::TracksFailed {
+            playlist: "a".to_owned(),
+            failure: Failure::Load,
+        });
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: Vec::new(),
+            cover: None,
+            access: None,
+        });
+
+        assert_eq!(
+            library.playlists,
+            Load::Ready(vec![playlist_with_cover("a", "A", first)]),
+            "the failure answered the ask, so the next reply is not awaited and clears nothing"
+        );
+    }
+
+    #[test]
+    fn an_awaited_reply_while_the_listing_loads_still_fills_the_cache() {
+        let old = cover_url("old");
+        let context = cover_url("context");
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(vec![playlist_with_cover(
+            "a",
+            "A",
+            old.clone(),
+        )]));
+        library.cover_refresh.drop_for("a");
+        library.select("a");
+        library.reload();
+        assert_eq!(library.playlists, Load::Loading);
+
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: vec![track("t")],
+            cover: Some(context.clone()),
+            access: None,
+        });
+        assert_eq!(
+            library.context_covers.get("a"),
+            Some(&context),
+            "an awaited reply fills the cache even with no list to write to"
+        );
+
+        library.apply(&Update::Playlists(vec![playlist_with_cover("a", "A", old)]));
+
+        assert_eq!(
+            library.playlists,
+            Load::Ready(vec![playlist_with_cover("a", "A", context)]),
+            "the listing's own cover is older than the reply, so the cache fills the row"
+        );
+    }
+
+    #[test]
+    fn removing_the_first_track_drops_the_cover_and_asks_for_it_again() {
+        let first = cover_url("first");
+        let mut library = covered_page(&first, &["spotify:track:t0", "spotify:track:t1"]);
+        assert!(
+            library
+                .remove_tracks("a", &[0], &moved(&["spotify:track:t0"]))
+                .is_some()
+        );
+
+        library.apply(&Update::TracksRemoved {
+            playlist: "a".to_owned(),
+            revision: revision(0x02),
+        });
+
+        assert_eq!(
+            entry_cover(&library, "a"),
+            None,
+            "the cover was taken from a track the list no longer starts with"
+        );
+        assert_eq!(
+            library.tracks_request(),
+            Some(Command::LoadTracks {
+                playlist: "a".to_owned()
+            }),
+            "a dropped cover is read again"
+        );
+    }
+
+    #[test]
+    fn removing_a_later_row_keeps_the_cover_and_asks_nothing() {
+        let first = cover_url("first");
+        let mut library = covered_page(
+            &first,
+            &["spotify:track:t0", "spotify:track:t1", "spotify:track:t2"],
+        );
+        assert!(
+            library
+                .remove_tracks("a", &[1], &moved(&["spotify:track:t1"]))
+                .is_some()
+        );
+
+        library.apply(&Update::TracksRemoved {
+            playlist: "a".to_owned(),
+            revision: revision(0x02),
+        });
+
+        assert_eq!(
+            entry_cover(&library, "a"),
+            Some(PlaylistCover::derived(first)),
+            "the first track is still the one the cover came from"
+        );
+        assert_eq!(
+            library.tracks_request(),
+            None,
+            "a cover that is still right must not be read again"
+        );
+    }
+
+    #[test]
+    fn moving_a_row_to_the_front_drops_the_cover() {
+        let first = cover_url("first");
+        let mut library = covered_page(
+            &first,
+            &["spotify:track:t0", "spotify:track:t1", "spotify:track:t2"],
+        );
+        assert!(move_one(&mut library, "a", 2, 0, &track("spotify:track:t2")).is_some());
+
+        library.apply(&Update::TrackMoved {
+            playlist: "a".to_owned(),
+            revision: revision(0x02),
+        });
+
+        assert_eq!(
+            entry_cover(&library, "a"),
+            None,
+            "the list now starts with another track, so its cover is wrong"
+        );
+        assert_eq!(
+            library.tracks_request(),
+            Some(Command::LoadTracks {
+                playlist: "a".to_owned()
+            }),
+            "a move that changes the first track drops and re-asks the cover"
+        );
+    }
+
+    #[test]
+    fn a_move_that_keeps_the_first_track_keeps_the_cover() {
+        let first = cover_url("first");
+        let mut library = covered_page(
+            &first,
+            &["spotify:track:t0", "spotify:track:t1", "spotify:track:t2"],
+        );
+        assert!(move_one(&mut library, "a", 1, 3, &track("spotify:track:t1")).is_some());
+
+        library.apply(&Update::TrackMoved {
+            playlist: "a".to_owned(),
+            revision: revision(0x02),
+        });
+
+        assert_eq!(
+            entry_cover(&library, "a"),
+            Some(PlaylistCover::derived(first)),
+            "rows two and three swapped, so the first track the cover came from is unchanged"
+        );
+        assert_eq!(
+            library.tracks_request(),
+            None,
+            "a move that keeps the first track asks for nothing"
+        );
+    }
+
+    #[test]
+    fn an_episode_in_front_does_not_count_as_the_first_track_in_a_move() {
+        let first = cover_url("first");
+        let mut library = covered_page(
+            &first,
+            &["spotify:episode:e", "spotify:track:t0", "spotify:track:t1"],
+        );
+        assert!(move_one(&mut library, "a", 2, 1, &track("spotify:track:t1")).is_some());
+
+        library.apply(&Update::TrackMoved {
+            playlist: "a".to_owned(),
+            revision: revision(0x02),
+        });
+
+        assert_eq!(
+            entry_cover(&library, "a"),
+            None,
+            "a cover comes from the first track, so a move past an episode still changes it"
+        );
+        assert_eq!(
+            library.tracks_request(),
+            Some(Command::LoadTracks {
+                playlist: "a".to_owned()
+            }),
+            "the first track changed, so the cover is read again"
+        );
+    }
+
+    #[test]
+    fn an_add_to_an_empty_playlist_asks_for_its_cover() {
+        let mut library = sidebar_library(&["a", "b"], 0x07, true, Some(0));
+        // An add is made from another page, so the target's own rows are not on
+        // screen to say which track came first.
+        library.open(album("spotify:album:x"));
+        assert!(library.add_tracks(0, &pick(&["spotify:track:x"])).is_some());
+
+        library.apply(&Update::TrackAdded {
+            playlist: "a".to_owned(),
+            revision: revision(0x08),
+        });
+
+        assert_eq!(
+            entry_cover(&library, "a"),
+            None,
+            "an empty list had no cover for the add to keep"
+        );
+        assert_eq!(
+            library.tracks_request(),
+            Some(Command::LoadTracks {
+                playlist: "a".to_owned()
+            }),
+            "a list an add filled needs its first cover read"
+        );
+    }
+
+    #[test]
+    fn an_add_to_a_playlist_with_a_cover_keeps_it() {
+        let first = cover_url("first");
+        let mut library = sidebar_library(&["a", "b"], 0x07, true, Some(2));
+        library.playlists = Load::Ready(vec![
+            with_access(
+                playlist_with_cover("a", "A", first.clone()),
+                0x07,
+                true,
+                Some(2),
+            ),
+            with_access(playlist("b", "B"), 0x07, true, Some(2)),
+        ]);
+        library.open(album("spotify:album:x"));
+        assert!(library.add_tracks(0, &pick(&["spotify:track:x"])).is_some());
+
+        library.apply(&Update::TrackAdded {
+            playlist: "a".to_owned(),
+            revision: revision(0x08),
+        });
+
+        assert_eq!(
+            entry_cover(&library, "a"),
+            Some(PlaylistCover::derived(first)),
+            "an append names the end of the list, so it cannot change its first track"
+        );
+        assert_eq!(
+            library.tracks_request(),
+            None,
+            "a cover an add kept is not read again"
+        );
+    }
+
+    #[test]
+    fn a_chosen_cover_survives_add_remove_and_move_and_asks_nothing() {
+        let chosen = cover_url("chosen");
+        let mut library = page_with(
+            "a",
+            &["spotify:track:t0", "spotify:track:t1", "spotify:track:t2"],
+            access(0x01, true),
+        );
+        library.playlists = Load::Ready(vec![with_access(
+            playlist_with_chosen_cover("a", "A", chosen.clone()),
+            0x07,
+            true,
+            Some(3),
+        )]);
+
+        assert!(
+            library
+                .remove_tracks("a", &[0], &moved(&["spotify:track:t0"]))
+                .is_some()
+        );
+        library.apply(&Update::TracksRemoved {
+            playlist: "a".to_owned(),
+            revision: revision(0x02),
+        });
+        assert_eq!(
+            entry_cover(&library, "a"),
+            Some(PlaylistCover::chosen(chosen.clone())),
+            "a chosen picture is the user's own, so a removal cannot drop it"
+        );
+
+        assert!(move_one(&mut library, "a", 1, 0, &track("spotify:track:t2")).is_some());
+        library.apply(&Update::TrackMoved {
+            playlist: "a".to_owned(),
+            revision: revision(0x03),
+        });
+        assert_eq!(
+            entry_cover(&library, "a"),
+            Some(PlaylistCover::chosen(chosen.clone())),
+            "a chosen picture is the user's own, so a move cannot drop it"
+        );
+
+        library.open(album("spotify:album:x"));
+        assert!(library.add_tracks(0, &pick(&["spotify:track:y"])).is_some());
+        library.apply(&Update::TrackAdded {
+            playlist: "a".to_owned(),
+            revision: revision(0x08),
+        });
+        assert_eq!(
+            entry_cover(&library, "a"),
+            Some(PlaylistCover::chosen(chosen)),
+            "a chosen picture is the user's own, so an add cannot drop it"
+        );
+        assert_eq!(
+            library.tracks_request(),
+            None,
+            "a chosen picture is never read over"
+        );
+    }
+
+    #[test]
+    fn a_reply_with_no_pending_write_drops_nothing() {
+        let first = cover_url("first");
+        let mut library = covered_page(&first, &["spotify:track:t0", "spotify:track:t1"]);
+
+        // No removal was begun, so this reply names no rows to compare.
+        library.apply(&Update::TracksRemoved {
+            playlist: "a".to_owned(),
+            revision: revision(0x02),
+        });
+
+        assert_eq!(
+            entry_cover(&library, "a"),
+            Some(PlaylistCover::derived(first)),
+            "a reply with no write pending cannot say a row changed"
+        );
+        assert_eq!(
+            library.tracks_request(),
+            None,
+            "a reply that drops nothing asks for nothing"
+        );
+    }
+
+    #[test]
+    fn a_reply_for_another_playlist_does_not_drop_a_pending_writes_cover() {
+        let first = cover_url("first");
+        let mut library = covered_page(&first, &["spotify:track:t0", "spotify:track:t1"]);
+        assert!(
+            library
+                .remove_tracks("a", &[0], &moved(&["spotify:track:t0"]))
+                .is_some()
+        );
+
+        // Neither reply has a write of its own on the list that holds the
+        // cover, so neither can say a row of it changed.
+        library.apply(&Update::TrackMoved {
+            playlist: "b".to_owned(),
+            revision: revision(0x09),
+        });
+        library.apply(&Update::TracksRemoved {
+            playlist: "b".to_owned(),
+            revision: revision(0x09),
+        });
+
+        assert_eq!(
+            entry_cover(&library, "a"),
+            Some(PlaylistCover::derived(first)),
+            "a reply for another playlist cannot drop the pending write's cover"
+        );
+        assert!(
+            library.pending.is_some(),
+            "the write for a is still in flight"
+        );
+        assert_eq!(
+            library.tracks_request(),
+            None,
+            "a reply that drops nothing asks for nothing"
+        );
+    }
+
+    #[test]
+    fn a_move_with_no_write_pending_drops_nothing() {
+        let first = cover_url("first");
+        let mut library = covered_page(&first, &["spotify:track:t0", "spotify:track:t1"]);
+
+        // No move was begun, so this reply names no rows to compare.
+        library.apply(&Update::TrackMoved {
+            playlist: "a".to_owned(),
+            revision: revision(0x02),
+        });
+
+        assert_eq!(
+            entry_cover(&library, "a"),
+            Some(PlaylistCover::derived(first)),
+            "a move reply with no write pending cannot say a row changed"
+        );
+        assert_eq!(
+            library.tracks_request(),
+            None,
+            "a reply that drops nothing asks for nothing"
+        );
+    }
+
+    #[test]
+    fn an_add_without_a_matching_pending_add_drops_nothing() {
+        let mut library = sidebar_library(&["a", "b"], 0x07, true, Some(0));
+
+        // The row shows no cover, so a hook placed before the guard would ask.
+        library.apply(&Update::TrackAdded {
+            playlist: "a".to_owned(),
+            revision: revision(0x08),
+        });
+
+        assert_eq!(
+            entry_cover(&library, "a"),
+            None,
+            "a reply naming no add of its own changes no cover"
+        );
+        assert_eq!(
+            library.tracks_request(),
+            None,
+            "a reply with no add pending asks for nothing"
+        );
+    }
+
+    #[test]
+    fn an_edit_on_the_open_page_asks_for_the_cover_without_touching_wanted_or_rows() {
+        let first = cover_url("first");
+        let mut library = covered_page(&first, &["spotify:track:t0", "spotify:track:t1"]);
+        assert!(
+            library
+                .remove_tracks("a", &[0], &moved(&["spotify:track:t0"]))
+                .is_some()
+        );
+        library.apply(&Update::TracksRemoved {
+            playlist: "a".to_owned(),
+            revision: revision(0x02),
+        });
+
+        assert_eq!(
+            library.tracks_request(),
+            Some(Command::LoadTracks {
+                playlist: "a".to_owned()
+            }),
+            "the dropped cover is asked for"
+        );
+        assert_eq!(
+            library.wanted.as_deref(),
+            Some("a"),
+            "a cover read for a listed playlist must not take the page's want"
+        );
+        assert_eq!(
+            library.tracks,
+            ready("a", &["spotify:track:t1"], access(0x02, true)),
+            "a bare cover read must not blank the rows on screen"
+        );
+    }
+
+    #[test]
+    fn an_add_while_the_page_is_idle_asks_once_and_marks_the_page_loading() {
+        let first = cover_url("first");
+        let mut library = page_dropped_by_an_add(Some(&first));
+        assert_eq!(
+            library.tracks,
+            Load::Idle,
+            "arrange: the add dropped the page"
+        );
+
+        assert_eq!(
+            library.tracks_request(),
+            Some(Command::LoadTracks {
+                playlist: "a".to_owned()
+            }),
+            "a page a write left blank is asked for once"
+        );
+        assert_eq!(
+            library.tracks,
+            Load::Loading,
+            "the ask marks the page loading, which is what stops a second one"
+        );
+        assert_eq!(
+            library.tracks_request(),
+            None,
+            "a page already loading is not asked for twice"
+        );
+    }
+
+    #[test]
+    fn an_add_while_the_page_is_loading_resets_it_and_the_re_ask_wins() {
+        let first = cover_url("first");
+        let mut library = page_dropped_by_an_add(Some(&first));
+        assert!(library.tracks_request().is_some(), "arrange: the re-ask");
+
+        // The read taken before the add, arriving after the re-ask was issued.
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: moved(&["spotify:track:t0", "spotify:track:t1"]),
+            cover: Some(first.clone()),
+            access: access(0x01, true),
+        });
+        assert_eq!(
+            library.tracks,
+            ready(
+                "a",
+                &["spotify:track:t0", "spotify:track:t1"],
+                access(0x01, true)
+            ),
+            "arrange: the pre-add reply lands as the page first, race and all"
+        );
+        // The re-ask's own reply, which is last and therefore the page.
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: moved(&["spotify:track:t0", "spotify:track:t1", "spotify:track:x"]),
+            cover: Some(first),
+            access: access(0x08, true),
+        });
+
+        assert_eq!(
+            library.tracks,
+            ready(
+                "a",
+                &["spotify:track:t0", "spotify:track:t1", "spotify:track:x"],
+                access(0x08, true)
+            ),
+            "the reply to the newest read is the page, whatever arrived in between"
+        );
+    }
+
+    #[test]
+    fn a_failed_page_is_never_asked_automatically() {
+        let mut library = sidebar_library(&["a", "b"], 0x07, true, Some(2));
+        library.select("a");
+        library.apply(&Update::TracksFailed {
+            playlist: "a".to_owned(),
+            failure: Failure::Load,
+        });
+
+        assert_eq!(
+            library.tracks_request(),
+            None,
+            "a failed page is left for its Retry, never read behind the user's back"
+        );
+        assert_eq!(
+            library.tracks,
+            Load::Failed(Failure::Load),
+            "and the failure stands for the Retry to see"
+        );
+    }
+
+    #[test]
+    fn a_failed_cover_re_ask_leaves_the_cover_dropped_and_does_not_ask_again() {
+        let first = cover_url("first");
+        let mut library = covered_page(&first, &["spotify:track:t0", "spotify:track:t1"]);
+        assert!(
+            library
+                .remove_tracks("a", &[0], &moved(&["spotify:track:t0"]))
+                .is_some()
+        );
+        library.apply(&Update::TracksRemoved {
+            playlist: "a".to_owned(),
+            revision: revision(0x02),
+        });
+        assert!(library.tracks_request().is_some(), "arrange: the re-ask");
+
+        library.apply(&Update::TracksFailed {
+            playlist: "a".to_owned(),
+            failure: Failure::Load,
+        });
+
+        assert_eq!(
+            entry_cover(&library, "a"),
+            None,
+            "a failed re-read leaves the cover dropped rather than restoring a wrong one"
+        );
+        assert_eq!(
+            library.tracks_request(),
+            None,
+            "a failed ask is not retried, so the hole cannot loop"
+        );
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: moved(&["spotify:track:t1"]),
+            cover: None,
+            access: access(0x02, true),
+        });
+        assert_eq!(
+            entry_cover(&library, "a"),
+            None,
+            "a later reply that answers no ask cannot say why the cover is missing"
+        );
+    }
+
+    #[test]
+    fn a_removed_or_unlisted_playlist_is_never_asked() {
+        let first = cover_url("first");
+        let mut unlisted = covered_page(&first, &["spotify:track:t0", "spotify:track:t1"]);
+        assert!(
+            unlisted
+                .remove_tracks("a", &[0], &moved(&["spotify:track:t0"]))
+                .is_some()
+        );
+        unlisted.apply(&Update::TracksRemoved {
+            playlist: "a".to_owned(),
+            revision: revision(0x02),
+        });
+        unlisted.apply(&Update::Playlists(Vec::new()));
+
+        assert_eq!(
+            unlisted.tracks_request(),
+            None,
+            "a playlist the list no longer names is never asked for"
+        );
+
+        let mut removed = covered_page(&first, &["spotify:track:t0", "spotify:track:t1"]);
+        removed.playlists = Load::Ready(vec![
+            with_access(
+                playlist_with_cover("a", "A", first.clone()),
+                0x07,
+                true,
+                Some(2),
+            ),
+            with_access(playlist("b", "B"), 0x07, true, Some(1)),
+        ]);
+        removed.apply(&Update::RootlistAccess(rootlist_access(0x07, true)));
+        assert!(
+            removed
+                .remove_tracks("a", &[0], &moved(&["spotify:track:t0"]))
+                .is_some()
+        );
+        removed.apply(&Update::TracksRemoved {
+            playlist: "a".to_owned(),
+            revision: revision(0x02),
+        });
+        assert!(
+            removed
+                .remove_from_library(&item(SidebarKind::Playlists, "a"))
+                .is_some()
+        );
+        removed.apply(&Update::PlaylistRemoved {
+            playlist: "a".to_owned(),
+            revision: revision(0x09),
+        });
+
+        assert_eq!(
+            removed.tracks_request(),
+            None,
+            "a playlist the user removed is never asked for"
+        );
+    }
+
+    #[test]
+    fn a_pre_edit_reply_arriving_after_the_edit_is_overwritten_by_the_re_ask() {
+        let first = cover_url("first");
+        let stale = cover_url("stale");
+        let mut library = covered_page(
+            &first,
+            &["spotify:track:t0", "spotify:track:t1", "spotify:track:t2"],
+        );
+        assert!(
+            library
+                .remove_tracks("a", &[0], &moved(&["spotify:track:t0"]))
+                .is_some()
+        );
+        library.apply(&Update::TracksRemoved {
+            playlist: "a".to_owned(),
+            revision: revision(0x02),
+        });
+
+        // The read taken before the removal answers no ask, so it is stored
+        // with the image it was taken with.
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: moved(&["spotify:track:t0", "spotify:track:t1", "spotify:track:t2"]),
+            cover: Some(stale.clone()),
+            access: access(0x01, true),
+        });
+        assert_eq!(
+            entry_cover(&library, "a"),
+            Some(PlaylistCover::derived(stale)),
+            "arrange: the pre-edit reply is stored before the re-ask is issued"
+        );
+
+        assert_eq!(
+            library.tracks_request(),
+            Some(Command::LoadTracks {
+                playlist: "a".to_owned()
+            }),
+            "arrange: the dropped cover is asked for again"
+        );
+
+        // The re-read answers the ask and finds no cover at all, and only that
+        // reply may say so.
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: moved(&["spotify:track:t1", "spotify:track:t2"]),
+            cover: None,
+            access: access(0x02, true),
+        });
+
+        assert_eq!(
+            entry_cover(&library, "a"),
+            None,
+            "the awaited answer's `None` clears the stale cover the pre-edit reply stored"
+        );
+    }
+
+    #[test]
+    fn two_quick_removals_end_with_the_last_answer() {
+        let first = cover_url("first");
+        let stale = cover_url("stale");
+        let mut library = covered_page(
+            &first,
+            &["spotify:track:t0", "spotify:track:t1", "spotify:track:t2"],
+        );
+        assert!(
+            library
+                .remove_tracks("a", &[0], &moved(&["spotify:track:t0"]))
+                .is_some()
+        );
+        library.apply(&Update::TracksRemoved {
+            playlist: "a".to_owned(),
+            revision: revision(0x02),
+        });
+        assert!(library.tracks_request().is_some(), "arrange: the first ask");
+
+        assert!(
+            library
+                .remove_tracks("a", &[0], &moved(&["spotify:track:t1"]))
+                .is_some()
+        );
+        library.apply(&Update::TracksRemoved {
+            playlist: "a".to_owned(),
+            revision: revision(0x03),
+        });
+        assert!(
+            library.tracks_request().is_some(),
+            "arrange: the second ask"
+        );
+
+        // The older ask's reply lands first, and the newer one has the last word.
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: moved(&["spotify:track:t1", "spotify:track:t2"]),
+            cover: Some(stale),
+            access: access(0x02, true),
+        });
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: moved(&["spotify:track:t2"]),
+            cover: None,
+            access: access(0x03, true),
+        });
+
+        assert_eq!(
+            entry_cover(&library, "a"),
+            None,
+            "the last answer said the list has no cover, so none is drawn"
+        );
+    }
+
+    #[test]
+    fn draining_tracks_request_terminates_with_several_due_playlists() {
+        let first = cover_url("first");
+        let mut library = covered_page(&first, &["spotify:track:t0", "spotify:track:t1"]);
+        let mut more = match &library.playlists {
+            Load::Ready(playlists) => playlists.clone(),
+            Load::Idle | Load::Loading | Load::Failed(_) => Vec::new(),
+        };
+        more.push(with_access(playlist("b", "B"), 0x07, true, Some(1)));
+        more.push(with_access(playlist("c", "C"), 0x07, true, Some(1)));
+        library.playlists = Load::Ready(more);
+        library.cover_refresh.drop_for("b");
+        library.cover_refresh.drop_for("c");
+
+        let mut asked = Vec::new();
+        for _ in 0..8 {
+            match library.tracks_request() {
+                Some(command) => asked.push(command),
+                None => break,
+            }
+        }
+
+        assert_eq!(
+            asked,
+            vec![
+                Command::LoadTracks {
+                    playlist: "b".to_owned()
+                },
+                Command::LoadTracks {
+                    playlist: "c".to_owned()
+                },
+            ],
+            "each due playlist is asked for exactly once"
+        );
+        assert_eq!(
+            library.tracks_request(),
+            None,
+            "the drain ends rather than spinning"
+        );
+    }
+
+    #[test]
+    fn the_shell_and_tracks_request_never_both_ask_for_one_page() {
+        let first = cover_url("first");
+        let mut library = page_dropped_by_an_add(Some(&first));
+
+        // The shell's own read goes first, and it marks the page loading.
+        assert_eq!(
+            library.open(Page::Playlist("a".to_owned())),
+            Some(Command::LoadTracks {
+                playlist: "a".to_owned()
+            }),
+            "arrange: the shell asks for the page"
+        );
+
+        assert_eq!(
+            library.tracks_request(),
+            None,
+            "a page the shell already asked for must not be asked for twice"
+        );
+    }
+
+    #[test]
+    fn a_created_playlist_keeps_its_cover_and_origin_through_a_later_add() {
+        let cover = cover_url("cover");
+        let new = "spotify:playlist:new";
+        let mut library = naming_library(&["a"], "Mix");
+        assert!(library.create_playlist().is_some());
+        library.apply(&Update::PlaylistCreated {
+            entry: with_access(
+                covered(new, "Mix", PlaylistCover::derived(cover.clone())),
+                0x08,
+                true,
+                Some(0),
+            ),
+            revision: revision(0x08),
+        });
+        assert_eq!(
+            entry_cover(&library, new),
+            Some(PlaylistCover::derived(cover.clone())),
+            "arrange: the created row carries the cover its reply named"
+        );
+
+        library.open(album("spotify:album:x"));
+        assert!(library.add_tracks(0, &pick(&["spotify:track:x"])).is_some());
+        library.apply(&Update::TrackAdded {
+            playlist: new.to_owned(),
+            revision: revision(0x09),
+        });
+
+        assert_eq!(
+            entry_cover(&library, new),
+            Some(PlaylistCover::derived(cover)),
+            "an append cannot change which track a cover came from"
+        );
+        assert_eq!(
+            library.tracks_request(),
+            None,
+            "so the new list's cover is not read again"
+        );
     }
 
     #[test]
@@ -6740,6 +8138,75 @@ mod tests {
         // nothing. This pins the settled rule for the empty list itself.
         assert!(settled);
         assert!(library.selected_entry().is_none());
+    }
+
+    #[test]
+    fn the_band_waits_instead_of_drawing_the_dropped_cover_as_a_hole() {
+        let first = cover_url("first");
+        let mut library = page_dropped_by_an_add(Some(&first));
+        assert!(
+            library.tracks_request().is_some(),
+            "arrange: the page is being read again"
+        );
+
+        let entry = library.selected_entry().expect("the selected entry");
+        assert_eq!(
+            band_cover(entry, settled(&library)),
+            BandCover::Pending,
+            "a cover being read waits, so the open band never draws a hole"
+        );
+    }
+
+    #[test]
+    fn the_band_draws_the_cover_the_re_read_brought() {
+        let first = cover_url("first");
+        let mut library = page_dropped_by_an_add(Some(&first));
+        assert!(library.tracks_request().is_some(), "arrange: the re-read");
+
+        let fresh = cover_url("fresh");
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: moved(&["spotify:track:x"]),
+            cover: Some(fresh.clone()),
+            access: access(0x08, true),
+        });
+
+        let entry = library.selected_entry().expect("the selected entry");
+        assert_eq!(
+            band_cover(entry, settled(&library)),
+            BandCover::Entry(Some(&fresh)),
+            "once the read lands the band draws the cover it brought"
+        );
+    }
+
+    #[test]
+    fn an_emptied_playlist_leaves_the_band_on_the_entry_with_no_cover() {
+        let first = cover_url("first");
+        let mut library = covered_page(&first, &["spotify:track:t0"]);
+        assert!(
+            library
+                .remove_tracks("a", &[0], &moved(&["spotify:track:t0"]))
+                .is_some()
+        );
+        library.apply(&Update::TracksRemoved {
+            playlist: "a".to_owned(),
+            revision: revision(0x02),
+        });
+        assert!(library.tracks_request().is_some(), "arrange: the re-ask");
+
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: Vec::new(),
+            cover: None,
+            access: access(0x02, true),
+        });
+
+        let entry = library.selected_entry().expect("the selected entry");
+        assert_eq!(
+            band_cover(entry, settled(&library)),
+            BandCover::Entry(None),
+            "an emptied playlist has no cover, and the band says so rather than waiting"
+        );
     }
     #[test]
     fn a_removal_issues_one_command_with_the_chain_and_the_held_revision() {
@@ -8203,6 +9670,32 @@ mod tests {
     }
 
     #[test]
+    fn a_link_invents_no_row_and_asks_for_the_list() {
+        let mut library = sidebar_library(&["a"], 0x07, true, None);
+        assert!(
+            library
+                .save_to_library(&item(SidebarKind::Playlists, "gone"))
+                .is_some()
+        );
+
+        library.apply(&Update::PlaylistLinked {
+            playlist: "gone".to_owned(),
+            revision: revision(0x08),
+        });
+
+        assert_eq!(
+            sidebar_order(&library),
+            names(&["a"]),
+            "the reply names no row, so the sidebar cannot draw one from it"
+        );
+        assert_eq!(
+            library.rootlist_request(),
+            Some(Command::ReloadLibrary),
+            "the linked row comes back by re-reading the list, not by inventing one"
+        );
+    }
+
+    #[test]
     fn a_failed_link_says_so_and_leaves_the_list_alone() {
         let mut library = sidebar_library(&["a"], 0x07, true, None);
         library.save_to_library(&item(SidebarKind::Playlists, "gone"));
@@ -8424,6 +9917,40 @@ mod tests {
         assert!(!library.renaming.is_open());
         assert!(!library.write_in_flight());
         assert_eq!(library.sidebar_notice, None);
+    }
+
+    #[test]
+    fn a_rename_leaves_the_cover_the_band_and_the_row_already_showed() {
+        let first = cover_url("first");
+        let mut library = covered_page(&first, &["spotify:track:t0"]);
+        rename_pending(&mut library, "a", crate::naming::Surface::Band);
+
+        library.apply(&Update::PlaylistRenamed {
+            playlist: "a".to_owned(),
+            name: "New Name".to_owned(),
+            revision: revision(0x09),
+        });
+
+        let entry = library.selected_entry().expect("the band's entry");
+        assert_eq!(
+            entry.name, "New Name",
+            "the band titles the playlist from a name the rename did not write"
+        );
+        assert_eq!(
+            band_cover(entry, settled(&library)),
+            BandCover::Entry(Some(&first)),
+            "a rename names the playlist, so it cannot change the picture beside the name"
+        );
+        assert_eq!(
+            entry_cover(&library, "a"),
+            Some(PlaylistCover::derived(first)),
+            "the sidebar row and the library card keep the cover they showed"
+        );
+        assert_eq!(
+            library.tracks_request(),
+            None,
+            "a rename marks no cover due, so it asks for no read of the page"
+        );
     }
 
     #[test]

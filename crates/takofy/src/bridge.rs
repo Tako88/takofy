@@ -1592,8 +1592,8 @@ mod tests {
     use takofy_core::login::{SourceError, SourceErrorKind, TokenSet, TokenSource};
     use takofy_model::{
         AlbumDetail, ArtistDetail, CoverImage, CoverUrl, Episode, FollowedArtist, FollowedShow,
-        LyricLine, Move, PlaylistAccess, PlaylistEntry, Removal, SavedAlbum, Show, ShowDetail,
-        TrackEntry, TrackLyrics,
+        LyricLine, Move, PlaylistAccess, PlaylistCover, PlaylistEntry, Removal, SavedAlbum, Show,
+        ShowDetail, TrackEntry, TrackLyrics,
     };
     use takofy_ui::signin::failure_message;
     use tokio::runtime::Runtime;
@@ -4162,7 +4162,7 @@ mod tests {
         let shared = Arc::clone(&host.shared);
         let cover = CoverUrl::from_wire("https://i.scdn.co/image/abcdef").expect("a cover");
         let read = PlaylistEntry {
-            cover: Some(cover.clone()),
+            cover: Some(PlaylistCover::derived(cover.clone())),
             description: Some("Made here".to_owned()),
             ..PlaylistEntry {
                 uri: CREATED.to_owned(),
@@ -4196,7 +4196,7 @@ mod tests {
         };
         assert_eq!(
             entry.cover,
-            Some(cover),
+            Some(PlaylistCover::derived(cover)),
             "the row draws the cover the read gave, not an empty slot"
         );
         assert_eq!(entry.description.as_deref(), Some("Made here"));

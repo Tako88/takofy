@@ -103,6 +103,44 @@ impl CoverImage {
 /// typed and a multi-byte character is still one of them.
 pub const PLAYLIST_NAME_MAX: usize = 100;
 
+/// Where a playlist's cover came from.
+///
+/// A chosen cover is one a user set, so no row edit may replace it. A derived
+/// cover is a copy of the playlist's first track, so an edit that changes that
+/// track invalidates it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CoverOrigin {
+    Chosen,
+    Derived,
+}
+
+/// A playlist's cover together with where it came from.
+///
+/// The url is never absent: an origin with nothing to name cannot be built.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlaylistCover {
+    pub url: CoverUrl,
+    pub origin: CoverOrigin,
+}
+
+impl PlaylistCover {
+    /// A cover a user set.
+    pub fn chosen(url: CoverUrl) -> Self {
+        Self {
+            url,
+            origin: CoverOrigin::Chosen,
+        }
+    }
+
+    /// A cover copied from the playlist's first track.
+    pub fn derived(url: CoverUrl) -> Self {
+        Self {
+            url,
+            origin: CoverOrigin::Derived,
+        }
+    }
+}
+
 /// A playlist as listed in the rootlist.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlaylistEntry {
@@ -111,7 +149,7 @@ pub struct PlaylistEntry {
     /// `false` when `name` is the URI fallback.
     pub named: bool,
     /// The playlist's cover, once one of the three sources names it.
-    pub cover: Option<CoverUrl>,
+    pub cover: Option<PlaylistCover>,
     /// The playlist's own description, collapsed to a line, when it has one.
     ///
     /// `None` is the wire giving nothing; an empty description is `None` rather
@@ -136,6 +174,11 @@ pub struct PlaylistEntry {
 }
 
 impl PlaylistEntry {
+    /// The playlist's cover image url, whatever its origin.
+    pub fn cover_url(&self) -> Option<&CoverUrl> {
+        self.cover.as_ref().map(|cover| &cover.url)
+    }
+
     /// The revision and length an add would be based on, when one may be made.
     ///
     /// It needs an editable list read at a known revision and a known count: the
@@ -507,8 +550,8 @@ pub struct PlaylistAccess {
 #[cfg(test)]
 mod tests {
     use super::{
-        AddedAt, CoverImage, CoverUrl, Episode, Move, PlaylistAccess, PlaylistEntry, PublishedAt,
-        Removal, Revision, TrackEntry, TrackLyrics,
+        AddedAt, CoverImage, CoverOrigin, CoverUrl, Episode, Move, PlaylistAccess, PlaylistCover,
+        PlaylistEntry, PublishedAt, Removal, Revision, TrackEntry, TrackLyrics,
     };
 
     fn revision(byte: u8) -> Revision {
@@ -571,6 +614,34 @@ mod tests {
             playlist(Some(0), access(true)).add_basis(),
             Some((&revision(1), 0))
         );
+    }
+
+    #[test]
+    fn a_chosen_cover_and_a_derived_cover_differ_only_in_origin() {
+        let url = CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover url");
+        assert_eq!(
+            PlaylistCover::chosen(url.clone()),
+            PlaylistCover {
+                url: url.clone(),
+                origin: CoverOrigin::Chosen,
+            }
+        );
+        assert_eq!(
+            PlaylistCover::derived(url.clone()),
+            PlaylistCover {
+                url,
+                origin: CoverOrigin::Derived,
+            }
+        );
+    }
+
+    #[test]
+    fn a_playlist_entry_hands_out_its_cover_url() {
+        let url = CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover url");
+        let mut entry = playlist(Some(1), access(true));
+        assert_eq!(entry.cover_url(), None, "no cover named");
+        entry.cover = Some(PlaylistCover::derived(url.clone()));
+        assert_eq!(entry.cover_url(), Some(&url));
     }
 
     #[test]

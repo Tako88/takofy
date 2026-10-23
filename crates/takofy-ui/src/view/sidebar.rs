@@ -723,7 +723,7 @@ impl ListItem for PlaylistEntry {
     }
 
     fn cover(&self) -> Option<&CoverUrl> {
-        self.cover.as_ref()
+        self.cover_url()
     }
 }
 
