@@ -20,6 +20,7 @@ pub mod menu;
 pub mod message;
 pub mod naming;
 pub mod player;
+pub mod prefs;
 pub mod queue;
 pub mod releases;
 pub mod removal;
