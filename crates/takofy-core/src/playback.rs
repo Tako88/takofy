@@ -295,7 +295,8 @@ mod tests {
     use librespot::playback::mixer::VolumeGetter;
 
     use super::{
-        Outcome, PlaybackError, PlaybackEvent, Volume, drive, duration_of, into_sole, map_event,
+        Outcome, PlaybackError, PlaybackEvent, Volume, attenuation, drive, duration_of, into_sole,
+        map_event,
     };
 
     /// The player reads the getter it was built with, so the cell behind it is
@@ -315,6 +316,22 @@ mod tests {
             (0.0..1.0).contains(&quieter),
             "60% is between silent and full, not {quieter}"
         );
+    }
+
+    /// librespot's curve is `Log(60 dB)`, so the gain is 10^(-3(1 - level)):
+    /// quiet enough at the bottom to be usable all the way down, instead of the
+    /// first fifth of the travel doing nothing audible.
+    #[test]
+    fn the_level_follows_the_log_curve() {
+        for percent in [1u16, 25, 60, 99] {
+            let level = f64::from(percent) / 100.0;
+            let expected = 10f64.powf(-3.0 * (1.0 - level));
+            let got = attenuation(percent);
+            assert!(
+                (got - expected).abs() < 1e-3,
+                "{percent}% is {got}, not the log curve's {expected}"
+            );
+        }
     }
 
     #[test]

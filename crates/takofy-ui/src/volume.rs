@@ -73,16 +73,27 @@ impl Volume {
         self.aim(level, false)
     }
 
-    /// Moves the level by `by` percent, clamped, and unmutes.
+    /// Moves the level by `by` percent from what is heard, clamped, and unmutes.
+    ///
+    /// The bar is a picture of the sound, so a step starts from where it is
+    /// drawn: muted, one step right is one step up from silence rather than from
+    /// the level waiting behind the lid.
     pub fn step(&mut self, by: i32) -> bool {
-        let level = i32::from(self.level)
+        let level = i32::from(self.effective())
             .saturating_add(by)
             .clamp(0, i32::from(MAX)) as u16;
         self.aim(level, false)
     }
 
     /// Silences without forgetting the level; pressing again brings it back.
+    ///
+    /// At zero there is nothing to silence, so the lid does not flip: a lit
+    /// button over an already silent player would offer an action with no sound
+    /// behind it.
     pub fn toggle_mute(&mut self) -> bool {
+        if self.level == 0 {
+            return false;
+        }
         self.aim(self.level, !self.muted)
     }
 
@@ -160,7 +171,16 @@ mod tests {
     fn muting_at_silence_changes_nothing_and_asks_for_nothing() {
         let mut volume = Volume::at(0);
         assert!(!volume.toggle_mute(), "there is nothing to silence");
+        assert!(!volume.muted(), "and the lid did not flip over silence");
         assert_eq!(volume.take(), None);
+    }
+
+    #[test]
+    fn a_step_starts_from_what_is_heard() {
+        let mut volume = Volume::muted_at(70);
+        assert!(volume.step(i32::from(STEP)));
+        assert_eq!(volume.level(), STEP, "one step up from silence");
+        assert!(!volume.muted(), "and the bar is not lying any more");
     }
 
     #[test]

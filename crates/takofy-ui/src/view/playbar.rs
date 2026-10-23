@@ -521,7 +521,8 @@ fn centre_column(
         Pen {
             tokens,
             claimed,
-            volume: Some(&mut transport.volume),
+            // The centre's runs are buttons: the slider is the extras' alone.
+            volume: None,
             can_act: &live,
         },
         &down_runs(queue),
@@ -551,7 +552,7 @@ fn centre_column(
         Pen {
             tokens,
             claimed,
-            volume: Some(&mut transport.volume),
+            volume: None,
             can_act: &live,
         },
         &up_runs(form, queue, bar),
@@ -658,7 +659,7 @@ fn centre_column(
 /// on release; the command that tells the player is taken once per change by
 /// `Transport::take_volume`.
 fn drag_volume(ui: &Ui, volume: &mut Volume, slot: &controls::Slot, rect: Rect) {
-    if slot.response.dragged() || slot.response.clicked() {
+    if slot.response.dragged() || slot.response.drag_stopped() || slot.response.clicked() {
         if let Some(pointer) = slot.response.interact_pointer_pos() {
             volume.set_fraction(controls::fraction_at(pointer.x, rect.left(), rect.width()));
         }
@@ -2465,6 +2466,67 @@ mod tests {
         assert!(
             accent_inside(&output, &tokens, shuffle),
             "an on shuffle did not take the accent"
+        );
+    }
+
+    #[test]
+    fn the_volume_slider_steps_with_its_arrow_keys() {
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        let mut volume = crate::volume::Volume::at(50);
+        let rect = Rect::from_min_size(Pos2::new(0.0, 100.0), Vec2::new(120.0, extent::SLIDER_H));
+        let input = |events: Vec<Event>| RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 300.0))),
+            events,
+            ..Default::default()
+        };
+
+        // Only Tab focuses a control and a test has no pointer to Tab with, so
+        // the slider is focused by hand.
+        let mut output = ctx.run_ui(input(Vec::new()), |ui| {
+            let slot = controls::slider(
+                ui,
+                &tokens,
+                VOLUME,
+                rect,
+                Some(volume.fraction()),
+                "Volume",
+                true,
+            );
+            ui.memory_mut(|memory| memory.request_focus(slot.response.id));
+            drag_volume(ui, &mut volume, &slot, rect);
+        });
+        output.textures_delta.clear();
+
+        for _ in 0..2 {
+            let mut output = ctx.run_ui(
+                input(vec![Event::Key {
+                    key: Key::ArrowRight,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                }]),
+                |ui| {
+                    let slot = controls::slider(
+                        ui,
+                        &tokens,
+                        VOLUME,
+                        rect,
+                        Some(volume.fraction()),
+                        "Volume",
+                        true,
+                    );
+                    drag_volume(ui, &mut volume, &slot, rect);
+                },
+            );
+            output.textures_delta.clear();
+        }
+
+        assert_eq!(
+            volume.level(),
+            50 + 2 * crate::volume::STEP,
+            "two steps of the arrow key did not move the level"
         );
     }
 
