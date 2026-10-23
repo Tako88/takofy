@@ -865,9 +865,17 @@ impl Library {
             Update::Followed {
                 artist, followed, ..
             } => {
+                // A write of this page's own, rather than the page's opening
+                // probe: only a write leaves a row the sidebar cannot draw.
+                let ours = self.follow.asking() == Some(true)
+                    && self.follow.artist() == Some(artist.as_str());
                 self.follow.apply(update);
                 if !followed {
                     self.end_saved(artist, false);
+                } else if ours {
+                    // The same reason an album's add re-arms its read: the
+                    // sidebar's artist list only gains a row by being read again.
+                    self.followed_artists = Load::Idle;
                 }
             }
             Update::FollowFailed { artist, .. } => {
@@ -967,6 +975,13 @@ impl Library {
                 listed(&self.playlists, uri, |entry| &entry.uri),
                 !matches!(self.playlists, Load::Idle | Load::Loading),
             ),
+            // An artist's entry in the library is its follow, and the page's own
+            // state is the only thing that knows it before the list is read.
+            "artist" => (
+                listed(&self.followed_artists, uri, |artist| &artist.uri)
+                    || (self.follow.artist() == Some(uri) && self.follow.confirmed() == Some(true)),
+                !matches!(self.followed_artists, Load::Idle),
+            ),
             _ => return None,
         };
         if here {
@@ -1015,6 +1030,17 @@ impl Library {
         self.sidebar_notice = None;
         self.remember_saved(uri, saved);
         if saved {
+            // An add names no card, so the list cannot gain the row on its own.
+            // Re-arming the read is what puts it in the sidebar; the next visit to
+            // the chip that lists this kind draws it there.
+            match uri
+                .strip_prefix("spotify:")
+                .and_then(|rest| rest.split_once(':'))
+            {
+                Some(("album", _)) => self.saved_albums = Load::Idle,
+                Some(("show", _)) => self.followed = Load::Idle,
+                _ => {}
+            }
             return;
         }
         if let Load::Ready(albums) = &mut self.saved_albums {
@@ -1370,7 +1396,9 @@ impl Library {
                 }
             }
             SidebarKind::Artists => {
-                if !listed(&self.followed_artists, &item.uri, |artist| &artist.uri) {
+                // The list answers for a row it draws; a band's menu is about the
+                // page's own artist, which the page's follow state knows first.
+                if self.is_saved(&item.uri) != Some(true) {
                     return None;
                 }
                 // A page's own follow write is already in flight; a second one
@@ -7998,6 +8026,74 @@ mod tests {
         );
         assert!(!library.write_in_flight());
         assert_eq!(library.sidebar_notice, None);
+    }
+
+    /// A saved album reaches the sidebar by re-reading the list that holds it: an
+    /// add names no card, so the list cannot gain the row on its own.
+    #[test]
+    fn a_saved_album_re_arms_the_list_that_would_hold_it() {
+        let mut library = saved_library();
+        assert!(matches!(library.saved_albums, Load::Ready(_)));
+        library.save_to_library(&item(SidebarKind::Albums, "spotify:album:new"));
+        library.apply(&Update::Saved {
+            uri: "spotify:album:new".to_owned(),
+            saved: true,
+        });
+
+        assert_eq!(
+            library.saved_albums,
+            Load::Idle,
+            "the list was not re-armed, so nothing would read it again"
+        );
+        assert_eq!(library.is_saved("spotify:album:new"), Some(true));
+    }
+
+    #[test]
+    fn a_saved_show_re_arms_the_shows_read() {
+        let mut library = saved_library();
+        library.save_to_library(&item(SidebarKind::Podcasts, "spotify:show:new"));
+        library.apply(&Update::Saved {
+            uri: "spotify:show:new".to_owned(),
+            saved: true,
+        });
+        assert_eq!(library.followed, Load::Idle);
+    }
+
+    #[test]
+    fn a_followed_artist_re_arms_the_artist_read() {
+        let mut library = Library::default();
+        library.apply(&Update::FollowedArtists(Vec::new()));
+        library.open(crate::route::Page::Artist("spotify:artist:new".to_owned()));
+        library.apply(&Update::Artist(artist_detail("spotify:artist:new")));
+        library.apply(&Update::Followed {
+            artist: "spotify:artist:new".to_owned(),
+            followed: false,
+        });
+        // The press is what makes the answer ours: the page's own probe carries
+        // the same shape and must not re-arm anything.
+        assert!(library.follow.pressed().is_some());
+
+        library.apply(&Update::Followed {
+            artist: "spotify:artist:new".to_owned(),
+            followed: true,
+        });
+        assert_eq!(library.followed_artists, Load::Idle);
+    }
+
+    #[test]
+    fn the_pages_own_probe_does_not_re_arm_the_artist_read() {
+        let mut library = Library::default();
+        library.apply(&Update::FollowedArtists(Vec::new()));
+        library.open(crate::route::Page::Artist("spotify:artist:new".to_owned()));
+        library.apply(&Update::Artist(artist_detail("spotify:artist:new")));
+        library.apply(&Update::Followed {
+            artist: "spotify:artist:new".to_owned(),
+            followed: true,
+        });
+        assert!(
+            matches!(library.followed_artists, Load::Ready(_)),
+            "a probe re-armed the list for nothing"
+        );
     }
 
     #[test]
