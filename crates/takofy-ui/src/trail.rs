@@ -1,51 +1,80 @@
 //! The current location as a stack of crumbs.
 //!
 //! The view draws the crumbs; this module only decides which ones exist, which
-//! one is current, and which one is a link back. It never measures text.
+//! one is current, and where a click on the others leads. It never measures text.
 
+use crate::format::root_filter_label;
 use crate::library::Library;
+use crate::library_filter::RootKind;
 use crate::route::Page;
 
 /// One entry in the location trail.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Crumb<'a> {
     pub label: &'a str,
     /// The deepest crumb, drawn as the current location.
     pub current: bool,
-    /// Whether the crumb can be clicked to go back.
-    pub link: bool,
+    /// Where a click goes. `None` draws the crumb as text.
+    pub target: Option<Target>,
+}
+
+/// Where a crumb leads.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Target {
+    /// The library root, showing one chip.
+    Root(RootKind),
+    /// A page.
+    Page(Page),
+}
+
+/// The root list a page's kind belongs to.
+///
+/// A search is not a list the root holds, so it has no middle crumb: the query
+/// is its own answer.
+fn owning_list(page: &Page) -> Option<RootKind> {
+    match page {
+        Page::Playlist(_) => Some(RootKind::Playlists),
+        Page::Album(_) => Some(RootKind::Albums),
+        Page::Artist(_) => Some(RootKind::Artists),
+        Page::Show(_) => Some(RootKind::Podcasts),
+        Page::Search(_) => None,
+    }
 }
 
 /// The trail for the current page.
 ///
-/// With the root on screen, Playlists is where you are. On any page Home and
-/// Playlists both become links back to the root, and the last crumb is current: the playlist's
-/// name once the list that names it is ready, the album's or artist's own name
-/// once its detail names this page, or the page's kind when there is no name to
-/// show. A
-/// playlist whose entry is not in a ready list is the one page that draws no
-/// current crumb at all.
+/// With the root on screen, Your Library is where you are. On any page Home
+/// leads back to the root as it was, the list the page belongs to leads back to
+/// the root showing that list's chip, and the last crumb is current: the
+/// playlist's name once the list that names it is ready, the album's or
+/// artist's own name once its detail names this page, or the page's kind when
+/// there is no name to show. A playlist whose entry is not in a ready list is
+/// the one page that draws no current crumb at all.
 pub fn trail(library: &Library) -> Vec<Crumb<'_>> {
     let mut crumbs = vec![Crumb {
         label: "Home",
         current: false,
-        link: library.page().is_some(),
+        target: library
+            .page()
+            .map(|_| Target::Root(library.root_filter.chosen())),
     }];
 
     let Some(page) = library.page() else {
         crumbs.push(Crumb {
-            label: "Playlists",
+            label: "Your Library",
             current: true,
-            link: false,
+            target: None,
         });
         return crumbs;
     };
 
-    crumbs.push(Crumb {
-        label: "Playlists",
-        current: false,
-        link: true,
-    });
+    if let Some(kind) = owning_list(page) {
+        crumbs.push(Crumb {
+            label: root_filter_label(kind),
+            current: false,
+            target: Some(Target::Root(kind)),
+        });
+    }
     let label = match page {
         Page::Playlist(_) => library.selected_name(),
         // The album's name only once it is loaded, and only for this page: a
@@ -75,7 +104,7 @@ pub fn trail(library: &Library) -> Vec<Crumb<'_>> {
         crumbs.push(Crumb {
             label,
             current: true,
-            link: false,
+            target: None,
         });
     }
 
@@ -126,7 +155,7 @@ mod tests {
         }
     }
 
-    /// The current crumb's label: the last crumb that is not a link.
+    /// The current crumb's label.
     fn current_label(library: &Library) -> Option<&str> {
         trail(library)
             .into_iter()
@@ -147,44 +176,89 @@ mod tests {
         }
     }
 
-    /// Home and Playlists both lead back to the root, and each names its own
-    /// `Control`: two links cannot share one widget id.
+    /// The middle crumb names the list the page lives in, and leads back to the
+    /// root showing that list's chip.
     #[test]
-    fn both_ways_back_are_links_on_a_page() {
+    fn a_page_names_the_list_it_lives_in() {
         let mut selected = Library::default();
         selected.apply(&Update::Playlists(vec![playlist("a", "Mix")]));
         selected.select("a");
 
-        let mut album = Library::default();
-        album.open(Page::Album("spotify:album:a".to_owned()));
-
-        let mut artist = Library::default();
-        artist.open(Page::Artist("spotify:artist:a".to_owned()));
-
-        let mut show = Library::default();
-        show.open(Page::Show("spotify:show:a".to_owned()));
-
-        for library in [selected, album, artist, show] {
+        for (page, kind, label) in [
+            (
+                Page::Album("spotify:album:a".to_owned()),
+                RootKind::Albums,
+                "Albums",
+            ),
+            (
+                Page::Artist("spotify:artist:a".to_owned()),
+                RootKind::Artists,
+                "Artists",
+            ),
+            (
+                Page::Show("spotify:show:a".to_owned()),
+                RootKind::Podcasts,
+                "Podcasts",
+            ),
+        ] {
+            let mut library = Library::default();
+            library.open(page);
             let crumbs = trail(&library);
-            let links: Vec<&str> = crumbs
-                .iter()
-                .filter(|crumb| crumb.link)
-                .map(|crumb| crumb.label)
-                .collect();
-            assert_eq!(links, ["Home", "Playlists"], "{crumbs:?}");
+            assert_eq!(crumbs[1].label, label, "{crumbs:?}");
+            assert_eq!(crumbs[1].target, Some(Target::Root(kind)), "{crumbs:?}");
         }
+
+        let crumbs = trail(&selected);
+        assert_eq!(crumbs[1].label, "Playlists");
+        assert_eq!(crumbs[1].target, Some(Target::Root(RootKind::Playlists)));
     }
 
-    /// At the root there is nowhere to go back to, so neither is a link.
+    /// Home goes back to the root as it was; the list crumb goes back to the
+    /// root showing that list.
     #[test]
-    fn the_root_trail_has_no_link() {
+    fn home_keeps_the_chip_and_the_list_crumb_sets_it() {
+        let mut library = Library::default();
+        library.root_filter.choose(RootKind::Artists);
+        library.open(Page::Album("spotify:album:a".to_owned()));
+
+        let crumbs = trail(&library);
+        assert_eq!(crumbs[0].target, Some(Target::Root(RootKind::Artists)));
+        assert_eq!(crumbs[1].target, Some(Target::Root(RootKind::Albums)));
+    }
+
+    /// A search is not a list the root holds, so it has no middle crumb.
+    #[test]
+    fn a_search_page_has_no_list_crumb() {
+        let mut library = Library::default();
+        library.open(Page::Search("never gonna".to_owned()));
+
+        assert_eq!(
+            trail(&library),
+            vec![
+                Crumb {
+                    label: "Home",
+                    current: false,
+                    target: Some(Target::Root(RootKind::All)),
+                },
+                Crumb {
+                    label: "Search",
+                    current: true,
+                    target: None,
+                },
+            ]
+        );
+    }
+
+    /// At the root there is nowhere to go back to.
+    #[test]
+    fn the_root_trail_has_nowhere_to_go() {
         let mut library = Library::default();
         library.apply(&Update::Playlists(vec![playlist("a", "Mix")]));
-        assert!(trail(&library).iter().all(|crumb| !crumb.link));
+        assert!(trail(&library).iter().all(|crumb| crumb.target.is_none()));
     }
 
     #[test]
-    fn no_selection_gives_home_then_playlists_as_current() {
+    fn the_root_trail_is_home_then_the_library() {
         let library = Library::default();
         assert_eq!(
             trail(&library),
@@ -192,19 +266,19 @@ mod tests {
                 Crumb {
                     label: "Home",
                     current: false,
-                    link: false,
+                    target: None,
                 },
                 Crumb {
-                    label: "Playlists",
+                    label: "Your Library",
                     current: true,
-                    link: false,
+                    target: None,
                 },
             ]
         );
     }
 
     #[test]
-    fn a_selection_gives_home_a_playlists_link_and_the_name() {
+    fn a_selection_gives_home_a_list_link_and_the_name() {
         let mut library = Library::default();
         library.apply(&Update::Playlists(vec![playlist("a", "Mix")]));
         library.select("a");
@@ -215,17 +289,17 @@ mod tests {
                 Crumb {
                     label: "Home",
                     current: false,
-                    link: true,
+                    target: Some(Target::Root(RootKind::All)),
                 },
                 Crumb {
                     label: "Playlists",
                     current: false,
-                    link: true,
+                    target: Some(Target::Root(RootKind::Playlists)),
                 },
                 Crumb {
                     label: "Mix",
                     current: true,
-                    link: false,
+                    target: None,
                 },
             ]
         );
@@ -239,7 +313,7 @@ mod tests {
         let crumbs = trail(&library);
         assert_eq!(crumbs.len(), 2);
         assert_eq!(crumbs[1].label, "Playlists");
-        assert!(crumbs[1].link);
+        assert_eq!(crumbs[1].target, Some(Target::Root(RootKind::Playlists)));
         assert!(!crumbs.iter().any(|crumb| crumb.current));
     }
 
@@ -253,33 +327,6 @@ mod tests {
         )));
 
         assert_eq!(current_label(&library), Some("Signal Decay"));
-    }
-
-    #[test]
-    fn a_search_page_names_its_kind() {
-        let mut library = Library::default();
-        library.open(Page::Search("never gonna".to_owned()));
-
-        assert_eq!(
-            trail(&library),
-            vec![
-                Crumb {
-                    label: "Home",
-                    current: false,
-                    link: true,
-                },
-                Crumb {
-                    label: "Playlists",
-                    current: false,
-                    link: true,
-                },
-                Crumb {
-                    label: "Search",
-                    current: true,
-                    link: false,
-                },
-            ]
-        );
     }
 
     #[test]
@@ -328,7 +375,7 @@ mod tests {
         assert_eq!(crumbs.len(), 3);
         assert_eq!(crumbs[2].label, "Signal Decay");
         assert!(crumbs[2].current);
-        assert!(!crumbs[2].link);
+        assert_eq!(crumbs[2].target, None);
         assert_eq!(
             crumbs.iter().filter(|crumb| crumb.current).count(),
             1,
@@ -418,6 +465,7 @@ mod tests {
             Page::Show("spotify:show:a".to_owned()),
         ] {
             let kind = page.kind();
+            let list = owning_list(&page).expect("every drawn page lives in a list");
             let mut library = Library::default();
             library.open(page);
 
@@ -427,17 +475,17 @@ mod tests {
                     Crumb {
                         label: "Home",
                         current: false,
-                        link: true,
+                        target: Some(Target::Root(RootKind::All)),
                     },
                     Crumb {
-                        label: "Playlists",
+                        label: root_filter_label(list),
                         current: false,
-                        link: true,
+                        target: Some(Target::Root(list)),
                     },
                     Crumb {
                         label: kind,
                         current: true,
-                        link: false,
+                        target: None,
                     },
                 ]
             );

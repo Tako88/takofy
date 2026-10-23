@@ -15,11 +15,14 @@ use crate::availability::Control;
 use crate::icon::{self, Icon};
 use crate::layout::{self, Sidebar};
 use crate::library::Library;
+use crate::library_filter::RootKind;
+use crate::route::Page;
 use crate::search::{Act, KeyInput, MenuView};
 use crate::theme::icon::Size;
 use crate::theme::{
     MonoWeight, Tokens, Weight, extent, fonts, radius, space, stroke, text, tracking,
 };
+use crate::trail::Target;
 
 use super::controls;
 use super::keys::{FIELD_FILTER, pressed, pressed_once};
@@ -58,14 +61,18 @@ pub struct Field {
 }
 
 /// A move the topbar can ask the shell for.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Nav {
     /// Back to the previous page.
     Back,
     /// Forward to the page Back left behind.
     Forward,
-    /// Back to the library root, which is Home.
+    /// Back to the library root, which is Home, showing the chip it showed.
     Home,
+    /// Back to the library root, showing one chip.
+    Root(RootKind),
+    /// Open a page.
+    Page(Page),
 }
 
 /// Draws the topbar inside `rect`.
@@ -129,6 +136,7 @@ pub fn show(
         ];
         let side = extent::BUTTON;
         let top = crate::view::shell::row_centre(ui) - side / 2.0;
+        let last = cluster.len() - 1;
         for (index, (control, glyph, label, requested, live, current)) in
             cluster.into_iter().enumerate()
         {
@@ -149,7 +157,7 @@ pub fn show(
             }
             // The cluster is exactly its buttons and the gaps between them, so
             // the last one gets no trailing gap to overflow the row by.
-            let advance = if index + 1 == cluster.len() {
+            let advance = if index == last {
                 extent::BUTTON
             } else {
                 extent::BUTTON + space::S1
@@ -161,8 +169,13 @@ pub fn show(
     // The trail draws before the field, because the crumbs borrow the library
     // the field has to be edited through: once `trail` returns, the borrow is
     // done and the search state is free.
-    if trail(ui, &crumbs, places.trail, tokens) {
-        nav = Some(Nav::Home);
+    if let Some((index, target)) = trail(ui, &crumbs, places.trail, tokens) {
+        // Home leads to the root as it is; a list crumb sets the chip it names.
+        nav = Some(match (index, target) {
+            (0, _) => Nav::Home,
+            (_, Target::Root(kind)) => Nav::Root(kind),
+            (_, Target::Page(page)) => Nav::Page(page),
+        });
     }
     let search_field = search(ui, places.search, &mut library.search, tokens);
 
@@ -210,11 +223,17 @@ fn strokes(crumbs: &[crate::trail::Crumb<'_>]) -> f32 {
 }
 
 /// The path you came by, flush against the topbar's right padding.
-fn trail(ui: &mut Ui, crumbs: &[crate::trail::Crumb<'_>], rect: Rect, tokens: &Tokens) -> bool {
+/// The crumb a click landed on, with where it leads.
+fn trail(
+    ui: &mut Ui,
+    crumbs: &[crate::trail::Crumb<'_>],
+    rect: Rect,
+    tokens: &Tokens,
+) -> Option<(usize, Target)> {
     let font = FontId::new(text::XXS, fonts::mono(MonoWeight::Medium));
     let spacing = recipe::tracking_pts(text::XXS, tracking::WIDE);
     let mut x = rect.left();
-    let mut clicked = false;
+    let mut clicked = None;
 
     for (index, crumb) in crumbs.iter().enumerate() {
         if index > 0 {
@@ -253,10 +272,9 @@ fn trail(ui: &mut Ui, crumbs: &[crate::trail::Crumb<'_>], rect: Rect, tokens: &T
                 tokens.palette.accent,
             );
             ui.painter().galley(place.min, galley, base);
-        } else if crumb.link {
-            // Home and Playlists lead to the same place, so each names its own
-            // control: two links sharing one widget id is egui's second-use
-            // warning over the trail.
+        } else if crumb.target.is_some() {
+            // Each crumb names its own control, because two links sharing one
+            // widget id is egui's second-use warning over the trail.
             let control = if index == 0 {
                 Control::TrailHome
             } else {
@@ -281,7 +299,9 @@ fn trail(ui: &mut Ui, crumbs: &[crate::trail::Crumb<'_>], rect: Rect, tokens: &T
                 recipe::spaced(ui, &label, font.clone(), color, spacing)
             };
             ui.painter().galley(place.min, galley, color);
-            clicked |= slot.response.clicked();
+            if slot.response.clicked() {
+                clicked = crumb.target.clone().map(|target| (index, target));
+            }
         } else {
             // Home at the root has nowhere to go, so it is text, not a control.
             ui.painter().galley(place.min, galley, base);
@@ -578,7 +598,7 @@ mod tests {
 
         let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 40.0));
         let at = Pos2::new(rect.left() + 2.0, rect.center().y);
-        let mut back = false;
+        let mut back = None;
         for event in crate::view::test_support::click_events(at) {
             let input = egui::RawInput {
                 screen_rect: Some(rect),
@@ -586,14 +606,16 @@ mod tests {
                 ..Default::default()
             };
             let mut output = ctx.run_ui(input, |ui| {
-                if trail(ui, &crumbs, rect, &tokens) {
-                    back = true;
+                if let Some(clicked) = trail(ui, &crumbs, rect, &tokens) {
+                    back = Some(clicked);
                 }
             });
             output.textures_delta.clear();
         }
 
-        assert!(back, "the Home crumb did not ask for the root");
+        let (index, target) = back.expect("the Home crumb did not ask for the root");
+        assert_eq!(index, 0, "Home is the first crumb");
+        assert_eq!(target, Target::Root(RootKind::All));
     }
 
     /// The magnifier sits at the field's left edge, so the text has to start

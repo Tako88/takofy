@@ -967,6 +967,13 @@ fn apply_nav(
             library.to_playlists();
             None
         }
+        // A list crumb asks for the root showing its own chip.
+        Some(topbar::Nav::Root(kind)) => {
+            library.to_playlists();
+            library.root_filter.choose(kind);
+            None
+        }
+        Some(topbar::Nav::Page(page)) => library.open(page),
     }
 }
 
@@ -1133,6 +1140,7 @@ mod tests {
     use super::*;
     use crate::cover::Art;
     use crate::library::{Library, Load};
+    use crate::library_filter::RootKind;
     use crate::menu::LibraryItem;
     use crate::message::{Failure, Update};
     use crate::player::{NowPlaying, Transport, TransportState};
@@ -1579,6 +1587,7 @@ mod tests {
     }
 
     const PLAYLIST: &str = "spotify:playlist:a";
+    const ARTIST: &str = "spotify:artist:a";
     const ALBUM: &str = "spotify:album:b";
     const ALBUM_B: &str = "spotify:album:c";
 
@@ -2271,6 +2280,44 @@ mod tests {
         );
         assert_eq!(library.page(), Some(&Page::Playlist(PLAYLIST.to_owned())));
         assert_eq!(library.tracks, Load::Loading);
+    }
+
+    /// A list crumb asks for the root showing its own chip, which is the whole
+    /// reason a crumb names a list rather than just "back".
+    #[test]
+    fn a_list_crumb_returns_to_the_root_on_its_own_chip() {
+        let mut library = Library::default();
+        library.select(PLAYLIST);
+        library.root_filter.choose(RootKind::Albums);
+
+        assert_eq!(
+            apply_nav(
+                &mut library,
+                Some(topbar::Nav::Root(RootKind::Playlists)),
+                None
+            ),
+            None
+        );
+        assert_eq!(library.page(), None, "the root is on screen");
+        assert_eq!(library.root_filter.chosen(), RootKind::Playlists);
+    }
+
+    /// A crumb that names a page opens it.
+    #[test]
+    fn a_page_crumb_opens_the_page() {
+        let mut library = Library::default();
+
+        assert_eq!(
+            apply_nav(
+                &mut library,
+                Some(topbar::Nav::Page(Page::Artist(ARTIST.to_owned()))),
+                None,
+            ),
+            Some(Command::LoadArtist {
+                artist: ARTIST.to_owned()
+            })
+        );
+        assert_eq!(library.page(), Some(&Page::Artist(ARTIST.to_owned())));
     }
 
     /// Draws one frame of the whole shell at `screen` and returns the covers it
