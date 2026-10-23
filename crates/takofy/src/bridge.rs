@@ -2198,6 +2198,9 @@ mod tests {
         last_seek: AtomicUsize,
         volumes: AtomicUsize,
         last_volume: AtomicUsize,
+        /// The level the fake player was built at, so a test can tell a level
+        /// that arrived before the player existed from one that arrived after.
+        level_at_player_start: AtomicUsize,
         players: AtomicUsize,
         player_started: AtomicBool,
         shutdowns: AtomicUsize,
@@ -2229,6 +2232,8 @@ mod tests {
                 shared: Arc::new(FakeState {
                     connect_scripts: Mutex::new(connect),
                     rootlist_script: Mutex::new(rootlist),
+                    // A fresh app starts at full, as `Volume::default()` does.
+                    last_volume: AtomicUsize::new(100),
                     ..FakeState::default()
                 }),
             }
@@ -2894,6 +2899,12 @@ mod tests {
             }
             if !self.shared.player_started.swap(true, Ordering::SeqCst) {
                 self.shared.players.fetch_add(1, Ordering::SeqCst);
+                // The player is built with a handle to the level cell, so it
+                // starts at whatever the level held when it was built.
+                self.shared.level_at_player_start.store(
+                    self.shared.last_volume.load(Ordering::SeqCst),
+                    Ordering::SeqCst,
+                );
                 let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
                 *self.shared.event_tx.lock().expect("lock") = Some(tx);
                 *self.shared.events.lock().expect("lock") = Some(rx);
@@ -7681,6 +7692,79 @@ mod tests {
         );
         assert_eq!(shared.players.load(Ordering::SeqCst), 1);
         assert_eq!(shared.shutdowns.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_volume_command_ahead_of_the_play_is_the_level_the_player_starts_at() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+        let (play_started_tx, play_started_rx) = channel();
+        *shared.play_started.lock().expect("lock") = Some(play_started_tx);
+
+        run_window(runtime(), host, store, source, move |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            ui_end
+                .commands
+                .send(Command::Volume { percent: 35 })
+                .expect("volume");
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::Play {
+                    uri: "spotify:track:x".to_owned(),
+                })
+                .expect("play");
+            play_started_rx.recv().expect("play started");
+        });
+
+        assert_eq!(
+            shared.level_at_player_start.load(Ordering::SeqCst),
+            35,
+            "the queue delivers in order, and the player is built with the level the host holds"
+        );
+        assert_eq!(
+            shared.volumes.load(Ordering::SeqCst),
+            1,
+            "the queue delivers in order, so the one level sent arrives once"
+        );
+        assert_eq!(
+            shared.players.load(Ordering::SeqCst),
+            1,
+            "the queue delivers in order, so the play after the level starts one player"
+        );
+    }
+
+    #[test]
+    fn a_player_with_no_volume_command_starts_at_full() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+        let (play_started_tx, play_started_rx) = channel();
+        *shared.play_started.lock().expect("lock") = Some(play_started_tx);
+
+        run_window(runtime(), host, store, source, move |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::Play {
+                    uri: "spotify:track:x".to_owned(),
+                })
+                .expect("play");
+            play_started_rx.recv().expect("play started");
+        });
+
+        assert_eq!(
+            shared.level_at_player_start.load(Ordering::SeqCst),
+            100,
+            "a player started without a level is at full, not silent"
+        );
+        assert_eq!(shared.volumes.load(Ordering::SeqCst), 0);
     }
 
     #[test]

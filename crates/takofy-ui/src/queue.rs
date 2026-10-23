@@ -175,7 +175,9 @@ impl Queue {
                 self.skips = 0;
                 // An armed queue has no current entry to replay, so the first
                 // play starts the first row.
-                self.goto(self.index.unwrap_or(0), transport)
+                let row = self.index.unwrap_or(0);
+                self.draw_if_undrawn(row);
+                self.goto(row, transport)
             }
         }
     }
@@ -472,6 +474,7 @@ impl Queue {
             return None;
         }
         self.skips = 0;
+        self.draw_if_undrawn(index);
         self.goto(index, transport)
     }
 
@@ -493,6 +496,23 @@ impl Queue {
     /// Whether shuffle is on.
     pub fn shuffle(&self) -> bool {
         self.shuffle
+    }
+
+    /// Applies the saved modes, seeding shuffle only while nothing is loaded.
+    ///
+    /// Returns whether shuffle was applied: `false` means repeat took and
+    /// shuffle did not.
+    ///
+    /// Shuffle seeded on an empty queue leaves the snapshot empty, so the first
+    /// play draws the coming rows. Rows already present keep their order: a
+    /// saved flag must not permute a list someone is looking at.
+    pub fn restore_modes(&mut self, repeat: Repeat, shuffle: bool) -> bool {
+        self.repeat = repeat;
+        if !self.tracks.is_empty() {
+            return false;
+        }
+        self.shuffle = shuffle;
+        true
     }
 
     /// Turns shuffle on or off.
@@ -601,6 +621,28 @@ impl Queue {
         let seed = shuffle::splitmix(&mut self.rng);
         let order = shuffle::order(self.tracks.len() - first, seed);
         self.reorder_tail(first, &order);
+    }
+
+    /// Draws the rows after `row` for a first play that no `start` draws for.
+    ///
+    /// An armed queue with shuffle on holds its rows in list order: the row
+    /// about to play keeps its place, the rows before it stay history, and the
+    /// rest are drawn, with the list's order kept for turning shuffle off.
+    fn draw_if_undrawn(&mut self, row: usize) {
+        // A started queue has already drawn and an empty one has nothing to
+        // draw: the callers exclude both, so these two guards are defences.
+        if !self.shuffle
+            || self.index.is_some()
+            || !self.snapshot.is_empty()
+            || self.tracks.is_empty()
+        {
+            return;
+        }
+        self.snapshot = self.uris();
+        self.draw_after(row + 1);
+        // The draw moved the rows the pick names onto other tracks.
+        self.selection.clear();
+        self.refocus = None;
     }
 
     /// Whether `row` is in the editable region: after the current entry.
@@ -1607,6 +1649,223 @@ mod tests {
             "nothing was playing, so nothing became current"
         );
         assert_eq!(queue.first_upcoming(), 0);
+    }
+
+    #[test]
+    fn restore_modes_on_an_empty_queue_sets_both_and_returns_true() {
+        let mut queue = Queue::seeded(9);
+
+        assert!(
+            queue.restore_modes(Repeat::All, true),
+            "an empty queue takes both saved modes"
+        );
+        assert_eq!(queue.repeat(), Repeat::All);
+        assert!(queue.shuffle());
+    }
+
+    #[test]
+    fn restore_modes_with_rows_sets_only_repeat_and_returns_false() {
+        let mut queue = Queue::seeded(9);
+        queue.append(tracks(4));
+        let before = order(&queue);
+
+        assert!(
+            !queue.restore_modes(Repeat::One, true),
+            "rows already hold an order, so the shuffle flag is not applied"
+        );
+        assert_eq!(queue.repeat(), Repeat::One, "repeat is only a mode");
+        assert!(!queue.shuffle(), "the loaded order was not drawn");
+        assert!(queue.armed());
+        assert_eq!(order(&queue), before);
+    }
+
+    #[test]
+    fn restore_modes_off_false_on_a_default_queue_changes_nothing() {
+        let mut queue = Queue::default();
+
+        assert!(
+            queue.restore_modes(Repeat::Off, false),
+            "an empty queue takes both saved modes"
+        );
+        assert_eq!(queue.repeat(), Repeat::Off);
+        assert!(!queue.shuffle());
+        assert!(queue.tracks.is_empty());
+        assert!(queue.snapshot.is_empty());
+    }
+
+    #[test]
+    fn the_first_play_of_an_armed_restored_shuffle_queue_draws_the_rest() {
+        let list = tracks(4);
+        let mut queue = Queue::seeded(9);
+        queue.restore_modes(Repeat::Off, true);
+        queue.append(list.clone());
+        let mut transport = Transport::default();
+
+        assert_eq!(
+            queue.toggle(&mut transport),
+            Some(play("t0")),
+            "the first row is the user's choice"
+        );
+
+        let mut drawn = Queue::seeded(9);
+        drawn.start_with_shuffle(&list, 0, &mut Transport::default());
+        assert_eq!(
+            order(&queue),
+            order(&drawn),
+            "the rest is drawn as a started list draws it"
+        );
+        assert!(holds_exactly(&queue, 4), "every row is still queued");
+        assert!(
+            !queue.snapshot.is_empty(),
+            "shuffle off needs the list's order back"
+        );
+    }
+
+    #[test]
+    fn shuffle_off_after_an_armed_first_play_restores_list_order() {
+        let mut queue = Queue::seeded(9);
+        queue.restore_modes(Repeat::Off, true);
+        queue.append(tracks(4));
+        queue.toggle(&mut Transport::default());
+
+        queue.toggle_shuffle();
+
+        assert_eq!(order(&queue), uris(&["t0", "t1", "t2", "t3"]));
+        assert_eq!(
+            queue.current().map(|entry| entry.uri.as_str()),
+            Some("t0"),
+            "the playing row keeps its entry"
+        );
+        assert_eq!(queue.index, Some(0));
+    }
+
+    #[test]
+    fn a_jump_on_an_armed_restored_shuffle_queue_draws_only_the_rows_after_it() {
+        let mut queue = Queue::seeded(9);
+        queue.restore_modes(Repeat::Off, true);
+        queue.append(tracks(4));
+        let mut transport = Transport::default();
+
+        assert_eq!(queue.jump(1, &mut transport), Some(play("t1")));
+
+        let order = order(&queue);
+        assert_eq!(
+            order[..2],
+            uris(&["t0", "t1"]),
+            "the row jumped to and the ones before it keep their place"
+        );
+        let mut tail = order[2..].to_vec();
+        tail.sort();
+        assert_eq!(tail, uris(&["t2", "t3"]), "the rest is a permutation");
+        assert_ne!(
+            &order[2..],
+            &uris(&["t2", "t3"]),
+            "a drawn order never repeats the one the rows had"
+        );
+        assert_eq!(
+            queue.snapshot,
+            uris(&["t0", "t1", "t2", "t3"]),
+            "the snapshot holds the list's order"
+        );
+        assert_eq!(queue.index, Some(1));
+    }
+
+    #[test]
+    fn a_one_row_armed_shuffle_queue_plays_its_only_row() {
+        let mut queue = Queue::seeded(9);
+        queue.restore_modes(Repeat::Off, true);
+        queue.append(tracks(1));
+        let mut transport = Transport::default();
+
+        assert_eq!(queue.toggle(&mut transport), Some(play("t0")));
+
+        assert_eq!(order(&queue), uris(&["t0"]));
+        assert_eq!(queue.index, Some(0));
+    }
+
+    #[test]
+    fn a_jump_to_the_last_row_of_an_armed_shuffle_queue_plays_it() {
+        let mut queue = Queue::seeded(9);
+        queue.restore_modes(Repeat::Off, true);
+        queue.append(tracks(4));
+        let mut transport = Transport::default();
+
+        assert_eq!(queue.jump(3, &mut transport), Some(play("t3")));
+
+        assert_eq!(queue.index, Some(3));
+        assert_eq!(
+            queue.current().map(|entry| entry.uri.as_str()),
+            Some("t3"),
+            "the row jumped to is the one that plays"
+        );
+        assert_eq!(
+            order(&queue),
+            uris(&["t0", "t1", "t2", "t3"]),
+            "there is no tail to draw, so every row keeps its place"
+        );
+    }
+
+    #[test]
+    fn the_first_play_of_a_drawn_queue_clears_the_picks() {
+        let mut queue = Queue::seeded(9);
+        queue.restore_modes(Repeat::Off, true);
+        queue.append(tracks(4));
+        queue.press(2, Press::Replace);
+        queue.refocus_at(3);
+        assert_eq!(picked(&queue), vec![2]);
+        let mut transport = Transport::default();
+
+        queue.toggle(&mut transport);
+
+        assert!(
+            picked(&queue).is_empty(),
+            "the picks name rows that now hold other tracks"
+        );
+        assert!(queue.refocus().is_none());
+    }
+
+    #[test]
+    fn an_armed_queue_with_shuffle_off_is_not_drawn_on_first_play() {
+        let mut queue = Queue::seeded(9);
+        queue.append(tracks(4));
+        let mut transport = Transport::default();
+
+        assert_eq!(queue.toggle(&mut transport), Some(play("t0")));
+
+        assert_eq!(order(&queue), uris(&["t0", "t1", "t2", "t3"]));
+        assert!(queue.snapshot.is_empty(), "nothing was drawn");
+    }
+
+    #[test]
+    fn a_second_toggle_or_jump_after_the_first_play_does_not_redraw() {
+        let mut queue = Queue::seeded(9);
+        queue.restore_modes(Repeat::Off, true);
+        queue.append(tracks(4));
+        let mut transport = Transport::default();
+        queue.toggle(&mut transport);
+        let before = order(&queue);
+        let rng = queue.rng;
+
+        queue.toggle(&mut transport);
+        queue.jump(2, &mut transport);
+
+        assert_eq!(order(&queue), before, "the draw happens once");
+        assert_eq!(queue.rng, rng, "and the generator is not advanced again");
+    }
+
+    #[test]
+    fn shuffle_toggled_on_an_armed_queue_is_not_drawn_twice() {
+        let mut queue = Queue::seeded(9);
+        queue.append(tracks(5));
+        queue.toggle_shuffle();
+        let before = order(&queue);
+        let rng = queue.rng;
+        let mut transport = Transport::default();
+
+        queue.toggle(&mut transport);
+
+        assert_eq!(order(&queue), before, "the first play kept the drawn order");
+        assert_eq!(queue.rng, rng, "and drew nothing itself");
     }
 
     #[test]

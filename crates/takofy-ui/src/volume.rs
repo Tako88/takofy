@@ -30,14 +30,29 @@ impl Default for Volume {
 impl Volume {
     /// A volume at `level`, with nothing owed to the player.
     ///
-    /// Used both for the default and for seeding a remembered level at startup:
-    /// a level the player already has is not a change.
+    /// The player starts at full on its own, so this seeds only what the slider
+    /// shows: no command is sent and the speakers stay where they were.
     pub fn at(level: u16) -> Self {
         Self {
             level: level.min(MAX),
             muted: false,
             pending: None,
         }
+    }
+
+    /// A volume remembered from a preferences file, owing the player what it
+    /// should sound at now.
+    ///
+    /// A remembered mute at zero is not a mute: there is nothing to silence and
+    /// no level waiting behind a lid.
+    pub fn restored(level: u16, muted: bool) -> Self {
+        let mut volume = if muted && level > 0 {
+            Self::muted_at(level)
+        } else {
+            Self::at(level)
+        };
+        volume.pending = Some(volume.effective());
+        volume
     }
 
     /// A seeded volume that is also muted, for a remembered mute.
@@ -203,5 +218,51 @@ mod tests {
         assert_eq!(volume.level(), 0, "and does not wrap");
         volume.step(i32::MAX);
         assert_eq!(volume.level(), MAX);
+    }
+
+    #[test]
+    fn restored_unmuted_owes_the_level_once() {
+        let mut volume = Volume::restored(70, false);
+
+        assert_eq!(volume.level(), 70);
+        assert_eq!(volume.take(), Some(70), "the player must hear the level");
+        assert_eq!(volume.take(), None, "one restore is one command");
+    }
+
+    #[test]
+    fn restored_muted_owes_silence_and_keeps_the_level() {
+        let mut volume = Volume::restored(70, true);
+
+        assert_eq!(volume.take(), Some(0), "muted means silence is owed");
+        assert_eq!(volume.level(), 70, "the level waits behind the lid");
+        assert!(volume.muted());
+
+        assert!(volume.toggle_mute());
+        assert_eq!(volume.take(), Some(70), "unmuting restores the level");
+    }
+
+    #[test]
+    fn restored_muted_at_zero_is_not_muted() {
+        let mut volume = Volume::restored(0, true);
+
+        assert!(!volume.muted(), "there is nothing to silence at zero");
+        assert_eq!(volume.take(), Some(0), "the player is still told silence");
+    }
+
+    #[test]
+    fn restored_clamps_the_level() {
+        let volume = Volume::restored(250, false);
+
+        assert_eq!(volume.level(), MAX, "nothing above full is a level");
+    }
+
+    #[test]
+    fn set_fraction_zero_while_muted_unmutes_at_zero_and_owes_nothing() {
+        let mut volume = Volume::muted_at(70);
+
+        assert!(!volume.set_fraction(0.0), "the sound was already silent");
+        assert_eq!(volume.level(), 0);
+        assert!(!volume.muted(), "a zero level has no lid to lift");
+        assert_eq!(volume.take(), None, "silence to silence is no command");
     }
 }

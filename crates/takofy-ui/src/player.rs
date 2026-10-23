@@ -764,6 +764,43 @@ mod tests {
     }
 
     #[test]
+    fn a_restored_level_is_one_command_on_the_first_take() {
+        let mut transport = Transport {
+            volume: Volume::restored(35, false),
+            ..Transport::default()
+        };
+        assert_eq!(
+            transport.take_volume(),
+            Some(Command::Volume { percent: 35 }),
+            "a restored level must reach the player, not stay a slider position"
+        );
+        assert_eq!(transport.take_volume(), None, "one change is one command");
+    }
+
+    #[test]
+    fn a_restored_mute_takes_volume_to_zero() {
+        let mut transport = Transport {
+            volume: Volume::restored(35, true),
+            ..Transport::default()
+        };
+        assert_eq!(
+            transport.take_volume(),
+            Some(Command::Volume { percent: 0 }),
+            "a restored mute owes the level that is heard, which is silence"
+        );
+    }
+
+    #[test]
+    fn a_default_transport_owes_no_volume_command() {
+        let mut transport = Transport::default();
+        assert_eq!(
+            transport.take_volume(),
+            None,
+            "the player already starts at full, so there is nothing to send"
+        );
+    }
+
+    #[test]
     fn every_state_has_a_label() {
         for state in [
             TransportState::Loading,
