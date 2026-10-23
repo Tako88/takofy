@@ -198,6 +198,12 @@ impl eframe::App for TakofyApp {
         if let Some(command) = command {
             let _ = self.ui_end.commands.send(command);
         }
+        // The volume is not the frame's one command: a frame that already asked
+        // for something else would drop the level, and the bar would then show a
+        // level the player never got.
+        if let Some(command) = self.transport.take_volume() {
+            let _ = self.ui_end.commands.send(command);
+        }
         // After the draw, because only the draw arms the read: a navigation
         // that leaves the page idle asks for the frame that sends it.
         self.wake_search(ui.ctx());

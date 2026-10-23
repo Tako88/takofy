@@ -35,3 +35,4 @@ pub mod theme;
 pub mod trail;
 pub mod verbs;
 pub mod view;
+pub mod volume;

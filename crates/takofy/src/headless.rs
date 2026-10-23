@@ -10,6 +10,7 @@ use std::process::ExitCode;
 use librespot::core::SessionConfig;
 use takofy_core::credentials::AccessToken;
 use takofy_core::engine::{Engine, EngineError};
+use takofy_core::playback::Volume;
 use takofy_core::{Outcome, PlaybackError, PlaybackEvent, TrackPages, drive};
 use takofy_model::TrackEntry;
 
@@ -55,7 +56,7 @@ async fn pick_playlist(engine: &Engine) -> Result<Option<String>, EngineError> {
 }
 
 async fn play(engine: &Engine, track: &TrackEntry) -> Result<ExitCode, EngineError> {
-    let (playback, events) = match engine.playback() {
+    let (playback, events) = match engine.playback(Volume::default()) {
         Ok(pair) => pair,
         Err(PlaybackError::NoAudioDevice) => {
             eprintln!("error: no audio output device available");

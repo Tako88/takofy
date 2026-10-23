@@ -6,14 +6,68 @@
 //! only the receiver, never the player.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use librespot::core::{Session, SpotifyUri};
 use librespot::metadata::audio::item::AudioItem;
 use librespot::playback::audio_backend::{self, SinkBuilder};
-use librespot::playback::config::{AudioFormat, PlayerConfig};
-use librespot::playback::mixer::NoOpVolume;
+use librespot::playback::config::{AudioFormat, PlayerConfig, VolumeCtrl};
+use librespot::playback::mixer::VolumeGetter;
+use librespot::playback::mixer::mappings::MappedCtrl;
 use librespot::playback::player::{Player, PlayerEvent, PlayerEventChannel};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+
+/// The loudest level a slider can name.
+pub const VOLUME_MAX: u16 = 100;
+
+/// The gain, shared with the player thread.
+///
+/// librespot reads the attenuation per packet through the `VolumeGetter` it was
+/// built with, and its player has no setter, so the level lives here: the binary
+/// keeps a handle to the same cell the player reads, and one atomic store
+/// changes what comes out of the speakers.
+#[derive(Clone, Debug)]
+pub struct Volume {
+    /// The attenuation factor as `f64` bits, because there is no `AtomicF64`.
+    attenuation: Arc<AtomicU64>,
+}
+
+impl Volume {
+    /// A handle to the level, seeded at `percent`.
+    pub fn at(percent: u16) -> Self {
+        Self {
+            attenuation: Arc::new(AtomicU64::new(attenuation(percent).to_bits())),
+        }
+    }
+
+    /// Sets the level. 0 is silence, 100 is unity gain, and anything above is
+    /// clamped rather than louder than the source.
+    pub fn set(&self, percent: u16) {
+        self.attenuation
+            .store(attenuation(percent).to_bits(), Ordering::Relaxed);
+    }
+}
+
+impl Default for Volume {
+    fn default() -> Self {
+        Self::at(VOLUME_MAX)
+    }
+}
+
+impl VolumeGetter for Volume {
+    fn attenuation_factor(&self) -> f64 {
+        f64::from_bits(self.attenuation.load(Ordering::Relaxed))
+    }
+}
+
+/// The gain one percent names.
+///
+/// librespot's own log curve, so the slider's travel sounds like every other
+/// client's instead of inventing a law of its own.
+fn attenuation(percent: u16) -> f64 {
+    let level = u32::from(percent.min(VOLUME_MAX)) * u32::from(u16::MAX) / u32::from(VOLUME_MAX);
+    VolumeCtrl::default().to_mapped(level as u16)
+}
 
 /// A playback event with the librespot types stripped out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -128,6 +182,7 @@ impl Playback {
     /// Needs an active Tokio runtime: the event forwarder is spawned on it.
     pub fn start(
         session: Session,
+        volume: Volume,
     ) -> Result<(Self, UnboundedReceiver<PlaybackEvent>), PlaybackError> {
         let build: SinkBuilder = audio_backend::find(None).ok_or(PlaybackError::NoAudioBackend)?;
         let format = AudioFormat::default();
@@ -144,7 +199,7 @@ impl Playback {
         let player = Player::new(
             PlayerConfig::default(),
             session,
-            Box::new(NoOpVolume),
+            Box::new(volume),
             sink_builder,
         );
         // Register the event sender before any `load`, on the same FIFO queue.
@@ -237,7 +292,47 @@ mod tests {
     use librespot::metadata::audio::{AudioFiles, AudioItem, UniqueFields};
     use librespot::playback::player::PlayerEvent;
 
-    use super::{Outcome, PlaybackError, PlaybackEvent, drive, duration_of, into_sole, map_event};
+    use librespot::playback::mixer::VolumeGetter;
+
+    use super::{
+        Outcome, PlaybackError, PlaybackEvent, Volume, drive, duration_of, into_sole, map_event,
+    };
+
+    /// The player reads the getter it was built with, so the cell behind it is
+    /// the whole interface: a clone must see what the other handle sets.
+    #[test]
+    fn the_players_handle_reads_what_the_window_sets() {
+        let window = Volume::default();
+        let player = window.clone();
+        assert_eq!(player.attenuation_factor(), 1.0, "full volume by default");
+
+        window.set(0);
+        assert_eq!(player.attenuation_factor(), 0.0, "zero is silence");
+
+        window.set(60);
+        let quieter = player.attenuation_factor();
+        assert!(
+            (0.0..1.0).contains(&quieter),
+            "60% is between silent and full, not {quieter}"
+        );
+    }
+
+    #[test]
+    fn a_lower_level_is_quieter_and_above_full_is_clamped() {
+        let volume = Volume::at(50);
+        let half = volume.attenuation_factor();
+        volume.set(20);
+        assert!(volume.attenuation_factor() < half, "less is quieter");
+
+        volume.set(100);
+        assert_eq!(volume.attenuation_factor(), 1.0);
+        volume.set(150);
+        assert_eq!(
+            volume.attenuation_factor(),
+            1.0,
+            "a level past full is never louder than the source"
+        );
+    }
 
     fn track() -> SpotifyUri {
         SpotifyUri::from_uri("spotify:track:4uLU6hMCjMI75M1A2tKUQC").expect("valid track uri")

@@ -178,8 +178,8 @@ pub fn availability(control: Control) -> Availability {
         Control::Miniplayer => Availability::Waiting,
         Control::Queue => Availability::Ready, // #35
         Control::Devices => Availability::Waiting,
-        Control::Mute => Availability::Waiting,
-        Control::Volume => Availability::Waiting,
+        Control::Mute => Availability::Ready,       // #35
+        Control::Volume => Availability::Ready,     // #35
         Control::Fullscreen => Availability::Ready, // #35
 
         // A row's like and more are not the playbar's like or the Now Playing
@@ -248,6 +248,8 @@ mod tests {
                     | Control::Shuffle
                     | Control::Repeat
                     | Control::Queue
+                    | Control::Mute
+                    | Control::Volume
                     | Control::Fullscreen
                     | Control::HeroPlay
                     | Control::HeroMore

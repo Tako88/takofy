@@ -106,6 +106,8 @@ pub enum Command {
     Stop,
     /// Jump to `position_ms` within the loaded track.
     Seek { position_ms: u32 },
+    /// Set the player's level. 0 is silence, 100 is unity gain.
+    Volume { percent: u16 },
     /// Fetch the playlists again.
     ReloadLibrary,
     /// Fetch one cover image from the worker.

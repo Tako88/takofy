@@ -497,6 +497,7 @@ pub(crate) fn start<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                 Event::Command(Some(Command::Resume)) => host.resume(),
                 Event::Command(Some(Command::Stop)) => host.stop(),
                 Event::Command(Some(Command::Seek { position_ms })) => host.seek(position_ms),
+                Event::Command(Some(Command::Volume { percent })) => host.set_volume(percent),
                 // The arm only spawns: the fetch must not park the command loop
                 // that also awaits host calls. A signed-out window has no cover
                 // to want, and every request is answered either way.
@@ -2118,6 +2119,8 @@ mod tests {
         stops: AtomicUsize,
         seeks: AtomicUsize,
         last_seek: AtomicUsize,
+        volumes: AtomicUsize,
+        last_volume: AtomicUsize,
         players: AtomicUsize,
         player_started: AtomicBool,
         shutdowns: AtomicUsize,
@@ -2831,6 +2834,13 @@ mod tests {
             self.shared
                 .last_seek
                 .store(position_ms as usize, Ordering::SeqCst);
+        }
+
+        fn set_volume(&self, percent: u16) {
+            self.shared.volumes.fetch_add(1, Ordering::SeqCst);
+            self.shared
+                .last_volume
+                .store(usize::from(percent), Ordering::SeqCst);
         }
 
         fn shutdown(self) -> impl Future<Output = Result<(), SessionError>> + Send {
@@ -7478,6 +7488,10 @@ mod tests {
                 .expect("seek");
             ui_end
                 .commands
+                .send(Command::Volume { percent: 35 })
+                .expect("volume");
+            ui_end
+                .commands
                 .send(Command::ReloadLibrary)
                 .expect("reload");
             loop {
@@ -7489,6 +7503,12 @@ mod tests {
 
         assert_eq!(shared.seeks.load(Ordering::SeqCst), 1);
         assert_eq!(shared.last_seek.load(Ordering::SeqCst), 41_000);
+        assert_eq!(shared.volumes.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            shared.last_volume.load(Ordering::SeqCst),
+            35,
+            "the level the window drew is the level the player was told"
+        );
         assert_eq!(shared.players.load(Ordering::SeqCst), 1);
         assert_eq!(shared.shutdowns.load(Ordering::SeqCst), 1);
     }

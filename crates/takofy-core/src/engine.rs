@@ -9,7 +9,7 @@ use crate::context::{ContextError, Page, PageSource, Walker};
 use crate::credentials::AccessToken;
 use crate::followed::FollowedError;
 use crate::lyrics::LyricsError;
-use crate::playback::{Playback, PlaybackError, PlaybackEvent};
+use crate::playback::{Playback, PlaybackError, PlaybackEvent, Volume};
 use crate::playlist_edit::{self, PlaylistError};
 use crate::remote::{
     ROOTLIST_WIRE, RemoteContext, RemoteRootlist, label_playlists, label_tracks, read_album,
@@ -92,6 +92,7 @@ impl Engine {
     /// Needs an active Tokio runtime: the event forwarder is spawned on it.
     pub fn playback(
         &self,
+        volume: Volume,
     ) -> Result<
         (
             Playback,
@@ -99,7 +100,7 @@ impl Engine {
         ),
         PlaybackError,
     > {
-        Playback::start(self.session.clone())
+        Playback::start(self.session.clone(), volume)
     }
 
     /// A paged, labelled view of a playlist's tracks.

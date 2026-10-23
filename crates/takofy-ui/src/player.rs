@@ -9,6 +9,7 @@ use takofy_model::CoverUrl;
 
 use crate::message::{Command, Failure, TransportUpdate, Update};
 use crate::signin::failure_message;
+use crate::volume::Volume;
 
 /// How often the bar is redrawn while a track plays. A repaint rate this
 /// interpolation depends on, so it is not a design token.
@@ -85,6 +86,8 @@ pub struct Transport {
     /// Whether the pointer is still down. Ending a drag is a one-shot transition,
     /// so asking twice about the same release asks once.
     pub dragging: bool,
+    /// The player's level and its lid.
+    pub volume: Volume,
 }
 
 /// The position and state a redraw interpolates from.
@@ -95,6 +98,16 @@ pub struct Anchor {
 }
 
 impl Transport {
+    /// The level the player has not been told, as the command that tells it.
+    ///
+    /// Taken rather than read, so a frame sends one command per change instead of
+    /// one per redraw of an unchanged bar.
+    pub fn take_volume(&mut self) -> Option<Command> {
+        self.volume
+            .take()
+            .map(|percent| Command::Volume { percent })
+    }
+
     /// Folds one update in, reporting whether the anchor moved so the caller
     /// can restamp its clock.
     pub fn apply(&mut self, update: &Update) -> bool {

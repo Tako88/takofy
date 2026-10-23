@@ -9,7 +9,7 @@ use std::future::Future;
 use librespot::core::SessionConfig;
 use takofy_core::credentials::AccessToken;
 use takofy_core::engine::{Engine, EngineError, RootlistRead};
-use takofy_core::playback::{Playback, PlaybackError, PlaybackEvent};
+use takofy_core::playback::{Playback, PlaybackError, PlaybackEvent, Volume};
 use takofy_model::{
     AlbumDetail, ArtistDetail, CoverUrl, FollowedArtist, FollowedShow, Move, PlaylistAccess,
     PlaylistEntry, Removal, Revision, SavedAlbum, ShowDetail, TrackEntry, TrackLyrics,
@@ -235,6 +235,9 @@ pub(crate) trait SessionHost: Send + 'static {
     /// Jumps within the loaded track. A call with no player is a no-op.
     fn seek(&self, position_ms: u32);
 
+    /// Sets the level the player reads. 0 is silence, 100 is unity gain.
+    fn set_volume(&self, percent: u16);
+
     /// The event stream of a player started since the last call, so the one
     /// drain thread can be handed it exactly once.
     fn take_events(&mut self) -> Option<UnboundedReceiver<PlaybackEvent>>;
@@ -267,6 +270,9 @@ pub(crate) struct LiveSession {
     engine: Option<Engine>,
     playback: Option<Playback>,
     events: Option<UnboundedReceiver<PlaybackEvent>>,
+    /// The level the player will read, kept here so a change before the player
+    /// exists is still the level it starts with.
+    volume: Volume,
 }
 
 impl LiveSession {
@@ -276,6 +282,7 @@ impl LiveSession {
             engine: None,
             playback: None,
             events: None,
+            volume: Volume::default(),
         }
     }
 }
@@ -553,7 +560,9 @@ impl SessionHost for LiveSession {
     fn play(&mut self, uri: &str) -> Result<(), SessionError> {
         if self.playback.is_none() {
             let engine = self.engine.as_ref().ok_or(SessionError::NotConnected)?;
-            let (playback, events) = engine.playback().map_err(SessionError::Playback)?;
+            let (playback, events) = engine
+                .playback(self.volume.clone())
+                .map_err(SessionError::Playback)?;
             self.playback = Some(playback);
             self.events = Some(events);
         }
@@ -583,6 +592,10 @@ impl SessionHost for LiveSession {
         if let Some(playback) = &self.playback {
             playback.seek(position_ms);
         }
+    }
+
+    fn set_volume(&self, percent: u16) {
+        self.volume.set(percent);
     }
 
     fn stop(&self) {

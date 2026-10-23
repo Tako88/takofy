@@ -19,6 +19,7 @@ use crate::queue::Queue;
 use crate::shuffle;
 use crate::theme::icon::Size;
 use crate::theme::{MonoWeight, Tokens, Weight, extent, fonts, radius, space, text, tracking};
+use crate::volume::{self, Volume};
 
 use super::art;
 use super::carry;
@@ -236,16 +237,28 @@ fn extras_controls(form: Playbar) -> &'static [Run] {
 }
 
 /// The extras' runs with the queue's and the window's own state.
-fn extras_runs(form: Playbar, bar: Bar) -> Vec<Run> {
+fn extras_runs(form: Playbar, bar: Bar, volume: &Volume) -> Vec<Run> {
     let mut runs = extras_controls(form).to_vec();
     for run in &mut runs {
         match run.control {
             Control::Queue => *run = pane_run(bar.pane),
             Control::Fullscreen => *run = fullscreen_run(bar.fullscreen),
+            Control::Mute => *run = mute_run(volume),
             _ => {}
         }
     }
     runs
+}
+
+/// The speaker: its label says which way it goes and it lights while silenced.
+fn mute_run(volume: &Volume) -> Run {
+    Run {
+        control: Control::Mute,
+        icon: Icon::VolumeMute,
+        label: if volume.muted() { "Unmute" } else { "Mute" },
+        lit: volume.muted(),
+        badge: None,
+    }
 }
 
 /// What the bar needs from the frame beyond its own data.
@@ -333,11 +346,18 @@ pub fn show(
         centre_column(ui, transport, queue, position_ms, form, bar, tokens)
     });
     let extras_press = row_centred(ui, "playbar-extras", extras, |ui| {
-        extras_column(ui, tokens, form, bar)
+        extras_column(ui, tokens, form, bar, &mut transport.volume)
     });
     // The reduced form draws the queue in the transport, so the two columns are
     // one channel: a press is whichever of them reported it.
     let control = extras_press.or(pressed.control);
+    // Mute is a lid on the level rather than a level of its own, so it asks for
+    // no command of its own. The level reaches the player from its own drain
+    // after the draw, because the shell keeps one command per frame and a level
+    // dropped there would leave the bar showing what the player never got.
+    if control == Some(Control::Mute) {
+        transport.volume.toggle_mute();
+    }
     Reply {
         command: pressed.command,
         pane: control == Some(Control::Queue),
@@ -454,13 +474,16 @@ fn now_column(
     let mut x = ui.max_rect().right() - controls;
     let clicked = draw_run(
         ui,
-        tokens,
+        Pen {
+            tokens,
+            claimed: None,
+            volume: None,
+            // A heart with no state to act on is inert, as a row's is.
+            can_act: &|control| control != Control::Like || liked.is_some(),
+        },
         &now_runs(form, liked),
-        None,
         &mut x,
         art_rect.center().y,
-        // A heart with no state to act on is inert, as a row's is.
-        &|control| control != Control::Like || liked.is_some(),
     );
     let like = clicked.filter(|control| *control == Control::Like);
     // egui reports a focused button's Enter or Space as a click, repeats too, so
@@ -495,12 +518,15 @@ fn centre_column(
 
     let mut clicked = draw_run(
         ui,
-        tokens,
+        Pen {
+            tokens,
+            claimed,
+            volume: Some(&mut transport.volume),
+            can_act: &live,
+        },
         &down_runs(queue),
-        claimed,
         &mut x,
         top + extent::BUTTON / 2.0,
-        &live,
     );
 
     let play = Rect::from_min_size(Pos2::new(x, top), Vec2::splat(extent::BUTTON_LG));
@@ -522,12 +548,15 @@ fn centre_column(
 
     if let Some(control) = draw_run(
         ui,
-        tokens,
+        Pen {
+            tokens,
+            claimed,
+            volume: Some(&mut transport.volume),
+            can_act: &live,
+        },
         &up_runs(form, queue, bar),
-        claimed,
         &mut x,
         top + extent::BUTTON / 2.0,
-        &live,
     ) {
         clicked = Some(control);
     }
@@ -623,6 +652,46 @@ fn centre_column(
     }
 }
 
+/// Follows the pointer across the volume slider, and its arrow keys.
+///
+/// A drag sounds as it moves, so the level is written on every pass rather than
+/// on release; the command that tells the player is taken once per change by
+/// `Transport::take_volume`.
+fn drag_volume(ui: &Ui, volume: &mut Volume, slot: &controls::Slot, rect: Rect) {
+    if slot.response.dragged() || slot.response.clicked() {
+        if let Some(pointer) = slot.response.interact_pointer_pos() {
+            volume.set_fraction(controls::fraction_at(pointer.x, rect.left(), rect.width()));
+        }
+        return;
+    }
+    if !slot.response.has_focus() {
+        return;
+    }
+    // Plain arrows would otherwise move focus to the next control, so the level
+    // would step and lose the keyboard at once.
+    ui.memory_mut(|memory| {
+        memory.set_focus_lock_filter(
+            slot.response.id,
+            EventFilter {
+                horizontal_arrows: true,
+                ..Default::default()
+            },
+        );
+    });
+    ui.input(|input| {
+        let step = i32::from(volume::STEP);
+        if input.key_pressed(Key::Home) {
+            volume.set_fraction(0.0);
+        } else if input.key_pressed(Key::End) {
+            volume.set_fraction(1.0);
+        } else if input.key_pressed(Key::ArrowLeft) {
+            volume.step(-step);
+        } else if input.key_pressed(Key::ArrowRight) {
+            volume.step(step);
+        }
+    });
+}
+
 /// The seek a click or a key on the focused track asks for.
 fn seek_command(
     ui: &Ui,
@@ -681,23 +750,32 @@ fn seek_command(
 }
 
 /// The buttons the reference sheds first as the window narrows, and the volume.
-fn extras_column(ui: &mut Ui, tokens: &Tokens, form: Playbar, bar: Bar) -> Option<Control> {
-    let runs = extras_runs(form, bar);
+fn extras_column(
+    ui: &mut Ui,
+    tokens: &Tokens,
+    form: Playbar,
+    bar: Bar,
+    volume: &mut Volume,
+) -> Option<Control> {
+    let runs = extras_runs(form, bar, volume);
     let width = run_width(&runs);
     let mut x = ui.max_rect().right() - width;
     let carrying = carry::carrying(ui.ctx());
     let clicked = draw_run(
         ui,
-        tokens,
+        Pen {
+            tokens,
+            claimed: bar.queue_claimed.then_some(Control::Queue),
+            volume: Some(volume),
+            can_act: &|control| match control {
+                Control::Queue => pane_live(bar.pane, carrying),
+                Control::Fullscreen => bar.fullscreen.is_some(),
+                _ => true,
+            },
+        },
         &runs,
-        bar.queue_claimed.then_some(Control::Queue),
         &mut x,
         row_centre(ui),
-        &|control| match control {
-            Control::Queue => pane_live(bar.pane, carrying),
-            Control::Fullscreen => bar.fullscreen.is_some(),
-            _ => true,
-        },
     );
     let pointer = ui.input(|input| input.pointer.button_clicked(egui::PointerButton::Primary));
     let held = clicked.is_some() && !pointer && context_menu::held_repeat(ui);
@@ -759,17 +837,31 @@ fn paint_badge(ui: &Ui, tokens: &Tokens, rect: Rect, badge: &str) {
     ui.painter().galley(at, galley, tokens.palette.text);
 }
 
+/// What a run needs from the frame beyond the rows themselves.
+struct Pen<'a> {
+    tokens: &'a Tokens,
+    /// The control that is a drop target this frame, drawn inert.
+    claimed: Option<Control>,
+    /// The level, where the run carries the slider.
+    volume: Option<&'a mut Volume>,
+    can_act: &'a dyn Fn(Control) -> bool,
+}
+
 /// Draws a run left to right, advancing `x` past it, and returns the one
 /// control that was clicked.
 fn draw_run(
     ui: &mut Ui,
-    tokens: &Tokens,
+    pen: Pen<'_>,
     controls: &[Run],
-    claimed: Option<Control>,
     x: &mut f32,
     centre_y: f32,
-    can_act: &dyn Fn(Control) -> bool,
 ) -> Option<Control> {
+    let Pen {
+        tokens,
+        claimed,
+        mut volume,
+        can_act,
+    } = pen;
     let mut clicked = None;
     for (index, run) in controls.iter().enumerate() {
         if index > 0 {
@@ -781,9 +873,19 @@ fn draw_run(
                 Pos2::new(*x, centre_y - extent::SLIDER_H / 2.0),
                 Vec2::new(extent::VOLUME_W, extent::SLIDER_H),
             );
-            let slot = controls::slider(ui, tokens, run.control, rect, Some(0.7), "Volume", true);
-            if slot.response.clicked() {
-                clicked = Some(run.control);
+            // Only the extras carry the slider, and they are the only caller with
+            // a level to draw, so a bar without one cannot reach here.
+            if let Some(volume) = volume.as_deref_mut() {
+                let slot = controls::slider(
+                    ui,
+                    tokens,
+                    run.control,
+                    rect,
+                    Some(volume.fraction()),
+                    "Volume",
+                    true,
+                );
+                drag_volume(ui, volume, &slot, rect);
             }
             *x += extent::VOLUME_W + space::S2;
         } else {
@@ -1813,6 +1915,93 @@ mod tests {
         replies
     }
 
+    /// The rect the extras draw `control` into, walked the way the draw walks.
+    fn extras_slot(extras: Rect, form: Playbar, control: Control) -> Rect {
+        let runs = extras_controls(form);
+        let mut x = extras.right() - run_width(runs);
+        for (index, run) in runs.iter().enumerate() {
+            if index > 0 {
+                x += space::S1;
+            }
+            let rect = if run.control == VOLUME {
+                x += space::S2;
+                let rect = Rect::from_min_size(
+                    Pos2::new(x, extras.center().y - extent::SLIDER_H / 2.0),
+                    Vec2::new(extent::VOLUME_W, extent::SLIDER_H),
+                );
+                x += extent::VOLUME_W + space::S2;
+                rect
+            } else {
+                let rect = Rect::from_min_size(
+                    Pos2::new(x, extras.center().y - extent::BUTTON / 2.0),
+                    Vec2::splat(extent::BUTTON),
+                );
+                x += extent::BUTTON;
+                rect
+            };
+            if run.control == control {
+                return rect;
+            }
+        }
+        panic!("{control:?} is not one of the extras' runs");
+    }
+
+    /// One frame of the bar over this transport, returning what it asked for.
+    fn volume_frame(
+        ctx: &egui::Context,
+        tokens: &Tokens,
+        transport: &mut Transport,
+        form: Playbar,
+        events: Vec<Event>,
+    ) -> Reply {
+        let rect = heart_bar();
+        let mut queue = Queue::default();
+        let mut reply = Reply::default();
+        let mut output = ctx.run_ui(
+            RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 300.0))),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                reply = show(
+                    ui,
+                    transport,
+                    &mut queue,
+                    0,
+                    form,
+                    Bar::default(),
+                    rect,
+                    crate::cover::Cover::Missing,
+                    tokens,
+                );
+            },
+        );
+        output.textures_delta.clear();
+        reply
+    }
+
+    /// Clicks `at` over the passes a click takes, collecting the levels the
+    /// frames left owed to the player.
+    fn click_volume(
+        ctx: &egui::Context,
+        tokens: &Tokens,
+        transport: &mut Transport,
+        form: Playbar,
+        at: Pos2,
+        asked: &mut Vec<Command>,
+    ) {
+        let _ = volume_frame(ctx, tokens, transport, form, Vec::new());
+        let _ = volume_frame(ctx, tokens, transport, form, vec![Event::PointerMoved(at)]);
+        let _ = transport.take_volume();
+        for event in crate::view::test_support::click_events(at) {
+            let _ = volume_frame(ctx, tokens, transport, form, vec![event]);
+            if let Some(command) = transport.take_volume() {
+                asked.push(command);
+            }
+        }
+    }
+
     fn controls_of(runs: &[Run]) -> Vec<Control> {
         runs.iter().map(|run| run.control).collect()
     }
@@ -1877,7 +2066,7 @@ mod tests {
                     "{form:?}: the layout reserves what the drawn runs take"
                 );
 
-                let extras = extras_runs(form, bar);
+                let extras = extras_runs(form, bar, &Volume::default());
                 assert_eq!(
                     controls_of(&extras),
                     controls_of(extras_controls(form)),
@@ -1893,7 +2082,7 @@ mod tests {
     }
 
     fn pane_run_in(form: Playbar, bar: Bar) -> Run {
-        let mut runs = extras_runs(form, bar);
+        let mut runs = extras_runs(form, bar, &Volume::default());
         runs.extend_from_slice(&up_runs(form, &queue_of(4), bar));
         *runs
             .iter()
@@ -2056,17 +2245,22 @@ mod tests {
 
     /// The two mode buttons' announced labels, drawn into the current `ui`.
     fn mode_labels(ui: &mut Ui, tokens: &Tokens, queue: &Queue) -> Vec<String> {
+        let can_act = |_| true;
+        let pen = || Pen {
+            tokens,
+            claimed: None,
+            volume: None,
+            can_act: &can_act,
+        };
         let mut x = 0.0;
-        let _ = draw_run(ui, tokens, &down_runs(queue), None, &mut x, 20.0, &|_| true);
+        let _ = draw_run(ui, pen(), &down_runs(queue), &mut x, 20.0);
         let mut x = 100.0;
         let _ = draw_run(
             ui,
-            tokens,
+            pen(),
             &up_runs(Playbar::Full, queue, Bar::default()),
-            None,
             &mut x,
             20.0,
-            &|_| true,
         );
         [Control::Shuffle, Control::Repeat]
             .map(|control| announced(ui, control))
@@ -2275,6 +2469,120 @@ mod tests {
     }
 
     #[test]
+    fn clicking_the_volume_slider_sets_the_level_and_asks_for_it() {
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        let mut transport = playing(0);
+        let extras = layout::playbar_for(heart_bar(), Playbar::Full).columns(heart_bar())[2];
+        let slider = extras_slot(extras, Playbar::Full, VOLUME);
+        // A quarter across the track, which is 25% of the way up.
+        let at = Pos2::new(slider.left() + slider.width() * 0.25, slider.center().y);
+
+        let mut asked = Vec::new();
+        click_volume(&ctx, &tokens, &mut transport, Playbar::Full, at, &mut asked);
+
+        assert_eq!(transport.volume.level(), 25);
+        assert!(
+            asked.contains(&Command::Volume { percent: 25 }),
+            "the slider did not ask the player for the level: {asked:?}"
+        );
+    }
+
+    #[test]
+    fn dragging_the_volume_slider_sounds_as_it_moves() {
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        let mut transport = playing(0);
+        let extras = layout::playbar_for(heart_bar(), Playbar::Full).columns(heart_bar())[2];
+        let slider = extras_slot(extras, Playbar::Full, VOLUME);
+        let at =
+            |fraction: f32| Pos2::new(slider.left() + slider.width() * fraction, slider.center().y);
+
+        let _ = volume_frame(&ctx, &tokens, &mut transport, Playbar::Full, Vec::new());
+        let _ = volume_frame(
+            &ctx,
+            &tokens,
+            &mut transport,
+            Playbar::Full,
+            vec![Event::PointerMoved(at(0.8))],
+        );
+        let press = |pos: Pos2, pressed: bool| Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let mut asked = Vec::new();
+        // A press on its own is not yet a drag, so the first level asked for is
+        // the one the pointer moved to.
+        for event in [
+            press(at(0.8), true),
+            Event::PointerMoved(at(0.4)),
+            Event::PointerMoved(at(0.1)),
+            press(at(0.1), false),
+        ] {
+            let _ = volume_frame(&ctx, &tokens, &mut transport, Playbar::Full, vec![event]);
+            if let Some(command) = transport.take_volume() {
+                asked.push(command);
+            }
+        }
+
+        assert_eq!(
+            asked,
+            vec![
+                Command::Volume { percent: 40 },
+                Command::Volume { percent: 10 },
+            ],
+            "a drag asked for something other than the levels it passed"
+        );
+        assert_eq!(transport.volume.level(), 10, "and stopped where it let go");
+    }
+
+    #[test]
+    fn the_mute_button_silences_and_restores_and_says_which_it_is() {
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        let mut transport = playing(0);
+        transport.volume = crate::volume::Volume::at(70);
+        let extras = layout::playbar_for(heart_bar(), Playbar::Full).columns(heart_bar())[2];
+        let mute = extras_slot(extras, Playbar::Full, Control::Mute).center();
+
+        let mut asked = Vec::new();
+        click_volume(
+            &ctx,
+            &tokens,
+            &mut transport,
+            Playbar::Full,
+            mute,
+            &mut asked,
+        );
+        assert!(transport.volume.muted(), "the speaker did not silence it");
+        assert!(
+            asked.contains(&Command::Volume { percent: 0 }),
+            "silencing did not reach the player: {asked:?}"
+        );
+        assert_eq!(mute_run(&transport.volume).label, "Unmute");
+        assert!(mute_run(&transport.volume).lit);
+
+        asked.clear();
+        click_volume(
+            &ctx,
+            &tokens,
+            &mut transport,
+            Playbar::Full,
+            mute,
+            &mut asked,
+        );
+        assert!(!transport.volume.muted());
+        assert!(
+            asked.contains(&Command::Volume { percent: 70 }),
+            "unmuting did not bring the level back: {asked:?}"
+        );
+        assert_eq!(mute_run(&transport.volume).label, "Mute");
+        assert!(!mute_run(&transport.volume).lit);
+    }
+
+    #[test]
     fn repeat_one_paints_a_one_and_the_other_states_do_not() {
         let tokens = Tokens::DARK;
         let ctx = context(&tokens);
@@ -2460,7 +2768,7 @@ mod tests {
     }
 
     fn fullscreen_run_in(form: Playbar, bar: Bar) -> Run {
-        *extras_runs(form, bar)
+        *extras_runs(form, bar, &Volume::default())
             .iter()
             .find(|run| run.control == Control::Fullscreen)
             .expect("both forms draw the fullscreen button")
