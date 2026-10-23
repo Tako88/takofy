@@ -34,6 +34,7 @@ pub mod shuffle;
 pub mod sidebar_kind;
 pub mod signin;
 pub mod theme;
+pub mod track_filter;
 pub mod trail;
 pub mod verbs;
 pub mod view;

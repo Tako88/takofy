@@ -35,6 +35,7 @@ use super::filter_row;
 use super::heart;
 use super::hero;
 use super::media;
+use super::playlist_filter;
 use super::skeleton;
 use super::text as recipe;
 use super::track_list::{head, list_rect};
@@ -240,6 +241,7 @@ pub fn tracks_view(
                     skeleton::rows(ui, count, table.columns().for_playlist(true), tokens);
                 }
                 Load::Failed(failure) => {
+                    library.track_filter.clear();
                     ui.label(recipe::muted(
                         crate::signin::failure_message(*failure),
                         tokens,
@@ -249,16 +251,26 @@ pub fn tracks_view(
                     }
                 }
                 Load::Ready(tracks) if tracks.tracks.is_empty() => {
+                    library.track_filter.clear();
                     ui.label(recipe::muted("No tracks in this playlist.", tokens));
                 }
                 Load::Ready(tracks) => {
+                    // The tools row is drawn first, so the query this frame's
+                    // keystroke, clear click or Escape leaves is already
+                    // resolved when the rows are chosen below.
+                    let hits = playlist_filter::show(
+                        ui,
+                        &mut library.track_filter,
+                        &tracks.playlist,
+                        &tracks.tracks,
+                        tokens,
+                    );
                     let columns = table_layout::columns(
                         width,
                         table
                             .columns()
                             .for_playlist(table_layout::is_playlist(&tracks.playlist)),
                     );
-                    head(ui, columns, tokens);
                     // A failed like is drawn here and nowhere else, so a flip
                     // started on an album, artist, search or release-block
                     // heart reverts without a word; a page change clears what
@@ -270,13 +282,7 @@ pub fn tracks_view(
                         ));
                     }
                     let count = tracks.tracks.len();
-                    // The whole list is reserved at once, so the scrollbar is right,
-                    // and only the rows the viewport can show are laid out and given
-                    // interaction: a thousand-track playlist paints the dozen rows on
-                    // screen.
-                    let list = list_rect(ui, count);
-                    ui.allocate_rect(list, Sense::hover());
-                    let visible = ui.clip_rect();
+                    let shown = hits.as_ref().map_or(count, Vec::len);
                     // The page is in the id: a selection belongs to a page, not to a row index.
                     let list_id = Id::unique(("playlist-tracks", tracks.playlist.as_str()));
                     // Only a page that may be written offers the destructive
@@ -290,122 +296,162 @@ pub fn tracks_view(
                         carry::Listing::Page
                     };
                     let mut selection = carry::List::open(ui.ctx(), list_id, count);
+                    // A filtered list has no hidden picks: they are pruned before
+                    // a menu, a lift or the Delete gate can read them.
+                    let keep = |row: usize| {
+                        hits.as_ref()
+                            .is_none_or(|hits| hits.binary_search(&row).is_ok())
+                    };
+                    selection.restrict(keep);
                     // The menu's gate is the list's: a carried block or a write in
                     // flight holds the rows still, so no menu opens over them.
                     let gate = selection.gate(writing);
 
-                    // The id the rows draw under, so a focused row is read from
-                    // the same `Ui` that drew them.
-                    let focused_now = ui.memory(|memory| memory.focused());
-                    let mut focused = None;
+                    if hits.as_ref().is_some_and(|hits| hits.is_empty()) {
+                        // Nothing matches: the head and the rows would only
+                        // repeat the note, so the note stands in their place.
+                        let query = library
+                            .track_filter
+                            .edit(&tracks.playlist)
+                            .trim()
+                            .to_owned();
+                        ui.label(recipe::muted(
+                            &format!("Nothing in this list matches \u{201c}{query}\u{201d}"),
+                            tokens,
+                        ));
+                        selection.restrict(|_| false);
+                        selection.finish(ui.ctx());
+                    } else {
+                        head(ui, columns, tokens);
+                        // The whole list is reserved at once, so the scrollbar is right,
+                        // and only the rows the viewport can show are laid out and given
+                        // interaction: a thousand-track playlist paints the dozen rows on
+                        // screen.
+                        let list = list_rect(ui, shown);
+                        ui.allocate_rect(list, Sense::hover());
+                        let visible = ui.clip_rect();
 
-                    for (index, entry) in tracks.tracks.iter().enumerate() {
-                        let rect = table_layout::row_rect(list, index, extent::ROW_H);
-                        if !visible.intersects(rect) {
-                            continue;
-                        }
-                        if focused_now == Some(track_row::id(ui, &entry.uri, index + 1)) {
-                            focused = Some(index);
-                        }
-                        let duration = entry.duration_ms.map(format_position);
-                        let added = entry.added_at.and_then(|added| added_label(added, now_ms));
-                        let row = Row {
-                            uri: &entry.uri,
-                            number: index + 1,
-                            title: &entry.title,
-                            title_cell: track_row::TitleCell::ArtThenName,
-                            artist: &entry.artists,
-                            artist_uri: entry.artist_uris.first().map(String::as_str),
-                            album: entry.album.as_deref(),
-                            album_uri: entry.album_uri.as_deref(),
-                            added: added.as_deref(),
-                            duration: duration.as_deref(),
-                            state: state_of(&entry.uri, transport),
-                            cover: art.look(entry.cover.as_ref(), now),
-                            look: selection.look(index),
-                            menu: gate.allows(),
-                            liked: library.likes.state(&entry.uri),
-                        };
-                        match track_row::show(ui, rect, columns, &row, tokens) {
-                            Some(Click::Play) => {
-                                command = queue.start(&tracks.tracks, index, transport);
+                        // The id the rows draw under, so a focused row is read from
+                        // the same `Ui` that drew them.
+                        let focused_now = ui.memory(|memory| memory.focused());
+                        let mut focused = None;
+
+                        for slot in 0..shown {
+                            let index = hits.as_ref().map_or(slot, |hits| hits[slot]);
+                            let entry = &tracks.tracks[index];
+                            let rect = table_layout::row_rect(list, slot, extent::ROW_H);
+                            if !visible.intersects(rect) {
+                                continue;
                             }
-                            Some(Click::Open(page)) => open = Some(page),
-                            Some(Click::Select(press)) => selection.press(index, press),
-                            Some(Click::Like(liked)) => {
-                                heart::post(
+                            if focused_now == Some(track_row::id(ui, &entry.uri, index + 1)) {
+                                focused = Some(index);
+                            }
+                            let duration = entry.duration_ms.map(format_position);
+                            let added = entry.added_at.and_then(|added| added_label(added, now_ms));
+                            let row = Row {
+                                uri: &entry.uri,
+                                number: index + 1,
+                                title: &entry.title,
+                                title_cell: track_row::TitleCell::ArtThenName,
+                                artist: &entry.artists,
+                                artist_uri: entry.artist_uris.first().map(String::as_str),
+                                album: entry.album.as_deref(),
+                                album_uri: entry.album_uri.as_deref(),
+                                added: added.as_deref(),
+                                duration: duration.as_deref(),
+                                state: state_of(&entry.uri, transport),
+                                cover: art.look(entry.cover.as_ref(), now),
+                                look: selection.look(index),
+                                menu: gate.allows(),
+                                liked: library.likes.state(&entry.uri),
+                            };
+                            match track_row::show(ui, rect, columns, &row, tokens) {
+                                Some(Click::Play) => {
+                                    command = queue.start(&tracks.tracks, index, transport);
+                                }
+                                Some(Click::Open(page)) => open = Some(page),
+                                Some(Click::Select(press)) => selection.press(index, press),
+                                Some(Click::Like(liked)) => {
+                                    heart::post(
+                                        ui.ctx(),
+                                        heart::Ask {
+                                            tracks: vec![entry.uri.clone()],
+                                            liked,
+                                        },
+                                    );
+                                }
+                                Some(Click::Menu(door)) => selection.menu(
                                     ui.ctx(),
-                                    heart::Ask {
-                                        tracks: vec![entry.uri.clone()],
-                                        liked,
+                                    door,
+                                    index,
+                                    gate,
+                                    carry::Open {
+                                        listing: listing.clone(),
+                                        here: library.page(),
+                                        likes: &library.likes,
+                                    },
+                                    |row| tracks.tracks.get(row).cloned(),
+                                ),
+                                // A write in flight holds the page still; a page it
+                                // may not write still lifts.
+                                Some(Click::Lift) if liftable => {
+                                    let ghost = Ghost::Table(row.lifted(columns));
+                                    selection.lift(index, rect.size(), ghost, |row| {
+                                        tracks.tracks.get(row).cloned()
+                                    });
+                                }
+                                Some(Click::Lift) => {}
+                                None => {}
+                            }
+                        }
+                        // A span a shift-click opened in true index space may
+                        // name hidden rows; prune it before Del reads it.
+                        selection.restrict(keep);
+                        // Del belongs to a focused row of a page that may be
+                        // written, and only while the menu is not holding the key:
+                        // a consumed event is gone, so the menu's own Del would
+                        // starve behind it.
+                        if movable
+                            && gate.allows()
+                            && !context_menu::is_open(ui.ctx())
+                            && let Some(row) = focused
+                            && context_menu::take_delete(ui)
+                        {
+                            let rows = selection.acting_rows(row);
+                            let entries: Vec<takofy_model::TrackEntry> = rows
+                                .iter()
+                                .filter_map(|row| tracks.tracks.get(*row).cloned())
+                                .collect();
+                            if rows.len() == entries.len() {
+                                context_menu::post_cut(
+                                    ui.ctx(),
+                                    Cut {
+                                        listing: listing.clone(),
+                                        rows,
+                                        entries,
                                     },
                                 );
                             }
-                            Some(Click::Menu(door)) => selection.menu(
-                                ui.ctx(),
-                                door,
-                                index,
-                                gate,
-                                carry::Open {
-                                    listing: listing.clone(),
-                                    here: library.page(),
-                                    likes: &library.likes,
-                                },
-                                |row| tracks.tracks.get(row).cloned(),
-                            ),
-                            // A write in flight holds the page still; a page it
-                            // may not write still lifts.
-                            Some(Click::Lift) if liftable => {
-                                let ghost = Ghost::Table(row.lifted(columns));
-                                selection.lift(index, rect.size(), ghost, |row| {
-                                    tracks.tracks.get(row).cloned()
-                                });
-                            }
-                            Some(Click::Lift) => {}
-                            None => {}
                         }
-                    }
-                    // Del belongs to a focused row of a page that may be
-                    // written, and only while the menu is not holding the key:
-                    // a consumed event is gone, so the menu's own Del would
-                    // starve behind it.
-                    if movable
-                        && gate.allows()
-                        && !context_menu::is_open(ui.ctx())
-                        && let Some(row) = focused
-                        && context_menu::take_delete(ui)
-                    {
-                        let rows = selection.acting_rows(row);
-                        let entries: Vec<takofy_model::TrackEntry> = rows
-                            .iter()
-                            .filter_map(|row| tracks.tracks.get(*row).cloned())
-                            .collect();
-                        if rows.len() == entries.len() {
-                            context_menu::post_cut(
-                                ui.ctx(),
-                                Cut {
-                                    listing: listing.clone(),
-                                    rows,
-                                    entries,
+                        // Only a page that may take the write says where its own
+                        // rows land, and only while no query narrows what the
+                        // user sees: a filtered drop would name a place the
+                        // hidden rows make ambiguous.
+                        let reorderable = movable && hits.is_none();
+                        if reorderable {
+                            selection.offer(
+                                &tracks.playlist,
+                                Zone {
+                                    hit: list.intersect(visible),
+                                    list,
+                                    row_h: extent::ROW_H,
+                                    first: 0,
+                                    count,
                                 },
                             );
                         }
+                        selection.finish(ui.ctx());
                     }
-                    // Only a page that may take the write says where its own
-                    // rows land.
-                    if movable {
-                        selection.offer(
-                            &tracks.playlist,
-                            Zone {
-                                hit: list.intersect(visible),
-                                list,
-                                row_h: extent::ROW_H,
-                                first: 0,
-                                count,
-                            },
-                        );
-                    }
-                    selection.finish(ui.ctx());
                 }
             }
         });
@@ -1547,6 +1593,7 @@ mod tests {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 crate::view::inner(ui, |ui| {
                     let width = ui.available_width();
+                    playlist_filter::row_rect(ui);
                     let columns = table_layout::columns(width, table.columns());
                     head(ui, columns, &tokens);
                     let list = list_rect(ui, count);
@@ -1576,6 +1623,7 @@ mod tests {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 crate::view::inner(ui, |ui| {
                     let width = ui.available_width();
+                    playlist_filter::row_rect(ui);
                     let columns = table_layout::columns(width, table.columns());
                     head(ui, columns, &tokens);
                     let list = list_rect(ui, count);
@@ -1637,6 +1685,7 @@ mod tests {
                 let _ = hero::show_with(ui, &band, &tokens, hero::Tools::plain());
                 crate::view::inner(ui, |ui| {
                     let width = ui.available_width();
+                    playlist_filter::row_rect(ui);
                     let columns = table_layout::columns(width, table.columns());
                     head(ui, columns, &tokens);
                     let list = list_rect(ui, count);
@@ -3739,7 +3788,13 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             let cell = cell_rect_for(&ctx, 1, 0, |columns| columns.album);
 
             // Warm up so focus traversal and the hit test read a previous pass.
-            for events in [Vec::new(), vec![key(egui::Key::Tab)]] {
+            // The first Tab lands in the tools row's field; the second reaches
+            // the first row.
+            for events in [
+                Vec::new(),
+                vec![key(egui::Key::Tab)],
+                vec![key(egui::Key::Tab)],
+            ] {
                 run(&ctx, input(events), |ui| {
                     let _ = tracks_view(
                         ui,
@@ -4521,7 +4576,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
     fn the_band_field_keeps_the_floor_still() {
         let ctx = context();
         let mut closed = band_library("Night Drive", true, &["t0"]);
-        let closed_output = tracklist_frame(&ctx, Table::Full, &mut closed);
+        let closed_output = tracklist_frame_in(&ctx, TALL, &mut closed);
         let closed_top = drawn_galleys(&closed_output)
             .into_iter()
             .find(|(text, _, _)| text == "t0")
@@ -4530,7 +4585,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
 
         let mut open = band_library("Night Drive", true, &["t0"]);
         assert!(open.begin_rename("spotify:playlist:a", Surface::Band));
-        let open_output = tracklist_frame(&ctx, Table::Full, &mut open);
+        let open_output = tracklist_frame_in(&ctx, TALL, &mut open);
         let open_top = drawn_galleys(&open_output)
             .into_iter()
             .find(|(text, _, _)| text == "t0")
@@ -4822,6 +4877,1088 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             "an empty playlist hid the failure: {painted:?}"
         );
         assert!(painted.contains(&"No tracks in this playlist.".to_owned()));
+    }
+
+    // -----------------------------------------------------------------------
+    // The filter field: the rows it leaves, the count it paints, and Escape.
+    // -----------------------------------------------------------------------
+
+    const PLAYLIST: &str = "spotify:playlist:a";
+    /// A window tall enough to hold the band-less page's tools row, head and all
+    /// sixty-two rows, so a restore can be read row by row.
+    const ALL: Vec2 = Vec2::new(900.0, 3200.0);
+    /// The twelve true indices a `midnight` query leaves.
+    const MIDNIGHT: [usize; 12] = [1, 4, 9, 12, 20, 23, 31, 38, 39, 51, 57, 60];
+
+    /// Sixty-two rows whose artist says `Midnight Artist` at twelve true
+    /// positions, so the title can stay `t<index>` for `painted_rows`.
+    fn midnight_tracks() -> Vec<TrackEntry> {
+        (0..62)
+            .map(|index| TrackEntry {
+                artists: if MIDNIGHT.contains(&index) {
+                    "Midnight Artist".to_owned()
+                } else {
+                    "Vela Moreno".to_owned()
+                },
+                ..track(&format!("t{index}"), &format!("t{index}"))
+            })
+            .collect()
+    }
+
+    /// One frame of the tracklist in a window of `size`, carrying `events`.
+    fn frame_in(
+        ctx: &Context,
+        size: Vec2,
+        library: &mut Library,
+        events: Vec<Event>,
+    ) -> egui::FullOutput {
+        let tokens = Tokens::DARK;
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        run(ctx, sized_input(size, events), |ui| {
+            let _ = tracks_view(
+                ui,
+                Table::Full,
+                library,
+                &mut transport,
+                &mut queue,
+                &mut Art::default(),
+                Instant::now(),
+                NOW_MS,
+                &tokens,
+            );
+        })
+    }
+
+    /// The field's bottom hairline: the box it spans and the ink it carries.
+    fn filter_hairline(output: &egui::FullOutput) -> (Rect, egui::Color32) {
+        let tokens = Tokens::DARK;
+        output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Rect(shape)
+                    if (shape.rect.height() - crate::theme::stroke::HAIRLINE).abs() < 0.01
+                        && shape.rect.width() <= 240.5
+                        && shape.rect.width() > 80.0
+                        && (shape.fill == tokens.palette.border
+                            || shape.fill == tokens.palette.text) =>
+                {
+                    Some((shape.rect, shape.fill))
+                }
+                _ => None,
+            })
+            .min_by(|left, right| left.0.top().total_cmp(&right.0.top()))
+            .expect("the filter field paints its bottom hairline")
+    }
+
+    /// The filter field's box, read from the hairline it paints under itself.
+    fn filter_field(output: &egui::FullOutput) -> Rect {
+        filter_hairline(output).0
+    }
+
+    /// The clear control's centre, solved the way the view places it: the field's
+    /// right padding, then the glyph's side.
+    fn clear_point(field: Rect) -> Pos2 {
+        Pos2::new(
+            field.right() - space::S1 - (space::S3 + crate::theme::icon::Size::SM.side) / 2.0,
+            field.center().y,
+        )
+    }
+
+    /// The clear control's box, solved the way the view places it. The field is
+    /// read from the hairline under it, so the box starts a row's height above
+    /// that line.
+    fn clear_box(field: Rect) -> Rect {
+        Rect::from_min_max(
+            Pos2::new(
+                field.right() - space::S3 - crate::theme::icon::Size::SM.side - space::S1,
+                field.bottom() - extent::BUTTON,
+            ),
+            Pos2::new(field.right() - space::S1, field.bottom()),
+        )
+    }
+
+    /// The tools row's box on a window of `size`, solved the way the view lays
+    /// it out. The scrollbar floats and reserves no width, so the row is the
+    /// same width with or without sixty-two rows in it.
+    fn tools_row_in(ctx: &Context, size: Vec2) -> Rect {
+        let mut found = None;
+        run(ctx, sized_input(size, Vec::new()), |ui| {
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                crate::view::inner(ui, |ui| {
+                    found = Some(playlist_filter::row_rect(ui));
+                });
+            });
+        });
+        found.expect("the tools row lays out")
+    }
+
+    /// The boxes of the geometry a frame painted: a glyph is paths and discs,
+    /// so this finds an icon without knowing which one it is.
+    fn painted_boxes(output: &egui::FullOutput) -> Vec<Rect> {
+        output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Path(path) if !path.points.is_empty() => {
+                    let mut boxed = Rect::NOTHING;
+                    for point in &path.points {
+                        boxed.extend_with(*point);
+                    }
+                    Some(boxed)
+                }
+                egui::epaint::Shape::Circle(circle) => Some(Rect::from_center_size(
+                    circle.center,
+                    Vec2::splat(circle.radius),
+                )),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Every text shape a frame painted, as a box.
+    fn painted_text_boxes(output: &egui::FullOutput) -> Vec<Rect> {
+        output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Text(text) => {
+                    Some(Rect::from_min_size(text.pos, text.galley.size()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// One click at `at` with `modifiers` held, one pass per pointer event so
+    /// egui's hit test has the previous frame to read.
+    fn click_holding(
+        ctx: &Context,
+        at: Pos2,
+        modifiers: Modifiers,
+        library: &mut Library,
+        transport: &mut Transport,
+        queue: &mut Queue,
+    ) {
+        let tokens = Tokens::DARK;
+        run(ctx, input(Vec::new()), |ui| {
+            let _ = tracks_view(
+                ui,
+                Table::Full,
+                library,
+                transport,
+                queue,
+                &mut Art::default(),
+                Instant::now(),
+                NOW_MS,
+                &tokens,
+            );
+        });
+        for event in crate::view::test_support::click_events(at) {
+            run(
+                ctx,
+                input(vec![Event::ModifiersChanged(modifiers), event]),
+                |ui| {
+                    let _ = tracks_view(
+                        ui,
+                        Table::Full,
+                        library,
+                        transport,
+                        queue,
+                        &mut Art::default(),
+                        Instant::now(),
+                        NOW_MS,
+                        &tokens,
+                    );
+                },
+            );
+        }
+    }
+
+    /// The band's shuffle tile, solved as `play_tile_rect_for` solves play: the
+    /// tools hug the right edge, more then like then shuffle.
+    fn shuffle_tile_rect_for(ctx: &Context, title: &str) -> Rect {
+        let tokens = Tokens::DARK;
+        let mut found = None;
+        run(ctx, input(Vec::new()), |ui| {
+            ui.add_space(space::S3);
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                let width = ui.available_width();
+                let top = ui.cursor().min;
+                let band = hero::Band {
+                    eyebrow: "Playlist",
+                    title,
+                    meta: Vec::new(),
+                    description: "",
+                    playable: true,
+                    shuffle: true,
+                    cover: Cover::Missing,
+                };
+                let _ = hero::show_with(ui, &band, &tokens, hero::Tools::plain());
+                let bottom = ui.cursor().min.y;
+                let height = PLAY + 2.0 * space::S4;
+                let row =
+                    Rect::from_min_size(Pos2::new(top.x, bottom - height), vec2(width, height));
+                let centre = row.center().y;
+                let right = row.right() - space::GUTTER;
+                let more = Rect::from_min_size(
+                    Pos2::new(right - extent::BUTTON_LG, centre - extent::BUTTON_LG / 2.0),
+                    Vec2::splat(extent::BUTTON_LG),
+                );
+                let right = more.left() - space::S2;
+                let like = Rect::from_min_size(
+                    Pos2::new(right - extent::BUTTON_LG, centre - extent::BUTTON_LG / 2.0),
+                    Vec2::splat(extent::BUTTON_LG),
+                );
+                let right = like.left() - space::S2;
+                found = Some(Rect::from_min_size(
+                    Pos2::new(right - extent::BUTTON_LG, centre - extent::BUTTON_LG / 2.0),
+                    Vec2::splat(extent::BUTTON_LG),
+                ));
+            });
+        });
+        found.expect("the hero and its action row lay out")
+    }
+
+    fn queued(queue: &Queue) -> usize {
+        usize::from(queue.current().is_some()) + queue.upcoming().len()
+    }
+
+    /// Every uri the queue holds, the current entry first.
+    fn queue_uris(queue: &Queue) -> Vec<String> {
+        let mut uris: Vec<String> = queue
+            .current()
+            .map(|entry| entry.uri.clone())
+            .into_iter()
+            .collect();
+        uris.extend(queue.upcoming().map(|(_, entry)| entry.uri.clone()));
+        uris
+    }
+
+    /// Every uri the whole sixty-two-row list holds, in its own order.
+    fn whole_list() -> Vec<String> {
+        (0..62).map(|index| format!("t{index}")).collect()
+    }
+
+    #[test]
+    fn typing_in_the_filter_keeps_the_matching_rows_with_their_true_numbers() {
+        let ctx = context();
+        let mut library = library_with(midnight_tracks());
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+
+        let layout = tracklist_frame_in(&ctx, ALL, &mut library);
+        let field = filter_field(&layout);
+        let _ = click(
+            &ctx,
+            field.center(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+        );
+        let output = frame_in(
+            &ctx,
+            ALL,
+            &mut library,
+            vec![Event::Text("midnight".to_owned())],
+        );
+
+        assert_eq!(
+            painted_rows(&output),
+            MIDNIGHT.to_vec(),
+            "the twelve matching rows are drawn, by their true indices"
+        );
+        assert!(
+            drawn_texts(&output).contains(&"40"),
+            "row forty still shows forty: {:?}",
+            drawn_texts(&output)
+        );
+        let tops: Vec<f32> = MIDNIGHT
+            .iter()
+            .map(|index| {
+                text_rect(&output, &format!("t{index}"))
+                    .unwrap_or_else(|| panic!("t{index} was not painted"))
+                    .top()
+            })
+            .collect();
+        assert!(
+            tops.windows(2)
+                .all(|pair| (pair[1] - pair[0] - extent::ROW_H).abs() < 0.01),
+            "the kept rows sit in consecutive slots: {tops:?}"
+        );
+    }
+
+    #[test]
+    fn the_count_line_reads_n_of_total_tracks() {
+        let ctx = context();
+        let mut library = library_with(midnight_tracks());
+        library.track_filter.edit(PLAYLIST).push_str("midnight");
+
+        let output = tracklist_frame_in(&ctx, ALL, &mut library);
+        let field = filter_field(&output);
+        let count = text_rect(&output, "12 OF 62 TRACKS").expect("the count is painted");
+        assert!(
+            count.right() <= field.left(),
+            "the count sits left of the field: {count:?} against {field:?}"
+        );
+        assert!(
+            !drawn_texts(&output).contains(&"FILTER"),
+            "text replaces the placeholder"
+        );
+
+        library.track_filter.edit(PLAYLIST).clear();
+        library.track_filter.edit(PLAYLIST).push_str("   ");
+        let output = tracklist_frame_in(&ctx, ALL, &mut library);
+        assert!(
+            !drawn_texts(&output)
+                .iter()
+                .any(|text| text.contains(" OF ")),
+            "a whitespace query is no filter and paints no count"
+        );
+    }
+
+    #[test]
+    fn the_first_keystroke_replaces_the_placeholder_in_its_own_frame() {
+        let ctx = context();
+        let mut library = library_with(midnight_tracks());
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+
+        let layout = tracklist_frame_in(&ctx, ALL, &mut library);
+        assert!(
+            drawn_texts(&layout).contains(&"FILTER"),
+            "the empty field shows its placeholder"
+        );
+        let field = filter_field(&layout);
+        let _ = click(
+            &ctx,
+            field.center(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+        );
+
+        // `i` is in every `Midnight Artist` row and in no title, so the first
+        // character is enough to tell the narrowed list from the whole one.
+        let typed = frame_in(&ctx, ALL, &mut library, vec![Event::Text("i".to_owned())]);
+        let texts = drawn_texts(&typed);
+
+        assert_eq!(
+            painted_rows(&typed),
+            MIDNIGHT.to_vec(),
+            "the first character narrows the rows on its own frame"
+        );
+        assert!(
+            !texts.contains(&"FILTER"),
+            "the placeholder leaves with the first character: {texts:?}"
+        );
+        assert!(
+            texts.contains(&"i"),
+            "the field paints the character on its own frame: {texts:?}"
+        );
+        assert!(
+            texts.contains(&"12 OF 62 TRACKS"),
+            "the count is on the keystroke's own frame: {texts:?}"
+        );
+
+        let clear = clear_box(filter_field(&typed));
+        assert!(
+            painted_boxes(&typed)
+                .iter()
+                .any(|glyph| clear.contains_rect(*glyph)),
+            "the clear control appears with the text: {clear:?}"
+        );
+        for text in painted_text_boxes(&typed) {
+            assert!(
+                !text.intersects(clear),
+                "no text sits under the clear control: {text:?} against {clear:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_narrow_row_keeps_the_count_and_the_field_inside_it() {
+        let ctx = context();
+        let mut library = library_with(midnight_tracks());
+        library.track_filter.edit(PLAYLIST).push_str("midnight");
+
+        // Narrower than a 240-wide field plus the count: the field gives way so
+        // the count stays in the row instead of the gutter.
+        let narrow = Vec2::new(350.0, 3200.0);
+        let output = tracklist_frame_in(&ctx, narrow, &mut library);
+        let row = tools_row_in(&ctx, narrow);
+        let field = filter_field(&output);
+        let count = text_rect(&output, "12 OF 62 TRACKS").expect("the count is painted");
+
+        assert!(
+            field.width() < 240.0,
+            "the field gave room to the count: {field:?}"
+        );
+        assert!(
+            field.left() >= row.left() - 0.01 && field.right() <= row.right() + 0.01,
+            "the field stays in the row: {field:?} against {row:?}"
+        );
+        assert!(
+            count.left() >= row.left() - 0.01 && count.right() <= row.right() + 0.01,
+            "the count stays in the row: {count:?} against {row:?}"
+        );
+        assert!(
+            count.right() <= field.left(),
+            "the count and the field do not overlap: {count:?} against {field:?}"
+        );
+
+        // Narrower still: no box holds both, so the field keeps the row and the
+        // count gives way rather than reaching into the gutter.
+        let too_narrow = Vec2::new(200.0, 3200.0);
+        let output = tracklist_frame_in(&ctx, too_narrow, &mut library);
+        let row = tools_row_in(&ctx, too_narrow);
+        let field = filter_field(&output);
+
+        assert!(
+            !drawn_texts(&output)
+                .iter()
+                .any(|text| text.contains(" OF ")),
+            "the count gives way when it cannot fit"
+        );
+        assert!(
+            field.left() >= row.left() - 0.01 && field.right() <= row.right() + 0.01,
+            "the field stays in the row: {field:?} against {row:?}"
+        );
+        assert!(
+            drawn_texts(&output).contains(&"midnight"),
+            "the field is drawn with its query"
+        );
+    }
+
+    #[test]
+    fn clearing_the_filter_restores_every_row_in_order() {
+        let ctx = context();
+        let mut library = library_with(midnight_tracks());
+        library.track_filter.edit(PLAYLIST).push_str("midnight");
+        let narrowed = tracklist_frame_in(&ctx, ALL, &mut library);
+        assert_eq!(painted_rows(&narrowed), MIDNIGHT.to_vec());
+
+        library.track_filter.clear();
+        let output = tracklist_frame_in(&ctx, ALL, &mut library);
+
+        assert_eq!(
+            painted_rows(&output),
+            (0..62).collect::<Vec<_>>(),
+            "clearing restores every row, in the list's order"
+        );
+        assert!(
+            !drawn_texts(&output)
+                .iter()
+                .any(|text| text.contains(" OF "))
+        );
+    }
+
+    #[test]
+    fn the_clear_button_clears_in_the_frame_it_is_clicked() {
+        let ctx = context();
+        let mut library = library_with(midnight_tracks());
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+
+        let layout = tracklist_frame_in(&ctx, ALL, &mut library);
+        let field = filter_field(&layout);
+        let _ = click(
+            &ctx,
+            field.center(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+        );
+        let typed = frame_in(
+            &ctx,
+            ALL,
+            &mut library,
+            vec![Event::Text("midnight".to_owned())],
+        );
+        assert_eq!(painted_rows(&typed), MIDNIGHT.to_vec());
+
+        let clear = clear_point(filter_field(&typed));
+        let mut output = typed;
+        for event in crate::view::test_support::click_events(clear) {
+            output = frame_in(&ctx, ALL, &mut library, vec![event]);
+        }
+
+        assert_eq!(
+            painted_rows(&output),
+            (0..62).collect::<Vec<_>>(),
+            "the click frame itself shows every row"
+        );
+        assert!(
+            !drawn_texts(&output)
+                .iter()
+                .any(|text| text.contains(" OF ")),
+            "the count is gone with the query"
+        );
+        assert!(library.track_filter.edit(PLAYLIST).is_empty());
+
+        // The chrome follows the click on its own frame: the clear control goes
+        // with the text it cleared, and the hairline already says the field kept
+        // the keyboard the click gave it.
+        assert!(
+            drawn_texts(&output).contains(&"FILTER"),
+            "the placeholder is back on the click frame"
+        );
+        let clear = clear_box(filter_field(&output));
+        assert!(
+            !painted_boxes(&output)
+                .iter()
+                .any(|glyph| clear.contains_rect(*glyph)),
+            "the clear control leaves with the text: {clear:?}"
+        );
+        assert_eq!(
+            filter_hairline(&output).1,
+            Tokens::DARK.palette.text,
+            "the hairline is focused on the click frame"
+        );
+
+        let _ = tracklist_frame_in(&ctx, ALL, &mut library);
+        assert!(ctx.text_edit_focused(), "the field keeps the keyboard");
+    }
+
+    #[test]
+    fn escape_in_the_focused_field_clears_and_returns_the_keyboard() {
+        let ctx = context();
+        let mut library = library_with(midnight_tracks());
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+
+        let layout = tracklist_frame_in(&ctx, ALL, &mut library);
+        let field = filter_field(&layout);
+        let _ = click(
+            &ctx,
+            field.center(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+        );
+        let typed = frame_in(
+            &ctx,
+            ALL,
+            &mut library,
+            vec![Event::Text("midnight".to_owned())],
+        );
+        assert_eq!(painted_rows(&typed), MIDNIGHT.to_vec());
+
+        let output = frame_in(&ctx, ALL, &mut library, vec![key(egui::Key::Escape)]);
+
+        assert!(library.track_filter.edit(PLAYLIST).is_empty());
+        assert_eq!(
+            painted_rows(&output),
+            (0..62).collect::<Vec<_>>(),
+            "the full list is back in the Escape frame"
+        );
+        assert!(!ctx.text_edit_focused(), "Escape returns the keyboard");
+
+        // The chrome is the Escape frame's too: the placeholder is back, the
+        // clear control is not, and the hairline has already let focus go.
+        assert!(
+            drawn_texts(&output).contains(&"FILTER"),
+            "the placeholder returns on the Escape frame"
+        );
+        let clear = clear_box(filter_field(&output));
+        assert!(
+            !painted_boxes(&output)
+                .iter()
+                .any(|glyph| clear.contains_rect(*glyph)),
+            "the clear control leaves with the text: {clear:?}"
+        );
+        assert_eq!(
+            filter_hairline(&output).1,
+            Tokens::DARK.palette.border,
+            "the hairline gives up the keyboard on the Escape frame"
+        );
+    }
+
+    #[test]
+    fn escape_the_frame_after_a_click_still_clears() {
+        let ctx = context();
+        let mut library = library_with(midnight_tracks());
+        library.track_filter.edit(PLAYLIST).push_str("midnight");
+
+        let layout = tracklist_frame_in(&ctx, ALL, &mut library);
+        let centre = filter_field(&layout).center();
+        let _ = frame_in(&ctx, ALL, &mut library, vec![Event::PointerMoved(centre)]);
+        let _ = frame_in(
+            &ctx,
+            ALL,
+            &mut library,
+            vec![crate::view::test_support::button(centre, true)],
+        );
+        let output = frame_in(&ctx, ALL, &mut library, vec![key(egui::Key::Escape)]);
+
+        assert!(
+            library.track_filter.edit(PLAYLIST).is_empty(),
+            "the Escape immediately after a click still clears"
+        );
+        assert_eq!(painted_rows(&output), (0..62).collect::<Vec<_>>());
+        assert!(!ctx.text_edit_focused());
+    }
+
+    #[test]
+    fn escape_in_an_empty_focused_field_surrenders_focus() {
+        let ctx = context();
+        let mut library = library_with(midnight_tracks());
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+
+        let layout = tracklist_frame_in(&ctx, ALL, &mut library);
+        let field = filter_field(&layout);
+        let _ = click(
+            &ctx,
+            field.center(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+        );
+        assert!(ctx.text_edit_focused(), "the click focused the field");
+
+        let _ = frame_in(&ctx, ALL, &mut library, vec![key(egui::Key::Escape)]);
+
+        assert!(
+            !ctx.text_edit_focused(),
+            "Escape with nothing to clear still returns the keyboard"
+        );
+    }
+
+    #[test]
+    fn escape_with_focus_on_a_row_leaves_the_query() {
+        let ctx = context();
+        let mut library = library_with(midnight_tracks());
+        library.track_filter.edit(PLAYLIST).push_str("midnight");
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+
+        let _ = tracklist_frame_in(&ctx, PROBE, &mut library);
+        let row = row_rect_for(&ctx, 12, 0).center();
+        let _ = click(&ctx, row, &mut library, &mut transport, &mut queue);
+
+        let output = frame_in(&ctx, PROBE, &mut library, vec![key(egui::Key::Escape)]);
+
+        assert_eq!(
+            library.track_filter.needle(PLAYLIST).as_deref(),
+            Some("midnight"),
+            "a page-wide Escape would fight the drawer's"
+        );
+        let painted = painted_rows(&output);
+        assert!(!painted.is_empty(), "the filtered rows are still drawn");
+        assert_eq!(
+            painted,
+            MIDNIGHT[..painted.len()].to_vec(),
+            "and they are still the matching rows"
+        );
+    }
+
+    #[test]
+    fn a_query_with_no_match_hides_the_head_and_says_so() {
+        let ctx = context();
+        let mut library = library_with(midnight_tracks());
+        library.track_filter.edit(PLAYLIST).push_str("zzz");
+
+        let output = tracklist_frame_in(&ctx, ALL, &mut library);
+        let texts = drawn_texts(&output);
+
+        assert!(
+            texts.contains(&"Nothing in this list matches \u{201c}zzz\u{201d}"),
+            "the note names the query: {texts:?}"
+        );
+        assert!(!texts.contains(&"TITLE"), "the head hides with the rows");
+        assert!(
+            texts.contains(&"0 OF 62 TRACKS"),
+            "the count still says zero"
+        );
+        assert!(filter_field(&output).width() > 0.0, "the field stays drawn");
+    }
+
+    #[test]
+    fn a_shift_click_on_a_filtered_list_picks_only_visible_rows() {
+        let ctx = context();
+        let mut library = library_with(midnight_tracks());
+        library.track_filter.edit(PLAYLIST).push_str("midnight");
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+
+        let _ = tracklist_frame_in(&ctx, PROBE, &mut library);
+        let first = row_rect_for(&ctx, 12, 0).center();
+        let third = row_rect_for(&ctx, 12, 2).center();
+        let _ = click(&ctx, first, &mut library, &mut transport, &mut queue);
+        click_holding(
+            &ctx,
+            third,
+            Modifiers::SHIFT,
+            &mut library,
+            &mut transport,
+            &mut queue,
+        );
+
+        for row in [1, 4, 9] {
+            assert!(
+                picked(&ctx, PLAYLIST, 62, row),
+                "visible row {row} is in the span"
+            );
+        }
+        for row in [0, 2, 3, 12] {
+            assert!(
+                !picked(&ctx, PLAYLIST, 62, row),
+                "hidden row {row} never enters the span"
+            );
+        }
+    }
+
+    #[test]
+    fn a_pick_made_before_filtering_loses_its_hidden_rows() {
+        let ctx = context();
+        let mut library = library_with(midnight_tracks());
+        let list = egui::Id::unique(("playlist-tracks", PLAYLIST));
+        crate::view::carry::select_rows(&ctx, list, 0..5);
+        assert!(picked(&ctx, PLAYLIST, 62, 0));
+
+        library.track_filter.edit(PLAYLIST).push_str("midnight");
+        let output = tracklist_frame_in(&ctx, ALL, &mut library);
+
+        assert!(!picked(&ctx, PLAYLIST, 62, 0), "a hidden pick is dropped");
+        assert!(!picked(&ctx, PLAYLIST, 62, 2));
+        assert!(picked(&ctx, PLAYLIST, 62, 1), "a visible pick survives");
+        assert!(picked(&ctx, PLAYLIST, 62, 4));
+        assert_eq!(painted_rows(&output), MIDNIGHT.to_vec());
+    }
+
+    #[test]
+    fn reloading_the_same_playlist_keeps_the_query_and_the_narrowed_rows() {
+        let ctx = context();
+        let mut library = library_with(midnight_tracks());
+        library.track_filter.edit(PLAYLIST).push_str("midnight");
+        let narrowed = tracklist_frame_in(&ctx, ALL, &mut library);
+        assert_eq!(painted_rows(&narrowed), MIDNIGHT.to_vec());
+
+        library.select(PLAYLIST);
+        assert!(matches!(library.tracks, Load::Loading));
+        let _ = tracklist_frame_in(&ctx, ALL, &mut library);
+        library.apply(&Update::Tracks {
+            playlist: PLAYLIST.to_owned(),
+            tracks: midnight_tracks(),
+            cover: None,
+            access: access(true),
+        });
+        let output = tracklist_frame_in(&ctx, ALL, &mut library);
+
+        assert_eq!(
+            painted_rows(&output),
+            MIDNIGHT.to_vec(),
+            "the reload is not a page change"
+        );
+        assert!(
+            drawn_texts(&output).contains(&"midnight"),
+            "the field comes back populated: {:?}",
+            drawn_texts(&output)
+        );
+    }
+
+    #[test]
+    fn a_failed_load_clears_the_query() {
+        let ctx = context();
+        let mut library = library_with(midnight_tracks());
+        library.track_filter.edit(PLAYLIST).push_str("midnight");
+        let _ = tracklist_frame_in(&ctx, ALL, &mut library);
+
+        library.apply(&Update::TracksFailed {
+            playlist: PLAYLIST.to_owned(),
+            failure: Failure::Load,
+        });
+        let output = tracklist_frame_in(&ctx, ALL, &mut library);
+
+        assert_eq!(library.track_filter.needle(PLAYLIST), None);
+        assert!(
+            !drawn_texts(&output).contains(&"FILTER"),
+            "no field to see it in"
+        );
+        assert!(drawn_texts(&output).contains(&crate::signin::failure_message(Failure::Load)));
+    }
+
+    #[test]
+    fn an_empty_list_clears_the_query() {
+        let ctx = context();
+        let mut library = library_with(midnight_tracks());
+        library.track_filter.edit(PLAYLIST).push_str("midnight");
+        let _ = tracklist_frame_in(&ctx, ALL, &mut library);
+
+        library.apply(&Update::Tracks {
+            playlist: PLAYLIST.to_owned(),
+            tracks: Vec::new(),
+            cover: None,
+            access: access(true),
+        });
+        let output = tracklist_frame_in(&ctx, ALL, &mut library);
+
+        assert_eq!(library.track_filter.needle(PLAYLIST), None);
+        assert!(
+            drawn_texts(&output).contains(&"No tracks in this playlist."),
+            "the empty page is unfiltered"
+        );
+    }
+
+    #[test]
+    fn a_query_survives_loading_and_its_field_is_absent_meanwhile() {
+        let ctx = context();
+        let mut library = library_with(midnight_tracks());
+        library.track_filter.edit(PLAYLIST).push_str("midnight");
+        let _ = tracklist_frame_in(&ctx, ALL, &mut library);
+
+        library.select(PLAYLIST);
+        let output = tracklist_frame_in(&ctx, ALL, &mut library);
+
+        assert_eq!(
+            library.track_filter.needle(PLAYLIST).as_deref(),
+            Some("midnight"),
+            "a reload of the same URI keeps the query"
+        );
+        assert!(
+            !drawn_texts(&output)
+                .iter()
+                .any(|text| text.contains(" OF ")),
+            "the skeleton has no count"
+        );
+        assert!(!drawn_texts(&output).contains(&"midnight"));
+    }
+
+    #[test]
+    fn deleting_every_visible_row_keeps_the_field_and_the_no_match_note() {
+        let ctx = context();
+        let mut library = library_with(midnight_tracks());
+        library.track_filter.edit(PLAYLIST).push_str("midnight");
+        let _ = tracklist_frame_in(&ctx, ALL, &mut library);
+
+        let remainder: Vec<TrackEntry> = midnight_tracks()
+            .into_iter()
+            .filter(|entry| !entry.artists.contains("Midnight"))
+            .collect();
+        library.apply(&Update::Tracks {
+            playlist: PLAYLIST.to_owned(),
+            tracks: remainder,
+            cover: None,
+            access: access(true),
+        });
+        let output = tracklist_frame_in(&ctx, ALL, &mut library);
+        let texts = drawn_texts(&output);
+
+        assert!(
+            texts.contains(&"Nothing in this list matches \u{201c}midnight\u{201d}"),
+            "the user can still see why, and clear it: {texts:?}"
+        );
+        assert!(texts.contains(&"0 OF 50 TRACKS"));
+        assert!(
+            filter_field(&output).width() > 0.0,
+            "the field is still drawn"
+        );
+    }
+
+    #[test]
+    fn another_page_shows_an_unfiltered_list() {
+        let ctx = context();
+        let mut library = library_with(midnight_tracks());
+        library.track_filter.edit(PLAYLIST).push_str("midnight");
+        let _ = tracklist_frame_in(&ctx, ALL, &mut library);
+
+        library.select("spotify:playlist:b");
+        library.apply(&Update::Tracks {
+            playlist: "spotify:playlist:b".to_owned(),
+            tracks: vec![track("u0", "t0"), track("u1", "t1")],
+            cover: None,
+            access: access(true),
+        });
+        let output = tracklist_frame_in(&ctx, ALL, &mut library);
+
+        assert_eq!(library.track_filter.needle("spotify:playlist:b"), None);
+        assert_eq!(painted_rows(&output), vec![0, 1], "the new page is whole");
+        assert!(
+            !drawn_texts(&output)
+                .iter()
+                .any(|text| text.contains(" OF "))
+        );
+    }
+
+    #[test]
+    fn a_filtered_editable_page_offers_no_drop_zone_and_an_unfiltered_one_does() {
+        let ctx = context();
+        let mut library = library_with(midnight_tracks());
+
+        let _ = tracklist_frame_in(&ctx, ALL, &mut library);
+        assert!(
+            crate::view::carry::take_offer(&ctx).is_some(),
+            "an unfiltered editable page offers its rows"
+        );
+
+        library.track_filter.edit(PLAYLIST).push_str("midnight");
+        let output = tracklist_frame_in(&ctx, ALL, &mut library);
+        assert_eq!(painted_rows(&output), MIDNIGHT.to_vec());
+        assert!(
+            crate::view::carry::take_offer(&ctx).is_none(),
+            "a filtered page offers no reorder"
+        );
+
+        library.track_filter.clear();
+        let _ = tracklist_frame_in(&ctx, ALL, &mut library);
+        assert!(
+            crate::view::carry::take_offer(&ctx).is_some(),
+            "clearing the query restores the drop zone"
+        );
+    }
+
+    #[test]
+    fn a_filtered_page_still_lifts_a_pick_to_the_rail_but_offers_nothing() {
+        let ctx = context();
+        let mut library = library_with(midnight_tracks());
+        library.track_filter.edit(PLAYLIST).push_str("midnight");
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+
+        let _ = tracklist_frame_in(&ctx, PROBE, &mut library);
+        let first = row_rect_for(&ctx, 12, 0).center();
+        lift_row(&ctx, first, &mut library, &mut transport, &mut queue);
+
+        let carried = crate::view::carry::carried(&ctx).expect("a filtered row still lifts");
+        assert_eq!(carried.rows, vec![1], "the lift carries the true index");
+        assert!(
+            crate::view::carry::take_offer(&ctx).is_none(),
+            "the page still withholds the reorder"
+        );
+    }
+
+    #[test]
+    fn a_filtered_double_click_plays_the_true_index() {
+        let ctx = context();
+        let mut library = library_with(midnight_tracks());
+        library.track_filter.edit(PLAYLIST).push_str("midnight");
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+
+        let _ = tracklist_frame_in(&ctx, PROBE, &mut library);
+        let first = row_rect_for(&ctx, 12, 0).center();
+        let command = double_click(&ctx, first, &mut library, &mut transport, &mut queue);
+
+        assert_eq!(
+            command,
+            Some(Command::Play {
+                uri: "t1".to_owned()
+            }),
+            "slot zero is the second true row"
+        );
+    }
+
+    #[test]
+    fn the_band_play_and_shuffle_ignore_the_filter() {
+        let ctx = context();
+
+        // The band is the whole list's, hidden rows included: both tiles start
+        // the queue on the true first row (the first row the query leaves is
+        // `t1`), and both hand the queue all sixty-two entries.
+        for (shuffled, tile) in [
+            (false, play_tile_rect_for as fn(&Context, &str) -> Rect),
+            (true, shuffle_tile_rect_for),
+        ] {
+            let mut library = library_named(midnight_tracks(), "Evening");
+            library.track_filter.edit(PLAYLIST).push_str("midnight");
+            let mut transport = Transport::default();
+            let mut queue = Queue::default();
+            let at = tile(&ctx, "Evening").center();
+            let command = click(&ctx, at, &mut library, &mut transport, &mut queue);
+
+            assert_eq!(
+                command,
+                Some(Command::Play {
+                    uri: "t0".to_owned()
+                }),
+                "the band starts the true first row (shuffled: {shuffled})"
+            );
+            assert_eq!(
+                queued(&queue),
+                62,
+                "the queue holds the whole playlist (shuffled: {shuffled})"
+            );
+            assert_eq!(
+                queue.current().map(|entry| entry.uri.as_str()),
+                Some("t0"),
+                "the true first row is the current one (shuffled: {shuffled})"
+            );
+            let mut uris = queue_uris(&queue);
+            let mut expected = whole_list();
+            if shuffled {
+                // Shuffle draws the rest in its own order, so the whole list is
+                // read as the same set of entries, not the same sequence.
+                uris.sort();
+                expected.sort();
+            }
+            assert_eq!(
+                uris, expected,
+                "every true row is in the queue (shuffled: {shuffled})"
+            );
+        }
+    }
+
+    #[test]
+    fn the_filter_field_takes_enter_and_leaves_it_alone() {
+        let ctx = context();
+        let mut library = library_with(midnight_tracks());
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let tokens = Tokens::DARK;
+
+        let layout = tracklist_frame_in(&ctx, ALL, &mut library);
+        let field = filter_field(&layout);
+        let _ = click(
+            &ctx,
+            field.center(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+        );
+        let typed = frame_in(
+            &ctx,
+            ALL,
+            &mut library,
+            vec![Event::Text("midnight".to_owned())],
+        );
+        assert_eq!(painted_rows(&typed), MIDNIGHT.to_vec());
+
+        let mut command = None;
+        let output = run(&ctx, sized_input(ALL, vec![key(egui::Key::Enter)]), |ui| {
+            command = tracks_view(
+                ui,
+                Table::Full,
+                &mut library,
+                &mut transport,
+                &mut queue,
+                &mut Art::default(),
+                Instant::now(),
+                NOW_MS,
+                &tokens,
+            );
+        });
+
+        assert_eq!(command, None, "Enter in the field plays nothing");
+        assert_eq!(painted_rows(&output), MIDNIGHT.to_vec());
+        assert_eq!(library.track_filter.edit(PLAYLIST).as_str(), "midnight");
+        // Enter is consumed and nothing else moves: the field keeps its text and
+        // the keyboard it was given, so the hairline still shows the focus.
+        assert!(
+            drawn_texts(&output).contains(&"midnight"),
+            "the field keeps its text: {:?}",
+            drawn_texts(&output)
+        );
+        assert!(
+            ctx.text_edit_focused(),
+            "Enter leaves the keyboard in the field"
+        );
+        assert_eq!(
+            filter_hairline(&output).1,
+            tokens.palette.text,
+            "the hairline still shows the field's focus"
+        );
     }
 }
 

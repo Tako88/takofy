@@ -8077,6 +8077,25 @@ mod tests {
         }
     }
 
+    /// The row titles of `titles` that the page painted, in `titles`' order.
+    ///
+    /// `page_rows` reads the whole list; this reads what the user sees, so it
+    /// can tell a narrowed page from an unfiltered one.
+    fn painted_titles(
+        window: &mut Window,
+        transport: &mut Transport,
+        queue: &mut Queue,
+        titles: &[&str],
+    ) -> Vec<String> {
+        let (_, frame) = window.frame(transport, queue, Vec::new());
+        let area = view_rect(window);
+        titles
+            .iter()
+            .filter(|title| text_in(&frame, title, area).is_some())
+            .map(|title| (*title).to_owned())
+            .collect()
+    }
+
     /// Clicks the playlist page's row titled `title`, which picks and focuses
     /// it.
     fn click_page_row(
@@ -8126,6 +8145,29 @@ mod tests {
             rows: rows.to_vec(),
             entries: page_entries(window, rows),
         }
+    }
+
+    /// The playlist filter's field, read from the hairline it paints under
+    /// itself. The head's own rule is wider than the field's 15rem cap.
+    fn page_filter_field(output: &egui::FullOutput, view: Rect) -> Option<Rect> {
+        let tokens = Tokens::DARK;
+        output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(shape)
+                    if view.contains_rect(shape.rect)
+                        && (shape.rect.height() - stroke::HAIRLINE).abs() < 0.01
+                        && shape.rect.width() > 80.0
+                        && shape.rect.width() <= 240.5
+                        && (shape.fill == tokens.palette.border
+                            || shape.fill == tokens.palette.text) =>
+                {
+                    Some(shape.rect)
+                }
+                _ => None,
+            })
+            .min_by(|left, right| left.top().total_cmp(&right.top()))
     }
 
     /// A request to open the menu on the page's rows, as a door posts it.
@@ -9088,6 +9130,182 @@ mod tests {
             assert_eq!(held, None, "a held Del removed a second row");
         }
         assert_eq!(page_rows(&window), vec!["list:p0", "list:p2"]);
+    }
+
+    #[test]
+    fn delete_on_a_filtered_selection_cuts_exactly_the_picked_visible_rows() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(
+            &mut window,
+            &[
+                "p0", "p1", "keep2", "p3", "p4", "keep5", "p6", "p7", "p8", "keep9",
+            ],
+        );
+        window.library.track_filter.edit(PLAYLIST).push_str("keep");
+        let expected: Vec<String> = page_entries(&window, &[2, 5, 9])
+            .into_iter()
+            .map(|entry| entry.title)
+            .collect();
+        assert_eq!(
+            expected,
+            ["keep2", "keep5", "keep9"],
+            "the page's true rows 2, 5 and 9 are the kept ones"
+        );
+
+        let _ = click_page_row(&mut window, &mut transport, &mut queue, "keep2");
+        window.held = egui::Modifiers::COMMAND;
+        let _ = click_page_row(&mut window, &mut transport, &mut queue, "keep5");
+        let _ = click_page_row(&mut window, &mut transport, &mut queue, "keep9");
+        window.held = egui::Modifiers::NONE;
+
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Delete);
+
+        assert_eq!(
+            command,
+            Some(Command::RemoveTracks {
+                playlist: PLAYLIST.to_owned(),
+                revision: revision("rev-1"),
+                removals: vec![
+                    Removal { from: 9, length: 1 },
+                    Removal { from: 5, length: 1 },
+                    Removal { from: 2, length: 1 },
+                ],
+            }),
+            "one cut, highest from first, on the true indices"
+        );
+        assert_eq!(
+            page_rows(&window),
+            vec![
+                "list:p0", "list:p1", "list:p3", "list:p4", "list:p6", "list:p7", "list:p8"
+            ],
+            "and exactly those rows left the page"
+        );
+    }
+
+    #[test]
+    fn delete_in_the_filter_field_edits_text_and_removes_no_row() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["p0", "p1"]);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let field = page_filter_field(&frame, view_rect(&window)).expect("the filter is painted");
+        let _ = window.click(&mut transport, &mut queue, field.center());
+        let _ = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![egui::Event::Text("ab".to_owned())],
+        );
+        // Del forward-deletes, and the caret sits after the text, so one step
+        // left puts a character in front of it.
+        let _ = press(
+            &mut window,
+            &mut transport,
+            &mut queue,
+            egui::Key::ArrowLeft,
+        );
+
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Delete);
+
+        assert_eq!(command, None);
+        assert_eq!(
+            window.library.track_filter.edit(PLAYLIST).as_str(),
+            "a",
+            "the field kept the key"
+        );
+        assert_eq!(page_rows(&window), vec!["list:p0", "list:p1"]);
+    }
+
+    #[test]
+    fn a_filtered_drag_inside_the_page_moves_nothing() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        playlist_page(&mut window, &["a", "keep0", "b", "keep1"]);
+        window.library.track_filter.edit(PLAYLIST).push_str("keep");
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let view = view_rect(&window);
+        let from = row_line(&frame, view, "keep0");
+        let to = page_boundary(&frame, view, &["keep0", "keep1"], 2);
+
+        assert_eq!(
+            window.drag(&mut transport, &mut queue, from, to),
+            None,
+            "a filtered page reorders nothing"
+        );
+        let before = vec!["list:a", "list:keep0", "list:b", "list:keep1"];
+        assert_eq!(page_rows(&window), before);
+        assert!(
+            window.library.movable(),
+            "the refused drag left a write pending"
+        );
+
+        // The same gesture, once the query is gone, is the one that moves.
+        window.library.track_filter.clear();
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let from = row_line(&frame, view, "keep0");
+        let to = page_boundary(&frame, view, &["keep0", "keep1"], 2);
+        assert!(
+            window.drag(&mut transport, &mut queue, from, to).is_some(),
+            "clearing the query restores the reorder"
+        );
+        assert_ne!(
+            page_rows(&window),
+            before,
+            "the same drag now moves the row"
+        );
+    }
+
+    #[test]
+    fn alt_arrows_on_a_filtered_page_move_no_page_row() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let titles = ["a", "keep0", "b", "keep1"];
+        playlist_page(&mut window, &titles);
+        window.library.track_filter.edit(PLAYLIST).push_str("keep");
+        let _ = click_page_row(&mut window, &mut transport, &mut queue, "keep0");
+
+        // The page really is narrowed, so the guard below cannot pass on a page
+        // that never filtered. `page_rows` reads the list itself, which keeps
+        // all four rows; the painted titles are what the user sees.
+        assert_eq!(
+            page_rows(&window),
+            titles.map(|title| format!("list:{title}")),
+            "the page's own list is whole"
+        );
+        let shown = painted_titles(&mut window, &mut transport, &mut queue, &titles);
+        assert_eq!(shown, vec!["keep0", "keep1"], "the query narrows the page");
+
+        let command = chord(
+            &mut window,
+            &mut transport,
+            &mut queue,
+            egui::Key::ArrowDown,
+            egui::Modifiers::ALT,
+        );
+
+        // There is no page-level Alt handler: `alt_step` moves the queue's rows
+        // only, so this is a regression guard for the day one is added rather
+        // than a test of a page feature.
+        assert_eq!(command, None);
+        assert_eq!(
+            painted_titles(&mut window, &mut transport, &mut queue, &titles),
+            shown,
+            "Alt+↓ is the queue's, never a page row's"
+        );
+        assert_eq!(
+            page_rows(&window),
+            titles.map(|title| format!("list:{title}")),
+            "Alt+↓ leaves the list's own order alone"
+        );
+        assert_eq!(
+            window.library.track_filter.needle(PLAYLIST).as_deref(),
+            Some("keep"),
+            "the Alt chord does not clear the query either"
+        );
     }
 
     #[test]

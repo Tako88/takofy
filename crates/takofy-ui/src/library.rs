@@ -27,6 +27,7 @@ use crate::reorder;
 use crate::route::{History, Page};
 use crate::search::Search;
 use crate::sidebar_kind::{SidebarFilter, SidebarKind};
+use crate::track_filter::TrackFilter;
 
 /// How the library page draws its saved things.
 ///
@@ -160,6 +161,9 @@ pub struct Library {
     /// The sidebar's kind chips. Like `root_filter`, opening a page or going
     /// home does not reset it.
     pub sidebar_kind: SidebarFilter,
+    /// The playlist page's filter. A page change clears it, because the query
+    /// names one playlist's rows; a reload of the same playlist keeps it.
+    pub track_filter: TrackFilter,
     /// The playlist `tracks` currently concerns; keeps a stale reply out.
     ///
     /// It is not the page: a reply that lands while the user is on an album
@@ -1294,6 +1298,7 @@ impl Library {
     /// made on.
     fn left_page(&mut self) {
         self.likes.clear_notice();
+        self.track_filter.clear();
         if self.renaming.surface() == Surface::Band {
             self.renaming.dismiss();
         }
@@ -6266,6 +6271,88 @@ mod tests {
 
         assert_eq!(library.tracks, Load::Idle);
         assert_eq!(library.selected(), None);
+    }
+
+    #[test]
+    fn a_filter_is_cleared_when_the_page_changes() {
+        let mut library = Library::default();
+        library.select("a");
+        library.track_filter.edit("a").push_str("midnight");
+
+        library.select("b");
+        assert!(
+            library.track_filter.edit("a").is_empty(),
+            "a new page clears the query"
+        );
+
+        library.track_filter.edit("b").push_str("midnight");
+        library.back();
+        assert!(
+            library.track_filter.edit("b").is_empty(),
+            "back clears the query"
+        );
+
+        library.track_filter.edit("b").push_str("midnight");
+        library.forward();
+        assert!(
+            library.track_filter.edit("b").is_empty(),
+            "forward clears the query"
+        );
+
+        library.track_filter.edit("b").push_str("midnight");
+        library.to_playlists();
+        assert!(
+            library.track_filter.edit("b").is_empty(),
+            "going home clears the query"
+        );
+    }
+
+    #[test]
+    fn reselecting_the_same_playlist_keeps_the_filter() {
+        let mut library = Library::default();
+        library.select("a");
+        library.track_filter.edit("a").push_str("midnight");
+
+        library.select("a");
+
+        assert_eq!(
+            library.track_filter.needle("a").as_deref(),
+            Some("midnight"),
+            "a reload of the same page is not a page change"
+        );
+    }
+
+    #[test]
+    fn a_tracks_reply_for_the_same_playlist_keeps_the_filter() {
+        let mut library = Library::default();
+        library.select("a");
+        library.track_filter.edit("a").push_str("midnight");
+
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: vec![track("t")],
+            cover: None,
+            access: None,
+        });
+
+        assert_eq!(
+            library.track_filter.needle("a").as_deref(),
+            Some("midnight")
+        );
+    }
+
+    #[test]
+    fn a_filter_does_not_change_movable_or_removable() {
+        let mut library = page_with("a", &["t0", "t1"], access(0x01, true));
+        assert!(library.movable() && library.removable());
+
+        library.track_filter.edit("a").push_str("midnight");
+
+        assert!(
+            library.movable(),
+            "the query is the view's gate, not this one"
+        );
+        assert!(library.removable());
     }
 
     #[test]

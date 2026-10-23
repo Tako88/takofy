@@ -14,6 +14,7 @@
 //! artist form of the band with a photograph behind it.
 
 use egui::{FontId, Id, Margin, Pos2, Rect, Sense, Ui, Vec2, WidgetInfo, vec2};
+use takofy_model::PLAYLIST_NAME_MAX;
 
 use crate::availability::Control;
 use crate::cover::Cover;
@@ -292,6 +293,7 @@ fn inner(
                         weak_color: tokens.palette.text_muted,
                         cursor: egui::Stroke::new(stroke::HAIRLINE, tokens.palette.text),
                         align: egui::Align2::LEFT_CENTER,
+                        limit: PLAYLIST_NAME_MAX,
                     },
                 )
             };

@@ -120,6 +120,17 @@ impl Selection {
         }
     }
 
+    /// Drops every row and the anchor that `keep` rejects.
+    ///
+    /// A filtered list uses this where `keep` would need a range: the visible
+    /// rows are not contiguous in the list's own index space.
+    pub fn retain(&mut self, keep: impl Fn(usize) -> bool) {
+        self.rows.retain(|row| keep(*row));
+        if !self.anchor.is_some_and(&keep) {
+            self.anchor = None;
+        }
+    }
+
     /// Replaces the selection with exactly these rows, anchored at the lowest.
     pub fn set(&mut self, rows: impl IntoIterator<Item = usize>) {
         self.rows = rows.into_iter().collect();
@@ -291,6 +302,46 @@ mod tests {
         selection.keep(2..4);
         assert_eq!(rows(&selection), vec![3]);
         assert_eq!(selection.anchor, None);
+    }
+
+    #[test]
+    fn retain_drops_hidden_rows_and_a_hidden_anchor() {
+        let mut selection = Selection::default();
+        selection.press(2, Press::Replace);
+        selection.press(5, Press::Toggle);
+        selection.press(9, Press::Toggle);
+
+        selection.retain(|row| row != 5 && row != 9);
+
+        assert_eq!(rows(&selection), vec![2]);
+        assert_eq!(selection.anchor, None, "the anchor fell with its row");
+    }
+
+    #[test]
+    fn retain_keeps_a_visible_anchor() {
+        let mut selection = Selection::default();
+        selection.press(2, Press::Replace);
+        selection.press(5, Press::Toggle);
+        selection.press(9, Press::Toggle);
+
+        selection.retain(|row| row != 5);
+
+        assert_eq!(rows(&selection), vec![2, 9]);
+        assert_eq!(selection.anchor, Some(9));
+    }
+
+    #[test]
+    fn an_extend_after_a_dropped_anchor_replaces() {
+        let mut selection = Selection::default();
+        selection.press(2, Press::Replace);
+        selection.press(5, Press::Toggle);
+        selection.press(9, Press::Toggle);
+        selection.retain(|row| row != 5 && row != 9);
+        assert_eq!(selection.anchor, None);
+
+        selection.press(4, Press::Extend);
+
+        assert_eq!(rows(&selection), vec![4], "a lost anchor falls to Replace");
     }
 
     #[test]
