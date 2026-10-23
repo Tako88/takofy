@@ -25,6 +25,7 @@ mod name_field;
 pub mod now_playing;
 pub mod playbar;
 pub mod playlist;
+mod playlist_filter;
 pub mod queue_pane;
 pub mod queue_row;
 mod release_block;

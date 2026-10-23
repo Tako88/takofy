@@ -385,10 +385,6 @@ impl List {
     ///
     /// A filtered list calls this so a hidden row can never reach the Delete
     /// gate or a menu. The stored selection is only rewritten when one fell.
-    ///
-    /// The playlist view that calls it lands in milestone 2, so the lib build
-    /// has no caller yet.
-    #[allow(dead_code)]
     pub fn restrict(&mut self, keep: impl Fn(usize) -> bool) {
         let before = self.selection.clone();
         self.selection.retain(keep);
