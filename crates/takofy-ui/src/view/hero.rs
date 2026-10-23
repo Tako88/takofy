@@ -1,8 +1,10 @@
 //! The band above a playlist's tracks.
 //!
 //! The band says what you are looking at: which kind of context it is, its name in
-//! the largest type in the window, and what it holds. Under it is the row of
-//! actions that act on the whole context rather than on one track.
+//! the largest type in the window, and what it holds. It is the words and the
+//! picture only: the row of actions that act on the whole context is
+//! [`super::actionbar`], drawn under the band by the page and pinned to the top of
+//! the page's scroll viewport.
 //!
 //! The playlist's description sits under its title in the reference's own byline
 //! style — mono, muted, tracked apart — and its owner rides the meta line as
@@ -16,18 +18,14 @@
 use egui::{FontId, Id, Margin, Pos2, Rect, Sense, Ui, Vec2, WidgetInfo, vec2};
 use takofy_model::PLAYLIST_NAME_MAX;
 
-use crate::availability::Control;
 use crate::cover::Cover;
-use crate::icon::Icon;
 use crate::layout::hero::title_size;
-use crate::menu::Door;
 use crate::naming::Renaming;
-use crate::theme::icon::Size;
 use crate::theme::{
-    MonoWeight, Tokens, Weight, extent, fonts, hero, radius, space, stroke, text, tracking,
+    MonoWeight, Tokens, Weight, fonts, hero, radius, space, stroke, text, tracking,
 };
 
-use super::{art, context_menu, controls, name_field, text as recipe};
+use super::{art, context_menu, name_field, text as recipe};
 
 /// What a band says about the context it heads.
 pub struct Band<'a> {
@@ -38,48 +36,8 @@ pub struct Band<'a> {
     pub meta: Vec<String>,
     /// The playlist's description, already collapsed to a line; empty is absent.
     pub description: &'a str,
-    /// Whether there is anything to play.
-    pub playable: bool,
-    /// Whether the reference gives this context a shuffle control.
-    ///
-    /// A playlist has one; an album's action bar has like and more only, so the
-    /// flag drops the control rather than duplicating the band. The tools are
-    /// laid out right-to-left, so dropping the leftmost keeps the others still.
-    pub shuffle: bool,
     /// The context's cover, as the art pipeline resolves it.
     pub cover: Cover,
-}
-
-/// How the band's heart reads, given what the library says about the context.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-struct Heart {
-    label: &'static str,
-    /// Whether it can act: no list could say, so nothing is offered.
-    live: bool,
-    /// Whether the glyph is the filled, saved one.
-    lit: bool,
-}
-
-/// The heart's three answers, in one place so the label and the glyph cannot
-/// disagree about whether the context is in the library.
-fn heart(saved: Option<bool>) -> Heart {
-    match saved {
-        Some(true) => Heart {
-            label: "Remove from your library",
-            live: true,
-            lit: true,
-        },
-        Some(false) => Heart {
-            label: "Save to your library",
-            live: true,
-            lit: false,
-        },
-        None => Heart {
-            label: "Save to your library",
-            live: false,
-            lit: false,
-        },
-    }
 }
 
 /// What the title can do this frame.
@@ -89,43 +47,15 @@ pub enum Title<'a> {
     Editing(&'a mut Renaming),
 }
 
-/// The band's optional tools.
-impl Tools<'_> {
-    /// A band with no tools: what a test draws when it is about the band itself.
-    #[cfg(test)]
-    pub fn plain() -> Tools<'static> {
-        Tools {
-            title: Title::Plain,
-            more: None,
-            saved: None,
-        }
-    }
-}
-
-pub struct Tools<'a> {
-    pub title: Title<'a>,
-    /// Whether the "…" can act. `None` keeps it present and inert.
-    pub more: Option<bool>,
-    /// Whether this context is in the library, or `None` while no list can say.
-    pub saved: Option<bool>,
-}
-
 /// What drawing the band reported.
 pub struct Reply {
-    pub played: bool,
     pub rename_clicked: bool,
-    pub more_door: Option<Door>,
-    /// The value the heart asks for, when it was pressed.
-    pub saved: Option<bool>,
-    /// Whether the shuffle was pressed.
-    pub shuffled: bool,
     /// The title's id, so a finished rename hands the keyboard back to it.
     pub title_id: Option<Id>,
 }
 
-/// Draws the band with the tools the page has, and reports what they did.
-pub fn show_with(ui: &mut Ui, band: &Band<'_>, tokens: &Tokens, tools: Tools<'_>) -> Reply {
-    let Tools { title, more, saved } = tools;
+/// Draws the band and how its title may be used this frame.
+pub fn show_with(ui: &mut Ui, band: &Band<'_>, tokens: &Tokens, title: Title<'_>) -> Reply {
     let width = ui.available_width();
     // The art is taller than the band's own minimum, and the padding sits inside
     // the band, so the art plus that padding is what the band comes to.
@@ -133,14 +63,8 @@ pub fn show_with(ui: &mut Ui, band: &Band<'_>, tokens: &Tokens, tools: Tools<'_>
     let (rect, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
     wash(ui, rect, tokens);
     let title = inner(ui, rect, band, tokens, title);
-    let (played, more_door, saved, shuffled) = actions(ui, band, tokens, more, saved);
-
     Reply {
-        played,
-        shuffled,
         rename_clicked: title.activated,
-        more_door,
-        saved,
         title_id: title.id,
     }
 }
@@ -328,90 +252,15 @@ fn inner(
     drawn
 }
 
-/// The row under the band: play, and the tools that act on the context.
-///
-/// A playlist's row holds three of them, an album's two: the shuffle is the one
-/// the flag drops.
-fn actions(
-    ui: &mut Ui,
-    band: &Band<'_>,
-    tokens: &Tokens,
-    more: Option<bool>,
-    saved: Option<bool>,
-) -> (bool, Option<Door>, Option<bool>, bool) {
-    let width = ui.available_width();
-    let height = hero::PLAY + 2.0 * space::S4;
-    let (row, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
-    let centre = row.center().y;
-
-    let play = Rect::from_min_size(
-        Pos2::new(row.left() + space::GUTTER, centre - hero::PLAY / 2.0),
-        Vec2::splat(hero::PLAY),
-    );
-    let slot = controls::play_tile(
-        ui,
-        tokens,
-        Control::HeroPlay,
-        play,
-        &format!("Play {}", band.title),
-        band.playable,
-    );
-    let played = slot.response.clicked();
-
-    // The tools hug the right edge, in the reference's order. Only the menu can
-    // act on a playlist; the other two wait for the writes behind them.
-    let mut tools = Vec::with_capacity(3);
-    if band.shuffle {
-        tools.push((Control::HeroShuffle, Icon::Shuffle, "Shuffle"));
-    }
-    tools.push((Control::HeroLike, Icon::Heart, "Save to your library"));
-    tools.push((Control::HeroMore, Icon::More, "More options"));
-    let more_live = more.unwrap_or(false);
-    let mut right = row.right() - space::GUTTER;
-    let mut door = None;
-    let mut asked = None;
-    let mut shuffled = false;
-    for (control, icon, label) in tools.into_iter().rev() {
-        let rect = Rect::from_min_size(
-            Pos2::new(right - extent::BUTTON_LG, centre - extent::BUTTON_LG / 2.0),
-            Vec2::splat(extent::BUTTON_LG),
-        );
-        let heart = heart(saved);
-        let (live, label) = match control {
-            Control::HeroMore => (more_live, label),
-            Control::HeroLike => (heart.live, heart.label),
-            Control::HeroShuffle => (true, label),
-            _ => (false, label),
-        };
-        let slot = if control == Control::HeroLike && heart.lit {
-            controls::icon_button_on(ui, tokens, control, (), rect, icon, Size::MD, label, live)
-        } else {
-            controls::icon_button(ui, tokens, control, rect, icon, Size::MD, label, live)
-        };
-        if control == Control::HeroMore {
-            door = context_menu::button_door(ui, &slot, rect, slot.response.id);
-        }
-        if control == Control::HeroLike && slot.response.clicked() {
-            asked = saved.map(|saved| !saved);
-        }
-        if control == Control::HeroShuffle && slot.response.clicked() {
-            shuffled = true;
-        }
-        right = rect.left() - space::S2;
-    }
-
-    (played, door, asked, shuffled)
-}
-
 #[cfg(test)]
 mod tests {
-    use egui::{Pos2, Rect, Vec2};
+    use egui::{Rect, Vec2};
 
     use super::*;
 
     /// A drawn band, so the frame's own answers are read rather than the helper
     /// that decides them.
-    fn band_output(saved: Option<bool>, at: Option<Pos2>) -> (Reply, egui::FullOutput) {
+    fn band_output() -> (Reply, egui::FullOutput) {
         let tokens = Tokens::DARK;
         let ctx = egui::Context::default();
         ctx.set_fonts(crate::theme::fonts::definitions());
@@ -421,16 +270,10 @@ mod tests {
             title: "Signal Decay",
             meta: Vec::new(),
             description: "",
-            playable: true,
-            shuffle: true,
             cover: crate::cover::Cover::Missing,
         };
         let mut reply = Reply {
-            played: false,
-            shuffled: false,
             rename_clicked: false,
-            more_door: None,
-            saved: None,
             title_id: None,
         };
         let mut output = ctx.run_ui(
@@ -439,19 +282,7 @@ mod tests {
                 ..Default::default()
             },
             |ui| {
-                reply = show_with(
-                    ui,
-                    &band,
-                    &tokens,
-                    Tools {
-                        title: Title::Plain,
-                        more: None,
-                        saved,
-                    },
-                );
-                if let Some(at) = at {
-                    let _ = at;
-                }
+                reply = show_with(ui, &band, &tokens, Title::Plain);
             },
         );
         output.textures_delta.clear();
@@ -459,29 +290,12 @@ mod tests {
     }
 
     #[test]
-    fn a_band_with_shuffle_reports_its_press() {
-        let (reply, _) = band_output(Some(true), None);
-        assert!(!reply.shuffled, "an untouched frame asked for nothing");
-        assert_eq!(reply.saved, None);
-    }
-
-    #[test]
-    fn the_heart_says_what_it_would_do_and_only_acts_on_a_known_answer() {
-        let saved = heart(Some(true));
-        assert_eq!(saved.label, "Remove from your library");
-        assert!(saved.lit, "a saved context's heart is filled");
-        assert!(saved.live);
-
-        let unsaved = heart(Some(false));
-        assert_eq!(unsaved.label, "Save to your library");
-        assert!(!unsaved.lit);
-        assert!(unsaved.live);
-
-        let unknown = heart(None);
+    fn a_band_with_a_plain_title_reports_nothing() {
+        let (reply, _) = band_output();
         assert!(
-            !unknown.live,
-            "no list could say, so the heart offers nothing"
+            !reply.rename_clicked,
+            "an untouched frame asked for nothing"
         );
-        assert!(!unknown.lit);
+        assert_eq!(reply.title_id, None, "a painted title carries no id");
     }
 }

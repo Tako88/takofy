@@ -13,7 +13,7 @@
 //! scanning the list with the pointer never starts playback.
 
 use egui::emath::GuiRounding;
-use egui::{FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2, WidgetInfo};
+use egui::{FontId, Id, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2, WidgetInfo};
 
 use crate::cover::Cover;
 use crate::icon::{self, Icon};
@@ -24,6 +24,7 @@ use crate::theme::{
 };
 
 use super::controls;
+use super::pin;
 use super::queue_row;
 use super::rows::{self, Look};
 use super::text as recipe;
@@ -73,7 +74,7 @@ pub fn show(ui: &mut Ui, rect: Rect, row: &Row<'_>, tokens: &Tokens) -> Option<C
         return None;
     }
     let key = (row.uri, row.index);
-    let body = rows::body(ui, rect, ui.scope_id().with(("episode-row", key)), row.look);
+    let body = rows::body(ui, rect, id(ui, key), row.look);
     let response = &body.response;
     response.widget_info(|| WidgetInfo::labeled(egui::Role::Button, true, spoken(row)));
     if row.refocus {
@@ -119,6 +120,12 @@ pub fn show(ui: &mut Ui, rect: Rect, row: &Row<'_>, tokens: &Tokens) -> Option<C
         return None;
     }
     body.press.map(Click::Select)
+}
+
+/// The id one episode's body is drawn under, so a page can find the row the
+/// keyboard is on before the clip culls it.
+pub(super) fn id(ui: &Ui, key: (&str, usize)) -> Id {
+    ui.scope_id().with(("episode-row", key))
 }
 
 /// Draws the row's hairline, its length, its toggle and its text, and reports
@@ -187,7 +194,7 @@ fn toggle(ui: &mut Ui, rect: Rect, row: &Row<'_>, key: (&str, usize), tokens: &T
         WidgetInfo::labeled(egui::Role::Button, true, label)
     });
     if response.has_focus() {
-        response.scroll_to_me(None);
+        pin::reveal(ui, rect);
     }
 
     let hover = ui.ctx().animate_bool_with_time_and_easing(

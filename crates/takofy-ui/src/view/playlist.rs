@@ -16,7 +16,7 @@ use crate::format::{
     plain_description, root_empty_label, root_filter_label, root_loading_label, total_duration_ms,
 };
 use crate::landing::Zone;
-use crate::layout::{Table, cards, table as table_layout};
+use crate::layout::{Table, actionbar as actionbar_layout, cards, table as table_layout};
 use crate::library::{BandCover, Library, Load, MediaLayout, band_cover};
 use crate::library_filter::{self, Item, RootKind};
 use crate::menu::{Cut, Door, LibraryItem};
@@ -29,12 +29,14 @@ use crate::scroll;
 use crate::sidebar_kind::SidebarKind;
 use crate::theme::{Tokens, extent, space};
 
+use super::actionbar;
 use super::carry::{self, Ghost};
 use super::context_menu;
 use super::filter_row;
 use super::heart;
 use super::hero;
 use super::media;
+use super::pin;
 use super::playlist_filter;
 use super::skeleton;
 use super::text as recipe;
@@ -105,8 +107,12 @@ pub fn tracks_view(
         // selection; with no name there is nothing to say above the rows. It
         // takes the width and starts at the cursor, so the header and the rows
         // follow it down one scroll area.
-        if let Some(entry) = library.selected_entry().cloned() {
-            let cover = band_cover_for(&entry, settled, art, now);
+        let entry = library.selected_entry().cloned();
+        let renamable = entry
+            .as_ref()
+            .is_some_and(|entry| library.can_rename(&entry.uri));
+        if let Some(entry) = &entry {
+            let cover = band_cover_for(entry, settled, art, now);
             let tracks = match &library.tracks {
                 Load::Ready(tracks) if !tracks.tracks.is_empty() => {
                     Some((tracks.tracks.len(), total_duration_ms(&tracks.tracks)))
@@ -125,14 +131,11 @@ pub fn tracks_view(
                 .as_deref()
                 .and_then(plain_description)
                 .unwrap_or_default();
-            let renamable = library.can_rename(&entry.uri);
-            let not_carrying = !carry::carrying(ui.ctx());
-            let more_live = not_carrying && !library.write_in_flight();
             let renaming = std::mem::take(&mut library.renaming);
             let mut renaming = renaming;
             let title = if renaming.is_open_on(&entry.uri, Surface::Band) {
                 hero::Title::Editing(&mut renaming)
-            } else if renamable && not_carrying {
+            } else if renamable && !carry::carrying(ui.ctx()) {
                 hero::Title::Clickable
             } else {
                 hero::Title::Plain
@@ -142,20 +145,9 @@ pub fn tracks_view(
                 title: &entry.name,
                 meta,
                 description: &description,
-                playable: tracks.is_some(),
-                shuffle: true,
                 cover,
             };
-            let reply = hero::show_with(
-                ui,
-                &band,
-                tokens,
-                hero::Tools {
-                    title,
-                    more: Some(more_live),
-                    saved: library.is_saved(&entry.uri),
-                },
-            );
+            let reply = hero::show_with(ui, &band, tokens, title);
             library.renaming = renaming;
             // The band takes a hand-back only for its own field: a row's return
             // belongs to the row, and a field raised on another page has no
@@ -172,7 +164,56 @@ pub fn tracks_view(
             if reply.rename_clicked {
                 library.begin_rename(&entry.uri, Surface::Band);
             }
-            if let Some(door) = reply.more_door {
+        }
+
+        // The row of actions under the band. It holds its place in the flow and
+        // pins to the top of the page's viewport, so it is drawn here and the
+        // rows below it are clipped clear of it.
+        //
+        // It is drawn for a playlist the library can name and for one it cannot,
+        // as long as there are tracks to act on: with no name the row is the
+        // only way to play the list or to filter it.
+        let ready = match &library.tracks {
+            Load::Ready(tracks) if !tracks.tracks.is_empty() => Some(tracks),
+            Load::Idle | Load::Loading | Load::Failed(_) | Load::Ready(_) => None,
+        };
+        let mut hits = None;
+        if entry.is_some() || ready.is_some() {
+            // Read before the field takes the query: the heart and the menu ask
+            // the library about the whole context.
+            let saved = entry
+                .as_ref()
+                .and_then(|entry| library.is_saved(&entry.uri));
+            let more_live =
+                entry.is_some() && !carry::carrying(ui.ctx()) && !library.write_in_flight();
+            let kind = actionbar_layout::Kind::Playlist(actionbar_layout::Form::at(
+                ui.ctx().content_rect().width(),
+                table,
+            ));
+            let playable = ready.is_some();
+            let filter = ready.map(|tracks| playlist_filter::Filter {
+                state: &mut library.track_filter,
+                playlist: &tracks.playlist,
+                entries: &tracks.tracks,
+            });
+            let acted = actionbar::show(
+                ui,
+                &actionbar::Bar {
+                    title: entry.as_ref().map(|entry| entry.name.as_str()),
+                    playable,
+                    shuffle: true,
+                    more: entry.as_ref().map(|_| more_live),
+                    saved,
+                    kind,
+                },
+                filter,
+                tokens,
+            );
+            hits = acted.hits;
+
+            if let Some(entry) = &entry
+                && let Some(door) = acted.more_door
+            {
                 let item = LibraryItem {
                     kind: SidebarKind::Playlists,
                     uri: entry.uri.clone(),
@@ -181,8 +222,8 @@ pub fn tracks_view(
                 let rights = LibraryRights {
                     renamable,
                     removable: library.can_remove(SidebarKind::Playlists),
-                    // The band's heart offers the same save the row's menu does.
-                    saved: library.is_saved(&entry.uri),
+                    // The row's heart offers the same save the row's menu does.
+                    saved,
                 };
                 context_menu::post(
                     ui.ctx(),
@@ -195,7 +236,9 @@ pub fn tracks_view(
                     ),
                 );
             }
-            if reply.saved.is_some() {
+            if let Some(entry) = &entry
+                && acted.saved.is_some()
+            {
                 let item = LibraryItem {
                     kind: SidebarKind::Playlists,
                     uri: entry.uri.clone(),
@@ -203,11 +246,11 @@ pub fn tracks_view(
                 };
                 command = library.save_to_library(&item).or(command.take());
             }
-            if (reply.played || reply.shuffled)
-                && tracks.is_some()
+            if (acted.played || acted.shuffled)
+                && playable
                 && let Load::Ready(tracks) = &library.tracks
             {
-                command = (if reply.shuffled {
+                command = (if acted.shuffled {
                     queue.start_with_shuffle(&tracks.tracks, 0, transport)
                 } else {
                     queue.start(&tracks.tracks, 0, transport)
@@ -255,31 +298,6 @@ pub fn tracks_view(
                     ui.label(recipe::muted("No tracks in this playlist.", tokens));
                 }
                 Load::Ready(tracks) => {
-                    // The tools row is drawn first, so the query this frame's
-                    // keystroke, clear click or Escape leaves is already
-                    // resolved when the rows are chosen below.
-                    let tools = playlist_filter::show(
-                        ui,
-                        &mut library.track_filter,
-                        &tracks.playlist,
-                        &tracks.tracks,
-                        tokens,
-                    );
-                    // A pinned row owns the top of the list's viewport: the
-                    // clip starts under it before the head and the rows are
-                    // drawn, so nothing scrolls over it, the `visible` below
-                    // culls the rows it hides for free, and the offer's own
-                    // geometry is narrowed with it. The scrollbar is painted
-                    // outside this closure and is unaffected.
-                    let pin = tools.occupies;
-                    if let Some(pinned) = pin {
-                        let clip = ui.clip_rect();
-                        ui.shrink_clip_rect(Rect::from_min_max(
-                            Pos2::new(clip.left(), pinned.bottom()),
-                            clip.max,
-                        ));
-                    }
-                    let hits = tools.hits;
                     let columns = table_layout::columns(
                         width,
                         table
@@ -360,10 +378,13 @@ pub fn tracks_view(
                             let rect = table_layout::row_rect(list, slot, extent::ROW_H);
                             let holds_keyboard =
                                 focused_now == Some(track_row::id(ui, &entry.uri, index + 1));
-                            if holds_keyboard {
-                                reveal = Some(rect);
-                            }
                             if !visible.intersects(rect) {
+                                // A row the cull skipped draws nothing, so it has
+                                // no reveal of its own; one that holds the keyboard
+                                // is asked for once the loop is done.
+                                if holds_keyboard {
+                                    reveal = Some(rect);
+                                }
                                 continue;
                             }
                             if holds_keyboard {
@@ -428,18 +449,18 @@ pub fn tracks_view(
                             }
                         }
                         // `rows::body` brings a focused row into view knowing
-                        // nothing of the pin above the list: it asks for the
-                        // row's whole rect at the top of the scroll area's own
-                        // viewport, so the row comes to rest behind the pinned
-                        // row, with only the bottom sliver of its 44 points
-                        // showing and no scroll left to bring it out. A focused
-                        // row above the pin's bottom is asked for again here,
-                        // shifted up by the pin's height, so the scroll area
-                        // lands it under the pin instead.
-                        if let (Some(pinned), Some(row)) = (pin, reveal)
-                            && row.top() < pinned.bottom()
+                        // nothing of what pins above the list: it asks for the
+                        // row's whole rect at the scroll area's own top edge, so
+                        // the row comes to rest behind the pinned rows, with
+                        // only the bottom sliver of its 44 points showing and no
+                        // scroll left to bring it out. A row the cull skipped —
+                        // one that starts above the region the rows may paint in
+                        // — is asked for again through the seam, which shifts
+                        // the request clear of everything pinned.
+                        if let Some(row) = reveal
+                            && row.top() < ui.clip_rect().top()
                         {
-                            ui.scroll_to_rect(row.translate(vec2(0.0, -pinned.height())), None);
+                            pin::reveal(ui, row);
                         }
                         // A span a shift-click opened in true index space may
                         // name hidden rows; prune it before Del reads it.
@@ -1134,7 +1155,6 @@ mod tests {
     use super::*;
     use crate::library::Library;
     use crate::message::Update;
-    use crate::theme::hero::PLAY;
     use crate::theme::{fonts, style};
     use crate::view::rows::Look;
     use crate::view::track_row::State;
@@ -1630,7 +1650,7 @@ mod tests {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 crate::view::inner(ui, |ui| {
                     let width = ui.available_width();
-                    playlist_filter::row_rect(ui);
+                    actionbar::row_rect(ui);
                     let columns = table_layout::columns(width, table.columns());
                     head(ui, columns, &tokens);
                     let list = list_rect(ui, count);
@@ -1660,7 +1680,7 @@ mod tests {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 crate::view::inner(ui, |ui| {
                     let width = ui.available_width();
-                    playlist_filter::row_rect(ui);
+                    actionbar::row_rect(ui);
                     let columns = table_layout::columns(width, table.columns());
                     head(ui, columns, &tokens);
                     let list = list_rect(ui, count);
@@ -1715,14 +1735,12 @@ mod tests {
                     title,
                     meta: Vec::new(),
                     description: "",
-                    playable: count > 0,
-                    shuffle: true,
                     cover: Cover::Missing,
                 };
-                let _ = hero::show_with(ui, &band, &tokens, hero::Tools::plain());
+                let _ = hero::show_with(ui, &band, &tokens, hero::Title::Plain);
+                actionbar::row_rect(ui);
                 crate::view::inner(ui, |ui| {
                     let width = ui.available_width();
-                    playlist_filter::row_rect(ui);
                     let columns = table_layout::columns(width, table.columns());
                     head(ui, columns, &tokens);
                     let list = list_rect(ui, count);
@@ -1733,41 +1751,44 @@ mod tests {
         found.expect("the hero, header and list lay out")
     }
 
-    /// The rect `tracks_view` draws the hero's play control into, solved the way
-    /// the view solves it: the band takes the width and a fixed height, the action
-    /// row a fixed height under it, and the tile sits at the row's left with the
-    /// gutter. The band is drawn through the view's own painter to advance the
-    /// layout, so only the action row's height is re-derived here.
+    /// The action row's tiles, solved by the row itself. The probe window is the
+    /// page's own width, so the form is the one the page would have there.
+    fn tiles_of(row: Rect) -> crate::layout::actionbar::Placed {
+        crate::layout::actionbar::solve(
+            row,
+            crate::layout::actionbar::Kind::Playlist(crate::layout::actionbar::Form::at(
+                PROBE.x,
+                Table::Full,
+            )),
+            crate::layout::actionbar::Parts {
+                shuffle: true,
+                field: true,
+            },
+        )
+    }
+
+    /// The rect `tracks_view` draws the action row's play control into, solved
+    /// the way the view solves it: the band, then the row's slot in the flow, then
+    /// the row's own solver.
     fn play_tile_rect_for(ctx: &Context, title: &str) -> Rect {
         let tokens = Tokens::DARK;
         let mut found = None;
         run(ctx, input(Vec::new()), |ui| {
             ui.add_space(space::S3);
             egui::ScrollArea::vertical().show(ui, |ui| {
-                let width = ui.available_width();
-                let top = ui.cursor().min;
                 let band = hero::Band {
                     eyebrow: "Playlist",
                     title,
                     meta: Vec::new(),
                     description: "",
-                    playable: true,
-                    shuffle: true,
                     cover: Cover::Missing,
                 };
-                let _ = hero::show_with(ui, &band, &tokens, hero::Tools::plain());
-                let bottom = ui.cursor().min.y;
-                let height = PLAY + 2.0 * space::S4;
-                let row =
-                    Rect::from_min_size(Pos2::new(top.x, bottom - height), vec2(width, height));
-                let centre = row.center().y;
-                found = Some(Rect::from_min_size(
-                    Pos2::new(row.left() + space::GUTTER, centre - PLAY / 2.0),
-                    Vec2::splat(PLAY),
-                ));
+                let _ = hero::show_with(ui, &band, &tokens, hero::Title::Plain);
+                let row = actionbar::row_rect(ui);
+                found = Some(tiles_of(row).play);
             });
         });
-        found.expect("the hero and its action row lay out")
+        found.expect("the band and its action row lay out")
     }
 
     /// Clicks `centre` `times` times, one event per pass, and returns the command
@@ -1833,6 +1854,19 @@ mod tests {
         queue: &mut Queue,
     ) -> Option<Command> {
         clicks(PROBE, ctx, centre, 1, library, transport, queue)
+    }
+
+    /// The same click, in a window of `screen`: a point read from a frame drawn
+    /// in a wider window only lands on the same widget where it was drawn.
+    fn click_in(
+        screen: Vec2,
+        ctx: &Context,
+        centre: Pos2,
+        library: &mut Library,
+        transport: &mut Transport,
+        queue: &mut Queue,
+    ) -> Option<Command> {
+        clicks(screen, ctx, centre, 1, library, transport, queue)
     }
 
     /// The x the header paints the upper-cased `label` at, read back from the
@@ -3825,27 +3859,50 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             let cell = cell_rect_for(&ctx, 1, 0, |columns| columns.album);
 
             // Warm up so focus traversal and the hit test read a previous pass.
-            // The first Tab lands in the tools row's field; the second reaches
-            // the first row.
-            for events in [
-                Vec::new(),
-                vec![key(egui::Key::Tab)],
-                vec![key(egui::Key::Tab)],
-            ] {
+            // The action row's widgets come before the list, so the keyboard is
+            // walked on until it lands on a row rather than counted out.
+            let pass = |library: &mut Library,
+                        transport: &mut Transport,
+                        queue: &mut Queue,
+                        events: Vec<Event>| {
                 run(&ctx, input(events), |ui| {
                     let _ = tracks_view(
                         ui,
                         Table::Full,
-                        &mut library,
-                        &mut transport,
-                        &mut queue,
+                        library,
+                        transport,
+                        queue,
                         &mut Art::default(),
                         Instant::now(),
                         NOW_MS,
                         &tokens,
                     );
-                });
+                })
+            };
+            let warm = pass(&mut library, &mut transport, &mut queue, Vec::new());
+            // The action row's box at rest: the field sits on its centre line.
+            let bar_bottom = field_at(&warm).center().y + crate::theme::actionbar::REST_H / 2.0;
+            let mut focused = None;
+            for _ in 0..8 {
+                pass(
+                    &mut library,
+                    &mut transport,
+                    &mut queue,
+                    vec![key(egui::Key::Tab)],
+                );
+                let landed = ctx.memory(|memory| memory.focused());
+                if landed.is_some_and(|id| {
+                    // A row of the list: a row's height, below the action row.
+                    ctx.read_response(id).is_some_and(|row| {
+                        (row.rect.height() - extent::ROW_H).abs() < 0.01
+                            && row.rect.top() >= bar_bottom - 0.01
+                    })
+                }) {
+                    focused = landed;
+                    break;
+                }
             }
+            assert!(focused.is_some(), "the keyboard never reached a row");
 
             // Rest the pointer on the album cell, then press the key.
             let mut command = None;
@@ -4420,11 +4477,9 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
                         "3 hr 51 min".to_owned(),
                     ],
                     description: LONG_DESCRIPTION,
-                    playable: true,
-                    shuffle: true,
                     cover: Cover::Missing,
                 };
-                let _ = hero::show_with(ui, &band, &tokens, hero::Tools::plain());
+                let _ = hero::show_with(ui, &band, &tokens, hero::Title::Plain);
             },
         );
         let band_top = band_top.expect("the band starts at the cursor");
@@ -4921,9 +4976,10 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
     // -----------------------------------------------------------------------
 
     const PLAYLIST: &str = "spotify:playlist:a";
-    /// A window tall enough to hold the band-less page's tools row, head and all
-    /// sixty-two rows, so a restore can be read row by row.
-    const ALL: Vec2 = Vec2::new(900.0, 3200.0);
+    /// A window tall enough to hold the band-less page's action row, head and all
+    /// sixty-two rows, so a restore can be read row by row. Wider than the rail's
+    /// 900, because the count is not drawn in a rail.
+    const ALL: Vec2 = Vec2::new(1000.0, 3200.0);
     /// The twelve true indices a `midnight` query leaves.
     const MIDNIGHT: [usize; 12] = [1, 4, 9, 12, 20, 23, 31, 38, 39, 51, 57, 60];
 
@@ -4949,10 +5005,50 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         library: &mut Library,
         events: Vec<Event>,
     ) -> egui::FullOutput {
+        table_frame_in(ctx, size, Table::Full, library, events)
+    }
+
+    /// One frame of the tracklist handed `table`, so a test can put the page in
+    /// the form its own table names at a width the page is not classified for.
+    fn table_frame_in(
+        ctx: &Context,
+        size: Vec2,
+        table: Table,
+        library: &mut Library,
+        events: Vec<Event>,
+    ) -> egui::FullOutput {
         let tokens = Tokens::DARK;
         let mut transport = Transport::default();
         let mut queue = Queue::default();
         run(ctx, sized_input(size, events), |ui| {
+            let _ = tracks_view(
+                ui,
+                table,
+                library,
+                &mut transport,
+                &mut queue,
+                &mut Art::default(),
+                Instant::now(),
+                NOW_MS,
+                &tokens,
+            );
+        })
+    }
+
+    /// One frame of the tracklist with a wheel jump applied in the frame it
+    /// arrives, as the window's own draw pass does: `view::show` calls
+    /// `scroll::instant` before any scroll area.
+    fn instant_frame_in(
+        ctx: &Context,
+        size: Vec2,
+        library: &mut Library,
+        events: Vec<Event>,
+    ) -> egui::FullOutput {
+        let tokens = Tokens::DARK;
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        run(ctx, sized_input(size, events), |ui| {
+            crate::scroll::instant(ui.ctx());
             let _ = tracks_view(
                 ui,
                 Table::Full,
@@ -4989,9 +5085,54 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             .expect("the filter field paints its bottom hairline")
     }
 
-    /// The filter field's box, read from the hairline it paints under itself.
-    fn filter_field(output: &egui::FullOutput) -> Rect {
-        filter_hairline(output).0
+    /// The filter field's box, read from the hairline it paints under itself:
+    /// the line is the field's bottom, and the field is one large button tall.
+    fn field_at(output: &egui::FullOutput) -> Rect {
+        let line = filter_hairline(output).0;
+        Rect::from_min_max(
+            Pos2::new(line.left(), line.bottom() - extent::BUTTON_LG),
+            Pos2::new(line.right(), line.bottom()),
+        )
+    }
+
+    /// The filter field's drawn box at any width, read from the line under its
+    /// query.
+    ///
+    /// A condensed page's field is wider than `filter_hairline`'s upper bound, so
+    /// the tests that check it pick the hairline below the field's own text
+    /// rather than the first one on the page.
+    fn field_box_under(output: &egui::FullOutput, label: &str) -> Rect {
+        let tokens = Tokens::DARK;
+        let text = output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Text(text) if text.galley.text() == label => {
+                    Some(Rect::from_min_size(text.pos, text.galley.size()))
+                }
+                _ => None,
+            })
+            .expect("the field paints its query");
+        let line = output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Rect(shape)
+                    if (shape.rect.height() - crate::theme::stroke::HAIRLINE).abs() < 0.01
+                        && shape.rect.top() >= text.bottom() - 0.01
+                        && (shape.fill == tokens.palette.border
+                            || shape.fill == tokens.palette.text) =>
+                {
+                    Some(shape.rect)
+                }
+                _ => None,
+            })
+            .min_by(|left, right| left.top().total_cmp(&right.top()))
+            .expect("the field paints its bottom hairline under its query");
+        Rect::from_min_max(
+            Pos2::new(line.left(), line.bottom() - extent::BUTTON_LG),
+            Pos2::new(line.right(), line.bottom()),
+        )
     }
 
     /// The clear control's centre, solved the way the view places it: the field's
@@ -5003,32 +5144,15 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         )
     }
 
-    /// The clear control's box, solved the way the view places it. The field is
-    /// read from the hairline under it, so the box starts a row's height above
-    /// that line.
+    /// The clear control's box, solved the way the view places it.
     fn clear_box(field: Rect) -> Rect {
         Rect::from_min_max(
             Pos2::new(
                 field.right() - space::S3 - crate::theme::icon::Size::SM.side - space::S1,
-                field.bottom() - extent::BUTTON,
+                field.top(),
             ),
             Pos2::new(field.right() - space::S1, field.bottom()),
         )
-    }
-
-    /// The tools row's box on a window of `size`, solved the way the view lays
-    /// it out. The scrollbar floats and reserves no width, so the row is the
-    /// same width with or without sixty-two rows in it.
-    fn tools_row_in(ctx: &Context, size: Vec2) -> Rect {
-        let mut found = None;
-        run(ctx, sized_input(size, Vec::new()), |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                crate::view::inner(ui, |ui| {
-                    found = Some(playlist_filter::row_rect(ui));
-                });
-            });
-        });
-        found.expect("the tools row lays out")
     }
 
     /// The boxes of the geometry a frame painted: a glyph is paths and discs,
@@ -5113,49 +5237,26 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         }
     }
 
-    /// The band's shuffle tile, solved as `play_tile_rect_for` solves play: the
-    /// tools hug the right edge, more then like then shuffle.
+    /// The action row's shuffle tile, solved as `play_tile_rect_for` solves play.
     fn shuffle_tile_rect_for(ctx: &Context, title: &str) -> Rect {
         let tokens = Tokens::DARK;
         let mut found = None;
         run(ctx, input(Vec::new()), |ui| {
             ui.add_space(space::S3);
             egui::ScrollArea::vertical().show(ui, |ui| {
-                let width = ui.available_width();
-                let top = ui.cursor().min;
                 let band = hero::Band {
                     eyebrow: "Playlist",
                     title,
                     meta: Vec::new(),
                     description: "",
-                    playable: true,
-                    shuffle: true,
                     cover: Cover::Missing,
                 };
-                let _ = hero::show_with(ui, &band, &tokens, hero::Tools::plain());
-                let bottom = ui.cursor().min.y;
-                let height = PLAY + 2.0 * space::S4;
-                let row =
-                    Rect::from_min_size(Pos2::new(top.x, bottom - height), vec2(width, height));
-                let centre = row.center().y;
-                let right = row.right() - space::GUTTER;
-                let more = Rect::from_min_size(
-                    Pos2::new(right - extent::BUTTON_LG, centre - extent::BUTTON_LG / 2.0),
-                    Vec2::splat(extent::BUTTON_LG),
-                );
-                let right = more.left() - space::S2;
-                let like = Rect::from_min_size(
-                    Pos2::new(right - extent::BUTTON_LG, centre - extent::BUTTON_LG / 2.0),
-                    Vec2::splat(extent::BUTTON_LG),
-                );
-                let right = like.left() - space::S2;
-                found = Some(Rect::from_min_size(
-                    Pos2::new(right - extent::BUTTON_LG, centre - extent::BUTTON_LG / 2.0),
-                    Vec2::splat(extent::BUTTON_LG),
-                ));
+                let _ = hero::show_with(ui, &band, &tokens, hero::Title::Plain);
+                let row = actionbar::row_rect(ui);
+                found = tiles_of(row).shuffle;
             });
         });
-        found.expect("the hero and its action row lay out")
+        found.expect("the band and its action row lay out")
     }
 
     fn queued(queue: &Queue) -> usize {
@@ -5186,8 +5287,9 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         let mut queue = Queue::default();
 
         let layout = tracklist_frame_in(&ctx, ALL, &mut library);
-        let field = filter_field(&layout);
-        let _ = click(
+        let field = field_at(&layout);
+        let _ = click_in(
+            ALL,
             &ctx,
             field.center(),
             &mut library,
@@ -5233,11 +5335,11 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         library.track_filter.edit(PLAYLIST).push_str("midnight");
 
         let output = tracklist_frame_in(&ctx, ALL, &mut library);
-        let field = filter_field(&output);
+        let field = field_at(&output);
         let count = text_rect(&output, "12 OF 62 TRACKS").expect("the count is painted");
         assert!(
-            count.right() <= field.left(),
-            "the count sits left of the field: {count:?} against {field:?}"
+            count.right() <= field.left() - crate::theme::actionbar::TOOLS_GAP + 0.01,
+            "the count sits one tools gap left of the field: {count:?} against {field:?}"
         );
         assert!(
             !drawn_texts(&output).contains(&"FILTER"),
@@ -5256,6 +5358,36 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
     }
 
     #[test]
+    fn at_900_the_count_gives_its_room_to_the_rail() {
+        let ctx = context();
+        // The rail starts at 900, inclusive, and the count is what steps aside
+        // for it: the field keeps its 176 and the list still narrows.
+        let rail = Vec2::new(900.0, 3200.0);
+        let mut library = library_with(midnight_tracks());
+        library.track_filter.edit(PLAYLIST).push_str("midnight");
+
+        let output = tracklist_frame_in(&ctx, rail, &mut library);
+
+        assert_eq!(
+            painted_rows(&output),
+            MIDNIGHT.to_vec(),
+            "the query still narrows the list in a rail"
+        );
+        assert!(
+            field_at(&output).width() == crate::theme::actionbar::FIELD_W,
+            "the field keeps its width: {:?}",
+            field_at(&output)
+        );
+        assert!(
+            !drawn_texts(&output)
+                .iter()
+                .any(|text| text.contains(" OF ")),
+            "the count is hidden at 900: {:?}",
+            drawn_texts(&output)
+        );
+    }
+
+    #[test]
     fn the_first_keystroke_replaces_the_placeholder_in_its_own_frame() {
         let ctx = context();
         let mut library = library_with(midnight_tracks());
@@ -5267,8 +5399,9 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             drawn_texts(&layout).contains(&"FILTER"),
             "the empty field shows its placeholder"
         );
-        let field = filter_field(&layout);
-        let _ = click(
+        let field = field_at(&layout);
+        let _ = click_in(
+            ALL,
             &ctx,
             field.center(),
             &mut library,
@@ -5299,7 +5432,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             "the count is on the keystroke's own frame: {texts:?}"
         );
 
-        let clear = clear_box(filter_field(&typed));
+        let clear = clear_box(field_at(&typed));
         assert!(
             painted_boxes(&typed)
                 .iter()
@@ -5312,60 +5445,6 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
                 "no text sits under the clear control: {text:?} against {clear:?}"
             );
         }
-    }
-
-    #[test]
-    fn a_narrow_row_keeps_the_count_and_the_field_inside_it() {
-        let ctx = context();
-        let mut library = library_with(midnight_tracks());
-        library.track_filter.edit(PLAYLIST).push_str("midnight");
-
-        // Narrower than a 240-wide field plus the count: the field gives way so
-        // the count stays in the row instead of the gutter.
-        let narrow = Vec2::new(350.0, 3200.0);
-        let output = tracklist_frame_in(&ctx, narrow, &mut library);
-        let row = tools_row_in(&ctx, narrow);
-        let field = filter_field(&output);
-        let count = text_rect(&output, "12 OF 62 TRACKS").expect("the count is painted");
-
-        assert!(
-            field.width() < 240.0,
-            "the field gave room to the count: {field:?}"
-        );
-        assert!(
-            field.left() >= row.left() - 0.01 && field.right() <= row.right() + 0.01,
-            "the field stays in the row: {field:?} against {row:?}"
-        );
-        assert!(
-            count.left() >= row.left() - 0.01 && count.right() <= row.right() + 0.01,
-            "the count stays in the row: {count:?} against {row:?}"
-        );
-        assert!(
-            count.right() <= field.left(),
-            "the count and the field do not overlap: {count:?} against {field:?}"
-        );
-
-        // Narrower still: no box holds both, so the field keeps the row and the
-        // count gives way rather than reaching into the gutter.
-        let too_narrow = Vec2::new(200.0, 3200.0);
-        let output = tracklist_frame_in(&ctx, too_narrow, &mut library);
-        let row = tools_row_in(&ctx, too_narrow);
-        let field = filter_field(&output);
-
-        assert!(
-            !drawn_texts(&output)
-                .iter()
-                .any(|text| text.contains(" OF ")),
-            "the count gives way when it cannot fit"
-        );
-        assert!(
-            field.left() >= row.left() - 0.01 && field.right() <= row.right() + 0.01,
-            "the field stays in the row: {field:?} against {row:?}"
-        );
-        assert!(
-            drawn_texts(&output).contains(&"midnight"),
-            "the field is drawn with its query"
-        );
     }
 
     #[test]
@@ -5399,8 +5478,9 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         let mut queue = Queue::default();
 
         let layout = tracklist_frame_in(&ctx, ALL, &mut library);
-        let field = filter_field(&layout);
-        let _ = click(
+        let field = field_at(&layout);
+        let _ = click_in(
+            ALL,
             &ctx,
             field.center(),
             &mut library,
@@ -5415,7 +5495,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         );
         assert_eq!(painted_rows(&typed), MIDNIGHT.to_vec());
 
-        let clear = clear_point(filter_field(&typed));
+        let clear = clear_point(field_at(&typed));
         let mut output = typed;
         for event in crate::view::test_support::click_events(clear) {
             output = frame_in(&ctx, ALL, &mut library, vec![event]);
@@ -5441,7 +5521,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             drawn_texts(&output).contains(&"FILTER"),
             "the placeholder is back on the click frame"
         );
-        let clear = clear_box(filter_field(&output));
+        let clear = clear_box(field_at(&output));
         assert!(
             !painted_boxes(&output)
                 .iter()
@@ -5466,8 +5546,9 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         let mut queue = Queue::default();
 
         let layout = tracklist_frame_in(&ctx, ALL, &mut library);
-        let field = filter_field(&layout);
-        let _ = click(
+        let field = field_at(&layout);
+        let _ = click_in(
+            ALL,
             &ctx,
             field.center(),
             &mut library,
@@ -5498,7 +5579,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             drawn_texts(&output).contains(&"FILTER"),
             "the placeholder returns on the Escape frame"
         );
-        let clear = clear_box(filter_field(&output));
+        let clear = clear_box(field_at(&output));
         assert!(
             !painted_boxes(&output)
                 .iter()
@@ -5519,7 +5600,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         library.track_filter.edit(PLAYLIST).push_str("midnight");
 
         let layout = tracklist_frame_in(&ctx, ALL, &mut library);
-        let centre = filter_field(&layout).center();
+        let centre = field_at(&layout).center();
         let _ = frame_in(&ctx, ALL, &mut library, vec![Event::PointerMoved(centre)]);
         let _ = frame_in(
             &ctx,
@@ -5545,8 +5626,9 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         let mut queue = Queue::default();
 
         let layout = tracklist_frame_in(&ctx, ALL, &mut library);
-        let field = filter_field(&layout);
-        let _ = click(
+        let field = field_at(&layout);
+        let _ = click_in(
+            ALL,
             &ctx,
             field.center(),
             &mut library,
@@ -5609,7 +5691,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             texts.contains(&"0 OF 62 TRACKS"),
             "the count still says zero"
         );
-        assert!(filter_field(&output).width() > 0.0, "the field stays drawn");
+        assert!(field_at(&output).width() > 0.0, "the field stays drawn");
     }
 
     #[test]
@@ -5788,10 +5870,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             "the user can still see why, and clear it: {texts:?}"
         );
         assert!(texts.contains(&"0 OF 50 TRACKS"));
-        assert!(
-            filter_field(&output).width() > 0.0,
-            "the field is still drawn"
-        );
+        assert!(field_at(&output).width() > 0.0, "the field is still drawn");
     }
 
     #[test]
@@ -5946,8 +6025,9 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         let tokens = Tokens::DARK;
 
         let layout = tracklist_frame_in(&ctx, ALL, &mut library);
-        let field = filter_field(&layout);
-        let _ = click(
+        let field = field_at(&layout);
+        let _ = click_in(
+            ALL,
             &ctx,
             field.center(),
             &mut library,
@@ -6002,14 +6082,88 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
     /// the top of the window, and the scroll area fills what is left of it.
     const VIEWPORT_TOP: f32 = space::S3;
 
-    /// The tools row's box, read from the hairline the field paints under
-    /// itself: the hairline's bottom is the row's bottom.
-    fn filter_row(output: &egui::FullOutput) -> Rect {
-        let line = filter_field(output);
-        Rect::from_min_max(
-            Pos2::new(line.left(), line.bottom() - extent::BUTTON),
-            Pos2::new(line.right(), line.bottom()),
+    /// Where a row that pins under the action row comes to rest: the viewport's
+    /// top edge plus the height the action row condenses to.
+    const PIN_TOP: f32 = VIEWPORT_TOP + crate::theme::actionbar::STUCK_H;
+
+    /// Every box a text shape with `label` was painted in, in paint order.
+    fn text_rects(output: &egui::FullOutput, label: &str) -> Vec<Rect> {
+        output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Text(text) if text.galley.text() == label => {
+                    Some(Rect::from_min_size(text.pos, text.galley.size()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The AccessKit node a frame announced for `label` inside `rect`.
+    fn announced_in(
+        output: &egui::FullOutput,
+        label: &str,
+        rect: Rect,
+    ) -> Option<egui::accesskit::NodeId> {
+        let update = output.platform_output.accesskit_update.as_ref()?;
+        update.nodes.iter().find_map(|(id, node)| {
+            let bounds = node.bounds()?;
+            let bounds = Rect::from_min_max(
+                Pos2::new(bounds.x0 as f32, bounds.y0 as f32),
+                Pos2::new(bounds.x1 as f32, bounds.y1 as f32),
+            );
+            (node.label() == Some(label) && bounds.intersects(rect)).then_some(*id)
+        })
+    }
+
+    /// Whether a frame's AccessKit update still contains `id`.
+    fn announced(output: &egui::FullOutput, id: egui::accesskit::NodeId) -> bool {
+        output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .is_some_and(|update| update.nodes.iter().any(|(node, _)| *node == id))
+    }
+
+    /// The action row's box, read from the surface it fills once it pins.
+    ///
+    /// The row's condensed height is the only fill of this tone on the page that
+    /// tall, so a pinned frame has exactly one.
+    fn pinned_bar(output: &egui::FullOutput) -> Option<Rect> {
+        let tokens = Tokens::DARK;
+        output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Rect(shape)
+                    if shape.fill == tokens.palette.surface
+                        && (shape.rect.height() - crate::theme::actionbar::STUCK_H).abs()
+                            < 0.01 =>
+                {
+                    Some(shape.rect)
+                }
+                _ => None,
+            })
+    }
+
+    /// The field's box on a stuck frame, solved from the row's own drawn box: a
+    /// stuck field paints no hairline of its own to read it from.
+    fn stuck_field(output: &egui::FullOutput, size: Vec2) -> Rect {
+        let bar = pinned_bar(output).expect("the row is pinned");
+        crate::layout::actionbar::solve(
+            bar,
+            crate::layout::actionbar::Kind::Playlist(crate::layout::actionbar::Form::at(
+                size.x,
+                Table::Full,
+            )),
+            crate::layout::actionbar::Parts {
+                shuffle: true,
+                field: true,
+            },
         )
+        .field
+        .expect("the pinned row has a field")
     }
 
     /// One frame with the wheel moved by `points` at `at`, which is how the
@@ -6021,9 +6175,22 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         points: f32,
         library: &mut Library,
     ) -> egui::FullOutput {
-        frame_in(
+        wheel_in(ctx, size, Table::Full, at, points, library)
+    }
+
+    /// The same, on a page handed `table`.
+    fn wheel_in(
+        ctx: &Context,
+        size: Vec2,
+        table: Table,
+        at: Pos2,
+        points: f32,
+        library: &mut Library,
+    ) -> egui::FullOutput {
+        table_frame_in(
             ctx,
             size,
+            table,
             library,
             vec![
                 Event::PointerMoved(at),
@@ -6038,137 +6205,152 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         )
     }
 
-    /// Wheels down until the tools row stops at the top of the list, answering
-    /// every frame's row top and the frame that pinned. The frame is `None`
-    /// when the row left the viewport instead of pinning to it.
+    /// Wheels down until the action row pins, answering the frame it pinned on.
     fn wheel_until_pinned(
         ctx: &Context,
         size: Vec2,
+        table: Table,
         library: &mut Library,
-    ) -> (Vec<f32>, Option<egui::FullOutput>) {
+    ) -> Option<egui::FullOutput> {
         let at = Pos2::new(size.x / 2.0, size.y - extent::ROW_H);
-        let mut tops = Vec::new();
         for _ in 0..240 {
-            let output = wheel(ctx, size, at, -extent::ROW_H, library);
-            tops.push(filter_row(&output).top());
-            if (tops[tops.len() - 1] - VIEWPORT_TOP).abs() < 0.01 {
-                return (tops, Some(output));
+            let output = wheel_in(ctx, size, table, at, -extent::ROW_H, library);
+            if pinned_bar(&output).is_some() {
+                return Some(output);
             }
         }
-        (tops, None)
+        None
     }
 
-    /// The first frame whose tools row is pinned to the top of the list.
+    /// The first frame whose action row is pinned to the top of the list.
     fn pinned_frame(ctx: &Context, size: Vec2, library: &mut Library) -> egui::FullOutput {
-        match wheel_until_pinned(ctx, size, library) {
-            (_, Some(output)) => output,
-            (tops, None) => panic!("the tools row never pinned: {tops:?}"),
-        }
+        pinned_frame_in(ctx, size, Table::Full, library)
+    }
+
+    /// The same, on a page handed `table`.
+    fn pinned_frame_in(
+        ctx: &Context,
+        size: Vec2,
+        table: Table,
+        library: &mut Library,
+    ) -> egui::FullOutput {
+        wheel_until_pinned(ctx, size, table, library).unwrap_or_else(|| {
+            panic!(
+                "the action row never pinned in a {}x{} window",
+                size.x, size.y
+            )
+        })
     }
 
     #[test]
-    fn the_filter_row_pins_to_the_top_of_the_list() {
+    fn the_bar_pins_to_the_top_of_the_list() {
         let ctx = context();
         let mut library = library_named(midnight_tracks(), "Late Night Drive");
         // Short enough that sixty-two rows scroll well past the band.
         let size = Vec2::new(900.0, 400.0);
 
         let layout = tracklist_frame_in(&ctx, size, &mut library);
-        let flow = filter_row(&layout);
+        assert!(
+            pinned_bar(&layout).is_none(),
+            "the row starts in its place in the flow"
+        );
+        let flow = field_at(&layout);
         assert!(
             flow.top() > VIEWPORT_TOP,
-            "the row starts below the viewport top: {flow:?}"
+            "the field starts below the viewport top: {flow:?}"
         );
 
-        let (tops, onset) = wheel_until_pinned(&ctx, size, &mut library);
-        let onset = onset.unwrap_or_else(|| {
-            panic!("the tools row left the viewport instead of pinning: {tops:?}")
-        });
-
+        let pinned = pinned_frame(&ctx, size, &mut library);
+        let bar = pinned_bar(&pinned).expect("the action row is pinned");
         assert!(
-            tops.iter().all(|top| *top >= VIEWPORT_TOP - 0.01),
-            "the row never leaves the top of the viewport: {tops:?}"
+            (bar.top() - VIEWPORT_TOP).abs() < 0.01,
+            "the row sits at the viewport's top edge: {bar:?}"
         );
         assert!(
-            tops.windows(2).any(|pair| pair[1] < pair[0]),
-            "the row walked up with the wheel before it pinned: {tops:?}"
+            (bar.height() - crate::theme::actionbar::STUCK_H).abs() < 0.01,
+            "the row condenses to the height the rows clear: {bar:?}"
+        );
+        let field = stuck_field(&pinned, size);
+        assert!(
+            (field.center().y - bar.center().y).abs() < 0.01,
+            "the field sits on the pinned row's centre line: {field:?} against {bar:?}"
         );
 
-        // Still there while the list keeps scrolling under it.
+        // One field, one placeholder: a second copy left at the row's place in
+        // the flow would be a second `FILTER`, above the pinned one.
+        let placeholders: Vec<Rect> = text_rects(&pinned, "FILTER");
+        assert_eq!(placeholders.len(), 1, "the row is painted once, at the top");
+        assert!(
+            placeholders[0].top() >= bar.top() - 0.01,
+            "no `FILTER` paints above the pinned row: {:?} against {bar:?}",
+            placeholders[0]
+        );
+
+        // Still there while the list keeps scrolling under it: a dozen more rows
+        // must not drift the bar or paint a second copy of the field.
         let at = Pos2::new(size.x / 2.0, size.y - extent::ROW_H);
-        let mut settled = onset;
+        let mut settled = pinned;
         for _ in 0..12 {
             settled = wheel(&ctx, size, at, -extent::ROW_H, &mut library);
         }
-        let row = filter_row(&settled);
+        let bar = pinned_bar(&settled).expect("the row stays pinned");
         assert!(
-            (row.top() - VIEWPORT_TOP).abs() < 0.01,
-            "the pinned row starts at the viewport top: {row:?}"
+            (bar.top() - VIEWPORT_TOP).abs() < 0.01,
+            "the pinned row stays at the viewport top: {bar:?}"
         );
         assert!(
-            (row.bottom() - (VIEWPORT_TOP + extent::BUTTON)).abs() < 0.01,
-            "the pinned row keeps its height: {row:?}"
+            (bar.height() - crate::theme::actionbar::STUCK_H).abs() < 0.01,
+            "the pinned row keeps its height: {bar:?}"
         );
-        // One field, one placeholder: a second copy left at the row's place in
-        // the flow would be a second `FILTER`, above the pinned one.
-        let placeholders: Vec<&str> = drawn_texts(&settled)
-            .into_iter()
-            .filter(|text| *text == "FILTER")
-            .collect();
+        let placeholders: Vec<Rect> = text_rects(&settled, "FILTER");
         assert_eq!(
             placeholders.len(),
             1,
-            "the row is painted once, at the top: {:?}",
-            drawn_texts(&settled)
+            "one field is painted, not a second copy left in the flow"
         );
-        let placeholder = text_rect(&settled, "FILTER").expect("the placeholder is painted");
         assert!(
-            placeholder.top() >= row.top() - 0.01,
-            "no `FILTER` paints above the pinned row: {placeholder:?} against {row:?}"
+            placeholders[0].top() >= bar.top() - 0.01,
+            "no `FILTER` paints above the pinned row: {:?} against {bar:?}",
+            placeholders[0]
         );
 
         // The wheel back hands the row its place in the flow again.
         let mut restored = None;
         for _ in 0..240 {
             let output = wheel(&ctx, size, at, extent::ROW_H, &mut library);
-            let at_rest = filter_row(&output);
-            if (at_rest.top() - flow.top()).abs() < 0.01
-                && (at_rest.bottom() - flow.bottom()).abs() < 0.01
+            if pinned_bar(&output).is_none() && (field_at(&output).top() - flow.top()).abs() < 0.01
             {
                 restored = Some(output);
                 break;
             }
         }
         let restored = restored.expect("the row returns to its place in the flow");
-        let field = filter_row(&restored);
         assert!(
-            field.top() > VIEWPORT_TOP + 0.01,
-            "back at the top of the scroll, the row is in its flow again: {field:?}"
+            field_at(&restored).top() > VIEWPORT_TOP + 0.01,
+            "back at the top of the scroll, the row is in its flow again"
         );
         assert_eq!(
-            drawn_texts(&restored)
-                .into_iter()
-                .filter(|text| *text == "FILTER")
-                .count(),
+            text_rects(&restored, "FILTER").len(),
             1,
             "the row is still painted once"
         );
     }
 
     #[test]
-    fn a_pinned_filter_still_edits_in_the_same_frame() {
+    fn a_pinned_field_still_edits_in_the_same_frame() {
         let ctx = context();
         let mut library = library_named(midnight_tracks(), "Late Night Drive");
         let mut transport = Transport::default();
         let mut queue = Queue::default();
-        let size = Vec2::new(900.0, 400.0);
+        let size = Vec2::new(1000.0, 400.0);
 
         let _ = tracklist_frame_in(&ctx, size, &mut library);
         let pinned = pinned_frame(&ctx, size, &mut library);
-        let field = filter_row(&pinned);
+        let bar = pinned_bar(&pinned).expect("the action row is pinned");
+        let field = stuck_field(&pinned, size);
         assert!(
-            (field.top() - VIEWPORT_TOP).abs() < 0.01,
-            "the row is pinned before the click: {field:?}"
+            (field.center().y - bar.center().y).abs() < 0.01,
+            "the field is vertically centred on the pinned row: {field:?} against {bar:?}"
         );
         let before = painted_rows(&pinned);
         assert!(!before.is_empty(), "the list is drawn under the pin");
@@ -6203,11 +6385,11 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             MIDNIGHT[start..start + rows.len()].to_vec(),
             "the pinned field narrows the list on the keystroke's own frame: {before:?} was the whole list"
         );
-        let typed_field = filter_row(&typed);
+        let typed_field = stuck_field(&typed, size);
         let count = text_rect(&typed, "12 OF 62 TRACKS").expect("the count is painted");
         assert!(
-            count.right() <= typed_field.left(),
-            "the count sits left of the pinned field: {count:?} against {typed_field:?}"
+            count.right() <= typed_field.left() - crate::theme::actionbar::TOOLS_GAP + 0.01,
+            "the count sits one tools gap left of the pinned field: {count:?} against {typed_field:?}"
         );
         assert!(
             drawn_texts(&typed).contains(&"midnight"),
@@ -6217,18 +6399,14 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
     }
 
     #[test]
-    fn no_row_paints_over_the_pinned_row() {
+    fn no_row_paints_over_the_pinned_bar() {
         let ctx = context();
         let mut library = library_named(midnight_tracks(), "Late Night Drive");
         let size = Vec2::new(900.0, 400.0);
 
         let _ = tracklist_frame_in(&ctx, size, &mut library);
         let pinned = pinned_frame(&ctx, size, &mut library);
-        let row = filter_row(&pinned);
-        assert!(
-            (row.top() - VIEWPORT_TOP).abs() < 0.01,
-            "the row is pinned: {row:?}"
-        );
+        let bar = pinned_bar(&pinned).expect("the action row is pinned");
 
         let mut painted = 0;
         for clipped in &pinned.shapes {
@@ -6243,18 +6421,18 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             }
             painted += 1;
             assert!(
-                clipped.clip_rect.top() >= row.bottom() - 0.01,
+                clipped.clip_rect.top() >= bar.bottom() - 0.01,
                 "row `{}` may paint from {:?}, above the pinned row's bottom {:?}",
                 text.galley.text(),
                 clipped.clip_rect,
-                row.bottom()
+                bar.bottom()
             );
         }
         assert!(painted > 0, "the list is still drawn under the pinned row");
     }
 
     #[test]
-    fn the_pinned_row_keeps_its_keyboard() {
+    fn the_pinned_field_keeps_its_keyboard() {
         let ctx = context();
         let mut library = library_named(midnight_tracks(), "Late Night Drive");
         library.track_filter.edit(PLAYLIST).push_str("midnight");
@@ -6263,7 +6441,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         let size = Vec2::new(900.0, 400.0);
 
         let layout = tracklist_frame_in(&ctx, size, &mut library);
-        let field = filter_row(&layout);
+        let field = field_at(&layout);
         let _ = clicks(
             size,
             &ctx,
@@ -6280,9 +6458,9 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
 
         let pinned = pinned_frame(&ctx, size, &mut library);
         assert!(
-            (filter_row(&pinned).top() - VIEWPORT_TOP).abs() < 0.01,
-            "the field is pinned: {:?}",
-            filter_row(&pinned)
+            pinned_bar(&pinned).is_some(),
+            "the field is pinned with the row: {:?}",
+            pinned_bar(&pinned)
         );
         assert!(
             ctx.text_edit_focused(),
@@ -6391,8 +6569,29 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         panic!("the pin never covered a row's title");
     }
 
+    /// Tabs until the keyboard lands on a row, answering the row's id.
+    ///
+    /// The bar's field, then its tools, come before the rows, so the first
+    /// `ROW_H`-tall widget after the field is a row of the list.
+    fn tab_to_a_row(ctx: &Context, size: Vec2, library: &mut Library) -> egui::Id {
+        let [press, release] = crate::view::test_support::tab();
+        for _ in 0..8 {
+            let _ = frame_in(ctx, size, library, vec![press.clone()]);
+            let focused = ctx.memory(|memory| memory.focused());
+            let _ = frame_in(ctx, size, library, vec![release.clone()]);
+            if let Some(id) = focused
+                && ctx
+                    .read_response(id)
+                    .is_some_and(|row| (row.rect.height() - extent::ROW_H).abs() < 0.01)
+            {
+                return id;
+            }
+        }
+        panic!("the keyboard never reached a row");
+    }
+
     #[test]
-    fn a_focused_row_is_not_left_under_the_pinned_row() {
+    fn a_focused_row_is_not_left_under_the_pinned_bar() {
         let ctx = context();
         let mut library = library_named(midnight_tracks(), "Late Night Drive");
         let mut transport = Transport::default();
@@ -6401,38 +6600,30 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
 
         let _ = tracklist_frame_in(&ctx, size, &mut library);
         let (pinned, hidden) = pinned_over_a_row(&ctx, size, &mut library);
-        let pin = filter_row(&pinned);
-        assert!(
-            (pin.top() - VIEWPORT_TOP).abs() < 0.01,
-            "the row is pinned: {pin:?}"
-        );
+        let bar = pinned_bar(&pinned).expect("the action row is pinned");
 
-        // The field takes the keyboard, and Tab hands it to the first row the
-        // list draws: the row the pin covers.
+        // The field takes the keyboard, and Tab walks past the row's tools and
+        // into the list: the first row is the one the pin covers.
+        let field = stuck_field(&pinned, size);
         let _ = clicks(
             size,
             &ctx,
-            pin.center(),
+            field.center(),
             1,
             &mut library,
             &mut transport,
             &mut queue,
         );
         assert!(ctx.text_edit_focused(), "the field has no keyboard");
-        let [press, release] = crate::view::test_support::tab();
-        let _ = frame_in(&ctx, size, &mut library, vec![press]);
-        let focused = ctx
-            .memory(|memory| memory.focused())
-            .expect("the keyboard stays in the list");
+        let focused = tab_to_a_row(&ctx, size, &mut library);
         let row = ctx
             .read_response(focused)
             .expect("the focused row is drawn");
         assert!(
-            row.rect.top() < pin.bottom(),
-            "the pin covers the row the keyboard reached: {:?} against {pin:?}",
+            row.rect.top() < bar.bottom(),
+            "the pin covers the row the keyboard reached: {:?} against {bar:?}",
             row.rect
         );
-        let _ = frame_in(&ctx, size, &mut library, vec![release]);
 
         // The row asks to be brought into view; the pin stays at the top. The
         // scroll is animated, so the row is read until it stops moving, and
@@ -6443,8 +6634,8 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             .expect("the focused row is drawn");
         let mut last = f32::NAN;
         for _ in 0..120 {
-            let pin = filter_row(&output);
-            if (row.rect.top() - last).abs() < 0.01 && row.rect.top() >= pin.bottom() - 0.01 {
+            let bar = pinned_bar(&output).expect("the row stays pinned");
+            if (row.rect.top() - last).abs() < 0.01 && row.rect.top() >= bar.bottom() - 0.01 {
                 break;
             }
             last = row.rect.top();
@@ -6453,10 +6644,10 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
                 .read_response(focused)
                 .expect("the focused row keeps being drawn");
         }
-        let pin = filter_row(&output);
+        let bar = pinned_bar(&output).expect("the row stays pinned");
         assert!(
-            (pin.top() - VIEWPORT_TOP).abs() < 0.01,
-            "the row stays pinned: {pin:?}"
+            (bar.top() - VIEWPORT_TOP).abs() < 0.01,
+            "the row stays pinned: {bar:?}"
         );
         assert_eq!(
             ctx.memory(|memory| memory.focused()),
@@ -6464,16 +6655,16 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             "the row keeps the keyboard"
         );
         assert!(
-            row.rect.top() >= pin.bottom() - 0.01,
-            "the focused row rests below the pin: {:?} against {pin:?}",
+            row.rect.top() >= bar.bottom() - 0.01,
+            "the focused row rests below the pin: {:?} against {bar:?}",
             row.rect
         );
         let (index, title, clip) =
             title_in(&output, row.rect).expect("the focused row paints its title");
         assert_eq!(index, hidden, "the focused row is the one the pin covered");
         assert!(
-            title.top() >= pin.bottom() - 0.01,
-            "the focused row's title is below the pin: {title:?} against {pin:?}"
+            title.top() >= bar.bottom() - 0.01,
+            "the focused row's title is below the pin: {title:?} against {bar:?}"
         );
         assert!(
             clip.top() <= title.top() + 0.01 && clip.bottom() >= title.bottom() - 0.01,
@@ -6489,21 +6680,17 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
     }
 
     #[test]
-    fn the_pinned_row_owns_the_space_it_covers() {
+    fn the_pinned_bar_owns_the_space_it_covers() {
         let ctx = context();
         let mut library = library_named(midnight_tracks(), "Late Night Drive");
         library.track_filter.edit(PLAYLIST).push_str("midnight");
         let mut transport = Transport::default();
         let mut queue = Queue::default();
-        let size = Vec2::new(900.0, 400.0);
+        let size = Vec2::new(1000.0, 400.0);
 
         let _ = tracklist_frame_in(&ctx, size, &mut library);
         let (pinned, _hidden) = pinned_over_a_row(&ctx, size, &mut library);
-        let pin = filter_row(&pinned);
-        assert!(
-            (pin.top() - VIEWPORT_TOP).abs() < 0.01,
-            "the row is pinned: {pin:?}"
-        );
+        let bar = pinned_bar(&pinned).expect("the action row is pinned");
         let drawn = painted_rows(&pinned);
         assert!(!drawn.is_empty(), "rows are drawn under the pin");
 
@@ -6517,28 +6704,35 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         crate::view::carry::select_rows(&ctx, list, kept..kept + 1);
 
         // The count sits left of the field and on the pinned row's own line,
-        // over the first row drawn under it: a press there is the pin's.
+        // over the first row drawn under it: a press there is the bar's.
+        let field = stuck_field(&pinned, size);
         let count = text_rect(&pinned, "12 OF 62 TRACKS").expect("the count is painted");
         assert!(
-            count.top() >= pin.top() - 0.01 && count.bottom() <= pin.bottom() + 0.01,
-            "the count is on the pinned row's line: {count:?} against {pin:?}"
+            count.top() >= bar.top() - 0.01 && count.bottom() <= bar.bottom() + 0.01,
+            "the count is on the pinned row's line: {count:?} against {bar:?}"
         );
         assert!(
-            count.right() <= pin.left(),
-            "the count sits left of the field: {count:?} against {pin:?}"
+            count.right() <= field.left(),
+            "the count sits left of the field: {count:?} against {field:?}"
         );
 
-        let command = clicks(
-            size,
-            &ctx,
-            count.center(),
-            1,
-            &mut library,
-            &mut transport,
-            &mut queue,
-        );
+        let mut pressed = Vec::new();
+        for at in [count.center(), bar.center()] {
+            pressed.push(clicks(
+                size,
+                &ctx,
+                at,
+                1,
+                &mut library,
+                &mut transport,
+                &mut queue,
+            ));
+        }
 
-        assert_eq!(command, None, "a press in the pinned row played a track");
+        assert!(
+            pressed.iter().all(Option::is_none),
+            "a press in the pinned row played a track: {pressed:?}"
+        );
         assert!(
             queue.current().is_none(),
             "a press in the pinned row queued a track"
@@ -6557,164 +6751,384 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         }
     }
 
-    /// Every rectangle the frame painted, with the place it holds in the paint
-    /// order.
-    fn rect_shapes(output: &egui::FullOutput) -> Vec<(usize, Rect, egui::Color32)> {
-        output
-            .shapes
-            .iter()
-            .enumerate()
-            .filter_map(|(at, clipped)| match &clipped.shape {
-                egui::epaint::Shape::Rect(shape) => Some((at, shape.rect, shape.fill)),
-                _ => None,
-            })
-            .collect()
-    }
-
-    /// The place a text shape holds in the paint order.
-    fn text_at(output: &egui::FullOutput, label: &str) -> Option<usize> {
-        output.shapes.iter().position(|clipped| {
-            matches!(&clipped.shape, egui::epaint::Shape::Text(text) if text.galley.text() == label)
-        })
-    }
-
-    /// The tools row's whole box: the width the view solves for the row itself,
-    /// and the place [`filter_row`] reads the row at.
-    ///
-    /// `filter_row` reads its width from the field's hairline, which is only the
-    /// field's span; the row's own span is what the view allocates, gutter to
-    /// gutter.
-    fn whole_row(ctx: &Context, size: Vec2, output: &egui::FullOutput) -> Rect {
-        Rect::from_x_y_ranges(
-            tools_row_in(ctx, size).x_range(),
-            filter_row(output).y_range(),
-        )
-    }
-
-    /// The hairlines the frame painted in `fill` across the whole of `row`.
-    fn full_width_lines(
-        output: &egui::FullOutput,
-        fill: egui::Color32,
-        row: Rect,
-    ) -> Vec<(usize, Rect)> {
-        rect_shapes(output)
-            .into_iter()
-            .filter(|(_, rect, fill_at)| {
-                *fill_at == fill
-                    && (rect.height() - crate::theme::stroke::HAIRLINE).abs() < 0.01
-                    && rect.left() <= row.left() + 0.01
-                    && rect.right() >= row.right() - 0.01
-            })
-            .map(|(at, rect, _)| (at, rect))
-            .collect()
-    }
-
     #[test]
-    fn a_pinned_row_covers_what_it_sits_on() {
+    fn the_playlist_bar_pins_and_rows_clear_it() {
         let ctx = context();
         let mut library = library_named(midnight_tracks(), "Late Night Drive");
         let size = Vec2::new(900.0, 400.0);
-        let tokens = Tokens::DARK;
 
         let _ = tracklist_frame_in(&ctx, size, &mut library);
         let pinned = pinned_frame(&ctx, size, &mut library);
-        let row = whole_row(&ctx, size, &pinned);
+        let bar = pinned_bar(&pinned).expect("the action row is pinned");
         assert!(
-            (row.top() - VIEWPORT_TOP).abs() < 0.01,
-            "the row is pinned: {row:?}"
+            (bar.top() - VIEWPORT_TOP).abs() < 0.01,
+            "the row sits at the viewport's top edge: {bar:?}"
         );
-        let field = filter_field(&pinned);
+        assert!(
+            (bar.bottom() - PIN_TOP).abs() < 0.01,
+            "the row condenses to the height the rows clear: {bar:?}"
+        );
 
-        // (a) The band is the row's own rect, in the surface the list sits on.
-        let shapes = rect_shapes(&pinned);
-        let (band_at, band) = shapes
+        let mut painted = 0;
+        for index in painted_rows(&pinned) {
+            let (_, clip) = clipped_title(&pinned, &format!("t{index}"))
+                .unwrap_or_else(|| panic!("row {index} paints a title"));
+            painted += 1;
+            assert!(
+                clip.top() >= bar.bottom() - 0.01,
+                "row {index} paints from {clip:?}, inside the pinned row {bar:?}"
+            );
+        }
+        assert!(painted > 0, "the list is drawn under the pinned row");
+    }
+
+    #[test]
+    fn the_playlist_bar_title_is_the_pages_name() {
+        let ctx = context();
+        let mut library = library_named(midnight_tracks(), "Late Night Drive");
+        let size = Vec2::new(900.0, 400.0);
+
+        let _ = tracklist_frame_in(&ctx, size, &mut library);
+        let pinned = pinned_frame(&ctx, size, &mut library);
+        let bar = pinned_bar(&pinned).expect("the action row is pinned");
+        let labels: Vec<Rect> = text_rects(&pinned, "Late Night Drive");
+        let label = labels
             .iter()
-            .find(|(_, rect, fill)| {
-                *fill == tokens.palette.surface
-                    && (rect.height() - row.height()).abs() < 0.01
-                    && (rect.top() - row.top()).abs() < 0.01
-            })
-            .map(|(at, rect, _)| (*at, *rect))
+            .find(|rect| rect.top() >= bar.top() - 0.01 && rect.bottom() <= bar.bottom() + 0.01)
             .unwrap_or_else(|| {
-                panic!("the pinned row paints no surface band at {row:?}: {shapes:?}")
+                panic!("the pinned row paints the playlist's name: {labels:?} in {bar:?}")
             });
-
-        // (c) It covers the row's whole width, not just the field's.
         assert!(
-            (band.left() - row.left()).abs() < 0.01 && (band.right() - row.right()).abs() < 0.01,
-            "the band covers the row's whole width: {band:?} against {row:?}"
+            label.left() > bar.left() + crate::theme::space::GUTTER,
+            "the name stands beside the play tile, not in the gutter: {label:?}"
         );
         assert!(
-            band.left() < field.left() - 0.01 && band.width() > field.width() + 0.01,
-            "the band reaches left of the field, which sits at the row's right edge: {band:?} against {field:?}"
-        );
-
-        // (b) It is painted before the field, so the field lands on it.
-        let line = filter_field(&pinned);
-        let line_at = shapes
-            .iter()
-            .find(|(_, rect, fill)| {
-                *fill == tokens.palette.border
-                    && (rect.height() - crate::theme::stroke::HAIRLINE).abs() < 0.01
-                    && (rect.left() - line.left()).abs() < 0.01
-                    && (rect.top() - line.top()).abs() < 0.01
-            })
-            .map(|(at, _, _)| *at)
-            .expect("the field paints its own hairline");
-        assert!(
-            band_at < line_at,
-            "the band is painted at {band_at}, after the field's hairline at {line_at}"
-        );
-        let placeholder_at = text_at(&pinned, "FILTER").expect("the field paints its placeholder");
-        assert!(
-            band_at < placeholder_at,
-            "the band is painted at {band_at}, after the field's own text at {placeholder_at}"
+            labels.len() > 1,
+            "the band keeps its own copy of the name above the row: {labels:?}"
         );
     }
 
     #[test]
-    fn the_pinned_row_has_a_stuck_edge() {
+    fn a_focused_row_partly_under_the_bar_is_scrolled_clear_of_it() {
         let ctx = context();
         let mut library = library_named(midnight_tracks(), "Late Night Drive");
-        let size = Vec2::new(900.0, 400.0);
-        let tokens = Tokens::DARK;
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let size = Vec2::new(900.0, 500.0);
 
-        // At rest the row is in its place in the flow and nothing slides under
-        // it, so it wears no edge of its own.
-        let layout = tracklist_frame_in(&ctx, size, &mut library);
-        let at_rest = whole_row(&ctx, size, &layout);
-        let stray: Vec<Rect> = full_width_lines(&layout, tokens.palette.border, at_rest)
-            .into_iter()
-            .map(|(_, rect)| rect)
-            .filter(|rect| (rect.bottom() - at_rest.bottom()).abs() < 0.01)
-            .collect();
-        assert!(
-            stray.is_empty(),
-            "the unpinned row wears a stuck edge at its bottom: {stray:?} against {at_rest:?}"
-        );
-
-        // Pinned, it draws one across its whole width, at its bottom.
+        let _ = tracklist_frame_in(&ctx, size, &mut library);
         let pinned = pinned_frame(&ctx, size, &mut library);
-        let row = whole_row(&ctx, size, &pinned);
         assert!(
-            (row.top() - VIEWPORT_TOP).abs() < 0.01,
-            "the row is pinned: {row:?}"
+            pinned_bar(&pinned).is_some(),
+            "the action row is pinned before the press"
         );
-        let lines = full_width_lines(&pinned, tokens.palette.border, row);
-        let (_, edge) = lines
+
+        // The first row the list draws is wholly below the pinned row, so a
+        // press on it lands on the row and not in the strip the row owns.
+        let first = *painted_rows(&pinned)
+            .first()
+            .expect("the list is drawn under the pinned row");
+        let title = clipped_title(&pinned, &format!("t{first}"))
+            .expect("the row paints its title")
+            .0;
+        let _ = clicks(
+            size,
+            &ctx,
+            Pos2::new(title.left() + 2.0, title.center().y),
+            1,
+            &mut library,
+            &mut transport,
+            &mut queue,
+        );
+        let focused = ctx
+            .memory(|memory| memory.focused())
+            .expect("the row took the keyboard");
+        // Walk the list up until the row's top is inside the strip everything
+        // pinned above the list covers, and let what the reveal asks for settle.
+        let pinned_under = pinned_bar(&pinned).expect("the row is pinned").bottom();
+        let at = Pos2::new(size.x / 2.0, size.y - extent::ROW_H);
+        let mut covered = false;
+        for _ in 0..80 {
+            let row = ctx.read_response(focused).expect("the row is drawn").rect;
+            if row.top() < pinned_under - 0.5 {
+                covered = true;
+                break;
+            }
+            let _ = wheel(&ctx, size, at, -6.0, &mut library);
+        }
+        assert!(covered, "the row never slid under the pinned row");
+
+        let mut output = frame_in(&ctx, size, &mut library, Vec::new());
+        let mut settled = false;
+        for _ in 0..240 {
+            if let Some(row) = ctx.read_response(focused)
+                && row.rect.top() >= pinned_under - 0.01
+            {
+                settled = true;
+                break;
+            }
+            output = frame_in(&ctx, size, &mut library, Vec::new());
+        }
+        assert_eq!(
+            ctx.memory(|memory| memory.focused()),
+            Some(focused),
+            "the row keeps the keyboard"
+        );
+        assert!(
+            settled,
+            "the focused row never came out from under the pinned row"
+        );
+
+        let bar = pinned_bar(&output).expect("the row is still pinned");
+        let row = ctx
+            .read_response(focused)
+            .expect("the row is drawn again")
+            .rect;
+        assert!(
+            row.top() >= bar.bottom() - 0.01,
+            "the focused row rests below the pinned row: {row:?} against {bar:?}"
+        );
+    }
+
+    #[test]
+    fn a_focused_row_wholly_under_the_bar_is_still_brought_out() {
+        let ctx = context();
+        let mut library = library_named(midnight_tracks(), "Late Night Drive");
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let size = Vec2::new(900.0, 500.0);
+
+        let _ = tracklist_frame_in(&ctx, size, &mut library);
+        let pinned = pinned_frame(&ctx, size, &mut library);
+        let bar = pinned_bar(&pinned).expect("the action row is pinned");
+        assert!(
+            (bar.top() - VIEWPORT_TOP).abs() < 0.01,
+            "the action row is pinned before the press"
+        );
+
+        // The first row the list draws is wholly below the pinned row, so a
+        // press on its title lands on the row and not in the strip.
+        let first = *painted_rows(&pinned)
+            .first()
+            .expect("the list is drawn under the pinned row");
+        let title = clipped_title(&pinned, &format!("t{first}"))
+            .expect("the row paints its title")
+            .0;
+        let _ = clicks(
+            size,
+            &ctx,
+            Pos2::new(title.left() + 2.0, title.center().y),
+            1,
+            &mut library,
+            &mut transport,
+            &mut queue,
+        );
+        let focused = ctx
+            .memory(|memory| memory.focused())
+            .expect("the row took the keyboard");
+        // The press lands on whichever row was under the pointer when the click
+        // resolved, so the focused row is read from the frame it was drawn in
+        // rather than assumed to be the one the pinned frame drew first.
+        let after_click = frame_in(&ctx, size, &mut library, Vec::new());
+        let focused_rect = ctx.read_response(focused).expect("the row is drawn").rect;
+        let focused_row = title_in(&after_click, focused_rect)
+            .expect("the focused row paints its title")
+            .0;
+
+        // One wheel jump of at least the pinned row and a whole row, and enough
+        // to leave this row wholly above the strip, so the frame after it draws
+        // nothing at the focused row: the cull skips it and `rows::body`, which
+        // is a drawn row's own reveal, never runs.
+        let at = Pos2::new(size.x / 2.0, size.y - extent::ROW_H);
+        let strip = pinned_bar(&after_click)
+            .expect("the row is pinned")
+            .bottom();
+        let jump =
+            (focused_rect.bottom() - strip).max(crate::theme::actionbar::STUCK_H) + extent::ROW_H;
+        let mut output = instant_frame_in(
+            &ctx,
+            size,
+            &mut library,
+            vec![
+                Event::PointerMoved(at),
+                Event::MouseWheel {
+                    unit: MouseWheelUnit::Point,
+                    delta: vec2(0.0, -jump),
+                    phase: TouchPhase::Move,
+                    source: MouseWheelSource::Unknown,
+                    modifiers: Modifiers::NONE,
+                },
+            ],
+        );
+
+        let mut culled = false;
+        let mut settled = false;
+        for _ in 0..240 {
+            let strip = pinned_bar(&output).expect("the row stays pinned").bottom();
+            if !painted_rows(&output).contains(&focused_row) {
+                culled = true;
+            } else if culled
+                && ctx
+                    .read_response(focused)
+                    .is_some_and(|row| row.rect.top() >= strip - 0.01)
+            {
+                settled = true;
+                break;
+            }
+            // Every frame runs the wheel the way the window's own pass does, so
+            // the notch's tail cannot keep moving the list under the reveal.
+            output = instant_frame_in(&ctx, size, &mut library, Vec::new());
+        }
+        assert!(
+            culled,
+            "the jump never put the focused row wholly under the pinned row"
+        );
+        assert!(
+            settled,
+            "the focused row never came out from under the pinned row"
+        );
+        let strip = pinned_bar(&output).expect("the row stays pinned").bottom();
+        let row = ctx
+            .read_response(focused)
+            .expect("the row is drawn again")
+            .rect;
+        assert!(
+            row.top() >= strip - 0.01,
+            "the focused row rests below the pinned row: {row:?} against {strip}"
+        );
+    }
+
+    #[test]
+    fn a_playlist_the_library_cannot_name_still_filters() {
+        let ctx = context();
+        // No entry: the library has no name for this playlist, so there is no
+        // band and no title, but the tracks are there to filter and to play.
+        let mut library = library_with(midnight_tracks());
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+
+        let layout = tracklist_frame_in(&ctx, ALL, &mut library);
+        let field = field_at(&layout);
+        assert!(
+            field.width() > 0.0,
+            "the row is drawn for a playlist the library cannot name"
+        );
+        assert!(
+            drawn_texts(&layout).contains(&"FILTER"),
+            "the field shows its placeholder: {:?}",
+            drawn_texts(&layout)
+        );
+        let _ = click_in(
+            ALL,
+            &ctx,
+            field.center(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+        );
+        let typed = frame_in(
+            &ctx,
+            ALL,
+            &mut library,
+            vec![Event::Text("midnight".to_owned())],
+        );
+        assert_eq!(
+            painted_rows(&typed),
+            MIDNIGHT.to_vec(),
+            "typing narrows the list on a page with no name"
+        );
+        assert!(
+            drawn_texts(&typed).contains(&"12 OF 62 TRACKS"),
+            "and the count is painted: {:?}",
+            drawn_texts(&typed)
+        );
+
+        // The play tile works on the tracks the page has, even with no name.
+        let row = crate::layout::actionbar::solve(
+            Rect::from_min_max(
+                Pos2::new(0.0, field.top() - crate::theme::actionbar::PAD_REST),
+                Pos2::new(ALL.x, field.bottom() + crate::theme::actionbar::PAD_REST),
+            ),
+            crate::layout::actionbar::Kind::Playlist(crate::layout::actionbar::Form::at(
+                ALL.x,
+                Table::Full,
+            )),
+            crate::layout::actionbar::Parts {
+                shuffle: true,
+                field: true,
+            },
+        );
+        let command = click(
+            &ctx,
+            row.play.center(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+        );
+        assert_eq!(
+            command,
+            Some(Command::Play {
+                uri: "t0".to_owned()
+            }),
+            "a page with no name still plays its first track"
+        );
+    }
+
+    #[test]
+    fn at_760_the_stuck_title_and_heart_are_gone_and_the_field_fills() {
+        let ctx = context();
+        ctx.enable_accesskit();
+        let mut library = library_named(midnight_tracks(), "Late Night Drive");
+        library.track_filter.edit(PLAYLIST).push_str("midnight");
+        let size = Vec2::new(760.0, 400.0);
+
+        // The field the page actually draws is wider than the wide form's fixed
+        // width: it has taken the room the count and the heart left.
+        let layout = table_frame_in(&ctx, size, Table::Narrow, &mut library, Vec::new());
+        let field = field_box_under(&layout, "midnight");
+        assert!(
+            field.width() > crate::theme::actionbar::FIELD_W,
+            "the drawn field fills to the icons: {field:?}"
+        );
+
+        let pinned = pinned_frame_in(&ctx, size, Table::Narrow, &mut library);
+        let bar = pinned_bar(&pinned).expect("the action row is pinned");
+        assert!(
+            !text_rects(&pinned, "Late Night Drive")
+                .iter()
+                .any(|label| label.top() >= bar.top() - 0.01
+                    && label.bottom() <= bar.bottom() + 0.01),
+            "a stuck narrow row paints no name: {:?}",
+            text_rects(&pinned, "Late Night Drive")
+        );
+        for label in ["Save to your library", "Remove from your library"] {
+            assert!(
+                announced_in(&pinned, label, bar).is_none(),
+                "a narrow row creates no heart control: {label} is announced in {bar:?}"
+            );
+        }
+
+        // The page's own table is what condenses it: handed the full table, the
+        // same width keeps the heart and the name.
+        let mut wide = library_named(midnight_tracks(), "Late Night Drive");
+        wide.track_filter.edit(PLAYLIST).push_str("midnight");
+        let _ = table_frame_in(&ctx, size, Table::Full, &mut wide, Vec::new());
+        let pinned_wide = pinned_frame_in(&ctx, size, Table::Full, &mut wide);
+        let wide_bar = pinned_bar(&pinned_wide).expect("the action row is pinned");
+        let heart = ["Save to your library", "Remove from your library"]
             .iter()
-            .find(|(_, rect)| (rect.bottom() - row.bottom()).abs() < 0.01)
-            .unwrap_or_else(|| panic!("the pinned row paints no stuck edge at {row:?}: {lines:?}"));
+            .find_map(|label| announced_in(&pinned_wide, label, wide_bar))
+            .expect("a wide row creates its heart control");
         assert!(
-            (edge.top() - (row.bottom() - crate::theme::stroke::HAIRLINE)).abs() < 0.01,
-            "the stuck edge is the row's bottom hairline: {edge:?} against {row:?}"
+            !announced(&pinned, heart),
+            "the narrow row never creates that control: {heart:?}"
         );
-        // It is the row's edge, not the field's underline: it runs the whole
-        // width, while the field's own hairline keeps its own shorter span.
-        let field = filter_field(&pinned);
         assert!(
-            edge.width() > field.width() + 0.01,
-            "the stuck edge is not the field's underline: {edge:?} against {field:?}"
+            text_rects(&pinned_wide, "Late Night Drive")
+                .iter()
+                .any(|label| label.top() >= wide_bar.top() - 0.01
+                    && label.bottom() <= wide_bar.bottom() + 0.01),
+            "a wide row keeps the name on the pin"
         );
     }
 }
