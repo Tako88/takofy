@@ -267,7 +267,11 @@ impl Transport {
             .map(|position_ms| Command::Seek { position_ms })
     }
 
-    fn length_known(&self) -> bool {
+    /// Whether a known non-zero length makes a seek possible at all.
+    ///
+    /// The bar's slider, its arrow keys and a holder's steer all ask here, so
+    /// the three cannot disagree about which transports can be jumped in.
+    pub(crate) fn length_known(&self) -> bool {
         self.duration_ms.is_some_and(|duration| duration > 0)
     }
 

@@ -6,7 +6,7 @@
 //! without a clock. It imports no I/O: a press yields a [`Command`], and the
 //! bridge is what sends it.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use takofy_model::{Device, DeviceKind, RemotePlayback, RemoteState, TrackEntry};
@@ -90,9 +90,11 @@ pub struct Devices {
     watch: Watch,
     /// A one-line notice and the instant it stops being drawn.
     flash: Option<(String, Instant)>,
-    /// Track URIs a label was asked for, hits and misses alike, so a label that
-    /// never arrives is not asked for twice.
-    labels: HashSet<String>,
+    /// The entries a label named, by URI, so a track that comes back is drawn
+    /// from the cache without asking again.
+    labelled: HashMap<String, TrackEntry>,
+    /// Track URIs a label was asked for and no answer has arrived for.
+    asked: HashSet<String>,
     /// A refresh the user's own press asked for, taken once.
     wants_refresh: bool,
     /// The unnamed holder a refresh was already asked for.
@@ -151,11 +153,11 @@ impl Devices {
 
     /// Asks the worker to name the track the holder is playing, once per URI.
     ///
-    /// A label that never arrives stays cached, so a track the account cannot
+    /// A label that never arrives stays asked, so a track the account cannot
     /// name does not become a request loop.
     pub fn label_request(&mut self) -> Option<Command> {
         let uri = self.playback.as_ref()?.track.uri.clone();
-        if uri.is_empty() || self.labels.contains(&uri) {
+        if uri.is_empty() || self.asked.contains(&uri) || self.labelled.contains_key(&uri) {
             return None;
         }
         if self
@@ -166,7 +168,7 @@ impl Devices {
         {
             return None;
         }
-        self.labels.insert(uri.clone());
+        self.asked.insert(uri.clone());
         Some(Command::LabelRemote { track: uri })
     }
 
@@ -182,7 +184,7 @@ impl Devices {
         if let Steer::SeekTo(position_ms) = steer {
             // The slider is enabled on the display transport's known length
             // alone, so a seek is refused on exactly that.
-            if !self.remote.duration_ms.is_some_and(|duration| duration > 0) {
+            if !self.remote.length_known() {
                 return None;
             }
             // The bar holds the new place until the push confirms it.
@@ -376,20 +378,29 @@ impl Devices {
             return false;
         }
         // A push names the track only by URI, so a new one drops the old title
-        // until the label read answers.
-        if self
+        // unless the label already named it. A URI that comes back — a replay
+        // or a restart — is drawn again at once and asks for nothing.
+        let uri = playback.track.uri.as_str();
+        if playback.track.named {
+            self.labelled
+                .insert(playback.track.uri.clone(), playback.track.clone());
+        }
+        let already_drawn = self
             .remote
             .now_playing
             .as_ref()
-            .is_some_and(|now_playing| now_playing.uri != playback.track.uri)
-        {
-            self.remote.now_playing = None;
+            .is_some_and(|now_playing| now_playing.uri == uri);
+        if playback.track.named || !already_drawn {
+            self.remote.now_playing = self.labelled.get(uri).map(now_playing_of);
         }
         self.remote.position_ms = playback.position_ms;
         self.remote.state = state_of(playback.state);
         self.remote.duration_ms = playback.duration_ms;
-        self.remote.scrub = None;
-        self.remote.dragging = false;
+        // A push mid-drag does not end the pointer's preview: the release still
+        // asks for the place the drag landed on.
+        if !self.remote.dragging {
+            self.remote.scrub = None;
+        }
         self.playback = Some(playback);
         self.anchored = Some(now);
         self.reach_answer();
@@ -405,13 +416,8 @@ impl Devices {
         {
             return false;
         }
-        self.labels.insert(entry.uri.clone());
-        self.remote.now_playing = Some(NowPlaying {
-            uri: entry.uri.clone(),
-            title: entry.title.clone(),
-            artists: entry.artists.clone(),
-            cover: entry.cover.clone(),
-        });
+        self.labelled.insert(entry.uri.clone(), entry.clone());
+        self.remote.now_playing = Some(now_playing_of(entry));
         true
     }
 
@@ -502,6 +508,16 @@ fn state_of(state: RemoteState) -> TransportState {
         RemoteState::Playing => TransportState::Playing,
         RemoteState::Paused => TransportState::Paused,
         RemoteState::Loading => TransportState::Loading,
+    }
+}
+
+/// What the bar and the pane draw for a labelled entry.
+fn now_playing_of(entry: &TrackEntry) -> NowPlaying {
+    NowPlaying {
+        uri: entry.uri.clone(),
+        title: entry.title.clone(),
+        artists: entry.artists.clone(),
+        cover: entry.cover.clone(),
     }
 }
 
@@ -748,8 +764,8 @@ mod tests {
         let now = base();
         let local = Transport::default();
         let mut devices = watching(now);
+        // The preview a finished drag left, waiting for the push that confirms it.
         devices.remote.scrub = Some(42);
-        devices.remote.dragging = true;
 
         assert!(devices.apply(
             &playing(Some(playback(
@@ -770,6 +786,40 @@ mod tests {
         assert!(!devices.remote.dragging);
         assert_eq!(local, Transport::default(), "the local transport moved");
         assert_eq!(devices.source(&local), Source::Remote);
+    }
+
+    #[test]
+    fn a_push_mid_drag_keeps_the_seek_the_release_asks_for() {
+        let now = base();
+        let mut devices = remote(now);
+        devices.remote.scrub = Some(4_000);
+        devices.remote.dragging = true;
+
+        assert!(devices.apply(
+            &playing(Some(playback(
+                RemoteState::Playing,
+                "spotify:track:a",
+                Some(10_000)
+            ))),
+            now
+        ));
+
+        assert_eq!(
+            devices.remote.scrub,
+            Some(4_000),
+            "a push dropped the pointer's preview"
+        );
+        assert!(devices.remote.dragging, "a push ended the drag");
+        assert_eq!(
+            devices.shown_position(now),
+            4_000,
+            "the bar draws the push over the drag"
+        );
+        assert_eq!(
+            devices.remote.scrub_end(),
+            Some(Command::Seek { position_ms: 4_000 }),
+            "the release no longer asks for the place it landed on"
+        );
     }
 
     #[test]
@@ -881,6 +931,110 @@ mod tests {
         let mut devices = remote(now);
         assert!(!devices.apply(&labelled(named_entry("spotify:track:b", "Other")), now));
         assert_eq!(devices.remote.now_playing, None);
+    }
+
+    #[test]
+    fn a_track_that_comes_back_is_named_again_without_asking() {
+        let now = base();
+        let mut devices = remote(now);
+        assert!(devices.apply(&labelled(named_entry("spotify:track:a", "Song")), now));
+
+        // The phone moves on to a track no label has named.
+        assert!(devices.apply(
+            &playing(Some(playback(
+                RemoteState::Playing,
+                "spotify:track:b",
+                Some(10_000)
+            ))),
+            now
+        ));
+        assert_eq!(devices.remote.now_playing, None);
+        assert_eq!(
+            devices.label_request(),
+            Some(Command::LabelRemote {
+                track: "spotify:track:b".to_owned()
+            })
+        );
+
+        // And back to the one it named.
+        assert!(devices.apply(
+            &playing(Some(playback(
+                RemoteState::Playing,
+                "spotify:track:a",
+                Some(10_000)
+            ))),
+            now
+        ));
+        assert_eq!(
+            devices
+                .remote
+                .now_playing
+                .as_ref()
+                .map(|now| now.title.as_str()),
+            Some("Song"),
+            "a cached name did not come back with its track"
+        );
+        assert_eq!(
+            devices.label_request(),
+            None,
+            "a cached name was asked again"
+        );
+    }
+
+    #[test]
+    fn stopping_and_starting_the_same_track_keeps_its_name() {
+        let now = base();
+        let mut devices = remote(now);
+        assert!(devices.apply(&labelled(named_entry("spotify:track:a", "Song")), now));
+
+        assert!(devices.apply(&playing(None), now));
+        assert_eq!(
+            devices.remote.now_playing, None,
+            "the stop still wipes the bar"
+        );
+
+        assert!(devices.apply(
+            &playing(Some(playback(
+                RemoteState::Playing,
+                "spotify:track:a",
+                Some(10_000)
+            ))),
+            now
+        ));
+        assert_eq!(
+            devices
+                .remote
+                .now_playing
+                .as_ref()
+                .map(|now| now.title.as_str()),
+            Some("Song"),
+            "the replay lost its name"
+        );
+        assert_eq!(devices.label_request(), None, "the replay was asked again");
+    }
+
+    #[test]
+    fn a_push_that_already_names_the_track_asks_for_no_label() {
+        let now = base();
+        let mut devices = watching(now);
+        let mut pushed = playback(RemoteState::Playing, "spotify:track:a", Some(10_000));
+        pushed.track = named_entry("spotify:track:a", "Song");
+
+        assert!(devices.apply(&playing(Some(pushed)), now));
+
+        assert_eq!(
+            devices
+                .remote
+                .now_playing
+                .as_ref()
+                .map(|now| now.title.as_str()),
+            Some("Song")
+        );
+        assert_eq!(
+            devices.label_request(),
+            None,
+            "a named push asked for a label"
+        );
     }
 
     #[test]
