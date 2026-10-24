@@ -307,6 +307,34 @@ pub fn filter_count_label(shown: usize, total: usize) -> String {
     format!("{shown} of {total} {noun}")
 }
 
+/// A filtered discography's count line: `3 of 4 releases`.
+///
+/// The unit follows the total, not the shown count, so a single-release
+/// discography reads `1 of 1 release` while a query is on.
+pub fn release_filter_count_label(shown: usize, total: usize) -> String {
+    let noun = if total == 1 { "release" } else { "releases" };
+    format!("{shown} of {total} {noun}")
+}
+
+/// A filtered list's sentence when a query leaves no row.
+///
+/// The query is the user's own words, so it keeps its case and is trimmed. The
+/// quotes are the reference's curly pair, as the rail's line uses.
+pub fn list_nothing(query: &str) -> String {
+    format!("Nothing in this list matches “{}”", query.trim())
+}
+
+/// The heading and sentence a format chip shows when it leaves no release.
+///
+/// The artist's name is part of the sentence because the section is about that
+/// artist: "Vela Moreno has no releases of that type."
+pub fn format_empty_copy(name: &str) -> (&'static str, String) {
+    (
+        "Nothing in this format yet",
+        format!("{name} has no releases of that type."),
+    )
+}
+
 /// A library row's second line: what the thing is, and whose it is.
 ///
 /// The reference writes `Playlist · Vela Moreno` for a playlist and the
@@ -1035,6 +1063,39 @@ mod tests {
         assert_eq!(
             rail_nothing("Midnight City"),
             "Nothing matches “Midnight City”"
+        );
+    }
+
+    #[test]
+    fn release_filter_count_labels() {
+        assert_eq!(release_filter_count_label(3, 4), "3 of 4 releases");
+        assert_eq!(release_filter_count_label(1, 1), "1 of 1 release");
+        assert_eq!(release_filter_count_label(0, 4), "0 of 4 releases");
+        assert_eq!(release_filter_count_label(1, 4), "1 of 4 releases");
+    }
+
+    #[test]
+    fn list_nothing_names_the_trimmed_query() {
+        assert_eq!(
+            list_nothing("  Midnight City  "),
+            "Nothing in this list matches “Midnight City”"
+        );
+        let line = list_nothing("har");
+        assert!(line.contains('“') && line.contains('”'), "{line}");
+        assert!(
+            !line.contains('"'),
+            "straight quotes are not the reference's"
+        );
+    }
+
+    #[test]
+    fn format_empty_copy_matches_the_reference() {
+        assert_eq!(
+            format_empty_copy("Vela Moreno"),
+            (
+                "Nothing in this format yet",
+                "Vela Moreno has no releases of that type.".to_owned()
+            )
         );
     }
 

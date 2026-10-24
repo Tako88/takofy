@@ -14,6 +14,7 @@ mod context_menu;
 pub mod controls;
 mod discography_filter;
 mod episode_row;
+mod filter_count;
 mod filter_field;
 mod filter_row;
 mod focus;
