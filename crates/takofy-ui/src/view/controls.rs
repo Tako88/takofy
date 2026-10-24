@@ -562,12 +562,14 @@ fn text_button_font() -> FontId {
 ///
 /// The reference draws it for the hero's own play control, for a hovered card and
 /// for a hovered row's index, and it is the only thing here that fills with the
-/// accent colour. Sound lives here and nowhere else.
+/// accent colour. Sound lives here and nowhere else. The glyph is the caller's
+/// because the playbar's tile is the same tile saying pause.
 pub fn play_tile(
     ui: &mut Ui,
     tokens: &Tokens,
     control: Control,
     rect: Rect,
+    glyph: Icon,
     label: &str,
     live: bool,
 ) -> Slot {
@@ -586,7 +588,7 @@ pub fn play_tile(
     ui.painter().rect_filled(rect, radius::SM, fill);
     icon::paint(
         ui.painter(),
-        Icon::Play,
+        glyph,
         centred(ui, rect, Size::MD.side),
         Size::MD,
         tokens.palette.text_inverse,
@@ -742,6 +744,49 @@ mod tests {
     /// Runs one pass and drops what it painted.
     fn run(ctx: &Context, input: RawInput, draw: impl FnMut(&mut Ui)) {
         let _ = painted(ctx, input, draw);
+    }
+
+    /// The same input at a known instant, so an eased hover can finish.
+    fn timed(events: Vec<Event>, time: f64) -> RawInput {
+        RawInput {
+            time: Some(time),
+            ..input(events)
+        }
+    }
+
+    /// The tile's box in the tile tests.
+    fn tile_rect() -> Rect {
+        Rect::from_min_size(Pos2::new(100.0, 100.0), Vec2::splat(extent::BUTTON_LG))
+    }
+
+    /// The fill a frame painted the tile with.
+    fn tile_fill(output: &egui::FullOutput, rect: Rect) -> Color32 {
+        output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(shape) if shape.rect == rect => Some(shape.fill),
+                _ => None,
+            })
+            .expect("the tile paints a square")
+    }
+
+    /// One frame of the tile carrying `glyph`.
+    fn tile_frame(ctx: &Context, input: RawInput, glyph: Icon, live: bool) -> egui::FullOutput {
+        let rect = tile_rect();
+        let mut output = ctx.run_ui(input, |ui| {
+            let _ = play_tile(
+                ui,
+                &Tokens::DARK,
+                Control::PlayPause,
+                rect,
+                glyph,
+                "Play",
+                live,
+            );
+        });
+        output.textures_delta.clear();
+        output
     }
 
     /// The slot every ring test draws: one ready toggle in `rect`.
@@ -1213,6 +1258,56 @@ mod tests {
         run(&ctx, input(Vec::new()), |_ui| {});
         tap(&ctx, rect.center(), &mut clicked);
         assert!(!clicked, "a waiting text button received a click");
+    }
+
+    #[test]
+    fn the_play_tile_paints_the_accent_fill_and_the_inverse_glyph_for_both_glyphs() {
+        let tokens = Tokens::DARK;
+        let rect = tile_rect();
+        for glyph in [Icon::Play, Icon::Pause] {
+            let ctx = Context::default();
+            let output = tile_frame(&ctx, timed(Vec::new(), 0.0), glyph, true);
+            assert_eq!(
+                tile_fill(&output, rect),
+                tokens.palette.accent,
+                "{glyph:?}: the tile is not the accent"
+            );
+            let colours = glyph_colours(&output);
+            assert!(!colours.is_empty(), "{glyph:?}: the tile paints no glyph");
+            for colour in colours {
+                assert_eq!(colour, tokens.palette.text_inverse, "{glyph:?}");
+            }
+
+            // The pointer's hover moves the fill toward the hovered accent.
+            let _ = tile_frame(
+                &ctx,
+                timed(vec![Event::PointerMoved(rect.center())], 0.1),
+                glyph,
+                true,
+            );
+            let hovered = tile_frame(&ctx, timed(Vec::new(), 1.0), glyph, true);
+            let fill = tile_fill(&hovered, rect);
+            assert!(
+                fill.g() > tokens.palette.accent.g() && fill.g() <= tokens.palette.accent_hover.g(),
+                "{glyph:?}: the hovered tile is {fill:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_tile_that_cannot_play_paints_the_disabled_fill() {
+        let tokens = Tokens::DARK;
+        let ctx = Context::default();
+        let output = tile_frame(&ctx, timed(Vec::new(), 0.0), Icon::Play, false);
+        assert_eq!(
+            tile_fill(&output, tile_rect()),
+            tokens.palette.text_disabled
+        );
+        let colours = glyph_colours(&output);
+        assert!(!colours.is_empty(), "the inert tile paints no glyph");
+        for colour in colours {
+            assert_eq!(colour, tokens.palette.text_inverse);
+        }
     }
 
     #[test]

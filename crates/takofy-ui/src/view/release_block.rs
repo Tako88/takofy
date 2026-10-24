@@ -210,6 +210,7 @@ fn body(
         tokens,
         Control::ReleasePlay,
         play,
+        Icon::Play,
         &format!("Play {}", release.name),
         block.playable,
     )

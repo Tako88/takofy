@@ -209,7 +209,8 @@ pub fn hero_meta(songs: usize, total_ms: u32) -> Vec<String> {
 /// `then_ms` is the date in epoch milliseconds and `now_ms` is the app's clock,
 /// which reads once per frame and does not tick while idle. A day is a fixed 24
 /// hour span rather than a calendar day, so the function has only an instant and
-/// a clock, and a local calendar would need a timezone. Months are `days / 30`.
+/// a clock, and a local calendar would need a timezone. Months are `days / 30`;
+/// past eleven of them the wording moves to `last year` and then to whole years.
 /// The 28–59 band is its own arm so the run after three weeks reads as one month
 /// instead of falling through to `0 months ago`.
 pub fn age_label(then_ms: u64, now_ms: u64) -> Option<String> {
@@ -221,7 +222,13 @@ pub fn age_label(then_ms: u64, now_ms: u64) -> Option<String> {
         7..=13 => "1 week ago".to_owned(),
         14..=27 => format!("{} weeks ago", days / 7),
         28..=59 => "1 month ago".to_owned(),
-        _ => format!("{} months ago", days / 30),
+        _ => match days / 30 {
+            months @ 2..=11 => format!("{months} months ago"),
+            12..=23 => "last year".to_owned(),
+            // 24 months is the first value that reaches this arm, so the count
+            // is never one.
+            months => format!("{} years ago", months / 12),
+        },
     })
 }
 
@@ -800,12 +807,32 @@ mod tests {
     }
 
     #[test]
-    fn added_label_months_are_days_over_30_unbounded() {
+    fn added_label_months_run_to_eleven() {
         assert_eq!(aged(60 * D).as_deref(), Some("2 months ago"));
         assert_eq!(aged(89 * D).as_deref(), Some("2 months ago"));
         assert_eq!(aged(90 * D).as_deref(), Some("3 months ago"));
-        assert_eq!(aged(420 * D).as_deref(), Some("14 months ago"));
-        assert_eq!(aged(1200 * D).as_deref(), Some("40 months ago"));
+        assert_eq!(aged(330 * D).as_deref(), Some("11 months ago"));
+        assert_eq!(aged(359 * D).as_deref(), Some("11 months ago"));
+    }
+
+    #[test]
+    fn added_label_12_to_23_months_is_last_year() {
+        assert_eq!(aged(360 * D).as_deref(), Some("last year"));
+        assert_eq!(aged(510 * D).as_deref(), Some("last year"));
+        assert_eq!(aged(719 * D).as_deref(), Some("last year"));
+    }
+
+    #[test]
+    fn added_label_24_months_is_two_years() {
+        assert_eq!(aged(720 * D).as_deref(), Some("2 years ago"));
+    }
+
+    #[test]
+    fn added_label_years_count_whole_years() {
+        assert_eq!(aged(1080 * D).as_deref(), Some("3 years ago"));
+        assert_eq!(aged(1439 * D).as_deref(), Some("3 years ago"));
+        assert_eq!(aged(1440 * D).as_deref(), Some("4 years ago"));
+        assert_eq!(aged(4_380 * D).as_deref(), Some("12 years ago"));
     }
 
     #[test]
@@ -820,7 +847,7 @@ mod tests {
         assert_eq!(added_label(at(u64::MAX), 0), None);
         assert_eq!(
             added_label(at(1_000_000_000_000), u64::MAX).as_deref(),
-            Some("7116799025 months ago")
+            Some("593066585 years ago")
         );
     }
 
@@ -1094,6 +1121,15 @@ mod tests {
 
     fn published(millis: u64) -> Option<PublishedAt> {
         PublishedAt::from_millis(millis as i64)
+    }
+
+    #[test]
+    fn an_episode_meta_ages_into_last_year() {
+        assert_eq!(
+            episode_meta("Lateral", published(NOW_MS - 510 * DAY), NOW_MS),
+            vec!["Lateral".to_owned(), "last year".to_owned()],
+            "the show row reads the same tail as the added column"
+        );
     }
 
     #[test]

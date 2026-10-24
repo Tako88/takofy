@@ -218,7 +218,7 @@ pub mod extent {
     /// The list rows a submenu shows before its own scroll takes over. The
     /// sheet's number: more lists than this are found by typing, not scrolling.
     pub const SUBMENU_ROWS: usize = 8;
-    /// The progress bar's maximum width, 32 rem.
+    /// The seek row's maximum width, 32 rem, readouts included.
     pub const PROGRESS_MAX_W: f32 = 512.0;
     /// The time readout's column, 2.5 rem.
     pub const TIME_W: f32 = 40.0;

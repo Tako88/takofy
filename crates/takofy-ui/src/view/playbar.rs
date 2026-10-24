@@ -376,6 +376,20 @@ pub fn play_glyph(state: TransportState) -> Icon {
     }
 }
 
+/// What the seek says to a screen reader: the time it is at, and the track's
+/// length when one is known. The painted readouts either side carry no node of
+/// their own, so this is the only place the pair is spoken.
+fn seek_spoken(position_ms: u32, duration_ms: Option<u32>) -> String {
+    match duration_ms {
+        Some(duration) => format!(
+            "{} of {}",
+            format_position(position_ms),
+            format_position(duration)
+        ),
+        None => format_position(position_ms),
+    }
+}
+
 /// The share of the seek track the fill covers.
 ///
 /// A loading track has no position to show: a fill would claim playback had
@@ -430,50 +444,73 @@ fn now_column(
         tokens,
     );
 
-    let text_left = art_rect.right() + space::S3;
     let controls = run_width(now_controls(form));
-    let text_right = (ui.max_rect().right() - controls - space::S3).max(text_left);
+    let title_font = egui::FontId::new(text::SM, fonts::sans(Weight::Medium));
+    let state_font = FontId::new(text::XXS, fonts::mono(MonoWeight::Regular));
 
     let title = transport
         .now_playing
         .as_ref()
         .map_or("Nothing playing", |now| now.title.as_str());
-    let title_line = recipe::line(
-        ui,
-        title,
-        egui::FontId::new(text::SM, fonts::sans(Weight::Medium)),
-        tokens.palette.text,
-        0.0,
-        (text_right - text_left).max(0.0),
+    // The row needs the width each line would take unclamped, so the controls
+    // sit where the words end when they fit and on the column's edge when they
+    // do not.
+    let label = transport.state.label();
+    let natural = {
+        let title_w = recipe::spaced(ui, title, title_font.clone(), tokens.palette.text, 0.0)
+            .size()
+            .x;
+        let state_w = if label.is_empty() {
+            0.0
+        } else {
+            recipe::spaced(
+                ui,
+                label,
+                state_font.clone(),
+                tokens.palette.text_subtle,
+                0.0,
+            )
+            .size()
+            .x
+        };
+        title_w.max(state_w)
+    };
+    let row = layout::playbar::now_row(
+        ui.max_rect().left(),
+        ui.max_rect().right(),
+        art_rect.width(),
+        controls,
+        natural,
     );
+    let title_line = recipe::line(ui, title, title_font, tokens.palette.text, 0.0, row.text_w);
     // The title and the state word are one block, centred on the art like the
     // reference's flex column: stacking them from fixed offsets puts the pair
     // off-centre whenever either line's height is not the one assumed.
-    let label = transport.state.label();
     let state_line = (!label.is_empty()).then(|| {
-        recipe::spaced(
+        recipe::line(
             ui,
             label,
-            FontId::new(text::XXS, fonts::mono(MonoWeight::Regular)),
+            state_font,
             tokens.palette.text_subtle,
             0.0,
+            row.text_w,
         )
     });
     let block = title_line.size().y + state_line.as_ref().map_or(0.0, |line| line.size().y);
     let mut y = art_rect.center().y - block / 2.0;
     let title_height = title_line.size().y;
     ui.painter()
-        .galley(Pos2::new(text_left, y), title_line, tokens.palette.text);
+        .galley(Pos2::new(row.text_left, y), title_line, tokens.palette.text);
     y += title_height;
     if let Some(state_line) = state_line {
         ui.painter().galley(
-            Pos2::new(text_left, y),
+            Pos2::new(row.text_left, y),
             state_line,
             tokens.palette.text_subtle,
         );
     }
 
-    let mut x = ui.max_rect().right() - controls;
+    let mut x = row.controls_x;
     let clicked = draw_run(
         ui,
         Pen {
@@ -515,8 +552,9 @@ fn centre_column(
         Control::Queue => pane_live(bar.pane, carrying),
         other => transport_live(other, queue, carrying),
     };
-    let width = 2.0 * run_width(&DOWN) + extent::BUTTON_LG;
-    let mut x = ui.max_rect().center().x - width / 2.0;
+    let down = down_runs(queue);
+    let row = layout::playbar::transport_row(ui.max_rect().center().x, run_width(&down));
+    let mut x = row.down_x;
 
     let mut clicked = draw_run(
         ui,
@@ -527,27 +565,26 @@ fn centre_column(
             volume: None,
             can_act: &live,
         },
-        &down_runs(queue),
+        &down,
         &mut x,
         top + extent::BUTTON / 2.0,
     );
 
-    let play = Rect::from_min_size(Pos2::new(x, top), Vec2::splat(extent::BUTTON_LG));
-    let play_slot = controls::round_button(
+    let play = Rect::from_min_size(Pos2::new(row.play_x, top), Vec2::splat(extent::BUTTON_LG));
+    // The grey tile is the idle transport alone: an empty queue never started a row.
+    let play_slot = controls::play_tile(
         ui,
         tokens,
         Control::PlayPause,
         play,
         play_glyph(transport.state),
-        Size::MD,
         "Play",
         queue.can_toggle(),
-        false,
     );
     if play_slot.response.clicked() {
         clicked = Some(Control::PlayPause);
     }
-    x = play.right() + space::S1;
+    x = row.up_x;
 
     if let Some(control) = draw_run(
         ui,
@@ -564,34 +601,41 @@ fn centre_column(
         clicked = Some(control);
     }
 
-    // Elapsed, the seek track, and the time left.
+    // Elapsed, the seek track, and the time left: one row that takes the column
+    // until its cap, with a readout and a gap on each side of the track.
     let centre = ui.max_rect().center().x;
-    let room = extent::PROGRESS_MAX_W + 2.0 * (extent::TIME_W + space::S3);
-    let row = Rect::from_min_size(
-        Pos2::new(centre - room / 2.0, top + extent::BUTTON_LG + space::S1),
-        Vec2::new(room, extent::SLIDER_H),
+    let seek = layout::playbar::seek_row(ui.max_rect().width());
+    let line = Rect::from_min_size(
+        Pos2::new(
+            centre - seek.width / 2.0,
+            top + extent::BUTTON_LG + space::S1,
+        ),
+        Vec2::new(seek.width, extent::SLIDER_H),
     );
+    let text_top = line.center().y - text::XXS;
+    let readout_font = FontId::new(text::XXS, fonts::mono(MonoWeight::Regular));
 
-    let elapsed = Rect::from_min_size(
-        Pos2::new(row.left(), row.center().y - text::XXS),
-        Vec2::new(extent::TIME_W, text::XXS * 2.0),
+    let elapsed = recipe::spaced(
+        ui,
+        &format_position(position_ms),
+        readout_font.clone(),
+        tokens.palette.text_muted,
+        recipe::tracking_pts(text::XXS, tracking::SLIGHT),
     );
-    ui.put(
+    ui.painter().galley(
+        Pos2::new(line.left(), text_top),
         elapsed,
-        egui::Label::new(recipe::readout(&format_position(position_ms), tokens)),
+        tokens.palette.text_muted,
     );
 
     let track = Rect::from_min_size(
         Pos2::new(
-            elapsed.right() + space::S3,
-            row.center().y - extent::SLIDER_H / 2.0,
+            line.left() + extent::TIME_W + space::S3,
+            line.center().y - extent::SLIDER_H / 2.0,
         ),
-        Vec2::new(
-            (room - 2.0 * (extent::TIME_W + space::S3)).max(0.0),
-            extent::SLIDER_H,
-        ),
+        Vec2::new(seek.track, extent::SLIDER_H),
     );
-    let seek = controls::slider(
+    let slot = controls::slider(
         ui,
         tokens,
         Control::Seek,
@@ -600,6 +644,10 @@ fn centre_column(
         "Seek",
         transport.seekable(),
     );
+    // Both readouts are painted, so the seek is the node that says both times.
+    let _ = ui.ctx().accesskit_node_builder(slot.response.id, |node| {
+        node.set_value(seek_spoken(position_ms, transport.duration_ms));
+    });
     if transport.state == TransportState::Loading {
         let span = Rect::from_center_size(
             track.center(),
@@ -615,17 +663,17 @@ fn centre_column(
     let readout = recipe::spaced(
         ui,
         &remaining,
-        FontId::new(text::XXS, fonts::mono(MonoWeight::Regular)),
+        readout_font,
         tokens.palette.text_subtle,
         recipe::tracking_pts(text::XXS, tracking::SLIGHT),
     );
     ui.painter().galley(
-        Pos2::new(track.right() + space::S3, elapsed.top()),
+        Pos2::new(line.right() - readout.size().x, text_top),
         readout,
         tokens.palette.text_subtle,
     );
 
-    let command = seek_command(ui, transport, &seek, track);
+    let command = seek_command(ui, transport, &slot, track);
     // egui reports a focused button's Enter or Space as a click and counts the
     // repeats too, so a held key must not step a mode or a toggle again. The
     // press is dropped here, before anything reads it.
@@ -816,9 +864,8 @@ pub fn queue_button(rect: Rect, form: Playbar) -> Rect {
         Playbar::Reduced => {
             let stack = extent::BUTTON_LG + space::S1 + extent::SLIDER_H;
             let y = centre.center().y - stack / 2.0 + extent::BUTTON / 2.0;
-            let start = centre.center().x - (2.0 * run_width(&DOWN) + extent::BUTTON_LG) / 2.0;
-            let up = start + run_width(&DOWN) + extent::BUTTON_LG + space::S1;
-            square(up + run_width(up_controls(form)) - extent::BUTTON, y)
+            let row = layout::playbar::transport_row(centre.center().x, run_width(&DOWN));
+            square(row.up_x + run_width(up_controls(form)) - extent::BUTTON, y)
         }
     }
 }
@@ -1356,6 +1403,660 @@ mod tests {
         );
     }
 
+    /// The bar has nothing to play before the first track, so its tile is the
+    /// same tile the band draws with nothing to act on: a filled, inert square.
+    #[test]
+    fn an_idle_playbar_paints_the_disabled_tile() {
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        let bar = heart_bar();
+        let cols = layout::playbar_for(bar, Playbar::Full).columns(bar);
+        let mut transport = Transport::default();
+        assert_eq!(transport.state, TransportState::Idle);
+        let mut queue = Queue::default();
+        assert!(!queue.can_toggle(), "an idle bar has nothing to play");
+
+        let mut output = ctx.run_ui(
+            RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 300.0))),
+                ..Default::default()
+            },
+            |ui| {
+                let _ = show(
+                    ui,
+                    &mut transport,
+                    &mut queue,
+                    0,
+                    Playbar::Full,
+                    Bar::default(),
+                    bar,
+                    Cover::Missing,
+                    &tokens,
+                );
+            },
+        );
+        output.textures_delta.clear();
+
+        let tiles: Vec<Rect> = output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(shape)
+                    if shape.fill == tokens.palette.text_disabled
+                        && (shape.rect.height() - extent::BUTTON_LG).abs() < 0.01 =>
+                {
+                    Some(shape.rect)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(tiles.len(), 1, "an idle bar draws exactly one grey tile");
+        assert!(
+            (tiles[0].center().x - cols[1].center().x).abs() < 0.01,
+            "the tile at {:?} is not on its column",
+            tiles[0].center()
+        );
+
+        let glyph: Vec<egui::Color32> = output
+            .shapes
+            .iter()
+            .filter(|clipped| tiles[0].contains(clipped.shape.visual_bounding_rect().center()))
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Path(path) if path.fill != egui::Color32::TRANSPARENT => {
+                    Some(path.fill)
+                }
+                egui::Shape::Circle(circle) => Some(circle.fill),
+                _ => None,
+            })
+            .collect();
+        assert!(!glyph.is_empty(), "the tile paints its glyph");
+        for colour in glyph {
+            assert_eq!(colour, tokens.palette.text_inverse);
+        }
+    }
+
+    /// One frame of the bar `width` wide, with the columns it solved.
+    fn bar_at(
+        ctx: &egui::Context,
+        tokens: &Tokens,
+        width: f32,
+        form: Playbar,
+        queue: &mut Queue,
+    ) -> ([Rect; 3], egui::FullOutput) {
+        bar_pass(ctx, tokens, width, form, queue, Vec::new(), 0.0)
+    }
+
+    /// One frame of the bar with `events` at `time`, so a hover can be read off
+    /// the fill it paints.
+    fn bar_pass(
+        ctx: &egui::Context,
+        tokens: &Tokens,
+        width: f32,
+        form: Playbar,
+        queue: &mut Queue,
+        events: Vec<Event>,
+        time: f64,
+    ) -> ([Rect; 3], egui::FullOutput) {
+        let bar = Rect::from_min_size(Pos2::new(0.0, 100.0), Vec2::new(width, extent::PLAYBAR_H));
+        let cols = layout::playbar_for(bar, form).columns(bar);
+        let mut transport = playing(0);
+        let mut output = ctx.run_ui(
+            RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(width, 300.0))),
+                events,
+                time: Some(time),
+                ..Default::default()
+            },
+            |ui| {
+                let _ = show(
+                    ui,
+                    &mut transport,
+                    queue,
+                    0,
+                    form,
+                    Bar::default(),
+                    bar,
+                    Cover::Missing,
+                    tokens,
+                );
+            },
+        );
+        output.textures_delta.clear();
+        (cols, output)
+    }
+
+    /// The button a hover at `at` paints, which is the button's own rect. The
+    /// clock only moves forward, so the eased hover finishes.
+    fn hovered_button(
+        ctx: &egui::Context,
+        tokens: &Tokens,
+        form: Playbar,
+        queue: &mut Queue,
+        at: Pos2,
+        clock: &mut f64,
+    ) -> Rect {
+        *clock += 0.1;
+        let moved = vec![Event::PointerMoved(at)];
+        let _ = bar_pass(ctx, tokens, 1200.0, form, queue, moved, *clock);
+        *clock += 1.0;
+        let (_, output) = bar_pass(ctx, tokens, 1200.0, form, queue, Vec::new(), *clock);
+        *transport_boxes(&output, heart_bar())
+            .iter()
+            .find(|rect| (rect.height() - extent::BUTTON).abs() < 0.01)
+            .expect("the hovered button paints its fill")
+    }
+
+    /// The transport's painted boxes, left to right. Only its runs and its tile
+    /// sit above the bar's centre line, so the other columns' buttons are not
+    /// mistaken for them.
+    fn transport_boxes(output: &egui::FullOutput, bar: Rect) -> Vec<Rect> {
+        let mut rects: Vec<Rect> = output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(shape)
+                    if shape.rect.center().y < bar.center().y - 1.0
+                        && ((shape.rect.height() - extent::BUTTON).abs() < 0.01
+                            || (shape.rect.height() - extent::BUTTON_LG).abs() < 0.01) =>
+                {
+                    Some(shape.rect)
+                }
+                _ => None,
+            })
+            .collect();
+        rects.sort_by(|a, b| a.left().total_cmp(&b.left()));
+        rects
+    }
+
+    /// The tile among `boxes`, which is the one `BUTTON_LG` square.
+    fn painted_tile(boxes: &[Rect]) -> Rect {
+        *boxes
+            .iter()
+            .find(|rect| (rect.height() - extent::BUTTON_LG).abs() < 0.01)
+            .expect("the transport paints its tile")
+    }
+
+    #[test]
+    fn the_tile_sits_twelve_from_both_neighbours_in_both_forms() {
+        let tokens = Tokens::DARK;
+        for form in [Playbar::Full, Playbar::Reduced] {
+            // One context per form, because the eased hover needs a clock that
+            // only moves forward.
+            let ctx = context(&tokens);
+            let mut queue = queue_of(4);
+            let (_, output) = bar_at(&ctx, &tokens, 1200.0, form, &mut queue);
+            let tile = painted_tile(&transport_boxes(&output, heart_bar()));
+            let mut clock = 0.0;
+
+            // The pointer lands in the middle of the run, which is where a
+            // neighbour is whatever the clearance is.
+            let previous = hovered_button(
+                &ctx,
+                &tokens,
+                form,
+                &mut queue,
+                Pos2::new(tile.left() - 26.0, tile.center().y),
+                &mut clock,
+            );
+            assert!(
+                (tile.left() - previous.right() - 12.0).abs() < 0.01,
+                "{form:?}: the tile is {} from the down run",
+                tile.left() - previous.right()
+            );
+
+            let next = hovered_button(
+                &ctx,
+                &tokens,
+                form,
+                &mut queue,
+                Pos2::new(tile.right() + 26.0, tile.center().y),
+                &mut clock,
+            );
+            assert!(
+                (next.left() - tile.right() - 12.0).abs() < 0.01,
+                "{form:?}: the tile is {} from the up run",
+                next.left() - tile.right()
+            );
+        }
+    }
+
+    #[test]
+    fn the_tile_is_centred_on_the_columns_centre_in_both_forms() {
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        for form in [Playbar::Full, Playbar::Reduced] {
+            let (cols, output) = bar_at(&ctx, &tokens, 1200.0, form, &mut queue_of(4));
+            let tile = painted_tile(&transport_boxes(&output, heart_bar()));
+            assert!(
+                (tile.center().x - cols[1].center().x).abs() < 0.01,
+                "{form:?}: the tile at {:?} is not on the column's centre {}",
+                tile.center(),
+                cols[1].center().x
+            );
+        }
+    }
+
+    /// The hover test proves the tile is painted where it is; this proves the
+    /// press lands there too.
+    #[test]
+    fn a_click_on_the_painted_tile_toggles_the_queue_in_both_forms() {
+        let tokens = Tokens::DARK;
+        for form in [Playbar::Full, Playbar::Reduced] {
+            let ctx = context(&tokens);
+            let mut queue = queue_of(4);
+            let (_, output) = bar_at(&ctx, &tokens, 1200.0, form, &mut queue);
+            let tile = painted_tile(&transport_boxes(&output, heart_bar()));
+
+            let replies = click_at(
+                &ctx,
+                &tokens,
+                &mut queue,
+                form,
+                Bar::default(),
+                tile.center(),
+            );
+            assert!(
+                replies
+                    .iter()
+                    .any(|reply| reply.command == Some(Command::Pause)),
+                "{form:?}: a click at {:?} did not pause the playing queue",
+                tile.center()
+            );
+        }
+    }
+
+    #[test]
+    fn the_transport_fits_its_column_at_every_supported_width() {
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        for width in 640..=2000 {
+            let width = width as f32;
+            let form = layout::regions_for(width).playbar;
+            let (cols, output) = bar_at(&ctx, &tokens, width, form, &mut queue_of(4));
+            let column = cols[1];
+            let tile = painted_tile(&transport_boxes(&output, heart_bar()));
+
+            // The buttons paint no frame of their own, so the run either side of
+            // the painted tile is where its own widths put it.
+            let left = tile.left() - (space::S1 + space::S2) - run_width(&DOWN);
+            let right = tile.right() + space::S2 + space::S1 + run_width(up_controls(form));
+            assert!(
+                left >= column.left() - 1e-3 && right <= column.right() + 1e-3,
+                "{width}: {form:?} runs from {left} to {right} outside {column:?}"
+            );
+        }
+    }
+
+    /// Where a painted word sits, by its own galley.
+    fn painted_text(output: &egui::FullOutput, text: &str) -> Rect {
+        output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::Shape::Text(shape) if shape.galley.text() == text => {
+                    Some(Rect::from_min_size(shape.pos, shape.galley.size()))
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{text} is not painted"))
+    }
+
+    /// The seek track a frame painted inside `column`.
+    fn painted_track(output: &egui::FullOutput, column: Rect) -> Rect {
+        output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(shape)
+                    if (shape.rect.height() - extent::SLIDER_TRACK_H).abs() < 0.01
+                        && shape.fill == Tokens::DARK.palette.border_strong
+                        && column.contains(shape.rect.center()) =>
+                {
+                    Some(shape.rect)
+                }
+                _ => None,
+            })
+            .expect("the bar paints its seek track")
+    }
+
+    #[test]
+    fn the_seek_row_measures_512_end_to_end() {
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        let (_, output) = bar_at(&ctx, &tokens, 1200.0, Playbar::Full, &mut queue_of(4));
+        let elapsed = painted_text(&output, "0:00");
+        let remaining = painted_text(&output, "-3:42");
+        let measured = remaining.right() - elapsed.left();
+        assert!(
+            (measured - 512.0).abs() < 0.01,
+            "the row measures {measured} from the first readout's left edge to the last one's right"
+        );
+    }
+
+    #[test]
+    fn the_seek_row_stays_inside_the_centre_column_at_every_supported_width() {
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        for width in 640..=2000 {
+            let width = width as f32;
+            let form = layout::regions_for(width).playbar;
+            let (cols, output) = bar_at(&ctx, &tokens, width, form, &mut queue_of(4));
+            let column = cols[1];
+            for text in ["0:00", "-3:42"] {
+                let rect = painted_text(&output, text);
+                assert!(
+                    rect.left() >= column.left() - 1e-3 && rect.right() <= column.right() + 1e-3,
+                    "{width}: {form:?} paints {text} at {rect:?} outside {column:?}"
+                );
+            }
+            let track = painted_track(&output, column);
+            assert!(
+                track.left() >= column.left() - 1e-3 && track.right() <= column.right() + 1e-3,
+                "{width}: {form:?} paints the track at {track:?} outside {column:?}"
+            );
+        }
+    }
+
+    /// One frame of the bar at `position_ms`, and the value its seek announced.
+    fn seek_announced(
+        ctx: &egui::Context,
+        tokens: &Tokens,
+        transport: &mut Transport,
+        position_ms: u32,
+    ) -> Option<String> {
+        let mut queue = queue_of(4);
+        let mut output = ctx.run_ui(
+            RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 300.0))),
+                ..Default::default()
+            },
+            |ui| {
+                let _ = show(
+                    ui,
+                    transport,
+                    &mut queue,
+                    position_ms,
+                    Playbar::Full,
+                    Bar::default(),
+                    heart_bar(),
+                    Cover::Missing,
+                    tokens,
+                );
+            },
+        );
+        output.textures_delta.clear();
+        announced_value(&output, "Seek")
+    }
+
+    /// Both readouts are painted galleys, so the seek's value is the only place a
+    /// screen reader hears the time.
+    #[test]
+    fn the_seek_announces_both_readouts() {
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        ctx.enable_accesskit();
+        let mut transport = playing(42_000);
+
+        assert_eq!(
+            seek_announced(&ctx, &tokens, &mut transport, 42_000).as_deref(),
+            Some("0:42 of 3:42"),
+            "the seek does not say where it is and how long the track is"
+        );
+
+        transport.duration_ms = None;
+        assert_eq!(
+            seek_announced(&ctx, &tokens, &mut transport, 42_000).as_deref(),
+            Some("0:42"),
+            "a track of unknown length announced a total it does not know"
+        );
+    }
+
+    /// One frame of the bar over `transport`, so what a drag recorded survives
+    /// into the frame that releases it.
+    fn seek_pass(
+        ctx: &egui::Context,
+        tokens: &Tokens,
+        transport: &mut Transport,
+        event: Event,
+    ) -> Reply {
+        let bar = heart_bar();
+        let mut queue = queue_of(4);
+        let mut reply = Reply::default();
+        let mut output = ctx.run_ui(
+            RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 300.0))),
+                events: vec![event],
+                ..Default::default()
+            },
+            |ui| {
+                reply = show(
+                    ui,
+                    transport,
+                    &mut queue,
+                    0,
+                    Playbar::Full,
+                    Bar::default(),
+                    bar,
+                    Cover::Missing,
+                    tokens,
+                );
+            },
+        );
+        output.textures_delta.clear();
+        reply
+    }
+
+    #[test]
+    fn a_seek_drag_across_the_new_track_maps_the_endpoints_to_zero_and_the_duration() {
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        let mut transport = playing(0);
+        let (_, output) = bar_at(&ctx, &tokens, 1200.0, Playbar::Full, &mut queue_of(4));
+        let track = painted_track(
+            &output,
+            layout::playbar_for(heart_bar(), Playbar::Full).columns(heart_bar())[1],
+        );
+
+        // The left edge is the start of the track.
+        let _ = seek_pass(
+            &ctx,
+            &tokens,
+            &mut transport,
+            Event::PointerMoved(track.left_center()),
+        );
+        let _ = seek_pass(
+            &ctx,
+            &tokens,
+            &mut transport,
+            button(track.left_center(), true),
+        );
+        let left = seek_pass(
+            &ctx,
+            &tokens,
+            &mut transport,
+            button(track.left_center(), false),
+        );
+        assert_eq!(
+            left.command,
+            Some(Command::Seek { position_ms: 0 }),
+            "a press at the left edge did not ask for the start"
+        );
+
+        // A drag from the left edge to the right one lands on the last position
+        // the track can hold.
+        let _ = seek_pass(
+            &ctx,
+            &tokens,
+            &mut transport,
+            Event::PointerMoved(track.left_center()),
+        );
+        let _ = seek_pass(
+            &ctx,
+            &tokens,
+            &mut transport,
+            button(track.left_center(), true),
+        );
+        let _ = seek_pass(
+            &ctx,
+            &tokens,
+            &mut transport,
+            Event::PointerMoved(track.right_center()),
+        );
+        let end = seek_pass(
+            &ctx,
+            &tokens,
+            &mut transport,
+            button(track.right_center(), false),
+        );
+        assert_eq!(
+            end.command,
+            Some(Command::Seek {
+                position_ms: 221_999
+            }),
+            "a drag to the right edge did not ask for the end"
+        );
+    }
+
+    /// A playing transport whose title is far wider than the now column.
+    fn wide_titled() -> Transport {
+        let mut transport = named_playing();
+        if let Some(now) = transport.now_playing.as_mut() {
+            now.title =
+                "A Signal That Decays Long After The Last Transmission Has Ended".to_owned();
+        }
+        transport
+    }
+
+    /// The fill a live control paints under the pointer, which is its own rect.
+    fn hover_fill(output: &egui::FullOutput) -> Option<Rect> {
+        output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(shape) if (shape.rect.height() - extent::BUTTON).abs() < 0.01 => {
+                    Some(shape.rect)
+                }
+                _ => None,
+            })
+    }
+
+    /// The now column's heart, read off the fill it paints when the pointer
+    /// rests on it. It is the column's only live control, so it is the only one
+    /// that paints a fill at all.
+    fn hovered_heart(
+        ctx: &egui::Context,
+        tokens: &Tokens,
+        transport: &mut Transport,
+        form: Playbar,
+        column: Rect,
+    ) -> Rect {
+        let mut x = column.right() - 1.0;
+        while x > column.left() {
+            let at = Pos2::new(x, column.center().y);
+            let _ = bar_frame(
+                ctx,
+                tokens,
+                transport,
+                form,
+                Some(false),
+                vec![Event::PointerMoved(at)],
+            );
+            let (output, _) = bar_frame(ctx, tokens, transport, form, Some(false), Vec::new());
+            // The fill of the pass before lasts a frame as its hover eases out,
+            // so only the fill the pointer is on says where the heart is.
+            if let Some(rect) = hover_fill(&output).filter(|rect| rect.contains(at)) {
+                return rect;
+            }
+            x -= 1.0;
+        }
+        panic!("the column paints no heart under the pointer");
+    }
+
+    #[test]
+    fn a_short_title_keeps_the_heart_and_add_button_beside_the_words() {
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        let mut transport = named_playing();
+        let (output, cols) = bar_frame(
+            &ctx,
+            &tokens,
+            &mut transport,
+            Playbar::Full,
+            Some(false),
+            Vec::new(),
+        );
+        let heart = hovered_heart(&ctx, &tokens, &mut transport, Playbar::Full, cols[0]);
+
+        let title = painted_text(&output, "Signal Decay");
+        let mut ellipsis = 0.0;
+        run(&ctx, input(Vec::new()), |ui| {
+            ellipsis = recipe::spaced(
+                ui,
+                "…",
+                FontId::new(text::SM, fonts::sans(Weight::Medium)),
+                tokens.palette.text,
+                0.0,
+            )
+            .size()
+            .x;
+        });
+        let gap = heart.left() - title.right();
+        assert!(
+            (gap - 12.0).abs() <= ellipsis,
+            "the heart is {gap} from a title that fits, more than one glyph of slack"
+        );
+    }
+
+    #[test]
+    fn a_long_title_elides_and_keeps_the_buttons_at_the_edge() {
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        let mut transport = wide_titled();
+        let title = transport
+            .now_playing
+            .as_ref()
+            .map(|now| now.title.clone())
+            .expect("the track is named");
+        let (output, cols) = bar_frame(
+            &ctx,
+            &tokens,
+            &mut transport,
+            Playbar::Full,
+            Some(false),
+            Vec::new(),
+        );
+        let heart = hovered_heart(&ctx, &tokens, &mut transport, Playbar::Full, cols[0]);
+        let controls_w = run_width(now_controls(Playbar::Full));
+
+        assert!(
+            (heart.left() - (cols[0].right() - controls_w)).abs() <= 1.0,
+            "the controls start at {} rather than the column's edge less {controls_w}",
+            heart.left()
+        );
+        let line = painted_text(&output, &title);
+        assert!(
+            line.right() <= heart.left() - 12.0 + 1e-3,
+            "the title's galley ends at {} inside the heart's {}",
+            line.right(),
+            heart.left()
+        );
+    }
+
+    #[test]
+    fn the_buttons_do_not_drift_when_the_state_word_changes_under_an_elided_title() {
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        let mut transport = wide_titled();
+        let column = layout::playbar_for(heart_bar(), Playbar::Full).columns(heart_bar())[0];
+        let playing = hovered_heart(&ctx, &tokens, &mut transport, Playbar::Full, column);
+        transport.state = TransportState::Loading;
+        let loading = hovered_heart(&ctx, &tokens, &mut transport, Playbar::Full, column);
+        assert_eq!(
+            playing, loading,
+            "the controls moved when only the state word changed"
+        );
+    }
+
     #[test]
     fn the_drawn_extras_fill_the_width_the_layout_reserves() {
         for form in [Playbar::Full, Playbar::Reduced] {
@@ -1843,13 +2544,15 @@ mod tests {
         (reply, output)
     }
 
-    /// Where one of the transport's buttons is drawn, from the shape the column
-    /// lays out by.
+    /// Where one of the transport's buttons is drawn, solved here from the theme's
+    /// own constants. It must not call `transport_row`: a helper that did would
+    /// agree with the painter by construction and pin nothing.
     fn transport_slot(centre: Rect, control: Control) -> Rect {
         let stack = extent::BUTTON_LG + space::S1 + extent::SLIDER_H;
         let top = centre.center().y - stack / 2.0;
-        let start = centre.center().x - (2.0 * run_width(&DOWN) + extent::BUTTON_LG) / 2.0;
-        let up = start + run_width(&DOWN) + extent::BUTTON_LG + space::S1;
+        let play = centre.center().x - extent::BUTTON_LG / 2.0;
+        let start = play - (space::S1 + space::S2) - run_width(&DOWN);
+        let up = play + extent::BUTTON_LG + space::S2 + space::S1;
         let at = |left: f32, index: usize| {
             Rect::from_min_size(
                 Pos2::new(left + index as f32 * (extent::BUTTON + space::S1), top),
@@ -2149,6 +2852,18 @@ mod tests {
                     .map(|(_, node)| node.is_disabled())
             })
             .unwrap_or_else(|| panic!("{label} is not announced"))
+    }
+
+    /// The value a frame announced for the node labelled `label`.
+    fn announced_value(output: &egui::FullOutput, label: &str) -> Option<String> {
+        output
+            .platform_output
+            .accesskit_update
+            .as_ref()?
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some(label))
+            .and_then(|(_, node)| node.value().map(str::to_owned))
     }
 
     /// The label of the node the frame says has the keyboard.

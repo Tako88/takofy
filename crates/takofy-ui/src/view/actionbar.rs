@@ -161,6 +161,7 @@ pub(super) fn show(
         tokens,
         Control::HeroPlay,
         placed.play,
+        Icon::Play,
         label,
         bar.playable,
     );
