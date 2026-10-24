@@ -8,11 +8,12 @@
 
 use std::collections::HashSet;
 use std::future::Future;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use takofy_core::connect::{ClusterEvent, Steer as CoreSteer};
+use takofy_core::connect::{ClusterEvent, Steer as CoreSteer, WITHDRAW_TIMEOUT};
 use takofy_core::credentials::{AccessToken, CredentialStore};
 use takofy_core::login::{AuthError, SourceErrorKind, TokenSource, authorize, resume};
 use takofy_core::playback::{PlaybackError, PlaybackEvent};
@@ -26,12 +27,8 @@ use tokio::sync::oneshot::Receiver as StopReceiver;
 use tokio::task::JoinSet;
 
 use crate::cover::{FETCH_TIMEOUT, MAX_CONCURRENT_COVERS, fetch_cover, spawn_cover};
-use crate::devices::device_updates;
+use crate::devices::SentRoster;
 use crate::session::{SessionError, SessionHost, stop_or};
-
-/// The outer bound on the exit's withdraw. The watch bounds its own delete and
-/// close; this only covers a host that never answers at all.
-const WITHDRAW_TIMEOUT: Duration = Duration::from_secs(4);
 
 /// A handle the worker can wake to ask for the next frame.
 pub(crate) trait Waker: Send + Sync + 'static {
@@ -185,6 +182,17 @@ pub(crate) fn start<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
     store: Arc<dyn CredentialStore>,
     source: Arc<S>,
 ) -> (UiEnd, WakeSlot, Worker) {
+    start_with(handle, host, store, source, WITHDRAW_TIMEOUT)
+}
+
+/// Starts the worker with an explicit outer withdraw bound.
+fn start_with<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
+    handle: &Handle,
+    host: H,
+    store: Arc<dyn CredentialStore>,
+    source: Arc<S>,
+    withdraw_timeout: Duration,
+) -> (UiEnd, WakeSlot, Worker) {
     let (updates_tx, updates_rx) = channel();
     let (commands_tx, mut commands_rx) = tokio::sync::mpsc::unbounded_channel();
     let (tokens_tx, mut tokens_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -216,6 +224,8 @@ pub(crate) fn start<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
         let mut host = host;
         let mut connected = false;
         let mut watching = false;
+        let sent_roster = SentRoster::default();
+        let dead_watch = Arc::new(AtomicBool::new(false));
         let mut token: Option<AccessToken> = None;
         // Built once: the timeout, the redirect ban, and the bounded pool live
         // on the client, and covers are the only thing it is ever used for.
@@ -532,6 +542,8 @@ pub(crate) fn start<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                         &mut stop_rx,
                         &task_notifier,
                         &mut watching,
+                        &sent_roster,
+                        &dead_watch,
                         connected,
                     )
                     .await;
@@ -545,6 +557,8 @@ pub(crate) fn start<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                         &mut stop_rx,
                         &task_notifier,
                         &mut watching,
+                        &sent_roster,
+                        &dead_watch,
                         connected,
                     )
                     .await;
@@ -603,7 +617,7 @@ pub(crate) fn start<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
         // The device goes before the player does, so a forced quit never leaves
         // the account with an entry this client will not answer on.
         if watching {
-            withdraw(&mut host).await;
+            withdraw(&mut host, withdraw_timeout).await;
         }
         let _ = host.shutdown().await;
     });
@@ -1511,6 +1525,8 @@ async fn watch_devices<H: SessionHost>(
     stop: &mut StopReceiver<()>,
     notifier: &Notifier,
     watching: &mut bool,
+    sent: &SentRoster,
+    dead: &Arc<AtomicBool>,
     connected: bool,
 ) -> Step {
     if !connected {
@@ -1523,27 +1539,30 @@ async fn watch_devices<H: SessionHost>(
     // Set before the await: a request that arrives while the start is in flight
     // must not reach the builder a second time.
     *watching = true;
+    dead.store(false, Ordering::SeqCst);
     match stop_or(stop, host.watch_devices()).await {
         None => Step::Stopped,
         Some(Err(error)) => {
             log_device_error(&error);
             *watching = false;
-            notifier.send(device_failure(Failure::Devices));
+            let failure = if error.devices_terminal() {
+                Failure::DevicesOff
+            } else {
+                Failure::Devices
+            };
+            notifier.send(device_failure(failure));
             Step::Done
         }
-        Some(Ok(())) => match host.take_devices() {
-            Some(events) => {
-                spawn_device_drain(notifier.clone(), events);
-                Step::Done
-            }
-            None => {
-                // Nothing to subscribe again with: the dealer's one start is
-                // spent, so this window cannot see the account's devices.
-                *watching = false;
+        Some(Ok(())) => {
+            if let Some(events) = host.take_devices() {
+                spawn_device_drain(notifier.clone(), events, sent.clone(), Arc::clone(dead));
+            } else {
+                // No stream to read, but the device was announced: keep
+                // `watching` so the exit still withdraws it.
                 notifier.send(device_failure(Failure::DevicesOff));
-                Step::Done
             }
-        },
+            Step::Done
+        }
     }
 }
 
@@ -1554,18 +1573,23 @@ async fn refresh_devices<H: SessionHost>(
     stop: &mut StopReceiver<()>,
     notifier: &Notifier,
     watching: &mut bool,
+    sent: &SentRoster,
+    dead: &Arc<AtomicBool>,
     connected: bool,
 ) -> Step {
     if !*watching {
-        return watch_devices(host, stop, notifier, watching, connected).await;
+        return watch_devices(host, stop, notifier, watching, sent, dead, connected).await;
+    }
+    if dead.load(Ordering::SeqCst) {
+        notifier.send(device_failure(Failure::DevicesOff));
+        return Step::Done;
     }
     match stop_or(stop, host.refresh_devices()).await {
         None => Step::Stopped,
         Some(Ok(view)) => {
-            // The ask was for the whole roster, so it is sent even when it is
-            // the one the window already draws.
-            let mut sent = None;
-            for update in device_updates(&view, &mut sent) {
+            // Compared against the one roster both paths share, so a later push
+            // cannot restore a roster this ask has replaced.
+            for update in sent.updates(&view) {
                 notifier.send(update);
             }
             Step::Done
@@ -1631,8 +1655,8 @@ async fn label_remote<H: SessionHost>(
 }
 
 /// Takes the device off the account before the player goes, within a bound.
-async fn withdraw<H: SessionHost>(host: &mut H) {
-    if tokio::time::timeout(WITHDRAW_TIMEOUT, host.withdraw_devices())
+async fn withdraw<H: SessionHost>(host: &mut H, timeout: Duration) {
+    if tokio::time::timeout(timeout, host.withdraw_devices())
         .await
         .is_err()
     {
@@ -1667,13 +1691,17 @@ pub(crate) fn core_steer(steer: Steer) -> CoreSteer {
 ///
 /// A plain thread, like the playback drain: no runtime, so `blocking_recv`
 /// cannot delay the runtime's drop.
-fn spawn_device_drain(notifier: Notifier, mut events: UnboundedReceiver<ClusterEvent>) {
+fn spawn_device_drain(
+    notifier: Notifier,
+    mut events: UnboundedReceiver<ClusterEvent>,
+    sent: SentRoster,
+    dead: Arc<AtomicBool>,
+) {
     std::thread::spawn(move || {
-        let mut sent = None;
         while let Some(event) = events.blocking_recv() {
             match event {
                 ClusterEvent::View(view) => {
-                    for update in device_updates(&view, &mut sent) {
+                    for update in sent.updates(&view) {
                         notifier.send(update);
                     }
                 }
@@ -1681,8 +1709,10 @@ fn spawn_device_drain(notifier: Notifier, mut events: UnboundedReceiver<ClusterE
             }
         }
         // The pump is gone while the window is not: a stale remote would
-        // otherwise keep advancing with nobody left to report it.
-        notifier.send(device_failure(Failure::Devices));
+        // otherwise keep advancing with nobody left to report it. The flag
+        // keeps a refresh from announcing on a stream that will never push.
+        dead.store(true, Ordering::SeqCst);
+        notifier.send(device_failure(Failure::DevicesOff));
     });
 }
 
@@ -1869,9 +1899,9 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    use takofy_core::connect::ClusterView;
+    use takofy_core::connect::{ClusterView, ConnectError};
     use takofy_core::credentials::{AccessToken, CredentialStore, RefreshToken, StoreError};
-    use takofy_core::engine::RootlistRead;
+    use takofy_core::engine::{EngineError, RootlistRead};
     use takofy_core::login::{SourceError, SourceErrorKind, TokenSet, TokenSource};
     use takofy_model::{
         AlbumDetail, ArtistDetail, ArtistPortrait, CoverImage, CoverUrl, Device, DeviceKind,
@@ -2422,6 +2452,7 @@ mod tests {
     enum RefreshScript {
         #[default]
         Phone,
+        TwoDevices,
         Fail,
         Pending,
     }
@@ -3301,7 +3332,10 @@ mod tests {
             }
             async move {
                 match script {
-                    WatchScript::Ready | WatchScript::Spent => Ok(()),
+                    WatchScript::Ready => Ok(()),
+                    WatchScript::Spent => Err(SessionError::Engine(EngineError::Connect(
+                        ConnectError::DealerSpent,
+                    ))),
                     WatchScript::Fail => Err(SessionError::NotConnected),
                     WatchScript::Pending => std::future::pending().await,
                 }
@@ -3323,6 +3357,7 @@ mod tests {
             async move {
                 match script {
                     RefreshScript::Phone => Ok(phone_view()),
+                    RefreshScript::TwoDevices => Ok(two_device_view()),
                     RefreshScript::Fail => Err(SessionError::NotConnected),
                     RefreshScript::Pending => std::future::pending().await,
                 }
@@ -5622,9 +5657,25 @@ mod tests {
         }
     }
 
+    fn tablet() -> Device {
+        Device {
+            id: "tablet".to_owned(),
+            name: "Tablet".to_owned(),
+            kind: DeviceKind::Tablet,
+        }
+    }
+
     fn phone_view() -> ClusterView {
         ClusterView {
             devices: Some(vec![phone()]),
+            holder: Some(PHONE.to_owned()),
+            playback: Some(remote_playback()),
+        }
+    }
+
+    fn two_device_view() -> ClusterView {
+        ClusterView {
+            devices: Some(vec![phone(), tablet()]),
             holder: Some(PHONE.to_owned()),
             playback: Some(remote_playback()),
         }
@@ -9115,7 +9166,7 @@ mod tests {
     }
 
     #[test]
-    fn a_watch_with_no_stream_to_hand_over_is_terminal() {
+    fn a_spent_dealer_stays_terminal_on_watch_and_refresh() {
         let store = Arc::new(MemoryStore::seeded("stored"));
         let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
         let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
@@ -9126,13 +9177,28 @@ mod tests {
             slot.install(Arc::new(RecordingWaker::default()));
             let _ = expect_updates(&ui_end, 2);
             ui_end.commands.send(Command::WatchDevices).expect("watch");
-            ui_end.updates.recv().expect("watch failed")
+            assert_eq!(
+                ui_end.updates.recv().expect("watch failed"),
+                Update::Devices(DeviceUpdate::Failed(Failure::DevicesOff)),
+                "a start that is spent cannot be retried by asking again"
+            );
+            ui_end
+                .commands
+                .send(Command::RefreshDevices)
+                .expect("refresh");
+            ui_end.updates.recv().expect("refresh stayed off")
         });
 
         assert_eq!(
             update,
             Update::Devices(DeviceUpdate::Failed(Failure::DevicesOff)),
-            "a start that is spent cannot be retried by asking again"
+            "a later refresh keeps the terminal answer"
+        );
+        assert_eq!(shared.watches.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            shared.refreshes.load(Ordering::SeqCst),
+            0,
+            "a spent watch never reaches the announce path"
         );
     }
 
@@ -9156,6 +9222,56 @@ mod tests {
 
         assert_eq!(updates, vec![device_roster(), device_playing()]);
         assert_eq!(shared.refreshes.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_refresh_roster_is_not_undone_by_an_older_push() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+        *shared.refresh_script.lock().expect("lock") = RefreshScript::TwoDevices;
+
+        let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            watch_now(&ui_end, &shared).recv().expect("watch started");
+            let tx = shared
+                .device_tx
+                .lock()
+                .expect("lock")
+                .clone()
+                .expect("a watch opened a stream");
+
+            tx.send(ClusterEvent::View(Box::new(phone_view())))
+                .expect("old roster");
+            let _ = expect_updates(&ui_end, 2);
+
+            ui_end
+                .commands
+                .send(Command::RefreshDevices)
+                .expect("refresh");
+            assert_eq!(
+                expect_updates(&ui_end, 2),
+                vec![
+                    Update::Devices(DeviceUpdate::Roster {
+                        devices: vec![phone(), tablet()],
+                        holder: Some(PHONE.to_owned()),
+                    }),
+                    device_playing(),
+                ]
+            );
+
+            tx.send(ClusterEvent::View(Box::new(phone_view())))
+                .expect("an older push");
+            expect_updates(&ui_end, 2)
+        });
+
+        assert_eq!(
+            updates,
+            vec![device_roster(), device_playing()],
+            "a push carrying the old roster replaces the newer one"
+        );
     }
 
     #[test]
@@ -9380,8 +9496,49 @@ mod tests {
 
         assert_eq!(
             update,
-            Update::Devices(DeviceUpdate::Failed(Failure::Devices)),
-            "a dead pump cannot leave a phantom remote advancing"
+            Update::Devices(DeviceUpdate::Failed(Failure::DevicesOff)),
+            "a dead pump is terminal, not a silence to retry"
+        );
+    }
+
+    #[test]
+    fn a_refresh_after_the_drain_dies_stays_off() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+
+        let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            watch_now(&ui_end, &shared).recv().expect("watch started");
+            shared.device_tx.lock().expect("lock").take();
+            assert_eq!(
+                ui_end
+                    .updates
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("the drain must report its own end"),
+                Update::Devices(DeviceUpdate::Failed(Failure::DevicesOff))
+            );
+
+            ui_end
+                .commands
+                .send(Command::RefreshDevices)
+                .expect("refresh");
+            ui_end
+                .updates
+                .recv_timeout(Duration::from_secs(2))
+                .expect("a dead watch cannot announce again")
+        });
+
+        assert_eq!(
+            update,
+            Update::Devices(DeviceUpdate::Failed(Failure::DevicesOff))
+        );
+        assert_eq!(
+            shared.refreshes.load(Ordering::SeqCst),
+            0,
+            "the dead watch is not asked for a roster"
         );
     }
 
@@ -9400,6 +9557,9 @@ mod tests {
         let window = move || {
             let _ = expect_updates(&ui_end, 2);
             watch_now(&ui_end, &watched).recv().expect("watch started");
+            // Returned to the caller so it lives through teardown: the stop is
+            // the only exit this test exercises.
+            ui_end
         };
         let teardown = move || async move {
             tokio::time::timeout(Duration::from_secs(2), worker.finish())
@@ -9414,7 +9574,7 @@ mod tests {
             );
         };
 
-        run_ordered(runtime, window, teardown);
+        let _ui_end = run_ordered(runtime, window, teardown);
     }
 
     #[test]
@@ -9537,7 +9697,8 @@ mod tests {
         *shared.withdraw_script.lock().expect("lock") = WithdrawScript::Pending;
 
         let runtime = runtime();
-        let (ui_end, slot, worker) = start(runtime.handle(), host, store, source);
+        let bound = Duration::from_millis(50);
+        let (ui_end, slot, worker) = start_with(runtime.handle(), host, store, source, bound);
         slot.install(Arc::new(RecordingWaker::default()));
 
         let watched = Arc::clone(&shared);
@@ -9547,13 +9708,12 @@ mod tests {
         };
         let teardown = move || async move {
             let started = std::time::Instant::now();
-            tokio::time::timeout(Duration::from_secs(10), worker.finish())
+            tokio::time::timeout(Duration::from_secs(2), worker.finish())
                 .await
                 .expect("a hung withdraw cannot hold the exit");
-            assert!(
-                started.elapsed() < Duration::from_secs(10),
-                "the exit is bounded"
-            );
+            let waited = started.elapsed();
+            assert!(waited >= bound, "the outer bound is the wait");
+            assert!(waited < Duration::from_secs(1), "the exit is bounded");
             assert_eq!(shared.withdrawals.load(Ordering::SeqCst), 1);
             assert_eq!(shared.shutdowns.load(Ordering::SeqCst), 1);
         };

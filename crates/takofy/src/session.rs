@@ -31,6 +31,14 @@ pub(crate) enum SessionError {
 }
 
 impl SessionError {
+    /// Whether this failure means the device watch can never start again.
+    pub(crate) fn devices_terminal(&self) -> bool {
+        matches!(
+            self,
+            Self::Engine(EngineError::Connect(ConnectError::DealerSpent))
+        )
+    }
+
     /// A fixed name for the log. The source error is never formatted: it can
     /// embed a response body.
     pub(crate) fn kind(&self) -> &'static str {
@@ -618,23 +626,17 @@ impl SessionHost for LiveSession {
     }
 
     async fn watch_devices(&mut self) -> Result<(), SessionError> {
-        // A second request hands back the stream the first one already has, or
-        // the engine's refusal when the drain thread has taken it: restarts are
-        // the bridge's guard, not this one.
+        // A second request hands back the stream the first one already holds.
+        // Once the drain thread has taken it, the engine's refusal stands.
         if self.devices.is_some() {
             return Ok(());
         }
         let Some(engine) = &mut self.engine else {
             return Err(SessionError::NotConnected);
         };
-        match engine.watch_devices().await {
-            Ok(events) => {
-                self.devices = Some(events);
-                Ok(())
-            }
-            Err(EngineError::Connect(ConnectError::AlreadyWatching)) => Ok(()),
-            Err(error) => Err(SessionError::Engine(error)),
-        }
+        let events = engine.watch_devices().await.map_err(SessionError::Engine)?;
+        self.devices = Some(events);
+        Ok(())
     }
 
     fn take_devices(&mut self) -> Option<UnboundedReceiver<ClusterEvent>> {
