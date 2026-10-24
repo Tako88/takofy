@@ -22,6 +22,10 @@ use takofy_ui::{layout, view};
 use crate::bridge::UiEnd;
 use crate::preferences::{Loaded, PrefsSync};
 
+/// The shortest delay a wake may ask for. A zero-delay repaint would spin the
+/// frame loop, so a clock that is already due waits this long instead.
+const WAKE_FLOOR: Duration = Duration::from_millis(1);
+
 /// Window options. `run_and_return` must stay true: shutdown runs after the
 /// window closes, and eframe must return instead of exiting the process.
 pub(crate) fn native_options() -> eframe::NativeOptions {
@@ -241,7 +245,7 @@ impl eframe::App for TakofyApp {
         // A watch waiting for its answer and a notice that is still on screen
         // are the module's own clocks: an idle window wakes for neither early.
         if let Some(delay) = self.devices.next_wake(now) {
-            ctx.request_repaint_after(delay.max(Duration::from_millis(1)));
+            ctx.request_repaint_after(delay.max(WAKE_FLOOR));
         }
     }
 
@@ -297,8 +301,7 @@ impl eframe::App for TakofyApp {
             .prefs
             .observe(now, &Prefs::of(&self.transport.volume, &self.queue))
         {
-            ui.ctx()
-                .request_repaint_after(wake.max(Duration::from_millis(1)));
+            ui.ctx().request_repaint_after(wake.max(WAKE_FLOOR));
         }
         // After the draw, because only the draw arms the read: a navigation
         // that leaves the page idle asks for the frame that sends it.
@@ -379,7 +382,7 @@ pub(crate) fn drain(
 /// least a millisecond avoids a zero-delay repaint storm.
 fn schedule_wake(ctx: &egui::Context, art: &Art, now: Instant) {
     if let Some(delay) = art.next_wake(now) {
-        ctx.request_repaint_after(delay.max(Duration::from_millis(1)));
+        ctx.request_repaint_after(delay.max(WAKE_FLOOR));
     }
 }
 
@@ -1607,18 +1610,85 @@ mod tests {
     }
 
     #[test]
-    fn an_idle_window_with_no_remote_is_not_woken() {
+    fn an_idle_window_is_woken_at_the_watch_patience_and_then_rests() {
         let (mut app, _received) = idle_window();
 
         let delay = logic_delay(&mut app);
-
         assert!(
             delay > REDRAW,
             "an idle window was redrawn at the transport cadence: {delay:?}"
         );
         assert!(
-            delay < Duration::MAX,
-            "the watch's own patience is a wake this window must get"
+            delay <= takofy_ui::devices::WATCH_PATIENCE,
+            "the watch's own patience is a wake this window must get: {delay:?}"
+        );
+
+        // A watch that has answered has no clock left, so the next pass asks
+        // for nothing without a remote holding the sound.
+        app.devices.apply(
+            &Update::Devices(DeviceUpdate::Failed(Failure::Devices)),
+            Instant::now(),
+        );
+        assert_eq!(
+            logic_delay(&mut app),
+            Duration::MAX,
+            "a settled idle window still woke for the watch"
+        );
+    }
+
+    #[test]
+    fn a_flash_wakes_the_window_and_its_end_lets_it_rest() {
+        let (mut app, _received) = idle_window();
+        let now = Instant::now();
+        // The watch has already settled, so the notice alone is asking.
+        app.devices.apply(
+            &Update::Devices(DeviceUpdate::Failed(Failure::Devices)),
+            now,
+        );
+        app.devices
+            .apply(&Update::Devices(DeviceUpdate::SteerFailed), now);
+
+        let delay = logic_delay(&mut app);
+        assert!(
+            delay <= takofy_ui::devices::FLASH_FOR,
+            "the notice's own deadline is not the wake: {delay:?}"
+        );
+
+        assert!(
+            app.devices.expire(now + takofy_ui::devices::FLASH_FOR),
+            "the notice did not expire"
+        );
+        assert_eq!(
+            logic_delay(&mut app),
+            Duration::MAX,
+            "the expired notice still woke the window"
+        );
+    }
+
+    #[test]
+    fn logic_sends_the_refresh_a_card_open_asked_for() {
+        let now = Instant::now();
+        let (mut app, mut received) = remote_window(now);
+        app.devices.list_opened();
+
+        logic_frame(&mut app);
+        let sent = take_commands(&mut received);
+        assert_eq!(
+            sent.iter()
+                .filter(|command| matches!(command, Command::RefreshDevices))
+                .count(),
+            1,
+            "the open's refresh was not the logic pass's to send: {sent:?}"
+        );
+
+        logic_frame(&mut app);
+        let sent = take_commands(&mut received);
+        assert_eq!(
+            sent.iter()
+                .filter(|command| matches!(command, Command::RefreshDevices))
+                .count(),
+            0,
+            "the open's refresh was sent twice: {sent:?}"
         );
     }
 

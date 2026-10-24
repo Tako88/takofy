@@ -69,6 +69,17 @@ The costs are explicit: announcing is required to see the list, the phone
 shows this client greyed until it can play, and local playback is not announced
 at all.
 
+Which transport a frame draws is a rule rather than a guess: the holder is drawn
+only while this window's own transport is silent, and the first local play flips
+every region back to it. One snapshot feeds the whole column — the bar's caption
+and title, the panel, the cover lookup and the heart all read that source's
+track — and Space asks the same source's toggle, so a remote press never reaches
+the queue and a local one never steers the phone. The devices card is a latch on
+that snapshot: it opens above the button and closes on Escape, on a press
+outside it, or on a second press of the same button, and the frame that opened it
+is not a press outside it, so the click that opens the card cannot also close
+it.
+
 Cover art runs through the same split. The binary fetches and decodes; the
 window only holds textures. A frame's protocol is `begin_frame` → `look` →
 `requests` → `next_wake`: the app starts the frame, the draw `look`s each cover
