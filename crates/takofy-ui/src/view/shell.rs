@@ -234,6 +234,7 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
         like,
         pane: layout::pane_button(content.width(), *screen.pane),
         fullscreen,
+        devices: crate::devices::Button::Off,
     };
     let playbar_reply = region(ui, "playbar", grid.playbar, bar_rect, |ui| {
         playbar::show(
@@ -243,6 +244,7 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
             screen.position_ms,
             regions.playbar,
             bar_state,
+            None,
             bar_rect,
             now_playing_cover,
             tokens,

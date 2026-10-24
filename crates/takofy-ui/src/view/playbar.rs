@@ -10,10 +10,11 @@ use egui::{EventFilter, FontId, Key, Pos2, Rect, Ui, Vec2};
 
 use crate::availability::Control;
 use crate::cover::Cover;
+use crate::devices::{Button, toggle_steer};
 use crate::format::{format_position, format_remaining};
 use crate::icon::Icon;
 use crate::layout::{self, PaneButton, Playbar};
-use crate::message::Command;
+use crate::message::{Command, Steer};
 use crate::player::{SEEK_STEP_MS, Transport, TransportState};
 use crate::queue::Queue;
 use crate::shuffle;
@@ -200,6 +201,17 @@ fn transport_live(control: Control, queue: &Queue, carrying: bool) -> bool {
     }
 }
 
+/// The extras' devices button: it lights while another device holds the sound.
+fn devices_run(devices: Button) -> Run {
+    Run {
+        control: Control::Devices,
+        icon: Icon::Devices,
+        label: "Connect to a device",
+        lit: devices == Button::Lit,
+        badge: None,
+    }
+}
+
 fn now_controls(form: Playbar) -> &'static [Run] {
     match form {
         Playbar::Full => &NOW_FULL,
@@ -238,12 +250,13 @@ fn extras_controls(form: Playbar) -> &'static [Run] {
     }
 }
 
-/// The extras' runs with the queue's and the window's own state.
+/// The extras' runs with the queue's, the window's and the devices' own state.
 fn extras_runs(form: Playbar, bar: Bar, volume: &Volume) -> Vec<Run> {
     let mut runs = extras_controls(form).to_vec();
     for run in &mut runs {
         match run.control {
             Control::Queue => *run = pane_run(bar.pane),
+            Control::Devices => *run = devices_run(bar.devices),
             Control::Fullscreen => *run = fullscreen_run(bar.fullscreen),
             Control::Mute => *run = mute_run(volume),
             _ => {}
@@ -274,44 +287,72 @@ pub struct Bar {
     pub pane: PaneButton,
     /// Whether the window reports itself fullscreen, or `None` while unknown.
     pub fullscreen: Option<bool>,
+    /// How the devices button draws.
+    pub devices: Button,
 }
 
 impl Default for Bar {
     /// A bar told nothing draws both switches inert: an unknown pane and an
-    /// unknown window are not the user's to act on.
+    /// unknown window are not the user's to act on, and no list has arrived.
     fn default() -> Self {
         Self {
             queue_claimed: false,
             like: None,
             pane: PaneButton::Unavailable,
             fullscreen: None,
+            devices: Button::Off,
         }
     }
+}
+
+/// The other device the bar draws while it holds the sound.
+///
+/// The line replaces the state word: the holder's name, or what just happened to
+/// it. `steerable` decides whether the transport can act, because the local
+/// queue says nothing about what another device can do.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Remote<'a> {
+    pub line: &'a str,
+    pub steerable: bool,
 }
 
 /// What the bar's controls asked for this frame.
 ///
 /// A transport move is a command the shell hands on; the pane and the window
-/// are the shell's own to change, so their presses are reported as presses.
+/// are the shell's own to change, so their presses are reported as presses. A
+/// steer is the holder's transport and never reaches the local queue.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Reply {
     pub command: Option<Command>,
+    /// The transport action another device is asked for, while it holds the
+    /// sound.
+    pub steer: Option<Steer>,
+    /// The devices button's own widget, when it was pressed.
+    pub devices: Option<egui::Id>,
     /// Whether the queue button was pressed.
     pub pane: bool,
     /// Whether the fullscreen button was pressed: the window is the shell's to ask.
     pub fullscreen: bool,
 }
 
-/// One column's press: a command to apply, and the control whose own state the
-/// shell owns.
+/// One column's press: a command to apply, a steer to send, and the control
+/// whose own state the shell owns.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 struct Pressed {
     command: Option<Command>,
+    steer: Option<Steer>,
     control: Option<Control>,
 }
 
 /// Draws the bar's three columns inside `rect` and reports what a control in it
 /// asked for.
+///
+/// With `remote` the transport is the holder's display transport and the bar is
+/// read-only towards the local queue: volume, mute, shuffle, repeat and the
+/// queue button are inert, the caption line replaces the state word, and the
+/// transport reports a [`Reply::steer`] instead of a command. The shell owns the
+/// display transport and copies the local level into it every frame, because
+/// volume is inert while remote and the holder's own level means nothing here.
 #[expect(
     clippy::too_many_arguments,
     reason = "the bar draws three columns from the transport, the queue, the carry and the frame"
@@ -323,6 +364,7 @@ pub fn show(
     position_ms: u32,
     form: Playbar,
     bar: Bar,
+    remote: Option<Remote<'_>>,
     rect: Rect,
     cover: Cover,
     tokens: &Tokens,
@@ -331,7 +373,7 @@ pub fn show(
     let [now, centre, extras] = cols.columns(rect);
 
     let like = row_centred(ui, "playbar-now", now, |ui| {
-        now_column(ui, transport, cover, tokens, form, bar.like)
+        now_column(ui, transport, cover, tokens, form, bar.like, remote)
     });
     if let Some(liked) = like
         && let Some(now) = transport.now_playing.as_ref()
@@ -345,10 +387,17 @@ pub fn show(
         );
     }
     let pressed = row_centred(ui, "playbar-centre", centre, |ui| {
-        centre_column(ui, transport, queue, position_ms, form, bar, tokens)
+        centre_column(ui, transport, queue, position_ms, form, bar, remote, tokens)
     });
-    let extras_press = row_centred(ui, "playbar-extras", extras, |ui| {
-        extras_column(ui, tokens, form, bar, &mut transport.volume)
+    let (extras_press, devices) = row_centred(ui, "playbar-extras", extras, |ui| {
+        extras_column(
+            ui,
+            tokens,
+            form,
+            bar,
+            remote.is_some(),
+            &mut transport.volume,
+        )
     });
     // The reduced form draws the queue in the transport, so the two columns are
     // one channel: a press is whichever of them reported it.
@@ -362,6 +411,8 @@ pub fn show(
     }
     Reply {
         command: pressed.command,
+        steer: pressed.steer,
+        devices,
         pane: control == Some(Control::Queue),
         fullscreen: control == Some(Control::Fullscreen),
     }
@@ -427,6 +478,7 @@ fn now_column(
     tokens: &Tokens,
     form: Playbar,
     liked: Option<bool>,
+    remote: Option<Remote<'_>>,
 ) -> Option<bool> {
     let art_rect = Rect::from_min_size(
         Pos2::new(
@@ -454,8 +506,11 @@ fn now_column(
         .map_or("Nothing playing", |now| now.title.as_str());
     // The row needs the width each line would take unclamped, so the controls
     // sit where the words end when they fit and on the column's edge when they
-    // do not.
-    let label = transport.state.label();
+    // do not. Another device's line is the holder, not a state of this one.
+    let label = match remote {
+        Some(remote) => remote.line,
+        None => transport.state.label(),
+    };
     let natural = {
         let title_w = recipe::spaced(ui, title, title_font.clone(), tokens.palette.text, 0.0)
             .size()
@@ -535,6 +590,10 @@ fn now_column(
 /// The transport row and the progress row beneath it. The command is applied
 /// after the whole column is drawn, so a transport move cannot repaint the row
 /// it came from in the same frame.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the column draws the transport, its seek and the mode it is drawn in"
+)]
 fn centre_column(
     ui: &mut Ui,
     transport: &mut Transport,
@@ -542,15 +601,26 @@ fn centre_column(
     position_ms: u32,
     form: Playbar,
     bar: Bar,
+    remote: Option<Remote<'_>>,
     tokens: &Tokens,
 ) -> Pressed {
     let stack = extent::BUTTON_LG + space::S1 + extent::SLIDER_H;
     let top = row_centre(ui) - stack / 2.0;
     let carrying = carry::carrying(ui.ctx());
     let claimed = bar.queue_claimed.then_some(Control::Queue);
-    let live = |control: Control| match control {
-        Control::Queue => pane_live(bar.pane, carrying),
-        other => transport_live(other, queue, carrying),
+    // Another device answers to its own state and never to this queue: an empty
+    // local queue says nothing about what the holder can do.
+    let live = |control: Control| match remote {
+        Some(remote) => {
+            matches!(
+                control,
+                Control::Previous | Control::Next | Control::PlayPause
+            ) && remote.steerable
+        }
+        None => match control {
+            Control::Queue => pane_live(bar.pane, carrying),
+            other => transport_live(other, queue, carrying),
+        },
     };
     let down = down_runs(queue);
     let row = layout::playbar::transport_row(ui.max_rect().center().x, run_width(&down));
@@ -572,6 +642,10 @@ fn centre_column(
 
     let play = Rect::from_min_size(Pos2::new(row.play_x, top), Vec2::splat(extent::BUTTON_LG));
     // The grey tile is the idle transport alone: an empty queue never started a row.
+    let toggle_live = match remote {
+        Some(remote) => remote.steerable,
+        None => queue.can_toggle(),
+    };
     let play_slot = controls::play_tile(
         ui,
         tokens,
@@ -579,7 +653,7 @@ fn centre_column(
         play,
         play_glyph(transport.state),
         "Play",
-        queue.can_toggle(),
+        toggle_live,
     );
     if play_slot.response.clicked() {
         clicked = Some(Control::PlayPause);
@@ -635,6 +709,14 @@ fn centre_column(
         ),
         Vec2::new(seek.track, extent::SLIDER_H),
     );
+    // The holder's own length decides whether its seek can act; the local
+    // transport's rule would ask this window's player instead.
+    let seekable = match remote {
+        Some(remote) => {
+            remote.steerable && transport.duration_ms.is_some_and(|duration| duration > 0)
+        }
+        None => transport.seekable(),
+    };
     let slot = controls::slider(
         ui,
         tokens,
@@ -642,7 +724,7 @@ fn centre_column(
         track,
         seek_fraction(transport, position_ms),
         "Seek",
-        transport.seekable(),
+        seekable,
     );
     // Both readouts are painted, so the seek is the node that says both times.
     let _ = ui.ctx().accesskit_node_builder(slot.response.id, |node| {
@@ -684,22 +766,60 @@ fn centre_column(
     ) && !pointer
         && context_menu::held_repeat(ui);
     let clicked = clicked.filter(|_| !held);
+    let (command, steer) = match remote {
+        // Nothing in remote mode reaches the local queue: the presses are the
+        // holder's, and the scrubber's own command is the only other steer.
+        Some(_) => (
+            None,
+            transport_steer(clicked, transport.state)
+                .or_else(|| command.as_ref().and_then(steer_of)),
+        ),
+        None => (
+            command.or(match clicked {
+                Some(Control::Previous) => queue.previous(position_ms, transport),
+                Some(Control::Next) => queue.next(transport),
+                Some(Control::PlayPause) => queue.toggle(transport),
+                Some(Control::Shuffle) => {
+                    queue.toggle_shuffle();
+                    None
+                }
+                Some(Control::Repeat) => {
+                    queue.cycle_repeat();
+                    None
+                }
+                _ => None,
+            }),
+            None,
+        ),
+    };
     Pressed {
-        command: command.or(match clicked {
-            Some(Control::Previous) => queue.previous(position_ms, transport),
-            Some(Control::Next) => queue.next(transport),
-            Some(Control::PlayPause) => queue.toggle(transport),
-            Some(Control::Shuffle) => {
-                queue.toggle_shuffle();
-                None
-            }
-            Some(Control::Repeat) => {
-                queue.cycle_repeat();
-                None
-            }
-            _ => None,
-        }),
+        command,
+        steer,
         control: clicked,
+    }
+}
+
+/// The steer one of the transport's own buttons asks for, while another device
+/// holds the sound.
+fn transport_steer(clicked: Option<Control>, state: TransportState) -> Option<Steer> {
+    match clicked? {
+        Control::Previous => Some(Steer::SkipPrev),
+        Control::Next => Some(Steer::SkipNext),
+        Control::PlayPause => toggle_steer(state),
+        _ => None,
+    }
+}
+
+/// The steer the scrubber's own output asks for.
+///
+/// Only the seek track's output is a steer: every other command this view builds
+/// belongs to the local player.
+fn steer_of(command: &Command) -> Option<Steer> {
+    match command {
+        Command::Seek { position_ms } => Some(Steer::SeekTo(*position_ms)),
+        Command::Pause => Some(Steer::Pause),
+        Command::Resume => Some(Steer::Resume),
+        _ => None,
     }
 }
 
@@ -801,13 +921,17 @@ fn seek_command(
 }
 
 /// The buttons the reference sheds first as the window narrows, and the volume.
+///
+/// Reports the control clicked and, when it was the devices button, that
+/// button's own widget so the shell can open the list from it.
 fn extras_column(
     ui: &mut Ui,
     tokens: &Tokens,
     form: Playbar,
     bar: Bar,
+    remote: bool,
     volume: &mut Volume,
-) -> Option<Control> {
+) -> (Option<Control>, Option<egui::Id>) {
     let runs = extras_runs(form, bar, volume);
     let width = run_width(&runs);
     let mut x = ui.max_rect().right() - width;
@@ -819,6 +943,10 @@ fn extras_column(
             claimed: bar.queue_claimed.then_some(Control::Queue),
             volume: Some(volume),
             can_act: &|control| match control {
+                Control::Devices => bar.devices != Button::Off,
+                // The level is this window's, which means nothing while another
+                // device holds the sound, and the queue is not its list.
+                Control::Mute | Control::Volume | Control::Queue if remote => false,
                 Control::Queue => pane_live(bar.pane, carrying),
                 Control::Fullscreen => bar.fullscreen.is_some(),
                 _ => true,
@@ -830,7 +958,47 @@ fn extras_column(
     );
     let pointer = ui.input(|input| input.pointer.button_clicked(egui::PointerButton::Primary));
     let held = clicked.is_some() && !pointer && context_menu::held_repeat(ui);
-    clicked.filter(|_| !held)
+    let clicked = clicked.filter(|_| !held);
+    let devices = clicked
+        .filter(|control| *control == Control::Devices)
+        .map(|_| controls::slot_id(ui, Control::Devices, ()));
+    (clicked, devices)
+}
+
+/// Where the devices button is drawn inside the bar `rect`, or `None` when the
+/// width sheds it with the reduced extras.
+pub fn devices_button(rect: Rect, form: Playbar) -> Option<Rect> {
+    run_rect(rect, form, Control::Devices)
+}
+
+/// Where the extras draw one of their runs, walked from the column's right edge
+/// the way the draw walks. `None` when this width does not draw it.
+fn run_rect(rect: Rect, form: Playbar, control: Control) -> Option<Rect> {
+    let [_, _, extras] = layout::playbar_for(rect, form).columns(rect);
+    let runs = extras_controls(form);
+    let mut x = extras.right() - run_width(runs);
+    for (index, run) in runs.iter().enumerate() {
+        if index > 0 {
+            x += space::S1;
+        }
+        let slot = if run.control == VOLUME {
+            x += space::S2;
+            let slot = Rect::from_min_size(
+                Pos2::new(x, extras.center().y - extent::SLIDER_H / 2.0),
+                Vec2::new(extent::VOLUME_W, extent::SLIDER_H),
+            );
+            x += extent::VOLUME_W + space::S2;
+            slot
+        } else {
+            let slot = square(x, extras.center().y);
+            x += extent::BUTTON;
+            slot
+        };
+        if run.control == control {
+            return Some(slot);
+        }
+    }
+    None
 }
 
 /// A `BUTTON` square whose left edge is `x` and whose centre is `centre_y`.
@@ -933,7 +1101,7 @@ fn draw_run(
                     rect,
                     Some(volume.fraction()),
                     "Volume",
-                    true,
+                    can_act(run.control),
                 );
                 drag_volume(ui, volume, &slot, rect);
             }
@@ -1284,6 +1452,7 @@ mod tests {
                     0,
                     Playbar::Full,
                     Bar::default(),
+                    None,
                     bar,
                     Cover::Missing,
                     &tokens,
@@ -1337,6 +1506,7 @@ mod tests {
                     0,
                     Playbar::Full,
                     Bar::default(),
+                    None,
                     bar,
                     Cover::Missing,
                     &tokens,
@@ -1429,6 +1599,7 @@ mod tests {
                     0,
                     Playbar::Full,
                     Bar::default(),
+                    None,
                     bar,
                     Cover::Missing,
                     &tokens,
@@ -1515,6 +1686,7 @@ mod tests {
                     0,
                     form,
                     Bar::default(),
+                    None,
                     bar,
                     Cover::Missing,
                     tokens,
@@ -1778,6 +1950,7 @@ mod tests {
                     position_ms,
                     Playbar::Full,
                     Bar::default(),
+                    None,
                     heart_bar(),
                     Cover::Missing,
                     tokens,
@@ -1836,6 +2009,7 @@ mod tests {
                     0,
                     Playbar::Full,
                     Bar::default(),
+                    None,
                     bar,
                     Cover::Missing,
                     tokens,
@@ -2182,6 +2356,7 @@ mod tests {
                         queue_claimed: true,
                         ..Bar::default()
                     },
+                    None,
                     bar,
                     Cover::Missing,
                     &tokens,
@@ -2237,6 +2412,7 @@ mod tests {
                         like,
                         ..Bar::default()
                     },
+                    None,
                     bar,
                     Cover::Missing,
                     tokens,
@@ -2534,6 +2710,7 @@ mod tests {
                     0,
                     form,
                     bar,
+                    None,
                     rect,
                     Cover::Missing,
                     tokens,
@@ -2678,6 +2855,7 @@ mod tests {
                     0,
                     form,
                     Bar::default(),
+                    None,
                     rect,
                     crate::cover::Cover::Missing,
                     tokens,
@@ -3776,6 +3954,571 @@ mod tests {
                 "{:?} drew the accent {lit}",
                 bar.pane
             );
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // The devices button and the remote transport
+    // ---------------------------------------------------------------------
+
+    /// One frame of the bar while another device holds the sound.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one frame of the bar over a chosen transport, queue and state"
+    )]
+    fn remote_frame(
+        ctx: &egui::Context,
+        tokens: &Tokens,
+        transport: &mut Transport,
+        queue: &mut Queue,
+        form: Playbar,
+        bar: Bar,
+        remote: Option<Remote<'_>>,
+        events: Vec<Event>,
+    ) -> (Reply, egui::FullOutput) {
+        let rect = heart_bar();
+        let mut reply = Reply::default();
+        let mut output = ctx.run_ui(
+            RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 300.0))),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                reply = show(
+                    ui,
+                    transport,
+                    queue,
+                    0,
+                    form,
+                    bar,
+                    remote,
+                    rect,
+                    Cover::Missing,
+                    tokens,
+                );
+            },
+        );
+        output.textures_delta.clear();
+        (reply, output)
+    }
+
+    /// Clicks `at` while remote, over the passes egui's hit test needs.
+    fn remote_click(
+        ctx: &egui::Context,
+        tokens: &Tokens,
+        transport: &mut Transport,
+        queue: &mut Queue,
+        bar: Bar,
+        remote: Option<Remote<'_>>,
+        at: Pos2,
+    ) -> Vec<Reply> {
+        let form = Playbar::Full;
+        let _ = remote_frame(ctx, tokens, transport, queue, form, bar, remote, Vec::new());
+        let mut replies = vec![
+            remote_frame(
+                ctx,
+                tokens,
+                transport,
+                queue,
+                form,
+                bar,
+                remote,
+                vec![Event::PointerMoved(at)],
+            )
+            .0,
+        ];
+        for event in click_events(at) {
+            replies.push(
+                remote_frame(
+                    ctx,
+                    tokens,
+                    transport,
+                    queue,
+                    form,
+                    bar,
+                    remote,
+                    vec![event],
+                )
+                .0,
+            );
+        }
+        replies
+    }
+
+    /// Where the play tile is drawn, solved here from the theme's own constants.
+    fn play_slot(centre: Rect) -> Rect {
+        let stack = extent::BUTTON_LG + space::S1 + extent::SLIDER_H;
+        Rect::from_min_size(
+            Pos2::new(
+                centre.center().x - extent::BUTTON_LG / 2.0,
+                centre.center().y - stack / 2.0,
+            ),
+            Vec2::splat(extent::BUTTON_LG),
+        )
+    }
+
+    fn remote(line: &str, steerable: bool) -> Option<Remote<'_>> {
+        Some(Remote { line, steerable })
+    }
+
+    #[test]
+    fn a_remote_bar_steers_from_an_empty_local_queue() {
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        ctx.enable_accesskit();
+        let form = Playbar::Full;
+        let mut queue = Queue::default();
+        assert!(
+            !queue.can_previous() && !queue.can_next() && !queue.can_toggle(),
+            "the local queue is empty"
+        );
+        let mut transport = playing(0);
+        let centre = layout::playbar_for(heart_bar(), form).columns(heart_bar())[1];
+        let playing = remote("Phone", true);
+
+        for (control, at, steer) in [
+            (
+                Control::Previous,
+                transport_slot(centre, Control::Previous).center(),
+                Steer::SkipPrev,
+            ),
+            (
+                Control::Next,
+                transport_slot(centre, Control::Next).center(),
+                Steer::SkipNext,
+            ),
+            (Control::PlayPause, play_slot(centre).center(), Steer::Pause),
+        ] {
+            let replies = remote_click(
+                &ctx,
+                &tokens,
+                &mut transport,
+                &mut queue,
+                Bar::default(),
+                playing,
+                at,
+            );
+            assert!(
+                replies.iter().any(|reply| reply.steer == Some(steer)),
+                "{control:?}: the press did not steer {steer:?}: {replies:?}"
+            );
+            assert!(
+                replies.iter().all(|reply| reply.command.is_none()),
+                "{control:?}: a remote press reached the local player: {replies:?}"
+            );
+            assert!(
+                replies
+                    .iter()
+                    .all(|reply| !reply.pane && !reply.fullscreen && reply.devices.is_none()),
+                "{control:?}: a remote press pressed something else: {replies:?}"
+            );
+        }
+        assert!(
+            queue.current().is_none() && !queue.armed(),
+            "a remote press moved the local queue"
+        );
+    }
+
+    /// The colours a control's glyph is painted in, read from the shapes inside
+    /// its own rect.
+    fn glyph_colours(output: &egui::FullOutput, rect: Rect) -> Vec<egui::Color32> {
+        output
+            .shapes
+            .iter()
+            .filter(|clipped| rect.contains(clipped.shape.visual_bounding_rect().center()))
+            .filter_map(|clipped| shape_colour(&clipped.shape))
+            .collect()
+    }
+
+    /// Whether `control` is drawn as something that can act this frame.
+    fn drawn_live(
+        ctx: &egui::Context,
+        tokens: &Tokens,
+        queue: &mut Queue,
+        transport: &mut Transport,
+        bar: Bar,
+        remote: Option<Remote<'_>>,
+        at: Rect,
+    ) -> bool {
+        let (_, output) = remote_frame(
+            ctx,
+            tokens,
+            transport,
+            queue,
+            Playbar::Full,
+            bar,
+            remote,
+            Vec::new(),
+        );
+        let colours = glyph_colours(&output, at);
+        assert!(!colours.is_empty(), "nothing is painted at {at:?}");
+        for colour in &colours {
+            if *colour == tokens.palette.text_disabled {
+                return false;
+            }
+        }
+        true
+    }
+
+    #[test]
+    fn a_remote_press_never_moves_the_local_queue() {
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        let mut queue = queue_of(4);
+        assert_eq!(queue.first_upcoming(), 1, "the queue is on its first track");
+        let mut transport = playing(0);
+        let centre = layout::playbar_for(heart_bar(), Playbar::Full).columns(heart_bar())[1];
+        let at = transport_slot(centre, Control::Next).center();
+
+        let replies = remote_click(
+            &ctx,
+            &tokens,
+            &mut transport,
+            &mut queue,
+            Bar::default(),
+            remote("Phone", true),
+            at,
+        );
+
+        assert!(
+            replies
+                .iter()
+                .any(|reply| reply.steer == Some(Steer::SkipNext)),
+            "the remote skip did not steer: {replies:?}"
+        );
+        assert_eq!(
+            queue.first_upcoming(),
+            1,
+            "a remote skip moved the local queue"
+        );
+    }
+
+    #[test]
+    fn a_remote_bar_draws_its_transport_live_with_an_empty_queue() {
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        ctx.enable_accesskit();
+        let mut queue = Queue::default();
+        let mut transport = playing(0);
+        let centre = layout::playbar_for(heart_bar(), Playbar::Full).columns(heart_bar())[1];
+
+        for control in [Control::Previous, Control::Next] {
+            assert!(
+                drawn_live(
+                    &ctx,
+                    &tokens,
+                    &mut queue,
+                    &mut transport,
+                    Bar::default(),
+                    remote("Phone", true),
+                    transport_slot(centre, control),
+                ),
+                "{control:?} is drawn inert while the phone holds the sound"
+            );
+        }
+        let (_, output) = remote_frame(
+            &ctx,
+            &tokens,
+            &mut transport,
+            &mut queue,
+            Playbar::Full,
+            Bar::default(),
+            remote("Phone", true),
+            Vec::new(),
+        );
+        assert!(
+            !announced_disabled(&output, "Play"),
+            "the play tile is drawn inert while the phone holds the sound"
+        );
+        for label in ["Shuffle off", "Repeat off", "Mute", "Volume", "Queue"] {
+            assert!(
+                announced_disabled(&output, label),
+                "{label} is drawn live while another device holds the sound"
+            );
+        }
+    }
+
+    #[test]
+    fn a_remote_bar_that_cannot_steer_announces_its_transport_disabled() {
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        ctx.enable_accesskit();
+        let mut queue = Queue::default();
+        let mut transport = playing(0);
+        let (_, output) = remote_frame(
+            &ctx,
+            &tokens,
+            &mut transport,
+            &mut queue,
+            Playbar::Full,
+            Bar::default(),
+            remote("Phone", false),
+            Vec::new(),
+        );
+        for label in ["Play", "Seek", "Mute", "Volume", "Shuffle off", "Queue"] {
+            assert!(
+                announced_disabled(&output, label),
+                "{label} is drawn live while the holder refuses control"
+            );
+        }
+        let centre = layout::playbar_for(heart_bar(), Playbar::Full).columns(heart_bar())[1];
+        for control in [Control::Previous, Control::Next] {
+            assert!(
+                !drawn_live(
+                    &ctx,
+                    &tokens,
+                    &mut queue,
+                    &mut transport,
+                    Bar::default(),
+                    remote("Phone", false),
+                    transport_slot(centre, control),
+                ),
+                "{control:?} is drawn live while the holder refuses control"
+            );
+        }
+
+        for at in [
+            transport_slot(
+                layout::playbar_for(heart_bar(), Playbar::Full).columns(heart_bar())[1],
+                Control::Previous,
+            )
+            .center(),
+            play_slot(layout::playbar_for(heart_bar(), Playbar::Full).columns(heart_bar())[1])
+                .center(),
+        ] {
+            let replies = remote_click(
+                &ctx,
+                &tokens,
+                &mut transport,
+                &mut queue,
+                Bar::default(),
+                remote("Phone", false),
+                at,
+            );
+            assert!(
+                replies
+                    .iter()
+                    .all(|reply| reply.steer.is_none() && reply.command.is_none()),
+                "a holder that cannot be steered was steered: {replies:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_remote_toggle_pauses_what_plays_and_resumes_what_is_paused() {
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        let form = Playbar::Full;
+        let centre = layout::playbar_for(heart_bar(), form).columns(heart_bar())[1];
+        let at = play_slot(centre).center();
+
+        for (state, steer) in [
+            (TransportState::Playing, Steer::Pause),
+            (TransportState::Loading, Steer::Pause),
+            (TransportState::Paused, Steer::Resume),
+        ] {
+            let mut queue = Queue::default();
+            let mut transport = Transport {
+                state,
+                duration_ms: Some(222_000),
+                ..Transport::default()
+            };
+            let replies = remote_click(
+                &ctx,
+                &tokens,
+                &mut transport,
+                &mut queue,
+                Bar::default(),
+                remote("Phone", true),
+                at,
+            );
+            assert!(
+                replies.iter().any(|reply| reply.steer == Some(steer)),
+                "{state:?} did not steer {steer:?}: {replies:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_remote_scrub_seeks_the_holder() {
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        let mut queue = Queue::default();
+        let mut transport = playing(0);
+        let centre = layout::playbar_for(heart_bar(), Playbar::Full).columns(heart_bar())[1];
+        let (_, output) = remote_frame(
+            &ctx,
+            &tokens,
+            &mut transport,
+            &mut queue,
+            Playbar::Full,
+            Bar::default(),
+            remote("Phone", true),
+            Vec::new(),
+        );
+        let track = painted_track(&output, centre);
+        let at = Pos2::new(track.center().x, track.center().y);
+
+        let replies = remote_click(
+            &ctx,
+            &tokens,
+            &mut transport,
+            &mut queue,
+            Bar::default(),
+            remote("Phone", true),
+            at,
+        );
+
+        assert!(
+            replies
+                .iter()
+                .any(|reply| matches!(reply.steer, Some(Steer::SeekTo(ms)) if ms == 111_000)),
+            "the scrub did not seek the phone: {replies:?}"
+        );
+        assert!(
+            replies.iter().all(|reply| reply.command.is_none()),
+            "a remote scrub reached the local player: {replies:?}"
+        );
+    }
+
+    #[test]
+    fn a_remote_bar_draws_the_caption_in_place_of_the_state() {
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        let mut queue = Queue::default();
+        let mut transport = playing(0);
+        let (_, output) = remote_frame(
+            &ctx,
+            &tokens,
+            &mut transport,
+            &mut queue,
+            Playbar::Full,
+            Bar::default(),
+            remote("Living room", true),
+            Vec::new(),
+        );
+        assert!(
+            text_inside(&output, heart_bar()).contains(&"Living room".to_owned()),
+            "the caption is not drawn"
+        );
+        assert!(
+            !text_inside(&output, heart_bar()).contains(&"Playing".to_owned()),
+            "the local state word is drawn beside the caption"
+        );
+    }
+
+    #[test]
+    fn steer_of_maps_only_the_scrubbers_output() {
+        assert_eq!(
+            steer_of(&Command::Seek {
+                position_ms: 42_000
+            }),
+            Some(Steer::SeekTo(42_000))
+        );
+        assert_eq!(steer_of(&Command::Pause), Some(Steer::Pause));
+        assert_eq!(steer_of(&Command::Resume), Some(Steer::Resume));
+        for command in [
+            Command::Play {
+                uri: "t1".to_owned(),
+            },
+            Command::Stop,
+            Command::Volume { percent: 50 },
+        ] {
+            assert_eq!(steer_of(&command), None, "{command:?}");
+        }
+    }
+
+    #[test]
+    fn the_devices_run_names_the_button_and_lights_with_the_holder() {
+        assert_eq!(devices_run(Button::Off).label, "Connect to a device");
+        assert_eq!(devices_run(Button::Ready).label, "Connect to a device");
+        assert!(!devices_run(Button::Off).lit);
+        assert!(!devices_run(Button::Ready).lit);
+        assert!(devices_run(Button::Lit).lit);
+        for devices in [Button::Off, Button::Ready, Button::Lit] {
+            let bar = Bar {
+                devices,
+                ..Bar::default()
+            };
+            let run = *extras_runs(Playbar::Full, bar, &Volume::default())
+                .iter()
+                .find(|run| run.control == Control::Devices)
+                .expect("the full extras draw the devices button");
+            assert_eq!(run.label, "Connect to a device");
+            assert_eq!(run.lit, devices == Button::Lit, "{devices:?}");
+        }
+        assert!(
+            extras_runs(Playbar::Reduced, Bar::default(), &Volume::default())
+                .iter()
+                .all(|run| run.control != Control::Devices),
+            "the reduced extras have no devices button to draw"
+        );
+    }
+
+    #[test]
+    fn the_devices_button_is_drawn_where_a_press_reaches_it() {
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        let mut queue = queue_of(4);
+        let form = Playbar::Full;
+        let at = devices_button(heart_bar(), form).expect("the full bar draws it");
+        let bar = Bar {
+            devices: Button::Ready,
+            ..Bar::default()
+        };
+
+        let replies = click_at(&ctx, &tokens, &mut queue, form, bar, at.center());
+
+        assert!(
+            replies.iter().any(|reply| reply.devices.is_some()),
+            "the press at {at:?} did not reach the devices button: {replies:?}"
+        );
+        assert!(
+            replies.iter().all(|reply| reply.command.is_none()),
+            "opening a list is not a command: {replies:?}"
+        );
+        assert!(devices_button(heart_bar(), Playbar::Reduced).is_none());
+    }
+
+    #[test]
+    fn a_devices_button_with_no_list_reports_nothing() {
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        let mut queue = queue_of(4);
+        let at = devices_button(heart_bar(), Playbar::Full).expect("the full bar draws it");
+        let replies = click_at(
+            &ctx,
+            &tokens,
+            &mut queue,
+            Playbar::Full,
+            Bar::default(),
+            at.center(),
+        );
+        assert!(
+            replies.iter().all(|reply| reply.devices.is_none()),
+            "a button with no list still opened one: {replies:?}"
+        );
+    }
+
+    #[test]
+    fn a_lit_devices_button_paints_the_accent() {
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        let mut queue = queue_of(4);
+        let at = devices_button(heart_bar(), Playbar::Full).expect("the full bar draws it");
+        for (devices, lit) in [
+            (Button::Lit, true),
+            (Button::Ready, false),
+            (Button::Off, false),
+        ] {
+            let bar = Bar {
+                devices,
+                ..Bar::default()
+            };
+            let (_, output) =
+                queue_frame(&ctx, &tokens, &mut queue, Playbar::Full, bar, Vec::new());
+            assert_eq!(accent_inside(&output, &tokens, at), lit, "{devices:?}");
         }
     }
 }

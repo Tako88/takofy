@@ -197,6 +197,13 @@ impl Devices {
         Some(Command::Steer { device, steer })
     }
 
+    /// The play/pause steer for the holder, or nothing when its state is not
+    /// one a toggle acts on. The bar's play tile and the Space key both ask
+    /// here, so the rule has one home.
+    pub fn toggle(&self) -> Option<Steer> {
+        toggle_steer(self.remote.state)
+    }
+
     /// Which transport the bar draws.
     pub fn source(&self, local: &Transport) -> Source {
         let holds = self.holder.is_some()
@@ -471,6 +478,16 @@ pub fn kind_label(kind: DeviceKind) -> &'static str {
         DeviceKind::Tv => "TV",
         DeviceKind::Car => "Car",
         DeviceKind::Other => "Other",
+    }
+}
+
+/// The play/pause steer a transport state asks for: pause what is playing or
+/// loading, resume what is paused, and nothing for a state that is neither.
+pub fn toggle_steer(state: TransportState) -> Option<Steer> {
+    match state {
+        TransportState::Playing | TransportState::Loading => Some(Steer::Pause),
+        TransportState::Paused => Some(Steer::Resume),
+        _ => None,
     }
 }
 
@@ -1215,6 +1232,29 @@ mod tests {
             Some(WATCH_PATIENCE - FLASH_FOR)
         );
         assert_eq!(devices.button(), Button::Off);
+    }
+
+    #[test]
+    fn the_play_pause_steer_follows_the_holders_state() {
+        let now = base();
+        let devices = Devices::default();
+        assert_eq!(devices.toggle(), None, "nothing holds the sound yet");
+
+        let mut devices = watching(now);
+        assert_eq!(
+            devices.toggle(),
+            None,
+            "a holder with no state toggles nothing"
+        );
+
+        for (state, steer) in [
+            (RemoteState::Playing, Some(Steer::Pause)),
+            (RemoteState::Loading, Some(Steer::Pause)),
+            (RemoteState::Paused, Some(Steer::Resume)),
+        ] {
+            devices.apply(&playing(Some(playback(state, "t1", Some(180_000)))), now);
+            assert_eq!(devices.toggle(), steer, "{state:?}");
+        }
     }
 
     #[test]
