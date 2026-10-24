@@ -5453,6 +5453,7 @@ dependencies = [
  "log",
  "protobuf",
  "protobuf-json-mapping",
+ "serde_json",
  "takofy-model",
  "thiserror 2.0.21",
  "tokio",

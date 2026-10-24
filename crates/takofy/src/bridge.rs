@@ -17,6 +17,7 @@ use takofy_core::connect::{ClusterEvent, Steer as CoreSteer, WITHDRAW_TIMEOUT};
 use takofy_core::credentials::{AccessToken, CredentialStore};
 use takofy_core::login::{AuthError, SourceErrorKind, TokenSource, authorize, resume};
 use takofy_core::playback::{PlaybackError, PlaybackEvent};
+use takofy_core::receive::Inbound;
 use takofy_model::{CoverUrl, Move, Owner, PlaylistEntry, Removal, Revision};
 use takofy_ui::message::{Command, DeviceUpdate, Failure, Steer, TransportUpdate, Update};
 use tokio::runtime::{Handle, Runtime};
@@ -118,6 +119,8 @@ enum Event {
     Token(Option<AccessToken>),
     /// A command, or `None` once the window has gone.
     Command(Option<Command>),
+    /// A request from the account, or `None` once that stream has ended.
+    Inbound(Option<Inbound>),
 }
 
 /// Whether a host call finished or was abandoned because the window closed.
@@ -130,6 +133,44 @@ impl Step {
     fn stopped(&self) -> bool {
         matches!(self, Self::Stopped)
     }
+}
+
+/// State the device watch keeps across commands: whether it was started, the
+/// request stream it handed over, the roster the window was told, and whether
+/// the pump has ended.
+struct Devices {
+    watching: bool,
+    inbound: Option<UnboundedReceiver<Inbound>>,
+    sent: SentRoster,
+    dead: Arc<AtomicBool>,
+}
+
+impl Default for Devices {
+    fn default() -> Self {
+        Self {
+            watching: false,
+            inbound: None,
+            sent: SentRoster::default(),
+            dead: Arc::new(AtomicBool::new(false)),
+        }
+    }
+}
+
+/// Waits for the account's next request, forgetting a stream that has ended.
+///
+/// A stream that closed leaves no receiver behind, so this arm never resolves
+/// again; leaving it armed on a dead channel would spin the loop. Cancelling the
+/// await loses nothing, because the receiver is polled in place rather than
+/// rebuilt.
+async fn next_inbound(slot: &mut Option<UnboundedReceiver<Inbound>>) -> Option<Inbound> {
+    let Some(receiver) = slot else {
+        return std::future::pending().await;
+    };
+    let inbound = receiver.recv().await;
+    if inbound.is_none() {
+        *slot = None;
+    }
+    inbound
 }
 
 /// Removes finished fetch tasks so their cells do not accumulate over a
@@ -223,9 +264,7 @@ fn start_with<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
     let task = handle.spawn(async move {
         let mut host = host;
         let mut connected = false;
-        let mut watching = false;
-        let sent_roster = SentRoster::default();
-        let dead_watch = Arc::new(AtomicBool::new(false));
+        let mut devices = Devices::default();
         let mut token: Option<AccessToken> = None;
         // Built once: the timeout, the redirect ban, and the bounded pool live
         // on the client, and covers are the only thing it is ever used for.
@@ -255,6 +294,7 @@ fn start_with<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                 _ = &mut stop_rx => break,
                 received = tokens_rx.recv() => Event::Token(received),
                 command = commands_rx.recv() => Event::Command(command),
+                request = next_inbound(&mut devices.inbound) => Event::Inbound(request),
             };
             match event {
                 Event::Token(Some(received)) => {
@@ -541,9 +581,7 @@ fn start_with<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                         &mut host,
                         &mut stop_rx,
                         &task_notifier,
-                        &mut watching,
-                        &sent_roster,
-                        &dead_watch,
+                        &mut devices,
                         connected,
                     )
                     .await;
@@ -556,9 +594,7 @@ fn start_with<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                         &mut host,
                         &mut stop_rx,
                         &task_notifier,
-                        &mut watching,
-                        &sent_roster,
-                        &dead_watch,
+                        &mut devices,
                         connected,
                     )
                     .await;
@@ -609,6 +645,14 @@ fn start_with<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                     );
                 }
                 Event::Command(None) => break,
+                // A request this device cannot take is answered at once, so the
+                // phone is never left waiting out its budget. Nothing else
+                // happens: no transport, no order.
+                Event::Inbound(Some(request)) => {
+                    log::info!("connect inbound: {}", request.kind.word());
+                    host.refuse(request.id);
+                }
+                Event::Inbound(None) => {}
             }
         }
         // Cancels every in-flight fetch. A detached decode thread is left to
@@ -616,7 +660,7 @@ fn start_with<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
         cover_tasks.abort_all();
         // The device goes before the player does, so a forced quit never leaves
         // the account with an entry this client will not answer on.
-        if watching {
+        if devices.watching {
             withdraw(&mut host, withdraw_timeout).await;
         }
         let _ = host.shutdown().await;
@@ -1499,15 +1543,32 @@ async fn create_playlist<H: SessionHost>(
     Step::Done
 }
 
+/// Whether this failure means the device can no longer play at all.
+///
+/// One track that will not play is not that: the player is up and the next one
+/// may play, so the announced stage must stay where it was.
+fn ends_playability(error: &SessionError) -> bool {
+    matches!(
+        error,
+        SessionError::NotConnected | SessionError::Playback(PlaybackError::NoAudioDevice)
+    )
+}
+
 /// Starts the player if needed and hands the one drain thread its events.
 fn play<H: SessionHost>(host: &mut H, notifier: &Notifier, uri: &str) {
     match host.play(uri) {
         Ok(()) => {
+            // The device can be picked from now on, so the account is told so
+            // before the player's first event arrives.
+            host.set_playable(true);
             if let Some(events) = host.take_events() {
                 spawn_drain(notifier.clone(), events);
             }
         }
         Err(error) => {
+            if ends_playability(&error) {
+                host.set_playable(false);
+            }
             notifier.send(Update::Transport(TransportUpdate::Failed(
                 playback_failure(&error),
             )));
@@ -1517,34 +1578,32 @@ fn play<H: SessionHost>(host: &mut H, notifier: &Notifier, uri: &str) {
 
 /// Starts the device watch, once per session.
 ///
-/// `watching` is the only guard that keeps a duplicate or a late request off the
-/// dealer's one start: the builder is consumed by the first, so a second cannot
-/// be attempted and a failure here is not retryable by asking again.
+/// `devices.watching` is the only guard that keeps a duplicate or a late request
+/// off the dealer's one start: the builder is consumed by the first, so a second
+/// cannot be attempted and a failure here is not retryable by asking again.
 async fn watch_devices<H: SessionHost>(
     host: &mut H,
     stop: &mut StopReceiver<()>,
     notifier: &Notifier,
-    watching: &mut bool,
-    sent: &SentRoster,
-    dead: &Arc<AtomicBool>,
+    devices: &mut Devices,
     connected: bool,
 ) -> Step {
     if !connected {
         notifier.send(device_failure(Failure::Devices));
         return Step::Done;
     }
-    if *watching {
+    if devices.watching {
         return Step::Done;
     }
     // Set before the await: a request that arrives while the start is in flight
     // must not reach the builder a second time.
-    *watching = true;
-    dead.store(false, Ordering::SeqCst);
+    devices.watching = true;
+    devices.dead.store(false, Ordering::SeqCst);
     match stop_or(stop, host.watch_devices()).await {
         None => Step::Stopped,
         Some(Err(error)) => {
             log_device_error(&error);
-            *watching = false;
+            devices.watching = false;
             let failure = if error.devices_terminal() {
                 Failure::DevicesOff
             } else {
@@ -1555,12 +1614,20 @@ async fn watch_devices<H: SessionHost>(
         }
         Some(Ok(())) => {
             if let Some(events) = host.take_devices() {
-                spawn_device_drain(notifier.clone(), events, sent.clone(), Arc::clone(dead));
+                spawn_device_drain(
+                    notifier.clone(),
+                    events,
+                    devices.sent.clone(),
+                    Arc::clone(&devices.dead),
+                );
             } else {
                 // No stream to read, but the device was announced: keep
                 // `watching` so the exit still withdraws it.
                 notifier.send(device_failure(Failure::DevicesOff));
             }
+            // Taken beside the events: the loop answers requests through it,
+            // and a stream with nobody to read it would refuse them untold.
+            devices.inbound = host.take_inbound();
             Step::Done
         }
     }
@@ -1572,15 +1639,13 @@ async fn refresh_devices<H: SessionHost>(
     host: &mut H,
     stop: &mut StopReceiver<()>,
     notifier: &Notifier,
-    watching: &mut bool,
-    sent: &SentRoster,
-    dead: &Arc<AtomicBool>,
+    devices: &mut Devices,
     connected: bool,
 ) -> Step {
-    if !*watching {
-        return watch_devices(host, stop, notifier, watching, sent, dead, connected).await;
+    if !devices.watching {
+        return watch_devices(host, stop, notifier, devices, connected).await;
     }
-    if dead.load(Ordering::SeqCst) {
+    if devices.dead.load(Ordering::SeqCst) {
         notifier.send(device_failure(Failure::DevicesOff));
         return Step::Done;
     }
@@ -1589,7 +1654,7 @@ async fn refresh_devices<H: SessionHost>(
         Some(Ok(view)) => {
             // Compared against the one roster both paths share, so a later push
             // cannot restore a roster this ask has replaced.
-            for update in sent.updates(&view) {
+            for update in devices.sent.updates(&view) {
                 notifier.send(update);
             }
             Step::Done
@@ -1902,12 +1967,13 @@ mod tests {
     use takofy_core::connect::{ClusterView, ConnectError};
     use takofy_core::credentials::{AccessToken, CredentialStore, RefreshToken, StoreError};
     use takofy_core::engine::{EngineError, RootlistRead};
+    use takofy_core::instruction::Kind;
     use takofy_core::login::{SourceError, SourceErrorKind, TokenSet, TokenSource};
     use takofy_model::{
         AlbumDetail, ArtistDetail, ArtistPortrait, CoverImage, CoverUrl, Device, DeviceKind,
         Episode, FollowedArtist, FollowedShow, LyricLine, Move, PlaylistAccess, PlaylistCover,
-        PlaylistEntry, RemotePlayback, RemoteState, Removal, SavedAlbum, Show, ShowDetail,
-        TrackEntry, TrackLyrics,
+        PlaylistEntry, RemotePlayback, RemoteState, Removal, RequestId, SavedAlbum, Show,
+        ShowDetail, TrackEntry, TrackLyrics,
     };
     use takofy_ui::signin::failure_message;
     use tokio::runtime::Runtime;
@@ -2473,6 +2539,25 @@ mod tests {
         Pending,
     }
 
+    /// A scripted play. The default starts the player.
+    #[derive(Clone, Copy, Default)]
+    enum PlayScript {
+        #[default]
+        Ok,
+        /// The machine has no output, so nothing can ever play here.
+        NoAudioDevice,
+        /// One track the player refuses; the player itself is fine.
+        NotPlayable,
+    }
+
+    /// One host call, in the order the command loop made it.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    enum Call {
+        Play(String),
+        SetPlayable(bool),
+        Refuse(RequestId),
+    }
+
     #[derive(Default)]
     struct FakeState {
         connect_scripts: Mutex<Vec<ConnectScript>>,
@@ -2508,6 +2593,11 @@ mod tests {
         refresh_script: Mutex<RefreshScript>,
         steer_scripts: Mutex<Vec<SteerScript>>,
         withdraw_script: Mutex<WithdrawScript>,
+        play_script: Mutex<PlayScript>,
+        /// Every call that moved the account's view of this device, in order.
+        calls: Mutex<Vec<Call>>,
+        /// Every request the loop refused, in order.
+        refusals: Mutex<Vec<RequestId>>,
         connected: AtomicBool,
         connects: AtomicUsize,
         rootlists: AtomicUsize,
@@ -2595,6 +2685,8 @@ mod tests {
         exit_calls: Mutex<Vec<&'static str>>,
         device_tx: Mutex<Option<UnboundedSender<ClusterEvent>>>,
         device_rx: Mutex<Option<UnboundedReceiver<ClusterEvent>>>,
+        inbound_tx: Mutex<Option<UnboundedSender<Inbound>>>,
+        inbound_rx: Mutex<Option<UnboundedReceiver<Inbound>>>,
         watch_started: Mutex<Option<Sender<()>>>,
         refresh_started: Mutex<Option<Sender<()>>>,
         steer_started: Mutex<Option<Sender<()>>>,
@@ -3321,11 +3413,14 @@ mod tests {
                 }
             };
             if matches!(script, WatchScript::Ready) {
-                // The stream exists before the signal fires, so a test that
-                // waits for the start can use it straight away.
+                // The streams exist before the signal fires, so a test that
+                // waits for the start can use them straight away.
                 let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
                 *self.shared.device_tx.lock().expect("lock") = Some(tx);
                 *self.shared.device_rx.lock().expect("lock") = Some(rx);
+                let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                *self.shared.inbound_tx.lock().expect("lock") = Some(tx);
+                *self.shared.inbound_rx.lock().expect("lock") = Some(rx);
             }
             if let Some(tx) = self.shared.watch_started.lock().expect("lock").take() {
                 let _ = tx.send(());
@@ -3344,6 +3439,27 @@ mod tests {
 
         fn take_devices(&mut self) -> Option<UnboundedReceiver<ClusterEvent>> {
             self.shared.device_rx.lock().expect("lock").take()
+        }
+
+        fn take_inbound(&mut self) -> Option<UnboundedReceiver<Inbound>> {
+            self.shared.inbound_rx.lock().expect("lock").take()
+        }
+
+        fn set_playable(&self, playable: bool) {
+            self.shared
+                .calls
+                .lock()
+                .expect("lock")
+                .push(Call::SetPlayable(playable));
+        }
+
+        fn refuse(&self, id: RequestId) {
+            self.shared
+                .calls
+                .lock()
+                .expect("lock")
+                .push(Call::Refuse(id));
+            self.shared.refusals.lock().expect("lock").push(id);
         }
 
         fn refresh_devices(
@@ -3412,10 +3528,27 @@ mod tests {
             }
         }
 
-        fn play(&mut self, _uri: &str) -> Result<(), SessionError> {
+        fn play(&mut self, uri: &str) -> Result<(), SessionError> {
             self.shared.plays.fetch_add(1, Ordering::SeqCst);
+            self.shared
+                .calls
+                .lock()
+                .expect("lock")
+                .push(Call::Play(uri.to_owned()));
             if !self.shared.connected.load(Ordering::SeqCst) {
                 return Err(SessionError::NotConnected);
+            }
+            let script = *self.shared.play_script.lock().expect("lock");
+            match script {
+                PlayScript::Ok => {}
+                PlayScript::NoAudioDevice => {
+                    return Err(SessionError::Playback(PlaybackError::NoAudioDevice));
+                }
+                PlayScript::NotPlayable => {
+                    return Err(SessionError::Playback(PlaybackError::NotPlayable(
+                        uri.to_owned(),
+                    )));
+                }
             }
             if !self.shared.player_started.swap(true, Ordering::SeqCst) {
                 self.shared.players.fetch_add(1, Ordering::SeqCst);
@@ -9016,6 +9149,38 @@ mod tests {
         }
     }
 
+    /// Waits until `check` holds, so no test has to guess at a delay.
+    fn until(what: &str, mut check: impl FnMut() -> bool) {
+        let started = std::time::Instant::now();
+        while started.elapsed() < Duration::from_secs(2) {
+            if check() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        panic!("timed out waiting for {what}");
+    }
+
+    /// Every call the loop made that moved the account's view of this device.
+    fn calls(shared: &FakeState) -> Vec<Call> {
+        shared.calls.lock().expect("lock").clone()
+    }
+
+    /// Every request the loop refused, in order.
+    fn refusals(shared: &FakeState) -> Vec<RequestId> {
+        shared.refusals.lock().expect("lock").clone()
+    }
+
+    /// The request stream a scripted watch opened, so a test can push into it.
+    fn inbound_sender(shared: &FakeState) -> UnboundedSender<Inbound> {
+        shared
+            .inbound_tx
+            .lock()
+            .expect("lock")
+            .clone()
+            .expect("a watch opened the request stream")
+    }
+
     /// Watches once, answering the signal the fake raises when it is called.
     fn watch_now(ui_end: &UiEnd, shared: &FakeState) -> Receiver<()> {
         let (tx, rx) = channel();
@@ -9739,5 +9904,257 @@ mod tests {
             "a window that never announced has nothing to withdraw"
         );
         assert_eq!(shared.shutdowns.load(Ordering::SeqCst), 1);
+    }
+
+    // ---- the account's requests ----
+
+    #[test]
+    fn an_inbound_command_is_refused_and_nothing_else_happens() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+
+        run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            watch_now(&ui_end, &shared).recv().expect("watch started");
+
+            let id = RequestId(7);
+            inbound_sender(&shared)
+                .send(Inbound {
+                    id,
+                    kind: Kind::Transfer,
+                })
+                .expect("inbound");
+            until("the request to be refused", || {
+                !refusals(&shared).is_empty()
+            });
+            assert_eq!(refusals(&shared), vec![id]);
+            // A refusal is the whole answer: the window hears nothing.
+            expect_no_update(&ui_end);
+        });
+
+        assert_eq!(
+            calls(&shared),
+            vec![Call::Refuse(RequestId(7))],
+            "the request is refused once and no other call is made"
+        );
+    }
+
+    #[test]
+    fn every_kind_is_refused_exactly_once() {
+        const KINDS: [Kind; 15] = [
+            Kind::Transfer,
+            Kind::Play,
+            Kind::Pause,
+            Kind::Resume,
+            Kind::SeekTo,
+            Kind::SkipNext,
+            Kind::SkipPrev,
+            Kind::SetShufflingContext,
+            Kind::SetRepeatingContext,
+            Kind::SetRepeatingTrack,
+            Kind::SetOptions,
+            Kind::SetQueue,
+            Kind::AddToQueue,
+            Kind::UpdateContext,
+            Kind::Unknown,
+        ];
+
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+
+        run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            watch_now(&ui_end, &shared).recv().expect("watch started");
+
+            let tx = inbound_sender(&shared);
+            for (id, kind) in (0u64..).zip(KINDS) {
+                tx.send(Inbound {
+                    id: RequestId(id),
+                    kind,
+                })
+                .expect("inbound");
+            }
+            until("every request to be refused", || {
+                refusals(&shared).len() == KINDS.len()
+            });
+        });
+
+        let refused = refusals(&shared);
+        let expected: Vec<RequestId> = (0u64..).map(RequestId).take(KINDS.len()).collect();
+        assert_eq!(refused, expected, "each request is answered, in order");
+        assert_eq!(
+            calls(&shared),
+            refused.into_iter().map(Call::Refuse).collect::<Vec<_>>(),
+            "every kind is refused exactly once"
+        );
+    }
+
+    #[test]
+    fn playing_a_track_makes_the_device_playable() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+
+        run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::Play {
+                    uri: TRACK.to_owned(),
+                })
+                .expect("play");
+            until("the device to become playable", || {
+                calls(&shared).contains(&Call::SetPlayable(true))
+            });
+        });
+
+        assert_eq!(
+            calls(&shared),
+            vec![Call::Play(TRACK.to_owned()), Call::SetPlayable(true)]
+        );
+        assert_eq!(shared.players.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_failed_play_for_no_audio_device_makes_it_unplayable() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+        *shared.play_script.lock().expect("lock") = PlayScript::NoAudioDevice;
+
+        run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::Play {
+                    uri: TRACK.to_owned(),
+                })
+                .expect("play");
+            assert_eq!(
+                ui_end.updates.recv().expect("play failed"),
+                Update::Transport(TransportUpdate::Failed(Failure::NoAudioDevice))
+            );
+        });
+
+        assert_eq!(
+            calls(&shared),
+            vec![Call::Play(TRACK.to_owned()), Call::SetPlayable(false)],
+            "a machine with no output can never be picked"
+        );
+    }
+
+    #[test]
+    fn a_not_playable_track_leaves_the_device_playable() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+
+        run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::Play {
+                    uri: TRACK.to_owned(),
+                })
+                .expect("play");
+            until("the device to become playable", || {
+                calls(&shared).contains(&Call::SetPlayable(true))
+            });
+
+            // One bad track is not a device that cannot play, so the stage
+            // must stay where the good one left it.
+            *shared.play_script.lock().expect("lock") = PlayScript::NotPlayable;
+            ui_end
+                .commands
+                .send(Command::Play {
+                    uri: TRACK.to_owned(),
+                })
+                .expect("play");
+            assert_eq!(
+                ui_end.updates.recv().expect("play failed"),
+                Update::Transport(TransportUpdate::Failed(Failure::Other))
+            );
+        });
+
+        assert_eq!(
+            calls(&shared),
+            vec![
+                Call::Play(TRACK.to_owned()),
+                Call::SetPlayable(true),
+                Call::Play(TRACK.to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_closed_inbound_stream_is_forgotten_and_its_arm_goes_quiet() {
+        runtime().block_on(async {
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Inbound>();
+            let mut slot = Some(rx);
+            drop(tx);
+
+            assert_eq!(
+                next_inbound(&mut slot).await,
+                None,
+                "a closed stream yields nothing to answer"
+            );
+            assert!(
+                slot.is_none(),
+                "the dead receiver is dropped instead of polled again"
+            );
+            assert!(
+                tokio::time::timeout(Duration::from_millis(20), next_inbound(&mut slot))
+                    .await
+                    .is_err(),
+                "an arm with no stream stays pending rather than resolving in a spin"
+            );
+        });
+    }
+
+    #[test]
+    fn commands_are_still_served_after_the_inbound_stream_closes() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+
+        run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            watch_now(&ui_end, &shared).recv().expect("watch started");
+
+            // The account stops sending requests; the loop must carry on with
+            // the window's commands.
+            shared.inbound_tx.lock().expect("lock").take();
+            expect_no_update(&ui_end);
+
+            ui_end
+                .commands
+                .send(Command::ReloadLibrary)
+                .expect("reload");
+            loop {
+                if matches!(ui_end.updates.recv().expect("update"), Update::Playlists(_)) {
+                    break;
+                }
+            }
+        });
+
+        assert!(
+            calls(&shared).is_empty(),
+            "a stream that ended refuses nothing"
+        );
+        assert_eq!(shared.watches.load(Ordering::SeqCst), 1);
     }
 }

@@ -3,7 +3,9 @@
 //! One gate orders every announce, refresh, steer and withdraw, so a connection
 //! id that arrives during a withdraw cannot re-create the device, and a skip's
 //! single attempt cannot overlap another request. The pump is the only
-//! long-lived reader; every other call is one request.
+//! long-lived reader of the dealer's streams; the publisher is the only writer
+//! of the account's copy of our state, so a slow put never stops a push from
+//! being read.
 
 use std::future::Future;
 use std::sync::Arc;
@@ -19,18 +21,28 @@ use librespot::core::spclient::{RequestStrategy, SpClient};
 use librespot::protocol::connect::{Cluster, ClusterUpdate};
 use protobuf::Message as _;
 use tokio::sync::Mutex as TokioMutex;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use tokio::sync::mpsc::{
+    UnboundedReceiver, UnboundedSender, WeakUnboundedSender, unbounded_channel,
+};
+use tokio::sync::watch as signal;
 
 use crate::connect::{
     Announcement, ClusterEvent, ClusterView, ConnectError, Steer, WITHDRAW_TIMEOUT, repeatable,
     steer_body, view_of, view_of_update,
 };
+use crate::presence::{Presence, Stage};
+use crate::publish;
+use crate::receive::{self, Inbound};
+use crate::registry::Registry;
 
 /// The stream the dealer names its connection id on.
 const CONNECTION_URI: &str = "hm://pusher/v1/connections/";
 
 /// The stream the cluster pushes on.
 const CLUSTER_URI: &str = "hm://connect-state/v1/cluster";
+
+/// The stream the account sends its commands on.
+const COMMAND_URI: &str = "hm://connect-state/v1/player/command";
 
 /// The header the pusher names the connection id in. The put carries the same
 /// id under `x-spotify-connection-id`; both spellings are the wire's.
@@ -42,12 +54,47 @@ pub(crate) const CONNECTION_ID_WAIT: Duration = Duration::from_secs(10);
 /// The longest a skip waits for the wire to be free.
 pub(crate) const GATE_WAIT: Duration = Duration::from_secs(2);
 
+/// How long a request may wait for an answer before the phone is told it failed.
+///
+/// Under the phone's own retry and over the longest accept path, so a slow
+/// transfer is never cut off and a stuck one is never left hanging.
+pub(crate) const ANSWER_BUDGET: Duration = Duration::from_secs(10);
+
+/// How long a context walk may take before it gives up.
+pub(crate) const RESOLVE_BUDGET: Duration = Duration::from_secs(3);
+
+/// The bound on every state put, in place of the client's own retries.
+pub(crate) const PUT_BUDGET: Duration = Duration::from_secs(3);
+
+/// The bound on the inactive put that gives the sound back.
+pub(crate) const RELEASE_BUDGET: Duration = Duration::from_secs(1);
+
+/// The window a loss rule falls back to when an activation reply carries no
+/// usable time of its own.
+pub(crate) const ACTIVATION_GRACE: Duration = Duration::from_secs(2);
+
+/// How long a burst of flips settles before it becomes one put.
+pub(crate) const STATE_DELAY: Duration = Duration::from_millis(200);
+
 /// The slices of time the watch depends on, so a test can shorten them.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Timing {
     pub id_wait: Duration,
     pub withdraw: Duration,
     pub gate_wait: Duration,
+    pub answer: Duration,
+    pub put: Duration,
+    pub debounce: Duration,
+    // The three below bound a transfer's context walk, the inactive put that
+    // gives the sound back, and the loss rule's fallback. This path never takes
+    // the sound, so nothing reads them; they live here with the rest of the
+    // watch's time.
+    #[allow(dead_code)]
+    pub resolve: Duration,
+    #[allow(dead_code)]
+    pub release: Duration,
+    #[allow(dead_code)]
+    pub grace: Duration,
 }
 
 impl Default for Timing {
@@ -56,6 +103,12 @@ impl Default for Timing {
             id_wait: CONNECTION_ID_WAIT,
             withdraw: WITHDRAW_TIMEOUT,
             gate_wait: GATE_WAIT,
+            answer: ANSWER_BUDGET,
+            resolve: RESOLVE_BUDGET,
+            put: PUT_BUDGET,
+            release: RELEASE_BUDGET,
+            grace: ACTIVATION_GRACE,
+            debounce: STATE_DELAY,
         }
     }
 }
@@ -63,24 +116,43 @@ impl Default for Timing {
 /// Orders the calls that write the account's device state.
 ///
 /// `withdrawn` is set before the gate is taken, so a withdraw that never gets in
-/// still stops every announce that comes after it.
-#[derive(Default)]
+/// still stops every announce that comes after it; the signal is what cuts a put
+/// that is already waiting on the wire.
 pub(crate) struct Gate {
     lock: TokioMutex<()>,
     withdrawn: AtomicBool,
+    signal: signal::Sender<bool>,
+}
+
+impl Default for Gate {
+    fn default() -> Self {
+        Self {
+            lock: TokioMutex::new(()),
+            withdrawn: AtomicBool::new(false),
+            signal: signal::channel(false).0,
+        }
+    }
 }
 
 impl Gate {
-    async fn take(&self) -> tokio::sync::MutexGuard<'_, ()> {
+    pub(crate) async fn take(&self) -> tokio::sync::MutexGuard<'_, ()> {
         self.lock.lock().await
     }
 
     fn mark_withdrawn(&self) {
         self.withdrawn.store(true, Ordering::SeqCst);
+        // `send_replace` rather than `send`: the flag must be readable by the
+        // next subscriber even when nobody is listening right now.
+        self.signal.send_replace(true);
     }
 
-    fn withdrawn(&self) -> bool {
+    pub(crate) fn withdrawn(&self) -> bool {
         self.withdrawn.load(Ordering::SeqCst)
+    }
+
+    /// The flag, for a put that must stop the moment the device goes.
+    fn withdrawn_signal(&self) -> signal::Receiver<bool> {
+        self.signal.subscribe()
     }
 }
 
@@ -91,10 +163,19 @@ pub(crate) trait Wire: Send + Sync + 'static {
     /// Empty until the dealer names one.
     fn connection_id(&self) -> String;
     fn set_connection_id(&self, id: &str);
+    /// The session the account knows this device by, carried by a body that can
+    /// play.
+    fn session_id(&self) -> String;
     fn put(
         &self,
         announcement: &Announcement,
     ) -> impl Future<Output = Result<Vec<u8>, ConnectError>> + Send;
+    /// Tells the account this device no longer holds the sound.
+    ///
+    /// Only a device that took the sound has anything to give back, and this
+    /// one never does, so nothing sends it.
+    #[allow(dead_code)]
+    fn put_inactive(&self) -> impl Future<Output = Result<(), ConnectError>> + Send;
     fn delete(&self) -> impl Future<Output = Result<(), ConnectError>> + Send;
     /// Sends one command body to `target`, in one attempt when `once`.
     fn command(
@@ -155,12 +236,21 @@ impl Wire for SessionWire {
         self.0.set_connection_id(id);
     }
 
+    fn session_id(&self) -> String {
+        self.0.session_id()
+    }
+
     async fn put(&self, announcement: &Announcement) -> Result<Vec<u8>, ConnectError> {
         let client = self.0.spclient();
         Ok(client
             .put_connect_state_request(announcement.message())
             .await?
             .to_vec())
+    }
+
+    async fn put_inactive(&self) -> Result<(), ConnectError> {
+        self.0.spclient().put_connect_state_inactive(false).await?;
+        Ok(())
     }
 
     async fn delete(&self) -> Result<(), ConnectError> {
@@ -207,14 +297,94 @@ impl Drop for Restore<'_> {
     }
 }
 
-/// Starts listening for the cluster and returns the stream the window reads.
+/// What every announcement reads: the stage this device is in, the requests in
+/// flight and the stream the window reads.
+///
+/// The newest report joins the bundle once the window has one to publish;
+/// nothing here reads a report yet.
+///
+/// The events sender is weak because the pump holds the only strong one: when
+/// its streams end the stream closes, and the window reads that as a dead watch.
+pub(crate) struct Shared {
+    pub(crate) presence: Arc<Presence>,
+    pub(crate) registry: Arc<Registry>,
+    pub(crate) events: WeakUnboundedSender<ClusterEvent>,
+}
+
+impl Shared {
+    /// A bundle with no window behind it, for a call made outside the pump.
+    pub(crate) fn detached(presence: Arc<Presence>, registry: Arc<Registry>) -> Arc<Self> {
+        let (events, _) = unbounded_channel();
+        Arc::new(Self {
+            presence,
+            registry,
+            events: events.downgrade(),
+        })
+    }
+
+    /// Sends to the window, or says that nothing is reading any more.
+    pub(crate) fn emit(&self, event: ClusterEvent) -> bool {
+        match self.events.upgrade() {
+            Some(events) => events.send(event).is_ok(),
+            None => false,
+        }
+    }
+}
+
+/// The one place an announcement is built, so a put always says what the stage
+/// says.
+fn body<W: Wire>(wire: &W, shared: &Shared) -> Announcement {
+    match shared.presence.stage() {
+        Stage::Controller => Announcement::controller(&wire.device_id(), &wire.client_id()),
+        Stage::Ready => {
+            Announcement::ready(&wire.device_id(), &wire.client_id(), &wire.session_id())
+        }
+    }
+}
+
+/// Runs one write on the wire under a budget, cut short when the device goes.
+pub(crate) async fn bounded<T>(
+    gate: &Gate,
+    budget: Duration,
+    work: impl Future<Output = Result<T, ConnectError>>,
+) -> Result<T, ConnectError> {
+    let mut withdrawn = gate.withdrawn_signal();
+    if *withdrawn.borrow_and_update() {
+        return Err(ConnectError::Withdrawn);
+    }
+    let raced = async {
+        tokio::select! {
+            biased;
+            // The gate outlives the call that borrows it, so a closed sender
+            // means the same thing the flag does.
+            _ = withdrawn.changed() => Err(ConnectError::Withdrawn),
+            result = work => result,
+        }
+    };
+    match tokio::time::timeout(budget, raced).await {
+        Ok(result) => result,
+        Err(_) => Err(ConnectError::PutTimedOut),
+    }
+}
+
+/// What `watch` hands its caller: the events the window reads, the requests it
+/// has to answer, and the bundle later calls announce through.
+pub struct Watching {
+    pub events: UnboundedReceiver<ClusterEvent>,
+    pub inbound: UnboundedReceiver<Inbound>,
+    pub(crate) shared: Arc<Shared>,
+}
+
+/// Starts listening for the cluster and returns the streams the window reads.
 ///
 /// A second call on one session cannot work: `DealerManager::start` consumes the
 /// builder it would subscribe on, so the caller keeps its own guard.
 pub(crate) async fn watch(
     session: &Session,
     gate: Arc<Gate>,
-) -> Result<UnboundedReceiver<ClusterEvent>, ConnectError> {
+    presence: Arc<Presence>,
+    registry: Arc<Registry>,
+) -> Result<Watching, ConnectError> {
     let dealer = session.dealer();
     let ids = dealer
         .listen_for(CONNECTION_URI, |message| {
@@ -224,32 +394,64 @@ pub(crate) async fn watch(
     let pushes = dealer
         .listen_for(CLUSTER_URI, Message::from_raw::<ClusterUpdate>)
         .map_err(|_| ConnectError::DealerSpent)?;
+    let requests = dealer
+        .handle_for(COMMAND_URI)
+        .map_err(|_| ConnectError::DealerSpent)?;
     dealer
         .start()
         .await
         .map_err(|_| ConnectError::DealerSpent)?;
-    let (tx, rx) = unbounded_channel();
+
+    let (events, event_rx) = unbounded_channel();
+    let (inbound_tx, inbound_rx) = unbounded_channel();
+    let shared = Arc::new(Shared {
+        presence,
+        registry,
+        events: events.downgrade(),
+    });
+    let wire = Arc::new(SessionWire::new(session));
+    let timing = Timing::default();
+
+    tokio::spawn(receive::serve(
+        requests,
+        inbound_tx,
+        Arc::clone(&shared.registry),
+    ));
+    tokio::spawn(publish::run(
+        Arc::clone(&wire),
+        Arc::clone(&gate),
+        Arc::clone(&shared),
+        timing,
+    ));
     tokio::spawn(pump(
-        Arc::new(SessionWire::new(session)),
+        wire,
         gate,
         ids,
         pushes,
-        tx,
-        Timing::default(),
+        Arc::clone(&shared),
+        events,
+        timing,
     ));
-    Ok(rx)
+
+    Ok(Watching {
+        events: event_rx,
+        inbound: inbound_rx,
+        shared,
+    })
 }
 
 /// Reads the dealer's two streams until they end or the window goes.
 ///
 /// One `Failed` per failure and no exit: a silence of the account is the state
-/// the window draws, not the end of the watch.
+/// the window draws, not the end of the watch. `events` is the only strong
+/// sender, so this task ending is what closes the window's stream.
 pub(crate) async fn pump<W: Wire>(
     wire: Arc<W>,
     gate: Arc<Gate>,
     mut ids: BoxedStreamResult<String>,
     mut pushes: BoxedStreamResult<ClusterUpdate>,
-    tx: UnboundedSender<ClusterEvent>,
+    shared: Arc<Shared>,
+    events: UnboundedSender<ClusterEvent>,
     timing: Timing,
 ) {
     let wait = tokio::time::sleep(timing.id_wait);
@@ -259,7 +461,7 @@ pub(crate) async fn pump<W: Wire>(
     loop {
         let event = tokio::select! {
             biased;
-            _ = tx.closed() => break,
+            _ = events.closed() => break,
             _ = &mut wait, if awaiting_id => {
                 awaiting_id = false;
                 ClusterEvent::Failed
@@ -268,7 +470,7 @@ pub(crate) async fn pump<W: Wire>(
                 Some(Ok(id)) => {
                     awaiting_id = false;
                     wire.set_connection_id(&id);
-                    match announce(&*wire, &gate).await {
+                    match announce(&*wire, &gate, &shared, timing).await {
                         Some(Ok(view)) => ClusterEvent::View(Box::new(view)),
                         Some(Err(_)) => ClusterEvent::Failed,
                         None => continue,
@@ -286,25 +488,41 @@ pub(crate) async fn pump<W: Wire>(
                 None => break,
             },
         };
-        if tx.send(event).is_err() {
+        if events.send(event).is_err() {
             break;
         }
     }
 }
 
 /// Announces the device and reads the reply, unless a withdraw got there first.
-async fn announce<W: Wire>(wire: &W, gate: &Gate) -> Option<Result<ClusterView, ConnectError>> {
+async fn announce<W: Wire>(
+    wire: &W,
+    gate: &Gate,
+    shared: &Shared,
+    timing: Timing,
+) -> Option<Result<ClusterView, ConnectError>> {
     let _guard = gate.take().await;
     if gate.withdrawn() {
         return None;
     }
-    Some(put_and_view(wire).await)
+    Some(put_and_view(wire, gate, shared, timing).await)
 }
 
-/// Sends the controller body and reads the cluster it answers with.
-async fn put_and_view<W: Wire>(wire: &W) -> Result<ClusterView, ConnectError> {
-    let announcement = Announcement::controller(&wire.device_id(), &wire.client_id());
-    let reply = wire.put(&announcement).await?;
+/// Sends the body the stage calls for and reads the cluster it answers with.
+///
+/// The caller holds the gate; the put itself is bounded, so a wire that never
+/// answers cannot keep it.
+pub(crate) async fn put_and_view<W: Wire>(
+    wire: &W,
+    gate: &Gate,
+    shared: &Shared,
+    timing: Timing,
+) -> Result<ClusterView, ConnectError> {
+    if wire.connection_id().is_empty() {
+        return Err(ConnectError::NoConnectionId);
+    }
+    let announcement = body(wire, shared);
+    let reply = bounded(gate, timing.put, wire.put(&announcement)).await?;
     let own = wire.device_id();
     Cluster::parse_from_bytes(&reply)
         .map(|cluster| view_of(&cluster, &own))
@@ -315,18 +533,16 @@ async fn put_and_view<W: Wire>(wire: &W) -> Result<ClusterView, ConnectError> {
 pub(crate) async fn refresh<W: Wire>(
     wire: &W,
     gate: &Gate,
+    shared: &Shared,
     timing: Timing,
 ) -> Result<ClusterView, ConnectError> {
-    if wire.connection_id().is_empty() {
-        return Err(ConnectError::NoConnectionId);
-    }
     let _guard = tokio::time::timeout(timing.gate_wait, gate.take())
         .await
         .map_err(|_| ConnectError::Busy)?;
     if gate.withdrawn() {
         return Err(ConnectError::Withdrawn);
     }
-    put_and_view(wire).await
+    put_and_view(wire, gate, shared, timing).await
 }
 
 /// Sends one transport action to the device that holds the sound.
@@ -341,20 +557,20 @@ pub(crate) async fn steer<W: Wire>(
     steer: &Steer,
     timing: Timing,
 ) -> Result<(), ConnectError> {
-    let body = steer_body(steer);
+    let payload = steer_body(steer);
     if repeatable(steer) {
-        return wire.command(target, &body, false).await;
+        return wire.command(target, &payload, false).await;
     }
     let _guard = tokio::time::timeout(timing.gate_wait, gate.take())
         .await
         .map_err(|_| ConnectError::Busy)?;
-    wire.command(target, &body, true).await
+    wire.command(target, &payload, true).await
 }
 
 /// Deletes the device, then closes the dealer, inside one bound.
 ///
-/// The flag goes up first so an announce already in flight that wins the gate
-/// afterwards sends nothing.
+/// The flag goes up first, so a put already on the wire is cut short and an
+/// announce that wins the gate afterwards sends nothing.
 pub(crate) async fn withdraw<W: Wire>(
     wire: &W,
     gate: &Gate,
@@ -385,198 +601,28 @@ pub(crate) fn connection_id_of(message: &Message) -> Result<String, ConnectError
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
-    use std::sync::Mutex;
-    use std::sync::atomic::AtomicUsize;
 
     use librespot::core::dealer::protocol::PayloadValue;
-    use librespot::protocol::connect::{Capabilities, DeviceInfo};
-    use librespot::protocol::devices::DeviceType;
-    use protobuf::{EnumOrUnknown, MessageField};
-    use tokio::sync::mpsc::UnboundedSender;
-    use tokio::sync::oneshot;
+    use protobuf::MessageField;
     use tokio::task::JoinHandle;
 
     use super::*;
-
-    const DEVICE: &str = "device-1";
-    const CLIENT: &str = "client-1";
-
-    /// What one put answers.
-    #[derive(Clone, Copy, Default, PartialEq, Eq)]
-    enum Reply {
-        #[default]
-        Cluster,
-        Garbage,
-        Fail,
-        /// Waits for the test's release before answering.
-        Held,
-    }
-
-    fn device_info(name: &str) -> DeviceInfo {
-        DeviceInfo {
-            can_play: true,
-            name: name.to_owned(),
-            device_type: EnumOrUnknown::new(DeviceType::SMARTPHONE),
-            capabilities: MessageField::some(Capabilities {
-                can_be_player: true,
-                ..Default::default()
-            }),
-            ..Default::default()
-        }
-    }
-
-    fn cluster() -> Cluster {
-        let mut device = HashMap::new();
-        device.insert("phone".to_owned(), device_info("Phone"));
-        Cluster {
-            device,
-            active_device_id: "phone".to_owned(),
-            ..Default::default()
-        }
-    }
-
-    #[derive(Default)]
-    struct FakeWire {
-        connection_id: Mutex<String>,
-        puts: Mutex<Vec<Announcement>>,
-        commands: Mutex<Vec<(String, String, bool)>>,
-        deletes: AtomicUsize,
-        closes: AtomicUsize,
-        exit_calls: Mutex<Vec<&'static str>>,
-        reply: Mutex<Reply>,
-        started: Mutex<Option<oneshot::Sender<()>>>,
-        release: Mutex<Option<oneshot::Receiver<()>>>,
-        delete_hangs: AtomicBool,
-    }
-
-    impl FakeWire {
-        fn reply(&self, reply: Reply) {
-            *self.reply.lock().expect("lock") = reply;
-        }
-
-        /// Holds the next put: `started` fires when it is in flight, and the
-        /// put answers only once the returned sender fires.
-        fn hold(&self) -> (oneshot::Sender<()>, oneshot::Receiver<()>) {
-            self.reply(Reply::Held);
-            let (started_tx, started_rx) = oneshot::channel();
-            let (release_tx, release_rx) = oneshot::channel();
-            *self.started.lock().expect("lock") = Some(started_tx);
-            *self.release.lock().expect("lock") = Some(release_rx);
-            (release_tx, started_rx)
-        }
-
-        fn puts(&self) -> Vec<Announcement> {
-            self.puts.lock().expect("lock").clone()
-        }
-
-        fn commands(&self) -> Vec<(String, String, bool)> {
-            self.commands.lock().expect("lock").clone()
-        }
-    }
-
-    impl Wire for FakeWire {
-        fn device_id(&self) -> String {
-            DEVICE.to_owned()
-        }
-
-        fn client_id(&self) -> String {
-            CLIENT.to_owned()
-        }
-
-        fn connection_id(&self) -> String {
-            self.connection_id.lock().expect("lock").clone()
-        }
-
-        fn set_connection_id(&self, id: &str) {
-            id.clone_into(&mut self.connection_id.lock().expect("lock"));
-        }
-
-        async fn put(&self, announcement: &Announcement) -> Result<Vec<u8>, ConnectError> {
-            self.puts.lock().expect("lock").push(announcement.clone());
-            if let Some(started) = self.started.lock().expect("lock").take() {
-                let _ = started.send(());
-            }
-            let held = *self.reply.lock().expect("lock") == Reply::Held;
-            let release = self.release.lock().expect("lock").take();
-            if held && let Some(release) = release {
-                let _ = release.await;
-            }
-            match *self.reply.lock().expect("lock") {
-                Reply::Cluster | Reply::Held => Ok(cluster().write_to_bytes().expect("bytes")),
-                // A length-delimited field shorter than it claims is not a
-                // cluster, whatever the parser is willing to skip.
-                Reply::Garbage => Ok(vec![0x0a, 0x05, 0x00]),
-                // Any failure will do: the pump reports the same either way.
-                Reply::Fail => Err(ConnectError::NoConnectionId),
-            }
-        }
-
-        async fn delete(&self) -> Result<(), ConnectError> {
-            self.deletes.fetch_add(1, Ordering::SeqCst);
-            self.exit_calls.lock().expect("lock").push("delete");
-            if self.delete_hangs.load(Ordering::SeqCst) {
-                std::future::pending::<()>().await;
-            }
-            Ok(())
-        }
-
-        async fn command(&self, target: &str, body: &str, once: bool) -> Result<(), ConnectError> {
-            self.commands
-                .lock()
-                .expect("lock")
-                .push((target.to_owned(), body.to_owned(), once));
-            Ok(())
-        }
-
-        async fn close(&self) {
-            self.closes.fetch_add(1, Ordering::SeqCst);
-            self.exit_calls.lock().expect("lock").push("close");
-        }
-    }
-
-    /// One item of a dealer stream, as the fake feeds it.
-    type Node<T> = Result<T, librespot::core::Error>;
-
-    /// The connection id stream's sending end.
-    type IdFeed = UnboundedSender<Node<String>>;
-
-    /// The cluster push stream's sending end.
-    type PushFeed = UnboundedSender<Node<ClusterUpdate>>;
-
-    /// A stream the test feeds, so an item can arrive after the pump started.
-    fn fed<T: Send + 'static>(rx: UnboundedReceiver<Node<T>>) -> BoxedStreamResult<T> {
-        Box::pin(futures_util::stream::unfold(rx, |mut rx| async move {
-            rx.recv().await.map(|item| (item, rx))
-        }))
-    }
-
-    fn empty<T: Send + 'static>() -> BoxedStreamResult<T> {
-        Box::pin(futures_util::stream::empty())
-    }
-
-    /// Starts a pump whose two streams the test feeds.
-    fn start_pump(
-        wire: Arc<FakeWire>,
-        gate: Arc<Gate>,
-        timing: Timing,
-    ) -> (
-        IdFeed,
-        PushFeed,
-        UnboundedReceiver<ClusterEvent>,
-        JoinHandle<()>,
-    ) {
-        let (id_tx, id_rx) = unbounded_channel();
-        let (push_tx, push_rx) = unbounded_channel();
-        let (tx, rx) = unbounded_channel();
-        let task = tokio::spawn(pump(wire, gate, fed(id_rx), fed(push_rx), tx, timing));
-        (id_tx, push_tx, rx, task)
-    }
+    use crate::publish;
+    use crate::testing::{
+        CLIENT, DEVICE, FakeWire, Pump, Reply, SESSION, bundle, cluster, empty, start_pump,
+    };
 
     fn timing() -> Timing {
         Timing {
             id_wait: Duration::from_millis(20),
             withdraw: Duration::from_millis(50),
             gate_wait: Duration::from_millis(30),
+            answer: Duration::from_millis(50),
+            resolve: Duration::from_millis(20),
+            put: Duration::from_millis(50),
+            release: Duration::from_millis(20),
+            grace: Duration::from_millis(50),
+            debounce: Duration::from_millis(20),
         }
     }
 
@@ -594,14 +640,77 @@ mod tests {
             .expect("the pump must still be alive")
     }
 
+    /// Waits for a held put to reach the wire, so a missing one fails the test
+    /// instead of hanging it.
+    async fn in_flight(started: tokio::sync::oneshot::Receiver<()>) {
+        tokio::time::timeout(Duration::from_secs(2), started)
+            .await
+            .expect("the put must reach the wire")
+            .expect("the wire must say the put started");
+    }
+
+    /// Waits until `check` holds, so no test has to guess at a duration.
+    async fn until(what: &str, mut check: impl FnMut() -> bool) {
+        let waited = tokio::time::timeout(Duration::from_secs(2), async {
+            while !check() {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await;
+        assert!(waited.is_ok(), "timed out waiting for {what}");
+    }
+
+    /// Collects the events the pump emits until it goes quiet for `wait`.
+    async fn quiet(rx: &mut UnboundedReceiver<ClusterEvent>, wait: Duration) -> Vec<ClusterEvent> {
+        let mut events = Vec::new();
+        while let Ok(event) = tokio::time::timeout(wait, rx.recv()).await {
+            events.push(event.expect("the pump must still be alive"));
+        }
+        events
+    }
+
+    /// How many puts of one kind the wire has seen.
+    fn starts(wire: &FakeWire, kind: &str) -> usize {
+        let wanted = format!("put:{kind}:start");
+        wire.log
+            .entries()
+            .iter()
+            .filter(|entry| entry.as_str() == wanted)
+            .count()
+    }
+
+    /// Pins the safety invariant on what the pump, the refresh and the publisher
+    /// actually sent.
+    fn assert_never_active(wire: &FakeWire) {
+        assert!(
+            wire.puts().iter().all(|put| !put.message().is_active),
+            "an announcement that takes the sound reached the wire"
+        );
+        let entries = wire.log.entries();
+        assert!(
+            !entries.iter().any(|entry| entry.contains(":active:")),
+            "an active body reached the wire: {entries:?}"
+        );
+    }
+
+    /// Runs the publisher beside a pump, so a flip reaches the wire.
+    fn start_publish(
+        wire: Arc<FakeWire>,
+        gate: Arc<Gate>,
+        pump: &Pump,
+        timing: Timing,
+    ) -> JoinHandle<()> {
+        tokio::spawn(publish::run(wire, gate, Arc::clone(&pump.shared), timing))
+    }
+
     #[tokio::test]
     async fn the_first_connection_id_pins_and_sends_the_controller_body() {
         let wire = Arc::new(FakeWire::default());
         let gate = Arc::new(Gate::default());
-        let (ids, _pushes, mut rx, _task) = start_pump(Arc::clone(&wire), gate, timing());
+        let mut pump = start_pump(Arc::clone(&wire), gate, timing());
 
-        ids.send(Ok("connection-1".to_owned())).expect("id");
-        let _ = recv(&mut rx).await;
+        pump.ids.send(Ok("connection-1".to_owned())).expect("id");
+        let _ = recv(&mut pump.events).await;
 
         assert_eq!(wire.connection_id(), "connection-1");
         // `connect`'s own test pins this body against the probed literal, so
@@ -613,10 +722,10 @@ mod tests {
     async fn a_reply_becomes_a_view_and_a_garbage_one_only_fails() {
         let wire = Arc::new(FakeWire::default());
         let gate = Arc::new(Gate::default());
-        let (ids, _pushes, mut rx, _task) = start_pump(Arc::clone(&wire), gate, timing());
+        let mut pump = start_pump(Arc::clone(&wire), gate, timing());
 
-        ids.send(Ok("connection-1".to_owned())).expect("id");
-        let view = view_of_event(recv(&mut rx).await);
+        pump.ids.send(Ok("connection-1".to_owned())).expect("id");
+        let view = view_of_event(recv(&mut pump.events).await);
         assert_eq!(
             view.devices
                 .expect("a roster")
@@ -627,8 +736,8 @@ mod tests {
         assert_eq!(view.holder.as_deref(), Some("phone"));
 
         wire.reply(Reply::Garbage);
-        ids.send(Ok("connection-2".to_owned())).expect("id");
-        assert_eq!(recv(&mut rx).await, ClusterEvent::Failed);
+        pump.ids.send(Ok("connection-2".to_owned())).expect("id");
+        assert_eq!(recv(&mut pump.events).await, ClusterEvent::Failed);
         assert_eq!(
             wire.puts().len(),
             2,
@@ -636,33 +745,39 @@ mod tests {
         );
 
         wire.reply(Reply::Fail);
-        ids.send(Ok("connection-3".to_owned())).expect("id");
+        pump.ids.send(Ok("connection-3".to_owned())).expect("id");
         assert_eq!(
-            recv(&mut rx).await,
+            recv(&mut pump.events).await,
             ClusterEvent::Failed,
             "a failed announce is the same silence as an unreadable one"
         );
 
         wire.reply(Reply::Cluster);
-        ids.send(Ok("connection-4".to_owned())).expect("id");
-        assert!(matches!(recv(&mut rx).await, ClusterEvent::View(_)));
+        pump.ids.send(Ok("connection-4".to_owned())).expect("id");
+        assert!(matches!(
+            recv(&mut pump.events).await,
+            ClusterEvent::View(_)
+        ));
     }
 
     #[tokio::test]
     async fn a_missing_connection_id_fails_once_and_a_late_one_still_announces() {
         let wire = Arc::new(FakeWire::default());
         let gate = Arc::new(Gate::default());
-        let (ids, _pushes, mut rx, _task) = start_pump(Arc::clone(&wire), gate, timing());
+        let mut pump = start_pump(Arc::clone(&wire), gate, timing());
 
-        assert_eq!(recv(&mut rx).await, ClusterEvent::Failed);
+        assert_eq!(recv(&mut pump.events).await, ClusterEvent::Failed);
         tokio::time::sleep(Duration::from_millis(60)).await;
         assert!(
-            rx.try_recv().is_err(),
+            pump.events.try_recv().is_err(),
             "the one silence is reported once, not on a loop"
         );
 
-        ids.send(Ok("connection-1".to_owned())).expect("id");
-        assert!(matches!(recv(&mut rx).await, ClusterEvent::View(_)));
+        pump.ids.send(Ok("connection-1".to_owned())).expect("id");
+        assert!(matches!(
+            recv(&mut pump.events).await,
+            ClusterEvent::View(_)
+        ));
         assert_eq!(wire.puts().len(), 1);
     }
 
@@ -670,12 +785,12 @@ mod tests {
     async fn a_second_connection_id_re_pins_and_announces_again() {
         let wire = Arc::new(FakeWire::default());
         let gate = Arc::new(Gate::default());
-        let (ids, _pushes, mut rx, _task) = start_pump(Arc::clone(&wire), gate, timing());
+        let mut pump = start_pump(Arc::clone(&wire), gate, timing());
 
-        ids.send(Ok("connection-1".to_owned())).expect("id");
-        let _ = recv(&mut rx).await;
-        ids.send(Ok("connection-2".to_owned())).expect("id");
-        let _ = recv(&mut rx).await;
+        pump.ids.send(Ok("connection-1".to_owned())).expect("id");
+        let _ = recv(&mut pump.events).await;
+        pump.ids.send(Ok("connection-2".to_owned())).expect("id");
+        let _ = recv(&mut pump.events).await;
 
         assert_eq!(wire.connection_id(), "connection-2");
         assert_eq!(wire.puts().len(), 2);
@@ -685,11 +800,10 @@ mod tests {
     async fn withdraw_deletes_then_closes_and_no_later_announce_sends() {
         let wire = Arc::new(FakeWire::default());
         let gate = Arc::new(Gate::default());
-        let (ids, _pushes, mut rx, _task) =
-            start_pump(Arc::clone(&wire), Arc::clone(&gate), timing());
+        let mut pump = start_pump(Arc::clone(&wire), Arc::clone(&gate), timing());
 
-        ids.send(Ok("connection-1".to_owned())).expect("id");
-        let _ = recv(&mut rx).await;
+        pump.ids.send(Ok("connection-1".to_owned())).expect("id");
+        let _ = recv(&mut pump.events).await;
 
         withdraw(&*wire, &gate, timing())
             .await
@@ -702,7 +816,7 @@ mod tests {
             "the device is deleted before the dealer closes"
         );
 
-        ids.send(Ok("connection-2".to_owned())).expect("id");
+        pump.ids.send(Ok("connection-2".to_owned())).expect("id");
         tokio::time::sleep(Duration::from_millis(60)).await;
         assert_eq!(
             wire.puts().len(),
@@ -736,28 +850,23 @@ mod tests {
     async fn a_withdraw_that_cannot_take_the_gate_still_blocks_later_announces() {
         let wire = Arc::new(FakeWire::default());
         let gate = Arc::new(Gate::default());
-        let (release, started) = wire.hold();
-        let (ids, _pushes, mut rx, _task) =
-            start_pump(Arc::clone(&wire), Arc::clone(&gate), timing());
-
-        ids.send(Ok("connection-1".to_owned())).expect("id");
-        started.await.expect("the announce is in flight");
-        assert_eq!(wire.puts().len(), 1);
+        // Held by something a withdraw cannot cut, so the bound is what ends it.
+        let held = gate.take().await;
 
         let result = withdraw(&*wire, &gate, timing()).await;
         assert!(
             matches!(result, Err(ConnectError::WithdrawTimedOut)),
-            "the blocked announce holds the gate past the bound"
+            "the held gate is past the bound"
         );
         assert_eq!(wire.deletes.load(Ordering::SeqCst), 0);
+        drop(held);
 
-        let _ = release.send(());
-        let _ = recv(&mut rx).await;
-        ids.send(Ok("connection-2".to_owned())).expect("id");
+        let pump = start_pump(Arc::clone(&wire), Arc::clone(&gate), timing());
+        pump.ids.send(Ok("connection-1".to_owned())).expect("id");
         tokio::time::sleep(Duration::from_millis(80)).await;
         assert_eq!(
             wire.puts().len(),
-            1,
+            0,
             "a withdraw that timed out still marks the device gone"
         );
     }
@@ -766,15 +875,16 @@ mod tests {
     async fn refresh_without_a_connection_id_sends_nothing() {
         let wire = Arc::new(FakeWire::default());
         let gate = Arc::new(Gate::default());
+        let shared = bundle(timing());
 
         assert!(matches!(
-            refresh(&*wire, &gate, timing()).await,
+            refresh(&*wire, &gate, &shared, timing()).await,
             Err(ConnectError::NoConnectionId)
         ));
         assert!(wire.puts().is_empty());
 
         wire.set_connection_id("connection-1");
-        let view = refresh(&*wire, &gate, timing())
+        let view = refresh(&*wire, &gate, &shared, timing())
             .await
             .expect("a refresh answers");
         assert_eq!(view.holder.as_deref(), Some("phone"));
@@ -786,15 +896,23 @@ mod tests {
         let wire = Arc::new(FakeWire::default());
         wire.set_connection_id("connection-1");
         let gate = Arc::new(Gate::default());
+        let shared = bundle(timing());
+        let patient = Timing {
+            put: Duration::from_secs(2),
+            ..timing()
+        };
         let (release, started) = wire.hold();
 
         let first_wire = Arc::clone(&wire);
         let first_gate = Arc::clone(&gate);
-        let first = tokio::spawn(async move { refresh(&*first_wire, &first_gate, timing()).await });
-        started.await.expect("the announce is in flight");
+        let first_shared = Arc::clone(&shared);
+        let first = tokio::spawn(async move {
+            refresh(&*first_wire, &first_gate, &first_shared, patient).await
+        });
+        in_flight(started).await;
 
         assert!(matches!(
-            refresh(&*wire, &gate, timing()).await,
+            refresh(&*wire, &gate, &shared, timing()).await,
             Err(ConnectError::Busy)
         ));
         assert_eq!(wire.puts().len(), 1, "the busy refresh sends nothing");
@@ -859,33 +977,33 @@ mod tests {
     async fn a_push_becomes_a_view_and_a_garbage_one_only_fails() {
         let wire = Arc::new(FakeWire::default());
         let gate = Arc::new(Gate::default());
-        let (ids, pushes, mut rx, _task) = start_pump(Arc::clone(&wire), gate, timing());
+        let mut pump = start_pump(Arc::clone(&wire), gate, timing());
 
-        ids.send(Ok("connection-1".to_owned())).expect("id");
-        let _ = recv(&mut rx).await;
+        pump.ids.send(Ok("connection-1".to_owned())).expect("id");
+        let _ = recv(&mut pump.events).await;
 
         let update = ClusterUpdate {
             cluster: MessageField::some(cluster()),
             ..Default::default()
         };
-        pushes.send(Ok(update)).expect("push");
-        let view = view_of_event(recv(&mut rx).await);
+        pump.pushes.send(Ok(update)).expect("push");
+        let view = view_of_event(recv(&mut pump.events).await);
         assert_eq!(view.holder.as_deref(), Some("phone"));
 
-        pushes
+        pump.pushes
             .send(Err(librespot::core::Error::failed_precondition(
                 std::io::Error::other("garbage"),
             )))
             .expect("push");
-        assert_eq!(recv(&mut rx).await, ClusterEvent::Failed);
+        assert_eq!(recv(&mut pump.events).await, ClusterEvent::Failed);
 
         let update = ClusterUpdate {
             cluster: MessageField::some(cluster()),
             ..Default::default()
         };
-        pushes.send(Ok(update)).expect("push");
+        pump.pushes.send(Ok(update)).expect("push");
         assert!(
-            matches!(recv(&mut rx).await, ClusterEvent::View(_)),
+            matches!(recv(&mut pump.events).await, ClusterEvent::View(_)),
             "the pump keeps reading after a bad push"
         );
         assert_eq!(wire.puts().len(), 1, "a push needs no announce");
@@ -911,13 +1029,13 @@ mod tests {
     async fn the_pump_ends_when_the_window_goes() {
         let wire = Arc::new(FakeWire::default());
         let gate = Arc::new(Gate::default());
-        let (ids, _pushes, mut rx, task) = start_pump(wire, gate, timing());
+        let mut pump = start_pump(wire, gate, timing());
 
-        ids.send(Ok("connection-1".to_owned())).expect("id");
-        let _ = recv(&mut rx).await;
-        drop(rx);
+        pump.ids.send(Ok("connection-1".to_owned())).expect("id");
+        let _ = recv(&mut pump.events).await;
+        drop(pump.events);
 
-        tokio::time::timeout(Duration::from_secs(2), task)
+        tokio::time::timeout(Duration::from_secs(2), pump.task)
             .await
             .expect("the pump must end with the window")
             .expect("the pump must not panic");
@@ -927,14 +1045,20 @@ mod tests {
     async fn the_pump_ends_when_the_streams_end() {
         let wire = Arc::new(FakeWire::default());
         let gate = Arc::new(Gate::default());
-        let (tx, mut rx) = unbounded_channel();
+        let (events, mut rx) = unbounded_channel();
+        let shared = Arc::new(Shared {
+            presence: Arc::new(Presence::default()),
+            registry: Arc::new(Registry::new(timing())),
+            events: events.downgrade(),
+        });
 
         let task = tokio::spawn(pump(
             Arc::clone(&wire),
             gate,
             empty(),
             empty(),
-            tx,
+            shared,
+            events,
             timing(),
         ));
         assert!(
@@ -969,5 +1093,373 @@ mod tests {
             connection_id_of(&bare),
             Err(ConnectError::NoConnectionId)
         ));
+    }
+
+    #[tokio::test]
+    async fn the_first_announce_is_a_controller_until_something_can_play() {
+        let wire = Arc::new(FakeWire::default());
+        let gate = Arc::new(Gate::default());
+        let mut pump = start_pump(Arc::clone(&wire), gate, timing());
+
+        pump.ids.send(Ok("connection-1".to_owned())).expect("id");
+        let _ = view_of_event(recv(&mut pump.events).await);
+
+        assert_eq!(wire.puts(), vec![Announcement::controller(DEVICE, CLIENT)]);
+        assert!(!wire.puts()[0].message().is_active);
+    }
+
+    #[tokio::test]
+    async fn becoming_playable_re_announces_ready_once() {
+        let wire = Arc::new(FakeWire::default());
+        let gate = Arc::new(Gate::default());
+        let mut pump = start_pump(Arc::clone(&wire), Arc::clone(&gate), timing());
+        let _publisher = start_publish(Arc::clone(&wire), Arc::clone(&gate), &pump, timing());
+
+        pump.ids.send(Ok("connection-1".to_owned())).expect("id");
+        let _ = view_of_event(recv(&mut pump.events).await);
+
+        assert!(pump.shared.presence.set_playable(true));
+        until("the ready announce", || wire.puts().len() == 2).await;
+        assert_eq!(wire.puts()[1], Announcement::ready(DEVICE, CLIENT, SESSION));
+
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        assert_eq!(
+            wire.puts().len(),
+            2,
+            "one flip is one announce, not one per check"
+        );
+        assert_never_active(&wire);
+    }
+
+    #[tokio::test]
+    async fn becoming_unplayable_re_announces_the_controller() {
+        let wire = Arc::new(FakeWire::default());
+        let gate = Arc::new(Gate::default());
+        let mut pump = start_pump(Arc::clone(&wire), Arc::clone(&gate), timing());
+        let _publisher = start_publish(Arc::clone(&wire), Arc::clone(&gate), &pump, timing());
+
+        pump.ids.send(Ok("connection-1".to_owned())).expect("id");
+        let _ = view_of_event(recv(&mut pump.events).await);
+
+        assert!(pump.shared.presence.set_playable(true));
+        until("the ready announce", || wire.puts().len() == 2).await;
+
+        assert!(pump.shared.presence.set_playable(false));
+        until("the controller announce", || wire.puts().len() == 3).await;
+        assert_eq!(wire.puts()[2], Announcement::controller(DEVICE, CLIENT));
+    }
+
+    #[tokio::test]
+    async fn a_flip_before_the_connection_id_sends_nothing_until_the_id_arrives() {
+        let wire = Arc::new(FakeWire::default());
+        let gate = Arc::new(Gate::default());
+        let patient = Timing {
+            id_wait: Duration::from_secs(2),
+            ..timing()
+        };
+        let mut pump = start_pump(Arc::clone(&wire), Arc::clone(&gate), patient);
+        let _publisher = start_publish(Arc::clone(&wire), Arc::clone(&gate), &pump, patient);
+
+        assert!(pump.shared.presence.set_playable(true));
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        assert!(
+            wire.puts().is_empty(),
+            "a put has no connection id to carry yet"
+        );
+
+        pump.ids.send(Ok("connection-1".to_owned())).expect("id");
+        let _ = view_of_event(recv(&mut pump.events).await);
+        assert_eq!(
+            wire.puts(),
+            vec![Announcement::ready(DEVICE, CLIENT, SESSION)],
+            "the id announces the stage the device is in"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_flip_after_withdraw_sends_nothing() {
+        let wire = Arc::new(FakeWire::default());
+        let gate = Arc::new(Gate::default());
+        let mut pump = start_pump(Arc::clone(&wire), Arc::clone(&gate), timing());
+        let _publisher = start_publish(Arc::clone(&wire), Arc::clone(&gate), &pump, timing());
+
+        pump.ids.send(Ok("connection-1".to_owned())).expect("id");
+        let _ = view_of_event(recv(&mut pump.events).await);
+
+        withdraw(&*wire, &gate, timing())
+            .await
+            .expect("the withdraw completes");
+
+        assert!(pump.shared.presence.set_playable(true));
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        assert_eq!(
+            wire.puts().len(),
+            1,
+            "a device that is gone announces nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_flip_while_an_announce_is_held_waits_for_the_gate() {
+        let wire = Arc::new(FakeWire::default());
+        let gate = Arc::new(Gate::default());
+        let patient = Timing {
+            put: Duration::from_secs(2),
+            gate_wait: Duration::from_secs(2),
+            ..timing()
+        };
+        let pump = start_pump(Arc::clone(&wire), Arc::clone(&gate), patient);
+        let _publisher = start_publish(Arc::clone(&wire), Arc::clone(&gate), &pump, patient);
+
+        let (release, started) = wire.hold();
+        pump.ids.send(Ok("connection-1".to_owned())).expect("id");
+        in_flight(started).await;
+
+        assert!(pump.shared.presence.set_playable(true));
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        assert_eq!(
+            wire.puts().len(),
+            1,
+            "the flip waits behind the announce that holds the gate"
+        );
+
+        let _ = release.send(());
+        until("the ready announce", || wire.puts().len() == 2).await;
+        assert_eq!(wire.puts()[1], Announcement::ready(DEVICE, CLIENT, SESSION));
+    }
+
+    #[tokio::test]
+    async fn a_refresh_announces_the_current_stage() {
+        let wire = Arc::new(FakeWire::default());
+        wire.set_connection_id("connection-1");
+        let gate = Arc::new(Gate::default());
+        let shared = bundle(timing());
+
+        let _ = refresh(&*wire, &gate, &shared, timing())
+            .await
+            .expect("a controller refresh answers");
+        assert_eq!(wire.puts(), vec![Announcement::controller(DEVICE, CLIENT)]);
+        assert_never_active(&wire);
+
+        assert!(shared.presence.set_playable(true));
+        let _ = refresh(&*wire, &gate, &shared, timing())
+            .await
+            .expect("a ready refresh answers");
+        assert_eq!(wire.puts()[1], Announcement::ready(DEVICE, CLIENT, SESSION));
+        assert_never_active(&wire);
+    }
+
+    #[tokio::test]
+    async fn a_put_that_never_answers_is_cut_off_at_the_budget_and_reported_failed() {
+        let wire = Arc::new(FakeWire::default());
+        let gate = Arc::new(Gate::default());
+        let short = Timing {
+            put: Duration::from_millis(40),
+            ..timing()
+        };
+        let (release, started) = wire.hold();
+        let mut pump = start_pump(Arc::clone(&wire), gate, short);
+
+        pump.ids.send(Ok("connection-1".to_owned())).expect("id");
+        in_flight(started).await;
+
+        assert_eq!(recv(&mut pump.events).await, ClusterEvent::Failed);
+        assert_eq!(
+            wire.log.entries(),
+            vec!["put:controller:start"],
+            "a cut put never reached its answer"
+        );
+        let _ = release.send(());
+    }
+
+    #[tokio::test]
+    async fn a_withdraw_cuts_an_in_flight_put_short_and_still_deletes() {
+        let wire = Arc::new(FakeWire::default());
+        let gate = Arc::new(Gate::default());
+        let patient = Timing {
+            put: Duration::from_secs(2),
+            ..timing()
+        };
+        let (release, started) = wire.hold();
+        let pump = start_pump(Arc::clone(&wire), Arc::clone(&gate), patient);
+
+        pump.ids.send(Ok("connection-1".to_owned())).expect("id");
+        in_flight(started).await;
+
+        let patient_exit = Timing {
+            withdraw: Duration::from_millis(500),
+            ..timing()
+        };
+        withdraw(&*wire, &gate, patient_exit)
+            .await
+            .expect("the cut announce frees the gate, so the exit finishes");
+        assert_eq!(
+            &*wire.exit_calls.lock().expect("lock"),
+            &["delete", "close"],
+            "a cut put does not cost the device its delete"
+        );
+        assert_eq!(
+            wire.log.entries(),
+            vec!["put:controller:start"],
+            "the in-flight put was cut, not answered"
+        );
+        let _ = release.send(());
+    }
+
+    #[tokio::test]
+    async fn a_slow_publisher_put_does_not_delay_a_cluster_push() {
+        let wire = Arc::new(FakeWire::default());
+        let gate = Arc::new(Gate::default());
+        let patient = Timing {
+            put: Duration::from_secs(2),
+            gate_wait: Duration::from_secs(2),
+            ..timing()
+        };
+        let mut pump = start_pump(Arc::clone(&wire), Arc::clone(&gate), patient);
+        let _publisher = start_publish(Arc::clone(&wire), Arc::clone(&gate), &pump, patient);
+
+        pump.ids.send(Ok("connection-1".to_owned())).expect("id");
+        let _ = view_of_event(recv(&mut pump.events).await);
+
+        let (release, started) = wire.hold();
+        assert!(pump.shared.presence.set_playable(true));
+        in_flight(started).await;
+
+        let update = ClusterUpdate {
+            cluster: MessageField::some(cluster()),
+            ..Default::default()
+        };
+        pump.pushes.send(Ok(update)).expect("push");
+        let view = view_of_event(recv(&mut pump.events).await);
+        assert_eq!(view.holder.as_deref(), Some("phone"));
+
+        let entries = wire.log.entries();
+        assert!(
+            entries.contains(&"put:ready:start".to_owned()),
+            "the held put is the publisher's: {entries:?}"
+        );
+        assert!(
+            !entries.contains(&"put:ready:done".to_owned()),
+            "the push was read while the put was still on the wire: {entries:?}"
+        );
+
+        let _ = release.send(());
+        until("the held put to answer", || {
+            wire.log.entries().contains(&"put:ready:done".to_owned())
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_pump_that_ends_closes_the_stream_the_window_reads() {
+        let wire = Arc::new(FakeWire::default());
+        let gate = Arc::new(Gate::default());
+        let mut pump = start_pump(Arc::clone(&wire), Arc::clone(&gate), timing());
+        let _publisher = start_publish(Arc::clone(&wire), Arc::clone(&gate), &pump, timing());
+
+        pump.ids.send(Ok("connection-1".to_owned())).expect("id");
+        let _ = view_of_event(recv(&mut pump.events).await);
+
+        // Both dealer streams end, as they do when the session dies.
+        drop(pump.ids);
+        drop(pump.pushes);
+
+        let closed = tokio::time::timeout(Duration::from_secs(2), async {
+            while pump.events.recv().await.is_some() {}
+        })
+        .await;
+        assert!(
+            closed.is_ok(),
+            "the stream must close when its pump ends, or the window never learns the devices are off"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_flip_put_is_retried_up_to_its_limit() {
+        let wire = Arc::new(FakeWire::default());
+        let gate = Arc::new(Gate::default());
+        let mut pump = start_pump(Arc::clone(&wire), Arc::clone(&gate), timing());
+        let _publisher = start_publish(Arc::clone(&wire), Arc::clone(&gate), &pump, timing());
+
+        pump.ids.send(Ok("connection-1".to_owned())).expect("id");
+        let _ = view_of_event(recv(&mut pump.events).await);
+
+        wire.reply(Reply::Refused);
+        assert!(pump.shared.presence.set_playable(true));
+        until("the run of failed puts to end", || {
+            starts(&wire, "ready") == usize::from(publish::PUT_ATTEMPTS)
+        })
+        .await;
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(
+            starts(&wire, "ready"),
+            usize::from(publish::PUT_ATTEMPTS),
+            "a failed put is retried, and the retries are bounded"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_flip_put_reports_failed_once_per_run() {
+        let wire = Arc::new(FakeWire::default());
+        let gate = Arc::new(Gate::default());
+        let mut pump = start_pump(Arc::clone(&wire), Arc::clone(&gate), timing());
+        let _publisher = start_publish(Arc::clone(&wire), Arc::clone(&gate), &pump, timing());
+
+        pump.ids.send(Ok("connection-1".to_owned())).expect("id");
+        let _ = view_of_event(recv(&mut pump.events).await);
+
+        wire.reply(Reply::Refused);
+        assert!(pump.shared.presence.set_playable(true));
+        until("the run of failed puts to end", || {
+            starts(&wire, "ready") == usize::from(publish::PUT_ATTEMPTS)
+        })
+        .await;
+
+        assert_eq!(
+            quiet(&mut pump.events, Duration::from_millis(150)).await,
+            vec![ClusterEvent::Failed],
+            "one Failed per run of failures, not one per attempt"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_successful_retry_clears_the_failure_run() {
+        let wire = Arc::new(FakeWire::default());
+        let gate = Arc::new(Gate::default());
+        let mut pump = start_pump(Arc::clone(&wire), Arc::clone(&gate), timing());
+        let _publisher = start_publish(Arc::clone(&wire), Arc::clone(&gate), &pump, timing());
+
+        pump.ids.send(Ok("connection-1".to_owned())).expect("id");
+        let _ = view_of_event(recv(&mut pump.events).await);
+
+        wire.replies([Reply::Refused, Reply::Cluster]);
+        assert!(pump.shared.presence.set_playable(true));
+        until("the retry to land", || {
+            wire.log
+                .entries()
+                .iter()
+                .filter(|entry| entry.as_str() == "put:ready:done")
+                .count()
+                == 2
+        })
+        .await;
+        assert_eq!(starts(&wire, "ready"), 2, "the failure cost one retry");
+
+        let events = quiet(&mut pump.events, Duration::from_millis(150)).await;
+        assert!(
+            matches!(
+                events.as_slice(),
+                [ClusterEvent::Failed, ClusterEvent::View(_)]
+            ),
+            "one Failed for the run, then the view the landed put answered with: {events:?}"
+        );
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(
+            starts(&wire, "ready"),
+            2,
+            "a put that landed is not retried"
+        );
     }
 }

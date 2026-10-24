@@ -1,19 +1,21 @@
 //! Session facade: the calls the command task makes on a live session.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use librespot::core::authentication::Credentials;
 use librespot::core::{Session, SessionConfig};
 
 use crate::album::AlbumError;
 use crate::artist::ArtistError;
-use crate::connect::{ClusterEvent, ClusterView, ConnectError, Steer};
+use crate::connect::{ClusterView, ConnectError, Steer};
 use crate::context::{ContextError, Page, PageSource, Walker};
 use crate::credentials::AccessToken;
 use crate::followed::FollowedError;
 use crate::lyrics::LyricsError;
 use crate::playback::{Playback, PlaybackError, PlaybackEvent, Volume};
 use crate::playlist_edit::{self, PlaylistError};
+use crate::presence::Presence;
+use crate::registry::Registry;
 use crate::remote::{
     ROOTLIST_WIRE, RemoteContext, RemoteRootlist, label_playlists, label_tracks, read_album,
     read_artist, read_followed_artists, read_followed_shows, read_liked_tracks, read_lyrics,
@@ -28,8 +30,8 @@ use crate::show::ShowError;
 use crate::watch::{self, Gate};
 use takofy_model::{
     AlbumDetail, ArtistDetail, ArtistPortrait, CoverUrl, FollowedArtist, FollowedShow, Move,
-    PlaylistAccess, PlaylistEntry, Removal, Revision, SavedAlbum, ShowDetail, TrackEntry,
-    TrackLyrics,
+    PlaylistAccess, PlaylistEntry, Removal, RequestId, Revision, SavedAlbum, ShowDetail,
+    TrackEntry, TrackLyrics,
 };
 
 /// Why an [`Engine`] operation failed.
@@ -61,44 +63,91 @@ pub enum EngineError {
 pub struct Engine {
     session: Session,
     gate: Arc<Gate>,
+    /// What this device announces about itself, held so a play can be reported
+    /// before anything is watching.
+    presence: Arc<Presence>,
+    /// The requests in flight, held so one can be refused before anything is
+    /// watching.
+    registry: Arc<Registry>,
+    /// What the watch announced through, once one has started.
+    shared: OnceLock<Arc<watch::Shared>>,
     /// Whether the pump was started; the dealer's one start cannot be repeated.
     watching: bool,
 }
 
 impl Engine {
+    /// The stage and the registry exist before any watch, because the window can
+    /// report a playable device before it asks for its own entry.
+    fn new(session: Session) -> Self {
+        Self {
+            session,
+            gate: Arc::default(),
+            presence: Arc::new(Presence::default()),
+            registry: Arc::new(Registry::new(watch::Timing::default())),
+            shared: OnceLock::new(),
+            watching: false,
+        }
+    }
+
     /// Connects with an already-issued access token.
     pub async fn connect(cfg: SessionConfig, token: &AccessToken) -> Result<Self, EngineError> {
         let session = Session::new(cfg, None);
         session
             .connect(Credentials::with_access_token(token.expose()), false)
             .await?;
-        Ok(Self {
-            session,
-            gate: Arc::default(),
-            watching: false,
-        })
+        Ok(Self::new(session))
     }
 
-    /// Starts watching the account's devices, answering the stream the window
+    /// Starts watching the account's devices, answering the streams the window
     /// reads.
     ///
-    /// The answer is one stream for the whole session: a second call is refused
+    /// The answer is one watch for the whole session: a second call is refused
     /// rather than started, because the dealer consumes its builder once.
-    pub async fn watch_devices(
-        &mut self,
-    ) -> Result<tokio::sync::mpsc::UnboundedReceiver<ClusterEvent>, EngineError> {
+    pub async fn watch_devices(&mut self) -> Result<watch::Watching, EngineError> {
         if self.watching {
             return Err(ConnectError::AlreadyWatching.into());
         }
-        let events = watch::watch(&self.session, Arc::clone(&self.gate)).await?;
+        let watching = watch::watch(
+            &self.session,
+            Arc::clone(&self.gate),
+            Arc::clone(&self.presence),
+            Arc::clone(&self.registry),
+        )
+        .await?;
         self.watching = true;
-        Ok(events)
+        // The one watch this engine can start fills the slot; a second attempt
+        // is refused above, so there is nothing to replace.
+        let _ = self.shared.set(Arc::clone(&watching.shared));
+        Ok(watching)
+    }
+
+    /// Says whether this device can play, which is the stage it announces.
+    ///
+    /// Works before a watch: the stage is held here, and the announcement made
+    /// when the watch starts reads it.
+    pub fn set_playable(&self, playable: bool) {
+        self.presence.set_playable(playable);
+    }
+
+    /// Answers one incoming request `Failure`.
+    ///
+    /// Works before a watch, like the stage: the registry answers a request the
+    /// request loop handed over.
+    pub fn refuse(&self, id: RequestId) {
+        self.registry.refuse(id);
     }
 
     /// Asks the cluster for its roster again, answering what it says.
     pub async fn refresh_devices(&self) -> Result<ClusterView, EngineError> {
         let wire = watch::SessionWire::new(&self.session);
-        Ok(watch::refresh(&wire, &self.gate, watch::Timing::default()).await?)
+        let timing = watch::Timing::default();
+        // A refresh before any watch still announces the stage this engine
+        // holds, so it reads the same bundle rather than a throwaway one.
+        let shared = match self.shared.get() {
+            Some(shared) => Arc::clone(shared),
+            None => watch::Shared::detached(Arc::clone(&self.presence), Arc::clone(&self.registry)),
+        };
+        Ok(watch::refresh(&wire, &self.gate, &shared, timing).await?)
     }
 
     /// Sends one transport action to the device that holds the sound.
@@ -576,11 +625,10 @@ mod tests {
     async fn an_empty_portrait_request_answers_nothing_without_a_request() {
         // The empty case returns before the session is touched, which is what
         // makes a speculative ask free.
-        let engine = Engine {
-            session: librespot::core::Session::new(librespot::core::SessionConfig::default(), None),
-            gate: Arc::default(),
-            watching: false,
-        };
+        let engine = Engine::new(librespot::core::Session::new(
+            librespot::core::SessionConfig::default(),
+            None,
+        ));
         assert_eq!(engine.portraits(&[]).await, Some(Vec::new()));
     }
 
