@@ -806,14 +806,14 @@ fn pointer_row(ui: &Ui, rect: Rect, rows: usize) -> Option<usize> {
 }
 
 /// A label's own width, measured in the font it is drawn in.
-fn measure(ui: &Ui, label: &str, font: FontId, tokens: &Tokens) -> f32 {
+pub(super) fn measure(ui: &Ui, label: &str, font: FontId, tokens: &Tokens) -> f32 {
     recipe::line(ui, label, font, tokens.palette.text, 0.0, f32::INFINITY)
         .size()
         .x
 }
 
 /// The face a key hint is set in: mono caps at the smallest step, tracked apart.
-fn key_font() -> FontId {
+pub(super) fn key_font() -> FontId {
     FontId::new(text::XXS, fonts::mono(MonoWeight::Medium))
 }
 

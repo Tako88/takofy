@@ -1,10 +1,13 @@
-//! Session facade for the rootlist.
+//! Session facade: the calls the command task makes on a live session.
+
+use std::sync::Arc;
 
 use librespot::core::authentication::Credentials;
 use librespot::core::{Session, SessionConfig};
 
 use crate::album::AlbumError;
 use crate::artist::ArtistError;
+use crate::connect::{ClusterEvent, ClusterView, ConnectError, Steer};
 use crate::context::{ContextError, Page, PageSource, Walker};
 use crate::credentials::AccessToken;
 use crate::followed::FollowedError;
@@ -22,6 +25,7 @@ use crate::remote::{
 use crate::rootlist::{RootlistError, fetch_all};
 use crate::search::search_uri;
 use crate::show::ShowError;
+use crate::watch::{self, Gate};
 use takofy_model::{
     AlbumDetail, ArtistDetail, ArtistPortrait, CoverUrl, FollowedArtist, FollowedShow, Move,
     PlaylistAccess, PlaylistEntry, Removal, Revision, SavedAlbum, ShowDetail, TrackEntry,
@@ -49,11 +53,16 @@ pub enum EngineError {
     Lyrics(#[from] LyricsError),
     #[error(transparent)]
     Playlist(#[from] PlaylistError),
+    #[error(transparent)]
+    Connect(#[from] ConnectError),
 }
 
 /// A connected Spotify session.
 pub struct Engine {
     session: Session,
+    gate: Arc<Gate>,
+    /// Whether the pump was started; the dealer's one start cannot be repeated.
+    watching: bool,
 }
 
 impl Engine {
@@ -63,7 +72,45 @@ impl Engine {
         session
             .connect(Credentials::with_access_token(token.expose()), false)
             .await?;
-        Ok(Self { session })
+        Ok(Self {
+            session,
+            gate: Arc::default(),
+            watching: false,
+        })
+    }
+
+    /// Starts watching the account's devices, answering the stream the window
+    /// reads.
+    ///
+    /// The answer is one stream for the whole session: a second call is refused
+    /// rather than started, because the dealer consumes its builder once.
+    pub async fn watch_devices(
+        &mut self,
+    ) -> Result<tokio::sync::mpsc::UnboundedReceiver<ClusterEvent>, EngineError> {
+        if self.watching {
+            return Err(ConnectError::AlreadyWatching.into());
+        }
+        let events = watch::watch(&self.session, Arc::clone(&self.gate)).await?;
+        self.watching = true;
+        Ok(events)
+    }
+
+    /// Asks the cluster for its roster again, answering what it says.
+    pub async fn refresh_devices(&self) -> Result<ClusterView, EngineError> {
+        let wire = watch::SessionWire::new(&self.session);
+        Ok(watch::refresh(&wire, &self.gate, watch::Timing::default()).await?)
+    }
+
+    /// Sends one transport action to the device that holds the sound.
+    pub async fn steer_device(&self, target: &str, steer: &Steer) -> Result<(), EngineError> {
+        let wire = watch::SessionWire::new(&self.session);
+        Ok(watch::steer(&wire, &self.gate, target, steer, watch::Timing::default()).await?)
+    }
+
+    /// Takes this client off the account's device list.
+    pub async fn withdraw_devices(&self) -> Result<(), EngineError> {
+        let wire = watch::SessionWire::new(&self.session);
+        Ok(watch::withdraw(&wire, &self.gate, watch::Timing::default()).await?)
     }
 
     /// The user's playlists, labelled, with what the column may write.
@@ -531,6 +578,8 @@ mod tests {
         // makes a speculative ask free.
         let engine = Engine {
             session: librespot::core::Session::new(librespot::core::SessionConfig::default(), None),
+            gate: Arc::default(),
+            watching: false,
         };
         assert_eq!(engine.portraits(&[]).await, Some(Vec::new()));
     }

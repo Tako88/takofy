@@ -5,6 +5,8 @@
 pub mod availability;
 pub mod cover;
 pub mod cover_refresh;
+pub mod device_list;
+pub mod devices;
 pub mod discography;
 pub mod drawer;
 pub mod follow;

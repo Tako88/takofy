@@ -10,12 +10,16 @@ use egui::{
     UiBuilder, Vec2,
 };
 
+use takofy_model::TrackEntry;
+
+use crate::devices::Source as DeviceSource;
 use crate::drawer::{Drawer, Input};
 use crate::landing::{self, Area, Landing, Target};
 use crate::layout::{self, Grid, NowPlaying, Playbar, Sidebar};
 use crate::library::Library;
 use crate::menu::{Cut, Gate, LibraryItem, Listing, Verb};
 use crate::message::Command;
+use crate::player::Transport;
 use crate::queue::{Queue, Step};
 use crate::reorder;
 use crate::route::Page;
@@ -26,8 +30,8 @@ use crate::verbs;
 use super::Screen;
 use super::carry::{self, Carry, ColumnOffer, Offer, Source};
 use super::{
-    context_menu, ghost, heart, now_playing, playbar, playlist, queue_pane, search_menu, sidebar,
-    topbar,
+    context_menu, device_list, ghost, heart, now_playing, playbar, playlist, queue_pane,
+    search_menu, sidebar, topbar,
 };
 
 /// The signed-in shell: three columns over a playbar, each panel a hairline box
@@ -135,41 +139,82 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
         super::pin::clear(ui.ctx());
     }
 
-    // The panel and the playbar share one tile: the track the transport names,
+    // One source per frame: the panel, the bar and the cover all draw the
+    // device that holds the sound, or this window's own player.
+    let source = screen.devices.source(screen.transport);
+    // The holder's transport is display only, so it carries this window's own
+    // level: volume and mute are inert while another device has the sound.
+    screen.devices.display().volume = screen.transport.volume;
+    // A preview belongs to the holder's bar, under the pointer. A local play
+    // takes that bar away, and the release that would end the drag is then
+    // never the holder's to see, so the preview goes with the bar.
+    if source == DeviceSource::Local {
+        let display = screen.devices.display();
+        display.scrub = None;
+        display.dragging = false;
+    }
+    let position_ms = match source {
+        DeviceSource::Local => screen.position_ms,
+        DeviceSource::Remote => screen.devices.shown_position(screen.now),
+    };
+    let caption = screen.devices.caption(screen.now);
+    let steerable = screen.devices.steerable();
+
+    // The panel and the playbar share one tile: the track the source names,
     // looked up each frame so a cover that arrives after `play` still reaches
     // them.
-    let playing_cover = screen
-        .transport
-        .now_playing
-        .as_ref()
-        .and_then(|now| now.cover.as_ref());
-    let now_playing_cover = screen.art.look(playing_cover, screen.now);
+    let playing = match source {
+        DeviceSource::Local => screen.transport.now_playing.as_ref(),
+        DeviceSource::Remote => screen.devices.display().now_playing.as_ref(),
+    };
+    let now_playing_cover = screen
+        .art
+        .look(playing.and_then(|now| now.cover.as_ref()), screen.now);
+    let like = playing.and_then(|now| screen.library.likes.state(&now.uri));
 
     // The panel's lyrics follow the transport: a different track drops the load
     // and keeps the tab the reader chose.
     if panel_drawn {
-        screen
-            .library
-            .lyrics
-            .sync(screen.transport.now_playing.as_ref());
+        screen.library.lyrics.sync(playing);
     }
+
+    // The entry the pane draws, so its More button acts on that track: this
+    // window's current row, or the holder's track while this queue holds it.
+    let current = match source {
+        DeviceSource::Local => screen.queue.current(),
+        DeviceSource::Remote => {
+            let uri = screen
+                .devices
+                .display()
+                .now_playing
+                .as_ref()
+                .map(|now| now.uri.clone());
+            uri.as_deref()
+                .and_then(|uri| queue_entry(screen.queue, uri))
+        }
+    };
 
     let mut reply = now_playing::Reply::default();
     if let Some(panel) = grid.now_playing
         && panel_drawn
     {
+        let display: &mut Transport = match source {
+            DeviceSource::Local => screen.transport,
+            DeviceSource::Remote => screen.devices.display(),
+        };
         reply = region(ui, "now-playing", panel, panel.shrink(inset), |ui| {
             now_playing::show(
                 ui,
-                screen.transport,
+                display,
                 screen.queue,
                 &screen.library.lyrics,
                 &screen.library.likes,
-                screen.position_ms,
+                position_ms,
                 &mut now_playing::Frame {
                     art: screen.art,
                     now: screen.now,
                     cover: now_playing_cover,
+                    current,
                     tokens,
                 },
             )
@@ -184,7 +229,7 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
     if let Some(door) = reply.menu {
         let gate = door_gate(ui.ctx(), screen, &Listing::Current);
         carry::current_menu(
-            screen.queue,
+            current,
             ui.ctx(),
             door,
             gate,
@@ -224,31 +269,64 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
         }
     });
 
-    let like = screen
-        .transport
-        .now_playing
-        .as_ref()
-        .and_then(|now| screen.library.likes.state(&now.uri));
     let bar_state = playbar::Bar {
         queue_claimed: matches!(target, Some(Target::End)),
         like,
         pane: layout::pane_button(content.width(), *screen.pane),
         fullscreen,
+        devices: screen.devices.button(),
     };
+    // Another device's line replaces the state word, and only a holder that lets
+    // remote control draws its transport live.
+    let remote = (source == DeviceSource::Remote).then_some(playbar::Remote {
+        line: &caption,
+        steerable,
+    });
     let playbar_reply = region(ui, "playbar", grid.playbar, bar_rect, |ui| {
+        let display: &mut Transport = match source {
+            DeviceSource::Local => screen.transport,
+            DeviceSource::Remote => screen.devices.display(),
+        };
         playbar::show(
             ui,
-            screen.transport,
+            display,
             screen.queue,
-            screen.position_ms,
+            position_ms,
             regions.playbar,
             bar_state,
+            remote,
             bar_rect,
             now_playing_cover,
             tokens,
         )
     });
     command = command.or(playbar_reply.command);
+    // A press opens the card above the button, and a second press of the same
+    // button closes it. Opening asks for one refresh: a reply is the only way to
+    // learn about a device that signed in after launch.
+    if let Some(pressed) = playbar_reply.devices
+        && let Some(anchor) = playbar::devices_button(bar_rect, regions.playbar)
+        && screen
+            .list
+            .press(crate::menu::Anchor::Button(anchor), pressed)
+    {
+        screen.devices.list_opened();
+    }
+    // A steer is the holder's own transport: it never reaches the local queue,
+    // and a frame whose one command is taken sends none. A seek it drops is not
+    // sent, so the preview the drag left is cleared rather than standing until a
+    // push that will never confirm it.
+    if let Some(steer) = playbar_reply.steer {
+        let sent = if command.is_none() {
+            command = screen.devices.steer(steer, screen.now);
+            command.is_some()
+        } else {
+            false
+        };
+        if !sent {
+            screen.devices.display().scrub = None;
+        }
+    }
     // A pane press is local and drops no command, so it is applied whatever the
     // frame's command did. The regions drew from the preference this frame began
     // with, so the click needs a frame to show.
@@ -277,12 +355,14 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
     }
     // The lyrics fetch is the open tab's, and it is asked for only once the
     // frame's own command is settled: a load marked `Loading` for a command that
-    // was then dropped would wait forever.
+    // was then dropped would wait forever. The track is the source's own, the
+    // one the pane drew, or a remote load would be reset every frame.
     if command.is_none() {
-        command = screen
-            .library
-            .lyrics
-            .request(screen.transport.now_playing.as_ref());
+        let track = match source {
+            DeviceSource::Local => screen.transport.now_playing.as_ref(),
+            DeviceSource::Remote => screen.devices.display().now_playing.as_ref(),
+        };
+        command = screen.library.lyrics.request(track);
     }
 
     // The menu draws after every region and before the drawer overlay: it hangs
@@ -484,6 +564,21 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
         tokens,
     ));
 
+    // The card hangs over every region and under the drawer overlay, so a
+    // drawer opened on top of it stays on top. Escape closes it before the
+    // drawer reads the same key.
+    if let Some(opener) = device_list::show(
+        ui,
+        device_list::Frame {
+            list: screen.list,
+            devices: screen.devices,
+            now: screen.now,
+            tokens,
+        },
+    ) {
+        ui.memory_mut(|memory| memory.request_focus(opener));
+    }
+
     // The drawer is stepped after the regions, so a playlist picked from the rail
     // closes it in the same frame it is picked.
     let open = *screen.drawer == Drawer::Open;
@@ -508,15 +603,23 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
     }
     *screen.drawer = next;
 
-    // The space toggles the track the transport already names, or starts an armed
-    // queue's first row; a row starts a track on Enter or a double click. It comes
-    // after the drawer step so that pausing does not also close a drawer nobody
-    // picked from.
-    if command.is_none()
-        && space
-        && (screen.transport.now_playing.is_some() || screen.queue.armed())
-    {
-        command = screen.queue.toggle(screen.transport);
+    // The space toggles the transport the source names; a row starts a track on
+    // Enter or a double click. It comes after the drawer step so that pausing
+    // does not also close a drawer nobody picked from. Another device answers
+    // to its own state, so the local queue's index and armed flag stay put.
+    if command.is_none() && space {
+        command = match source {
+            DeviceSource::Remote => screen
+                .devices
+                .toggle()
+                .and_then(|steer| screen.devices.steer(steer, screen.now)),
+            DeviceSource::Local
+                if screen.transport.now_playing.is_some() || screen.queue.armed() =>
+            {
+                screen.queue.toggle(screen.transport)
+            }
+            DeviceSource::Local => None,
+        };
     }
 
     // After every edit: `logic` runs before `ui`, so a read this frame armed —
@@ -669,6 +772,18 @@ fn apply_remove_from_library(
 
 /// The gate a menu on `listing` opens under.
 ///
+/// The queue's entry at `uri`, if the queue holds it.
+///
+/// The pane draws the current row and the ones after it, so those are the
+/// entries it can claim: a track in the history is no row on screen.
+fn queue_entry<'q>(queue: &'q Queue, uri: &str) -> Option<&'q TrackEntry> {
+    queue
+        .current()
+        .into_iter()
+        .chain(queue.upcoming().map(|(_, entry)| entry))
+        .find(|entry| entry.uri == uri)
+}
+
 /// A queue or Now Playing menu touches no revision, so a playlist write in
 /// flight must not hold it shut; every other list still waits for it.
 fn door_gate(ctx: &egui::Context, screen: &Screen<'_>, listing: &Listing) -> Gate {
@@ -1212,20 +1327,23 @@ mod tests {
     use std::time::Instant;
 
     use takofy_model::{
-        ArtistDetail, CoverUrl, FollowedArtist, FollowedShow, Move, PlaylistAccess, PlaylistEntry,
-        Release, ReleaseKind, Removal, Revision, SavedAlbum, TrackEntry,
+        ArtistDetail, CoverUrl, Device, DeviceKind, FollowedArtist, FollowedShow, Move,
+        PlaylistAccess, PlaylistEntry, Release, ReleaseKind, RemotePlayback, RemoteState, Removal,
+        Revision, SavedAlbum, TrackEntry,
     };
 
     use super::*;
     use crate::cover::Art;
+    use crate::device_list::DeviceList;
+    use crate::devices::Devices;
     use crate::library::{Library, Load, MediaLayout};
     use crate::library_filter::RootKind;
     use crate::menu::LibraryItem;
-    use crate::message::{Failure, Update};
+    use crate::message::{DeviceUpdate, Failure, Steer, Update};
     use crate::player::{NowPlaying, Transport, TransportState};
     use crate::queue::Queue;
     use crate::route::Page;
-    use crate::search::Device;
+    use crate::search::Device as SearchDevice;
     use crate::selection::Press;
     use crate::sidebar_kind::SidebarKind;
     use crate::signin::SignIn;
@@ -1270,6 +1388,8 @@ mod tests {
         size: Vec2,
         state: SignIn,
         library: Library,
+        devices: Devices,
+        list: DeviceList,
         drawer: Drawer,
         menu: crate::menu::Menu,
         art: Art,
@@ -1296,6 +1416,8 @@ mod tests {
                 size,
                 state: SignIn::SignedIn,
                 library: Library::default(),
+                devices: Devices::default(),
+                list: DeviceList::default(),
                 drawer: Drawer::default(),
                 menu: crate::menu::Menu::default(),
                 art: Art::default(),
@@ -1340,6 +1462,8 @@ mod tests {
                 library: &mut self.library,
                 transport,
                 queue,
+                devices: &mut self.devices,
+                list: &mut self.list,
                 drawer: &mut self.drawer,
                 menu: &mut self.menu,
                 position_ms: 0,
@@ -1485,6 +1609,24 @@ mod tests {
                 egui::Shape::Text(text) if text.galley.text() == label => Some(text.pos),
                 _ => None,
             })
+    }
+
+    /// The seek track the bar painted inside `column`.
+    fn painted_seek_track(output: &egui::FullOutput, column: Rect) -> Rect {
+        output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(shape)
+                    if (shape.rect.height() - extent::SLIDER_TRACK_H).abs() < 0.01
+                        && shape.fill == Tokens::DARK.palette.border_strong
+                        && column.contains(shape.rect.center()) =>
+                {
+                    Some(shape.rect)
+                }
+                _ => None,
+            })
+            .expect("the bar paints its seek track")
     }
 
     /// The rect the first text shape with `label` inside `area` was painted in.
@@ -4190,7 +4332,7 @@ mod tests {
             vec![egui::Event::PointerMoved(third)],
         );
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        assert_eq!(window.library.search.device(), Device::Pointer);
+        assert_eq!(window.library.search.device(), SearchDevice::Pointer);
         assert_eq!(ticks(&frame), 1, "the pointed-at row takes the tick");
 
         // The keyboard marks the row the pointer is on: the mark's rule is the
@@ -4203,7 +4345,7 @@ mod tests {
             );
         }
         assert_eq!(window.library.search.mark(), Some(3));
-        assert_eq!(window.library.search.device(), Device::Keyboard);
+        assert_eq!(window.library.search.device(), SearchDevice::Keyboard);
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
         assert_eq!(
             ticks(&frame),
@@ -4220,7 +4362,7 @@ mod tests {
             vec![egui::Event::PointerMoved(second)],
         );
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        assert_eq!(window.library.search.device(), Device::Pointer);
+        assert_eq!(window.library.search.device(), SearchDevice::Pointer);
         assert_eq!(
             window.library.search.mark(),
             Some(3),
@@ -12173,6 +12315,8 @@ mod tests {
         let mut drawer = Drawer::default();
         let mut menu = crate::menu::Menu::default();
         let mut art = Art::default();
+        let mut devices = Devices::default();
+        let mut list = DeviceList::default();
         let mut pane = layout::PanePref::default();
         let mut typed = String::new();
         let mut command = None;
@@ -12195,6 +12339,8 @@ mod tests {
                     library: &mut library,
                     transport: &mut transport,
                     queue: &mut queue,
+                    devices: &mut devices,
+                    list: &mut list,
                     drawer: &mut drawer,
                     menu: &mut menu,
                     position_ms: 0,
@@ -12733,6 +12879,8 @@ mod tests {
                 library: &mut window.library,
                 transport: &mut transport,
                 queue: &mut queue,
+                devices: &mut window.devices,
+                list: &mut window.list,
                 drawer: &mut window.drawer,
                 menu: &mut window.menu,
                 position_ms: 0,
@@ -13934,5 +14082,573 @@ mod tests {
             0.0,
             "the panel's queue rows were revealed clear of the artist's chip row"
         );
+    }
+
+    // ---- the devices card and the holder's transport ----
+
+    fn device(id: &str, name: &str, kind: DeviceKind) -> Device {
+        Device {
+            id: id.to_owned(),
+            name: name.to_owned(),
+            kind,
+        }
+    }
+
+    /// The account's roster, with the phone holding the sound.
+    fn roster() -> Update {
+        Update::Devices(DeviceUpdate::Roster {
+            devices: vec![
+                device("a", "Phone", DeviceKind::Phone),
+                device("b", "Laptop", DeviceKind::Computer),
+            ],
+            holder: Some("a".to_owned()),
+        })
+    }
+
+    /// What the holder is playing, as the cluster reports it.
+    fn playback(state: RemoteState, steerable: bool) -> Update {
+        Update::Devices(DeviceUpdate::Playing(Some(RemotePlayback {
+            track: track(9, None),
+            state,
+            position_ms: 3_000,
+            duration_ms: Some(60_000),
+            steerable,
+        })))
+    }
+
+    /// A window whose watch answered with the phone playing.
+    fn remote_window() -> Window {
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let now = window.now;
+        assert_eq!(
+            window.devices.watch_request(true),
+            Some(Command::WatchDevices)
+        );
+        window.devices.apply(&roster(), now);
+        window
+            .devices
+            .apply(&playback(RemoteState::Playing, true), now);
+        window
+    }
+
+    /// The playbar's own rect and the form it was drawn in.
+    fn playbar_parts(window: &Window) -> (Rect, Playbar) {
+        let content = Rect::from_min_size(egui::Pos2::ZERO, window.size);
+        let regions = layout::regions_with(content.width(), window.pane);
+        let shell = layout::shell_for(&regions);
+        let bar = layout::grid_for(content, &shell)
+            .playbar
+            .shrink(stroke::HAIRLINE);
+        (bar, regions.playbar)
+    }
+
+    fn devices_button_at(window: &Window) -> Rect {
+        let (bar, form) = playbar_parts(window);
+        playbar::devices_button(bar, form).expect("the full extras draw the devices button")
+    }
+
+    /// One transport button, solved the way the bar solves it: play is centred
+    /// and the runs walk out from it.
+    fn transport_button_at(window: &Window, control: crate::availability::Control) -> Rect {
+        use crate::availability::Control;
+        let (bar, _) = playbar_parts(window);
+        let stack = extent::BUTTON_LG + space::S1 + extent::SLIDER_H;
+        let top = bar.center().y - stack / 2.0;
+        let down_w = extent::BUTTON + space::S1 + extent::BUTTON;
+        let row = layout::playbar::transport_row(bar.center().x, down_w);
+        let square =
+            |x: f32, y: f32| Rect::from_min_size(egui::pos2(x, y), Vec2::splat(extent::BUTTON));
+        match control {
+            Control::PlayPause => {
+                Rect::from_min_size(egui::pos2(row.play_x, top), Vec2::splat(extent::BUTTON_LG))
+            }
+            Control::Previous => square(
+                row.down_x + extent::BUTTON + space::S1,
+                top + extent::BUTTON / 2.0,
+            ),
+            Control::Next => square(row.up_x, top + extent::BUTTON / 2.0),
+            other => panic!("{other:?} is not a transport button"),
+        }
+    }
+
+    /// An armed local queue: rows with nothing current, which a space would
+    /// start, and the index a remote press must not move.
+    fn armed_queue() -> Queue {
+        let mut queue = Queue::default();
+        let rows = vec![track(0, None), track(1, None)];
+        assert!(queue.append(rows).is_some());
+        queue
+    }
+
+    #[test]
+    fn the_devices_button_opens_the_card() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = remote_window();
+
+        let command = window.click(
+            &mut transport,
+            &mut queue,
+            devices_button_at(&window).center(),
+        );
+
+        assert!(window.list.is_open(), "the press did not open the card");
+        assert_eq!(
+            command, None,
+            "the open asked for the refresh itself instead of leaving it to `logic`"
+        );
+    }
+
+    #[test]
+    fn a_second_press_of_the_button_closes_the_card() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = remote_window();
+        let button = devices_button_at(&window).center();
+
+        window.click(&mut transport, &mut queue, button);
+        assert!(window.list.is_open());
+
+        let command = window.click(&mut transport, &mut queue, button);
+        assert!(!window.list.is_open(), "a second press left the card open");
+        assert_eq!(command, None, "a close asks for nothing");
+    }
+
+    #[test]
+    fn escape_closes_the_card_and_hands_the_keyboard_back_to_the_button() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = remote_window();
+        window.click(
+            &mut transport,
+            &mut queue,
+            devices_button_at(&window).center(),
+        );
+        assert!(window.list.is_open());
+
+        assert_eq!(
+            press(&mut window, &mut transport, &mut queue, egui::Key::Escape),
+            None
+        );
+        assert!(!window.list.is_open(), "Escape left the card open");
+
+        // The button holds the keyboard again, so Enter presses it.
+        let _ = press(&mut window, &mut transport, &mut queue, egui::Key::Enter);
+        assert!(
+            window.list.is_open(),
+            "the keyboard went somewhere other than the devices button"
+        );
+    }
+
+    #[test]
+    fn a_taken_command_slot_leaves_the_refresh_want_for_logic() {
+        use crate::view::test_support::click_events;
+        let mut transport = Transport {
+            state: TransportState::Playing,
+            ..Transport::default()
+        };
+        let mut queue = Queue::default();
+        assert!(queue.start(&[track(0, None)], 0, &mut transport).is_some());
+        transport.state = TransportState::Playing;
+        let mut window = remote_window();
+        let at = devices_button_at(&window).center();
+
+        // The release that presses the button shares its frame with a space,
+        // which takes the frame's one command first.
+        let [moved, down, up] = click_events(at);
+        let _ = window.frame(&mut transport, &mut queue, Vec::new());
+        let _ = window.frame(&mut transport, &mut queue, vec![moved]);
+        let _ = window.frame(&mut transport, &mut queue, vec![down]);
+        let (command, _) = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![up, key(egui::Key::Space, true)],
+        );
+
+        assert!(window.list.is_open(), "the press did not open the card");
+        assert!(
+            matches!(command, Some(Command::Pause | Command::Resume)),
+            "the space did not take the frame's command: {command:?}"
+        );
+        let (next, _) = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![key(egui::Key::Space, false)],
+        );
+        assert_eq!(next, None, "the shell sent the refresh itself");
+        assert_eq!(
+            window.devices.refresh_request(),
+            Some(Command::RefreshDevices),
+            "a taken slot dropped the refresh instead of leaving it for `logic`"
+        );
+    }
+
+    #[test]
+    fn a_pause_press_while_remote_steers_the_holder_and_never_the_queue() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        assert!(queue.start(&[track(0, None)], 0, &mut transport).is_some());
+        transport.state = TransportState::Idle;
+        let mut window = remote_window();
+
+        let command = window.click(
+            &mut transport,
+            &mut queue,
+            transport_button_at(&window, crate::availability::Control::PlayPause).center(),
+        );
+
+        assert_eq!(
+            command,
+            Some(Command::Steer {
+                device: "a".to_owned(),
+                steer: Steer::Pause,
+            }),
+            "a remote pause was not the holder's"
+        );
+        assert_eq!(
+            queue.current().map(|entry| entry.uri.as_str()),
+            Some("t0"),
+            "the remote press moved the local queue"
+        );
+    }
+
+    #[test]
+    fn a_remote_skip_leaves_the_local_queue_where_it_was() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let rows = vec![track(0, None), track(1, None)];
+        assert!(queue.start(&rows, 1, &mut transport).is_some());
+        transport.state = TransportState::Idle;
+        let mut window = remote_window();
+
+        let command = window.click(
+            &mut transport,
+            &mut queue,
+            transport_button_at(&window, crate::availability::Control::Next).center(),
+        );
+
+        assert_eq!(
+            command,
+            Some(Command::Steer {
+                device: "a".to_owned(),
+                steer: Steer::SkipNext,
+            }),
+            "a remote skip did not steer the holder"
+        );
+        assert_eq!(
+            queue.current().map(|entry| entry.uri.as_str()),
+            Some("t1"),
+            "the remote skip moved the local queue"
+        );
+    }
+
+    #[test]
+    fn the_bar_draws_the_holders_caption_and_title() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = remote_window();
+
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let (bar, _) = playbar_parts(&window);
+        assert!(
+            text_in(&frame, "Phone", bar).is_some(),
+            "the bar does not name the device holding the sound"
+        );
+        assert!(
+            text_in(&frame, "Nothing playing", bar).is_none(),
+            "the bar claims nothing plays while the holder's track is unnamed"
+        );
+
+        let mut named = track(9, None);
+        named.title = "A Title".to_owned();
+        named.named = true;
+        window
+            .devices
+            .apply(&Update::Devices(DeviceUpdate::Labelled(named)), window.now);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert!(
+            text_in(&frame, "A Title", bar).is_some(),
+            "the label that arrived did not reach the bar"
+        );
+        assert!(
+            text_in(&frame, "Phone", bar).is_some(),
+            "the caption went missing once the track was named"
+        );
+    }
+
+    #[test]
+    fn a_local_play_flips_the_bar_back_to_this_window() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        assert!(queue.start(&[track(0, None)], 0, &mut transport).is_some());
+        let mut window = remote_window();
+
+        transport.state = TransportState::Playing;
+        transport.now_playing = Some(NowPlaying {
+            uri: "t0".to_owned(),
+            title: "Local Track".to_owned(),
+            artists: String::new(),
+            cover: None,
+        });
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let (bar, _) = playbar_parts(&window);
+        assert!(
+            text_in(&frame, "Phone", bar).is_none(),
+            "the bar kept the holder after this window started playing"
+        );
+        assert!(
+            text_in(&frame, "Local Track", bar).is_some(),
+            "the bar did not draw this window's own track"
+        );
+
+        let command = window.click(
+            &mut transport,
+            &mut queue,
+            transport_button_at(&window, crate::availability::Control::PlayPause).center(),
+        );
+        assert_eq!(
+            command,
+            Some(Command::Pause),
+            "a local play/pause press stopped going through the queue"
+        );
+    }
+
+    #[test]
+    fn space_while_remote_toggles_the_holder_and_leaves_an_armed_queue_alone() {
+        let mut transport = Transport::default();
+        let mut queue = armed_queue();
+        let mut window = remote_window();
+
+        let command = press(&mut window, &mut transport, &mut queue, egui::Key::Space);
+
+        assert_eq!(
+            command,
+            Some(Command::Steer {
+                device: "a".to_owned(),
+                steer: Steer::Pause,
+            }),
+            "a space while remote did not toggle the holder"
+        );
+        assert!(queue.armed(), "the remote space started the local queue");
+        assert_eq!(queue.current(), None, "the remote space moved the queue");
+    }
+
+    #[test]
+    fn the_lyrics_tab_asks_for_the_holders_track_only_once() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = remote_window();
+        let mut named = track(9, None);
+        named.title = "A Title".to_owned();
+        window
+            .devices
+            .apply(&Update::Devices(DeviceUpdate::Labelled(named)), window.now);
+        window.library.lyrics.select(crate::lyrics::Tab::Lyrics);
+
+        let (command, _) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert_eq!(
+            command,
+            Some(Command::LoadLyrics {
+                track: "t9".to_owned()
+            }),
+            "the open tab asked for a track that is not on screen"
+        );
+        assert!(
+            matches!(window.library.lyrics.load(), Load::Loading),
+            "the load did not start for the holder's track"
+        );
+
+        // The backdrop's track never changes, so nothing is asked for again: a
+        // request reading the silent local transport would starve or reset it.
+        for _ in 0..3 {
+            let (command, _) = window.frame(&mut transport, &mut queue, Vec::new());
+            assert_eq!(command, None, "the same lyrics were asked for again");
+            assert!(
+                matches!(window.library.lyrics.load(), Load::Loading),
+                "the load was reset under the reader"
+            );
+        }
+    }
+
+    #[test]
+    fn a_local_play_mid_drag_takes_the_holders_preview_with_its_bar() {
+        use crate::view::test_support::drag_events;
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = remote_window();
+        playlist_page(&mut window, &["p0", "p1"]);
+        let _ = click_page_row(&mut window, &mut transport, &mut queue, "p0");
+
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let (bar, form) = playbar_parts(&window);
+        let centre = layout::playbar_for(bar, form).columns(bar)[1];
+        let track = painted_seek_track(&frame, centre);
+        let from = egui::Pos2::new(track.left() + track.width() * 0.2, track.center().y);
+        let to = egui::Pos2::new(track.left() + track.width() * 0.8, track.center().y);
+
+        let mut held = drag_events(from, to);
+        held.pop();
+        for event in held {
+            let _ = window.frame(&mut transport, &mut queue, vec![event]);
+        }
+        assert!(
+            window.devices.display().dragging,
+            "the drag left no preview on the holder's bar"
+        );
+
+        // Enter on the focused page row starts a local track, so this frame's
+        // bar is this window's own and the release reaches the holder's slider
+        // never.
+        let release = window.release(to);
+        let _ = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![release, key(egui::Key::Enter, true)],
+        );
+        assert_eq!(
+            window.devices.display().scrub,
+            None,
+            "the holder's bar is gone, so its preview must not outlive it"
+        );
+        assert!(!window.devices.display().dragging);
+    }
+
+    #[test]
+    fn now_playings_more_is_inert_while_the_holder_plays_a_track_this_queue_lacks() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        // This window's own row has verbs, and the holder's push is another
+        // track: the button must not reach the row the pane is not drawing.
+        queue.start(&[menu_track(0)], 0, &mut transport);
+        transport.state = TransportState::Idle;
+        let mut window = remote_window();
+
+        let at = now_playing_more(&window);
+        let _ = window.click(&mut transport, &mut queue, at);
+        settle_menu(&mut window, &mut transport, &mut queue);
+
+        assert!(
+            !window.menu.is_open(),
+            "the more button acted on the local row while the holder played"
+        );
+    }
+
+    #[test]
+    fn now_playings_more_acts_on_the_holders_track_while_the_queue_holds_it() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut held = track(9, None);
+        held.album_uri = Some(ALBUM.to_owned());
+        held.artist_uris = vec!["spotify:artist:b".to_owned()];
+        held.artist_names = vec!["A Band".to_owned()];
+        queue.start(&[track(0, None), held], 0, &mut transport);
+        transport.state = TransportState::Idle;
+        let mut window = remote_window();
+
+        let at = now_playing_more(&window);
+        let _ = window.click(&mut transport, &mut queue, at);
+        settle_menu(&mut window, &mut transport, &mut queue);
+
+        assert!(window.menu.is_open(), "the more button opened no menu");
+        assert_eq!(
+            window
+                .menu
+                .targets()
+                .iter()
+                .map(|entry| entry.uri.as_str())
+                .collect::<Vec<_>>(),
+            ["t9"],
+            "the menu is about a track the pane is not drawing"
+        );
+        assert!(window.menu.cut().is_none(), "the entry was removable");
+    }
+
+    #[test]
+    fn now_playings_more_acts_on_this_windows_row_while_it_plays() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        queue.start(&[menu_track(0)], 0, &mut transport);
+        // A holder is still there behind the local play, so the source rule is
+        // what keeps this frame on the local row.
+        let mut window = remote_window();
+
+        let at = now_playing_more(&window);
+        let _ = window.click(&mut transport, &mut queue, at);
+        settle_menu(&mut window, &mut transport, &mut queue);
+
+        assert!(window.menu.is_open(), "the more button opened no menu");
+        assert_eq!(
+            window
+                .menu
+                .targets()
+                .iter()
+                .map(|entry| entry.uri.as_str())
+                .collect::<Vec<_>>(),
+            ["spotify:track:0"],
+            "the menu is about the holder's track while this window plays"
+        );
+    }
+
+    #[test]
+    fn a_dropped_steer_clears_the_preview_the_drag_left() {
+        use crate::view::test_support::drag_events;
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = remote_window();
+        // A Back settles a stale playlist in this frame, taking its one command
+        // before the playbar draws, so the seek the release asks for is dropped.
+        stale_playlist_behind_an_album(&mut window.library);
+
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let (bar, form) = playbar_parts(&window);
+        let centre = layout::playbar_for(bar, form).columns(bar)[1];
+        let track = painted_seek_track(&frame, centre);
+        let from = egui::Pos2::new(track.left() + track.width() * 0.2, track.center().y);
+        let to = egui::Pos2::new(track.left() + track.width() * 0.8, track.center().y);
+
+        // The drag stops with the button still down, so the bar holds a preview.
+        let mut held = drag_events(from, to);
+        held.pop();
+        for event in held {
+            let _ = window.frame(&mut transport, &mut queue, vec![event]);
+        }
+        assert!(
+            window.devices.display().scrub.is_some(),
+            "the drag left no preview to lose"
+        );
+
+        let release = window.release(to);
+        let (command, _) = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![release, key(egui::Key::BrowserBack, true)],
+        );
+        assert!(
+            matches!(command, Some(Command::LoadTracks { .. })),
+            "the nav did not take the frame's command: {command:?}"
+        );
+        assert_eq!(
+            window.devices.display().scrub,
+            None,
+            "a dropped seek left its preview standing until a push never comes"
+        );
+    }
+
+    #[test]
+    fn space_emits_nothing_while_the_holder_cannot_be_steered() {
+        let mut transport = Transport::default();
+        let mut queue = armed_queue();
+        let mut window = remote_window();
+        let now = window.now;
+        window
+            .devices
+            .apply(&playback(RemoteState::Playing, false), now);
+
+        assert_eq!(
+            press(&mut window, &mut transport, &mut queue, egui::Key::Space),
+            None,
+            "a space steered a holder that forbids it"
+        );
+        assert!(queue.armed(), "a refused space started the local queue");
     }
 }

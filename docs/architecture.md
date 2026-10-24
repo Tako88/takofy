@@ -59,6 +59,27 @@ rows, since both are indices into it. None of this changes the shutdown order �
 the command task still owns the engine and the player, and teardown still joins
 it before the runtime drops.
 
+The device list is read the same way. This client announces itself as a device
+that cannot play and cannot be handed the sound, so seeing the account's
+devices costs an entry in that list. The roster arrives whole, and the holder's
+playback arrives as its own update so a position move does not rewrite the
+rows. A remote transport sits beside the local one and steering goes through
+one gated request path, so a skip cannot overlap an announce or a withdraw.
+The costs are explicit: announcing is required to see the list, the phone
+shows this client greyed until it can play, and local playback is not announced
+at all.
+
+Which transport a frame draws is a rule rather than a guess: the holder is drawn
+only while this window's own transport is silent, and the first local play flips
+every region back to it. One snapshot feeds the whole column — the bar's caption
+and title, the panel, the cover lookup and the heart all read that source's
+track — and Space asks the same source's toggle, so a remote press never reaches
+the queue and a local one never steers the phone. The devices card is a latch on
+that snapshot: it opens above the button and closes on Escape, on a press
+outside it, or on a second press of the same button, and the frame that opened it
+is not a press outside it, so the click that opens the card cannot also close
+it.
+
 Cover art runs through the same split. The binary fetches and decodes; the
 window only holds textures. A frame's protocol is `begin_frame` → `look` →
 `requests` → `next_wake`: the app starts the frame, the draw `look`s each cover
@@ -94,7 +115,9 @@ written. That request is made in a single attempt — `TryTimes(1)` for the one
 POST, the default strategy restored after it — because a `MOV` is not
 idempotent: a retry after a 5xx or a lost reply can move the row twice on a
 server that has already applied it, so the one request that might have landed is
-not repeated. While a write is in flight no
+not repeated. A remote skip follows the same rule for the same reason — it is
+relative, so a retry can skip twice — while pause, resume and seek name the
+state they want and repeat safely. While a write is in flight no
 read's order is adopted; a probe recorded the server answering a write with the
 new revision and the old order, so adopting on revision equality would undo the
 drag, and the worker answers in the order its commands were sent, which is what
@@ -215,6 +238,10 @@ re-entry keeps both what was revealed and where the reader was.
   paths can be exercised without a network or an audio device. A real `Playback`
   needs a live session and an audio device, so the exit path would otherwise be
   untestable.
+- The device watch is a runtime task that reads the dealer's streams and never
+  outlives the withdraw, and a plain drain thread that turns its events into
+  updates. On every exit path the command task withdraws the announced device
+  before it shuts the player down.
 - The window's end of the bridge, `UiEnd`, is moved into the app and dropped
   with it when the window closes.
 - `Worker` is owned outside the app, by the teardown that joins it. eframe drops

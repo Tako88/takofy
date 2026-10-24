@@ -204,7 +204,7 @@ impl Transport {
     /// known non-zero length.
     pub fn seekable(&self) -> bool {
         matches!(self.state, TransportState::Playing | TransportState::Paused)
-            && self.duration_ms.is_some_and(|duration| duration > 0)
+            && self.length_known()
     }
 
     /// The command that jumps to a fraction of the track, if it is seekable.
@@ -236,9 +236,26 @@ impl Transport {
         if !self.seekable() {
             return None;
         }
-        let duration = self.duration_ms?;
-        let target = (fraction.clamp(0.0, 1.0) * duration as f32) as u32;
-        Some(target.min(duration.saturating_sub(1)))
+        self.position_at_fraction(fraction)
+    }
+
+    /// The clamped position a fraction lands on, asking only that the length is
+    /// known: a holder's transport carries its track while it is still loading,
+    /// and the seek the bar offers it is enabled on that alone.
+    pub(crate) fn length_target(&self, fraction: f32) -> Option<u32> {
+        if !self.length_known() {
+            return None;
+        }
+        self.position_at_fraction(fraction)
+    }
+
+    /// The clamped position `delta_ms` after `position_ms`, asking only that the
+    /// length is known.
+    pub(crate) fn length_by(&self, position_ms: u32, delta_ms: i64) -> Option<u32> {
+        if !self.length_known() {
+            return None;
+        }
+        self.position_by(position_ms, delta_ms)
     }
 
     /// The command that jumps `delta_ms` from the anchor, clamped to the track.
@@ -246,11 +263,28 @@ impl Transport {
         if !self.seekable() {
             return None;
         }
+        self.position_by(self.position_ms, delta_ms)
+            .map(|position_ms| Command::Seek { position_ms })
+    }
+
+    /// Whether a known non-zero length makes a seek possible at all.
+    ///
+    /// The bar's slider, its arrow keys and a holder's steer all ask here, so
+    /// the three cannot disagree about which transports can be jumped in.
+    pub(crate) fn length_known(&self) -> bool {
+        self.duration_ms.is_some_and(|duration| duration > 0)
+    }
+
+    fn position_at_fraction(&self, fraction: f32) -> Option<u32> {
+        let duration = self.duration_ms?;
+        let target = (fraction.clamp(0.0, 1.0) * duration as f32) as u32;
+        Some(target.min(duration.saturating_sub(1)))
+    }
+
+    fn position_by(&self, position_ms: u32, delta_ms: i64) -> Option<u32> {
         let max = i64::from(self.duration_ms?.saturating_sub(1));
-        let target = i64::from(self.position_ms).saturating_add(delta_ms);
-        Some(Command::Seek {
-            position_ms: target.clamp(0, max) as u32,
-        })
+        let target = i64::from(position_ms).saturating_add(delta_ms);
+        Some(target.clamp(0, max) as u32)
     }
 
     /// The position to draw after `elapsed`, never past a known duration.

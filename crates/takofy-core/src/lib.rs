@@ -7,6 +7,7 @@
 
 pub mod album;
 pub mod artist;
+pub mod connect;
 pub mod context;
 pub mod credentials;
 pub mod engine;
@@ -25,6 +26,7 @@ mod cover;
 mod portrait;
 mod remote;
 mod search;
+mod watch;
 mod wire;
 
 pub use context::{ContextError, Page, PageTrack, page_from_proto, parse_page_json};

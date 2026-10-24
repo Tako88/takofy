@@ -5,9 +5,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use eframe::egui;
 use takofy_ui::cover::Art;
+use takofy_ui::device_list::DeviceList;
+use takofy_ui::devices::{Devices, Source};
 use takofy_ui::drawer::Drawer;
 use takofy_ui::layout::PanePref;
-use takofy_ui::library::Library;
+use takofy_ui::library::{Library, Load};
 use takofy_ui::menu::Menu;
 use takofy_ui::message::{Command, Update};
 use takofy_ui::player::{REDRAW, Transport, TransportState};
@@ -19,6 +21,10 @@ use takofy_ui::{layout, view};
 
 use crate::bridge::UiEnd;
 use crate::preferences::{Loaded, PrefsSync};
+
+/// The shortest delay a wake may ask for. A zero-delay repaint would spin the
+/// frame loop, so a clock that is already due waits this long instead.
+const WAKE_FLOOR: Duration = Duration::from_millis(1);
 
 /// Window options. `run_and_return` must stay true: shutdown runs after the
 /// window closes, and eframe must return instead of exiting the process.
@@ -41,6 +47,10 @@ pub(crate) struct TakofyApp {
     library: Library,
     transport: Transport,
     queue: Queue,
+    /// The account's devices, the holder's transport and the watch for them.
+    devices: Devices,
+    /// Whether the device card is open, and above which button.
+    list: DeviceList,
     drawer: Drawer,
     /// What the user asked of the Now Playing column. Nothing persists it, so it
     /// starts at the width rule every launch.
@@ -109,6 +119,8 @@ impl TakofyApp {
             library: Library::default(),
             transport,
             queue,
+            devices: Devices::default(),
+            list: DeviceList::default(),
             drawer: Drawer::default(),
             pane: PanePref::default(),
             menu: Menu::default(),
@@ -151,6 +163,7 @@ impl eframe::App for TakofyApp {
             &mut self.library,
             &mut self.transport,
             &mut self.queue,
+            &mut self.devices,
             &mut self.art,
             now,
         );
@@ -200,14 +213,39 @@ impl eframe::App for TakofyApp {
         // The search reads are want-driven like the lists above: the menu while
         // the field is open, the page while it is on screen.
         self.request_search();
+        // The device watch is want-driven too: the playlists landing is what
+        // says the account can be asked, and the button stays off until an
+        // answer arrives. A card that opened asked for one refresh, and a track
+        // the holder plays is named once per URI.
+        if let Some(command) = self
+            .devices
+            .watch_request(matches!(self.library.playlists, Load::Ready(_)))
+        {
+            let _ = self.ui_end.commands.send(command);
+        }
+        if let Some(command) = self.devices.refresh_request() {
+            let _ = self.ui_end.commands.send(command);
+        }
+        if let Some(command) = self.devices.label_request() {
+            let _ = self.ui_end.commands.send(command);
+        }
+        self.devices.expire(now);
         // After the drain and before the draw, so a cover that just arrived is
         // ready in this same frame's `ui()`.
         self.art.upload(ctx);
         if self.transport.anchor() != before {
             self.since = Some(now);
         }
-        if self.transport.state == TransportState::Playing {
+        if self.transport.state == TransportState::Playing
+            || (self.devices.source(&self.transport) == Source::Remote
+                && self.devices.display().state == TransportState::Playing)
+        {
             ctx.request_repaint_after(REDRAW);
+        }
+        // A watch waiting for its answer and a notice that is still on screen
+        // are the module's own clocks: an idle window wakes for neither early.
+        if let Some(delay) = self.devices.next_wake(now) {
+            ctx.request_repaint_after(delay.max(WAKE_FLOOR));
         }
     }
 
@@ -236,6 +274,8 @@ impl eframe::App for TakofyApp {
                 library: &mut self.library,
                 transport: &mut self.transport,
                 queue: &mut self.queue,
+                devices: &mut self.devices,
+                list: &mut self.list,
                 drawer: &mut self.drawer,
                 pane: &mut self.pane,
                 menu: &mut self.menu,
@@ -261,8 +301,7 @@ impl eframe::App for TakofyApp {
             .prefs
             .observe(now, &Prefs::of(&self.transport.volume, &self.queue))
         {
-            ui.ctx()
-                .request_repaint_after(wake.max(Duration::from_millis(1)));
+            ui.ctx().request_repaint_after(wake.max(WAKE_FLOOR));
         }
         // After the draw, because only the draw arms the read: a navigation
         // that leaves the page idle asks for the frame that sends it.
@@ -308,12 +347,17 @@ pub(crate) fn window_clear_color(tokens: &Tokens) -> [f32; 4] {
 ///
 /// A disconnected sender is not an error: it means the worker is gone and the
 /// window can no longer hear anything.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one store per thing an update can change, in the order it arrived"
+)]
 pub(crate) fn drain(
     rx: &Receiver<Update>,
     state: &mut SignIn,
     library: &mut Library,
     transport: &mut Transport,
     queue: &mut Queue,
+    devices: &mut Devices,
     art: &mut Art,
     now: Instant,
 ) -> Vec<Command> {
@@ -322,6 +366,7 @@ pub(crate) fn drain(
         state.apply(update.clone());
         library.apply(&update);
         transport.apply(&update);
+        devices.apply(&update, now);
         art.apply(&update, now);
         if let Some(command) = queue.apply(&update, transport) {
             commands.push(command);
@@ -337,7 +382,7 @@ pub(crate) fn drain(
 /// least a millisecond avoids a zero-delay repaint storm.
 fn schedule_wake(ctx: &egui::Context, art: &Art, now: Instant) {
     if let Some(delay) = art.next_wake(now) {
-        ctx.request_repaint_after(delay.max(Duration::from_millis(1)));
+        ctx.request_repaint_after(delay.max(WAKE_FLOOR));
     }
 }
 
@@ -347,9 +392,11 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use eframe::App;
-    use takofy_model::{CoverImage, CoverUrl, TrackEntry};
+    use takofy_model::{
+        CoverImage, CoverUrl, Device, DeviceKind, RemotePlayback, RemoteState, TrackEntry,
+    };
     use takofy_ui::library::Load;
-    use takofy_ui::message::{Command, Failure, TransportUpdate};
+    use takofy_ui::message::{Command, DeviceUpdate, Failure, TransportUpdate};
     use takofy_ui::prefs::QUIET;
     use takofy_ui::repeat::Repeat;
     use takofy_ui::route::Page;
@@ -407,6 +454,7 @@ mod tests {
         let mut library = Library::default();
         let mut transport = Transport::default();
         let mut queue = Queue::default();
+        let mut devices = Devices::default();
         tx.send(Update::NeedsAuthorization).expect("send");
         tx.send(Update::SignInFailed(Failure::PortBusy))
             .expect("send");
@@ -417,6 +465,7 @@ mod tests {
             &mut library,
             &mut transport,
             &mut queue,
+            &mut devices,
             &mut Art::default(),
             Instant::now(),
         );
@@ -432,6 +481,7 @@ mod tests {
         let mut library = Library::default();
         let mut transport = Transport::default();
         let mut queue = Queue::default();
+        let mut devices = Devices::default();
         tx.send(Update::SignedIn).expect("send");
         tx.send(Update::Playlists(Vec::new())).expect("send");
 
@@ -441,6 +491,7 @@ mod tests {
             &mut library,
             &mut transport,
             &mut queue,
+            &mut devices,
             &mut Art::default(),
             Instant::now(),
         );
@@ -456,6 +507,7 @@ mod tests {
         let mut library = Library::default();
         let mut transport = Transport::default();
         let mut queue = Queue::default();
+        let mut devices = Devices::default();
         tx.send(Update::Transport(TransportUpdate::Position {
             position_ms: 9,
             paused: false,
@@ -468,6 +520,7 @@ mod tests {
             &mut library,
             &mut transport,
             &mut queue,
+            &mut devices,
             &mut Art::default(),
             Instant::now(),
         );
@@ -484,6 +537,7 @@ mod tests {
         let mut library = Library::default();
         let mut transport = Transport::default();
         let mut queue = Queue::default();
+        let mut devices = Devices::default();
 
         assert!(
             drain(
@@ -492,6 +546,7 @@ mod tests {
                 &mut library,
                 &mut transport,
                 &mut queue,
+                &mut devices,
                 &mut Art::default(),
                 Instant::now()
             )
@@ -508,6 +563,7 @@ mod tests {
         let mut library = Library::default();
         let mut transport = Transport::default();
         let mut queue = Queue::default();
+        let mut devices = Devices::default();
         tx.send(Update::SignedIn).expect("send");
         drop(tx);
 
@@ -518,6 +574,7 @@ mod tests {
                 &mut library,
                 &mut transport,
                 &mut queue,
+                &mut devices,
                 &mut Art::default(),
                 Instant::now()
             )
@@ -531,6 +588,7 @@ mod tests {
                 &mut library,
                 &mut transport,
                 &mut queue,
+                &mut devices,
                 &mut Art::default(),
                 Instant::now()
             )
@@ -545,6 +603,7 @@ mod tests {
         let mut library = Library::default();
         let mut transport = Transport::default();
         let mut queue = Queue::default();
+        let mut devices = Devices::default();
         let all = vec![track("a"), track("b")];
         assert_eq!(
             queue.start(&all, 0, &mut transport),
@@ -563,6 +622,7 @@ mod tests {
             &mut library,
             &mut transport,
             &mut queue,
+            &mut devices,
             &mut Art::default(),
             Instant::now(),
         );
@@ -582,6 +642,7 @@ mod tests {
         let mut library = Library::default();
         let mut transport = Transport::default();
         let mut queue = Queue::default();
+        let mut devices = Devices::default();
         let all = vec![track("a"), track("b")];
         assert_eq!(
             queue.start(&all, 0, &mut transport),
@@ -600,6 +661,7 @@ mod tests {
             &mut library,
             &mut transport,
             &mut queue,
+            &mut devices,
             &mut Art::default(),
             Instant::now(),
         );
@@ -767,6 +829,7 @@ mod tests {
         let mut library = Library::default();
         let mut transport = Transport::default();
         let mut queue = Queue::default();
+        let mut devices = Devices::default();
         let mut art = Art::default();
         let now = Instant::now();
         let url = CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover url");
@@ -783,6 +846,7 @@ mod tests {
             &mut library,
             &mut transport,
             &mut queue,
+            &mut devices,
             &mut art,
             now,
         );
@@ -798,6 +862,7 @@ mod tests {
         let mut library = Library::default();
         let mut transport = Transport::default();
         let mut queue = Queue::default();
+        let mut devices = Devices::default();
         let mut art = Art::default();
         let now = Instant::now();
         let url = CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover url");
@@ -815,6 +880,7 @@ mod tests {
             &mut library,
             &mut transport,
             &mut queue,
+            &mut devices,
             &mut art,
             now,
         );
@@ -905,6 +971,8 @@ mod tests {
             library: Library::default(),
             transport,
             queue,
+            devices: Devices::default(),
+            list: DeviceList::default(),
             drawer: Drawer::default(),
             pane: PanePref::default(),
             menu: Menu::default(),
@@ -935,6 +1003,7 @@ mod tests {
         let mut library = Library::default();
         let mut transport = Transport::default();
         let mut queue = Queue::default();
+        let mut devices = Devices::default();
         type_search(&mut library, "never gonna");
         assert_eq!(
             library.search.request(None),
@@ -954,6 +1023,7 @@ mod tests {
             &mut library,
             &mut transport,
             &mut queue,
+            &mut devices,
             &mut Art::default(),
             Instant::now(),
         );
@@ -1411,6 +1481,227 @@ mod tests {
             Command::Search {
                 query: "never gonna".to_owned()
             }
+        );
+    }
+
+    /// Every command the frames since the last call sent.
+    fn take_commands(received: &mut tokio::sync::mpsc::UnboundedReceiver<Command>) -> Vec<Command> {
+        let mut commands = Vec::new();
+        while let Ok(command) = received.try_recv() {
+            commands.push(command);
+        }
+        commands
+    }
+
+    fn watched(watches: &[Command]) -> usize {
+        watches
+            .iter()
+            .filter(|command| matches!(command, Command::WatchDevices))
+            .count()
+    }
+
+    #[test]
+    fn logic_sends_watch_devices_once_after_the_playlists_land() {
+        let (mut app, mut received) = test_window();
+        logic_frame(&mut app);
+        assert_eq!(
+            watched(&take_commands(&mut received)),
+            0,
+            "a watch was asked for before the account could be named"
+        );
+
+        app.library.playlists = Load::Ready(Vec::new());
+        logic_frame(&mut app);
+        assert_eq!(
+            watched(&take_commands(&mut received)),
+            1,
+            "the playlists landing is what arms the watch"
+        );
+
+        logic_frame(&mut app);
+        assert_eq!(
+            watched(&take_commands(&mut received)),
+            0,
+            "a second frame asked the one-shot dealer to start again"
+        );
+    }
+
+    #[test]
+    fn a_roster_drains_into_the_devices() {
+        let (tx, rx) = channel();
+        let mut state = SignIn::SignedIn;
+        let mut library = Library::default();
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut devices = Devices::default();
+        let now = Instant::now();
+        tx.send(Update::Devices(DeviceUpdate::Roster {
+            devices: vec![Device {
+                id: "a".to_owned(),
+                name: "Phone".to_owned(),
+                kind: DeviceKind::Phone,
+            }],
+            holder: Some("a".to_owned()),
+        }))
+        .expect("send");
+
+        let commands = drain(
+            &rx,
+            &mut state,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut devices,
+            &mut Art::default(),
+            now,
+        );
+
+        assert!(commands.is_empty());
+        assert_eq!(devices.caption(now), "Phone");
+        assert_eq!(devices.rows().len(), 1, "the roster did not reach the card");
+    }
+
+    /// A window already watching an account whose phone plays in this window's
+    /// own place: the remote transport is the one on screen.
+    fn remote_window(now: Instant) -> (TakofyApp, tokio::sync::mpsc::UnboundedReceiver<Command>) {
+        let (mut app, received) = test_window();
+        app.state = SignIn::SignedIn;
+        app.library.playlists = Load::Ready(Vec::new());
+        assert_eq!(app.devices.watch_request(true), Some(Command::WatchDevices));
+        app.devices.apply(
+            &Update::Devices(DeviceUpdate::Roster {
+                devices: vec![Device {
+                    id: "a".to_owned(),
+                    name: "Phone".to_owned(),
+                    kind: DeviceKind::Phone,
+                }],
+                holder: Some("a".to_owned()),
+            }),
+            now,
+        );
+        app.devices.apply(
+            &Update::Devices(DeviceUpdate::Playing(Some(RemotePlayback {
+                track: track("spotify:track:a"),
+                state: RemoteState::Playing,
+                position_ms: 1_000,
+                duration_ms: Some(60_000),
+                steerable: true,
+            }))),
+            now,
+        );
+        (app, received)
+    }
+
+    /// The delay one `logic` pass asked for. The pass is the one a delayed
+    /// repaint is timed from, so the ask is read from that same output.
+    fn logic_delay(app: &mut TakofyApp) -> Duration {
+        let ctx = window_context();
+        // egui's own first passes ask for a frame; the app's ask is what is left.
+        for _ in 0..2 {
+            let mut warm = ctx.run_ui(egui::RawInput::default(), |_ui| {});
+            warm.textures_delta.clear();
+        }
+        let mut frame = eframe::Frame::_new_kittest();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            app.logic(ui.ctx(), &mut frame);
+        });
+        output.textures_delta.clear();
+        root_delay(&output)
+    }
+
+    #[test]
+    fn an_idle_window_is_woken_at_the_watch_patience_and_then_rests() {
+        let (mut app, _received) = idle_window();
+
+        let delay = logic_delay(&mut app);
+        assert!(
+            delay > REDRAW,
+            "an idle window was redrawn at the transport cadence: {delay:?}"
+        );
+        assert!(
+            delay <= takofy_ui::devices::WATCH_PATIENCE,
+            "the watch's own patience is a wake this window must get: {delay:?}"
+        );
+
+        // A watch that has answered has no clock left, so the next pass asks
+        // for nothing without a remote holding the sound.
+        app.devices.apply(
+            &Update::Devices(DeviceUpdate::Failed(Failure::Devices)),
+            Instant::now(),
+        );
+        assert_eq!(
+            logic_delay(&mut app),
+            Duration::MAX,
+            "a settled idle window still woke for the watch"
+        );
+    }
+
+    #[test]
+    fn a_flash_wakes_the_window_and_its_end_lets_it_rest() {
+        let (mut app, _received) = idle_window();
+        let now = Instant::now();
+        // The watch has already settled, so the notice alone is asking.
+        app.devices.apply(
+            &Update::Devices(DeviceUpdate::Failed(Failure::Devices)),
+            now,
+        );
+        app.devices
+            .apply(&Update::Devices(DeviceUpdate::SteerFailed), now);
+
+        let delay = logic_delay(&mut app);
+        assert!(
+            delay <= takofy_ui::devices::FLASH_FOR,
+            "the notice's own deadline is not the wake: {delay:?}"
+        );
+
+        assert!(
+            app.devices.expire(now + takofy_ui::devices::FLASH_FOR),
+            "the notice did not expire"
+        );
+        assert_eq!(
+            logic_delay(&mut app),
+            Duration::MAX,
+            "the expired notice still woke the window"
+        );
+    }
+
+    #[test]
+    fn logic_sends_the_refresh_a_card_open_asked_for() {
+        let now = Instant::now();
+        let (mut app, mut received) = remote_window(now);
+        app.devices.list_opened();
+
+        logic_frame(&mut app);
+        let sent = take_commands(&mut received);
+        assert_eq!(
+            sent.iter()
+                .filter(|command| matches!(command, Command::RefreshDevices))
+                .count(),
+            1,
+            "the open's refresh was not the logic pass's to send: {sent:?}"
+        );
+
+        logic_frame(&mut app);
+        let sent = take_commands(&mut received);
+        assert_eq!(
+            sent.iter()
+                .filter(|command| matches!(command, Command::RefreshDevices))
+                .count(),
+            0,
+            "the open's refresh was sent twice: {sent:?}"
+        );
+    }
+
+    #[test]
+    fn while_the_remote_plays_the_window_keeps_the_redraw_cadence() {
+        let now = Instant::now();
+        let (mut app, _received) = remote_window(now);
+
+        let delay = logic_delay(&mut app);
+
+        assert!(
+            delay <= REDRAW,
+            "the remote position would stand still: {delay:?}"
         );
     }
 }
