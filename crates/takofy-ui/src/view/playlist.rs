@@ -205,6 +205,7 @@ pub fn tracks_view(
                     more: entry.as_ref().map(|_| more_live),
                     saved,
                     kind,
+                    text: None,
                 },
                 filter,
                 tokens,
@@ -1763,6 +1764,7 @@ mod tests {
             crate::layout::actionbar::Parts {
                 shuffle: true,
                 field: true,
+                follow: None,
             },
         )
     }
@@ -6160,6 +6162,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             crate::layout::actionbar::Parts {
                 shuffle: true,
                 field: true,
+                follow: None,
             },
         )
         .field
@@ -7056,6 +7059,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             crate::layout::actionbar::Parts {
                 shuffle: true,
                 field: true,
+                follow: None,
             },
         );
         let command = click(

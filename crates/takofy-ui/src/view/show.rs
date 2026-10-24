@@ -131,6 +131,7 @@ pub fn show_view(
                             more: Some(true),
                             saved,
                             kind: Kind::Other,
+                            text: None,
                         },
                         None,
                         tokens,
@@ -520,6 +521,7 @@ mod tests {
                         crate::layout::actionbar::Parts {
                             shuffle: false,
                             field: false,
+                            follow: None,
                         },
                     )
                     .play,

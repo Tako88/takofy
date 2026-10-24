@@ -6,6 +6,11 @@
 //! scroll viewport, where it condenses, fills with the page's surface and wears a
 //! hairline under it so the rows sliding beneath have an edge to stop at.
 //!
+//! A page whose one act on the whole context is a word rather than a saved state
+//! puts that word in the heart's place, and its failure in the name's box: the
+//! artist page follows, the reference gives it no like, and a failed write has
+//! nowhere else on the fixed-height row to be said.
+//!
 //! The fill is opaque rather than the reference's 86% with a backdrop blur: egui
 //! has no backdrop filter, and the row is drawn before the rows it would veil, so
 //! a translucent fill would show the page behind the row rather than the rows'
@@ -22,6 +27,7 @@ use crate::icon::Icon;
 use crate::layout;
 use crate::layout::actionbar::Kind;
 use crate::menu::Door;
+use crate::message::Failure;
 use crate::theme::icon::Size;
 use crate::theme::{Tokens, Weight, actionbar, fonts, stroke, text, tracking};
 
@@ -43,6 +49,24 @@ pub struct Bar<'a> {
     pub saved: Option<bool>,
     /// Which page the row heads, and what its row leaves room for.
     pub kind: Kind,
+    /// The page's own text control, in the heart's place.
+    ///
+    /// A page whose only act on the whole context is a word offers it here: the
+    /// artist page follows rather than saving, and the two controls answer the
+    /// same question, so the row carries one or the other.
+    pub text: Option<Text<'a>>,
+}
+
+/// A text control the row carries where the heart would be.
+#[derive(Clone, Copy, Debug)]
+pub struct Text<'a> {
+    /// The word the control draws: `Follow` or `Following`.
+    pub label: &'a str,
+    /// Whether it can act right now.
+    pub live: bool,
+    /// Why the last press failed. The message takes the name's box while it
+    /// stands, because the row has no other line to put it on.
+    pub failed: Option<Failure>,
 }
 
 /// What drawing the row reported.
@@ -52,6 +76,8 @@ pub struct Reply {
     pub more_door: Option<Door>,
     /// The value the heart asks for, when it was pressed.
     pub saved: Option<bool>,
+    /// Whether the page's own text control, if it has one, was pressed.
+    pub followed: bool,
     /// The true rows the field's query leaves, when the field was drawn and the
     /// query is not empty. `None` means the whole list, including when the row
     /// had no room for a field: a query nobody can see never narrows the list.
@@ -65,6 +91,7 @@ impl Reply {
             shuffled: false,
             more_door: None,
             saved: None,
+            followed: false,
             hits: None,
         }
     }
@@ -117,6 +144,9 @@ pub(super) fn show(
         layout::actionbar::Parts {
             shuffle: bar.shuffle,
             field: filter.is_some(),
+            follow: bar
+                .text
+                .map(|text| controls::text_button_size(ui, tokens, text.label)),
         },
     );
 
@@ -162,10 +192,26 @@ pub(super) fn show(
         playlist_filter::announce(ui, hits.len(), total);
     }
 
-    if stuck
+    // The page's text control stands between the field and the tools, which is
+    // the reference's DOM order and so the row's Tab order too.
+    if let (Some(text), Some(rect)) = (bar.text.as_ref(), placed.follow) {
+        let slot = controls::text_button(ui, tokens, Control::Follow, rect, text.label, text.live);
+        reply.followed = slot.response.clicked();
+    }
+
+    // The name is painted only while the row pins, and a failure takes the same
+    // box in either state: it is the one thing the page has to say about the
+    // control's last press, and the row is fixed at both heights, so a message
+    // may not bring a second line. A box too narrow for the name holds no
+    // message either.
+    let name_box = layout::actionbar::title(rect, &placed, count, bar.kind, filter.is_some());
+    if let Some(failure) = bar.text.as_ref().and_then(|text| text.failed)
+        && let Some(label_box) = name_box
+    {
+        paint_failure(ui, label_box, failure, tokens);
+    } else if stuck
         && let Some(title) = bar.title
-        && let Some(label_box) =
-            layout::actionbar::title(rect, &placed, count, bar.kind, filter.is_some())
+        && let Some(label_box) = name_box
     {
         paint_title(ui, label_box, title, tokens);
     }
@@ -262,6 +308,26 @@ fn paint_title(ui: &Ui, label_box: Rect, title: &str, tokens: &Tokens) {
     );
 }
 
+/// The last press's failure, in the row's name box.
+///
+/// Secondary weight and the muted tone, because it is an aside about a control
+/// rather than the context's name.
+fn paint_failure(ui: &Ui, label_box: Rect, failure: Failure, tokens: &Tokens) {
+    let hint = recipe::line(
+        ui,
+        crate::signin::failure_message(failure),
+        recipe::track_secondary(),
+        tokens.palette.text_muted,
+        0.0,
+        label_box.width(),
+    );
+    ui.painter().galley(
+        Pos2::new(label_box.left(), label_box.center().y - hint.size().y / 2.0),
+        hint,
+        tokens.palette.text_muted,
+    );
+}
+
 /// How the row's heart reads, given what the library says about the context.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct Heart {
@@ -345,6 +411,7 @@ mod tests {
             more: Some(true),
             saved: Some(true),
             kind,
+            text: None,
         }
     }
 
@@ -497,6 +564,67 @@ mod tests {
         frame_of_probed(ctx, &bar(kind(size)), size, offset, events, filter, probe)
     }
 
+    /// The row the artist page draws: a name, the tools, and the word the page
+    /// owns in the heart's place.
+    fn text_bar(kind: Kind) -> Bar<'static> {
+        Bar {
+            title: Some("Vela Moreno"),
+            playable: true,
+            shuffle: true,
+            more: Some(true),
+            saved: None,
+            kind,
+            text: Some(Text {
+                label: "Follow",
+                live: true,
+                failed: None,
+            }),
+        }
+    }
+
+    /// The rects the row's controls registered, read back from the frame that
+    /// drew them, so a test presses what the page actually laid out.
+    struct Drawn {
+        play: Rect,
+        follow: Option<Rect>,
+        shuffle: Option<Rect>,
+        heart: Option<Rect>,
+    }
+
+    fn drawn(ctx: &Context, bar: &Bar<'_>, size: Vec2, offset: f32) -> Drawn {
+        let (_, ids) = frame_of_probed(ctx, bar, size, offset, Vec::new(), None, |ui| {
+            [
+                Control::HeroPlay,
+                Control::Follow,
+                Control::HeroShuffle,
+                Control::HeroLike,
+                Control::HeroMore,
+            ]
+            .map(|control| (control, controls::slot_id(ui, control, ())))
+        });
+        let rect = |control: Control| {
+            ids.iter()
+                .find(|(each, _)| *each == control)
+                .and_then(|(_, id)| ctx.read_response(*id))
+                .map(|response| response.rect)
+        };
+        Drawn {
+            play: rect(Control::HeroPlay).expect("the row draws its play tile"),
+            follow: rect(Control::Follow),
+            shuffle: rect(Control::HeroShuffle),
+            heart: rect(Control::HeroLike),
+        }
+    }
+
+    /// One press on a control, event by event, and the reply the last pass made.
+    fn press(ctx: &Context, bar: &Bar<'_>, size: Vec2, offset: f32, at: Pos2) -> Reply {
+        let mut last = Reply::quiet();
+        for event in click_events(at) {
+            last = frame_of(ctx, bar, size, offset, vec![event], None).reply;
+        }
+        last
+    }
+
     /// The rects the frame filled with `fill`.
     fn fills(output: &egui::FullOutput, fill: egui::Color32) -> Vec<(usize, Rect)> {
         output
@@ -557,6 +685,7 @@ mod tests {
             Parts {
                 shuffle: true,
                 field: true,
+                follow: None,
             },
         )
     }
@@ -1074,6 +1203,7 @@ mod tests {
             more: None,
             saved: None,
             kind: kind(VIEWPORT),
+            text: None,
         };
 
         let rested = frame_of(
@@ -1148,6 +1278,275 @@ mod tests {
             .reply;
         }
         assert!(last.played, "a page with no name still plays its tracks");
+    }
+
+    #[test]
+    fn the_text_slot_reports_its_press() {
+        let ctx = context();
+        let text = text_bar(kind(VIEWPORT));
+        let follow = drawn(&ctx, &text, VIEWPORT, 0.0)
+            .follow
+            .expect("the row draws the page's text control");
+
+        let reply = press(&ctx, &text, VIEWPORT, 0.0, follow.center());
+        assert!(reply.followed, "the text control reports its press");
+        assert!(
+            !reply.played && !reply.shuffled && reply.saved.is_none() && reply.more_door.is_none(),
+            "a press on the word is a press on nothing else"
+        );
+    }
+
+    #[test]
+    fn a_slot_that_is_not_live_reports_nothing() {
+        let ctx = context();
+        let quiet = Bar {
+            text: Some(Text {
+                label: "Following",
+                live: false,
+                failed: None,
+            }),
+            ..text_bar(kind(VIEWPORT))
+        };
+        let follow = drawn(&ctx, &quiet, VIEWPORT, 0.0)
+            .follow
+            .expect("a waiting control is still drawn in its place");
+        let reply = press(&ctx, &quiet, VIEWPORT, 0.0, follow.center());
+        assert!(
+            !reply.followed,
+            "a control that cannot act reports nothing when pressed"
+        );
+    }
+
+    #[test]
+    fn the_slot_draws_the_pages_label() {
+        let ctx = context();
+        let following = Bar {
+            text: Some(Text {
+                label: "Following",
+                live: true,
+                failed: None,
+            }),
+            ..text_bar(kind(VIEWPORT))
+        };
+        let frame = frame_of(&ctx, &following, VIEWPORT, 0.0, Vec::new(), None);
+        let follow = drawn(&ctx, &following, VIEWPORT, 0.0)
+            .follow
+            .expect("the row draws the page's text control");
+        let label = text_rect(&frame.output, "Following").expect("the word is painted");
+        assert!(
+            follow.contains_rect(label),
+            "the word sits inside the control's box: {label:?} against {follow:?}"
+        );
+        assert_eq!(
+            text_rect(&frame.output, "Follow"),
+            None,
+            "the label is the page's, not a word the row chose"
+        );
+    }
+
+    #[test]
+    fn a_bar_with_a_slot_has_no_heart() {
+        let ctx = context();
+        let text = text_bar(kind(VIEWPORT));
+        let boxes = drawn(&ctx, &text, VIEWPORT, 0.0);
+        assert!(boxes.follow.is_some(), "the row draws the text control");
+        assert!(
+            boxes.heart.is_none(),
+            "a page with a word in the heart's place has no heart: {:?}",
+            boxes.heart
+        );
+        assert!(boxes.shuffle.is_some(), "the tools are still there");
+    }
+
+    #[test]
+    fn tab_order_with_a_slot_is_play_follow_shuffle_more() {
+        let ctx = context();
+        let text = text_bar(kind(VIEWPORT));
+        let (_, expected) = frame_of_probed(&ctx, &text, VIEWPORT, 0.0, Vec::new(), None, |ui| {
+            vec![
+                controls::slot_id(ui, Control::HeroPlay, ()),
+                controls::slot_id(ui, Control::Follow, ()),
+                controls::slot_id(ui, Control::HeroShuffle, ()),
+                controls::slot_id(ui, Control::HeroMore, ()),
+            ]
+        });
+
+        let [press, release] = crate::view::test_support::tab();
+        let mut reached = Vec::new();
+        for _ in 0..expected.len() {
+            let _ = frame_of(&ctx, &text, VIEWPORT, 0.0, vec![press.clone()], None);
+            reached.push(ctx.memory(|memory| memory.focused()));
+            let _ = frame_of(&ctx, &text, VIEWPORT, 0.0, vec![release.clone()], None);
+        }
+        let reached: Vec<&str> = reached
+            .iter()
+            .map(|id| match *id {
+                None => "nothing",
+                Some(id) if id == expected[0] => "play",
+                Some(id) if id == expected[1] => "follow",
+                Some(id) if id == expected[2] => "shuffle",
+                Some(id) if id == expected[3] => "more",
+                Some(_) => "something else",
+            })
+            .collect();
+        assert_eq!(
+            reached,
+            ["play", "follow", "shuffle", "more"],
+            "the word is a Tab stop between the play tile and the tools"
+        );
+    }
+
+    #[test]
+    fn a_failure_at_rest_sits_between_play_and_the_slot() {
+        let ctx = context();
+        let failed = Bar {
+            text: Some(Text {
+                label: "Following",
+                live: true,
+                failed: Some(Failure::Save),
+            }),
+            ..text_bar(kind(VIEWPORT))
+        };
+        let frame = frame_of(&ctx, &failed, VIEWPORT, 0.0, Vec::new(), None);
+        let boxes = drawn(&ctx, &failed, VIEWPORT, 0.0);
+        let follow = boxes.follow.expect("the row draws the text control");
+
+        let copy = crate::signin::failure_message(Failure::Save);
+        let hint = text_rect(&frame.output, copy).expect("the failure's copy is painted");
+        assert!(
+            hint.left() >= boxes.play.right() + actionbar::GAP - 0.01,
+            "the copy starts where the name's box starts: {hint:?} against {:?}",
+            boxes.play
+        );
+        assert!(
+            hint.right() <= follow.left() - actionbar::GAP + 0.01,
+            "the copy stops short of the control: {hint:?} against {follow:?}"
+        );
+        assert!(
+            (hint.center().y - follow.center().y).abs() < 1.0,
+            "the copy shares the control's line: {hint:?} against {follow:?}"
+        );
+        assert!(
+            text_rect(&frame.output, "Following").is_some(),
+            "the label stays where the server last left it"
+        );
+        assert_eq!(
+            frame.flow.height(),
+            actionbar::REST_H,
+            "a message brings no second line: the row keeps its resting height"
+        );
+    }
+
+    #[test]
+    fn a_failure_replaces_the_pinned_title_and_the_bar_stays_sixty() {
+        let ctx = context();
+        let failed = Bar {
+            text: Some(Text {
+                label: "Following",
+                live: true,
+                failed: Some(Failure::Save),
+            }),
+            ..text_bar(kind(VIEWPORT))
+        };
+        let clean = frame_of(
+            &ctx,
+            &text_bar(kind(VIEWPORT)),
+            VIEWPORT,
+            FILLER + 50.0,
+            Vec::new(),
+            None,
+        );
+        assert!(
+            text_rect(&clean.output, "Vela Moreno").is_some(),
+            "a pinned row with nothing to report paints the name"
+        );
+
+        let pinned = frame_of(&ctx, &failed, VIEWPORT, FILLER + 50.0, Vec::new(), None);
+        let copy = crate::signin::failure_message(Failure::Save);
+        let hint = text_rect(&pinned.output, copy).expect("the failure's copy is painted");
+        assert!(
+            text_rect(&pinned.output, "Vela Moreno").is_none(),
+            "the message takes the name's box while it stands: {:?}",
+            text_rect(&pinned.output, "Vela Moreno")
+        );
+        let bar = pinned.rect();
+        assert_eq!(
+            bar.height(),
+            actionbar::STUCK_H,
+            "the row is still the pinned height: {bar:?}"
+        );
+        let boxes = drawn(&ctx, &failed, VIEWPORT, FILLER + 50.0);
+        assert!(
+            hint.left() >= boxes.play.right() + actionbar::GAP - 0.01,
+            "the copy sits in the name's box: {hint:?}"
+        );
+        assert!(
+            hint.right() <= boxes.follow.expect("the slot").left() - actionbar::GAP + 0.01,
+            "and in front of the control: {hint:?}"
+        );
+        assert!(
+            (hint.center().y - bar.center().y).abs() < 0.01,
+            "the copy is on the row's line: {hint:?} against {bar:?}"
+        );
+    }
+
+    #[test]
+    fn a_failure_with_no_box_paints_nothing() {
+        let ctx = context();
+        // Narrow enough that the row has no name's box between the play tile and
+        // the text control.
+        let size = Vec2::new(300.0, 400.0);
+        let failed = Bar {
+            text: Some(Text {
+                label: "Following",
+                live: true,
+                failed: Some(Failure::Save),
+            }),
+            ..text_bar(kind(size))
+        };
+        let frame = frame_of(&ctx, &failed, size, 0.0, Vec::new(), None);
+        let copy = crate::signin::failure_message(Failure::Save);
+        assert!(
+            text_rect(&frame.output, copy).is_none(),
+            "a message with no box to sit in paints nothing: {:?}",
+            text_rect(&frame.output, copy)
+        );
+        assert!(
+            text_rect(&frame.output, "Vela Moreno").is_none(),
+            "and the name has no box either, so neither is drawn"
+        );
+        assert!(
+            drawn(&ctx, &failed, size, 0.0).follow.is_some(),
+            "the control is still drawn: only its message had nowhere to go"
+        );
+    }
+
+    #[test]
+    fn the_bar_alone_reports_its_own_reach() {
+        let ctx = context();
+        pin::clear(&ctx);
+        let text = text_bar(kind(VIEWPORT));
+
+        let _ = frame_of(&ctx, &text, VIEWPORT, 0.0, Vec::new(), None);
+        assert_eq!(
+            pin::inset(&ctx),
+            0.0,
+            "a row in its place reaches over nothing"
+        );
+
+        let _ = frame_of(&ctx, &text, VIEWPORT, FILLER + 50.0, Vec::new(), None);
+        assert_eq!(
+            pin::inset(&ctx),
+            actionbar::STUCK_H,
+            "a pinned row reports its own reach"
+        );
+
+        let _ = frame_of(&ctx, &text, VIEWPORT, FILLER + 50.0, Vec::new(), None);
+        assert_eq!(
+            pin::inset(&ctx),
+            actionbar::STUCK_H,
+            "the second frame reports the same reach, not twice it"
+        );
     }
 
     #[test]
