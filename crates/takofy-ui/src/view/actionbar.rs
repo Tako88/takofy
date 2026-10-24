@@ -161,6 +161,7 @@ pub(super) fn show(
         tokens,
         Control::HeroPlay,
         placed.play,
+        Icon::Play,
         label,
         bar.playable,
     );
@@ -252,7 +253,7 @@ pub(super) fn show(
                 Control::HeroLike,
                 (),
                 rect,
-                Icon::Heart,
+                heart.icon,
                 Size::MD,
                 heart.label,
                 heart.live,
@@ -263,7 +264,7 @@ pub(super) fn show(
                 tokens,
                 Control::HeroLike,
                 rect,
-                Icon::Heart,
+                heart.icon,
                 Size::MD,
                 heart.label,
                 heart.live,
@@ -347,6 +348,8 @@ struct Heart {
     live: bool,
     /// Whether the glyph is the filled, saved one.
     lit: bool,
+    /// The glyph itself, so the filled heart and the accent tone cannot disagree.
+    icon: Icon,
 }
 
 /// The heart's three answers, in one place so the label and the glyph cannot
@@ -357,16 +360,19 @@ fn heart(saved: Option<bool>) -> Heart {
             label: "Remove from your library",
             live: true,
             lit: true,
+            icon: Icon::HeartFilled,
         },
         Some(false) => Heart {
             label: "Save to your library",
             live: true,
             lit: false,
+            icon: Icon::Heart,
         },
         None => Heart {
             label: "Save to your library",
             live: false,
             lit: false,
+            icon: Icon::Heart,
         },
     }
 }
@@ -920,11 +926,13 @@ mod tests {
         assert_eq!(saved.label, "Remove from your library");
         assert!(saved.lit, "a saved context's heart is filled");
         assert!(saved.live);
+        assert_eq!(saved.icon, Icon::HeartFilled);
 
         let unsaved = heart(Some(false));
         assert_eq!(unsaved.label, "Save to your library");
         assert!(!unsaved.lit);
         assert!(unsaved.live);
+        assert_eq!(unsaved.icon, Icon::Heart);
 
         let unknown = heart(None);
         assert!(
@@ -932,6 +940,47 @@ mod tests {
             "no list could say, so the heart offers nothing"
         );
         assert!(!unknown.lit);
+        assert_eq!(unknown.icon, Icon::Heart);
+    }
+
+    /// Whether an accent-filled path lies inside `rect`.
+    ///
+    /// The filled glyph is polygons and the outline is strokes, so a fill is the
+    /// only thing that tells the two hearts apart.
+    fn accent_path_in(output: &egui::FullOutput, tokens: &Tokens, rect: Rect) -> bool {
+        output.shapes.iter().any(|clipped| match &clipped.shape {
+            egui::epaint::Shape::Path(path) if path.fill == tokens.palette.accent => {
+                rect.contains(clipped.shape.visual_bounding_rect().center())
+            }
+            _ => false,
+        })
+    }
+
+    #[test]
+    fn a_saved_contexts_heart_paints_an_accent_filled_path() {
+        let tokens = Tokens::DARK;
+        let ctx = context();
+        let kind = kind(VIEWPORT);
+        let mut saved = bar(kind);
+        saved.saved = Some(true);
+        let heart_rect = drawn(&ctx, &saved, VIEWPORT, 0.0)
+            .heart
+            .expect("the row draws its heart");
+        let frame = frame_of(&ctx, &saved, VIEWPORT, 0.0, Vec::new(), None);
+        assert!(
+            accent_path_in(&frame.output, &tokens, heart_rect),
+            "a saved heart is a filled accent glyph"
+        );
+
+        for state in [Some(false), None] {
+            let mut unsaved = bar(kind);
+            unsaved.saved = state;
+            let frame = frame_of(&ctx, &unsaved, VIEWPORT, 0.0, Vec::new(), None);
+            assert!(
+                !accent_path_in(&frame.output, &tokens, heart_rect),
+                "an unsaved or unknown heart is an outline, not a filled path"
+            );
+        }
     }
 
     #[test]

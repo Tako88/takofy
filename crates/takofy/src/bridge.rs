@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use takofy_core::credentials::{AccessToken, CredentialStore};
 use takofy_core::login::{AuthError, SourceErrorKind, TokenSource, authorize, resume};
 use takofy_core::playback::{PlaybackError, PlaybackEvent};
-use takofy_model::{CoverUrl, Move, PlaylistEntry, Removal, Revision};
+use takofy_model::{CoverUrl, Move, Owner, PlaylistEntry, Removal, Revision};
 use takofy_ui::message::{Command, Failure, TransportUpdate, Update};
 use tokio::runtime::{Handle, Runtime};
 use tokio::sync::Semaphore;
@@ -1410,7 +1410,7 @@ async fn create_playlist<H: SessionHost>(
             cover,
             description,
             tracks: Some(landed),
-            owner: None,
+            owner: Some(Owner::You),
             access,
         },
         revision,
@@ -4223,7 +4223,7 @@ mod tests {
                     cover: None,
                     description: None,
                     tracks: Some(0),
-                    owner: None,
+                    owner: Some(Owner::You),
                     access: Some(PlaylistAccess {
                         revision: revision(4),
                         editable: true,
@@ -4265,7 +4265,7 @@ mod tests {
                 cover: None,
                 description: None,
                 tracks: Some(0),
-                owner: None,
+                owner: Some(Owner::You),
                 access: None,
             }
         };
@@ -4526,7 +4526,7 @@ mod tests {
                     cover: None,
                     description: None,
                     tracks: Some(3),
-                    owner: None,
+                    owner: Some(Owner::You),
                     access: Some(PlaylistAccess {
                         revision: revision(10),
                         editable: true,
@@ -4713,7 +4713,7 @@ mod tests {
                     cover: None,
                     description: None,
                     tracks: Some(0),
-                    owner: None,
+                    owner: Some(Owner::You),
                     access: None,
                 },
                 revision: revision(4),

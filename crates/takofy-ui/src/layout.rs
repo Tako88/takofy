@@ -15,6 +15,7 @@ pub mod filter_row;
 pub mod hero;
 pub mod menu;
 pub mod panel;
+pub mod playbar;
 pub mod queue;
 pub mod search_menu;
 pub mod sticky;

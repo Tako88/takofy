@@ -18,6 +18,7 @@ pub mod likes;
 pub mod lyrics;
 pub mod menu;
 pub mod message;
+pub mod mosaic;
 pub mod naming;
 pub mod player;
 pub mod portraits;

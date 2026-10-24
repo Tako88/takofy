@@ -10,6 +10,7 @@ use egui::{FontId, Pos2, Rect, Sense, Ui, Vec2};
 
 use crate::availability::Control;
 use crate::cover::Cover;
+use crate::icon::Icon;
 use crate::theme::{Tokens, ease, extent, motion, radius, space, stroke, text, tracking};
 
 use super::{art, controls, text as recipe};
@@ -114,6 +115,7 @@ pub fn show(ui: &mut Ui, rect: Rect, card: &Card<'_>, tokens: &Tokens) -> bool {
             tokens,
             Control::CardPlay,
             tile,
+            Icon::Play,
             &format!("Play {}", card.name),
             false,
         );

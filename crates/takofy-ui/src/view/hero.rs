@@ -12,14 +12,17 @@
 //! user page to open. A description longer than two rows elides, where the
 //! reference lets it wrap.
 //!
-//! What the reference puts here and this does not: the four-cover mosaic, and the
-//! artist form of the band with a photograph behind it.
+//! A playlist's band draws the four-cover mosaic when the list has four distinct
+//! album covers and every one of them is held; until then it draws the playlist's
+//! own picture. The artist form of the band, with a photograph behind it, is
+//! still missing.
 
 use egui::{FontId, Id, Margin, Pos2, Rect, Sense, Ui, Vec2, WidgetInfo, vec2};
 use takofy_model::PLAYLIST_NAME_MAX;
 
 use crate::cover::Cover;
 use crate::layout::hero::title_size;
+use crate::mosaic::QUADRANTS;
 use crate::naming::Renaming;
 use crate::theme::{
     MonoWeight, Tokens, Weight, fonts, hero, radius, space, stroke, text, tracking,
@@ -40,6 +43,15 @@ pub struct Band<'a> {
     pub cover: Cover,
 }
 
+/// What the band draws in its art box.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Picture {
+    /// The context's single cover, as the art pipeline resolves it.
+    Cover,
+    /// Four covers tiling the box, in reading order.
+    Mosaic([Cover; QUADRANTS]),
+}
+
 /// What the title can do this frame.
 pub enum Title<'a> {
     Plain,
@@ -56,13 +68,24 @@ pub struct Reply {
 
 /// Draws the band and how its title may be used this frame.
 pub fn show_with(ui: &mut Ui, band: &Band<'_>, tokens: &Tokens, title: Title<'_>) -> Reply {
+    show_picture(ui, band, Picture::Cover, tokens, title)
+}
+
+/// Draws the band with `picture` in its art box.
+pub fn show_picture(
+    ui: &mut Ui,
+    band: &Band<'_>,
+    picture: Picture,
+    tokens: &Tokens,
+    title: Title<'_>,
+) -> Reply {
     let width = ui.available_width();
     // The art is taller than the band's own minimum, and the padding sits inside
     // the band, so the art plus that padding is what the band comes to.
     let height = (hero::ART + 2.0 * space::S5).max(hero::MIN_H);
     let (rect, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
     wash(ui, rect, tokens);
-    let title = inner(ui, rect, band, tokens, title);
+    let title = inner(ui, rect, band, picture, tokens, title);
     Reply {
         rename_clicked: title.activated,
         title_id: title.id,
@@ -93,6 +116,7 @@ fn inner(
     ui: &mut Ui,
     rect: Rect,
     band: &Band<'_>,
+    picture: Picture,
     tokens: &Tokens,
     title_tool: Title<'_>,
 ) -> TitleDrawn {
@@ -101,14 +125,24 @@ fn inner(
         Pos2::new(rect.left() + space::GUTTER, floor - hero::ART),
         Vec2::splat(hero::ART),
     );
-    art::tile(
-        ui.painter(),
-        art,
-        radius::SM,
-        tokens.palette.border_strong,
-        band.cover,
-        tokens,
-    );
+    match picture {
+        Picture::Cover => art::tile(
+            ui.painter(),
+            art,
+            radius::SM,
+            tokens.palette.border_strong,
+            band.cover,
+            tokens,
+        ),
+        Picture::Mosaic(covers) => art::mosaic(
+            ui.painter(),
+            art,
+            radius::SM,
+            tokens.palette.border_strong,
+            covers,
+            tokens,
+        ),
+    }
 
     let left = art.right() + space::S5;
     let width = (rect.right() - space::GUTTER - left).max(0.0);

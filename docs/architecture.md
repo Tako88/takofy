@@ -71,6 +71,11 @@ tokio's blocking pool for the same reason sign-in does: a decode that hangs must
 not hold up the runtime drop, and a detached thread dies with the process
 instead.
 
+A box that composes several covers is still one box. The playlist band's mosaic
+looks at up to four album covers in the frame's own pass and paints only once
+every one of them is held, drawing today's single cover until then, so a picture
+never arrives in pieces and nothing in the band moves while it lands.
+
 Following an artist is the first command that changes the account rather than
 reading it, and it crosses the same seam as everything else: the page sends a
 write and reports only what the server confirmed, so the label moves on the

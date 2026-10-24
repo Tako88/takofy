@@ -8,7 +8,7 @@
 use std::time::Instant;
 
 use egui::{Id, Pos2, Rect, Sense, Ui, vec2};
-use takofy_model::PlaylistEntry;
+use takofy_model::{Owner, PlaylistEntry};
 
 use crate::cover::{Art, Cover};
 use crate::format::{
@@ -17,10 +17,11 @@ use crate::format::{
 };
 use crate::landing::Zone;
 use crate::layout::{Table, actionbar as actionbar_layout, cards, table as table_layout};
-use crate::library::{BandCover, Library, Load, MediaLayout, band_cover};
+use crate::library::{BandCover, Library, Load, MediaLayout, TracksFor, band_cover};
 use crate::library_filter::{self, Item, RootKind};
 use crate::menu::{Cut, Door, LibraryItem};
 use crate::message::{Command, Failure};
+use crate::mosaic::{self, Kept};
 use crate::naming::Surface;
 use crate::player::Transport;
 use crate::queue::Queue;
@@ -89,10 +90,6 @@ pub fn tracks_view(
         MainPage::Playlist => {}
     }
 
-    // The band draws `Loading` until the selected playlist's tracks settle: it
-    // must not fetch a first-track cover it is about to replace with the
-    // context image.
-    let settled = !matches!(library.tracks, Load::Loading);
     // Read before the rows, which borrow the tracks these ask about.
     let movable = library.movable();
     let liftable = library.liftable();
@@ -113,7 +110,8 @@ pub fn tracks_view(
             .as_ref()
             .is_some_and(|entry| library.can_rename(&entry.uri));
         if let Some(entry) = &entry {
-            let cover = band_cover_for(entry, settled, art, now);
+            let (cover, picture) =
+                band_picture(entry, &library.tracks, &mut library.mosaic_kept, art, now);
             let tracks = match &library.tracks {
                 Load::Ready(tracks) if !tracks.tracks.is_empty() => {
                     Some((tracks.tracks.len(), total_duration_ms(&tracks.tracks)))
@@ -123,7 +121,7 @@ pub fn tracks_view(
             // The owner and the description come from the listing; the count and
             // the total wait for the tracks. The description is owned here so the
             // band can borrow it for as long as it is drawn.
-            let meta = byline(entry.owner.as_deref(), tracks);
+            let meta = byline(entry.owner.as_ref(), tracks);
             // The description is drawn as the wire sends it: whitespace is
             // collapsed, but markup it carries (entities, `spotify:` links)
             // draws literally.
@@ -142,13 +140,16 @@ pub fn tracks_view(
                 hero::Title::Plain
             };
             let band = hero::Band {
+                // The eyebrow stays Playlist: the wire has no list visibility.
+                // `ItemAttributes.public` exists but is per item, this client
+                // never reads it, and it says nothing about the list.
                 eyebrow: "Playlist",
                 title: &entry.name,
                 meta,
                 description: &description,
                 cover,
             };
-            let reply = hero::show_with(ui, &band, tokens, title);
+            let reply = hero::show_picture(ui, &band, picture, tokens, title);
             library.renaming = renaming;
             // The band takes a hand-back only for its own field: a row's return
             // belongs to the row, and a field raised on another page has no
@@ -538,6 +539,59 @@ fn band_cover_for(entry: &PlaylistEntry, settled: bool, art: &mut Art, now: Inst
             .and_then(|url| art.look_held(url, now))
             .unwrap_or(Cover::Loading),
         BandCover::Entry(url) => art.look(url, now),
+    }
+}
+
+/// The cover and the picture the band draws this frame.
+///
+/// A ready list for this page asks for the first four distinct album covers and
+/// remembers them; a list that asks for what the memo already holds leaves it
+/// alone. Any other state keeps the remembered URLs without fetching, so a
+/// reload shows the mosaic it already held rather than one cover and a second
+/// round of fetches.
+///
+/// The quadrants are looked at first, and the single cover only once they cannot
+/// tile the box: a band drawing the mosaic does not also fetch and pin the
+/// picture it replaced. The cover is therefore unread while the mosaic draws,
+/// and the first quadrant stands in for it.
+fn band_picture(
+    entry: &PlaylistEntry,
+    tracks: &Load<TracksFor>,
+    kept: &mut Option<Kept>,
+    art: &mut Art,
+    now: Instant,
+) -> (Cover, hero::Picture) {
+    let settled = !matches!(tracks, Load::Loading);
+    let ready = match tracks {
+        Load::Ready(ready) if ready.playlist == entry.uri => Some(ready),
+        Load::Idle | Load::Loading | Load::Failed(_) | Load::Ready(_) => None,
+    };
+    if let Some(ready) = ready {
+        let urls = mosaic::wanted(
+            entry.cover.as_ref().map(|cover| cover.origin),
+            &mosaic::urls(&ready.tracks),
+        );
+        if kept.as_ref().and_then(|kept| kept.urls_for(&entry.uri)) != Some(urls.as_slice()) {
+            *kept = Some(Kept::new(entry.uri.clone(), urls));
+        }
+    }
+    let wanted = kept
+        .as_ref()
+        .and_then(|kept| kept.urls_for(&entry.uri))
+        .unwrap_or_default();
+    let drawn: Vec<Cover> = wanted
+        .iter()
+        .map(|url| match ready {
+            Some(_) => art.look(Some(url), now),
+            None => art.look_held(url, now).unwrap_or(Cover::Loading),
+        })
+        .collect();
+    match mosaic::arrange(&drawn) {
+        Some(quadrants) => (quadrants[0], hero::Picture::Mosaic(quadrants)),
+        None => (
+            band_cover_for(entry, settled, art, now),
+            hero::Picture::Cover,
+        ),
     }
 }
 
@@ -939,7 +993,7 @@ impl MediaDraw<'_, '_> {
                 &entry.uri,
                 &entry.name,
                 media_type(RootKind::Playlists),
-                library_kind("Playlist", entry.owner.as_deref()),
+                library_kind("Playlist", entry.owner.as_ref().and_then(Owner::name)),
                 media_size(RootKind::Playlists, entry.tracks),
                 false,
                 entry.cover_url(),
@@ -1090,6 +1144,8 @@ fn select_playlist(library: &mut Library, uri: &str) -> Option<Command> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use egui::{
         Context, Event, Modifiers, MouseWheelSource, MouseWheelUnit, Pos2, RawInput, TouchPhase,
         Vec2,
@@ -1098,12 +1154,12 @@ mod tests {
     use super::*;
     use crate::library::Library;
     use crate::message::Update;
-    use crate::theme::{fonts, style};
+    use crate::theme::{fonts, hero as band, stroke, style};
     use crate::view::rows::Look;
     use crate::view::track_row::State;
     use takofy_model::{
-        AddedAt, AlbumDetail, CoverImage, CoverUrl, PlaylistAccess, PlaylistCover, PlaylistEntry,
-        Revision, TrackEntry,
+        AddedAt, AlbumDetail, CoverImage, CoverUrl, Owner, OwnerName, PlaylistAccess,
+        PlaylistCover, PlaylistEntry, Revision, TrackEntry,
     };
 
     /// The probe window: 900 by 400, the size every bare-row test runs in.
@@ -1428,6 +1484,15 @@ mod tests {
         library
     }
 
+    /// The same page, heading a list of our own.
+    fn library_ours(tracks: Vec<TrackEntry>, name: &str) -> Library {
+        let mut library = library_with(tracks);
+        let mut entry = listed(name, None, None);
+        entry.owner = Some(Owner::You);
+        library.apply(&Update::Playlists(vec![entry]));
+        library
+    }
+
     fn listed(name: &str, description: Option<&str>, owner: Option<&str>) -> PlaylistEntry {
         PlaylistEntry {
             uri: "spotify:playlist:a".to_owned(),
@@ -1435,7 +1500,7 @@ mod tests {
             named: true,
             cover: None,
             description: description.map(str::to_owned),
-            owner: owner.map(str::to_owned),
+            owner: owner.and_then(OwnerName::from_wire).map(Owner::Named),
             tracks: None,
             access: None,
         }
@@ -1510,6 +1575,165 @@ mod tests {
 
     fn image() -> CoverImage {
         CoverImage::new(1, 1, vec![0; 4]).expect("a 1x1 image")
+    }
+
+    /// A playlist page whose band heads `covers`, one per track, ready.
+    fn mosaic_library(covers: &[&str]) -> Library {
+        let tracks = covers
+            .iter()
+            .enumerate()
+            .map(|(index, tail)| TrackEntry {
+                cover: Some(cover_url(tail)),
+                ..track(&format!("t{index}"), &format!("t{index}"))
+            })
+            .collect();
+        library_detailed(tracks, "Evening", Some(DESCRIPTION), None)
+    }
+
+    /// The same page, with a picture of its own to fall back to.
+    fn mosaic_library_with_picture(covers: &[&str]) -> Library {
+        let mut library = mosaic_library(covers);
+        library.apply(&Update::Playlists(vec![PlaylistEntry {
+            cover: Some(PlaylistCover::derived(cover_url("m0"))),
+            ..listed("Evening", Some(DESCRIPTION), None)
+        }]));
+        library
+    }
+
+    /// A long list whose first four tracks carry distinct covers, so the band has
+    /// a mosaic to draw beside a full byline and description.
+    fn mosaic_full() -> Library {
+        let mut tracks = timed_tracks(62, 223_548);
+        for (index, track) in tracks.iter_mut().enumerate().take(mosaic::QUADRANTS) {
+            track.cover = Some(cover_url(&format!("m{index}")));
+        }
+        library_detailed(tracks, "Evening", Some(DESCRIPTION), Some("alice"))
+    }
+
+    /// Holds every URL in `art`, as the fetches would have by the time the band
+    /// draws.
+    ///
+    /// One URL at a time: a batch larger than the store's in-flight cap would
+    /// leave its tail wanted and never sent.
+    fn hold(ctx: &Context, art: &mut Art, urls: &[CoverUrl], now: Instant) {
+        for url in urls {
+            art.begin_frame();
+            let _ = art.look(Some(url), now);
+            while !art.requests(now).is_empty() {}
+            art.apply(
+                &Update::Cover {
+                    url: url.clone(),
+                    image: image(),
+                },
+                now,
+            );
+            art.upload(ctx);
+        }
+    }
+
+    /// Drives `url` to a failure it will not retry, as three failed answers do.
+    ///
+    /// The second and third attempts are only sent once their retry delay is
+    /// due, so the clock moves with the store's own schedule.
+    fn fail_permanently(art: &mut Art, url: &CoverUrl, now: Instant) -> Instant {
+        let mut at = now;
+        for delay in [
+            Duration::ZERO,
+            Duration::from_secs(5),
+            Duration::from_secs(30),
+        ] {
+            at += delay;
+            art.begin_frame();
+            let _ = art.look(Some(url), at);
+            while !art.requests(at).is_empty() {}
+            art.apply(&Update::CoverFailed { url: url.clone() }, at);
+        }
+        at
+    }
+
+    /// One frame of the tracklist with a store the test owns.
+    fn band_frame_with(
+        ctx: &Context,
+        library: &mut Library,
+        art: &mut Art,
+        now: Instant,
+    ) -> egui::FullOutput {
+        let tokens = Tokens::DARK;
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        run(ctx, input(Vec::new()), |ui| {
+            let _ = tracks_view(
+                ui,
+                Table::Full,
+                library,
+                &mut transport,
+                &mut queue,
+                art,
+                now,
+                NOW_MS,
+                &tokens,
+            );
+        })
+    }
+
+    /// The covers the band paints, read from the art box's own hairline.
+    fn band_art(output: &egui::FullOutput) -> Rect {
+        let tokens = Tokens::DARK;
+        output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Rect(shape)
+                    if (shape.rect.width() - band::ART).abs() < 0.01
+                        && (shape.rect.height() - band::ART).abs() < 0.01
+                        && (shape.stroke.width - stroke::HAIRLINE).abs() < 0.01
+                        && shape.stroke.color == tokens.palette.border_strong =>
+                {
+                    Some(shape.rect)
+                }
+                _ => None,
+            })
+            .expect("the band draws its art box")
+    }
+
+    /// The textured rects inside `area`, in paint order.
+    fn textured(output: &egui::FullOutput, area: Rect) -> Vec<Rect> {
+        output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Rect(shape)
+                    if shape.brush.is_some() && area.contains(shape.rect.center()) =>
+                {
+                    Some(shape.rect)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The sunken holes inside `area`, in paint order.
+    fn holes(output: &egui::FullOutput, area: Rect) -> Vec<Rect> {
+        let tokens = Tokens::DARK;
+        output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Rect(shape)
+                    if shape.brush.is_none()
+                        && shape.fill == tokens.palette.surface_sunken
+                        && area.contains(shape.rect.center()) =>
+                {
+                    Some(shape.rect)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A held cover's drawing, so a quadrant can be named without a texture id.
+    fn drawn_cover(art: &mut Art, tail: &str, now: Instant) -> Cover {
+        art.look(Some(&cover_url(tail)), now)
     }
 
     fn fetch_urls(commands: Vec<Command>) -> Vec<CoverUrl> {
@@ -4363,6 +4587,528 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         assert!(
             !texts.iter().any(|text| text.contains("songs")),
             "the count waits for the tracks: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn the_band_says_made_by_you_for_our_own_playlist() {
+        let ctx = context();
+        let mut library = library_ours(timed_tracks(62, 223_548), "Evening");
+        let output = tracklist_frame(&ctx, Table::Full, &mut library);
+        let texts = drawn_texts(&output);
+        assert!(
+            texts.contains(&"Made by you \u{b7} 62 songs \u{b7} 3 hr 51 min"),
+            "our own list says Made by you: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn a_numeric_owner_draws_no_made_by_line() {
+        let ctx = context();
+        let mut library = library_with(timed_tracks(2, 1_000));
+        let mut entry = listed("Evening", None, None);
+        entry.owner = OwnerName::from_wire("31415926535").map(Owner::Named);
+        assert_eq!(entry.owner, None, "a numeric id is not an owner");
+        library.apply(&Update::Playlists(vec![entry]));
+        let output = tracklist_frame(&ctx, Table::Full, &mut library);
+        let texts = drawn_texts(&output);
+        assert!(
+            !texts.iter().any(|text| text.starts_with("Made by")),
+            "a numeric owner names nobody: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn a_card_for_our_own_playlist_draws_the_kind_word_alone() {
+        let mut art = Art::default();
+        let tokens = Tokens::DARK;
+        let mut select = None;
+        let mut open = None;
+        let library = Library::default();
+        let mut draw = MediaDraw {
+            art: &mut art,
+            now: Instant::now(),
+            tokens: &tokens,
+            library: &library,
+            select: &mut select,
+            open: &mut open,
+        };
+
+        let mut ours = playlist("spotify:playlist:a", "A");
+        ours.owner = Some(Owner::You);
+        assert_eq!(draw.media_of(&Item::Playlist(&ours)).sub, "Playlist");
+
+        let mut named = playlist("spotify:playlist:b", "B");
+        named.owner = Some(Owner::Named(
+            OwnerName::from_wire("Vela Moreno").expect("a name"),
+        ));
+        assert_eq!(
+            draw.media_of(&Item::Playlist(&named)).sub,
+            "Playlist \u{b7} Vela Moreno"
+        );
+    }
+
+    #[test]
+    fn a_playlist_with_four_held_covers_draws_the_mosaic() {
+        let ctx = context();
+        let now = Instant::now();
+        let mut art = Art::default();
+        let mut library = mosaic_library(&["m0", "m1", "m2", "m3"]);
+        let urls: Vec<CoverUrl> = (0..4)
+            .map(|index| cover_url(&format!("m{index}")))
+            .collect();
+        hold(&ctx, &mut art, &urls, now);
+
+        let output = band_frame_with(&ctx, &mut library, &mut art, now);
+        let area = band_art(&output);
+        assert_eq!(
+            textured(&output, area),
+            crate::layout::hero::quadrants(area).to_vec(),
+            "four covers quarter the band's art box"
+        );
+    }
+
+    #[test]
+    fn the_band_draws_the_single_cover_until_every_mosaic_cover_is_held() {
+        let ctx = context();
+        let now = Instant::now();
+        let mut art = Art::default();
+        let mut library = mosaic_library_with_picture(&["m0", "m1", "m2", "m3"]);
+        let urls: Vec<CoverUrl> = (0..4)
+            .map(|index| cover_url(&format!("m{index}")))
+            .collect();
+        hold(&ctx, &mut art, &urls[..3], now);
+
+        let output = band_frame_with(&ctx, &mut library, &mut art, now);
+        let area = band_art(&output);
+        assert_eq!(
+            textured(&output, area),
+            vec![area],
+            "one picture fills the box while a quadrant is missing"
+        );
+
+        hold(&ctx, &mut art, &urls[3..], now);
+        let output = band_frame_with(&ctx, &mut library, &mut art, now);
+        let area = band_art(&output);
+        assert_eq!(
+            textured(&output, area).len(),
+            4,
+            "the mosaic swaps in whole once the fourth cover lands"
+        );
+    }
+
+    #[test]
+    fn a_mosaic_cover_not_yet_held_is_fetched_but_not_drawn() {
+        let ctx = context();
+        let now = Instant::now();
+        let mut art = Art::default();
+        let mut library = mosaic_library_with_picture(&["m0", "m1", "m2", "m3"]);
+        let entry = library
+            .selected_entry()
+            .cloned()
+            .expect("the page names its playlist");
+
+        let (_, picture) = band_picture(
+            &entry,
+            &library.tracks,
+            &mut library.mosaic_kept,
+            &mut art,
+            now,
+        );
+        assert_eq!(
+            picture,
+            hero::Picture::Cover,
+            "nothing is drawn until every cover lands"
+        );
+        let fetched = fetch_urls(art.requests(now));
+        for tail in ["m0", "m1", "m2", "m3"] {
+            assert!(
+                fetched.contains(&cover_url(tail)),
+                "{tail} is fetched for the mosaic: {fetched:?}"
+            );
+        }
+
+        let output = band_frame_with(&ctx, &mut library, &mut art, now);
+        let area = band_art(&output);
+        assert!(
+            textured(&output, area).is_empty(),
+            "a cover that has not landed draws nothing"
+        );
+    }
+
+    #[test]
+    fn two_distinct_covers_draw_two_quadrants_and_two_holes() {
+        let ctx = context();
+        let now = Instant::now();
+        let mut art = Art::default();
+        let mut library = mosaic_library(&["m0", "m1"]);
+        hold(&ctx, &mut art, &[cover_url("m0"), cover_url("m1")], now);
+
+        let output = band_frame_with(&ctx, &mut library, &mut art, now);
+        let area = band_art(&output);
+        let quadrants = crate::layout::hero::quadrants(area);
+        assert_eq!(
+            textured(&output, area),
+            vec![quadrants[0], quadrants[1]],
+            "the two covers take the first quadrants in reading order"
+        );
+        assert_eq!(
+            holes(&output, area),
+            vec![quadrants[2], quadrants[3]],
+            "the missing corners are holes"
+        );
+    }
+
+    #[test]
+    fn a_mosaic_quadrant_that_failed_for_good_keeps_the_single_picture() {
+        let ctx = context();
+        let now = Instant::now();
+        let mut art = Art::default();
+        let mut library = mosaic_library_with_picture(&["m0", "m1", "m2", "m3"]);
+        let urls: Vec<CoverUrl> = (0..4)
+            .map(|index| cover_url(&format!("m{index}")))
+            .collect();
+        hold(&ctx, &mut art, &urls[..3], now);
+        let at = fail_permanently(&mut art, &urls[3], now);
+        let entry = library
+            .selected_entry()
+            .cloned()
+            .expect("the page names its playlist");
+
+        let (_, picture) = band_picture(
+            &entry,
+            &library.tracks,
+            &mut library.mosaic_kept,
+            &mut art,
+            at,
+        );
+        assert_eq!(
+            picture,
+            hero::Picture::Cover,
+            "a quadrant that will never arrive holds the mosaic back"
+        );
+
+        let output = band_frame_with(&ctx, &mut library, &mut art, at);
+        let area = band_art(&output);
+        assert_eq!(
+            textured(&output, area),
+            vec![area],
+            "the band stays on its single picture"
+        );
+    }
+
+    #[test]
+    fn a_reload_keeps_the_mosaic_that_was_held() {
+        let ctx = context();
+        let now = Instant::now();
+        let mut art = Art::default();
+        let mut library = mosaic_library(&["m0", "m1", "m2", "m3"]);
+        let urls: Vec<CoverUrl> = (0..4)
+            .map(|index| cover_url(&format!("m{index}")))
+            .collect();
+        hold(&ctx, &mut art, &urls, now);
+
+        let output = band_frame_with(&ctx, &mut library, &mut art, now);
+        assert_eq!(textured(&output, band_art(&output)).len(), 4);
+
+        // Re-selecting the same playlist puts its tracks back into `Loading`.
+        library.select("spotify:playlist:a");
+        let output = band_frame_with(&ctx, &mut library, &mut art, now);
+        let area = band_art(&output);
+        assert_eq!(
+            textured(&output, area).len(),
+            4,
+            "a held mosaic survives the reload"
+        );
+        assert!(
+            fetch_urls(art.requests(now)).is_empty(),
+            "a held mosaic is not fetched again"
+        );
+    }
+
+    #[test]
+    fn a_ready_list_of_another_playlist_draws_no_mosaic() {
+        let ctx = context();
+        let now = Instant::now();
+        let mut art = Art::default();
+        let mut library = mosaic_library_with_picture(&["m0", "m1", "m2", "m3"]);
+        let urls: Vec<CoverUrl> = (0..4)
+            .map(|index| cover_url(&format!("m{index}")))
+            .collect();
+        hold(&ctx, &mut art, &urls, now);
+        let tracks = match &library.tracks {
+            Load::Ready(ready) => ready.tracks.clone(),
+            Load::Idle | Load::Loading | Load::Failed(_) => panic!("the page is ready"),
+        };
+        library.tracks = Load::Ready(TracksFor {
+            playlist: "spotify:playlist:other".to_owned(),
+            tracks,
+            access: None,
+            notice: None,
+        });
+
+        let entry = library
+            .selected_entry()
+            .cloned()
+            .expect("the page names its playlist");
+        let (_, picture) = band_picture(
+            &entry,
+            &library.tracks,
+            &mut library.mosaic_kept,
+            &mut art,
+            now,
+        );
+        assert_eq!(
+            picture,
+            hero::Picture::Cover,
+            "another list's read never quarter this band"
+        );
+
+        let output = band_frame_with(&ctx, &mut library, &mut art, now);
+        let area = band_art(&output);
+        assert_eq!(
+            textured(&output, area),
+            vec![area],
+            "the band keeps its own picture"
+        );
+    }
+
+    #[test]
+    fn a_drag_in_flight_keeps_the_mosaic() {
+        let ctx = context();
+        let now = Instant::now();
+        let mut art = Art::default();
+        let mut library = mosaic_library(&["m0", "m1", "m2", "m3"]);
+        let urls: Vec<CoverUrl> = (0..4)
+            .map(|index| cover_url(&format!("m{index}")))
+            .collect();
+        hold(&ctx, &mut art, &urls, now);
+
+        let before = {
+            let output = band_frame_with(&ctx, &mut library, &mut art, now);
+            textured(&output, band_art(&output))
+        };
+        egui::DragAndDrop::set_payload(&ctx, ());
+        let after = {
+            let output = band_frame_with(&ctx, &mut library, &mut art, now);
+            textured(&output, band_art(&output))
+        };
+        egui::DragAndDrop::clear_payload(&ctx);
+
+        assert_eq!(after, before, "a drag in flight does not disturb the band");
+        assert_eq!(after.len(), 4);
+    }
+
+    #[test]
+    fn a_reorder_that_changes_the_first_four_covers_changes_the_mosaic_once_ready() {
+        let ctx = context();
+        let now = Instant::now();
+        let mut art = Art::default();
+        let mut library = mosaic_library(&["m0", "m1", "m2", "m3"]);
+        let all: Vec<CoverUrl> = (0..8)
+            .map(|index| cover_url(&format!("m{index}")))
+            .collect();
+        hold(&ctx, &mut art, &all, now);
+        let entry = library
+            .selected_entry()
+            .cloned()
+            .expect("the page names its playlist");
+
+        let first = match band_picture(
+            &entry,
+            &library.tracks,
+            &mut library.mosaic_kept,
+            &mut art,
+            now,
+        )
+        .1
+        {
+            hero::Picture::Mosaic(quadrants) => quadrants,
+            hero::Picture::Cover => panic!("four held covers quarter the band"),
+        };
+        assert_eq!(
+            first,
+            [
+                drawn_cover(&mut art, "m0", now),
+                drawn_cover(&mut art, "m1", now),
+                drawn_cover(&mut art, "m2", now),
+                drawn_cover(&mut art, "m3", now),
+            ]
+        );
+
+        // The reload between orders keeps the quadrants that were held.
+        library.select("spotify:playlist:a");
+        let reloading = match band_picture(
+            &entry,
+            &library.tracks,
+            &mut library.mosaic_kept,
+            &mut art,
+            now,
+        )
+        .1
+        {
+            hero::Picture::Mosaic(quadrants) => quadrants,
+            hero::Picture::Cover => panic!("the kept mosaic stays during the reload"),
+        };
+        assert_eq!(
+            reloading, first,
+            "the held quadrants stay while the list reloads"
+        );
+
+        // The reordered list lands ready, and the quadrants follow it.
+        let mut tracks: Vec<TrackEntry> = (0..4)
+            .map(|index| track(&format!("t{index}"), &format!("t{index}")))
+            .collect();
+        for (index, track) in tracks.iter_mut().enumerate() {
+            track.cover = Some(cover_url(&format!("m{}", index + crate::mosaic::QUADRANTS)));
+        }
+        library.apply(&Update::Tracks {
+            playlist: "spotify:playlist:a".to_owned(),
+            tracks,
+            cover: None,
+            access: None,
+        });
+        let after = match band_picture(
+            &entry,
+            &library.tracks,
+            &mut library.mosaic_kept,
+            &mut art,
+            now,
+        )
+        .1
+        {
+            hero::Picture::Mosaic(quadrants) => quadrants,
+            hero::Picture::Cover => panic!("the reordered covers quarter the band"),
+        };
+        assert_eq!(
+            after,
+            [
+                drawn_cover(&mut art, "m4", now),
+                drawn_cover(&mut art, "m5", now),
+                drawn_cover(&mut art, "m6", now),
+                drawn_cover(&mut art, "m7", now),
+            ],
+            "the quadrants follow the reordered list"
+        );
+    }
+
+    #[test]
+    fn a_chosen_cover_keeps_its_single_picture() {
+        let ctx = context();
+        let now = Instant::now();
+        let mut art = Art::default();
+        let mut library = mosaic_library(&["m0", "m1", "m2", "m3"]);
+        library.apply(&Update::Playlists(vec![PlaylistEntry {
+            cover: Some(PlaylistCover::chosen(cover_url("own"))),
+            ..listed("Evening", Some(DESCRIPTION), None)
+        }]));
+        let urls: Vec<CoverUrl> = (0..4)
+            .map(|index| cover_url(&format!("m{index}")))
+            .collect();
+        hold(&ctx, &mut art, &urls, now);
+        hold(&ctx, &mut art, &[cover_url("own")], now);
+
+        let output = band_frame_with(&ctx, &mut library, &mut art, now);
+        let area = band_art(&output);
+        assert_eq!(
+            textured(&output, area),
+            vec![area],
+            "a picture its users chose is never replaced by a mosaic"
+        );
+    }
+
+    #[test]
+    fn one_distinct_cover_keeps_the_single_look() {
+        let ctx = context();
+        let now = Instant::now();
+        let mut art = Art::default();
+        let tracks = (0..4)
+            .map(|index| TrackEntry {
+                cover: Some(cover_url("one")),
+                ..track(&format!("t{index}"), &format!("t{index}"))
+            })
+            .collect();
+        let mut library = library_detailed(tracks, "Evening", None, None);
+        library.apply(&Update::Playlists(vec![PlaylistEntry {
+            cover: Some(PlaylistCover::derived(cover_url("one"))),
+            ..listed("Evening", None, None)
+        }]));
+        hold(&ctx, &mut art, &[cover_url("one")], now);
+
+        let output = band_frame_with(&ctx, &mut library, &mut art, now);
+        let area = band_art(&output);
+        assert_eq!(
+            textured(&output, area),
+            vec![area],
+            "one album is one picture, not four"
+        );
+    }
+
+    #[test]
+    fn album_and_show_bands_still_draw_one_cover() {
+        let ctx = context();
+        let tokens = Tokens::DARK;
+        let now = Instant::now();
+        let mut art = Art::default();
+        hold(&ctx, &mut art, &[cover_url("one")], now);
+        let cover = art.look(Some(&cover_url("one")), now);
+        assert!(matches!(cover, Cover::Ready(_)));
+
+        for eyebrow in ["Album", "Show"] {
+            let mut output = run(&ctx, input(Vec::new()), |ui| {
+                let band = hero::Band {
+                    eyebrow,
+                    title: "Signal Decay",
+                    meta: Vec::new(),
+                    description: "",
+                    cover,
+                };
+                let _ = hero::show_with(ui, &band, &tokens, hero::Title::Plain);
+            });
+            let area = band_art(&output);
+            assert_eq!(
+                textured(&output, area),
+                vec![area],
+                "the {eyebrow} band still draws its one cover"
+            );
+            output.textures_delta.clear();
+        }
+    }
+
+    #[test]
+    fn the_band_text_does_not_move_with_the_covers_held() {
+        let ctx = context();
+        let now = Instant::now();
+        let mut art = Art::default();
+        let mut library = mosaic_full();
+        let urls: Vec<CoverUrl> = (0..4)
+            .map(|index| cover_url(&format!("m{index}")))
+            .collect();
+
+        let mut held = 0;
+        let mut positions = Vec::new();
+        let mut pictures = Vec::new();
+        for want in [0, 2, 4] {
+            if want > held {
+                hold(&ctx, &mut art, &urls[held..want], now);
+                held = want;
+            }
+            let output = band_frame_with(&ctx, &mut library, &mut art, now);
+            let area = band_art(&output);
+            pictures.push(textured(&output, area).len());
+            positions.push((
+                galley_at(&output, "Evening"),
+                galley_at(&output, META),
+                galley_at(&output, DESCRIPTION),
+            ));
+        }
+
+        assert_eq!(positions[0], positions[1], "two covers moved the words");
+        assert_eq!(positions[1], positions[2], "four covers moved the words");
+        assert_eq!(
+            pictures,
+            vec![0, 0, 4],
+            "the picture itself changed, so the texts were compared across frames"
         );
     }
 

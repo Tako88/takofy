@@ -141,6 +141,50 @@ impl PlaylistCover {
     }
 }
 
+/// An owner's name as the wire spells it, checked once.
+///
+/// A blank name, or one made of digits alone, is an opaque account id rather
+/// than a person, so it cannot be built and never reaches a screen.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct OwnerName(String);
+
+impl OwnerName {
+    /// Reads a wire name, trimmed.
+    ///
+    /// Anything blank after trimming, or all ASCII digits, is not a name.
+    pub fn from_wire(name: &str) -> Option<Self> {
+        let name = name.trim();
+        if name.is_empty() || name.chars().all(|c| c.is_ascii_digit()) {
+            return None;
+        }
+        Some(Self(name.to_owned()))
+    }
+
+    /// The name as it will be drawn.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Who owns a playlist, as the window draws it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Owner {
+    /// The account signed in, drawn without a name because the list is ours.
+    You,
+    /// Another account, named.
+    Named(OwnerName),
+}
+
+impl Owner {
+    /// The name to draw, when there is one to draw: our own list draws none.
+    pub fn name(&self) -> Option<&str> {
+        match self {
+            Self::You => None,
+            Self::Named(name) => Some(name.as_str()),
+        }
+    }
+}
+
 /// A playlist as listed in the rootlist.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlaylistEntry {
@@ -160,12 +204,11 @@ pub struct PlaylistEntry {
     /// This is the playlist's length, not the number of tracks a truncated
     /// read returned.
     pub tracks: Option<usize>,
-    /// The playlist's owner as the wire names it, when it names one.
+    /// Who owns the playlist, when the read named a person.
     ///
-    /// This is the wire's username, not a display name: for most accounts it is
-    /// an opaque id, so the band's line may read `Made by 31l6…`. It is drawn as
-    /// given, never hidden or heuristically filtered.
-    pub owner: Option<String>,
+    /// Our own lists are [`Owner::You`] and draw no name; another account's
+    /// numeric id is not a person, so it is no owner at all.
+    pub owner: Option<Owner>,
     /// The revision the entry was read at and whether its items may be edited.
     ///
     /// `None` when the read named no revision: an entry with no access names no
@@ -568,8 +611,9 @@ pub struct PlaylistAccess {
 #[cfg(test)]
 mod tests {
     use super::{
-        AddedAt, CoverImage, CoverOrigin, CoverUrl, Episode, Move, PlaylistAccess, PlaylistCover,
-        PlaylistEntry, PublishedAt, Removal, Revision, TrackEntry, TrackLyrics,
+        AddedAt, CoverImage, CoverOrigin, CoverUrl, Episode, Move, Owner, OwnerName,
+        PlaylistAccess, PlaylistCover, PlaylistEntry, PublishedAt, Removal, Revision, TrackEntry,
+        TrackLyrics,
     };
 
     fn revision(byte: u8) -> Revision {
@@ -915,5 +959,45 @@ mod tests {
         let copy = removal;
         assert_eq!(copy, removal);
         assert_ne!(removal, Removal { from: 4, ..removal });
+    }
+
+    #[test]
+    fn owner_name_rejects_blank_and_whitespace() {
+        assert_eq!(OwnerName::from_wire(""), None);
+        assert_eq!(OwnerName::from_wire("   "), None);
+        assert_eq!(OwnerName::from_wire(" \n\t "), None);
+    }
+
+    #[test]
+    fn owner_name_rejects_a_bare_number() {
+        assert_eq!(OwnerName::from_wire("31"), None);
+        assert_eq!(OwnerName::from_wire("31415926535"), None);
+        assert_eq!(OwnerName::from_wire("  42  "), None);
+    }
+
+    #[test]
+    fn owner_name_keeps_a_name_with_digits_and_letters() {
+        assert!(OwnerName::from_wire("31l6").is_some());
+        assert!(OwnerName::from_wire("alice123").is_some());
+        assert!(OwnerName::from_wire("Vela Moreno").is_some());
+    }
+
+    #[test]
+    fn owner_name_is_trimmed() {
+        let name = OwnerName::from_wire("  Vela Moreno \n").expect("a name");
+        assert_eq!(name.as_str(), "Vela Moreno");
+    }
+
+    #[test]
+    fn owner_name_reads_back() {
+        let name = OwnerName::from_wire("Vela Moreno").expect("a name");
+        assert_eq!(name.as_str(), "Vela Moreno");
+    }
+
+    #[test]
+    fn owner_name_method_is_none_for_you() {
+        assert_eq!(Owner::You.name(), None);
+        let named = Owner::Named(OwnerName::from_wire("Vela Moreno").expect("a name"));
+        assert_eq!(named.name(), Some("Vela Moreno"));
     }
 }
