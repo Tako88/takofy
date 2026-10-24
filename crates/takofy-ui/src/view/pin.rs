@@ -26,13 +26,24 @@ pub(crate) fn inset(ctx: &egui::Context) -> f32 {
     ctx.data(|data| data.get_temp(id()).unwrap_or(0.0))
 }
 
-/// Records how far this frame's pinned bar reaches below the viewport's top.
+/// Records how far a pinned row reaches below the viewport's top, replacing what
+/// this frame already held.
 ///
-/// The bar is the only writer and [`reveal`] the only reader: every row that has
-/// to be brought into view clears the bar's own reach, and nothing else adds to
-/// it.
+/// The page's bar writes first and overwrites, so a frame that draws no bar
+/// starts from its own height rather than the last page's. A band under the bar
+/// adds to it with [`raise`] instead.
 pub(crate) fn set(ctx: &egui::Context, inset: f32) {
     ctx.data_mut(|data| data.insert_temp(id(), inset.max(0.0)));
+}
+
+/// Adds a band's own reach to this frame's inset, keeping the lowest bottom.
+///
+/// The bar overwrites the seam because it is the page's first band and because a
+/// page that draws no band must not inherit one. A band under it adds its reach
+/// instead: the strip a reveal has to clear is the lowest of the page's bands,
+/// not whichever one wrote last.
+pub(crate) fn raise(ctx: &egui::Context, reach: f32) {
+    set(ctx, inset(ctx).max(reach));
 }
 
 /// Forgets the inset, so a page without a pinned row never inherits one.
@@ -206,6 +217,58 @@ mod tests {
             seen.row_top < ROW_H,
             "with nothing pinned the row lands at the top: {}",
             seen.row_top
+        );
+    }
+
+    #[test]
+    fn raise_keeps_the_lowest_bottom() {
+        let ctx = context();
+        clear(&ctx);
+        set(&ctx, 60.0);
+        raise(&ctx, 120.0);
+        assert_eq!(inset(&ctx), 120.0, "the lower band is the one to clear");
+        raise(&ctx, 80.0);
+        assert_eq!(
+            inset(&ctx),
+            120.0,
+            "a band that ends above the lowest does not lift the inset"
+        );
+    }
+
+    #[test]
+    fn raise_on_a_cleared_seam_is_the_band_alone() {
+        let ctx = context();
+        clear(&ctx);
+        raise(&ctx, 100.0);
+        assert_eq!(inset(&ctx), 100.0);
+    }
+
+    #[test]
+    fn set_after_a_raise_starts_the_frame_over() {
+        let ctx = context();
+        set(&ctx, 60.0);
+        raise(&ctx, 120.0);
+        set(&ctx, 60.0);
+        assert_eq!(
+            inset(&ctx),
+            60.0,
+            "the bar's own reach resets the seam for the frame"
+        );
+    }
+
+    #[test]
+    fn a_reveal_clears_the_lowest_band() {
+        let ctx = context();
+        clear(&ctx);
+        let plain = frame(&ctx, 300.0, 5);
+        set(&ctx, 60.0);
+        raise(&ctx, 120.0);
+        let shifted = frame(&ctx, 300.0, 5);
+        assert!(
+            (shifted.row_top - plain.row_top - 120.0).abs() < 0.01,
+            "the row lands clear of both bands: {} against {}",
+            shifted.row_top,
+            plain.row_top
         );
     }
 }
