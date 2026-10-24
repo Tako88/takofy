@@ -7,14 +7,17 @@ use egui::{Rect, pos2, vec2};
 
 use crate::theme::{extent, space};
 
+pub mod actionbar;
 pub mod cards;
 pub mod chips;
 pub mod episode;
+pub mod filter_row;
 pub mod hero;
 pub mod menu;
 pub mod panel;
 pub mod queue;
 pub mod search_menu;
+pub mod sticky;
 pub mod table;
 pub mod tracks;
 

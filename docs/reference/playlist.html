@@ -98,14 +98,22 @@
         <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg>
       </button>
       <span class="actionbar__title">Late Night Drive</span>
-      <div class="actionbar__tools">
+      <div class="actionbar__tools actionbar__tools--filter">
+        <p class="filter-count" role="status" aria-live="polite" data-list-count></p>
+        <form class="filter-field" role="search" onsubmit="return false" data-list-filter data-list-target="#playlist-tracks">
+          <svg class="icon icon--sm" aria-hidden="true"><use href="#i-search"></use></svg>
+          <input type="search" aria-label="Filter this playlist" placeholder="Filter" autocomplete="off" />
+          <button class="filter-field__clear" type="button" data-list-filter-clear aria-label="Clear filter" hidden>
+            <svg class="icon icon--sm" aria-hidden="true"><use href="#i-close"></use></svg>
+          </button>
+        </form>
         <button class="icon-button icon-button--lg" type="button" data-toggle aria-pressed="false" aria-label="Shuffle">
           <svg class="icon icon--md" aria-hidden="true"><use href="#i-shuffle"></use></svg>
         </button>
-        <button class="icon-button icon-button--lg" type="button" data-like data-like-group="row" aria-pressed="true" aria-label="Saved Late Night Drive">
+        <button class="icon-button icon-button--lg actionbar__tool--optional" type="button" data-like data-like-group="row" aria-pressed="true" aria-label="Saved Late Night Drive">
           <svg class="icon icon--md" aria-hidden="true"><use href="#i-heart-filled"></use></svg>
         </button>
-        <button class="icon-button icon-button--lg" type="button" aria-label="Download Late Night Drive">
+        <button class="icon-button icon-button--lg actionbar__tool--optional" type="button" aria-label="Download Late Night Drive">
           <svg class="icon icon--md" aria-hidden="true"><use href="#i-download"></use></svg>
         </button>
         <button class="icon-button icon-button--lg" type="button" aria-label="More options for Late Night Drive">
@@ -116,17 +124,6 @@
 
     <div class="view__inner">
       <div class="tracks tracks--playlist">
-        <div class="list-tools" data-sticky-row>
-          <p class="filter-count" role="status" aria-live="polite" data-list-count></p>
-          <form class="filter-field" role="search" onsubmit="return false" data-list-filter data-list-target="#playlist-tracks">
-            <svg class="icon icon--sm" aria-hidden="true"><use href="#i-search"></use></svg>
-            <input type="search" aria-label="Filter this playlist" placeholder="Filter" autocomplete="off" />
-            <button class="filter-field__clear" type="button" data-list-filter-clear aria-label="Clear filter" hidden>
-              <svg class="icon icon--sm" aria-hidden="true"><use href="#i-close"></use></svg>
-            </button>
-          </form>
-        </div>
-
         <div class="tracklist__head">
           <span class="tracklist__head-number">#</span>
           <span>Title</span>

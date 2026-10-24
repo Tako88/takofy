@@ -103,6 +103,25 @@ pub struct ColumnOffer {
     pub zone: Zone,
     /// The height a row is drawn at, which is the fill's height.
     pub drawn: f32,
+    /// The true row each drawn slot stands for, when a query narrowed the list.
+    ///
+    /// `None` when the drawn set is the whole list, so an unnarrowed column
+    /// costs no lookup and a reorder reads the same index it always did.
+    pub rows: Option<Vec<usize>>,
+}
+
+impl ColumnOffer {
+    /// The true row behind a drawn slot, or `None` when the slot names no row.
+    ///
+    /// Every write a drop makes goes through this: a narrowed column's slot is
+    /// not the playlist's index, and adding to, or moving, the slot's number
+    /// would name another playlist.
+    pub fn source_row(&self, slot_row: usize) -> Option<usize> {
+        match &self.rows {
+            None => Some(slot_row),
+            Some(rows) => rows.get(slot_row).copied(),
+        }
+    }
 }
 
 /// The rows an editable page offers as a drop target this frame.
@@ -378,6 +397,18 @@ impl List {
             selected: self.selection.contains(row),
             lifted,
             carrying: self.carry.is_some(),
+        }
+    }
+
+    /// Drops every pick and the anchor that `keep` rejects.
+    ///
+    /// A filtered list calls this so a hidden row can never reach the Delete
+    /// gate or a menu. The stored selection is only rewritten when one fell.
+    pub fn restrict(&mut self, keep: impl Fn(usize) -> bool) {
+        let before = self.selection.clone();
+        self.selection.retain(keep);
+        if self.selection != before {
+            self.changed = true;
         }
     }
 
@@ -808,6 +839,7 @@ mod tests {
             ColumnOffer {
                 zone: zone(),
                 drawn: extent::ROW_H,
+                rows: None,
             },
         );
 
@@ -816,6 +848,7 @@ mod tests {
             Some(ColumnOffer {
                 zone: zone(),
                 drawn: extent::ROW_H,
+                rows: None,
             })
         );
         assert_eq!(take_column_offer(&ctx), None, "an offer is read once");
@@ -829,6 +862,7 @@ mod tests {
             ColumnOffer {
                 zone: zone(),
                 drawn: extent::ROW_H,
+                rows: None,
             },
         );
         let _ = take_column_offer(&ctx);
@@ -837,6 +871,42 @@ mod tests {
             take_column_offer(&ctx),
             None,
             "a frame that offers nothing offers nothing"
+        );
+    }
+
+    /// The column's offer of the rows a query left, drawn at the test zone.
+    fn column_offer(rows: Option<Vec<usize>>) -> ColumnOffer {
+        ColumnOffer {
+            zone: zone(),
+            drawn: extent::ROW_H,
+            rows,
+        }
+    }
+
+    #[test]
+    fn source_row_is_identity_without_rows() {
+        let offer = column_offer(None);
+
+        assert_eq!(offer.source_row(0), Some(0));
+        assert_eq!(offer.source_row(5), Some(5), "a whole list maps to itself");
+    }
+
+    #[test]
+    fn source_row_maps_a_slot_to_its_true_row() {
+        let offer = column_offer(Some(vec![3, 7]));
+
+        assert_eq!(offer.source_row(0), Some(3), "the first drawn row");
+        assert_eq!(offer.source_row(1), Some(7), "the second drawn row");
+    }
+
+    #[test]
+    fn source_row_past_the_end_is_none() {
+        let offer = column_offer(Some(vec![3, 7]));
+
+        assert_eq!(
+            offer.source_row(2),
+            None,
+            "a slot the offer does not hold names no row"
         );
     }
 
@@ -1151,6 +1221,40 @@ mod tests {
             !List::open(&ctx, id, 8).look(6).selected,
             "the dropped row must not come back with the long list"
         );
+    }
+
+    #[test]
+    fn restrict_prunes_a_stale_pick_and_marks_it_changed() {
+        let ctx = context();
+        let id = Id::unique("list");
+        let mut list = List::open(&ctx, id, 6);
+        list.press(1, Press::Replace);
+        list.press(4, Press::Toggle);
+        list.finish(&ctx);
+
+        let mut list = List::open(&ctx, id, 6);
+        list.restrict(|row| row != 4);
+
+        assert!(!list.look(4).selected, "a hidden row is dropped");
+        assert!(list.look(1).selected);
+        assert!(list.changed, "the drop is stored on finish");
+        list.finish(&ctx);
+        assert!(!List::open(&ctx, id, 6).look(4).selected);
+    }
+
+    #[test]
+    fn restrict_that_changes_nothing_leaves_changed_false() {
+        let ctx = context();
+        let id = Id::unique("list");
+        let mut list = List::open(&ctx, id, 6);
+        list.press(1, Press::Replace);
+        list.finish(&ctx);
+
+        let mut list = List::open(&ctx, id, 6);
+        list.restrict(|row| row != 4);
+
+        assert!(list.look(1).selected);
+        assert!(!list.changed, "a no-op restriction stores nothing");
     }
 
     #[test]

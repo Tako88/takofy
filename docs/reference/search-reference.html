@@ -57,7 +57,7 @@
     </div>
     <form class="searchbar" role="search" onsubmit="return false">
       <svg class="icon icon--md" aria-hidden="true"><use href="#i-search"></use></svg>
-      <input type="search" placeholder="Artists, albums or podcasts" aria-label="Search" />
+      <input type="search" placeholder="Artists, albums or tracks" aria-label="Search" />
     </form>
     <nav class="trail" aria-label="You are here">
       <a href="index.html">Home</a>
@@ -91,7 +91,7 @@
             <p class="label">Empty</p>
             <form class="searchbar" role="search" onsubmit="return false">
               <svg class="icon icon--md" aria-hidden="true"><use href="#i-search"></use></svg>
-              <input type="search" placeholder="Artists, albums or podcasts" aria-label="Search, empty" />
+              <input type="search" placeholder="Artists, albums or tracks" aria-label="Search, empty" />
             </form>
             <p class="states__note">
               The placeholder names what the index actually holds. It is not a question the client
@@ -153,53 +153,82 @@
               </form>
 
               <ul class="search-menu menu" id="menu-anatomy" role="listbox" aria-label="Results for harbour">
-                <li class="search-menu__row is-active" role="option" aria-selected="true" data-kind="album">
-                  <img class="search-menu__art" src="img/covers/harbour-lights.jpg" alt="" />
-                  <span class="search-menu__text">
-                    <span class="search-menu__title truncate">Harbour Lights</span>
-                    <span class="search-menu__sub truncate">Vela Moreno</span>
-                  </span>
-                  <span class="search-menu__type">Album</span>
-                  <span class="search-menu__go"><svg class="icon" aria-hidden="true"><use href="#i-chevron-right"></use></svg></span>
+                <li class="search-menu__group" role="group" aria-labelledby="menu-group-tracks">
+                  <p class="search-menu__group-label" id="menu-group-tracks">Tracks <span>3 of 20</span></p>
+                  <ul class="search-menu__rows" role="none">
+                    <li class="search-menu__row is-active" role="option" aria-selected="true" data-kind="track">
+                      <img class="search-menu__art" src="img/covers/slow-tide.jpg" alt="" />
+                      <span class="search-menu__text">
+                        <span class="search-menu__title truncate">Harbour Wall</span>
+                        <span class="search-menu__sub truncate">Vela Moreno · Slow Tide</span>
+                      </span>
+                      <span class="search-menu__go"><svg class="icon" aria-hidden="true"><use href="#i-play"></use></svg></span>
+                    </li>
+                    <li class="search-menu__row" role="option" aria-selected="false" data-kind="track">
+                      <img class="search-menu__art" src="img/covers/cold-storage.jpg" alt="" />
+                      <span class="search-menu__text">
+                        <span class="search-menu__title truncate">Harbour Fog</span>
+                        <span class="search-menu__sub truncate">Nils Aker · Cold Storage</span>
+                      </span>
+                      <span class="search-menu__go"><svg class="icon" aria-hidden="true"><use href="#i-play"></use></svg></span>
+                    </li>
+                    <li class="search-menu__row" role="option" aria-selected="false" data-kind="track">
+                      <img class="search-menu__art" src="img/covers/halcyon-street.jpg" alt="" />
+                      <span class="search-menu__text">
+                        <span class="search-menu__title truncate">Harbour Bell</span>
+                        <span class="search-menu__sub truncate">The Rookery · Halcyon Street</span>
+                      </span>
+                      <span class="search-menu__go"><svg class="icon" aria-hidden="true"><use href="#i-play"></use></svg></span>
+                    </li>
+                  </ul>
                 </li>
-                <li class="search-menu__row" role="option" aria-selected="false" data-kind="track">
-                  <img class="search-menu__art" src="img/covers/slow-tide.jpg" alt="" />
-                  <span class="search-menu__text">
-                    <span class="search-menu__title truncate">Harbour Wall</span>
-                    <span class="search-menu__sub truncate">Vela Moreno · Slow Tide</span>
-                  </span>
-                  <span class="search-menu__type">Track</span>
-                  <span class="search-menu__go"><svg class="icon" aria-hidden="true"><use href="#i-chevron-right"></use></svg></span>
+
+                <li class="search-menu__group" role="group" aria-labelledby="menu-group-albums">
+                  <p class="search-menu__group-label" id="menu-group-albums">Albums <span>2 of 6</span></p>
+                  <ul class="search-menu__rows" role="none">
+                    <li class="search-menu__row" role="option" aria-selected="false" data-kind="album">
+                      <img class="search-menu__art" src="img/covers/slow-tide.jpg" alt="" />
+                      <span class="search-menu__text">
+                        <span class="search-menu__title truncate">Slow Tide</span>
+                        <span class="search-menu__sub truncate">Vela Moreno</span>
+                      </span>
+                      <span class="search-menu__go"><svg class="icon" aria-hidden="true"><use href="#i-chevron-right"></use></svg></span>
+                    </li>
+                    <li class="search-menu__row" role="option" aria-selected="false" data-kind="album">
+                      <img class="search-menu__art" src="img/covers/cold-storage.jpg" alt="" />
+                      <span class="search-menu__text">
+                        <span class="search-menu__title truncate">Cold Storage</span>
+                        <span class="search-menu__sub truncate">Nils Aker</span>
+                      </span>
+                      <span class="search-menu__go"><svg class="icon" aria-hidden="true"><use href="#i-chevron-right"></use></svg></span>
+                    </li>
+                  </ul>
                 </li>
-                <li class="search-menu__row" role="option" aria-selected="false" data-kind="artist">
-                  <img class="search-menu__art" src="img/artists/coastal-divide.jpg" alt="" />
-                  <span class="search-menu__text">
-                    <span class="search-menu__title truncate">Harbour</span>
-                    <span class="search-menu__sub truncate">91,204 monthly listeners</span>
-                  </span>
-                  <span class="search-menu__type">Artist</span>
-                  <span class="search-menu__go"><svg class="icon" aria-hidden="true"><use href="#i-chevron-right"></use></svg></span>
+
+                <li class="search-menu__group" role="group" aria-labelledby="menu-group-artists">
+                  <p class="search-menu__group-label" id="menu-group-artists">Artists <span>2 of 4</span></p>
+                  <ul class="search-menu__rows" role="none">
+                    <li class="search-menu__row" role="option" aria-selected="false" data-kind="artist">
+                      <img class="search-menu__art" src="img/artists/the-rookery.jpg" alt="" />
+                      <span class="search-menu__text">
+                        <span class="search-menu__title truncate">The Rookery</span>
+                        <span class="search-menu__sub truncate">5 tracks</span>
+                      </span>
+                      <span class="search-menu__go"><svg class="icon" aria-hidden="true"><use href="#i-chevron-right"></use></svg></span>
+                    </li>
+                    <li class="search-menu__row" role="option" aria-selected="false" data-kind="artist">
+                      <img class="search-menu__art" src="img/artists/vela-moreno.jpg" alt="" />
+                      <span class="search-menu__text">
+                        <span class="search-menu__title truncate">Vela Moreno</span>
+                        <span class="search-menu__sub truncate">8 tracks</span>
+                      </span>
+                      <span class="search-menu__go"><svg class="icon" aria-hidden="true"><use href="#i-chevron-right"></use></svg></span>
+                    </li>
+                  </ul>
                 </li>
-                <li class="search-menu__row" role="option" aria-selected="false" data-kind="playlist">
-                  <img class="search-menu__art" src="img/covers/saltglass.jpg" alt="" />
-                  <span class="search-menu__text">
-                    <span class="search-menu__title truncate">Harbour Static</span>
-                    <span class="search-menu__sub truncate">Made for you</span>
-                  </span>
-                  <span class="search-menu__type">Playlist</span>
-                  <span class="search-menu__go"><svg class="icon" aria-hidden="true"><use href="#i-chevron-right"></use></svg></span>
-                </li>
-                <li class="search-menu__row" role="option" aria-selected="false" data-kind="podcast">
-                  <img class="search-menu__art" src="img/covers/pod-long-way-round.jpg" alt="" />
-                  <span class="search-menu__text">
-                    <span class="search-menu__title truncate">Harbour Road</span>
-                    <span class="search-menu__sub truncate">Wanderline</span>
-                  </span>
-                  <span class="search-menu__type">Podcast</span>
-                  <span class="search-menu__go"><svg class="icon" aria-hidden="true"><use href="#i-chevron-right"></use></svg></span>
-                </li>
+
                 <li class="search-menu__row search-menu__all" role="option" aria-selected="false">
-                  <span class="truncate">See all 12 results for <b>“harbour”</b></span>
+                  <span class="truncate">See more results for <b>“harbour”</b></span>
                   <svg class="icon" aria-hidden="true"><use href="#i-chevron-right"></use></svg>
                 </li>
               </ul>
@@ -209,7 +238,7 @@
           <div class="search-stage__page" aria-hidden="true">
             <div class="search-stage__cards">
               <div class="search-stage__card"><img src="img/covers/nocturne-field.jpg" alt="" /><span>Nocturne Field</span></div>
-              <div class="search-stage__card"><img src="img/covers/harbour-lights.jpg" alt="" /><span>Harbour Lights</span></div>
+              <div class="search-stage__card"><img src="img/covers/slow-tide.jpg" alt="" /><span>Slow Tide</span></div>
               <div class="search-stage__card"><img src="img/covers/low-country.jpg" alt="" /><span>Low Country</span></div>
               <div class="search-stage__card"><img src="img/covers/wintering.jpg" alt="" /><span>Wintering</span></div>
             </div>
@@ -218,12 +247,22 @@
 
         <p class="states__note">
           Same width as the field, 6px below it, 3px radius, one hairline border plus the app's
-          largest shadow. Rows are 44px: a 36px cover, the title over its owner, and a mono kind tag
-          at the right edge. <b>No duration column</b> — a duration cannot compare a four-minute
-          track with a 128-episode show, and the kind is the thing that tells you what Enter will
-          do. The highlighted row trades its kind tag for the action glyph: a chevron for anything
-          that opens, play/pause for a track. At rail width the tag is the first thing to go — see
-          section 08.
+          largest shadow. Rows are 44px: a 36px cover, the title over its owner, and <b>no kind
+          tag</b> — the band label already said what kind this is, and a tag repeating the word
+          you just read is a column spent on nothing. The menu answers in three bands, always in
+          this order: tracks, then albums, then artists. Each heading is the app's head grammar at
+          small size — a mono caps label with that band's share on the right: <b>3 of 20</b>, the
+          app's own showing-versus-total phrasing, so a band that is hiding something says so
+          without spending a “more” row of its own. A band that shows everything prints its total
+          alone. A hairline separates one band from the next, and bands are capped (three tracks, two
+          albums, two artists) so the whole thing stays on one screen. The index answers tracks and
+          nothing else: the album and artist bands are read off the same twenty, so an album row is
+          the record a match sits on and an artist row counts how many of the twenty are theirs —
+          which is also why no row here quotes a listener count the payload cannot carry. The
+          highlighted row spends the space where the tag used to sit on the action glyph, so it can
+          never disagree with what Enter does: play/pause for a track, a chevron for anything that
+          opens. Playlists and shows are missing for the same reason rather than by oversight: the
+          index returns tracks, so there is nothing to derive a playlist band from.
         </p>
       </section>
 
@@ -240,12 +279,11 @@
             <div class="search-sheet">
               <ul class="search-menu menu" role="listbox" aria-label="Active row example">
                 <li class="search-menu__row is-active" role="option" aria-selected="true" data-kind="album">
-                  <img class="search-menu__art" src="img/covers/harbour-lights.jpg" alt="" />
+                  <img class="search-menu__art" src="img/covers/slow-tide.jpg" alt="" />
                   <span class="search-menu__text">
-                    <span class="search-menu__title truncate">Harbour Lights</span>
+                    <span class="search-menu__title truncate">Slow Tide</span>
                     <span class="search-menu__sub truncate">Vela Moreno</span>
                   </span>
-                  <span class="search-menu__type">Album</span>
                   <span class="search-menu__go"><svg class="icon" aria-hidden="true"><use href="#i-chevron-right"></use></svg></span>
                 </li>
               </ul>
@@ -266,7 +304,6 @@
                     <span class="search-menu__title truncate">Harbour Wall</span>
                     <span class="search-menu__sub truncate">Vela Moreno · Slow Tide</span>
                   </span>
-                  <span class="search-menu__type">Track</span>
                   <span class="search-menu__go"><svg class="icon" aria-hidden="true"><use href="#i-chevron-right"></use></svg></span>
                 </li>
               </ul>
@@ -287,13 +324,12 @@
                     <span class="search-menu__title truncate">Slow Tide</span>
                     <span class="search-menu__sub truncate">Vela Moreno · Slow Tide</span>
                   </span>
-                  <span class="search-menu__type">Track</span>
                   <span class="search-menu__eq" aria-hidden="true"><span class="eq"><i></i><i></i><i></i></span></span>
                 </li>
               </ul>
             </div>
             <p class="states__note">
-              The accent rule at the margin, and the equaliser in place of the kind tag. If the
+              The accent rule at the margin, and the equaliser in place of the action glyph. If the
               arrows land on this row as well, the accent stays — identity beats focus — and the
               glyph becomes pause.
             </p>
@@ -312,23 +348,35 @@
       <section class="section" aria-labelledby="ref-floor">
         <div class="section__head">
           <h2 class="section__title" id="ref-floor"><span class="states__no">04</span>The floor of the list</h2>
-          <p class="label states__meta">5 rows + 1 action</p>
+          <p class="label states__meta">1 band · 1 action</p>
         </div>
 
         <div class="states__stage">
           <div class="search-sheet">
             <ul class="search-menu menu" role="listbox" aria-label="Last rows of the menu">
-              <li class="search-menu__row" role="option" aria-selected="false" data-kind="podcast">
-                <img class="search-menu__art" src="img/covers/pod-long-way-round.jpg" alt="" />
+              <li class="search-menu__group" role="group" aria-labelledby="floor-group-artists">
+                <p class="search-menu__group-label" id="floor-group-artists">Artists <span>2 of 4</span></p>
+                <ul class="search-menu__rows" role="none">
+              <li class="search-menu__row" role="option" aria-selected="false" data-kind="artist">
+                <img class="search-menu__art" src="img/artists/the-rookery.jpg" alt="" />
                 <span class="search-menu__text">
-                  <span class="search-menu__title truncate">Harbour Road</span>
-                  <span class="search-menu__sub truncate">Wanderline</span>
+                  <span class="search-menu__title truncate">The Rookery</span>
+                  <span class="search-menu__sub truncate">5 tracks</span>
                 </span>
-                <span class="search-menu__type">Podcast</span>
                 <span class="search-menu__go"><svg class="icon" aria-hidden="true"><use href="#i-chevron-right"></use></svg></span>
               </li>
+              <li class="search-menu__row" role="option" aria-selected="false" data-kind="artist">
+                <img class="search-menu__art" src="img/artists/vela-moreno.jpg" alt="" />
+                <span class="search-menu__text">
+                  <span class="search-menu__title truncate">Vela Moreno</span>
+                  <span class="search-menu__sub truncate">8 tracks</span>
+                </span>
+                <span class="search-menu__go"><svg class="icon" aria-hidden="true"><use href="#i-chevron-right"></use></svg></span>
+              </li>
+                </ul>
+              </li>
               <li class="search-menu__row search-menu__all is-active" role="option" aria-selected="true">
-                <span class="truncate">See all 12 results for <b>“harbour”</b></span>
+                <span class="truncate">See more results for <b>“harbour”</b></span>
                 <svg class="icon" aria-hidden="true"><use href="#i-chevron-right"></use></svg>
               </li>
             </ul>
@@ -336,11 +384,13 @@
         </div>
 
         <p class="states__note">
-          Five results, then a sixth row that is an action: <b>See all 12 results for “harbour”</b>.
-          Without that row the results page would be reachable only by pressing Enter on the right
-          result — a keyboard-only route. It is a full 44px row in the menu's mono voice, it takes
-          the same highlight, and it is the only row without a cover. When the total is five or
-          fewer there is nothing left over, so the action row is not rendered.
+          Each band is capped, so the menu always ends mid-catalogue — here, on the second artist —
+          and then comes a row that is an action: <b>See more results for “harbour”</b>. Without
+          it a truncated band would be a dead end: the results page would be reachable only by
+          pressing Enter on the right row, a keyboard-only route. It is a full 44px row, it speaks
+          in the app's sentence case with the query in bone — a voice no band label uses — it takes
+          the same highlight, and it is the only row without a cover. When no band is capped
+          nothing is left over, so the action row is not rendered at all.
         </p>
       </section>
 
@@ -362,7 +412,7 @@
 
         <p class="states__note">
           The menu is a lens, not a mode: no scrim, no blur, no dimming of the page beneath — the
-          covers in section 02 stay at their normal brightness while five results float over them.
+          covers in section 02 stay at their normal brightness while seven results float over them.
           It is not clipped by the top bar, which is static and has no overflow of its own; it
           crosses that hairline and is stopped only by the app panel's rounded frame. On a phone
           that panel is the viewport, so the viewport edge is where the list ends.
@@ -373,46 +423,36 @@
       <section class="section" aria-labelledby="ref-results">
         <div class="section__head">
           <h2 class="section__title" id="ref-results"><span class="states__no">06</span>The results page</h2>
-          <p class="label states__meta">mixed list · kind column</p>
+          <p class="label states__meta">three bands · one kind per block</p>
         </div>
 
         <div class="states__stage">
           <div class="page-head">
             <p class="page-head__title">Results for “harbour”</p>
-            <p class="page-head__note">12 results</p>
+            <p class="page-head__note">Top 20 tracks</p>
           </div>
+
+          <section class="section section--first" aria-labelledby="res-tracks">
+            <div class="section__head">
+              <h3 class="section__title" id="res-tracks">Tracks</h3>
+              <span class="section__link">10 of 20</span>
+            </div>
 
           <div class="tracks tracks--results">
             <div class="tracklist__head">
               <span class="tracklist__head-number">#</span>
               <span>Title</span>
-              <span class="tracklist__head-meta">Kind</span>
+              <span class="tracklist__head-meta">Artist</span>
+              <span class="tracklist__head-album tracklist__head-meta">Album</span>
               <span></span>
+              <span class="tracklist__head-end"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-clock"></use></svg></span>
               <span></span>
             </div>
 
             <ol class="tracklist" data-playing-scope>
-              <li class="track-row" data-kind="album">
+              <li class="track-row" data-track="Harbour Wall" data-artist="Vela Moreno" data-art="img/covers/slow-tide.jpg" data-duration="245">
                 <span class="track-row__index">
                   <span class="track-row__number">1</span>
-                  <button class="track-row__toggle" type="button" aria-label="Play Harbour Lights"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg></button>
-                  <span class="track-row__eq" aria-hidden="true"><span class="eq"><i></i><i></i><i></i></span></span>
-                </span>
-                <span class="track-row__title">
-                  <img class="track-row__art" src="img/covers/harbour-lights.jpg" alt="" loading="lazy" />
-                  <span class="track-row__text">
-                    <span class="track-row__name truncate">Harbour Lights</span>
-                    <span class="track-row__artist truncate">Vela Moreno</span>
-                  </span>
-                </span>
-                <span class="track-row__meta">Album</span>
-                <span><button class="icon-button track-row__like" type="button" data-like data-like-group="row" aria-pressed="false" aria-label="Save Harbour Lights"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-heart"></use></svg></button></span>
-                <span class="track-row__actions"><button class="icon-button" type="button" aria-label="More options for Harbour Lights"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button></span>
-              </li>
-
-              <li class="track-row" data-kind="track">
-                <span class="track-row__index">
-                  <span class="track-row__number">2</span>
                   <button class="track-row__toggle" type="button" aria-label="Play Harbour Wall"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg></button>
                   <span class="track-row__eq" aria-hidden="true"><span class="eq"><i></i><i></i><i></i></span></span>
                 </span>
@@ -420,79 +460,355 @@
                   <img class="track-row__art" src="img/covers/slow-tide.jpg" alt="" loading="lazy" />
                   <span class="track-row__text">
                     <span class="track-row__name truncate">Harbour Wall</span>
-                    <span class="track-row__artist truncate">Vela Moreno · Slow Tide</span>
                   </span>
                 </span>
-                <span class="track-row__meta">Track</span>
+                <span class="track-row__artist truncate"><a href="artist.html">Vela Moreno</a></span>
+                <span class="track-row__album truncate"><a href="album.html">Slow Tide</a></span>
                 <span><button class="icon-button track-row__like" type="button" data-like data-like-group="row" aria-pressed="true" aria-label="Saved Harbour Wall"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-heart-filled"></use></svg></button></span>
+                <span class="track-row__duration">4:05</span>
                 <span class="track-row__actions"><button class="icon-button" type="button" aria-label="More options for Harbour Wall"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button></span>
               </li>
 
-              <li class="track-row" data-kind="artist">
+              <li class="track-row" data-track="Harbour Fog" data-artist="Nils Aker" data-art="img/covers/cold-storage.jpg" data-duration="212">
                 <span class="track-row__index">
-                  <span class="track-row__number">3</span>
-                  <button class="track-row__toggle" type="button" aria-label="Play Harbour"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg></button>
+                  <span class="track-row__number">2</span>
+                  <button class="track-row__toggle" type="button" aria-label="Play Harbour Fog"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg></button>
                   <span class="track-row__eq" aria-hidden="true"><span class="eq"><i></i><i></i><i></i></span></span>
                 </span>
                 <span class="track-row__title">
-                  <img class="track-row__art" src="img/artists/coastal-divide.jpg" alt="" loading="lazy" />
+                  <img class="track-row__art" src="img/covers/cold-storage.jpg" alt="" loading="lazy" />
                   <span class="track-row__text">
-                    <span class="track-row__name truncate">Harbour</span>
-                    <span class="track-row__artist truncate">91,204 monthly listeners</span>
+                    <span class="track-row__name truncate">Harbour Fog</span>
                   </span>
                 </span>
-                <span class="track-row__meta">Artist</span>
-                <span><button class="icon-button track-row__like" type="button" data-like data-like-group="row" aria-pressed="false" aria-label="Save Harbour"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-heart"></use></svg></button></span>
-                <span class="track-row__actions"><button class="icon-button" type="button" aria-label="More options for Harbour"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button></span>
+                <span class="track-row__artist truncate"><a href="artist.html">Nils Aker</a></span>
+                <span class="track-row__album truncate"><a href="album.html">Cold Storage</a></span>
+                <span><button class="icon-button track-row__like" type="button" data-like data-like-group="row" aria-pressed="false" aria-label="Save Harbour Fog"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-heart"></use></svg></button></span>
+                <span class="track-row__duration">3:32</span>
+                <span class="track-row__actions"><button class="icon-button" type="button" aria-label="More options for Harbour Fog"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button></span>
               </li>
 
-              <li class="track-row" data-kind="playlist">
+              <li class="track-row" data-track="Harbour Bell" data-artist="The Rookery" data-art="img/covers/halcyon-street.jpg" data-duration="196">
+                <span class="track-row__index">
+                  <span class="track-row__number">3</span>
+                  <button class="track-row__toggle" type="button" aria-label="Play Harbour Bell"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg></button>
+                  <span class="track-row__eq" aria-hidden="true"><span class="eq"><i></i><i></i><i></i></span></span>
+                </span>
+                <span class="track-row__title">
+                  <img class="track-row__art" src="img/covers/halcyon-street.jpg" alt="" loading="lazy" />
+                  <span class="track-row__text">
+                    <span class="track-row__name truncate">Harbour Bell</span>
+                  </span>
+                </span>
+                <span class="track-row__artist truncate"><a href="artist.html">The Rookery</a></span>
+                <span class="track-row__album truncate"><a href="album.html">Halcyon Street</a></span>
+                <span><button class="icon-button track-row__like" type="button" data-like data-like-group="row" aria-pressed="false" aria-label="Save Harbour Bell"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-heart"></use></svg></button></span>
+                <span class="track-row__duration">3:16</span>
+                <span class="track-row__actions"><button class="icon-button" type="button" aria-label="More options for Harbour Bell"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button></span>
+              </li>
+
+              <li class="track-row" data-track="Harbour Line" data-artist="Hana Sō" data-art="img/covers/blue-hour.jpg" data-duration="238">
                 <span class="track-row__index">
                   <span class="track-row__number">4</span>
-                  <button class="track-row__toggle" type="button" aria-label="Play Harbour Static"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg></button>
+                  <button class="track-row__toggle" type="button" aria-label="Play Harbour Line"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg></button>
+                  <span class="track-row__eq" aria-hidden="true"><span class="eq"><i></i><i></i><i></i></span></span>
+                </span>
+                <span class="track-row__title">
+                  <img class="track-row__art" src="img/covers/blue-hour.jpg" alt="" loading="lazy" />
+                  <span class="track-row__text">
+                    <span class="track-row__name truncate">Harbour Line</span>
+                  </span>
+                </span>
+                <span class="track-row__artist truncate"><a href="artist.html">Hana Sō</a></span>
+                <span class="track-row__album truncate"><a href="album.html">Blue Hour</a></span>
+                <span><button class="icon-button track-row__like" type="button" data-like data-like-group="row" aria-pressed="false" aria-label="Save Harbour Line"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-heart"></use></svg></button></span>
+                <span class="track-row__duration">3:58</span>
+                <span class="track-row__actions"><button class="icon-button" type="button" aria-label="More options for Harbour Line"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button></span>
+              </li>
+
+              <li class="track-row" data-track="Harbour Lights" data-artist="Vela Moreno" data-art="img/covers/slow-tide.jpg" data-duration="262">
+                <span class="track-row__index">
+                  <span class="track-row__number">5</span>
+                  <button class="track-row__toggle" type="button" aria-label="Play Harbour Lights"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg></button>
+                  <span class="track-row__eq" aria-hidden="true"><span class="eq"><i></i><i></i><i></i></span></span>
+                </span>
+                <span class="track-row__title">
+                  <img class="track-row__art" src="img/covers/slow-tide.jpg" alt="" loading="lazy" />
+                  <span class="track-row__text">
+                    <span class="track-row__name truncate">Harbour Lights</span>
+                  </span>
+                </span>
+                <span class="track-row__artist truncate"><a href="artist.html">Vela Moreno</a></span>
+                <span class="track-row__album truncate"><a href="album.html">Slow Tide</a></span>
+                <span><button class="icon-button track-row__like" type="button" data-like data-like-group="row" aria-pressed="false" aria-label="Save Harbour Lights"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-heart"></use></svg></button></span>
+                <span class="track-row__duration">4:22</span>
+                <span class="track-row__actions"><button class="icon-button" type="button" aria-label="More options for Harbour Lights"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button></span>
+              </li>
+              <li class="track-row" data-track="Harbour Road" data-artist="Vela Moreno" data-art="img/covers/saltglass.jpg" data-duration="271">
+                <span class="track-row__index">
+                  <span class="track-row__number">6</span>
+                  <button class="track-row__toggle" type="button" aria-label="Play Harbour Road"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play" data-play-icon"></use></svg></button>
                   <span class="track-row__eq" aria-hidden="true"><span class="eq"><i></i><i></i><i></i></span></span>
                 </span>
                 <span class="track-row__title">
                   <img class="track-row__art" src="img/covers/saltglass.jpg" alt="" loading="lazy" />
                   <span class="track-row__text">
-                    <span class="track-row__name truncate">Harbour Static</span>
-                    <span class="track-row__artist truncate">Made for you · 37 songs</span>
+                    <span class="track-row__name truncate">Harbour Road</span>
                   </span>
                 </span>
-                <span class="track-row__meta">Playlist</span>
-                <span><button class="icon-button track-row__like" type="button" data-like data-like-group="row" aria-pressed="false" aria-label="Save Harbour Static"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-heart"></use></svg></button></span>
-                <span class="track-row__actions"><button class="icon-button" type="button" aria-label="More options for Harbour Static"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button></span>
+                <span class="track-row__artist truncate"><a href="artist.html">Vela Moreno</a></span>
+                <span class="track-row__album truncate"><a href="album.html">Saltglass</a></span>
+                <span><button class="icon-button track-row__like" type="button" data-like data-like-group="row" aria-pressed="false" aria-label="Save Harbour Road"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-heart"></use></svg></button></span>
+                <span class="track-row__duration">4:31</span>
+                <span class="track-row__actions"><button class="icon-button" type="button" aria-label="More options for Harbour Road"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button></span>
               </li>
-
-              <li class="track-row" data-kind="podcast">
+              <li class="track-row" data-track="Harbour Wall (Reprise)" data-artist="Vela Moreno" data-art="img/covers/slow-tide.jpg" data-duration="134">
                 <span class="track-row__index">
-                  <span class="track-row__number">5</span>
-                  <button class="track-row__toggle" type="button" aria-label="Play Harbour Road"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg></button>
+                  <span class="track-row__number">7</span>
+                  <button class="track-row__toggle" type="button" aria-label="Play Harbour Wall (Reprise)"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg></button>
                   <span class="track-row__eq" aria-hidden="true"><span class="eq"><i></i><i></i><i></i></span></span>
                 </span>
                 <span class="track-row__title">
-                  <img class="track-row__art" src="img/covers/pod-long-way-round.jpg" alt="" loading="lazy" />
+                  <img class="track-row__art" src="img/covers/slow-tide.jpg" alt="" loading="lazy" />
                   <span class="track-row__text">
-                    <span class="track-row__name truncate">Harbour Road</span>
-                    <span class="track-row__artist truncate">Wanderline · 44 episodes</span>
+                    <span class="track-row__name truncate">Harbour Wall (Reprise)</span>
                   </span>
                 </span>
-                <span class="track-row__meta">Podcast</span>
-                <span><button class="icon-button track-row__like" type="button" data-like data-like-group="row" aria-pressed="false" aria-label="Save Harbour Road"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-heart"></use></svg></button></span>
-                <span class="track-row__actions"><button class="icon-button" type="button" aria-label="More options for Harbour Road"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button></span>
+                <span class="track-row__artist truncate"><a href="artist.html">Vela Moreno</a></span>
+                <span class="track-row__album truncate"><a href="album.html">Slow Tide</a></span>
+                <span><button class="icon-button track-row__like" type="button" data-like data-like-group="row" aria-pressed="false" aria-label="Save Harbour Wall (Reprise)"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-heart"></use></svg></button></span>
+                <span class="track-row__duration">2:14</span>
+                <span class="track-row__actions"><button class="icon-button" type="button" aria-label="More options for Harbour Wall (Reprise)"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button></span>
+              </li>
+
+              <li class="track-row" data-track="Harbour Towns" data-artist="The Rookery" data-art="img/covers/terminal.jpg" data-duration="252">
+                <span class="track-row__index">
+                  <span class="track-row__number">8</span>
+                  <button class="track-row__toggle" type="button" aria-label="Play Harbour Towns"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg></button>
+                  <span class="track-row__eq" aria-hidden="true"><span class="eq"><i></i><i></i><i></i></span></span>
+                </span>
+                <span class="track-row__title">
+                  <img class="track-row__art" src="img/covers/terminal.jpg" alt="" loading="lazy" />
+                  <span class="track-row__text">
+                    <span class="track-row__name truncate">Harbour Towns</span>
+                  </span>
+                </span>
+                <span class="track-row__artist truncate"><a href="artist.html">The Rookery</a></span>
+                <span class="track-row__album truncate"><a href="album.html">Terminal</a></span>
+                <span><button class="icon-button track-row__like" type="button" data-like data-like-group="row" aria-pressed="false" aria-label="Save Harbour Towns"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-heart"></use></svg></button></span>
+                <span class="track-row__duration">4:12</span>
+                <span class="track-row__actions"><button class="icon-button" type="button" aria-label="More options for Harbour Towns"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button></span>
+              </li>
+
+              <li class="track-row" data-track="Harbour Salts" data-artist="Vela Moreno" data-art="img/covers/saltglass.jpg" data-duration="227">
+                <span class="track-row__index">
+                  <span class="track-row__number">9</span>
+                  <button class="track-row__toggle" type="button" aria-label="Play Harbour Salts"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play" data-play-icon"></use></svg></button>
+                  <span class="track-row__eq" aria-hidden="true"><span class="eq"><i></i><i></i><i></i></span></span>
+                </span>
+                <span class="track-row__title">
+                  <img class="track-row__art" src="img/covers/saltglass.jpg" alt="" loading="lazy" />
+                  <span class="track-row__text">
+                    <span class="track-row__name truncate">Harbour Salts</span>
+                  </span>
+                </span>
+                <span class="track-row__artist truncate"><a href="artist.html">Vela Moreno</a></span>
+                <span class="track-row__album truncate"><a href="album.html">Saltglass</a></span>
+                <span><button class="icon-button track-row__like" type="button" data-like data-like-group="row" aria-pressed="false" aria-label="Save Harbour Salts"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-heart"></use></svg></button></span>
+                <span class="track-row__duration">3:47</span>
+                <span class="track-row__actions"><button class="icon-button" type="button" aria-label="More options for Harbour Salts"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button></span>
+              </li>
+
+              <li class="track-row" data-track="Harbour Static" data-artist="The Rookery" data-art="img/covers/halcyon-street.jpg" data-duration="209">
+                <span class="track-row__index">
+                  <span class="track-row__number">10</span>
+                  <button class="track-row__toggle" type="button" aria-label="Play Harbour Static"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play" data-play-icon"></use></svg></button>
+                  <span class="track-row__eq" aria-hidden="true"><span class="eq"><i></i><i></i><i></i></span></span>
+                </span>
+                <span class="track-row__title">
+                  <img class="track-row__art" src="img/covers/halcyon-street.jpg" alt="" loading="lazy" />
+                  <span class="track-row__text">
+                    <span class="track-row__name truncate">Harbour Static</span>
+                  </span>
+                </span>
+                <span class="track-row__artist truncate"><a href="artist.html">The Rookery</a></span>
+                <span class="track-row__album truncate"><a href="album.html">Halcyon Street</a></span>
+                <span><button class="icon-button track-row__like" type="button" data-like data-like-group="row" aria-pressed="false" aria-label="Save Harbour Static"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-heart"></use></svg></button></span>
+                <span class="track-row__duration">3:29</span>
+                <span class="track-row__actions"><button class="icon-button" type="button" aria-label="More options for Harbour Static"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button></span>
               </li>
             </ol>
+
+            <button class="list-more" type="button">
+              Show 10 more tracks
+              <svg class="icon" aria-hidden="true"><use href="#i-chevron-down"></use></svg>
+            </button>
           </div>
+          </section>
+
+          <section class="section" aria-labelledby="res-albums">
+            <div class="section__head">
+              <h3 class="section__title" id="res-albums">Albums</h3>
+              <span class="section__link">6</span>
+            </div>
+
+            <ul class="card-grid" data-playing-scope>
+              <li class="card">
+                <div class="card__art">
+                  <img src="img/covers/slow-tide.jpg" alt="" loading="lazy" />
+                  <button class="card__play" type="button" data-track="Harbour Wall" data-artist="Vela Moreno" data-art="img/covers/slow-tide.jpg" data-duration="245" aria-label="Play Slow Tide">
+                    <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon"></use></svg>
+                  </button>
+                </div>
+                <div class="card__body">
+                  <a class="card__title truncate" href="album.html">Slow Tide</a>
+                  <p class="card__sub truncate">Vela Moreno</p>
+                </div>
+              </li>
+              <li class="card">
+                <div class="card__art">
+                  <img src="img/covers/cold-storage.jpg" alt="" loading="lazy" />
+                  <button class="card__play" type="button" data-track="Harbour Fog" data-artist="Nils Aker" data-art="img/covers/cold-storage.jpg" data-duration="212" aria-label="Play Cold Storage">
+                    <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon"></use></svg>
+                  </button>
+                </div>
+                <div class="card__body">
+                  <a class="card__title truncate" href="album.html">Cold Storage</a>
+                  <p class="card__sub truncate">Nils Aker</p>
+                </div>
+              </li>
+              <li class="card">
+                <div class="card__art">
+                  <img src="img/covers/halcyon-street.jpg" alt="" loading="lazy" />
+                  <button class="card__play" type="button" data-track="Harbour Bell" data-artist="The Rookery" data-art="img/covers/halcyon-street.jpg" data-duration="196" aria-label="Play Halcyon Street">
+                    <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon"></use></svg>
+                  </button>
+                </div>
+                <div class="card__body">
+                  <a class="card__title truncate" href="album.html">Halcyon Street</a>
+                  <p class="card__sub truncate">The Rookery</p>
+                </div>
+              </li>
+              <li class="card">
+                <div class="card__art">
+                  <img src="img/covers/terminal.jpg" alt="" loading="lazy" />
+                  <button class="card__play" type="button" data-track="Harbour Towns" data-artist="The Rookery" data-art="img/covers/terminal.jpg" data-duration="252" aria-label="Play Terminal">
+                    <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon"></use></svg>
+                  </button>
+                </div>
+                <div class="card__body">
+                  <a class="card__title truncate" href="album.html">Terminal</a>
+                  <p class="card__sub truncate">The Rookery</p>
+                </div>
+              </li>
+              <li class="card">
+                <div class="card__art">
+                  <img src="img/covers/blue-hour.jpg" alt="" loading="lazy" />
+                  <button class="card__play" type="button" data-track="Harbour Line" data-artist="Hana Sō" data-art="img/covers/blue-hour.jpg" data-duration="238" aria-label="Play Blue Hour">
+                    <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon"></use></svg>
+                  </button>
+                </div>
+                <div class="card__body">
+                  <a class="card__title truncate" href="album.html">Blue Hour</a>
+                  <p class="card__sub truncate">Hana Sō</p>
+                </div>
+              </li>
+              <li class="card">
+                <div class="card__art">
+                  <img src="img/covers/saltglass.jpg" alt="" loading="lazy" />
+                  <button class="card__play" type="button" data-track="Harbour Salts" data-artist="Vela Moreno" data-art="img/covers/saltglass.jpg" data-duration="227" aria-label="Play Saltglass">
+                    <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon"></use></svg>
+                  </button>
+                </div>
+                <div class="card__body">
+                  <a class="card__title truncate" href="album.html">Saltglass</a>
+                  <p class="card__sub truncate">Vela Moreno</p>
+                </div>
+              </li>
+            </ul>
+          </section>
+
+          <section class="section" aria-labelledby="res-artists">
+            <div class="section__head">
+              <h3 class="section__title" id="res-artists">Artists</h3>
+              <span class="section__link">4</span>
+            </div>
+
+            <ul class="card-grid" data-playing-scope>
+              <li class="card card--artist">
+                <div class="card__art">
+                  <img src="img/artists/the-rookery.jpg" alt="" loading="lazy" />
+                  <button class="card__play" type="button" data-track="Harbour Bell" data-artist="The Rookery" data-art="img/covers/halcyon-street.jpg" data-duration="196" aria-label="Play The Rookery">
+                    <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon"></use></svg>
+                  </button>
+                </div>
+                <div class="card__body">
+                  <a class="card__title truncate" href="artist.html">The Rookery</a>
+                  <p class="card__sub truncate">5 tracks</p>
+                </div>
+              </li>
+              <li class="card card--artist">
+                <div class="card__art">
+                  <img src="img/artists/vela-moreno.jpg" alt="" loading="lazy" />
+                  <button class="card__play" type="button" data-track="Harbour Wall" data-artist="Vela Moreno" data-art="img/covers/slow-tide.jpg" data-duration="245" aria-label="Play Vela Moreno">
+                    <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon"></use></svg>
+                  </button>
+                </div>
+                <div class="card__body">
+                  <a class="card__title truncate" href="artist.html">Vela Moreno</a>
+                  <p class="card__sub truncate">8 tracks</p>
+                </div>
+              </li>
+              <li class="card card--artist">
+                <div class="card__art">
+                  <img src="img/artists/nils-aker.jpg" alt="" loading="lazy" />
+                  <button class="card__play" type="button" data-track="Harbour Fog" data-artist="Nils Aker" data-art="img/covers/cold-storage.jpg" data-duration="212" aria-label="Play Nils Aker">
+                    <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon"></use></svg>
+                  </button>
+                </div>
+                <div class="card__body">
+                  <a class="card__title truncate" href="artist.html">Nils Aker</a>
+                  <p class="card__sub truncate">4 tracks</p>
+                </div>
+              </li>
+              <li class="card card--artist">
+                <div class="card__art">
+                  <img src="img/artists/hana-so.jpg" alt="" loading="lazy" />
+                  <button class="card__play" type="button" data-track="Harbour Line" data-artist="Hana Sō" data-art="img/covers/blue-hour.jpg" data-duration="238" aria-label="Play Hana Sō">
+                    <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon"></use></svg>
+                  </button>
+                </div>
+                <div class="card__body">
+                  <a class="card__title truncate" href="artist.html">Hana Sō</a>
+                  <p class="card__sub truncate">3 tracks</p>
+                </div>
+              </li>
+            </ul>
+          </section>
         </div>
 
         <p class="states__note">
-          Neither of the playlist tables as it stands. Results are of different kinds, so the Album
-          column says nothing — a track has one, a playlist does not — and it is replaced by Kind;
-          the artist folds under the title, which is exactly the anatomy of the menu's rows. Coming
-          out of the menu into the page, nothing has to be re-read. No count line under the heading:
-          the total sits in the head's right slot, where every other view keeps its size readout.
-          And nothing where the album band would be — a query has no artwork to tint from. At rail
-          width the Kind column drops with the menu's kind tag, leaving the cover and the title.
+          One kind per block, and each block wears the grammar it already has everywhere else in
+          the app: the tracks come as a tracklist — and the Album column is honest again, because
+          the block is tracks only, which is exactly what the mixed list could not say — while
+          albums and artists come as the card grids a shelf uses. <b>The index answers twenty tracks
+          and stops</b>, so the page says so once, at the top: a hard cap that stays quiet reads as
+          the whole catalogue. Ten rows, then one control that asks for the rest and then takes
+          itself away — a request, not a switch, so it never collapses back, and a new query starts
+          at ten again. The other two bands are read off <b>all twenty</b>, never off the ten on
+          screen: computed from what is visible, they would grow underneath you the moment the list
+          expanded and move the page while you were reading it. That is also what they can honestly
+          claim — the album a match sits on, and how many of the twenty an artist accounts for; no
+          listener counts, because a track payload has none. Every band caps at ten, rows or cards,
+          with the same reveal, so the page has one rule rather than three. Each band keeps its
+          size in the head's right slot — 10 of 20 is the same grammar as the menu's bands. Nothing
+          where the album band would be: a query has no artwork to tint from. In a narrower window
+          the album column is the first thing the track block gives up; at phone width the artist
+          wraps under the title, exactly as a playlist does, and the grids fall to two columns.
+        </p>
+        <p class="states__note">
+          The specimen draws the first ten rows and stops at the control, because that is the state
+          every query arrives in.
         </p>
       </section>
 
@@ -522,7 +838,7 @@
             <div class="search-sheet search-sheet--wide">
               <div class="page-head">
                 <p class="page-head__title">Results for “harbour lights, 1974”</p>
-                <p class="page-head__note">0 results</p>
+                <p class="page-head__note">0 tracks</p>
               </div>
               <div class="empty-state">
                 <p class="empty-state__title">Nothing in the catalogue matches that</p>
@@ -556,26 +872,58 @@
             </form>
 
             <ul class="search-menu menu" role="listbox" aria-label="Narrow rail results">
-              <li class="search-menu__row is-active" role="option" aria-selected="true" data-kind="album">
-                <img class="search-menu__art" src="img/covers/harbour-lights.jpg" alt="" />
-                <span class="search-menu__text">
-                  <span class="search-menu__title truncate">Harbour Lights</span>
-                  <span class="search-menu__sub truncate">Vela Moreno</span>
-                </span>
-                <span class="search-menu__type">Album</span>
-                <span class="search-menu__go"><svg class="icon" aria-hidden="true"><use href="#i-chevron-right"></use></svg></span>
+              <li class="search-menu__group" role="group" aria-labelledby="rail-group-tracks">
+                <p class="search-menu__group-label" id="rail-group-tracks">Tracks <span>2 of 20</span></p>
+                <ul class="search-menu__rows" role="none">
+                  <li class="search-menu__row is-active" role="option" aria-selected="true" data-kind="track">
+                    <img class="search-menu__art" src="img/covers/slow-tide.jpg" alt="" />
+                    <span class="search-menu__text">
+                      <span class="search-menu__title truncate">Harbour Wall</span>
+                      <span class="search-menu__sub truncate">Vela Moreno · Slow Tide</span>
+                    </span>
+                    <span class="search-menu__go"><svg class="icon" aria-hidden="true"><use href="#i-play"></use></svg></span>
+                  </li>
+                  <li class="search-menu__row" role="option" aria-selected="false" data-kind="track">
+                    <img class="search-menu__art" src="img/covers/cold-storage.jpg" alt="" />
+                    <span class="search-menu__text">
+                      <span class="search-menu__title truncate">Harbour Fog</span>
+                      <span class="search-menu__sub truncate">Nils Aker · Cold Storage</span>
+                    </span>
+                    <span class="search-menu__go"><svg class="icon" aria-hidden="true"><use href="#i-play"></use></svg></span>
+                  </li>
+                </ul>
               </li>
-              <li class="search-menu__row" role="option" aria-selected="false" data-kind="track">
-                <img class="search-menu__art" src="img/covers/slow-tide.jpg" alt="" />
-                <span class="search-menu__text">
-                  <span class="search-menu__title truncate">Harbour Wall</span>
-                  <span class="search-menu__sub truncate">Vela Moreno · Slow Tide</span>
-                </span>
-                <span class="search-menu__type">Track</span>
-                <span class="search-menu__go"><svg class="icon" aria-hidden="true"><use href="#i-chevron-right"></use></svg></span>
+
+              <li class="search-menu__group" role="group" aria-labelledby="rail-group-albums">
+                <p class="search-menu__group-label" id="rail-group-albums">Albums <span>1 of 6</span></p>
+                <ul class="search-menu__rows" role="none">
+                  <li class="search-menu__row" role="option" aria-selected="false" data-kind="album">
+                    <img class="search-menu__art" src="img/covers/slow-tide.jpg" alt="" />
+                    <span class="search-menu__text">
+                      <span class="search-menu__title truncate">Slow Tide</span>
+                      <span class="search-menu__sub truncate">Vela Moreno</span>
+                    </span>
+                    <span class="search-menu__go"><svg class="icon" aria-hidden="true"><use href="#i-chevron-right"></use></svg></span>
+                  </li>
+                </ul>
               </li>
+
+              <li class="search-menu__group" role="group" aria-labelledby="rail-group-artists">
+                <p class="search-menu__group-label" id="rail-group-artists">Artists <span>1 of 4</span></p>
+                <ul class="search-menu__rows" role="none">
+                  <li class="search-menu__row" role="option" aria-selected="false" data-kind="artist">
+                    <img class="search-menu__art" src="img/artists/the-rookery.jpg" alt="" />
+                    <span class="search-menu__text">
+                      <span class="search-menu__title truncate">The Rookery</span>
+                      <span class="search-menu__sub truncate">5 tracks</span>
+                    </span>
+                    <span class="search-menu__go"><svg class="icon" aria-hidden="true"><use href="#i-chevron-right"></use></svg></span>
+                  </li>
+                </ul>
+              </li>
+
               <li class="search-menu__row search-menu__all" role="option" aria-selected="false">
-                <span class="truncate">See all 12 results for <b>“harbour”</b></span>
+                <span class="truncate">See more results for <b>“harbour”</b></span>
                 <svg class="icon" aria-hidden="true"><use href="#i-chevron-right"></use></svg>
               </li>
             </ul>
@@ -584,9 +932,11 @@
 
         <p class="states__note">
           At rail width the field is the rail: 20rem minus the drawer control and the nav cluster.
-          The menu follows the field exactly, the kind tag drops, and the query in the action row
-          truncates instead of wrapping. Rows keep their 44px height — this is the one place the
-          row loses a column, never its target size.
+          The menu follows the field exactly and the query in the action row truncates instead of
+          wrapping. Grouping costs nothing at this width, which is the point of moving the kind into
+          a heading: a heading is a word, not a column, so there is no longest cell to measure and
+          nothing to drop when the field narrows. Rows keep their 44px height — this is where a row
+          is never allowed to lose its target size, only a column it does not need.
         </p>
       </section>
 

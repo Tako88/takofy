@@ -1,4 +1,6 @@
-//! The artist page's body: the photograph hero, Popular, and the Discography.
+//! The artist page's body: the photograph hero, the shared action bar, Popular,
+//! and the Discography. The hero is only the band and the name; the page draws
+//! the row and owns the presses it reports.
 //!
 //! The page draws only what the library already has. `Load::Idle` has nothing to
 //! say because the route asks for the artist when it opens, so it draws nothing
@@ -12,8 +14,12 @@
 //! can.
 //!
 //! The filter row hides a block entirely rather than drawing it shorter: a block
-//! the chosen chip does not match is skipped before its rect is solved, so it
-//! reserves no space and asks for no labels and no cover.
+//! the chosen chip and the typed name do not match is skipped before its rect is
+//! solved, so it reserves no space and asks for no labels and no cover. The row
+//! is drawn for every artist with releases, because its field must exist even
+//! when there is only one kind to chip between. A list the chip or the query
+//! emptied says which of the two did it, after the body's clip is restored so a
+//! released band cannot hide the sentence.
 
 use std::time::Instant;
 
@@ -22,6 +28,8 @@ use takofy_model::{FollowedArtist, Release};
 
 use crate::cover::{Art, Cover};
 use crate::format::{discography_meta, format_position};
+use crate::layout::actionbar::Kind;
+use crate::layout::sticky;
 use crate::layout::{Table, cards, table as table_layout};
 use crate::library::{Library, Load};
 use crate::likes::Likes;
@@ -36,12 +44,14 @@ use crate::sidebar_kind::SidebarKind;
 use crate::theme::{Tokens, extent, space};
 use crate::view::text as recipe;
 
+use super::actionbar;
 use super::artist_hero::{self, ArtistHero};
 use super::carry::{self, Ghost};
 use super::context_menu;
-use super::filter_row;
+use super::discography_filter;
 use super::heart;
 use super::media;
+use super::pin;
 use super::release_block::{self, Block};
 use super::section;
 use super::skeleton;
@@ -105,6 +115,13 @@ pub fn artist_view(
         .id_salt(("artist", uri.as_str()))
         .show(ui, |ui| {
             scroll::follow_drag(ui);
+            // The viewport's own top, read before anything shrinks the clip: the
+            // action row shrinks it to its own bottom once it pins, and a band
+            // under that row is measured from the viewport, not from the row.
+            let viewport_top = ui.clip_rect().top();
+            // The pane's full width, so the band's surface reaches both of its
+            // edges even though the chips sit inside the page's gutter.
+            let pane = ui.clip_rect();
             let page = library.artist_page();
             match page.load {
                 Load::Idle => {}
@@ -112,6 +129,7 @@ pub fn artist_view(
                     skeleton::rows(ui, skeleton::SCREENFUL, table.columns().for_album(), tokens);
                 }
                 Load::Failed(failure) => {
+                    page.filter.clear_query();
                     ui.label(recipe::muted(
                         crate::signin::failure_message(*failure),
                         tokens,
@@ -137,23 +155,43 @@ pub fn artist_view(
                     let hero = ArtistHero {
                         name: &artist.name,
                         portrait: art.look(artist.portrait.as_ref(), now),
-                        playable: !artist.top_tracks.is_empty(),
-                        follow: page.follow.label(),
-                        follow_live: page.follow.pressable() && !removal_pending,
-                        follow_failed: page.follow.failed(),
                     };
-                    let pressed = artist_hero::show(ui, &hero, tokens);
-                    if pressed.followed && !removal_pending {
+                    artist_hero::show(ui, &hero, tokens);
+
+                    // The action row is the shared one, so it pins while the
+                    // discography scrolls under it. The artist's difference is a
+                    // word where the heart would be: following is a write to a
+                    // list, not a saved state, and the reference gives the artist
+                    // no like at all.
+                    let acted = actionbar::show(
+                        ui,
+                        &actionbar::Bar {
+                            title: Some(&artist.name),
+                            playable: !artist.top_tracks.is_empty(),
+                            shuffle: true,
+                            more: Some(true),
+                            saved: None,
+                            kind: Kind::Other,
+                            text: Some(actionbar::Text {
+                                label: page.follow.label(),
+                                live: page.follow.pressable() && !removal_pending,
+                                failed: page.follow.failed(),
+                            }),
+                        },
+                        None,
+                        tokens,
+                    );
+                    if acted.followed && !removal_pending {
                         command = page.follow.pressed();
                     }
-                    if pressed.played {
+                    if acted.played {
                         command = queue.start(&artist.top_tracks, 0, transport);
                     }
-                    if pressed.shuffled {
+                    if acted.shuffled {
                         command = (queue.start_with_shuffle(&artist.top_tracks, 0, transport))
                             .or(command.take());
                     }
-                    if let Some(door) = pressed.more {
+                    if let Some(door) = acted.more_door {
                         let item = LibraryItem {
                             kind: SidebarKind::Artists,
                             uri: uri.clone(),
@@ -197,6 +235,7 @@ pub fn artist_view(
                             tokens,
                         );
                         if artist.releases.is_empty() {
+                            page.filter.clear_query();
                             ui.label(recipe::muted("No releases.", tokens));
                         } else {
                             // The row the artist's own kinds allow, and the chip it
@@ -205,17 +244,54 @@ pub fn artist_view(
                             // would otherwise hide every block.
                             let row = crate::discography::chips(&artist.releases);
                             let active = page.filter.effective(&row);
-                            if row.len() > 1
-                                && let Some(picked) = filter_row::show(ui, tokens, &row, active)
-                            {
+                            // Everything the chip and the frame's starting query
+                            // keep, and the height it takes, solved before any block
+                            // is drawn: the band's end has to be exact while the
+                            // band is still in the flow. A keystroke resolves below
+                            // and asks for the frame that makes the end agree.
+                            let pre_needle = page.filter.needle();
+                            let pre_hits = match &pre_needle {
+                                Some(needle) => {
+                                    crate::discography::narrow(&artist.releases, active, needle)
+                                }
+                                None => crate::discography::narrow(&artist.releases, active, ""),
+                            };
+                            let heights: Vec<f32> = pre_hits
+                                .iter()
+                                .map(|&index| {
+                                    release_block::height(artist.releases[index].tracks.len())
+                                })
+                                .collect();
+                            let body_h =
+                                sticky::stack_height(&heights, ui.spacing().item_spacing.y);
+
+                            let shown = discography_filter::show(
+                                ui,
+                                tokens,
+                                discography_filter::Row {
+                                    chips: &row,
+                                    active,
+                                    body_h,
+                                    viewport_top,
+                                    pane,
+                                    releases: &artist.releases,
+                                    filter: page.filter,
+                                },
+                            );
+                            if let Some(picked) = shown.picked {
                                 page.filter.choose(picked);
                             }
 
-                            for release in artist
-                                .releases
-                                .iter()
-                                .filter(|release| active.matches(release.kind))
-                            {
+                            // The rows slide under the band, so the body is drawn
+                            // through the clip the band's own state decides: below
+                            // a held band, and above one riding the section's end.
+                            // The clip goes back before the empty state and the
+                            // likeness row, which are not part of the filtered body.
+                            let clip = ui.clip_rect();
+                            ui.set_clip_rect(sticky::body_clip(clip, shown.band, shown.hold));
+
+                            for &index in &shown.hits {
+                                let release = &artist.releases[index];
                                 let on_screen = ui.clip_rect().intersects(block_rect(ui, release));
                                 if !on_screen {
                                     let block = Block {
@@ -288,6 +364,17 @@ pub fn artist_view(
                                     );
                                 }
                             }
+                            ui.set_clip_rect(clip);
+
+                            // After the clip, because a released band ends the body
+                            // at its own top: a sentence inside the body's clip is
+                            // invisible exactly when an empty result needs it.
+                            if let Some(emptied) =
+                                crate::discography::emptied(shown.hits.len(), shown.queried)
+                            {
+                                let query = page.filter.edit().trim().to_owned();
+                                draw_empty(ui, emptied, &artist.name, &query, tokens);
+                            }
                         }
 
                         if let Some(artist) = fans(ui, page.related, art, now, tokens) {
@@ -315,6 +402,60 @@ pub fn artist_view(
         command = library.set_saved(&item, asked);
     }
     command
+}
+
+/// The sentence an emptied discography draws under its row.
+///
+/// The query wins whenever one is typed, and the format's own state is only ever
+/// shown with no query. Both are drawn after the body's clip is restored so a
+/// released band cannot hide the only thing the page has to say.
+pub(super) fn draw_empty(
+    ui: &mut Ui,
+    emptied: crate::discography::Emptied,
+    artist: &str,
+    query: &str,
+    tokens: &Tokens,
+) {
+    use crate::discography::Emptied;
+    match emptied {
+        Emptied::Query => {
+            let line = crate::format::list_nothing(query);
+            egui::Frame::new()
+                .inner_margin(egui::Margin::symmetric(0, space::S3 as i8))
+                .show(ui, |ui| {
+                    ui.label(
+                        egui::RichText::new(line)
+                            .font(egui::FontId::new(
+                                crate::theme::text::SM,
+                                crate::theme::fonts::sans(crate::theme::Weight::Regular),
+                            ))
+                            .color(tokens.palette.text_subtle),
+                    );
+                });
+        }
+        Emptied::Format => {
+            let (title, body) = crate::format::format_empty_copy(artist);
+            ui.add_space(space::S7);
+            ui.label(
+                egui::RichText::new(title)
+                    .font(egui::FontId::new(
+                        crate::theme::text::MD,
+                        crate::theme::fonts::sans(crate::theme::Weight::Semibold),
+                    ))
+                    .color(tokens.palette.text),
+            );
+            ui.add_space(space::S2);
+            ui.label(
+                egui::RichText::new(body)
+                    .font(egui::FontId::new(
+                        crate::theme::text::BASE,
+                        crate::theme::fonts::sans(crate::theme::Weight::Regular),
+                    ))
+                    .color(tokens.palette.text_muted),
+            );
+            ui.add_space(space::S7);
+        }
+    }
 }
 
 /// One release's saved state, as the page read it before the draw.
@@ -422,10 +563,20 @@ fn popular(
         count,
     );
     let gate = selection.gate(writing);
+    // The id the rows draw under, so a focused row is read from the same `Ui`
+    // that drew them.
+    let focused_now = ui.memory(|memory| memory.focused());
+    let mut reveal = None;
 
     for (index, entry) in artist.top_tracks.iter().enumerate() {
         let rect = table_layout::row_rect(list, index, extent::ROW_H);
         if !visible.intersects(rect) {
+            // A row the cull skipped draws nothing, so it has no reveal of its
+            // own; one that holds the keyboard is asked for once the loop is
+            // done.
+            if focused_now == Some(track_row::id(ui, &entry.uri, index + 1)) {
+                reveal = Some(rect);
+            }
             continue;
         }
         let duration = entry.duration_ms.map(format_position);
@@ -481,6 +632,14 @@ fn popular(
             }
             Some(Click::Open(_)) | None => {}
         }
+    }
+    // A focused row the cull skipped is asked for again through the seam, which
+    // shifts the request clear of the action row pinned above the list; the
+    // row's own reveal knows nothing of it and would leave the row behind it.
+    if let Some(row) = reveal
+        && row.top() < ui.clip_rect().top()
+    {
+        pin::reveal(ui, row);
     }
     selection.finish(ui.ctx());
 }
@@ -866,6 +1025,10 @@ mod tests {
         let tokens = Tokens::DARK;
         let mut command = None;
         let output = run(ctx, input(size, events), |ui| {
+            // A notch lands in the frame it arrives, as the window's own draw
+            // pass makes it: egui's spread of one notch over several frames
+            // would still be moving the page while a probe reads a row's place.
+            crate::scroll::instant(ui.ctx());
             ui.add_space(space::S3);
             if let Some(next) = artist_view(
                 ui,
@@ -906,37 +1069,100 @@ mod tests {
         last
     }
 
-    /// The hero's play tile and its Follow button, solved as the hero lays them
-    /// out: the band first, then the action row under it.
-    fn hero_rects(ctx: &Context, size: Vec2) -> (Rect, Rect) {
+    /// The size the artist's word needs, as the page measures it.
+    fn word(ctx: &Context, label: &str) -> Vec2 {
         let tokens = Tokens::DARK;
+        let mut size = Vec2::ZERO;
+        run(ctx, input(PAGE, Vec::new()), |ui| {
+            size = crate::view::controls::text_button_size(ui, &tokens, label);
+        });
+        size
+    }
+
+    /// The action row's parts on this page: the tools and the word.
+    fn bar_parts(ctx: &Context, label: &str) -> crate::layout::actionbar::Parts {
+        crate::layout::actionbar::Parts {
+            shuffle: true,
+            field: false,
+            follow: Some(word(ctx, label)),
+        }
+    }
+
+    /// The row's slot in the page's flow, solved where the page puts it: the
+    /// hero's band first, then the shared row.
+    fn bar_row(ctx: &Context, size: Vec2) -> Rect {
         let mut found = None;
         run(ctx, input(size, Vec::new()), |ui| {
             ui.add_space(space::S3);
-            let (band, _) = ui.allocate_exact_size(
+            let _ = ui.allocate_exact_size(
                 vec2(ui.available_width(), hero::ARTIST_MIN_H),
                 Sense::hover(),
             );
-            let (row, _) = ui.allocate_exact_size(
-                vec2(ui.available_width(), hero::PLAY + 2.0 * space::S4),
-                Sense::hover(),
-            );
-            let play = Rect::from_min_size(
-                Pos2::new(
-                    row.left() + space::GUTTER,
-                    row.center().y - hero::PLAY / 2.0,
-                ),
-                Vec2::splat(hero::PLAY),
-            );
-            let size = crate::view::controls::text_button_size(ui, &tokens, "Follow");
-            let follow = Rect::from_min_size(
-                Pos2::new(play.right() + space::S4, row.center().y - size.y / 2.0),
-                size,
-            );
-            let _ = band;
-            found = Some((play, follow));
+            found = Some(actionbar::row_rect(ui));
         });
-        found.expect("the hero and its action row lay out")
+        found.expect("the band and its action row lay out")
+    }
+
+    /// The bar's play tile and its text control, solved by the row's own solver.
+    fn bar_tiles(ctx: &Context, size: Vec2, label: &str) -> (Rect, Rect) {
+        let placed =
+            crate::layout::actionbar::solve(bar_row(ctx, size), Kind::Other, bar_parts(ctx, label));
+        (
+            placed.play,
+            placed.follow.expect("the artist's bar has a text slot"),
+        )
+    }
+
+    /// The row a pinned page draws, recovered from the fill it paints: the same
+    /// box the page's children are solved against.
+    fn bar_rect(output: &egui::FullOutput) -> Option<Rect> {
+        let tokens = Tokens::DARK;
+        output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Rect(shape)
+                    if shape.fill == tokens.palette.surface
+                        && (shape.rect.height() - crate::theme::actionbar::STUCK_H).abs()
+                            < 0.01 =>
+                {
+                    Some(shape.rect)
+                }
+                _ => None,
+            })
+    }
+
+    /// One frame with the wheel moved by `points` at the foot of the page, which
+    /// is how the artist page scrolls.
+    fn wheel(
+        ctx: &Context,
+        size: Vec2,
+        points: f32,
+        library: &mut Library,
+        transport: &mut Transport,
+        queue: &mut Queue,
+        art: &mut Art,
+    ) -> egui::FullOutput {
+        let at = Pos2::new(size.x / 2.0, size.y - extent::ROW_H);
+        frame(
+            ctx,
+            size,
+            vec![
+                Event::PointerMoved(at),
+                Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: Vec2::new(0.0, points),
+                    phase: egui::TouchPhase::Move,
+                    source: egui::MouseWheelSource::Unknown,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+            library,
+            transport,
+            queue,
+            art,
+        )
+        .1
     }
 
     /// The rect the Popular table's `index`-th row occupies, solved the way the
@@ -950,10 +1176,7 @@ mod tests {
                 vec2(ui.available_width(), hero::ARTIST_MIN_H),
                 Sense::hover(),
             );
-            let _ = ui.allocate_exact_size(
-                vec2(ui.available_width(), hero::PLAY + 2.0 * space::S4),
-                Sense::hover(),
-            );
+            actionbar::row_rect(ui);
             section::head(ui, "Popular", "", &tokens);
             let columns =
                 table_layout::columns(ui.available_width(), Table::Full.columns().for_album());
@@ -1190,7 +1413,7 @@ mod tests {
     }
 
     #[test]
-    fn the_heros_play_starts_the_top_list() {
+    fn the_bars_play_starts_the_top_list() {
         let ctx = context();
         let size = Vec2::new(900.0, 800.0);
         let top = vec![
@@ -1202,7 +1425,7 @@ mod tests {
         let mut queue = Queue::default();
         let mut art = Art::default();
 
-        let (play, _) = hero_rects(&ctx, size);
+        let (play, _) = bar_tiles(&ctx, size, "Follow");
         let command = click(
             &ctx,
             size,
@@ -1239,7 +1462,7 @@ mod tests {
         let mut queue = Queue::default();
         let mut art = Art::default();
 
-        let (_, follow) = hero_rects(&ctx, size);
+        let (_, follow) = bar_tiles(&ctx, size, "Follow");
         let command = click(
             &ctx,
             size,
@@ -1279,7 +1502,7 @@ mod tests {
         let mut queue = Queue::default();
         let mut art = Art::default();
 
-        let (_, follow) = hero_rects(&ctx, size);
+        let (_, follow) = bar_tiles(&ctx, size, "Following");
         let command = click(
             &ctx,
             size,
@@ -1330,7 +1553,7 @@ mod tests {
         let mut queue = Queue::default();
         let mut art = Art::default();
 
-        let (_, follow) = hero_rects(&ctx, size);
+        let (_, follow) = bar_tiles(&ctx, size, "Following");
         let command = click(
             &ctx,
             size,
@@ -1392,16 +1615,408 @@ mod tests {
             "the label stays where the server last left it: {texts:?}"
         );
 
-        // Beside the button, on its own centre line, not over the tools.
-        let (_, follow) = hero_rects(&ctx, size);
+        // The row's name box, in front of the control: the row has no second
+        // line, so a message may not add one.
+        let (play, follow) = bar_tiles(&ctx, size, "Following");
         let hint = text_rect(&output, copy).expect("the failure's copy is painted");
         assert!(
-            hint.left() > follow.left(),
-            "the copy sits beside the button: {hint:?} against {follow:?}"
+            hint.left() >= play.right() + crate::theme::actionbar::GAP - 0.01,
+            "the copy starts where the name's box starts: {hint:?} against {play:?}"
+        );
+        assert!(
+            hint.right() <= follow.left() - crate::theme::actionbar::GAP + 0.01,
+            "the copy stops short of the control: {hint:?} against {follow:?}"
         );
         assert!(
             (hint.center().y - follow.center().y).abs() < 1.0,
-            "the copy shares the button's centre line: {hint:?} against {follow:?}"
+            "the copy shares the control's line: {hint:?} against {follow:?}"
+        );
+
+        // The row keeps its resting height, so the message moved nothing below
+        // it: the sections sit where they sit without one.
+        let head = text_rect(&output, "Popular").expect("the Popular head is painted");
+        let mut quiet = library_with(detail(Vec::new(), Vec::new()));
+        quiet.apply(&Update::Followed {
+            artist: ARTIST.to_owned(),
+            followed: true,
+        });
+        let (_, plain) = frame(
+            &ctx,
+            size,
+            Vec::new(),
+            &mut quiet,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        assert_eq!(
+            head,
+            text_rect(&plain, "Popular").expect("the Popular head is painted without one"),
+            "a failure may not push the page down"
+        );
+    }
+
+    #[test]
+    fn the_follow_press_still_writes_when_the_bar_is_pinned() {
+        let ctx = context();
+        let size = Vec2::new(900.0, 800.0);
+        // A discography long enough to scroll the bar out of the viewport.
+        let releases: Vec<Release> = (1..=12)
+            .map(|index| {
+                release(
+                    &format!("spotify:album:r{index}"),
+                    &format!("Release {index}"),
+                    &["spotify:track:a", "spotify:track:b"],
+                )
+            })
+            .collect();
+        let mut library = library_with(detail(
+            vec![track("spotify:track:a", "One", "Vela Moreno", 222_000)],
+            releases,
+        ));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let mut output = frame(
+            &ctx,
+            size,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        )
+        .1;
+        for _ in 0..40 {
+            if bar_rect(&output).is_some() {
+                break;
+            }
+            output = wheel(
+                &ctx,
+                size,
+                -extent::ROW_H,
+                &mut library,
+                &mut transport,
+                &mut queue,
+                &mut art,
+            );
+        }
+        let bar = bar_rect(&output).expect("the artist's row never pinned");
+        let follow = crate::layout::actionbar::solve(bar, Kind::Other, bar_parts(&ctx, "Follow"))
+            .follow
+            .expect("the pinned bar keeps its text control");
+
+        let command = click(
+            &ctx,
+            size,
+            follow.center(),
+            1,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        assert_eq!(
+            command,
+            Some(Command::SetFollow {
+                artist: ARTIST.to_owned(),
+                followed: true,
+            }),
+            "a pinned bar's Follow writes what it wrote in the band"
+        );
+    }
+
+    /// A Popular row reveals through the page's seam: a row the pinned bar
+    /// partly covers is asked for clear of the bar, not just into the scroll
+    /// area's own clip.
+    #[test]
+    fn a_focused_popular_row_partly_under_the_bar_is_scrolled_clear_of_it() {
+        let ctx = context();
+        let size = Vec2::new(900.0, 800.0);
+        // Enough rows that the row can be walked up under the pinned bar and
+        // still have somewhere to scroll back from.
+        let top: Vec<TrackEntry> = (0..40)
+            .map(|index| {
+                track(
+                    &format!("spotify:track:p{index}"),
+                    &format!("P{index}"),
+                    "Vela Moreno",
+                    200_000,
+                )
+            })
+            .collect();
+        let mut library = library_with(detail(top, Vec::new()));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let mut output = frame(
+            &ctx,
+            size,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        )
+        .1;
+        for _ in 0..40 {
+            if bar_rect(&output).is_some() {
+                break;
+            }
+            output = wheel(
+                &ctx,
+                size,
+                -extent::ROW_H,
+                &mut library,
+                &mut transport,
+                &mut queue,
+                &mut art,
+            );
+        }
+        let bar = bar_rect(&output).expect("the artist's row never pinned");
+
+        // The first row is wholly below the pinned row, so a press on it lands
+        // on the row and not in the strip the row owns.
+        let title = text_rect(&output, "P0").expect("the row paints its title");
+        let _ = click(
+            &ctx,
+            size,
+            Pos2::new(title.left() + 2.0, title.center().y),
+            1,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let focused = ctx
+            .memory(|memory| memory.focused())
+            .expect("the row took the keyboard");
+
+        // Walk the row up until its top is inside the strip the pinned row
+        // covers, then let what the reveal asked for settle.
+        let mut covered = false;
+        for _ in 0..80 {
+            let row = ctx.read_response(focused).expect("the row is drawn").rect;
+            if row.top() < bar.bottom() - 0.5 {
+                covered = true;
+                break;
+            }
+            let _ = wheel(
+                &ctx,
+                size,
+                -6.0,
+                &mut library,
+                &mut transport,
+                &mut queue,
+                &mut art,
+            );
+        }
+        assert!(covered, "the row never slid under the pinned row");
+
+        let mut output = frame(
+            &ctx,
+            size,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        )
+        .1;
+        let mut settled = false;
+        for _ in 0..240 {
+            if let Some(row) = ctx.read_response(focused)
+                && row.rect.top() >= bar.bottom() - 0.01
+            {
+                settled = true;
+                break;
+            }
+            output = frame(
+                &ctx,
+                size,
+                Vec::new(),
+                &mut library,
+                &mut transport,
+                &mut queue,
+                &mut art,
+            )
+            .1;
+        }
+        assert_eq!(
+            ctx.memory(|memory| memory.focused()),
+            Some(focused),
+            "the row keeps the keyboard"
+        );
+        assert!(
+            settled,
+            "the focused row never came out from under the pinned row"
+        );
+        let bar = bar_rect(&output).expect("the row is still pinned");
+        let row = ctx
+            .read_response(focused)
+            .expect("the row is drawn again")
+            .rect;
+        assert!(
+            row.top() >= bar.bottom() - 0.01,
+            "the focused row rests below the pinned row: {row:?} against {bar:?}"
+        );
+    }
+
+    /// A Popular row the cull skipped is still asked for through the page's
+    /// seam: a row wholly above the strip the pinned bar owns draws nothing, so
+    /// it has no reveal of its own and the section has to ask for it.
+    #[test]
+    fn a_focused_popular_row_wholly_under_the_bar_is_still_brought_out() {
+        let ctx = context();
+        let size = Vec2::new(900.0, 800.0);
+        // Enough rows that the row can be jumped wholly above the pinned bar
+        // and still have somewhere to scroll back from.
+        let top: Vec<TrackEntry> = (0..40)
+            .map(|index| {
+                track(
+                    &format!("spotify:track:p{index}"),
+                    &format!("P{index}"),
+                    "Vela Moreno",
+                    200_000,
+                )
+            })
+            .collect();
+        let mut library = library_with(detail(top, Vec::new()));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let mut output = frame(
+            &ctx,
+            size,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        )
+        .1;
+        for _ in 0..40 {
+            if bar_rect(&output).is_some() {
+                break;
+            }
+            output = wheel(
+                &ctx,
+                size,
+                -extent::ROW_H,
+                &mut library,
+                &mut transport,
+                &mut queue,
+                &mut art,
+            );
+        }
+        assert!(
+            bar_rect(&output).is_some(),
+            "the artist's row is pinned before the press"
+        );
+
+        // The first row the list draws, so a press on its title lands on the row
+        // and not in the strip the pinned row owns.
+        let title = text_rect(&output, "P0").expect("the row paints its title");
+        let _ = click(
+            &ctx,
+            size,
+            Pos2::new(title.left() + 2.0, title.center().y),
+            1,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let focused = ctx
+            .memory(|memory| memory.focused())
+            .expect("the row took the keyboard");
+        // The press lands on whichever row was under the pointer when the click
+        // resolved, so the focused row is read from the frame it was drawn in.
+        let after = frame(
+            &ctx,
+            size,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        )
+        .1;
+        let rect = ctx
+            .read_response(focused)
+            .expect("the focused row is drawn")
+            .rect;
+        let label = drawn_texts(&after)
+            .into_iter()
+            .find(|text| {
+                text.strip_prefix('P')
+                    .and_then(|tail| tail.parse::<usize>().ok())
+                    .is_some()
+                    && text_rect(&after, text).is_some_and(|box_| rect.contains_rect(box_))
+            })
+            .map(str::to_owned)
+            .expect("the focused row paints its title");
+
+        // One wheel jump of at least the pinned row and a whole row, and enough
+        // to leave this row wholly above the strip, so the frame after it draws
+        // nothing at the focused row: the cull skips it and `rows::body`, which
+        // is a drawn row's own reveal, never runs.
+        let strip = bar_rect(&after).expect("the row is pinned").bottom();
+        let jump = (rect.bottom() - strip).max(crate::theme::actionbar::STUCK_H) + extent::ROW_H;
+        let mut output = wheel(
+            &ctx,
+            size,
+            -jump,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+
+        let mut culled = false;
+        let mut settled = false;
+        for _ in 0..240 {
+            let strip = bar_rect(&output).expect("the row is still pinned").bottom();
+            if text_rect(&output, &label).is_none() {
+                culled = true;
+            } else if culled
+                && ctx
+                    .read_response(focused)
+                    .is_some_and(|row| row.rect.top() >= strip - 0.01)
+            {
+                settled = true;
+                break;
+            }
+            output = frame(
+                &ctx,
+                size,
+                Vec::new(),
+                &mut library,
+                &mut transport,
+                &mut queue,
+                &mut art,
+            )
+            .1;
+        }
+        assert!(
+            culled,
+            "the jump never put the focused row wholly under the pinned row"
+        );
+        assert!(
+            settled,
+            "the focused row never came out from under the pinned row"
+        );
+        let bar = bar_rect(&output).expect("the row is still pinned");
+        let row = ctx
+            .read_response(focused)
+            .expect("the row is drawn again")
+            .rect;
+        assert!(
+            row.top() >= bar.bottom() - 0.01,
+            "the focused row rests below the pinned row: {row:?} against {bar:?}"
         );
     }
 
@@ -2397,7 +3012,7 @@ mod tests {
     }
 
     #[test]
-    fn an_artist_with_only_other_releases_draws_no_row() {
+    fn an_artist_with_releases_always_has_the_row_and_the_field() {
         let ctx = context();
         let mut library = library_with(detail(
             Vec::new(),
@@ -2423,8 +3038,13 @@ mod tests {
         );
 
         assert!(
-            !drawn(&output, "ALL"),
-            "a row of All alone filters nothing: {:?}",
+            drawn(&output, "ALL"),
+            "a single kind still gets the row: {:?}",
+            drawn_texts(&output)
+        );
+        assert!(
+            drawn(&output, "FILTER"),
+            "the field must exist even when there is nothing to chip between: {:?}",
             drawn_texts(&output)
         );
         assert!(
@@ -2434,7 +3054,7 @@ mod tests {
     }
 
     #[test]
-    fn no_releases_draws_no_row() {
+    fn no_releases_draws_no_row_and_no_field() {
         let ctx = context();
         let mut library = library_with(detail(Vec::new(), Vec::new()));
         let mut transport = Transport::default();
@@ -2456,6 +3076,10 @@ mod tests {
         assert!(
             !texts.contains(&"ALL"),
             "there is nothing to filter: {texts:?}"
+        );
+        assert!(
+            !texts.contains(&"FILTER"),
+            "a discography with no releases has no field: {texts:?}"
         );
     }
 
@@ -2497,7 +3121,11 @@ mod tests {
         let sizes = chip_sizes(&ctx);
         let needed: f32 =
             sizes.iter().map(|size| size.x).sum::<f32>() + space::S1 * (sizes.len() - 1) as f32;
-        let wide = needed + 2.0 * space::GUTTER + 32.0;
+        let wide = needed
+            + 2.0 * space::GUTTER
+            + crate::theme::cluster::FIELD_W
+            + crate::theme::cluster::GAP
+            + 2.0 * space::GUTTER;
 
         let (_, output) = frame(
             &ctx,
@@ -2586,10 +3214,11 @@ mod tests {
         let sizes = chip_sizes(&ctx);
         let needed: f32 =
             sizes.iter().map(|size| size.x).sum::<f32>() + space::S1 * (sizes.len() - 1) as f32;
-        let wide = needed + 2.0 * space::GUTTER + 32.0;
         // One point short of fitting on one line: the row wraps a chip, and the
         // blocks keep a legible width.
-        let narrow = 2.0 * space::GUTTER + needed - 1.0;
+        let narrow =
+            needed + 2.0 * space::GUTTER + crate::theme::cluster::FIELD_W + space::S1 - 1.0;
+        let wide = narrow + 4.0;
         let mut transport = Transport::default();
         let mut queue = Queue::default();
         let mut art = Art::default();
@@ -2642,63 +3271,57 @@ mod tests {
         );
     }
 
-    /// The row reserves its whole height, not just its first line: the first
-    /// block sits below the row by the row's height plus the same gap the
-    /// section head leaves above it.
+    /// The row reserves the cluster's whole height, not the chip's: the first
+    /// block sits below the band by the field's height and the step under it.
     #[test]
     fn the_row_reserves_its_height_above_the_first_block() {
         let ctx = context();
         let size = Vec2::new(900.0, 1500.0);
+        let mut library = library_with(detail(
+            Vec::new(),
+            vec![release("spotify:album:r1", "A Book", &["spotify:track:1"])],
+        ));
         let mut transport = Transport::default();
         let mut queue = Queue::default();
         let mut art = Art::default();
 
-        // The same block with no row above it: an Other-only artist has one
-        // chip, so the row is not drawn at all.
-        let mut plain = library_with(detail(
-            Vec::new(),
-            vec![release_of_kind(
-                "spotify:book:r1",
-                "A Book",
-                ReleaseKind::Other,
-                &["spotify:track:1"],
-            )],
-        ));
-        let (_, without) = frame(
+        let (_, output) = frame(
             &ctx,
             size,
             Vec::new(),
-            &mut plain,
-            &mut transport,
-            &mut queue,
-            &mut art,
-        );
-        let mut rowed = library_with(detail(
-            Vec::new(),
-            vec![release("spotify:album:r1", "A Book", &["spotify:track:1"])],
-        ));
-        let (_, with) = frame(
-            &ctx,
-            size,
-            Vec::new(),
-            &mut rowed,
+            &mut library,
             &mut transport,
             &mut queue,
             &mut art,
         );
 
-        let plain_top = text_rect(&without, "A Book").expect("the block with no row");
-        let rowed_top = text_rect(&with, "A Book").expect("the block under the row");
-        let head = text_rect(&with, "Discography").expect("the section head");
-        let chip = chip_rect(&with, Chip::All).expect("the All chip");
-        let above_row = chip.top() - head.bottom();
-        let above_block = rowed_top.top() - plain_top.top();
+        let head = text_rect(&output, "Discography").expect("the section head");
+        let chip = chip_rect(&output, Chip::All).expect("the All chip");
+        let row_top = chip.center().y - crate::theme::cluster::FIELD_H / 2.0;
+        let block_top = output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Rect(shape)
+                    if shape.fill == Tokens::DARK.palette.border
+                        && (shape.rect.height() - stroke::HAIRLINE).abs() < 0.01
+                        && shape.rect.top() > row_top + crate::theme::cluster::FIELD_H =>
+                {
+                    Some(shape.rect.top())
+                }
+                _ => None,
+            })
+            .fold(f32::INFINITY, f32::min);
+        let above_block = block_top - row_top;
+        let expected = crate::theme::cluster::FIELD_H + space::S4 + space::S2;
 
         assert!(
-            (above_block - (chip.height() + above_row)).abs() < 0.01,
-            "the row pushes the block down by {} and is {} plus the head's {above_row}",
-            above_block,
-            chip.height()
+            (above_block - expected).abs() < 0.01,
+            "the row takes its cluster's height and the step under it: {above_block} against {expected}"
+        );
+        assert!(
+            row_top > head.bottom(),
+            "the row still starts under the section head"
         );
     }
 
@@ -2740,5 +3363,1982 @@ mod tests {
                 first_block.top()
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // The chip row as a band: it holds under the bar, paints its own surface,
+    // lets go at the end of the discography and joins the reveal seam.
+    // -----------------------------------------------------------------------
+
+    /// Eight releases over four kinds, two tracks each: a discography long
+    /// enough to scroll and mixed enough to offer every chip.
+    fn eight() -> Vec<Release> {
+        [
+            ("Album One", ReleaseKind::Album),
+            ("An EP", ReleaseKind::Ep),
+            ("Album Two", ReleaseKind::Album),
+            ("A Single", ReleaseKind::Single),
+            ("Album Three", ReleaseKind::Album),
+            ("Another EP", ReleaseKind::Ep),
+            ("Another Single", ReleaseKind::Single),
+            ("A Compilation", ReleaseKind::Compilation),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, (name, kind))| {
+            let uri = format!("spotify:release:r{index}");
+            Release {
+                uri: uri.clone(),
+                name: name.to_owned(),
+                kind,
+                year: Some(2024),
+                cover: None,
+                // The track's own URI is the row's title, so a row can be named
+                // without depending on the order the store happened to ask.
+                tracks: vec![format!("T{index}.1"), format!("T{index}.2")],
+            }
+        })
+        .collect()
+    }
+
+    /// Answers every release's label request, walking the page so each block is
+    /// drawn and asked for, then walks back up to where the band still rests.
+    ///
+    /// The store only accepts a reply for a release it has asked about, so a
+    /// label cannot simply be handed over for every release up front.
+    fn label_every_release(
+        ctx: &Context,
+        size: Vec2,
+        releases: &[Release],
+        library: &mut Library,
+        transport: &mut Transport,
+        queue: &mut Queue,
+        art: &mut Art,
+    ) {
+        let mut labelled = 0;
+        let mut output = frame(ctx, size, Vec::new(), library, transport, queue, art).1;
+        for _ in 0..400 {
+            for command in library.releases.requests() {
+                let Command::LoadReleaseTracks { release, tracks } = command else {
+                    continue;
+                };
+                labelled += 1;
+                let tracks = tracks
+                    .iter()
+                    .map(|uri| track(uri, uri, "Vela Moreno", 200_000))
+                    .collect();
+                library.apply(&Update::ReleaseTracks { release, tracks });
+            }
+            if labelled >= releases.len() {
+                break;
+            }
+            output = wheel(ctx, size, -extent::ROW_H, library, transport, queue, art);
+        }
+        assert_eq!(
+            labelled,
+            releases.len(),
+            "not every release was drawn and labelled"
+        );
+        // Back to where the band is in its slot, so the caller can scroll down
+        // into the band it is about.
+        for _ in 0..400 {
+            if band_rect(&output).is_none() {
+                return;
+            }
+            output = wheel(ctx, size, extent::ROW_H, library, transport, queue, art);
+        }
+        panic!("the page never scrolled back above the band");
+    }
+
+    /// A page on [`ARTIST`] with the discography and a likeness row that is ready
+    /// to draw: the row the band must not band over.
+    fn with_fans(releases: Vec<Release>) -> Library {
+        let mut detail = detail(Vec::new(), releases);
+        detail.related = vec!["spotify:artist:other".to_owned()];
+        let mut library = library_with(detail);
+        let _ = library.related_request();
+        library.apply(&Update::Related {
+            artist: ARTIST.to_owned(),
+            cards: vec![FollowedArtist {
+                uri: "spotify:artist:other".to_owned(),
+                name: "Other Artist".to_owned(),
+                named: true,
+                portrait: None,
+                releases: None,
+            }],
+        });
+        library
+    }
+
+    /// The chip row's own surface, recovered from the fill it paints. The bar's
+    /// fill is the only other one on the page, and it is the bar's height.
+    fn band_rect(output: &egui::FullOutput) -> Option<Rect> {
+        let tokens = Tokens::DARK;
+        output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Rect(shape)
+                    if shape.fill == tokens.palette.surface
+                        && (shape.rect.height() - crate::theme::actionbar::STUCK_H).abs()
+                            > 0.01 =>
+                {
+                    Some(shape.rect)
+                }
+                _ => None,
+            })
+    }
+
+    /// The rect a shape paints into.
+    fn shape_rect(shape: &egui::epaint::Shape) -> Option<Rect> {
+        match shape {
+            egui::epaint::Shape::Rect(rect) => Some(rect.rect),
+            egui::epaint::Shape::Text(text) => {
+                Some(Rect::from_min_size(text.pos, text.galley.size()))
+            }
+            _ => None,
+        }
+    }
+
+    /// The shape painting `label`, with the clip it was drawn through.
+    fn clipped_text(output: &egui::FullOutput, label: &str) -> Option<Rect> {
+        output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Text(text) if text.galley.text() == label => {
+                    Some(clipped.clip_rect)
+                }
+                _ => None,
+            })
+    }
+
+    /// The band's hairline: the edge it wears while it is out of its slot.
+    fn band_edge(output: &egui::FullOutput, band: Rect) -> Option<Rect> {
+        let tokens = Tokens::DARK;
+        output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Rect(shape)
+                    if shape.fill == tokens.palette.border
+                        && (shape.rect.top() - (band.bottom() - stroke::HAIRLINE)).abs() < 0.01
+                        && (shape.rect.width() - band.width()).abs() < 0.01 =>
+                {
+                    Some(shape.rect)
+                }
+                _ => None,
+            })
+    }
+
+    /// The name of a track row of the fixture, if `label` is one.
+    fn row_title(label: &str) -> bool {
+        label.strip_prefix('T').is_some_and(|tail| {
+            !tail.is_empty() && tail.chars().all(|c| c.is_ascii_digit() || c == '.')
+        })
+    }
+
+    /// Wheels the page until the chip row holds under the bar, and answers the
+    /// frame it held on.
+    fn held_frame(
+        ctx: &Context,
+        size: Vec2,
+        library: &mut Library,
+        transport: &mut Transport,
+        queue: &mut Queue,
+        art: &mut Art,
+    ) -> egui::FullOutput {
+        let mut output = frame(ctx, size, Vec::new(), library, transport, queue, art).1;
+        for _ in 0..400 {
+            if let (Some(bar), Some(band)) = (bar_rect(&output), band_rect(&output))
+                && (band.top() - bar.bottom()).abs() < 0.5
+            {
+                return output;
+            }
+            output = wheel(ctx, size, -space::S4, library, transport, queue, art);
+        }
+        panic!("the chip row never held under the bar");
+    }
+
+    /// Wheels on until the chip row lets go of the floor and rides the end of the
+    /// discography, with enough of it below the bar to be seen.
+    fn released_frame(
+        ctx: &Context,
+        size: Vec2,
+        library: &mut Library,
+        transport: &mut Transport,
+        queue: &mut Queue,
+        art: &mut Art,
+    ) -> egui::FullOutput {
+        let mut output = frame(ctx, size, Vec::new(), library, transport, queue, art).1;
+        for _ in 0..800 {
+            if let (Some(bar), Some(band)) = (bar_rect(&output), band_rect(&output))
+                && band.top() < bar.bottom() - 0.5
+                && band.bottom() > bar.bottom() + 2.0
+            {
+                return output;
+            }
+            output = wheel(ctx, size, -space::S2, library, transport, queue, art);
+        }
+        panic!("the chip row never let go of the floor");
+    }
+
+    #[test]
+    fn the_wheel_pins_the_artist_bar() {
+        let ctx = context();
+        let size = Vec2::new(900.0, 600.0);
+        let mut library = library_with(detail(Vec::new(), eight()));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let mut output = frame(
+            &ctx,
+            size,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        )
+        .1;
+        assert!(
+            bar_rect(&output).is_none(),
+            "nothing is pinned at the top of the page"
+        );
+        for _ in 0..40 {
+            if bar_rect(&output).is_some() {
+                break;
+            }
+            output = wheel(
+                &ctx,
+                size,
+                -extent::ROW_H,
+                &mut library,
+                &mut transport,
+                &mut queue,
+                &mut art,
+            );
+        }
+        assert!(
+            bar_rect(&output).is_some(),
+            "the wheel scrolls the artist page and its bar pins"
+        );
+    }
+
+    #[test]
+    fn the_artist_bar_pins_at_the_top_with_the_name_beside_play() {
+        let ctx = context();
+        let size = Vec2::new(900.0, 600.0);
+        let mut library = library_with(detail(Vec::new(), eight()));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let output = held_frame(
+            &ctx,
+            size,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let bar = bar_rect(&output).expect("the action row is pinned");
+        assert!(
+            (bar.top() - space::S3).abs() < 0.01,
+            "the row pins at the viewport's top: {}",
+            bar.top()
+        );
+        let name = output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Text(text) if text.galley.text() == "Vela Moreno" => {
+                    Some(Rect::from_min_size(text.pos, text.galley.size()))
+                }
+                _ => None,
+            })
+            .find(|rect| bar.contains_rect(*rect))
+            .expect("the pinned row names the artist");
+        assert!(
+            name.left() > bar.left() + hero::PLAY,
+            "the name stands beside the play tile: {name:?} in {bar:?}"
+        );
+    }
+
+    #[test]
+    fn the_chip_row_pins_at_sixty_under_the_bar() {
+        let ctx = context();
+        let size = Vec2::new(900.0, 600.0);
+        let mut library = library_with(detail(Vec::new(), eight()));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let output = held_frame(
+            &ctx,
+            size,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let bar = bar_rect(&output).expect("the action row is pinned");
+        let band = band_rect(&output).expect("the chip row is filled while it holds");
+
+        assert!(
+            (band.top() - bar.bottom()).abs() < 0.01,
+            "the band starts where the bar ends: {} against {}",
+            band.top(),
+            bar.bottom()
+        );
+        assert!(
+            (band.width() - size.x).abs() < 0.01 && band.left().abs() < 0.01,
+            "the surface bleeds to both pane edges: {band:?}"
+        );
+        let all = chip_rect(&output, Chip::All).expect("the All chip is drawn at the floor");
+        assert!(
+            all.left() >= space::GUTTER - 0.01 && all.top() >= band.top() - 0.01,
+            "the chips sit inside the surface, not off its edge: {all:?} in {band:?}"
+        );
+        assert!(
+            band_edge(&output, band).is_some(),
+            "the held band wears an edge at its bottom"
+        );
+
+        // The surface is painted before the chips, because the rows sliding under
+        // the band are painted after it: anything left clear would show their ink.
+        let (surface, surface_clip) = output
+            .shapes
+            .iter()
+            .enumerate()
+            .find_map(|(index, clipped)| match &clipped.shape {
+                egui::epaint::Shape::Rect(shape)
+                    if shape.fill == Tokens::DARK.palette.surface
+                        && (shape.rect.height() - band.height()).abs() < 0.01 =>
+                {
+                    Some((index, clipped.clip_rect))
+                }
+                _ => None,
+            })
+            .expect("the band's surface is in the frame");
+        assert!(
+            surface_clip.width() >= band.width() - 0.01,
+            "the surface is painted through the gutter's clip, not the pane's: {surface_clip:?}"
+        );
+        let first_chip = output
+            .shapes
+            .iter()
+            .position(|clipped| {
+                matches!(&clipped.shape, egui::epaint::Shape::Text(text) if text.galley.text() == "ALL")
+            })
+            .expect("the All chip's label is in the frame");
+        assert!(
+            surface < first_chip,
+            "the surface is painted before the chips: {surface} against {first_chip}"
+        );
+    }
+
+    #[test]
+    fn the_row_rests_in_its_slot_before_it_reaches_the_bar() {
+        let ctx = context();
+        let size = Vec2::new(900.0, 600.0);
+        let mut library = library_with(detail(Vec::new(), eight()));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let output = frame(
+            &ctx,
+            size,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        )
+        .1;
+        assert!(
+            band_rect(&output).is_none(),
+            "a row in its slot paints no surface of its own"
+        );
+        let head = text_rect(&output, "Discography").expect("the section head");
+        let chip = chip_rect(&output, Chip::All).expect("the All chip");
+        let first = text_rect(&output, "Album One").expect("the first block");
+        assert!(
+            head.bottom() < chip.top() && chip.bottom() < first.top(),
+            "the row keeps the slot between the head and the blocks: {chip:?}"
+        );
+        assert_eq!(
+            pin::inset(&ctx),
+            0.0,
+            "a row in its slot speaks for nothing"
+        );
+    }
+
+    #[test]
+    fn rows_never_paint_under_the_held_band() {
+        let ctx = context();
+        let size = Vec2::new(900.0, 600.0);
+        let mut library = library_with(detail(Vec::new(), eight()));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let output = held_frame(
+            &ctx,
+            size,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let band = band_rect(&output).expect("the chip row is held");
+
+        let mut drawn = 0;
+        for clipped in &output.shapes {
+            let egui::epaint::Shape::Text(text) = &clipped.shape else {
+                continue;
+            };
+            let label = text.galley.text();
+            if !eight().iter().any(|release| release.name == label) {
+                continue;
+            }
+            drawn += 1;
+            assert!(
+                clipped.clip_rect.top() >= band.bottom() - 0.01,
+                "{label} is drawn through a clip that starts above the band: {:?}",
+                clipped.clip_rect
+            );
+        }
+        assert!(drawn > 0, "a block is drawn under the held band");
+    }
+
+    #[test]
+    fn a_press_on_a_chip_while_held_chooses_it_and_reaches_no_row() {
+        let ctx = context();
+        let size = Vec2::new(900.0, 600.0);
+        let releases = eight();
+        let mut library = library_with(detail(Vec::new(), releases.clone()));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        label_every_release(
+            &ctx,
+            size,
+            &releases,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let output = held_frame(
+            &ctx,
+            size,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let albums = chip_rect(&output, Chip::Kind(ReleaseKind::Album))
+            .expect("the Albums chip at the floor");
+
+        let command = click(
+            &ctx,
+            size,
+            albums.center(),
+            1,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        assert_eq!(command, None, "a filter press asks for nothing");
+        assert_eq!(
+            library.filter.chosen(),
+            Chip::Kind(ReleaseKind::Album),
+            "the press on the held band chooses the chip"
+        );
+        for release in &releases {
+            assert!(
+                !release_picked(&ctx, &release.uri, 0),
+                "the press fell through the band onto a row"
+            );
+        }
+    }
+
+    #[test]
+    fn the_band_releases_at_the_end_of_the_discography() {
+        let ctx = context();
+        let size = Vec2::new(900.0, 420.0);
+        let mut library = with_fans(eight());
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let output = released_frame(
+            &ctx,
+            size,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let band = band_rect(&output).expect("the chip row rides the end");
+        let fans = text_rect(&output, "Fans also like").expect("the likeness head is drawn");
+        assert!(
+            (band.bottom() - (fans.top() - space::S2 - space::S6)).abs() < 0.01,
+            "the band ends where the discography ends: {} against {}",
+            band.bottom(),
+            fans.top() - space::S2 - space::S6
+        );
+    }
+
+    #[test]
+    fn rows_above_the_released_band_stay_visible_and_fans_is_not_clipped() {
+        let ctx = context();
+        let size = Vec2::new(900.0, 420.0);
+        let releases = eight();
+        let mut library = with_fans(releases.clone());
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        label_every_release(
+            &ctx,
+            size,
+            &releases,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let output = released_frame(
+            &ctx,
+            size,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let bar = bar_rect(&output).expect("the action row is pinned");
+        let band = band_rect(&output).expect("the chip row rides the end");
+        assert!(
+            band.top() < bar.bottom() - 0.5,
+            "the band is riding the end, not holding the floor"
+        );
+
+        // No row of the discography paints inside the strip the riding band
+        // covers: the body is drawn through a clip that stops above it.
+        let fixture = eight();
+        let names: Vec<&str> = fixture
+            .iter()
+            .map(|release| release.name.as_str())
+            .collect();
+        for clipped in &output.shapes {
+            let Some(rect) = shape_rect(&clipped.shape) else {
+                continue;
+            };
+            let egui::epaint::Shape::Text(text) = &clipped.shape else {
+                continue;
+            };
+            let label = text.galley.text();
+            if !names.contains(&label) && !row_title(label) {
+                continue;
+            }
+            assert!(
+                rect.bottom() <= band.top() + 0.01 || rect.top() >= band.bottom() - 0.01,
+                "{label} paints inside the riding band: {rect:?} against {band:?}"
+            );
+        }
+
+        // The likeness row below it is drawn whole: the body's clip went back
+        // before the section that is not part of the discography.
+        let fans = text_rect(&output, "Fans also like").expect("the likeness head is drawn");
+        let clip = clipped_text(&output, "Fans also like").expect("the likeness head has a clip");
+        assert!(
+            clip.contains_rect(fans),
+            "the likeness head is clipped away: {fans:?} through {clip:?}"
+        );
+        let card = text_rect(&output, "Other Artist").expect("the card is drawn");
+        let clip = clipped_text(&output, "Other Artist").expect("the card has a clip");
+        assert!(
+            clip.contains_rect(card),
+            "the likeness card is clipped away: {card:?} through {clip:?}"
+        );
+    }
+
+    #[test]
+    fn the_hairline_stays_while_the_band_rides_up() {
+        let ctx = context();
+        let size = Vec2::new(900.0, 420.0);
+        let mut library = with_fans(eight());
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let output = released_frame(
+            &ctx,
+            size,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let band = band_rect(&output).expect("the chip row rides the end");
+        assert!(
+            band_edge(&output, band).is_some(),
+            "a band out of its slot keeps the edge that says rows pass under it"
+        );
+    }
+
+    #[test]
+    fn the_inset_is_the_lowest_bottom() {
+        let ctx = context();
+        let size = Vec2::new(900.0, 600.0);
+        let mut library = library_with(detail(Vec::new(), eight()));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let output = held_frame(
+            &ctx,
+            size,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let bar = bar_rect(&output).expect("the action row is pinned");
+        let band = band_rect(&output).expect("the chip row is held");
+        assert!(
+            (pin::inset(&ctx) - (band.bottom() - bar.top())).abs() < 0.01,
+            "the seam holds the lowest band's bottom: {} against {}",
+            pin::inset(&ctx),
+            band.bottom() - bar.top()
+        );
+    }
+
+    #[test]
+    fn a_focused_release_row_comes_out_from_under_the_held_band() {
+        let ctx = context();
+        let size = Vec2::new(900.0, 600.0);
+        let releases = eight();
+        let mut library = library_with(detail(Vec::new(), releases.clone()));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        label_every_release(
+            &ctx,
+            size,
+            &releases,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let output = held_frame(
+            &ctx,
+            size,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let band = band_rect(&output).expect("the chip row is held");
+
+        // The first row drawn wholly below the band, so the press lands on the row
+        // and not in the strip the band owns.
+        let (label, title) = drawn_texts(&output)
+            .into_iter()
+            .filter(|text| row_title(text))
+            .filter_map(|text| text_rect(&output, text).map(|rect| (text.to_owned(), rect)))
+            .find(|(_, rect)| rect.top() >= band.bottom() + 1.0)
+            .expect("a row is drawn below the held band");
+        let _ = click(
+            &ctx,
+            size,
+            Pos2::new(title.left() + 2.0, title.center().y),
+            1,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let focused = ctx
+            .memory(|memory| memory.focused())
+            .expect("the row took the keyboard");
+
+        // Walk the row up until its top is inside the strip the band covers, then
+        // let what the reveal asked for settle.
+        let mut covered = false;
+        for _ in 0..120 {
+            let row = ctx.read_response(focused).expect("the row is drawn").rect;
+            if row.top() < band.bottom() - 0.5 {
+                covered = true;
+                break;
+            }
+            let _ = wheel(
+                &ctx,
+                size,
+                -space::S2,
+                &mut library,
+                &mut transport,
+                &mut queue,
+                &mut art,
+            );
+        }
+        assert!(covered, "the row never slid under the held band");
+
+        let mut output = frame(
+            &ctx,
+            size,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        )
+        .1;
+        let mut settled = false;
+        for _ in 0..240 {
+            if let Some(row) = ctx.read_response(focused)
+                && row.rect.top() >= band.bottom() - 0.01
+            {
+                settled = true;
+                break;
+            }
+            output = frame(
+                &ctx,
+                size,
+                Vec::new(),
+                &mut library,
+                &mut transport,
+                &mut queue,
+                &mut art,
+            )
+            .1;
+        }
+        assert_eq!(
+            ctx.memory(|memory| memory.focused()),
+            Some(focused),
+            "the row keeps the keyboard"
+        );
+        assert!(
+            settled,
+            "the focused row never came out from under the held band: {label}"
+        );
+        let band = band_rect(&output).expect("the chip row is still held");
+        let row = ctx
+            .read_response(focused)
+            .expect("the row is drawn again")
+            .rect;
+        assert!(
+            row.top() >= band.bottom() - 0.01,
+            "the focused row rests below the band: {row:?} against {band:?}"
+        );
+    }
+
+    #[test]
+    fn a_focused_row_in_the_last_block_asks_for_no_scroll_while_the_band_is_released() {
+        let ctx = context();
+        let size = Vec2::new(900.0, 420.0);
+        let releases = eight();
+        let mut library = with_fans(releases.clone());
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        label_every_release(
+            &ctx,
+            size,
+            &releases,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+
+        // The last row of the last block, drawn below the band while it still
+        // holds the floor: the row a reader would reach for at the end.
+        let mut output = frame(
+            &ctx,
+            size,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        )
+        .1;
+        let mut last = None;
+        for _ in 0..800 {
+            let Some(band) = band_rect(&output) else {
+                output = wheel(
+                    &ctx,
+                    size,
+                    -space::S2,
+                    &mut library,
+                    &mut transport,
+                    &mut queue,
+                    &mut art,
+                );
+                continue;
+            };
+            if let Some(rect) = text_rect(&output, "T7.2")
+                && rect.top() >= band.bottom() + 1.0
+                && rect.bottom() <= size.y - 1.0
+            {
+                last = Some(rect);
+                break;
+            }
+            output = wheel(
+                &ctx,
+                size,
+                -space::S2,
+                &mut library,
+                &mut transport,
+                &mut queue,
+                &mut art,
+            );
+        }
+        let title = last.expect("the last row is drawn below the held band");
+        let _ = click(
+            &ctx,
+            size,
+            Pos2::new(title.left() + 2.0, title.center().y),
+            1,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let focused = ctx
+            .memory(|memory| memory.focused())
+            .expect("the last row took the keyboard");
+
+        // Scroll on until the discography's end carries the band up: the row is
+        // behind the bar now, and a band measured from the viewport's top would
+        // drag the page upward every frame.
+        let output = released_frame(
+            &ctx,
+            size,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let bar = bar_rect(&output).expect("the action row is pinned");
+        let band = band_rect(&output).expect("the chip row rides the end");
+        assert!(
+            band.top() < bar.bottom() - 0.5,
+            "the band is riding the end, not holding the floor"
+        );
+        assert_eq!(
+            pin::inset(&ctx),
+            crate::theme::actionbar::STUCK_H,
+            "a released band leaves the seam to the bar"
+        );
+
+        // The page does not move on its own: the row it still holds the keyboard
+        // for asks for nothing. Let whatever the last wheel left pending settle
+        // first, so the comparison is of a quiet page.
+        let mut output = output;
+        for _ in 0..6 {
+            output = frame(
+                &ctx,
+                size,
+                Vec::new(),
+                &mut library,
+                &mut transport,
+                &mut queue,
+                &mut art,
+            )
+            .1;
+        }
+        let fans = text_rect(&output, "Fans also like").expect("the likeness head is drawn");
+        let mut still = output;
+        for _ in 0..8 {
+            still = frame(
+                &ctx,
+                size,
+                Vec::new(),
+                &mut library,
+                &mut transport,
+                &mut queue,
+                &mut art,
+            )
+            .1;
+        }
+        let moved = text_rect(&still, "Fans also like").expect("the likeness head is still drawn");
+        assert!(
+            (moved.top() - fans.top()).abs() < 0.01,
+            "the page moved while a row was focused under a released band: {} against {}",
+            moved.top(),
+            fans.top()
+        );
+        assert!(
+            ctx.read_response(focused)
+                .is_none_or(|row| row.rect.top() >= 0.0),
+            "the focused row was dragged above the viewport"
+        );
+    }
+
+    #[test]
+    fn a_three_line_band_at_a_narrow_pane_covers_the_last_row() {
+        let ctx = context();
+        // Narrow enough that the five chips need three lines: the room a 240-wide
+        // cluster leaves beside them on a rail-width window, where the band's own
+        // height is the trailing step of the last block and then some.
+        let size = Vec2::new(200.0, 380.0);
+        let mut library = with_fans(eight());
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let output = released_frame(
+            &ctx,
+            size,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let band = band_rect(&output).expect("the chip row rides the end");
+
+        let mut tops: Vec<f32> = [
+            Chip::All,
+            Chip::Kind(ReleaseKind::Album),
+            Chip::Kind(ReleaseKind::Ep),
+            Chip::Kind(ReleaseKind::Single),
+            Chip::Kind(ReleaseKind::Compilation),
+        ]
+        .into_iter()
+        .filter_map(|chip| chip_rect(&output, chip))
+        .map(|rect| rect.top())
+        .collect();
+        tops.dedup_by(|a, b| (*a - *b).abs() < 0.01);
+        assert!(
+            tops.len() >= 3,
+            "the band wraps to three lines at {size:?}: {tops:?}"
+        );
+
+        // The last row of the last block sits wholly inside the band's rect: a
+        // wrapped band is taller than the step it rides, so it covers the row
+        // that would otherwise be the last thing on the page.
+        let end = band.bottom();
+        let row_top = end - space::S6 - extent::ROW_H;
+        let row_bottom = end - space::S6;
+        assert!(
+            band.top() <= row_top && row_bottom <= band.bottom(),
+            "the wrapped band covers the last row: {band:?} against {row_top}..{row_bottom}"
+        );
+    }
+
+    #[test]
+    fn a_page_with_no_band_leaves_the_bar_inset_alone() {
+        let ctx = context();
+        let size = Vec2::new(900.0, 600.0);
+        // A genuinely empty discography draws no row and no band; a tall
+        // likeness grid gives the page enough after it to scroll the bar's row
+        // past the floor.
+        let mut detail = detail(Vec::new(), Vec::new());
+        detail.related = (0..12)
+            .map(|index| format!("spotify:artist:other{index}"))
+            .collect();
+        let mut library = library_with(detail);
+        let _ = library.related_request();
+        library.apply(&Update::Related {
+            artist: ARTIST.to_owned(),
+            cards: (0..12)
+                .map(|index| FollowedArtist {
+                    uri: format!("spotify:artist:other{index}"),
+                    name: format!("Other Artist {index}"),
+                    named: true,
+                    portrait: None,
+                    releases: None,
+                })
+                .collect(),
+        });
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let mut output = frame(
+            &ctx,
+            size,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        )
+        .1;
+        // To the foot of the page, where an empty discography's row would hold
+        // the floor if it had one.
+        for _ in 0..200 {
+            output = wheel(
+                &ctx,
+                size,
+                -extent::ROW_H,
+                &mut library,
+                &mut transport,
+                &mut queue,
+                &mut art,
+            );
+        }
+        let bar = bar_rect(&output).expect("the action row pins without a band under it");
+        assert!(
+            band_rect(&output).is_none(),
+            "an empty discography draws no row, so nothing holds the floor"
+        );
+        assert_eq!(
+            pin::inset(&ctx),
+            crate::theme::actionbar::STUCK_H,
+            "a page with no band leaves the seam to the bar"
+        );
+        let _ = bar;
+    }
+
+    /// The field's box in the page: flush with the row's far edge, on the chip
+    /// line the cluster shares.
+    fn field_rect(output: &egui::FullOutput, size: Vec2) -> Rect {
+        let chip = chip_rect(output, Chip::All).expect("the All chip is drawn");
+        Rect::from_min_size(
+            pos2(
+                size.x - space::GUTTER - crate::theme::cluster::FIELD_W,
+                chip.center().y - crate::theme::cluster::FIELD_H / 2.0,
+            ),
+            vec2(
+                crate::theme::cluster::FIELD_W,
+                crate::theme::cluster::FIELD_H,
+            ),
+        )
+    }
+
+    /// Types `text` into the page's release field, returning the frame the
+    /// keystrokes landed on.
+    fn type_into_field(
+        ctx: &Context,
+        size: Vec2,
+        text: &str,
+        library: &mut Library,
+        transport: &mut Transport,
+        queue: &mut Queue,
+        art: &mut Art,
+    ) -> egui::FullOutput {
+        let (_, output) = frame(ctx, size, Vec::new(), library, transport, queue, art);
+        let field = field_rect(&output, size);
+        for event in click_events(field.center()) {
+            let _ = frame(ctx, size, vec![event], library, transport, queue, art);
+        }
+        // The field's own key filter is stored for the next pass, so the text
+        // event belongs to a frame that already knows the field has the
+        // keyboard.
+        let _ = frame(ctx, size, Vec::new(), library, transport, queue, art);
+        frame(
+            ctx,
+            size,
+            vec![Event::Text(text.to_owned())],
+            library,
+            transport,
+            queue,
+            art,
+        )
+        .1
+    }
+
+    fn repaint_delay(output: &egui::FullOutput) -> std::time::Duration {
+        output
+            .viewport_output
+            .get(&egui::ViewportId::ROOT)
+            .map_or(std::time::Duration::MAX, |viewport| viewport.repaint_delay)
+    }
+
+    #[test]
+    fn the_field_sits_flush_right_in_the_chip_row_240_wide() {
+        let ctx = context();
+        let mut library = library_with(detail(Vec::new(), mixed()));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let size = PAGE;
+        let (_, output) = frame(
+            &ctx,
+            size,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let field = field_rect(&output, size);
+        assert_eq!(field.width(), crate::theme::cluster::FIELD_W);
+        assert_eq!(field.height(), crate::theme::cluster::FIELD_H);
+        assert!(
+            (field.right() - (size.x - space::GUTTER)).abs() < 0.01,
+            "the field is flush with the row's far edge: {field:?}"
+        );
+        assert!(drawn(&output, "FILTER"), "{:?}", drawn_texts(&output));
+    }
+
+    #[test]
+    fn typing_narrows_by_name_on_top_of_the_chip() {
+        let ctx = context();
+        let size = PAGE;
+        let mut library = library_with(detail(Vec::new(), mixed()));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let output = type_into_field(
+            &ctx,
+            size,
+            "album",
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        assert_eq!(library.filter.needle().as_deref(), Some("album"));
+        assert!(drawn(&output, "Album One"), "{:?}", drawn_texts(&output));
+        assert!(drawn(&output, "Album Two"), "{:?}", drawn_texts(&output));
+        assert!(
+            !drawn(&output, "An EP"),
+            "the name axis composes with the chip: {:?}",
+            drawn_texts(&output)
+        );
+
+        library.filter.choose(Chip::Kind(ReleaseKind::Ep));
+        let (_, after) = frame(
+            &ctx,
+            size,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        assert!(
+            !drawn(&after, "An EP"),
+            "the album query still narrows the EP chip: {:?}",
+            drawn_texts(&after)
+        );
+    }
+
+    #[test]
+    fn the_count_reads_n_of_m_over_all_releases_and_only_while_typing() {
+        let ctx = context();
+        let size = PAGE;
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let mut albums = library_with(detail(Vec::new(), mixed()));
+        albums.filter.choose(Chip::Kind(ReleaseKind::Album));
+        albums.filter.edit().push_str("album");
+        let (_, output) = frame(
+            &ctx,
+            size,
+            Vec::new(),
+            &mut albums,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        assert!(
+            drawn(&output, "2 OF 3 RELEASES"),
+            "the count is shown over every release, not the chip's subset: {:?}",
+            drawn_texts(&output)
+        );
+
+        let mut eps = library_with(detail(Vec::new(), mixed()));
+        eps.filter.choose(Chip::Kind(ReleaseKind::Ep));
+        eps.filter.edit().push_str("album");
+        let (_, output) = frame(
+            &ctx,
+            size,
+            Vec::new(),
+            &mut eps,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        assert!(
+            drawn(&output, "0 OF 3 RELEASES"),
+            "an empty slice of the whole still counts the whole: {:?}",
+            drawn_texts(&output)
+        );
+
+        let mut quiet = library_with(detail(Vec::new(), mixed()));
+        let (_, output) = frame(
+            &ctx,
+            size,
+            Vec::new(),
+            &mut quiet,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        assert!(
+            !drawn_texts(&output)
+                .iter()
+                .any(|text| text.contains(" OF 3 RELEASES")),
+            "no query, no count: {:?}",
+            drawn_texts(&output)
+        );
+    }
+
+    #[test]
+    fn the_count_paints_inside_the_band_while_it_holds() {
+        let ctx = context();
+        let size = Vec2::new(900.0, 420.0);
+        let mut library = with_fans(eight());
+        library.filter.edit().push_str("album");
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let mut output = held_frame(
+            &ctx,
+            size,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        // Scroll on while the band keeps the floor: the count has to follow the
+        // painted band, not the slot it left behind well above it.
+        let bar = bar_rect(&output).expect("the action row is pinned");
+        for _ in 0..8 {
+            let next = wheel(
+                &ctx,
+                size,
+                -space::S4,
+                &mut library,
+                &mut transport,
+                &mut queue,
+                &mut art,
+            );
+            let Some(band) = band_rect(&next) else {
+                break;
+            };
+            if (band.top() - bar.bottom()).abs() > 0.5 {
+                break;
+            }
+            output = next;
+        }
+        let band = band_rect(&output).expect("the chip row holds under the bar");
+        let count = text_rect(&output, "3 OF 8 RELEASES").expect("the count is painted");
+        assert!(
+            band.contains_rect(count),
+            "the count moves with the held band: {count:?} outside {band:?}"
+        );
+    }
+
+    #[test]
+    fn the_count_paints_inside_the_band_while_it_releases() {
+        let ctx = context();
+        let size = Vec2::new(900.0, 420.0);
+        let mut library = with_fans(eight());
+        library.filter.edit().push_str("album");
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let output = released_frame(
+            &ctx,
+            size,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let band = band_rect(&output).expect("the chip row rides the end of the discography");
+        let count = text_rect(&output, "3 OF 8 RELEASES").expect("the count is painted");
+        assert!(
+            band.contains_rect(count),
+            "the count rides the released band: {count:?} outside {band:?}"
+        );
+    }
+
+    #[test]
+    fn the_status_node_is_polite_and_exists_only_while_typing() {
+        let ctx = context();
+        ctx.enable_accesskit();
+        let size = PAGE;
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+        let tokens = Tokens::DARK;
+
+        let mut library = library_with(detail(Vec::new(), mixed()));
+        library.filter.edit().push_str("album");
+        let mut read = None;
+        let _ = run(&ctx, input(size, Vec::new()), |ui| {
+            crate::scroll::instant(ui.ctx());
+            ui.add_space(space::S3);
+            let _ = artist_view(
+                ui,
+                Table::Full,
+                &mut library,
+                &mut transport,
+                &mut queue,
+                &mut art,
+                Instant::now(),
+                &tokens,
+            );
+            read = ui
+                .ctx()
+                .accesskit_node_builder(egui::Id::unique("release-count"), |node| {
+                    (node.role(), node.live(), node.label().map(str::to_owned))
+                });
+        });
+        let read = read.expect("the count has a status node");
+        assert_eq!(read.0, egui::Role::Status);
+        assert_eq!(read.1, Some(egui::accesskit::Live::Polite));
+        assert_eq!(read.2.as_deref(), Some("2 of 3 releases"));
+
+        let mut quiet = library_with(detail(Vec::new(), mixed()));
+        let mut stray = false;
+        let _ = run(&ctx, input(size, Vec::new()), |ui| {
+            crate::scroll::instant(ui.ctx());
+            ui.add_space(space::S3);
+            let _ = artist_view(
+                ui,
+                Table::Full,
+                &mut quiet,
+                &mut transport,
+                &mut queue,
+                &mut art,
+                Instant::now(),
+                &tokens,
+            );
+            stray = ui
+                .ctx()
+                .has_accesskit_node(egui::Id::unique("release-count"));
+        });
+        assert!(!stray, "an unfiltered discography announces nothing");
+    }
+
+    #[test]
+    fn the_section_head_keeps_its_totals_while_typing() {
+        let ctx = context();
+        let size = PAGE;
+        let mut library = library_with(detail(Vec::new(), mixed()));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let output = type_into_field(
+            &ctx,
+            size,
+            "album",
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let aside = discography_meta(3, 3).to_uppercase();
+        assert!(
+            drawn(&output, &aside),
+            "the section head describes the artist, not the query: {aside}"
+        );
+    }
+
+    #[test]
+    fn the_field_is_a_tab_stop_after_the_chips_and_before_the_blocks() {
+        let ctx = context();
+        let size = PAGE;
+        let mut library = library_with(detail(Vec::new(), eight()));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let (_, output) = frame(
+            &ctx,
+            size,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let field = field_rect(&output, size);
+        for event in click_events(field.center()) {
+            let _ = frame(
+                &ctx,
+                size,
+                vec![event],
+                &mut library,
+                &mut transport,
+                &mut queue,
+                &mut art,
+            );
+        }
+        let _ = frame(
+            &ctx,
+            size,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        assert!(ctx.text_edit_focused(), "the field took the keyboard");
+
+        // Forward, the next stop is a row below the field: the field comes
+        // before the blocks.
+        let [press, release] = crate::view::test_support::tab();
+        let _ = frame(
+            &ctx,
+            size,
+            vec![press.clone()],
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let _ = frame(
+            &ctx,
+            size,
+            vec![release.clone()],
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let focused = ctx
+            .memory(|memory| memory.focused())
+            .expect("Tab left the field for a control");
+        let row = ctx
+            .read_response(focused)
+            .expect("the focused control is drawn")
+            .rect;
+        assert!(
+            !ctx.text_edit_focused() && row.top() >= field.bottom() - 0.01,
+            "the field comes before the blocks: {row:?} against {field:?}"
+        );
+
+        // Backwards, the next stop is a chip on the field's own line: the field
+        // comes after the chips.
+        for event in click_events(field.center()) {
+            let _ = frame(
+                &ctx,
+                size,
+                vec![event],
+                &mut library,
+                &mut transport,
+                &mut queue,
+                &mut art,
+            );
+        }
+        let _ = frame(
+            &ctx,
+            size,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        assert!(ctx.text_edit_focused(), "the field took the keyboard");
+        let back = |pressed| Event::Key {
+            key: egui::Key::Tab,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: egui::Modifiers::SHIFT,
+        };
+        let _ = frame(
+            &ctx,
+            size,
+            vec![back(true)],
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let _ = frame(
+            &ctx,
+            size,
+            vec![back(false)],
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let focused = ctx
+            .memory(|memory| memory.focused())
+            .expect("Shift+Tab left the field for a control");
+        let chip = ctx
+            .read_response(focused)
+            .expect("the focused control is drawn")
+            .rect;
+        assert!(
+            chip.top() < field.bottom() && chip.bottom() > field.top(),
+            "the field comes after the chips: {chip:?} against {field:?}"
+        );
+    }
+
+    #[test]
+    fn the_field_keeps_its_focus_and_text_across_the_pin() {
+        let ctx = context();
+        let size = Vec2::new(900.0, 500.0);
+        let mut library = library_with(detail(Vec::new(), eight()));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let _ = type_into_field(
+            &ctx,
+            size,
+            "album",
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        assert!(ctx.text_edit_focused(), "the field took the keyboard");
+        let output = held_frame(
+            &ctx,
+            size,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        assert!(
+            drawn(&output, "album"),
+            "the field's text survives the pin: {:?}",
+            drawn_texts(&output)
+        );
+        assert!(
+            ctx.text_edit_focused(),
+            "the field keeps the keyboard across the pin"
+        );
+    }
+
+    #[test]
+    fn the_rule_follows_the_row() {
+        let ctx = context();
+        let size = Vec2::new(900.0, 500.0);
+        let mut library = with_fans(eight());
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+        let tokens = Tokens::DARK;
+
+        let (_, resting) = frame(
+            &ctx,
+            size,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let field = field_rect(&resting, size);
+        let line = |output: &egui::FullOutput, field: Rect| {
+            output.shapes.iter().any(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Rect(shape)
+                    if (shape.rect.height() - stroke::HAIRLINE).abs() < 0.01
+                        && (shape.rect.width() - field.width()).abs() < 0.01
+                        && (shape.rect.bottom() - field.bottom()).abs() < 0.01 =>
+                {
+                    shape.fill == tokens.palette.border || shape.fill == tokens.palette.text
+                }
+                _ => false,
+            })
+        };
+        assert!(line(&resting, field), "a resting row underlines its field");
+
+        let held = held_frame(
+            &ctx,
+            size,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let chip = chip_rect(&held, Chip::All).expect("the All chip is drawn at the floor");
+        let held_field = Rect::from_min_size(
+            pos2(
+                size.x - space::GUTTER - crate::theme::cluster::FIELD_W,
+                chip.center().y - crate::theme::cluster::FIELD_H / 2.0,
+            ),
+            vec2(
+                crate::theme::cluster::FIELD_W,
+                crate::theme::cluster::FIELD_H,
+            ),
+        );
+        assert!(
+            !line(&held, held_field),
+            "a held row gives the field's rule to its own hairline"
+        );
+
+        let released = {
+            let ctx = context();
+            let size = Vec2::new(900.0, 420.0);
+            let mut library = with_fans(eight());
+            let mut transport = Transport::default();
+            let mut queue = Queue::default();
+            let mut art = Art::default();
+            let output = released_frame(
+                &ctx,
+                size,
+                &mut library,
+                &mut transport,
+                &mut queue,
+                &mut art,
+            );
+            let chip = chip_rect(&output, Chip::All).expect("the All chip rides the end");
+            let field = Rect::from_min_size(
+                pos2(
+                    size.x - space::GUTTER - crate::theme::cluster::FIELD_W,
+                    chip.center().y - crate::theme::cluster::FIELD_H / 2.0,
+                ),
+                vec2(
+                    crate::theme::cluster::FIELD_W,
+                    crate::theme::cluster::FIELD_H,
+                ),
+            );
+            (output, field)
+        };
+        assert!(
+            !line(&released.0, released.1),
+            "a riding row also gives the field's rule to its own hairline"
+        );
+    }
+
+    #[test]
+    fn the_field_does_not_move_when_the_count_arrives() {
+        let ctx = context();
+        let size = PAGE;
+        let mut library = library_with(detail(Vec::new(), mixed()));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let (_, before) = frame(
+            &ctx,
+            size,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let before = field_rect(&before, size);
+        library.filter.edit().push_str("album");
+        let (_, after) = frame(
+            &ctx,
+            size,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let after = field_rect(&after, size);
+        assert_eq!(before, after, "the count arrives beside the field");
+    }
+
+    #[test]
+    fn a_steady_page_stops_asking_for_frames_after_an_edit() {
+        let ctx = context();
+        let size = PAGE;
+        let mut library = library_with(detail(Vec::new(), mixed()));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        // A quiet page: nothing has been typed, so nothing asks for a frame.
+        let mut steady = std::time::Duration::ZERO;
+        for _ in 0..8 {
+            let (_, output) = frame(
+                &ctx,
+                size,
+                Vec::new(),
+                &mut library,
+                &mut transport,
+                &mut queue,
+                &mut art,
+            );
+            steady = repaint_delay(&output);
+        }
+        assert_ne!(
+            steady,
+            std::time::Duration::ZERO,
+            "a steady page must not look like an edited one"
+        );
+
+        // The keystroke narrows the blocks on the frame it lands: the post-edit
+        // set is what is drawn. The end and the count were reserved from the
+        // pre-edit state, so the page asks for one more frame to settle them.
+        let typed = type_into_field(
+            &ctx,
+            size,
+            "album",
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        assert!(drawn(&typed, "Album One"), "{:?}", drawn_texts(&typed));
+        assert!(
+            !drawn(&typed, "An EP"),
+            "the blocks use the post-edit set: {:?}",
+            drawn_texts(&typed)
+        );
+
+        // Escape is the clean test of the page's own request: the field handles
+        // the key itself and gives the keyboard back, so nothing else in the row
+        // has a reason to ask for the next frame.
+        let _ = frame(
+            &ctx,
+            size,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let escape = Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let (_, cleared) = frame(
+            &ctx,
+            size,
+            vec![escape],
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        assert_eq!(library.filter.needle(), None, "Escape cleared the query");
+        assert!(
+            drawn(&cleared, "An EP"),
+            "the cleared list draws its hidden block again: {:?}",
+            drawn_texts(&cleared)
+        );
+        // The page's own request for the settling frame is deliberately not
+        // pinned here: Escape and the focus change request frames on their own,
+        // whatever `request_repaint` did, so a ZERO delay on this frame would
+        // prove neither.
+
+        // The focus ring and the field's own state take a few frames to stop
+        // moving; the page must not keep asking once they have.
+        let mut quiet = false;
+        for _ in 0..24 {
+            let (_, settled) = frame(
+                &ctx,
+                size,
+                Vec::new(),
+                &mut library,
+                &mut transport,
+                &mut queue,
+                &mut art,
+            );
+            if repaint_delay(&settled) != std::time::Duration::ZERO {
+                quiet = true;
+                break;
+            }
+        }
+        assert!(quiet, "the page never stopped asking for frames");
+    }
+
+    #[test]
+    fn typing_reaches_no_other_control() {
+        let ctx = context();
+        let size = PAGE;
+        let mut library = library_with(detail(Vec::new(), mixed()));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+        let page = library.page().cloned();
+
+        let (command, output) = {
+            let _ = frame(
+                &ctx,
+                size,
+                Vec::new(),
+                &mut library,
+                &mut transport,
+                &mut queue,
+                &mut art,
+            );
+            let field = field_rect(
+                &frame(
+                    &ctx,
+                    size,
+                    Vec::new(),
+                    &mut library,
+                    &mut transport,
+                    &mut queue,
+                    &mut art,
+                )
+                .1,
+                size,
+            );
+            for event in click_events(field.center()) {
+                let _ = frame(
+                    &ctx,
+                    size,
+                    vec![event],
+                    &mut library,
+                    &mut transport,
+                    &mut queue,
+                    &mut art,
+                );
+            }
+            let _ = frame(
+                &ctx,
+                size,
+                Vec::new(),
+                &mut library,
+                &mut transport,
+                &mut queue,
+                &mut art,
+            );
+            frame(
+                &ctx,
+                size,
+                vec![Event::Text("album".to_owned())],
+                &mut library,
+                &mut transport,
+                &mut queue,
+                &mut art,
+            )
+        };
+        assert_eq!(command, None, "typing asks for nothing");
+        assert_eq!(library.page(), page.as_ref(), "typing navigates nowhere");
+        assert_eq!(library.filter.chosen(), Chip::All);
+        assert!(drawn(&output, "Album One"));
+        assert!(!drawn(&output, "An EP"));
+    }
+
+    #[test]
+    fn the_page_paints_no_unaligned_marker_with_a_query() {
+        let ctx = context();
+        let mut library = library_with(detail(
+            Vec::new(),
+            vec![
+                release("spotify:album:r1", "Slow Tide", &["spotify:track:1"]),
+                release("spotify:album:r2", "Kestrel", &["spotify:track:1"]),
+            ],
+        ));
+        library.filter.edit().push_str("slow");
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let (_, output) = frame(
+            &ctx,
+            Vec2::new(900.0, 800.0),
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        assert!(
+            !drawn_texts(&output).contains(&"Unaligned"),
+            "a queried page paints an unaligned widget: {:?}",
+            drawn_texts(&output)
+        );
+    }
+
+    #[test]
+    fn the_query_sentence_wins() {
+        let ctx = context();
+        let size = PAGE;
+        let mut library = library_with(detail(Vec::new(), mixed()));
+        library.filter.edit().push_str("zzz");
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let (_, output) = frame(
+            &ctx,
+            size,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let texts = drawn_texts(&output);
+        assert!(
+            texts.contains(&"Nothing in this list matches “zzz”"),
+            "the query sentence: {texts:?}"
+        );
+        assert!(
+            !texts.contains(&"Nothing in this format yet"),
+            "only one of the two sentences is ever on screen: {texts:?}"
+        );
+        assert!(!texts.contains(&"Album One"), "{texts:?}");
+        assert!(!texts.contains(&"An EP"), "{texts:?}");
+    }
+
+    #[test]
+    fn the_format_empty_state_names_the_artist() {
+        let ctx = context();
+        let tokens = Tokens::DARK;
+        let output = run(&ctx, input(PAGE, Vec::new()), |ui| {
+            ui.add_space(space::S3);
+            draw_empty(
+                ui,
+                crate::discography::Emptied::Format,
+                "Vela Moreno",
+                "",
+                &tokens,
+            );
+        });
+        let texts = drawn_texts(&output);
+        assert!(
+            texts.contains(&"Nothing in this format yet"),
+            "the format's heading: {texts:?}"
+        );
+        assert!(
+            texts.contains(&"Vela Moreno has no releases of that type."),
+            "the format's sentence names the artist: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn the_band_still_releases_over_an_empty_body() {
+        let ctx = context();
+        let size = Vec2::new(900.0, 420.0);
+        let mut library = with_fans(eight());
+        library.filter.edit().push_str("zzz");
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let output = released_frame(
+            &ctx,
+            size,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        assert!(
+            band_rect(&output).is_some(),
+            "the row still rides the empty body"
+        );
+        assert!(
+            drawn(&output, "Nothing in this list matches “zzz”"),
+            "the sentence is drawn after the body clip is restored: {:?}",
+            drawn_texts(&output)
+        );
     }
 }

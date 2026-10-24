@@ -289,6 +289,52 @@ pub fn library_count(shown: usize, total: usize) -> String {
     }
 }
 
+/// The rail's empty line when a query left no row: `Nothing matches “har”`.
+///
+/// The query is the user's own words, so it keeps its case and is trimmed: a
+/// trailing space is not part of what they asked for. The quotes are the
+/// reference's curly pair, as the search menu's line uses.
+pub fn rail_nothing(query: &str) -> String {
+    format!("Nothing matches “{}”", query.trim())
+}
+
+/// A filtered playlist's count line: `12 of 62 tracks`.
+///
+/// The unit follows the total, not the shown count, so a one-track playlist
+/// reads `1 of 1 track` while a filter is on.
+pub fn filter_count_label(shown: usize, total: usize) -> String {
+    let noun = if total == 1 { "track" } else { "tracks" };
+    format!("{shown} of {total} {noun}")
+}
+
+/// A filtered discography's count line: `3 of 4 releases`.
+///
+/// The unit follows the total, not the shown count, so a single-release
+/// discography reads `1 of 1 release` while a query is on.
+pub fn release_filter_count_label(shown: usize, total: usize) -> String {
+    let noun = if total == 1 { "release" } else { "releases" };
+    format!("{shown} of {total} {noun}")
+}
+
+/// A filtered list's sentence when a query leaves no row.
+///
+/// The query is the user's own words, so it keeps its case and is trimmed. The
+/// quotes are the reference's curly pair, as the rail's line uses.
+pub fn list_nothing(query: &str) -> String {
+    format!("Nothing in this list matches “{}”", query.trim())
+}
+
+/// The heading and sentence a format chip shows when it leaves no release.
+///
+/// The artist's name is part of the sentence because the section is about that
+/// artist: "Vela Moreno has no releases of that type."
+pub fn format_empty_copy(name: &str) -> (&'static str, String) {
+    (
+        "Nothing in this format yet",
+        format!("{name} has no releases of that type."),
+    )
+}
+
 /// A library row's second line: what the thing is, and whose it is.
 ///
 /// The reference writes `Playlist · Vela Moreno` for a playlist and the
@@ -993,6 +1039,72 @@ mod tests {
         assert_eq!(library_count(0, 0), "0 saved");
         assert_eq!(library_count(28, 28), "28 saved");
         assert_eq!(library_count(3, 28), "3 of 28");
+    }
+
+    #[test]
+    fn nothing_matches_names_the_trimmed_query() {
+        assert_eq!(rail_nothing("har"), "Nothing matches “har”");
+        assert_eq!(rail_nothing("  har  "), "Nothing matches “har”");
+    }
+
+    #[test]
+    fn the_quote_marks_are_the_curly_pair() {
+        let line = rail_nothing("har");
+
+        assert!(line.contains('“') && line.contains('”'), "{line}");
+        assert!(
+            !line.contains('"'),
+            "straight quotes are not the reference's"
+        );
+    }
+
+    #[test]
+    fn the_query_keeps_its_case() {
+        assert_eq!(
+            rail_nothing("Midnight City"),
+            "Nothing matches “Midnight City”"
+        );
+    }
+
+    #[test]
+    fn release_filter_count_labels() {
+        assert_eq!(release_filter_count_label(3, 4), "3 of 4 releases");
+        assert_eq!(release_filter_count_label(1, 1), "1 of 1 release");
+        assert_eq!(release_filter_count_label(0, 4), "0 of 4 releases");
+        assert_eq!(release_filter_count_label(1, 4), "1 of 4 releases");
+    }
+
+    #[test]
+    fn list_nothing_names_the_trimmed_query() {
+        assert_eq!(
+            list_nothing("  Midnight City  "),
+            "Nothing in this list matches “Midnight City”"
+        );
+        let line = list_nothing("har");
+        assert!(line.contains('“') && line.contains('”'), "{line}");
+        assert!(
+            !line.contains('"'),
+            "straight quotes are not the reference's"
+        );
+    }
+
+    #[test]
+    fn format_empty_copy_matches_the_reference() {
+        assert_eq!(
+            format_empty_copy("Vela Moreno"),
+            (
+                "Nothing in this format yet",
+                "Vela Moreno has no releases of that type.".to_owned()
+            )
+        );
+    }
+
+    #[test]
+    fn filter_count_labels() {
+        assert_eq!(filter_count_label(12, 62), "12 of 62 tracks");
+        assert_eq!(filter_count_label(1, 1), "1 of 1 track");
+        assert_eq!(filter_count_label(0, 62), "0 of 62 tracks");
+        assert_eq!(filter_count_label(1, 2), "1 of 2 tracks");
     }
 
     #[test]

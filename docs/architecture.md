@@ -150,6 +150,30 @@ a reply that was lost after the server applied the write: the held revision is
 then old, the next write fails, and the library has to be reloaded. That is
 preferred to retrying a write that is not idempotent.
 
+## Narrowing a list, and strips that stay
+
+A list can be narrowed by name as well as by kind, and the two axes multiply.
+The matching is pure and lives beside the list it narrows, not in a view: a
+track matches on its title, artists and album; a rail row on its name; a release
+on its name only. A field is one widget with one id and one focus, drawn by the
+three surfaces that have one, and it reads its own text after the frame's edit
+so a keystroke resolves in the frame that typed it.
+
+A narrowed row keeps the index it has in the whole list. That is what lets a
+removal name true rows while a move is refused: a gap on screen has no true
+position once hidden rows can sit between two visible ones, so the drag is
+switched off rather than made up. The queue has neither a field nor that rule,
+because its order is the window's own.
+
+Two strips pin: the action row under a band, which condenses and keeps the
+page's name, and a section's own row of chips, which holds under the action row
+and releases at the end of the section it filters so it never bands over the
+next one. Both are drawn once, at the pinned position, never copied. What egui
+cannot do is reveal a focused row clear of them: it measures against the scroll
+area's own clip, and a child's shrunken clip never reaches it. So the pinned
+strips report how far down they reach, one seam sums that per frame, and every
+row that asks to be revealed is shifted by it.
+
 ## Who owns what
 
 - The binary owns the tokio runtime, and the `Engine` in headless mode. In the

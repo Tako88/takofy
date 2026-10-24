@@ -6,7 +6,6 @@
 //! a key means.
 
 use egui::{Align2, Color32, FontId, Id, Margin, Rect, Stroke, Ui, UiBuilder};
-use takofy_model::PLAYLIST_NAME_MAX;
 
 use super::keys::{FIELD_FILTER, pressed_once};
 
@@ -24,6 +23,8 @@ pub(crate) struct Spec<'a> {
     pub weak_color: Color32,
     pub cursor: Stroke,
     pub align: Align2,
+    /// The most characters this field accepts; the caller names its own bound.
+    pub limit: usize,
 }
 
 /// What the keyboard and focus did this frame.
@@ -50,6 +51,7 @@ pub(crate) fn edit(ui: &mut Ui, spec: Spec<'_>) -> Out {
         weak_color,
         cursor,
         align,
+        limit,
     } = spec;
     if rect.width() <= 0.0 {
         return Out::default();
@@ -114,7 +116,7 @@ pub(crate) fn edit(ui: &mut Ui, spec: Spec<'_>) -> Out {
         child.visuals_mut().weak_text_color = Some(weak_color);
         child.visuals_mut().text_cursor.stroke = cursor;
 
-        let output = egui::TextEdit::singleline(text)
+        let mut field = egui::TextEdit::singleline(text)
             .id(id)
             .frame(egui::Frame::NONE.inner_margin(inset))
             .min_size(rect.size())
@@ -123,9 +125,14 @@ pub(crate) fn edit(ui: &mut Ui, spec: Spec<'_>) -> Out {
             .font(font)
             .text_color(text_color)
             .event_filter(FIELD_FILTER)
-            .hint_text(egui::RichText::new(hint))
-            .char_limit(PLAYLIST_NAME_MAX)
-            .show(&mut child);
+            .char_limit(limit);
+        // egui takes a hint atom for an empty field and paints the first keystroke
+        // one frame late when one is present, so a field with nothing to hint
+        // passes none and shows the character on its own frame.
+        if !hint.is_empty() {
+            field = field.hint_text(egui::RichText::new(hint));
+        }
+        let output = field.show(&mut child);
         focused = output.response.has_focus();
         lost_focus = output.response.lost_focus();
     }
