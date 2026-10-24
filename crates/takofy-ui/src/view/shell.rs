@@ -14102,6 +14102,7 @@ mod tests {
                 device("b", "Laptop", DeviceKind::Computer),
             ],
             holder: Some("a".to_owned()),
+            held_here: false,
         })
     }
 

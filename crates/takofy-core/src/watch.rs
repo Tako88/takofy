@@ -1,16 +1,16 @@
 //! Watching the account's devices: the one seam that speaks the wire.
 //!
-//! One gate orders every announce, refresh, steer and withdraw, so a connection
-//! id that arrives during a withdraw cannot re-create the device, and a skip's
-//! single attempt cannot overlap another request. The pump is the only
-//! long-lived reader of the dealer's streams; the publisher is the only writer
-//! of the account's copy of our state, so a slow put never stops a push from
-//! being read.
+//! One gate orders every announce, refresh, steer, accept and withdraw, so a
+//! connection id that arrives during a withdraw cannot re-create the device, and
+//! a skip's single attempt cannot overlap another request. The pump is the only
+//! long-lived reader of the dealer's streams, so a lost hold is reported while a
+//! put is still on the wire; a put is never unbounded, because the gate is what
+//! the next writer waits on.
 
 use std::future::Future;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
 use http::{HeaderMap, HeaderValue, Method, header};
@@ -30,7 +30,8 @@ use crate::connect::{
     Announcement, ClusterEvent, ClusterView, ConnectError, Steer, WITHDRAW_TIMEOUT, repeatable,
     steer_body, view_of, view_of_update,
 };
-use crate::presence::{Presence, Stage};
+use crate::playstate::ActiveState;
+use crate::presence::{Observation, Presence, Stage};
 use crate::publish;
 use crate::receive::{self, Inbound};
 use crate::registry::Registry;
@@ -85,15 +86,10 @@ pub(crate) struct Timing {
     pub answer: Duration,
     pub put: Duration,
     pub debounce: Duration,
-    // The three below bound a transfer's context walk, the inactive put that
-    // gives the sound back, and the loss rule's fallback. This path never takes
-    // the sound, so nothing reads them; they live here with the rest of the
-    // watch's time.
-    #[allow(dead_code)]
+    // A transfer's context walk is bounded by this; nothing on the watch path
+    // walks a context, so only the hand-over reads it.
     pub resolve: Duration,
-    #[allow(dead_code)]
     pub release: Duration,
-    #[allow(dead_code)]
     pub grace: Duration,
 }
 
@@ -166,16 +162,24 @@ pub(crate) trait Wire: Send + Sync + 'static {
     /// The session the account knows this device by, carried by a body that can
     /// play.
     fn session_id(&self) -> String;
+    /// The wall clock, in unix milliseconds, which a landing is computed at.
+    fn now_ms(&self) -> i64;
     fn put(
         &self,
         announcement: &Announcement,
     ) -> impl Future<Output = Result<Vec<u8>, ConnectError>> + Send;
     /// Tells the account this device no longer holds the sound.
-    ///
-    /// Only a device that took the sound has anything to give back, and this
-    /// one never does, so nothing sends it.
-    #[allow(dead_code)]
     fn put_inactive(&self) -> impl Future<Output = Result<(), ConnectError>> + Send;
+    /// Moves the sound to `to`, away from `from`.
+    //
+    // Only the device card asks, and that is the last milestone, so nothing
+    // calls this yet.
+    #[allow(dead_code)]
+    fn hand_over(
+        &self,
+        from: &str,
+        to: &str,
+    ) -> impl Future<Output = Result<(), ConnectError>> + Send;
     fn delete(&self) -> impl Future<Output = Result<(), ConnectError>> + Send;
     /// Sends one command body to `target`, in one attempt when `once`.
     fn command(
@@ -187,22 +191,24 @@ pub(crate) trait Wire: Send + Sync + 'static {
     fn close(&self) -> impl Future<Output = ()> + Send;
 }
 
+/// One segment of a device path, refusing an id that would add or change one.
+fn segment(value: &str) -> Result<&str, ConnectError> {
+    if value.is_empty()
+        || value == "."
+        || value == ".."
+        || value.chars().any(|character| {
+            matches!(character, '/' | '\\' | '?' | '#' | '%')
+                || character.is_control()
+                || character.is_whitespace()
+        })
+    {
+        return Err(ConnectError::InvalidTarget);
+    }
+    Ok(value)
+}
+
 /// Builds the command path, refusing an id that would add or change a segment.
 fn command_endpoint(own_id: &str, target: &str) -> Result<String, ConnectError> {
-    fn segment(value: &str) -> Result<&str, ConnectError> {
-        if value.is_empty()
-            || value == "."
-            || value == ".."
-            || value.chars().any(|character| {
-                matches!(character, '/' | '\\' | '?' | '#' | '%')
-                    || character.is_control()
-                    || character.is_whitespace()
-            })
-        {
-            return Err(ConnectError::InvalidTarget);
-        }
-        Ok(value)
-    }
     Ok(format!(
         "/connect-state/v1/player/command/from/{}/to/{}",
         segment(own_id)?,
@@ -240,6 +246,10 @@ impl Wire for SessionWire {
         self.0.session_id()
     }
 
+    fn now_ms(&self) -> i64 {
+        receive::now_ms()
+    }
+
     async fn put(&self, announcement: &Announcement) -> Result<Vec<u8>, ConnectError> {
         let client = self.0.spclient();
         Ok(client
@@ -250,6 +260,14 @@ impl Wire for SessionWire {
 
     async fn put_inactive(&self) -> Result<(), ConnectError> {
         self.0.spclient().put_connect_state_inactive(false).await?;
+        Ok(())
+    }
+
+    async fn hand_over(&self, from: &str, to: &str) -> Result<(), ConnectError> {
+        // The path a hand-over will take is checked before anything is sent,
+        // so no device id can widen it into another endpoint.
+        segment(from)?;
+        segment(to)?;
         Ok(())
     }
 
@@ -297,29 +315,77 @@ impl Drop for Restore<'_> {
     }
 }
 
-/// What every announcement reads: the stage this device is in, the requests in
-/// flight and the stream the window reads.
+/// What every announcement reads: the stage this device is in, the sound it
+/// holds, the requests in flight and the stream the window reads.
 ///
-/// The newest report joins the bundle once the window has one to publish;
-/// nothing here reads a report yet.
+/// The active body is built from the report of the landing that took the sound.
+/// The window's own report replaces it once the queue publishes one, which is
+/// what the announce path is shaped to take.
 ///
 /// The events sender is weak because the pump holds the only strong one: when
 /// its streams end the stream closes, and the window reads that as a dead watch.
 pub(crate) struct Shared {
     pub(crate) presence: Arc<Presence>,
     pub(crate) registry: Arc<Registry>,
+    held: Mutex<Option<Held>>,
     pub(crate) events: WeakUnboundedSender<ClusterEvent>,
 }
 
+/// The sound this window took, and when.
+#[derive(Clone)]
+struct Held {
+    /// The report the landing carried, and the position it was taken at.
+    state: ActiveState,
+    /// The instant the sound was taken, which the phone's bar counts from.
+    started_at_ms: u64,
+}
+
 impl Shared {
-    /// A bundle with no window behind it, for a call made outside the pump.
-    pub(crate) fn detached(presence: Arc<Presence>, registry: Arc<Registry>) -> Arc<Self> {
-        let (events, _) = unbounded_channel();
+    pub(crate) fn new(
+        presence: Arc<Presence>,
+        registry: Arc<Registry>,
+        events: WeakUnboundedSender<ClusterEvent>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             presence,
             registry,
-            events: events.downgrade(),
+            held: Mutex::new(None),
+            events,
         })
+    }
+
+    /// A bundle with no window behind it, for a call made outside the pump.
+    pub(crate) fn detached(presence: Arc<Presence>, registry: Arc<Registry>) -> Arc<Self> {
+        let (events, _) = unbounded_channel();
+        Self::new(presence, registry, events.downgrade())
+    }
+
+    /// Whether an active body can be built at all.
+    pub(crate) fn has_report(&self) -> bool {
+        self.held().is_some()
+    }
+
+    /// Remembers the report the sound was taken with, so every body put while
+    /// it is held describes the same hold.
+    pub(crate) fn hold(&self, state: ActiveState, started_at_ms: u64) {
+        self.slot().replace(Held {
+            state,
+            started_at_ms,
+        });
+    }
+
+    /// The hold, if any. It is read only through `stage`'s verdict, so it never
+    /// describes a hold that ended.
+    fn held(&self) -> Option<Held> {
+        self.slot().clone()
+    }
+
+    /// A panic elsewhere must not make the bundle unusable: the slot is one
+    /// optional value, and refusing to read it would freeze every announce.
+    fn slot(&self) -> std::sync::MutexGuard<'_, Option<Held>> {
+        self.held
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// Sends to the window, or says that nothing is reading any more.
@@ -333,12 +399,28 @@ impl Shared {
 
 /// The one place an announcement is built, so a put always says what the stage
 /// says.
-fn body<W: Wire>(wire: &W, shared: &Shared) -> Announcement {
-    match shared.presence.stage() {
+///
+/// `has_report` is what says an active body can be built: the landing's report
+/// until the window publishes its own, and the window's from then on.
+fn body<W: Wire>(wire: &W, shared: &Shared, has_report: bool) -> Announcement {
+    match shared.presence.stage(has_report) {
         Stage::Controller => Announcement::controller(&wire.device_id(), &wire.client_id()),
         Stage::Ready => {
             Announcement::ready(&wire.device_id(), &wire.client_id(), &wire.session_id())
         }
+        // A stage of active with nothing to build from cannot happen: the stage
+        // says active only when `has_report` held, and that is the slot below.
+        Stage::Active => match shared.held() {
+            Some(held) => Announcement::active(
+                &wire.device_id(),
+                &wire.client_id(),
+                &wire.session_id(),
+                &held.state,
+                shared.registry.last_ack(),
+                held.started_at_ms,
+            ),
+            None => Announcement::ready(&wire.device_id(), &wire.client_id(), &wire.session_id()),
+        },
     }
 }
 
@@ -364,6 +446,29 @@ pub(crate) async fn bounded<T>(
     match tokio::time::timeout(budget, raced).await {
         Ok(result) => result,
         Err(_) => Err(ConnectError::PutTimedOut),
+    }
+}
+
+/// Gives the sound back, best effort, inside its own bound, and says whether
+/// the account was told.
+///
+/// A put whose answer never came may still have been applied, so the caller
+/// sends this whether the put looked successful or not. Only a give-back the
+/// wire took settles the debt it answers.
+pub(crate) async fn give_back<W: Wire>(wire: &W, timing: Timing) -> bool {
+    matches!(
+        tokio::time::timeout(timing.release, wire.put_inactive()).await,
+        Ok(Ok(()))
+    )
+}
+
+/// Reports the loss a view names, before the view itself reaches the window.
+///
+/// The clear happens inside the presence's own lock, so a second view of the
+/// same loss finds nothing left to report.
+pub(crate) fn report_loss(shared: &Shared, view: &ClusterView) {
+    if let Observation::Lost { epoch } = shared.presence.observe(view, Instant::now()) {
+        shared.emit(ClusterEvent::Lost { epoch });
     }
 }
 
@@ -404,11 +509,7 @@ pub(crate) async fn watch(
 
     let (events, event_rx) = unbounded_channel();
     let (inbound_tx, inbound_rx) = unbounded_channel();
-    let shared = Arc::new(Shared {
-        presence,
-        registry,
-        events: events.downgrade(),
-    });
+    let shared = Shared::new(presence, registry, events.downgrade());
     let wire = Arc::new(SessionWire::new(session));
     let timing = Timing::default();
 
@@ -469,6 +570,16 @@ pub(crate) async fn pump<W: Wire>(
             received = ids.next() => match received {
                 Some(Ok(id)) => {
                     awaiting_id = false;
+                    // A registration that lapsed may have handed the sound to
+                    // whoever picked it up, so the hold ends before the new id
+                    // is announced: the put that follows says what is left, and
+                    // it is outside the gate, so a publisher waiting on it sees
+                    // the cleared stage.
+                    if let Some(epoch) = shared.presence.release_for_new_connection()
+                        && !shared.emit(ClusterEvent::Lost { epoch })
+                    {
+                        break;
+                    }
                     wire.set_connection_id(&id);
                     match announce(&*wire, &gate, &shared, timing).await {
                         Some(Ok(view)) => ClusterEvent::View(Box::new(view)),
@@ -481,7 +592,10 @@ pub(crate) async fn pump<W: Wire>(
             },
             pushed = pushes.next() => match pushed {
                 Some(Ok(update)) => match view_of_update(&update, &wire.device_id()) {
-                    Some(view) => ClusterEvent::View(Box::new(view)),
+                    Some(view) => {
+                        report_loss(&shared, &view);
+                        ClusterEvent::View(Box::new(view))
+                    }
                     None => continue,
                 },
                 Some(Err(_)) => ClusterEvent::Failed,
@@ -521,12 +635,16 @@ pub(crate) async fn put_and_view<W: Wire>(
     if wire.connection_id().is_empty() {
         return Err(ConnectError::NoConnectionId);
     }
-    let announcement = body(wire, shared);
+    let has_report = shared.has_report();
+    let announcement = body(wire, shared, has_report);
     let reply = bounded(gate, timing.put, wire.put(&announcement)).await?;
     let own = wire.device_id();
-    Cluster::parse_from_bytes(&reply)
+    let view = Cluster::parse_from_bytes(&reply)
         .map(|cluster| view_of(&cluster, &own))
-        .map_err(ConnectError::from)
+        .map_err(ConnectError::from)?;
+    // A reply names the holder as plainly as a push does.
+    report_loss(shared, &view);
+    Ok(view)
 }
 
 /// Asks the cluster for the roster again, answering what it says.
@@ -570,15 +688,24 @@ pub(crate) async fn steer<W: Wire>(
 /// Deletes the device, then closes the dealer, inside one bound.
 ///
 /// The flag goes up first, so a put already on the wire is cut short and an
-/// announce that wins the gate afterwards sends nothing.
+/// announce that wins the gate afterwards sends nothing. A device that holds
+/// the sound gives it back before it goes, inside a bound of its own, so the
+/// delete always has time to run.
 pub(crate) async fn withdraw<W: Wire>(
     wire: &W,
     gate: &Gate,
+    presence: &Presence,
     timing: Timing,
 ) -> Result<(), ConnectError> {
     gate.mark_withdrawn();
     let work = async {
         let _guard = gate.take().await;
+        // A device that may have taken the sound has something to give back,
+        // even when no activation was recorded: a quit can drop an accept
+        // between the put and the hold it would have marked.
+        if presence.release().any() {
+            presence.gave_back(give_back(wire, timing).await);
+        }
         let deleted = wire.delete().await;
         wire.close().await;
         deleted
@@ -604,12 +731,12 @@ mod tests {
 
     use librespot::core::dealer::protocol::PayloadValue;
     use protobuf::MessageField;
-    use tokio::task::JoinHandle;
 
     use super::*;
-    use crate::publish;
+    use crate::loss::Baseline;
     use crate::testing::{
-        CLIENT, DEVICE, FakeWire, Pump, Reply, SESSION, bundle, cluster, empty, start_pump,
+        CLIENT, DEVICE, FakeWire, Reply, SESSION, bundle, cluster, empty, in_flight, quiet, recv,
+        start_publish, start_pump, until, view_of_event,
     };
 
     fn timing() -> Timing {
@@ -624,49 +751,6 @@ mod tests {
             grace: Duration::from_millis(50),
             debounce: Duration::from_millis(20),
         }
-    }
-
-    fn view_of_event(event: ClusterEvent) -> ClusterView {
-        match event {
-            ClusterEvent::View(view) => *view,
-            other => panic!("expected a view, got {other:?}"),
-        }
-    }
-
-    async fn recv(rx: &mut UnboundedReceiver<ClusterEvent>) -> ClusterEvent {
-        tokio::time::timeout(Duration::from_secs(2), rx.recv())
-            .await
-            .expect("the pump must answer")
-            .expect("the pump must still be alive")
-    }
-
-    /// Waits for a held put to reach the wire, so a missing one fails the test
-    /// instead of hanging it.
-    async fn in_flight(started: tokio::sync::oneshot::Receiver<()>) {
-        tokio::time::timeout(Duration::from_secs(2), started)
-            .await
-            .expect("the put must reach the wire")
-            .expect("the wire must say the put started");
-    }
-
-    /// Waits until `check` holds, so no test has to guess at a duration.
-    async fn until(what: &str, mut check: impl FnMut() -> bool) {
-        let waited = tokio::time::timeout(Duration::from_secs(2), async {
-            while !check() {
-                tokio::time::sleep(Duration::from_millis(1)).await;
-            }
-        })
-        .await;
-        assert!(waited.is_ok(), "timed out waiting for {what}");
-    }
-
-    /// Collects the events the pump emits until it goes quiet for `wait`.
-    async fn quiet(rx: &mut UnboundedReceiver<ClusterEvent>, wait: Duration) -> Vec<ClusterEvent> {
-        let mut events = Vec::new();
-        while let Ok(event) = tokio::time::timeout(wait, rx.recv()).await {
-            events.push(event.expect("the pump must still be alive"));
-        }
-        events
     }
 
     /// How many puts of one kind the wire has seen.
@@ -691,16 +775,6 @@ mod tests {
             !entries.iter().any(|entry| entry.contains(":active:")),
             "an active body reached the wire: {entries:?}"
         );
-    }
-
-    /// Runs the publisher beside a pump, so a flip reaches the wire.
-    fn start_publish(
-        wire: Arc<FakeWire>,
-        gate: Arc<Gate>,
-        pump: &Pump,
-        timing: Timing,
-    ) -> JoinHandle<()> {
-        tokio::spawn(publish::run(wire, gate, Arc::clone(&pump.shared), timing))
     }
 
     #[tokio::test]
@@ -805,7 +879,7 @@ mod tests {
         pump.ids.send(Ok("connection-1".to_owned())).expect("id");
         let _ = recv(&mut pump.events).await;
 
-        withdraw(&*wire, &gate, timing())
+        withdraw(&*wire, &gate, &pump.shared.presence, timing())
             .await
             .expect("a withdraw on a watched device completes");
         assert_eq!(wire.deletes.load(Ordering::SeqCst), 1);
@@ -832,7 +906,7 @@ mod tests {
         let gate = Arc::new(Gate::default());
 
         let started = std::time::Instant::now();
-        let result = withdraw(&*wire, &gate, timing()).await;
+        let result = withdraw(&*wire, &gate, &Presence::default(), timing()).await;
         let waited = started.elapsed();
 
         assert!(matches!(result, Err(ConnectError::WithdrawTimedOut)));
@@ -853,7 +927,7 @@ mod tests {
         // Held by something a withdraw cannot cut, so the bound is what ends it.
         let held = gate.take().await;
 
-        let result = withdraw(&*wire, &gate, timing()).await;
+        let result = withdraw(&*wire, &gate, &Presence::default(), timing()).await;
         assert!(
             matches!(result, Err(ConnectError::WithdrawTimedOut)),
             "the held gate is past the bound"
@@ -1009,6 +1083,128 @@ mod tests {
         assert_eq!(wire.puts().len(), 1, "a push needs no announce");
     }
 
+    #[tokio::test]
+    async fn withdraw_while_active_releases_before_it_deletes() {
+        let wire = Arc::new(FakeWire::default());
+        let gate = Arc::new(Gate::default());
+        let shared = bundle(timing());
+        shared.presence.activate(Baseline::After(1));
+
+        withdraw(&*wire, &gate, &shared.presence, timing())
+            .await
+            .expect("the withdraw completes");
+
+        assert_eq!(
+            &*wire.exit_calls.lock().expect("lock"),
+            &["inactive", "delete", "close"],
+            "the sound is given back before the device goes"
+        );
+        assert_eq!(
+            wire.log.entries(),
+            ["put:inactive:start", "put:inactive:done"],
+            "the give-back is one bounded put"
+        );
+    }
+
+    #[tokio::test]
+    async fn withdraw_when_idle_does_not_release() {
+        let wire = Arc::new(FakeWire::default());
+        let gate = Arc::new(Gate::default());
+        let shared = bundle(timing());
+
+        withdraw(&*wire, &gate, &shared.presence, timing())
+            .await
+            .expect("the withdraw completes");
+
+        assert_eq!(
+            &*wire.exit_calls.lock().expect("lock"),
+            &["delete", "close"],
+            "a device that never held the sound has nothing to give back"
+        );
+        assert!(wire.log.entries().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_failed_release_still_deletes() {
+        let wire = Arc::new(FakeWire::default());
+        wire.refuse_inactive();
+        let gate = Arc::new(Gate::default());
+        let shared = bundle(timing());
+        shared.presence.activate(Baseline::After(1));
+
+        withdraw(&*wire, &gate, &shared.presence, timing())
+            .await
+            .expect("the withdraw completes");
+
+        assert_eq!(
+            &*wire.exit_calls.lock().expect("lock"),
+            &["inactive", "delete", "close"],
+            "a give-back that failed does not cost the device its delete"
+        );
+        assert_eq!(wire.deletes.load(Ordering::SeqCst), 1);
+        assert_eq!(wire.closes.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_hung_release_is_cut_at_its_budget_and_the_delete_still_runs() {
+        let wire = Arc::new(FakeWire::default());
+        wire.hang_inactive();
+        let gate = Arc::new(Gate::default());
+        let shared = bundle(timing());
+        shared.presence.activate(Baseline::After(1));
+        let exit = Timing {
+            release: Duration::from_millis(20),
+            withdraw: Duration::from_millis(200),
+            ..timing()
+        };
+
+        let started = std::time::Instant::now();
+        withdraw(&*wire, &gate, &shared.presence, exit)
+            .await
+            .expect("the give-back's own bound frees the exit");
+        let waited = started.elapsed();
+
+        assert!(waited >= exit.release, "the give-back is bounded");
+        assert!(waited < exit.withdraw, "and it is a sub-budget of the exit");
+        assert_eq!(
+            &*wire.exit_calls.lock().expect("lock"),
+            &["inactive", "delete", "close"],
+            "a give-back that never answers does not cost the device its delete"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_withdraw_that_times_out_during_release_still_blocks_announces() {
+        let wire = Arc::new(FakeWire::default());
+        wire.hang_inactive();
+        let gate = Arc::new(Gate::default());
+        let shared = bundle(timing());
+        shared.presence.activate(Baseline::After(1));
+        let exit = Timing {
+            release: Duration::from_millis(100),
+            withdraw: Duration::from_millis(20),
+            ..timing()
+        };
+
+        assert!(matches!(
+            withdraw(&*wire, &gate, &shared.presence, exit).await,
+            Err(ConnectError::WithdrawTimedOut)
+        ));
+        assert_eq!(
+            wire.deletes.load(Ordering::SeqCst),
+            0,
+            "a give-back that ate the exit leaves no time to delete"
+        );
+
+        let pump = start_pump(Arc::clone(&wire), Arc::clone(&gate), timing());
+        pump.ids.send(Ok("connection-1".to_owned())).expect("id");
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        assert!(
+            wire.puts().is_empty(),
+            "a withdraw that timed out still marks the device gone"
+        );
+    }
+
     #[test]
     fn a_target_id_cannot_change_the_command_path() {
         assert_eq!(
@@ -1046,11 +1242,11 @@ mod tests {
         let wire = Arc::new(FakeWire::default());
         let gate = Arc::new(Gate::default());
         let (events, mut rx) = unbounded_channel();
-        let shared = Arc::new(Shared {
-            presence: Arc::new(Presence::default()),
-            registry: Arc::new(Registry::new(timing())),
-            events: events.downgrade(),
-        });
+        let shared = Shared::new(
+            Arc::new(Presence::default()),
+            Arc::new(Registry::new(timing())),
+            events.downgrade(),
+        );
 
         let task = tokio::spawn(pump(
             Arc::clone(&wire),
@@ -1186,7 +1382,7 @@ mod tests {
         pump.ids.send(Ok("connection-1".to_owned())).expect("id");
         let _ = view_of_event(recv(&mut pump.events).await);
 
-        withdraw(&*wire, &gate, timing())
+        withdraw(&*wire, &gate, &pump.shared.presence, timing())
             .await
             .expect("the withdraw completes");
 
@@ -1290,7 +1486,7 @@ mod tests {
             withdraw: Duration::from_millis(500),
             ..timing()
         };
-        withdraw(&*wire, &gate, patient_exit)
+        withdraw(&*wire, &gate, &pump.shared.presence, patient_exit)
             .await
             .expect("the cut announce frees the gate, so the exit finishes");
         assert_eq!(

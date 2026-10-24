@@ -46,7 +46,7 @@ pub(crate) async fn run<W: Wire>(
 ) {
     loop {
         shared.presence.changed().await;
-        let stage = shared.presence.stage();
+        let stage = shared.presence.stage(shared.has_report());
         let mut failures = 0;
         let mut reported = false;
         loop {
@@ -70,7 +70,9 @@ pub(crate) async fn run<W: Wire>(
                     failures += 1;
                     // A flip during the attempt is a new run with a new stage
                     // of its own, so this one has nothing left to say.
-                    if failures >= PUT_ATTEMPTS || shared.presence.stage() != stage {
+                    if failures >= PUT_ATTEMPTS
+                        || shared.presence.stage(shared.has_report()) != stage
+                    {
                         break;
                     }
                 }

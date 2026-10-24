@@ -15,6 +15,7 @@ use takofy_ui::message::{DeviceUpdate, Update};
 pub(crate) struct Roster {
     pub devices: Vec<Device>,
     pub holder: Option<String>,
+    pub held_here: bool,
 }
 
 /// The roster the window last received, shared by every path that sends one.
@@ -42,11 +43,13 @@ pub(crate) fn device_updates(view: &ClusterView, sent: &mut Option<Roster>) -> V
         let roster = Roster {
             devices: devices.clone(),
             holder: view.holder.clone(),
+            held_here: view.held_here,
         };
         if sent.as_ref() != Some(&roster) {
             updates.push(Update::Devices(DeviceUpdate::Roster {
                 devices: roster.devices.clone(),
                 holder: roster.holder.clone(),
+                held_here: roster.held_here,
             }));
             *sent = Some(roster);
         }
@@ -102,9 +105,21 @@ mod tests {
         holder: Option<&str>,
         playback: Option<RemotePlayback>,
     ) -> ClusterView {
+        held_view(devices, holder, false, playback)
+    }
+
+    /// The same, saying whether this window is the device holding the sound.
+    fn held_view(
+        devices: Option<Vec<Device>>,
+        holder: Option<&str>,
+        held_here: bool,
+        playback: Option<RemotePlayback>,
+    ) -> ClusterView {
         ClusterView {
             devices,
             holder: holder.map(str::to_owned),
+            held_here,
+            changed_ms: 0,
             playback,
         }
     }
@@ -124,6 +139,7 @@ mod tests {
                 Update::Devices(DeviceUpdate::Roster {
                     devices: vec![device("a")],
                     holder: Some("a".to_owned()),
+                    held_here: false,
                 }),
                 Update::Devices(DeviceUpdate::Playing(Some(playback(RemoteState::Playing)))),
             ]
@@ -177,9 +193,31 @@ mod tests {
                 Update::Devices(DeviceUpdate::Roster {
                     devices: vec![device("a"), device("b")],
                     holder: Some("b".to_owned()),
+                    held_here: false,
                 }),
                 Update::Devices(DeviceUpdate::Playing(None)),
             ]
+        );
+    }
+
+    #[test]
+    fn a_held_here_change_alone_replaces_the_roster() {
+        let mut sent = None;
+        let first = view(Some(vec![device("a"), device("b")]), Some("a"), None);
+        let _ = device_updates(&first, &mut sent);
+
+        let second = held_view(Some(vec![device("a"), device("b")]), Some("a"), true, None);
+        assert_eq!(
+            device_updates(&second, &mut sent),
+            vec![
+                Update::Devices(DeviceUpdate::Roster {
+                    devices: vec![device("a"), device("b")],
+                    holder: Some("a".to_owned()),
+                    held_here: true,
+                }),
+                Update::Devices(DeviceUpdate::Playing(None)),
+            ],
+            "the same devices under the same holder, held here"
         );
     }
 }

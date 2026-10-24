@@ -229,6 +229,11 @@ impl eframe::App for TakofyApp {
         if let Some(command) = self.devices.label_request() {
             let _ = self.ui_end.commands.send(command);
         }
+        // A hand-over adopts rows the phone named only by URI, so the queue asks
+        // for their names once the landing is in.
+        if let Some(command) = self.queue.label_wants() {
+            let _ = self.ui_end.commands.send(command);
+        }
         self.devices.expire(now);
         // After the drain and before the draw, so a cover that just arrived is
         // ready in this same frame's `ui()`.
@@ -1542,6 +1547,7 @@ mod tests {
                 kind: DeviceKind::Phone,
             }],
             holder: Some("a".to_owned()),
+            held_here: false,
         }))
         .expect("send");
 
@@ -1576,6 +1582,7 @@ mod tests {
                     kind: DeviceKind::Phone,
                 }],
                 holder: Some("a".to_owned()),
+                held_here: false,
             }),
             now,
         );

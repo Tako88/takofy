@@ -20,7 +20,6 @@ use crate::watch::Timing;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Verdict {
     /// The request was taken, which only an accepting path answers.
-    #[allow(dead_code)]
     Success,
     Failure,
 }
@@ -80,9 +79,6 @@ impl Registry {
     }
 
     /// Reads a request's ack without answering it, so a put can carry it.
-    // An ack rides on a put, and this path answers by refusing, which carries
-    // none.
-    #[allow(dead_code)]
     pub(crate) fn ack_of(&self, id: RequestId) -> Option<Ack> {
         self.state().entries.get(&id).map(|entry| entry.ack.clone())
     }
@@ -103,8 +99,6 @@ impl Registry {
     }
 
     /// The last command the phone sent, which an announcement carries.
-    // This path's announcements carry no command, so nothing reads it.
-    #[allow(dead_code)]
     pub(crate) fn last_ack(&self) -> Option<Ack> {
         self.state().last_ack.clone()
     }

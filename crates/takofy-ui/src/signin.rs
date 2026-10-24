@@ -99,6 +99,7 @@ impl SignIn {
                 | Update::Cover { .. }
                 | Update::CoverFailed { .. }
                 | Update::Devices(_)
+                | Update::Remote(_)
                 | Update::Transport(_),
                 _,
             ) => {}

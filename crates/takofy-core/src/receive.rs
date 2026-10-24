@@ -14,7 +14,7 @@ use librespot::core::dealer::protocol::Command;
 use takofy_model::RequestId;
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::instruction::{Kind, kind_of, summarise};
+use crate::instruction::{Instruction, Kind, instruction_of, kind_of, summarise};
 use crate::registry::{Ack, Registry, Responder, Verdict};
 
 /// The log target of this module, so the binary can let its one summary line
@@ -22,10 +22,12 @@ use crate::registry::{Ack, Registry, Responder, Verdict};
 pub const RECEIVE_LOG_TARGET: &str = "takofy_core::receive";
 
 /// One request the window has to deal with.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Inbound {
     pub id: RequestId,
     pub kind: Kind,
+    /// What the request asked for, decoded once so every handler agrees.
+    pub instruction: Instruction,
 }
 
 /// Reads the dealer's requests until its stream ends.
@@ -43,6 +45,7 @@ pub(crate) async fn serve(
         let id = RequestId(next);
         next = next.wrapping_add(1);
         log::info!("{}", line(&request.command));
+        let instruction = instruction_of(&request);
         registry.insert(
             id,
             Ack {
@@ -55,6 +58,7 @@ pub(crate) async fn serve(
             .send(Inbound {
                 id,
                 kind: kind_of(&request.command),
+                instruction,
             })
             .is_err()
         {
@@ -95,7 +99,7 @@ impl Responder for DealerResponder {
 }
 
 /// Milliseconds since the epoch, or zero when the clock is before it.
-fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |elapsed| {
@@ -121,6 +125,7 @@ mod tests {
     use tokio::task::JoinHandle;
 
     use super::*;
+    use crate::instruction::Refusal;
     use crate::testing::fed;
     use crate::watch::Timing;
 
@@ -204,7 +209,29 @@ mod tests {
 
         let received = recv(&mut inbound).await;
         assert_eq!(received.kind, Kind::Pause);
+        assert_eq!(received.instruction, Instruction::Other(Kind::Pause));
         assert_eq!(received.id, RequestId(0), "the first request is id zero");
+    }
+
+    #[tokio::test]
+    async fn a_transfer_without_data_arrives_refused() {
+        let registry = registry();
+        let (requests, mut inbound, _task) = start(registry);
+        let (reply_tx, _reply_rx) = unbounded_channel();
+        let bare = Command::Transfer(TransferCommand {
+            data: None,
+            options: TransferOptions::default(),
+            from_device_identifier: String::new(),
+            logging_params: logging(),
+        });
+
+        requests
+            .send((request(1, bare), reply_tx))
+            .expect("the stream takes the request");
+
+        let received = recv(&mut inbound).await;
+        assert_eq!(received.kind, Kind::Transfer);
+        assert_eq!(received.instruction, Instruction::Refused(Refusal::NoData));
     }
 
     #[tokio::test]

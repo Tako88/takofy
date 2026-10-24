@@ -1,15 +1,19 @@
 //! What one incoming command asked for, in words this client can log.
 //!
 //! A command's payload can carry track uris and context uris, and the log is
-//! read by whoever is watching the account. So the only shape that leaves this
-//! module is a summary of counts and kinds, never a uri. It also decodes the
-//! endpoint, so the rest of the crate asks one question instead of matching on
-//! the wire's own enum.
+//! read by whoever is watching the account. So the only shape that reaches the
+//! log is a summary of counts and kinds, never a uri: a decoded plan carries
+//! uris because the queue has to adopt them, and it is never printed. It also
+//! decodes the endpoint, so the rest of the crate asks one question instead of
+//! matching on the wire's own enum.
 
 use std::fmt;
 
-use librespot::core::dealer::protocol::Command;
+use librespot::core::dealer::protocol::{Command, Request};
 use librespot::protocol::transfer_state::TransferState;
+
+use crate::transfer::plan;
+pub use crate::transfer::{Refusal, TransferPlan};
 
 /// The wire's way of saying a transfer has no context.
 const NO_CONTEXT: &str = "-";
@@ -100,6 +104,20 @@ impl ContextKind {
         }
     }
 
+    /// Whether a transfer of this context can be played in full here.
+    ///
+    /// The four kinds whose rows this client can resolve and adopt; every other
+    /// kind is refused rather than downgraded to one track.
+    pub fn honoured(self) -> bool {
+        matches!(
+            self,
+            ContextKind::Playlist
+                | ContextKind::Album
+                | ContextKind::Show
+                | ContextKind::Collection
+        )
+    }
+
     fn word(self) -> &'static str {
         match self {
             ContextKind::Playlist => "playlist",
@@ -152,6 +170,31 @@ impl fmt::Display for TransferSummary {
             Some(skew) => write!(f, "skew {skew} ms"),
             None => write!(f, "skew none"),
         }
+    }
+}
+
+/// What one incoming request asked this window to do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Instruction {
+    /// A hand-over this window can take, decoded into what the queue adopts.
+    Transfer(TransferPlan),
+    /// A hand-over it cannot take, and why, so nothing is put.
+    Refused(Refusal),
+    /// Any other endpoint: this window answers it without acting on it.
+    Other(Kind),
+}
+
+/// Decodes one request into a plan, a refusal, or just its endpoint.
+pub fn instruction_of(request: &Request) -> Instruction {
+    match &request.command {
+        Command::Transfer(transfer) => match transfer.data.as_ref() {
+            Some(state) => match plan(state) {
+                Ok(plan) => Instruction::Transfer(plan),
+                Err(refusal) => Instruction::Refused(refusal),
+            },
+            None => Instruction::Refused(Refusal::NoData),
+        },
+        other => Instruction::Other(kind_of(other)),
     }
 }
 
@@ -460,6 +503,120 @@ mod tests {
         for (uri, expected) in cases {
             assert_eq!(ContextKind::of_uri(uri), expected, "{uri:?}");
         }
+    }
+
+    #[test]
+    fn only_playlist_album_show_and_collection_are_honoured() {
+        let cases = [
+            (ContextKind::Playlist, true),
+            (ContextKind::Album, true),
+            (ContextKind::Show, true),
+            (ContextKind::Collection, true),
+            (ContextKind::Artist, false),
+            (ContextKind::Station, false),
+            (ContextKind::Search, false),
+            (ContextKind::Local, false),
+            (ContextKind::Other, false),
+            (ContextKind::None, false),
+        ];
+
+        for (kind, expected) in cases {
+            assert_eq!(kind.honoured(), expected, "{kind:?}");
+        }
+    }
+
+    /// The wire's ids are 22 base62 characters, so a fixture has to be one.
+    const TRACK_1: &str = "spotify:track:4uLU6hMCjMI75M1A2tKUQ1";
+    const TRACK_2: &str = "spotify:track:4uLU6hMCjMI75M1A2tKUQ2";
+    const PLAYLIST: &str = "spotify:playlist:37i9dQZF1DXcBWIGoYBM5M";
+    const ARTIST: &str = "spotify:artist:0OdUWJ0sBjDrqHygGUXeCF";
+
+    fn request(command: Command) -> Request {
+        Request {
+            message_id: 1,
+            sent_by_device_id: "phone".to_owned(),
+            command,
+        }
+    }
+
+    fn transfer(data: Option<TransferState>) -> Command {
+        Command::Transfer(TransferCommand {
+            data,
+            options: TransferOptions::default(),
+            from_device_identifier: String::new(),
+            logging_params: logging(),
+        })
+    }
+
+    /// A paused album whose current track sits inside its own page.
+    fn state(context: &str) -> TransferState {
+        TransferState {
+            current_session: MessageField::some(Session {
+                context: MessageField::some(Context {
+                    uri: Some(context.to_owned()),
+                    pages: vec![page(&[TRACK_1, TRACK_2])],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            playback: MessageField::some(Playback {
+                current_track: MessageField::some(track(TRACK_2)),
+                is_paused: Some(true),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_transfer_with_data_is_a_plan() {
+        let state = state(PLAYLIST);
+        let expected = crate::transfer::plan(&state).expect("the fixture is playable");
+
+        let instruction = instruction_of(&request(transfer(Some(state))));
+
+        assert_eq!(instruction, Instruction::Transfer(expected.clone()));
+        let Instruction::Transfer(plan) = instruction else {
+            panic!("a playable transfer must decode into a plan");
+        };
+        assert_eq!(plan.current, TRACK_2);
+        assert_eq!(plan.pages, vec![TRACK_1.to_owned(), TRACK_2.to_owned()]);
+    }
+
+    #[test]
+    fn a_transfer_without_data_is_refused_no_data() {
+        assert_eq!(
+            instruction_of(&request(transfer(None))),
+            Instruction::Refused(Refusal::NoData)
+        );
+    }
+
+    #[test]
+    fn an_unsupported_context_is_a_refusal() {
+        assert_eq!(
+            instruction_of(&request(transfer(Some(state(ARTIST))))),
+            Instruction::Refused(Refusal::UnsupportedContext(ContextKind::Artist))
+        );
+    }
+
+    #[test]
+    fn other_endpoints_keep_their_kind() {
+        for (command, expected) in commands() {
+            if expected == Kind::Transfer {
+                continue;
+            }
+            assert_eq!(
+                instruction_of(&request(command)),
+                Instruction::Other(expected),
+                "{expected:?}"
+            );
+        }
+
+        let payload = serde_json::json!({"endpoint": "something_new"});
+        assert_eq!(
+            instruction_of(&request(Command::Unknown(payload))),
+            Instruction::Other(Kind::Unknown)
+        );
     }
 
     #[test]

@@ -59,15 +59,28 @@ rows, since both are indices into it. None of this changes the shutdown order â€
 the command task still owns the engine and the player, and teardown still joins
 it before the runtime drops.
 
-The device list is read the same way. This client announces itself as a device
-that cannot play and cannot be handed the sound, so seeing the account's
-devices costs an entry in that list. The roster arrives whole, and the holder's
-playback arrives as its own update so a position move does not rewrite the
-rows. A remote transport sits beside the local one and steering goes through
+The device list is read the same way, and it is the same entry that lets this
+client be handed the sound. It announces itself as a device that can play only
+once something is playing here, because an active device with no player takes
+the account's sound and plays it nowhere. The roster arrives whole, and the
+holder's playback arrives as its own update so a position move does not rewrite
+the rows. A remote transport sits beside the local one and steering goes through
 one gated request path, so a skip cannot overlap an announce or a withdraw.
-The costs are explicit: announcing is required to see the list, the phone
-shows this client greyed until it can play, and local playback is not announced
-at all.
+
+Taking the sound over is a request, not a message. The account's command channel
+arrives as a dealer request whose reply must come after this device has put
+itself active, not before: answering first leaves the phone waiting through its
+retries. So a hand-over is resolved into a queue, put, and only then answered â€”
+and every path that cannot honour it gives the sound back rather than answering
+success. The device that holds the sound pauses when the account says someone
+else does, never on its own judgement, and leaving the window gives the sound
+back before the device is removed.
+
+Three costs are explicit. The phone's copy of what plays here is kept by a
+debounced put after each state change, so its position moves between updates by
+its own arithmetic. The window does not obey a volume it cannot offer, and says
+so in what it announces. And a queue the phone hands over is that phone's own
+window of upcoming rows, not a whole context.
 
 Which transport a frame draws is a rule rather than a guess: the holder is drawn
 only while this window's own transport is silent, and the first local play flips

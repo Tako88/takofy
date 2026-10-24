@@ -19,6 +19,9 @@ use librespot::protocol::player::{
 use protobuf::{EnumOrUnknown, MessageField};
 use takofy_model::{Device, DeviceKind, RemotePlayback, RemoteState, TrackEntry};
 
+use crate::playstate::{ActiveState, player_state_of};
+use crate::registry::Ack;
+
 /// The name this client announces itself under.
 pub const DEVICE_NAME: &str = "Takofy";
 
@@ -79,23 +82,11 @@ impl Announcement {
     /// than obeyed, and the player state is idle and trackless, so this body
     /// cannot take the sound until a landing fills it in.
     pub fn ready(device_id: &str, client_id: &str, session_id: &str) -> Self {
-        let info = DeviceInfo {
-            can_play: true,
-            volume: 0,
-            name: DEVICE_NAME.to_owned(),
-            capabilities: MessageField::some(receiver_capabilities()),
-            device_software_version: env!("CARGO_PKG_VERSION").to_owned(),
-            device_type: EnumOrUnknown::new(DeviceType::COMPUTER),
-            spirc_version: SPIRC_VERSION.to_owned(),
-            device_id: device_id.to_owned(),
-            client_id: client_id.to_owned(),
-            ..Default::default()
-        };
         Self(PutStateRequest {
             member_type: EnumOrUnknown::new(MemberType::CONNECT_STATE),
             put_state_reason: EnumOrUnknown::new(PutStateReason::NEW_DEVICE),
             device: MessageField::some(WireDevice {
-                device_info: MessageField::some(info),
+                device_info: MessageField::some(receiver_info(device_id, client_id)),
                 player_state: MessageField::some(idle_player_state(session_id)),
                 ..Default::default()
             }),
@@ -104,9 +95,65 @@ impl Announcement {
         })
     }
 
+    /// The body of a device that holds the sound.
+    ///
+    /// The track comes from [`ActiveState`], which cannot be built without one,
+    /// so an active body is never empty. It keeps the ready capabilities: the
+    /// picker must go on offering this device while it plays.
+    pub(crate) fn active(
+        device_id: &str,
+        client_id: &str,
+        session_id: &str,
+        state: &ActiveState,
+        ack: Option<Ack>,
+        started_at_ms: u64,
+    ) -> Self {
+        // Built when the sound is taken, so one instant stamps the start, the
+        // clock and the state it carries.
+        let now_ms = i64::try_from(started_at_ms).unwrap_or(i64::MAX);
+        let (message_id, sender) =
+            ack.map_or((0, String::new()), |ack| (ack.message_id, ack.sender));
+        Self(PutStateRequest {
+            member_type: EnumOrUnknown::new(MemberType::CONNECT_STATE),
+            put_state_reason: EnumOrUnknown::new(PutStateReason::PLAYER_STATE_CHANGED),
+            device: MessageField::some(WireDevice {
+                device_info: MessageField::some(receiver_info(device_id, client_id)),
+                player_state: MessageField::some(player_state_of(
+                    state.report(),
+                    state.age_ms(),
+                    now_ms,
+                    session_id,
+                )),
+                ..Default::default()
+            }),
+            is_active: true,
+            last_command_message_id: message_id,
+            last_command_sent_by_device_id: sender,
+            started_playing_at: started_at_ms,
+            client_side_timestamp: started_at_ms,
+            ..Default::default()
+        })
+    }
+
     /// The body the wire sends.
     pub fn message(&self) -> &PutStateRequest {
         &self.0
+    }
+}
+
+/// The device info of a device that can play, with volume disabled.
+fn receiver_info(device_id: &str, client_id: &str) -> DeviceInfo {
+    DeviceInfo {
+        can_play: true,
+        volume: 0,
+        name: DEVICE_NAME.to_owned(),
+        capabilities: MessageField::some(receiver_capabilities()),
+        device_software_version: env!("CARGO_PKG_VERSION").to_owned(),
+        device_type: EnumOrUnknown::new(DeviceType::COMPUTER),
+        spirc_version: SPIRC_VERSION.to_owned(),
+        device_id: device_id.to_owned(),
+        client_id: client_id.to_owned(),
+        ..Default::default()
     }
 }
 
@@ -172,6 +219,12 @@ pub struct ClusterView {
     pub devices: Option<Vec<Device>>,
     /// The device holding the sound, when one is named and it is not us.
     pub holder: Option<String>,
+    /// Whether the cluster names this client as the one holding the sound.
+    ///
+    /// `holder` cannot answer this: it is `None` both for "nobody" and for us.
+    pub held_here: bool,
+    /// The cluster's own state-change instant, in unix milliseconds.
+    pub changed_ms: i64,
     pub playback: Option<RemotePlayback>,
 }
 
@@ -183,6 +236,10 @@ pub struct ClusterView {
 pub enum ClusterEvent {
     View(Box<ClusterView>),
     Failed,
+    /// The sound was taken away, naming the activation that ended.
+    Lost {
+        epoch: u64,
+    },
 }
 
 /// Why a connect call failed.
@@ -208,6 +265,12 @@ pub enum ConnectError {
     WithdrawTimedOut,
     #[error("the state put did not answer in time")]
     PutTimedOut,
+    #[error("the request expired before it could be answered")]
+    Expired,
+    #[error("the landing has no track to play")]
+    NoTrack,
+    #[error("the device cannot play")]
+    NotPlayable,
 }
 
 /// A transport action sent to the device that holds the sound.
@@ -246,6 +309,8 @@ pub fn view_of(cluster: &Cluster, own_id: &str) -> ClusterView {
     ClusterView {
         devices: roster(cluster, own_id),
         holder: holder(cluster, own_id),
+        held_here: held_here(cluster, own_id),
+        changed_ms: cluster.changed_timestamp_ms,
         playback: playback(cluster),
     }
 }
@@ -292,6 +357,11 @@ fn kind_of(device_type: DeviceType) -> DeviceKind {
         DeviceType::AUTOMOBILE => DeviceKind::Car,
         _ => DeviceKind::Other,
     }
+}
+
+fn held_here(cluster: &Cluster, own_id: &str) -> bool {
+    let id = cluster.active_device_id.as_str();
+    !id.is_empty() && id == own_id
 }
 
 fn holder(cluster: &Cluster, own_id: &str) -> Option<String> {
@@ -409,7 +479,7 @@ mod tests {
         ContextPlayerOptions, PlayOrigin, PlayerState, ProvidedTrack, Restrictions, Suppressions,
     };
     use protobuf::{EnumOrUnknown, Message as _, MessageField};
-    use takofy_model::{DeviceKind, RemoteState};
+    use takofy_model::{DeviceKind, Options, RemoteState, Report, Status, TrackEntry};
 
     use super::*;
 
@@ -693,11 +763,64 @@ mod tests {
             .expect("a receiver names its capabilities")
     }
 
-    fn ready_player(body: &PutStateRequest) -> &PlayerState {
+    fn body_player(body: &PutStateRequest) -> &PlayerState {
         ready_device(body)
             .player_state
             .as_ref()
             .expect("a receiver names its player state")
+    }
+
+    /// The report an active body publishes: one row behind and one ahead.
+    fn entry(uri: &str) -> TrackEntry {
+        TrackEntry {
+            uri: uri.to_owned(),
+            title: uri.to_owned(),
+            artists: String::new(),
+            album: None,
+            album_uri: None,
+            artist_uris: Vec::new(),
+            artist_names: Vec::new(),
+            added_at: None,
+            duration_ms: None,
+            named: false,
+            cover: None,
+        }
+    }
+
+    fn report() -> Report {
+        Report {
+            status: Status::Playing,
+            track: Some(entry("spotify:track:current")),
+            prev: vec![entry("spotify:track:before")],
+            next: vec![entry("spotify:track:after")],
+            context: Some("spotify:album:context".to_owned()),
+            options: Options::default(),
+            position_ms: 10_000,
+            duration_ms: Some(200_000),
+        }
+    }
+
+    /// When this window took the sound.
+    const STARTED_AT_MS: u64 = 1_700_000_000_000;
+
+    /// How old the report was when the body was built.
+    const AGE_MS: i64 = 3_000;
+
+    fn active_state(report: Report) -> ActiveState {
+        ActiveState::new(report, AGE_MS).expect("the fixture names a track")
+    }
+
+    fn active_body(ack: Option<Ack>) -> PutStateRequest {
+        Announcement::active(
+            "device-id",
+            "client-id",
+            "session-id",
+            &active_state(report()),
+            ack,
+            STARTED_AT_MS,
+        )
+        .message()
+        .clone()
     }
 
     #[test]
@@ -705,7 +828,7 @@ mod tests {
         let body = ready_body();
 
         assert!(!body.is_active);
-        assert!(ready_player(&body).track.is_none());
+        assert!(body_player(&body).track.is_none());
     }
 
     #[test]
@@ -732,13 +855,13 @@ mod tests {
 
     #[test]
     fn ready_carries_the_session_id() {
-        assert_eq!(ready_player(&ready_body()).session_id, "session-id");
+        assert_eq!(body_player(&ready_body()).session_id, "session-id");
     }
 
     #[test]
     fn ready_player_state_has_the_idle_shape() {
         let body = ready_body();
-        let player = ready_player(&body);
+        let player = body_player(&body);
 
         assert!(player.is_system_initiated);
         assert_eq!(player.playback_speed, 1.0);
@@ -748,6 +871,149 @@ mod tests {
             player.options,
             MessageField::some(ContextPlayerOptions::new())
         );
+    }
+
+    #[test]
+    fn active_announcement_is_active_and_carries_the_player_state() {
+        let body = active_body(None);
+        let player = body_player(&body);
+
+        assert!(body.is_active);
+        assert_eq!(
+            body.member_type.enum_value().expect("known"),
+            MemberType::CONNECT_STATE
+        );
+        assert_eq!(
+            body.put_state_reason.enum_value().expect("known"),
+            PutStateReason::PLAYER_STATE_CHANGED
+        );
+        assert_eq!(body.started_playing_at, STARTED_AT_MS);
+        assert_eq!(body.client_side_timestamp, STARTED_AT_MS);
+
+        assert_eq!(player.session_id, "session-id");
+        assert_eq!(
+            player.timestamp,
+            i64::try_from(STARTED_AT_MS).expect("an instant fits an i64")
+        );
+        assert_eq!(
+            (player.is_playing, player.is_paused, player.is_buffering),
+            (true, false, false)
+        );
+        assert_eq!((player.prev_tracks.len(), player.next_tracks.len()), (1, 1));
+        assert_eq!(
+            player
+                .track
+                .as_ref()
+                .expect("an active body names its track")
+                .uri,
+            "spotify:track:current"
+        );
+        assert_eq!(player.index.as_ref().expect("an index").track, 1);
+        assert_eq!(player.context_uri, "spotify:album:context");
+        assert_eq!(
+            player.position_as_of_timestamp,
+            10_000 + AGE_MS,
+            "the position advances with the age the caller measured"
+        );
+        assert_eq!(player.duration, 200_000);
+    }
+
+    #[test]
+    fn active_keeps_the_ready_capabilities_and_cannot_be_trackless() {
+        let body = active_body(None);
+
+        assert!(ready_info(&body).can_play);
+        assert_eq!(ready_capabilities(&body), &receiver_capabilities());
+
+        let mut trackless = report();
+        trackless.track = None;
+        assert!(
+            ActiveState::new(trackless, AGE_MS).is_none(),
+            "a report with no track cannot hold the sound"
+        );
+        let mut unnamed = report();
+        unnamed.track = Some(entry(""));
+        assert!(ActiveState::new(unnamed, AGE_MS).is_none());
+    }
+
+    #[test]
+    fn active_carries_the_last_command_ack() {
+        let body = active_body(Some(Ack {
+            message_id: 42,
+            sender: "phone".to_owned(),
+        }));
+
+        assert_eq!(body.last_command_message_id, 42);
+        assert_eq!(body.last_command_sent_by_device_id, "phone");
+    }
+
+    #[test]
+    fn active_without_an_ack_carries_no_command_ids() {
+        let body = active_body(None);
+
+        assert_eq!(body.last_command_message_id, 0);
+        assert!(body.last_command_sent_by_device_id.is_empty());
+    }
+
+    #[test]
+    fn each_announcement_kind_has_its_own_flags() {
+        let controller = Announcement::controller("device", "client")
+            .message()
+            .clone();
+        assert!(!ready_info(&controller).can_play);
+        assert!(!controller.is_active);
+        assert!(
+            controller
+                .device
+                .as_ref()
+                .expect("a device")
+                .player_state
+                .is_none()
+        );
+
+        let ready = ready_body();
+        assert!(ready_info(&ready).can_play);
+        assert!(!ready.is_active);
+        assert!(body_player(&ready).track.is_none());
+
+        let active = active_body(None);
+        assert!(active.is_active);
+        assert!(
+            body_player(&active)
+                .track
+                .as_ref()
+                .is_some_and(|track| !track.uri.is_empty()),
+            "an active body always names a track"
+        );
+    }
+
+    #[test]
+    fn held_here_is_true_only_for_our_own_id() {
+        let cases = [
+            ("own", "own", true),
+            ("phone", "own", false),
+            ("", "own", false),
+        ];
+
+        for (active, own, expected) in cases {
+            let view = view_of(&cluster(Vec::new(), active), own);
+            assert_eq!(view.held_here, expected, "active={active:?} own={own:?}");
+        }
+    }
+
+    #[test]
+    fn nobody_is_not_held_here() {
+        assert!(!view_of(&Cluster::default(), "own").held_here);
+        assert!(!view_of(&cluster(Vec::new(), ""), "own").held_here);
+    }
+
+    #[test]
+    fn changed_ms_is_the_clusters() {
+        let mut cluster = cluster(Vec::new(), "phone");
+        cluster.changed_timestamp_ms = 1_234;
+
+        assert_eq!(view_of(&cluster, "own").changed_ms, 1_234);
+        assert_eq!(view_of(&Cluster::default(), "own").changed_ms, 0);
     }
 
     fn rust_files(dir: &Path, files: &mut Vec<PathBuf>) {

@@ -17,6 +17,7 @@ use tokio::task::JoinHandle;
 
 use crate::connect::{Announcement, ClusterEvent, ConnectError};
 use crate::presence::Presence;
+use crate::publish;
 use crate::registry::{Registry, Responder, Verdict};
 use crate::watch::{Gate, Shared, Timing, Wire, pump};
 
@@ -66,11 +67,25 @@ pub(crate) fn device_info(name: &str) -> DeviceInfo {
 }
 
 pub(crate) fn cluster() -> Cluster {
+    cluster_of("phone", 0)
+}
+
+/// A cluster naming `holder` as the device with the sound.
+pub(crate) fn cluster_of(holder: &str, changed_ms: i64) -> Cluster {
     let mut device = HashMap::new();
     device.insert("phone".to_owned(), device_info("Phone"));
     Cluster {
         device,
-        active_device_id: "phone".to_owned(),
+        active_device_id: holder.to_owned(),
+        changed_timestamp_ms: changed_ms,
+        ..Default::default()
+    }
+}
+
+/// A pushed update carrying one cluster.
+pub(crate) fn pushed(cluster: Cluster) -> ClusterUpdate {
+    ClusterUpdate {
+        cluster: MessageField::some(cluster),
         ..Default::default()
     }
 }
@@ -100,9 +115,18 @@ pub(crate) struct FakeWire {
     pub(crate) exit_calls: Mutex<Vec<&'static str>>,
     reply: Mutex<Reply>,
     queued: Mutex<Vec<Reply>>,
+    /// The cluster a put answers with, when a test wants one that is not the
+    /// default: naming this device, or stamped.
+    answer_cluster: Mutex<Option<Cluster>>,
     started: Mutex<Option<oneshot::Sender<()>>>,
     release: Mutex<Option<oneshot::Receiver<()>>>,
     pub(crate) delete_hangs: AtomicBool,
+    inactive_hangs: AtomicBool,
+    inactive_fails: AtomicBool,
+    now: Mutex<i64>,
+    /// Every hand-over the wire was asked to make, in order.
+    #[allow(dead_code)] // Nothing hands the sound over yet.
+    pub(crate) hand_overs: Mutex<Vec<(String, String)>>,
 }
 
 impl FakeWire {
@@ -140,6 +164,26 @@ impl FakeWire {
         self.puts.lock().expect("lock").clone()
     }
 
+    /// The cluster the next put answers with.
+    pub(crate) fn answer_with(&self, cluster: Cluster) {
+        *self.answer_cluster.lock().expect("lock") = Some(cluster);
+    }
+
+    /// The instant the fake clock reads, which a landing is computed at.
+    pub(crate) fn set_now(&self, now_ms: i64) {
+        *self.now.lock().expect("lock") = now_ms;
+    }
+
+    /// Makes the inactive put hang, so only its budget can end it.
+    pub(crate) fn hang_inactive(&self) {
+        self.inactive_hangs.store(true, Ordering::SeqCst);
+    }
+
+    /// Makes the inactive put fail.
+    pub(crate) fn refuse_inactive(&self) {
+        self.inactive_fails.store(true, Ordering::SeqCst);
+    }
+
     pub(crate) fn commands(&self) -> Vec<(String, String, bool)> {
         self.commands.lock().expect("lock").clone()
     }
@@ -166,8 +210,26 @@ impl Wire for FakeWire {
         SESSION.to_owned()
     }
 
+    fn now_ms(&self) -> i64 {
+        *self.now.lock().expect("lock")
+    }
+
+    async fn hand_over(&self, from: &str, to: &str) -> Result<(), ConnectError> {
+        self.hand_overs
+            .lock()
+            .expect("lock")
+            .push((from.to_owned(), to.to_owned()));
+        Ok(())
+    }
+
     async fn put(&self, announcement: &Announcement) -> Result<Vec<u8>, ConnectError> {
         let kind = kind_of(announcement);
+        let cluster = self
+            .answer_cluster
+            .lock()
+            .expect("lock")
+            .take()
+            .unwrap_or_else(cluster);
         self.puts.lock().expect("lock").push(announcement.clone());
         self.log.push(format!("put:{kind}:start"));
         if let Some(started) = self.started.lock().expect("lock").take() {
@@ -179,7 +241,7 @@ impl Wire for FakeWire {
             let _ = release.await;
         }
         let answer = match self.next_reply() {
-            Reply::Cluster | Reply::Held => Ok(cluster().write_to_bytes().expect("bytes")),
+            Reply::Cluster | Reply::Held => Ok(cluster.write_to_bytes().expect("bytes")),
             // A length-delimited field shorter than it claims is not a
             // cluster, whatever the parser is willing to skip.
             Reply::Garbage => Ok(vec![0x0a, 0x05, 0x00]),
@@ -193,6 +255,13 @@ impl Wire for FakeWire {
 
     async fn put_inactive(&self) -> Result<(), ConnectError> {
         self.log.push("put:inactive:start");
+        self.exit_calls.lock().expect("lock").push("inactive");
+        if self.inactive_hangs.load(Ordering::SeqCst) {
+            std::future::pending::<()>().await;
+        }
+        if self.inactive_fails.load(Ordering::SeqCst) {
+            return Err(ConnectError::PutTimedOut);
+        }
         self.log.push("put:inactive:done");
         Ok(())
     }
@@ -273,6 +342,55 @@ impl Drop for FakeResponder {
     }
 }
 
+/// The next event the pump sent, failing the test rather than hanging on one
+/// that never comes.
+pub(crate) async fn recv(rx: &mut UnboundedReceiver<ClusterEvent>) -> ClusterEvent {
+    tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+        .await
+        .expect("the pump must answer")
+        .expect("the pump must still be alive")
+}
+
+/// The view one event carries.
+pub(crate) fn view_of_event(event: ClusterEvent) -> crate::connect::ClusterView {
+    match event {
+        ClusterEvent::View(view) => *view,
+        other => panic!("expected a view, got {other:?}"),
+    }
+}
+
+/// Waits for a held put to reach the wire, so a missing one fails the test
+/// instead of hanging it.
+pub(crate) async fn in_flight(started: oneshot::Receiver<()>) {
+    tokio::time::timeout(std::time::Duration::from_secs(2), started)
+        .await
+        .expect("the put must reach the wire")
+        .expect("the wire must say the put started");
+}
+
+/// Waits until `check` holds, so no test has to guess at a duration.
+pub(crate) async fn until(what: &str, mut check: impl FnMut() -> bool) {
+    let waited = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while !check() {
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+    })
+    .await;
+    assert!(waited.is_ok(), "timed out waiting for {what}");
+}
+
+/// Collects the events the pump emits until it goes quiet for `wait`.
+pub(crate) async fn quiet(
+    rx: &mut UnboundedReceiver<ClusterEvent>,
+    wait: std::time::Duration,
+) -> Vec<ClusterEvent> {
+    let mut events = Vec::new();
+    while let Ok(event) = tokio::time::timeout(wait, rx.recv()).await {
+        events.push(event.expect("the pump must still be alive"));
+    }
+    events
+}
+
 /// A bundle with no pump behind it, for a call the test makes directly.
 pub(crate) fn bundle(timing: Timing) -> Arc<Shared> {
     Shared::detached(
@@ -298,11 +416,11 @@ pub(crate) fn start_pump(wire: Arc<FakeWire>, gate: Arc<Gate>, timing: Timing) -
     let (ids, id_rx) = unbounded_channel();
     let (pushes, push_rx) = unbounded_channel();
     let (events, event_rx) = unbounded_channel();
-    let shared = Arc::new(Shared {
-        presence: Arc::new(Presence::default()),
-        registry: Arc::new(Registry::new(timing)),
-        events: events.downgrade(),
-    });
+    let shared = Shared::new(
+        Arc::new(Presence::default()),
+        Arc::new(Registry::new(timing)),
+        events.downgrade(),
+    );
     let task = tokio::spawn(pump(
         wire,
         gate,
@@ -319,4 +437,14 @@ pub(crate) fn start_pump(wire: Arc<FakeWire>, gate: Arc<Gate>, timing: Timing) -
         shared,
         task,
     }
+}
+
+/// Runs the publisher beside a pump, so a flip reaches the wire.
+pub(crate) fn start_publish(
+    wire: Arc<FakeWire>,
+    gate: Arc<Gate>,
+    pump: &Pump,
+    timing: Timing,
+) -> JoinHandle<()> {
+    tokio::spawn(publish::run(wire, gate, Arc::clone(&pump.shared), timing))
 }

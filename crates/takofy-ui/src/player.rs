@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use takofy_model::CoverUrl;
+use takofy_model::{CoverUrl, TrackEntry};
 
 use crate::message::{Command, Failure, TransportUpdate, Update};
 use crate::signin::failure_message;
@@ -179,6 +179,29 @@ impl Transport {
         Command::Play {
             uri: uri.to_owned(),
         }
+    }
+
+    /// Settles on a track the engine loaded for a hand-over.
+    ///
+    /// The engine owns that load, so no `Play` is asked for here: naming the
+    /// track and the state it starts in is the whole of it. A playing landing is
+    /// `Loading`, because it has been accepted and has not started; the length
+    /// is unknown until the player reports it.
+    pub fn landed(&mut self, entry: &TrackEntry, position_ms: u32, playing: bool) {
+        self.now_playing = Some(NowPlaying {
+            uri: entry.uri.clone(),
+            title: entry.title.clone(),
+            artists: entry.artists.clone(),
+            cover: entry.cover.clone(),
+        });
+        self.position_ms = position_ms;
+        self.duration_ms = None;
+        self.scrub = None;
+        self.state = if playing {
+            TransportState::Loading
+        } else {
+            TransportState::Paused
+        };
     }
 
     /// How the transport holds `uri`: whether it is the loaded track, and

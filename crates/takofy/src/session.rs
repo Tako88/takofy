@@ -12,9 +12,10 @@ use takofy_core::credentials::AccessToken;
 use takofy_core::engine::{Engine, EngineError, RootlistRead};
 use takofy_core::playback::{Playback, PlaybackError, PlaybackEvent, Volume};
 use takofy_core::receive::Inbound;
+use takofy_core::{Resolution, TransferPlan};
 use takofy_model::{
-    AlbumDetail, ArtistDetail, ArtistPortrait, CoverUrl, FollowedArtist, FollowedShow, Move,
-    PlaylistAccess, PlaylistEntry, Removal, RequestId, Revision, SavedAlbum, ShowDetail,
+    AlbumDetail, ArtistDetail, ArtistPortrait, CoverUrl, FollowedArtist, FollowedShow, Landing,
+    Move, PlaylistAccess, PlaylistEntry, Removal, RequestId, Revision, SavedAlbum, ShowDetail,
     TrackEntry, TrackLyrics,
 };
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -293,6 +294,33 @@ pub(crate) trait SessionHost: Send + 'static {
 
     fn play(&mut self, uri: &str) -> Result<(), SessionError>;
 
+    /// Starts the player if it is not running, keeping its event stream for the
+    /// drain.
+    fn prepare_player(&mut self) -> Result<(), SessionError>;
+
+    /// Every track URI a context holds, in the walker's order.
+    fn resolve_context(
+        &self,
+        uri: &str,
+    ) -> impl Future<Output = Result<Vec<String>, SessionError>> + Send;
+
+    /// Takes the account's sound for one hand-over, answering the phone.
+    fn accept(
+        &self,
+        id: RequestId,
+        plan: &TransferPlan,
+        resolution: Resolution,
+    ) -> impl Future<Output = Result<Landing, SessionError>> + Send;
+
+    /// Loads one track at `position_ms`, playing only when asked to.
+    fn load(&mut self, uri: &str, position_ms: u32, play: bool) -> Result<(), SessionError>;
+
+    /// Gives the account's sound back, announcing what the device is now.
+    fn release_sound(&self) -> impl Future<Output = Result<(), SessionError>> + Send;
+
+    /// Whether this device holds the account's sound.
+    fn holding(&self) -> bool;
+
     /// Jumps within the loaded track. A call with no player is a no-op.
     fn seek(&self, position_ms: u32);
 
@@ -351,6 +379,20 @@ impl LiveSession {
             inbound: None,
             volume: Volume::default(),
         }
+    }
+
+    /// Starts the player on first use, keeping its event stream so the one drain
+    /// thread can be handed it once.
+    fn ensure_player(&mut self) -> Result<&Playback, SessionError> {
+        if self.playback.is_none() {
+            let engine = self.engine.as_ref().ok_or(SessionError::NotConnected)?;
+            let (playback, events) = engine
+                .playback(self.volume.clone())
+                .map_err(SessionError::Playback)?;
+            self.playback = Some(playback);
+            self.events = Some(events);
+        }
+        self.playback.as_ref().ok_or(SessionError::NotConnected)
     }
 }
 
@@ -705,17 +747,55 @@ impl SessionHost for LiveSession {
     }
 
     fn play(&mut self, uri: &str) -> Result<(), SessionError> {
-        if self.playback.is_none() {
-            let engine = self.engine.as_ref().ok_or(SessionError::NotConnected)?;
-            let (playback, events) = engine
-                .playback(self.volume.clone())
-                .map_err(SessionError::Playback)?;
-            self.playback = Some(playback);
-            self.events = Some(events);
-        }
-        match self.playback.as_ref() {
-            Some(playback) => playback.play(uri).map_err(SessionError::Playback),
+        self.load(uri, 0, true)
+    }
+
+    fn prepare_player(&mut self) -> Result<(), SessionError> {
+        self.ensure_player().map(|_| ())
+    }
+
+    async fn resolve_context(&self, uri: &str) -> Result<Vec<String>, SessionError> {
+        match &self.engine {
+            Some(engine) => engine
+                .resolve_context(uri)
+                .await
+                .map_err(SessionError::Engine),
             None => Err(SessionError::NotConnected),
+        }
+    }
+
+    async fn accept(
+        &self,
+        id: RequestId,
+        plan: &TransferPlan,
+        resolution: Resolution,
+    ) -> Result<Landing, SessionError> {
+        match &self.engine {
+            Some(engine) => engine
+                .accept_transfer(id, plan, resolution)
+                .await
+                .map_err(SessionError::Engine),
+            None => Err(SessionError::NotConnected),
+        }
+    }
+
+    fn load(&mut self, uri: &str, position_ms: u32, play: bool) -> Result<(), SessionError> {
+        self.ensure_player()?
+            .load(uri, position_ms, play)
+            .map_err(SessionError::Playback)
+    }
+
+    async fn release_sound(&self) -> Result<(), SessionError> {
+        match &self.engine {
+            Some(engine) => engine.release_sound().await.map_err(SessionError::Engine),
+            None => Err(SessionError::NotConnected),
+        }
+    }
+
+    fn holding(&self) -> bool {
+        match &self.engine {
+            Some(engine) => engine.holding(),
+            None => false,
         }
     }
 
@@ -767,6 +847,7 @@ mod tests {
     use librespot::playback::mixer::VolumeGetter;
     use takofy_core::connect::Steer;
     use takofy_core::playback::Volume;
+    use takofy_core::{Resolution, TransferPlan};
     use takofy_model::RequestId;
     use tokio::sync::oneshot;
 
@@ -901,6 +982,82 @@ mod tests {
             live.volume.attenuation_factor(),
             Volume::at(35).attenuation_factor(),
             "a failed play leaves the level alone"
+        );
+    }
+
+    /// A plan can only be built from the wire's own shape, so a test outside
+    /// core decodes one the way the request loop does.
+    fn plan() -> TransferPlan {
+        use librespot::core::dealer::protocol::{
+            Command, LoggingParams, Request, TransferCommand, TransferOptions,
+        };
+        use librespot::protocol::context_track::ContextTrack;
+        use librespot::protocol::playback::Playback as WirePlayback;
+        use librespot::protocol::transfer_state::TransferState;
+        use takofy_core::instruction::{Instruction, instruction_of};
+
+        let track = ContextTrack {
+            uri: Some("spotify:track:4uLU6hMCjMI75M1A2tKUQC".to_owned()),
+            ..Default::default()
+        };
+        let playback = WirePlayback {
+            current_track: Some(track).into(),
+            ..Default::default()
+        };
+        let data = TransferState {
+            playback: Some(playback).into(),
+            ..Default::default()
+        };
+        let request = Request {
+            message_id: 1,
+            sent_by_device_id: "phone".to_owned(),
+            command: Command::Transfer(TransferCommand {
+                data: Some(data),
+                options: TransferOptions::default(),
+                from_device_identifier: String::new(),
+                logging_params: LoggingParams {
+                    interaction_ids: None,
+                    device_identifier: None,
+                    command_initiated_time: None,
+                    page_instance_ids: None,
+                    command_id: None,
+                },
+            }),
+        };
+        match instruction_of(&request) {
+            Instruction::Transfer(plan) => plan,
+            other => panic!("a transfer naming a track must decode to a plan: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn each_new_host_call_before_sign_in_returns_not_connected() {
+        let mut live = LiveSession::new(SessionConfig::default());
+        let plan = plan();
+
+        assert!(matches!(
+            SessionHost::prepare_player(&mut live),
+            Err(SessionError::NotConnected)
+        ));
+        assert!(matches!(
+            SessionHost::resolve_context(&live, "spotify:playlist:abc").await,
+            Err(SessionError::NotConnected)
+        ));
+        assert!(matches!(
+            SessionHost::load(&mut live, "spotify:track:x", 5_000, false),
+            Err(SessionError::NotConnected)
+        ));
+        assert!(matches!(
+            SessionHost::accept(&live, RequestId(1), &plan, Resolution::Resolved(Vec::new())).await,
+            Err(SessionError::NotConnected)
+        ));
+        assert!(matches!(
+            SessionHost::release_sound(&live).await,
+            Err(SessionError::NotConnected)
+        ));
+        assert!(
+            !SessionHost::holding(&live),
+            "a window with no session holds nothing"
         );
     }
 }

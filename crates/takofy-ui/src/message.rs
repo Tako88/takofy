@@ -5,7 +5,7 @@
 
 use takofy_model::{
     AlbumDetail, ArtistDetail, ArtistPortrait, CoverImage, CoverUrl, Device, FollowedArtist,
-    FollowedShow, Move, PlaylistAccess, PlaylistEntry, RemotePlayback, Removal, Revision,
+    FollowedShow, Landing, Move, PlaylistAccess, PlaylistEntry, RemotePlayback, Removal, Revision,
     SavedAlbum, ShowDetail, TrackEntry, TrackLyrics,
 };
 
@@ -130,6 +130,8 @@ pub enum Command {
     Steer { device: String, steer: Steer },
     /// Label the track another device is playing.
     LabelRemote { track: String },
+    /// Label these track URIs, in the order the caller listed them.
+    LabelRows { uris: Vec<String> },
     /// Fetch the playlists again.
     ReloadLibrary,
     /// Fetch one cover image from the worker.
@@ -195,10 +197,12 @@ pub enum Steer {
 /// A change to the account's devices.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeviceUpdate {
-    /// The whole roster, and the device holding the sound when one does.
+    /// The whole roster, the device holding the sound when one does, and
+    /// whether that device is this window.
     Roster {
         devices: Vec<Device>,
         holder: Option<String>,
+        held_here: bool,
     },
     /// What the holder is playing, or `None` when nothing is.
     Playing(Option<RemotePlayback>),
@@ -208,6 +212,20 @@ pub enum DeviceUpdate {
     Failed(Failure),
     /// A transport action did not reach its device.
     SteerFailed,
+}
+
+/// A change on the account's device side of the receiver.
+///
+/// A landing names the activation it belongs to, so a loss that crossed it in
+/// flight can be told apart from one it followed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RemoteUpdate {
+    /// A hand-over landed: these rows, and this one is current.
+    Landed(Landing),
+    /// Another device took the sound, at this activation epoch.
+    Lost { epoch: u64 },
+    /// The rows a label named.
+    Labelled(Vec<TrackEntry>),
 }
 
 /// A playback change the worker reports to the window.
@@ -420,4 +438,6 @@ pub enum Update {
     Transport(TransportUpdate),
     /// A change to the account's devices.
     Devices(DeviceUpdate),
+    /// A change the receiver made to what this window is playing.
+    Remote(RemoteUpdate),
 }

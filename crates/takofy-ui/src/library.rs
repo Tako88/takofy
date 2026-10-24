@@ -998,6 +998,7 @@ impl Library {
             Update::NeedsAuthorization
             | Update::SignInFailed(_)
             | Update::Devices(_)
+            | Update::Remote(_)
             | Update::Transport(_)
             | Update::Cover { .. }
             | Update::CoverFailed { .. } => {}
@@ -6575,6 +6576,7 @@ mod tests {
         library.apply(&Update::Devices(DeviceUpdate::Roster {
             devices: Vec::new(),
             holder: Some("phone".to_owned()),
+            held_here: false,
         }));
         assert_eq!(library.playlists, Load::Idle);
         assert_eq!(library.tracks, Load::Idle);

@@ -20,6 +20,7 @@ use std::sync::Arc;
 use librespot::core::SessionConfig;
 use log::LevelFilter;
 use takofy_core::credentials::StoreError;
+use takofy_core::hold::HOLD_LOG_TARGET;
 use takofy_core::login::{AuthError, LoginMethod, SourceErrorKind, authenticate};
 use takofy_core::oauth::{OAUTH_LOG_TARGET, RedirectMode, SpotifyOAuth};
 use takofy_core::receive::RECEIVE_LOG_TARGET;
@@ -193,6 +194,10 @@ fn logger_builder() -> env_logger::Builder {
     // counts and kinds, never a URI, and it is the only evidence that a request
     // arrived at all.
     builder.filter_module(RECEIVE_LOG_TARGET, LevelFilter::Info);
+    // The one line that says what the account answered to a hold: which baseline
+    // the loss rule took, and whether the reply named this device. Both words,
+    // never a URI.
+    builder.filter_module(HOLD_LOG_TARGET, LevelFilter::Info);
     builder
 }
 
@@ -218,6 +223,7 @@ mod tests {
     use std::vec::IntoIter;
 
     use log::{Level, Metadata, Record};
+    use takofy_core::hold::HOLD_LOG_TARGET;
     use takofy_core::oauth::{OAUTH_LOG_TARGET, RedirectMode};
     use takofy_core::receive::RECEIVE_LOG_TARGET;
 
@@ -252,6 +258,14 @@ mod tests {
         // door for librespot's own chatter.
         assert!(!logger.matches(&record("takofy_core::watch", Level::Info)));
         assert!(!logger.matches(&record("librespot_core", Level::Debug)));
+    }
+
+    #[test]
+    fn the_activation_line_shows_and_its_neighbours_do_not() {
+        let logger = logger_builder().build();
+        assert!(logger.matches(&record(HOLD_LOG_TARGET, Level::Info)));
+        assert!(!logger.matches(&record("takofy_core::publish", Level::Info)));
+        assert!(!logger.matches(&record("librespot_playback", Level::Info)));
     }
 
     #[test]
