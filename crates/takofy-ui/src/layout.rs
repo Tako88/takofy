@@ -16,6 +16,7 @@ pub mod menu;
 pub mod panel;
 pub mod queue;
 pub mod search_menu;
+pub mod sticky;
 pub mod table;
 pub mod tracks;
 

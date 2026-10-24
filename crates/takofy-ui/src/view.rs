@@ -12,6 +12,7 @@ pub mod card;
 mod carry;
 mod context_menu;
 pub mod controls;
+mod discography_filter;
 mod episode_row;
 mod filter_field;
 mod filter_row;

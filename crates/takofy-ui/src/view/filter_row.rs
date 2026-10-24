@@ -9,32 +9,13 @@
 //! the height its rows took so the blocks below move down by exactly that much.
 
 use egui::emath::GuiRounding;
-use egui::{Rect, Sense, Ui, Vec2};
+use egui::{Pos2, Rect, Sense, Ui, Vec2};
 
 use crate::availability::Control;
-use crate::discography::Chip;
-use crate::format::filter_label;
 use crate::layout::chips;
 use crate::theme::{Tokens, space};
 
 use super::controls;
-
-/// Draws the discography's row and returns the chip a press chose, if any.
-///
-/// `active` is the chip drawn as pressed, which is the effective choice rather
-/// than the raw one: a choice with no chip is drawn as `All`.
-pub fn show(ui: &mut Ui, tokens: &Tokens, row: &[Chip], active: Chip) -> Option<Chip> {
-    show_with(
-        ui,
-        tokens,
-        row,
-        active,
-        |_| Control::DiscographyFilter,
-        filter_label,
-        RowSlot::None,
-    )
-    .0
-}
 
 /// What sits at a row's trailing edge, and how much of the row it takes.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -46,20 +27,32 @@ pub enum RowSlot {
     Trailing(f32),
 }
 
+/// A row's geometry: the slot it takes in the page's flow, and where each chip
+/// lands inside it.
+///
+/// The row is laid out where it belongs and drawn wherever the page puts it, so
+/// a row that pins can keep its slot reserved in the flow while its chips are
+/// painted at the floor. Rects are in the page's coordinates, which is what the
+/// page's own hit test and its debug grid already speak.
+pub struct Laid<T> {
+    /// The slot the row takes in the flow: every line of chips, and nothing else.
+    pub area: Rect,
+    /// Each chip with the rect it is drawn into.
+    pub chips: Vec<(T, Rect)>,
+}
+
 /// The same row over any chip set: the copy, the control and the label are the
 /// caller's, so the root's filter row is this one path and not a second row.
 ///
 /// `label_of` returns a borrowed label; the caller owns the text and decides
 /// whether it is upper-cased by the chip.
-pub fn show_with<T: Copy + PartialEq>(
+pub fn lay_out<T: Copy + PartialEq>(
     ui: &mut Ui,
     tokens: &Tokens,
     row: &[T],
-    active: T,
-    control_of: impl Fn(T) -> Control,
     label_of: impl Fn(T) -> &'static str,
     slot: RowSlot,
-) -> (Option<T>, Rect) {
+) -> Laid<T> {
     let sizes: Vec<Vec2> = row
         .iter()
         .map(|chip| controls::chip_size(ui, tokens, label_of(*chip)))
@@ -82,11 +75,35 @@ pub fn show_with<T: Copy + PartialEq>(
     let height = wrapped.height.max(row_h);
     let (area, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
 
+    // Snapped to the pixel grid: a hairline on a half pixel is soft, and an
+    // unrounded widget rect is what egui's debug overlay flags.
+    let chips = row
+        .iter()
+        .copied()
+        .zip(wrapped.rects)
+        .map(|(chip, rect)| (chip, rect.translate(area.min.to_vec2()).round_ui()))
+        .collect();
+    Laid { area, chips }
+}
+
+/// Draws a laid-out row with its top-left corner at `origin`.
+///
+/// A pinned row keeps its slot in the flow and moves only its ink, so every chip
+/// shifts by the same delta and the scroll extent does not change because the
+/// row pinned.
+pub fn draw_at<T: Copy + PartialEq>(
+    ui: &mut Ui,
+    tokens: &Tokens,
+    laid: &Laid<T>,
+    active: T,
+    control_of: impl Fn(T) -> Control,
+    label_of: impl Fn(T) -> &'static str,
+    origin: Pos2,
+) -> Option<T> {
+    let shift = origin - laid.area.min;
     let mut picked = None;
-    for (chip, rect) in row.iter().zip(wrapped.rects) {
-        // Snapped to the pixel grid: a hairline on a half pixel is soft, and an
-        // unrounded widget rect is what egui's debug overlay flags.
-        let rect = rect.translate(area.min.to_vec2()).round_ui();
+    for (chip, rect) in &laid.chips {
+        let rect = rect.translate(shift).round_ui();
         let label = label_of(*chip);
         let slot = controls::chip_in_keyed(
             ui,
@@ -101,9 +118,32 @@ pub fn show_with<T: Copy + PartialEq>(
             picked = Some(*chip);
         }
     }
+    picked
+}
 
+/// Draws the row in its own slot and leaves the step the reference keeps under
+/// it.
+pub fn show_with<T: Copy + PartialEq>(
+    ui: &mut Ui,
+    tokens: &Tokens,
+    row: &[T],
+    active: T,
+    control_of: impl Fn(T) -> Control,
+    label_of: impl Fn(T) -> &'static str,
+    slot: RowSlot,
+) -> (Option<T>, Rect) {
+    let laid = lay_out(ui, tokens, row, &label_of, slot);
+    let picked = draw_at(
+        ui,
+        tokens,
+        &laid,
+        active,
+        &control_of,
+        &label_of,
+        laid.area.min,
+    );
     ui.add_space(space::S4);
-    (picked, area)
+    (picked, laid.area)
 }
 
 #[cfg(test)]
@@ -111,7 +151,8 @@ mod tests {
     use egui::emath::GuiRounding;
 
     use super::*;
-    use crate::discography::chips;
+    use crate::discography::{Chip, chips};
+    use crate::format::filter_label;
     use takofy_model::{Release, ReleaseKind};
 
     fn release(kind: ReleaseKind) -> Release {
@@ -145,7 +186,15 @@ mod tests {
                 ..Default::default()
             },
             |ui| {
-                let _ = show(ui, &Tokens::DARK, &row(), Chip::All);
+                let _ = show_with(
+                    ui,
+                    &Tokens::DARK,
+                    &row(),
+                    Chip::All,
+                    |_| Control::DiscographyFilter,
+                    filter_label,
+                    RowSlot::None,
+                );
             },
         );
         output.textures_delta.clear();
