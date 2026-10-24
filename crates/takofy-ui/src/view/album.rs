@@ -142,6 +142,7 @@ pub fn album_view(
                             more: Some(!writing),
                             saved,
                             kind: Kind::Other,
+                            text: None,
                         },
                         None,
                         tokens,
@@ -543,6 +544,7 @@ mod tests {
                         crate::layout::actionbar::Parts {
                             shuffle: false,
                             field: false,
+                            follow: None,
                         },
                     )
                     .play,
@@ -575,6 +577,7 @@ mod tests {
                         crate::layout::actionbar::Parts {
                             shuffle: false,
                             field: false,
+                            follow: None,
                         },
                     )
                     .heart

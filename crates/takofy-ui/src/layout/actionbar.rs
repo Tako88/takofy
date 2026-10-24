@@ -12,7 +12,9 @@
 //! second, so a keystroke that brings the count in does not shift the field.
 //!
 //! Everything here is pure: the solver answers rects and the view paints them, so
-//! the tests that check a place in the row never draw a frame.
+//! the tests that check a place in the row never draw a widget. One measures the
+//! artist's word through the control that will draw it, because a sweep at the
+//! size the word actually takes is worth more than a guessed number.
 
 use egui::{Pos2, Rect, Vec2};
 
@@ -67,6 +69,11 @@ pub struct Parts {
     pub shuffle: bool,
     /// Whether the row carries the page's filter field.
     pub field: bool,
+    /// The size of the text control a page puts where the heart would be.
+    ///
+    /// A text slot means no heart: a page that follows an artist offers
+    /// `Follow` rather than a saved state, and the two never share the row.
+    pub follow: Option<Vec2>,
 }
 
 /// Where the row is drawn this frame, and whether it pinned.
@@ -91,6 +98,8 @@ pub struct Placed {
     pub play: Rect,
     /// The filter field, when the page has one and the row has room for it.
     pub field: Option<Rect>,
+    /// The page's text control, in the heart's place.
+    pub follow: Option<Rect>,
     /// The shuffle, on the contexts the reference gives one.
     pub shuffle: Option<Rect>,
     /// Saving the context to the library. A condensed playlist gives it up when
@@ -107,7 +116,10 @@ impl Placed {
     /// keeps every one it has still; the reference's DOM order puts the shuffle
     /// first among them.
     fn first_tool(&self) -> Rect {
-        self.shuffle.or(self.heart).unwrap_or(self.more)
+        self.follow
+            .or(self.shuffle)
+            .or(self.heart)
+            .unwrap_or(self.more)
     }
 }
 
@@ -129,17 +141,36 @@ pub fn solve(bar: Rect, kind: Kind, parts: Parts) -> Placed {
         rect
     };
     let more = tool();
-    // A condensed playlist gives the heart's room to the field, but only when
-    // the page actually has a field this frame. A page whose tracks are still
+    // A text slot takes the heart's place: a page that offers a word offers no
+    // saved state, and the two would be two answers to the same question. A
+    // condensed playlist gives the heart's room to the field, but only when the
+    // page actually has a field this frame: a page whose tracks are still
     // loading keeps its tools where they are, so they do not shift when the
     // list arrives.
     let narrow_field = matches!(kind, Kind::Playlist(form) if form.narrow) && parts.field;
-    let heart = (kind == Kind::Other || !narrow_field).then(&mut tool);
+    let heart = (parts.follow.is_none() && (kind == Kind::Other || !narrow_field)).then(&mut tool);
     let shuffle = parts.shuffle.then(&mut tool);
+
+    // The text slot is anchored to the tools rather than to the play tile: our
+    // name is painted only once the row pins, and a slot sitting beside the play
+    // tile would jump sideways at that moment. It is a control of its own, so it
+    // stands a row gap off the glyphs rather than the tools' own gap, and a
+    // wider label grows leftward without moving anything.
+    let first_tool = shuffle.or(heart).unwrap_or(more);
+    let follow = parts.follow.map(|size| {
+        Rect::from_min_size(
+            Pos2::new(
+                first_tool.left() - actionbar::GAP - size.x,
+                centre - size.y / 2.0,
+            ),
+            size,
+        )
+    });
 
     let mut placed = Placed {
         play,
         field: None,
+        follow,
         shuffle,
         heart,
         more,
@@ -242,6 +273,7 @@ mod tests {
             Parts {
                 shuffle: true,
                 field: true,
+                follow: None,
             },
         );
         (bar, placed)
@@ -291,6 +323,7 @@ mod tests {
                 Parts {
                     shuffle: true,
                     field: true,
+                    follow: None,
                 },
             );
             assert_eq!(placed.play.left(), bar.left() + space::GUTTER);
@@ -321,6 +354,7 @@ mod tests {
         let parts = |shuffle| Parts {
             shuffle,
             field: false,
+            follow: None,
         };
         let with = solve(bar, Kind::Other, parts(true));
         let without = solve(bar, Kind::Other, parts(false));
@@ -340,6 +374,7 @@ mod tests {
             Parts {
                 shuffle: true,
                 field: false,
+                follow: None,
             },
         );
         let label = title(bar, &placed, None, kind, false).expect("a wide row has room for a name");
@@ -358,6 +393,7 @@ mod tests {
             Parts {
                 shuffle: false,
                 field: false,
+                follow: None,
             },
         );
         assert_eq!(
@@ -384,6 +420,7 @@ mod tests {
             Parts {
                 shuffle: true,
                 field: false,
+                follow: None,
             },
         );
         assert!(
@@ -397,6 +434,7 @@ mod tests {
             Parts {
                 shuffle: true,
                 field: false,
+                follow: None,
             },
         );
         assert!(
@@ -482,6 +520,7 @@ mod tests {
             Parts {
                 shuffle: true,
                 field: false,
+                follow: None,
             },
         );
         assert!(
@@ -504,6 +543,7 @@ mod tests {
             Parts {
                 shuffle: true,
                 field: true,
+                follow: None,
             },
         );
         assert!(
@@ -525,6 +565,7 @@ mod tests {
         let parts = Parts {
             shuffle: false,
             field: false,
+            follow: None,
         };
         let bar = slot(12.0, 760.0, actionbar::STUCK_H);
         let album = solve(bar, Kind::Other, parts);
@@ -577,6 +618,7 @@ mod tests {
             Parts {
                 shuffle: true,
                 field: true,
+                follow: None,
             },
         );
         let fitted = count(&placed, kind, label_w).expect("the count fits exactly");
@@ -593,6 +635,7 @@ mod tests {
             Parts {
                 shuffle: true,
                 field: true,
+                follow: None,
             },
         );
         assert!(
@@ -619,6 +662,7 @@ mod tests {
             Parts {
                 shuffle: true,
                 field: true,
+                follow: None,
             },
         );
         assert_eq!(
@@ -643,6 +687,7 @@ mod tests {
             Parts {
                 shuffle: true,
                 field: true,
+                follow: None,
             },
         );
         let field = placed.field.expect("a shrunk field is still drawn");
@@ -662,6 +707,7 @@ mod tests {
             Parts {
                 shuffle: true,
                 field: true,
+                follow: None,
             },
         );
         assert_eq!(
@@ -684,6 +730,7 @@ mod tests {
             Parts {
                 shuffle: true,
                 field: true,
+                follow: None,
             },
         );
         assert!(
@@ -692,6 +739,206 @@ mod tests {
             placed.field
         );
         assert!(count(&placed, kind, 60.0).is_none(), "nor is the count");
+    }
+
+    /// The size the artist's text control asks for, measured the way the view
+    /// measures it: the sweep is only worth anything at the drawn size.
+    fn text_slot(label: &str) -> Vec2 {
+        let tokens = crate::theme::Tokens::DARK;
+        let ctx = egui::Context::default();
+        ctx.set_fonts(crate::theme::fonts::definitions());
+        let mut size = Vec2::ZERO;
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 400.0))),
+                ..Default::default()
+            },
+            |ui| size = crate::view::controls::text_button_size(ui, &tokens, label),
+        );
+        output.textures_delta.clear();
+        size
+    }
+
+    /// The parts of the artist's row: a shuffle, no field, and the text slot.
+    fn artist_parts(label: &str) -> Parts {
+        Parts {
+            shuffle: true,
+            field: false,
+            follow: Some(text_slot(label)),
+        }
+    }
+
+    #[test]
+    fn a_text_slot_replaces_the_heart_and_sits_a_gap_left_of_the_tools() {
+        let bar = slot(12.0, 1440.0, actionbar::REST_H);
+        let placed = solve(bar, Kind::Other, artist_parts("Follow"));
+        let follow = placed.follow.expect("the row has a text slot");
+        let shuffle = placed.shuffle.expect("the artist's row has a shuffle");
+
+        assert!(
+            placed.heart.is_none(),
+            "a text slot means no heart: {:?}",
+            placed.heart
+        );
+        assert_eq!(
+            follow.right(),
+            shuffle.left() - actionbar::GAP,
+            "the slot sits a row gap left of the tools: {follow:?} against {shuffle:?}"
+        );
+        assert_eq!(follow.size(), text_slot("Follow"));
+        assert!(
+            (follow.center().y - bar.center().y).abs() < 0.01,
+            "the slot is centred on the row's line: {follow:?} against {bar:?}"
+        );
+    }
+
+    #[test]
+    fn without_a_shuffle_the_slot_sits_a_gap_left_of_the_menu() {
+        let bar = slot(12.0, 1440.0, actionbar::REST_H);
+        let placed = solve(
+            bar,
+            Kind::Other,
+            Parts {
+                shuffle: false,
+                field: false,
+                follow: Some(text_slot("Follow")),
+            },
+        );
+        assert!(placed.shuffle.is_none(), "an album has no shuffle");
+        assert_eq!(
+            placed.follow.expect("the row has a text slot").right(),
+            placed.more.left() - actionbar::GAP,
+            "with nothing between them the slot still clears the menu"
+        );
+    }
+
+    #[test]
+    fn the_title_ends_a_gap_before_the_text_slot() {
+        let bar = slot(12.0, 1440.0, actionbar::STUCK_H);
+        let placed = solve(bar, Kind::Other, artist_parts("Follow"));
+        let label =
+            title(bar, &placed, None, Kind::Other, false).expect("a wide row has room for a name");
+        assert_eq!(
+            label.right(),
+            placed.follow.expect("the row has a text slot").left() - actionbar::GAP,
+            "the name stops one row gap short of the slot, the way it does of a tool"
+        );
+    }
+
+    #[test]
+    fn the_tools_do_not_move_when_the_label_widens() {
+        let bar = slot(12.0, 1440.0, actionbar::REST_H);
+        let at = |width: f32| {
+            solve(
+                bar,
+                Kind::Other,
+                Parts {
+                    shuffle: true,
+                    field: false,
+                    follow: Some(Vec2::new(width, text_slot("Follow").y)),
+                },
+            )
+        };
+        let narrow = at(60.0);
+        let wide = at(90.0);
+
+        assert_eq!(narrow.play, wide.play, "the play tile is anchored");
+        assert_eq!(
+            narrow.shuffle, wide.shuffle,
+            "the tools are anchored to the far edge, so a wider label never moves them"
+        );
+        assert_eq!(narrow.more, wide.more);
+        let narrow = narrow.follow.expect("the slot is drawn");
+        let wide = wide.follow.expect("the slot is drawn");
+        assert_eq!(
+            narrow.right(),
+            wide.right(),
+            "the slot grows leftward: {narrow:?} against {wide:?}"
+        );
+        assert!(
+            (wide.left() - (narrow.left() - 30.0)).abs() < 0.01,
+            "the wider label takes its room from the name side: {narrow:?} against {wide:?}"
+        );
+    }
+
+    #[test]
+    fn a_page_with_no_slot_is_unchanged() {
+        let bar = slot(12.0, 1440.0, actionbar::REST_H);
+        let placed = solve(
+            bar,
+            Kind::Other,
+            Parts {
+                shuffle: false,
+                field: false,
+                follow: None,
+            },
+        );
+        let heart = placed.heart.expect("an album keeps its heart");
+        assert!(placed.follow.is_none(), "a page without a slot has none");
+        assert_eq!(heart.right(), placed.more.left() - actionbar::TOOLS_GAP);
+        assert_eq!(placed.more.right(), bar.right() - space::GUTTER);
+        assert_eq!(
+            title(bar, &placed, None, Kind::Other, false)
+                .expect("room")
+                .right(),
+            heart.left() - actionbar::GAP,
+            "the name still runs up to the heart"
+        );
+    }
+
+    #[test]
+    fn the_artist_bar_never_overlaps_between_the_window_minimum_and_2400() {
+        let size = text_slot("Following");
+        let height = crate::layout::WINDOW_MIN[1];
+        let mut width = crate::layout::WINDOW_MIN[0];
+        while width <= 2400.0 {
+            let regions = regions_for(width);
+            let shell = shell_for(&regions);
+            let grid = grid_for(
+                Rect::from_min_size(Pos2::ZERO, Vec2::new(width, height)),
+                &shell,
+            );
+            let bar = slot(grid.view.top(), grid.view.width(), actionbar::STUCK_H);
+            let placed = solve(
+                bar,
+                Kind::Other,
+                Parts {
+                    shuffle: true,
+                    field: false,
+                    follow: Some(size),
+                },
+            );
+            let follow = placed.follow.expect("the artist's slot is always drawn");
+            let shuffle = placed.shuffle.expect("the artist's row has a shuffle");
+            assert!(
+                follow.right() <= shuffle.left() - actionbar::GAP + 0.01,
+                "{width}: the slot closes on the tools: {follow:?} against {shuffle:?}"
+            );
+            assert!(
+                follow.left() >= placed.play.right() + actionbar::GAP,
+                "{width}: the slot reaches into the play tile: {follow:?} against {:?}",
+                placed.play
+            );
+            let boxes = [
+                ("play", placed.play),
+                ("follow", follow),
+                ("shuffle", shuffle),
+                ("more", placed.more),
+            ];
+            for (index, (name, rect)) in boxes.iter().enumerate() {
+                assert!(
+                    bar.contains_rect(*rect),
+                    "{width}: {name} leaves the row: {rect:?} against {bar:?}"
+                );
+                for (other, against) in &boxes[index + 1..] {
+                    assert!(
+                        !rect.intersects(*against),
+                        "{width}: {name} {rect:?} overlaps {other} {against:?}"
+                    );
+                }
+            }
+            width += 1.0;
+        }
     }
 
     #[test]
@@ -713,6 +960,7 @@ mod tests {
                 Parts {
                     shuffle: true,
                     field: true,
+                    follow: None,
                 },
             );
 
