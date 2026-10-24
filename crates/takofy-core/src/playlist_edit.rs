@@ -3,7 +3,7 @@
 use librespot::core::SpotifyUri;
 use librespot::protocol::playlist4_external::SelectedListContent;
 use protobuf::Message as _;
-use takofy_model::{Move, PLAYLIST_NAME_MAX, PlaylistAccess, Removal, Revision};
+use takofy_model::{Move, Owner, OwnerName, PLAYLIST_NAME_MAX, PlaylistAccess, Removal, Revision};
 
 use crate::wire::{put_bytes, put_message, put_str, put_varint_field};
 
@@ -282,6 +282,18 @@ pub fn owned(owner: Option<&str>, user: &str) -> bool {
     matches!(owner, Some(owner) if !owner.trim().is_empty() && owner == user)
 }
 
+/// The owner a playlist row draws, when the wire named one this client can show.
+///
+/// The session's own name is [`Owner::You`] even when it is a number: it is the
+/// account signed in, not a name to filter. Another account's numeric id names
+/// nobody, so it is dropped rather than drawn.
+pub fn owner_of(wire: Option<&str>, user: &str) -> Option<Owner> {
+    if owned(wire, user) {
+        return Some(Owner::You);
+    }
+    wire.and_then(OwnerName::from_wire).map(Owner::Named)
+}
+
 /// What the page may change, when the read carries a revision.
 ///
 /// Editable needs the list's permission, the user owning it, and the shown URIs
@@ -380,11 +392,13 @@ mod tests {
 
     use super::{
         PlaylistError, access, add_body, changes_endpoint, create_body, created_uri,
-        listing_access, move_body, owned, removals_body, remove_body, rename_body, reply_revision,
-        require_moves, require_name, require_playlist, require_removals, require_tracks,
-        rootlist_changes_endpoint, varint,
+        listing_access, move_body, owned, owner_of, removals_body, remove_body, rename_body,
+        reply_revision, require_moves, require_name, require_playlist, require_removals,
+        require_tracks, rootlist_changes_endpoint, varint,
     };
-    use takofy_model::{Move, PLAYLIST_NAME_MAX, PlaylistAccess, Removal, Revision};
+    use takofy_model::{
+        Move, Owner, OwnerName, PLAYLIST_NAME_MAX, PlaylistAccess, Removal, Revision,
+    };
 
     /// The revision the probe wrote, 24 bytes.
     const PROBE_REV: [u8; 24] = [
@@ -808,6 +822,43 @@ mod tests {
         assert!(!owned(None, "alice"));
         assert!(!owned(Some(""), ""));
         assert!(!owned(Some("   "), "   "));
+    }
+
+    #[test]
+    fn the_session_user_is_you_even_when_the_name_is_a_number() {
+        assert_eq!(
+            owner_of(Some("31415926535"), "31415926535"),
+            Some(Owner::You)
+        );
+    }
+
+    #[test]
+    fn another_users_number_is_no_owner() {
+        assert_eq!(owner_of(Some("31415926535"), "alice"), None);
+    }
+
+    #[test]
+    fn another_users_name_is_named() {
+        assert_eq!(
+            owner_of(Some("Vela Moreno"), "alice"),
+            Some(Owner::Named(
+                OwnerName::from_wire("Vela Moreno").expect("a name")
+            ))
+        );
+    }
+
+    #[test]
+    fn a_blank_or_missing_owner_is_none() {
+        assert_eq!(owner_of(Some(""), "alice"), None);
+        assert_eq!(owner_of(Some("   "), "alice"), None);
+        assert_eq!(owner_of(None, "alice"), None);
+    }
+
+    #[test]
+    fn a_collapsed_owner_is_not_you() {
+        let owner = owner_of(Some("alice  smith"), "alice smith").expect("an owner");
+        assert_ne!(owner, Owner::You);
+        assert_eq!(owner.name(), Some("alice  smith"));
     }
 
     #[test]

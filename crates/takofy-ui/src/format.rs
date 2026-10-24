@@ -2,7 +2,7 @@
 //! playbar's clock, the hero's byline, the playlist band's description, and the
 //! age a playlist row gives its date.
 
-use takofy_model::{AddedAt, PlaylistEntry, PublishedAt, ReleaseKind, TrackEntry};
+use takofy_model::{AddedAt, Owner, PlaylistEntry, PublishedAt, ReleaseKind, TrackEntry};
 
 use crate::discography::Chip;
 use crate::library::SidebarWrite;
@@ -371,11 +371,16 @@ pub fn library_kind(kind: &str, detail: Option<&str>) -> String {
 /// What a playlist row says under its name.
 ///
 /// A playlist that can take an add reads its own track count, because the count
-/// is the answer an add gets. Every other row reads its owner, as it always did.
+/// is the answer an add gets. Every other row reads its owner's name; our own
+/// lists and the wire's numeric ids have none, so the row says the kind alone.
 pub fn playlist_detail(entry: &PlaylistEntry) -> Option<String> {
     match entry.add_basis() {
         Some((_, tracks)) => Some(track_count_label(tracks)),
-        None => entry.owner.clone(),
+        None => entry
+            .owner
+            .as_ref()
+            .and_then(Owner::name)
+            .map(str::to_owned),
     }
 }
 
@@ -492,12 +497,15 @@ pub fn root_loading_label(kind: RootKind) -> &'static str {
 
 /// The band's byline parts: the owner, then the count and the total.
 ///
-/// The owner is dropped when it is blank, so a playlist whose wire owner is
-/// empty reads `62 songs · 3 hr 51 min` rather than `Made by ` with no name.
-pub fn byline(owner: Option<&str>, tracks: Option<(usize, u32)>) -> Vec<String> {
+/// Our own list reads `Made by you`; another account is named. A blank or
+/// numeric owner never reaches here, because the model refuses to build one.
+pub fn byline(owner: Option<&Owner>, tracks: Option<(usize, u32)>) -> Vec<String> {
     let mut parts = Vec::new();
-    if let Some(owner) = owner.map(str::trim).filter(|owner| !owner.is_empty()) {
-        parts.push(format!("Made by {owner}"));
+    if let Some(owner) = owner {
+        parts.push(match owner.name() {
+            Some(name) => format!("Made by {name}"),
+            None => "Made by you".to_owned(),
+        });
     }
     if let Some((songs, total_ms)) = tracks {
         parts.extend(hero_meta(songs, total_ms));
@@ -521,7 +529,7 @@ pub fn plain_description(raw: &str) -> Option<String> {
 mod tests {
     use super::*;
 
-    use takofy_model::{PlaylistAccess, Revision};
+    use takofy_model::{Owner, OwnerName, PlaylistAccess, Revision};
 
     #[test]
     fn the_search_note_says_top_only_when_the_answer_reaches_the_cap() {
@@ -557,9 +565,13 @@ mod tests {
             cover: None,
             description: None,
             tracks,
-            owner: owner.map(str::to_owned),
+            owner: owner.and_then(OwnerName::from_wire).map(Owner::Named),
             access,
         }
+    }
+
+    fn named(name: &str) -> Owner {
+        Owner::Named(OwnerName::from_wire(name).expect("a name"))
     }
 
     fn editable(editable: bool) -> Option<PlaylistAccess> {
@@ -607,6 +619,29 @@ mod tests {
         assert_eq!(
             playlist_detail(&entry(Some("Vela Moreno"), None, editable(true))),
             Some("Vela Moreno".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_playlist_of_ours_names_no_owner_under_its_name() {
+        let mut ours = entry(None, Some(12), editable(false));
+        ours.owner = Some(Owner::You);
+        assert_eq!(
+            playlist_detail(&ours),
+            None,
+            "our own list draws no name under its title"
+        );
+    }
+
+    #[test]
+    fn a_numeric_or_missing_owner_names_no_owner_under_its_name() {
+        let mut numeric = entry(None, Some(12), editable(false));
+        numeric.owner = OwnerName::from_wire("31415926535").map(Owner::Named);
+        assert_eq!(numeric.owner, None, "a numeric id is not an owner");
+        assert_eq!(playlist_detail(&numeric), None);
+        assert_eq!(
+            playlist_detail(&entry(None, Some(12), editable(false))),
+            None
         );
     }
 
@@ -955,9 +990,21 @@ mod tests {
     }
 
     #[test]
-    fn byline_puts_the_owner_before_the_count_and_the_total() {
+    fn byline_says_made_by_you_for_our_own() {
         assert_eq!(
-            byline(Some("alice"), Some((62, 13_860_000))),
+            byline(Some(&Owner::You), Some((62, 13_860_000))),
+            vec![
+                "Made by you".to_owned(),
+                "62 songs".to_owned(),
+                "3 hr 51 min".to_owned()
+            ]
+        );
+    }
+
+    #[test]
+    fn byline_names_another_owner() {
+        assert_eq!(
+            byline(Some(&named("alice")), Some((62, 13_860_000))),
             vec![
                 "Made by alice".to_owned(),
                 "62 songs".to_owned(),
@@ -967,15 +1014,7 @@ mod tests {
     }
 
     #[test]
-    fn byline_keeps_the_owner_while_the_tracks_are_unknown() {
-        assert_eq!(
-            byline(Some("alice"), None),
-            vec!["Made by alice".to_owned()]
-        );
-    }
-
-    #[test]
-    fn byline_draws_the_count_alone_when_the_owner_is_absent() {
+    fn byline_draws_the_count_alone_without_an_owner() {
         assert_eq!(byline(None, Some((1, 0))), vec!["1 song".to_owned()]);
         assert_eq!(byline(None, Some((0, 0))), vec!["0 songs".to_owned()]);
     }
@@ -986,15 +1025,10 @@ mod tests {
     }
 
     #[test]
-    fn byline_drops_a_blank_owner() {
+    fn byline_keeps_the_owner_while_the_tracks_are_unknown() {
         assert_eq!(
-            byline(Some(""), Some((62, 13_860_000))),
-            vec!["62 songs".to_owned(), "3 hr 51 min".to_owned()]
-        );
-        assert_eq!(
-            byline(Some("  "), None),
-            Vec::<String>::new(),
-            "a spaces-only owner is not a name"
+            byline(Some(&named("alice")), None),
+            vec!["Made by alice".to_owned()]
         );
     }
 

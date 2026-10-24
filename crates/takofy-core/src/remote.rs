@@ -106,6 +106,7 @@ pub(crate) async fn label_playlists(session: &Session, uris: Vec<String>) -> Vec
         }
     }
     let labels = fetch_labels(session, &candidates).await;
+    let user = session.username();
 
     uris.into_iter()
         .zip(metas)
@@ -128,7 +129,7 @@ pub(crate) async fn label_playlists(session: &Session, uris: Vec<String>) -> Vec
                 cover,
                 description,
                 tracks,
-                owner,
+                owner: playlist_edit::owner_of(owner.as_deref(), &user),
                 access,
             }
         })

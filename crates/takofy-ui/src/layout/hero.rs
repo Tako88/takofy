@@ -8,6 +8,11 @@
 //!
 //! Every constant is a step-3 token. At the 16-point rem base the floor is
 //! `hero::TITLE_MIN` (2 rem) and the cap is `text::XXXXL` (3.5 rem).
+//!
+//! A mosaic band's four covers are quartered here too, so the painter only
+//! places rects and the arithmetic is testable without a window.
+
+use egui::{CornerRadius, Pos2, Rect};
 
 use crate::theme::{hero, text};
 
@@ -36,10 +41,143 @@ pub fn artist_title_size(viewport_w: f32) -> f32 {
     (hero::ARTIST_TITLE_VW * viewport_w).clamp(hero::ARTIST_TITLE_MIN, hero::ARTIST_TITLE_MAX)
 }
 
+/// The four quadrants of a mosaic box, in reading order: top left, top right,
+/// bottom left, bottom right.
+///
+/// The split is the box's centre, so an odd width halves evenly rather than
+/// leaving a one-pixel seam between two neighbours.
+pub fn quadrants(rect: Rect) -> [Rect; 4] {
+    let mid = rect.center();
+    [
+        Rect::from_min_max(rect.min, mid),
+        Rect::from_min_max(Pos2::new(mid.x, rect.top()), Pos2::new(rect.right(), mid.y)),
+        Rect::from_min_max(
+            Pos2::new(rect.left(), mid.y),
+            Pos2::new(mid.x, rect.bottom()),
+        ),
+        Rect::from_min_max(mid, rect.max),
+    ]
+}
+
+/// Each quadrant's corners with only its outside one rounded.
+///
+/// The four outside corners are the box's own, so the inner edges stay square and
+/// the quadrants join without a notch.
+pub fn quadrant_corners(radius: CornerRadius) -> [CornerRadius; 4] {
+    [
+        CornerRadius {
+            nw: radius.nw,
+            ne: 0,
+            sw: 0,
+            se: 0,
+        },
+        CornerRadius {
+            nw: 0,
+            ne: radius.ne,
+            sw: 0,
+            se: 0,
+        },
+        CornerRadius {
+            nw: 0,
+            ne: 0,
+            sw: radius.sw,
+            se: 0,
+        },
+        CornerRadius {
+            nw: 0,
+            ne: 0,
+            sw: 0,
+            se: radius.se,
+        },
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::layout::WINDOW_MIN;
+    use crate::theme::radius;
+
+    const BOX: Rect = Rect {
+        min: Pos2::new(0.0, 0.0),
+        max: Pos2::new(100.0, 100.0),
+    };
+
+    #[test]
+    fn the_quadrants_tile_the_box_without_gaps_or_overlap() {
+        let quadrants = quadrants(BOX);
+        for quadrant in quadrants {
+            assert!(BOX.contains_rect(quadrant), "{quadrant:?} leaves the box");
+        }
+        let area: f32 = quadrants.iter().map(|quadrant| quadrant.area()).sum();
+        assert!(
+            (area - BOX.area()).abs() < 0.001,
+            "the quadrants cover {area} of {}",
+            BOX.area()
+        );
+        assert_eq!(quadrants[0].max.x, quadrants[1].min.x, "the top seam");
+        assert_eq!(quadrants[2].max.x, quadrants[3].min.x, "the bottom seam");
+        assert_eq!(quadrants[0].max.y, quadrants[2].min.y, "the left seam");
+        assert_eq!(quadrants[1].max.y, quadrants[3].min.y, "the right seam");
+    }
+
+    #[test]
+    fn the_quadrants_read_top_left_top_right_bottom_left_bottom_right() {
+        let [top_left, top_right, bottom_left, bottom_right] = quadrants(BOX);
+        assert_eq!(top_left.min, BOX.min);
+        assert_eq!(top_right.min, Pos2::new(BOX.center().x, BOX.top()));
+        assert_eq!(bottom_left.min, Pos2::new(BOX.left(), BOX.center().y));
+        assert_eq!(bottom_right.max, BOX.max);
+    }
+
+    #[test]
+    fn an_odd_box_splits_at_its_centre() {
+        let odd = Rect {
+            min: Pos2::new(0.0, 0.0),
+            max: Pos2::new(5.0, 5.0),
+        };
+        let [top_left, top_right, bottom_left, bottom_right] = quadrants(odd);
+        assert_eq!(top_left.max.x, 2.5);
+        assert_eq!(top_left.max.y, 2.5);
+        assert_eq!(top_right.min.x, 2.5);
+        assert_eq!(bottom_left.min.y, 2.5);
+        assert_eq!(bottom_right.min, Pos2::new(2.5, 2.5));
+    }
+
+    #[test]
+    fn only_the_outside_corner_of_each_quadrant_is_rounded() {
+        let corners = quadrant_corners(radius::LG);
+        let each = radius::LG.nw;
+        assert_eq!(
+            corners,
+            [
+                CornerRadius {
+                    nw: each,
+                    ne: 0,
+                    sw: 0,
+                    se: 0
+                },
+                CornerRadius {
+                    nw: 0,
+                    ne: each,
+                    sw: 0,
+                    se: 0
+                },
+                CornerRadius {
+                    nw: 0,
+                    ne: 0,
+                    sw: each,
+                    se: 0
+                },
+                CornerRadius {
+                    nw: 0,
+                    ne: 0,
+                    sw: 0,
+                    se: each
+                },
+            ]
+        );
+    }
 
     fn assert_close(left: f32, right: f32) {
         assert!((left - right).abs() < 0.01, "{left} is not {right}");

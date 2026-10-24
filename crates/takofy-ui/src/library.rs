@@ -20,6 +20,7 @@ use crate::likes::{self, Likes};
 use crate::lyrics::LyricsPanel;
 use crate::menu::{AddTarget, LibraryItem};
 use crate::message::{Command, Failure, Update};
+use crate::mosaic::Kept;
 use crate::naming::{Naming, Renaming, Surface};
 use crate::rail_filter::RailFilter;
 use crate::releases::Releases;
@@ -83,12 +84,13 @@ pub enum BandCover<'a> {
     Entry(Option<&'a CoverUrl>),
 }
 
-/// The band's cover source: the playlist entry alone, once its tracks have
-/// settled.
+/// The band's single-cover source: the playlist entry alone, once its tracks
+/// have settled.
 ///
-/// The band never derives a cover from the track list: the entry already holds
-/// the picture or the first track's album cover, and a second derivation could
-/// disagree with it.
+/// The band never derives its single cover from the track list: the entry already
+/// holds the picture or the first track's album cover, and a second derivation
+/// could disagree with it. The four-cover mosaic is the deliberate exception: it
+/// tiles the list's own album covers only when the entry names no chosen picture.
 pub fn band_cover(entry: &PlaylistEntry, settled: bool) -> BandCover<'_> {
     if settled {
         BandCover::Entry(entry.cover_url())
@@ -141,6 +143,9 @@ pub struct Library {
     /// page change; only the layout root's own reset could drop it.
     pub search: Search,
     pub tracks: Load<TracksFor>,
+    /// The covers the last ready playlist wanted for its mosaic, and which list
+    /// they belonged to, so a reload keeps the mosaic it already holds.
+    pub mosaic_kept: Option<Kept>,
     /// The album the album page draws.
     pub album: Load<AlbumDetail>,
     /// The show the show page draws.

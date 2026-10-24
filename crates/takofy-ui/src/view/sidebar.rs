@@ -1447,7 +1447,7 @@ fn state(ui: &mut Ui, rect: Rect, text: RichText) {
 mod tests {
     use super::*;
     use egui::{Color32, Event, Pos2, Vec2};
-    use takofy_model::{FollowedShow, PlaylistEntry};
+    use takofy_model::{FollowedShow, Owner, OwnerName, PlaylistEntry};
 
     use crate::menu::{Anchor, Device, LibraryItem, Listing};
     use crate::message::{Failure, Update};
@@ -2435,10 +2435,24 @@ mod tests {
             panic!("the list is ready");
         };
         assert_eq!(ListItem::kind(&playlists[0]), "Playlist · 4 tracks");
-        let mut owned = playlist("spotify:playlist:O", "O");
-        owned.owner = Some("Vela Moreno".to_owned());
+
+        let mut ours = playlist("spotify:playlist:O", "O");
+        ours.owner = Some(Owner::You);
         assert_eq!(
-            ListItem::kind(&owned),
+            ListItem::kind(&ours),
+            "Playlist",
+            "our own list draws the kind word alone"
+        );
+
+        let unnamed = playlist("spotify:playlist:N", "N");
+        assert_eq!(ListItem::kind(&unnamed), "Playlist");
+
+        let mut named = playlist("spotify:playlist:V", "V");
+        named.owner = Some(Owner::Named(
+            OwnerName::from_wire("Vela Moreno").expect("a name"),
+        ));
+        assert_eq!(
+            ListItem::kind(&named),
             "Playlist · Vela Moreno",
             "a playlist that cannot take an add keeps its owner line"
         );
