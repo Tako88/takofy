@@ -98,7 +98,7 @@ impl Engine {
     /// Asks the cluster for its roster again, answering what it says.
     pub async fn refresh_devices(&self) -> Result<ClusterView, EngineError> {
         let wire = watch::SessionWire::new(&self.session);
-        Ok(watch::refresh(&wire, &self.gate).await?)
+        Ok(watch::refresh(&wire, &self.gate, watch::Timing::default()).await?)
     }
 
     /// Sends one transport action to the device that holds the sound.

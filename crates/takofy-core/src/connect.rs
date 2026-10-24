@@ -5,6 +5,8 @@
 //! take the account's sound. Parsing only reads; nothing here hands the sound
 //! anywhere.
 
+use std::time::Duration;
+
 use librespot::protocol::connect::{
     Capabilities, Cluster, ClusterUpdate, Device as WireDevice, DeviceInfo, MemberType,
     PutStateReason, PutStateRequest,
@@ -17,11 +19,16 @@ use takofy_model::{Device, DeviceKind, RemotePlayback, RemoteState, TrackEntry};
 /// The name this client announces itself under.
 pub const DEVICE_NAME: &str = "Takofy";
 
-/// The longest stretch a push may be extrapolated by, in milliseconds.
+/// The ceiling on a push's elapsed time when the cluster names no duration.
 ///
-/// Both instants in a push are on the server's clock, so this only bounds a
-/// push that arrived a long time after it was made.
-pub const MAX_ELAPSED_MS: i64 = 60_000;
+/// A push's `timestamp` is the playing device's last state change, not the
+/// push's own arrival, so a phone two minutes into a track legitimately reports
+/// two minutes of elapsed time. This only stops a wildly wrong clock from
+/// saturating the position; a known duration is the real bound.
+pub const MAX_EXTRAPOLATION_MS: i64 = 12 * 60 * 60 * 1_000;
+
+/// The bound on the exit's delete and close.
+pub const WITHDRAW_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// This client's own entry on the account.
 ///
@@ -100,6 +107,10 @@ pub enum ConnectError {
     Withdrawn,
     #[error("the wire stayed busy")]
     Busy,
+    #[error("a device id cannot be a path segment")]
+    InvalidTarget,
+    #[error("the dealer cannot be started again")]
+    DealerSpent,
     #[error("the withdraw did not finish in time")]
     WithdrawTimedOut,
 }
@@ -245,7 +256,11 @@ fn position_of(
 ) -> u32 {
     let base = player.position_as_of_timestamp.max(0);
     let elapsed = if state == RemoteState::Playing {
-        elapsed_of(cluster.server_timestamp_ms, player.timestamp)
+        let elapsed = elapsed_of(cluster.server_timestamp_ms, player.timestamp);
+        match duration {
+            Some(duration) => elapsed.min(i64::from(duration)),
+            None => elapsed.min(MAX_EXTRAPOLATION_MS),
+        }
     } else {
         0
     };
@@ -265,9 +280,7 @@ fn elapsed_of(server_timestamp_ms: i64, player_timestamp: i64) -> i64 {
     if player_timestamp <= 0 || server_timestamp_ms <= 0 {
         return 0;
     }
-    server_timestamp_ms
-        .saturating_sub(player_timestamp)
-        .clamp(0, MAX_ELAPSED_MS)
+    server_timestamp_ms.saturating_sub(player_timestamp).max(0)
 }
 
 /// The track as the cluster names it, before a label fills in the rest.
@@ -496,17 +509,23 @@ mod tests {
     }
 
     #[test]
-    fn no_other_module_can_put_state() {
+    fn only_one_module_speaks_the_device_wire() {
         let put_state = concat!("put_connect_", "state");
+        let delete_state = concat!("delete_connect_", "state");
         let state_path = concat!("connect-state/v1/", "devices");
+        let transfer = concat!(".", "transfer(");
+        let transfer_path = concat!("connect/", "transfer");
         let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
         let skipped = crates.join("takofy-core").join("src").join("watch.rs");
 
         let mut files = Vec::new();
         for entry in std::fs::read_dir(&crates).expect("the crates directory") {
-            let source = entry.expect("a crate directory").path().join("src");
-            if source.is_dir() {
-                rust_files(&source, &mut files);
+            let crate_dir = entry.expect("a crate directory").path();
+            for root in ["src", "tests", "examples", "benches"] {
+                let source = crate_dir.join(root);
+                if source.is_dir() {
+                    rust_files(&source, &mut files);
+                }
             }
         }
 
@@ -517,16 +536,15 @@ mod tests {
             }
             let source = std::fs::read_to_string(&path).expect("a readable source file");
             scanned += 1;
-            assert!(
-                !source.contains(put_state),
-                "{} may send its own device state",
-                path.display()
-            );
-            assert!(
-                !source.contains(state_path),
-                "{} may write a device state directly",
-                path.display()
-            );
+            for (pattern, reason) in [
+                (put_state, "may send its own device state"),
+                (delete_state, "may delete the account's device"),
+                (state_path, "may write a device state directly"),
+                (transfer, "may move playback itself"),
+                (transfer_path, "may move playback itself"),
+            ] {
+                assert!(!source.contains(pattern), "{} {reason}", path.display());
+            }
         }
 
         assert!(
@@ -797,10 +815,28 @@ mod tests {
     }
 
     #[test]
-    fn elapsed_is_capped() {
-        let playback = playback_at(0, 1_000, 1_000 + MAX_ELAPSED_MS * 10, 0);
+    fn a_three_minute_old_anchor_advances_three_minutes() {
+        let playback = playback_at(0, 1_000, 1_000 + 180_000, 0);
 
-        assert_eq!(playback.position_ms, MAX_ELAPSED_MS as u32);
+        assert_eq!(playback.position_ms, 180_000);
+    }
+
+    #[test]
+    fn a_missing_duration_still_has_a_generous_ceiling() {
+        let playback = playback_at(0, 1_000, 1_000 + MAX_EXTRAPOLATION_MS * 10, 0);
+
+        assert_eq!(playback.position_ms, MAX_EXTRAPOLATION_MS as u32);
+    }
+
+    #[test]
+    fn a_known_duration_wins_over_the_ceiling() {
+        let playback = playback_at(0, 1_000, 1_000 + MAX_EXTRAPOLATION_MS * 10, 240_000);
+
+        assert_eq!(playback.position_ms, 240_000);
+        assert_eq!(playback.duration_ms, Some(240_000));
+
+        let long = playback_at(0, 1_000, 1_000 + MAX_EXTRAPOLATION_MS * 10, 72_000_000);
+        assert_eq!(long.position_ms, 72_000_000);
     }
 
     #[test]
