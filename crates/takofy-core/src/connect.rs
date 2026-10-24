@@ -94,6 +94,14 @@ pub enum ConnectError {
     NoConnectionId,
     #[error("could not parse a cluster: {0}")]
     Cluster(#[from] protobuf::Error),
+    #[error("the devices are already being watched")]
+    AlreadyWatching,
+    #[error("the device has been withdrawn")]
+    Withdrawn,
+    #[error("the wire stayed busy")]
+    Busy,
+    #[error("the withdraw did not finish in time")]
+    WithdrawTimedOut,
 }
 
 /// A transport action sent to the device that holds the sound.
