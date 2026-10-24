@@ -500,10 +500,13 @@ fn now_column(
     let title_font = egui::FontId::new(text::SM, fonts::sans(Weight::Medium));
     let state_font = FontId::new(text::XXS, fonts::mono(MonoWeight::Regular));
 
-    let title = transport
-        .now_playing
-        .as_ref()
-        .map_or("Nothing playing", |now| now.title.as_str());
+    // A holder's push names its track only by URI, so an unnamed remote track
+    // has no title to draw: the caption beside it names the device instead.
+    let title = match (transport.now_playing.as_ref(), remote) {
+        (Some(now), _) => now.title.as_str(),
+        (None, Some(_)) => "",
+        (None, None) => "Nothing playing",
+    };
     // The row needs the width each line would take unclamped, so the controls
     // sit where the words end when they fit and on the column's edge when they
     // do not. Another device's line is the holder, not a state of this one.
@@ -813,8 +816,6 @@ fn transport_steer(clicked: Option<Control>, state: TransportState) -> Option<St
 fn steer_of(command: &Command) -> Option<Steer> {
     match command {
         Command::Seek { position_ms } => Some(Steer::SeekTo(*position_ms)),
-        Command::Pause => Some(Steer::Pause),
-        Command::Resume => Some(Steer::Resume),
         _ => None,
     }
 }
@@ -884,9 +885,7 @@ impl SeekScope {
     fn enabled(self, transport: &Transport) -> bool {
         match self {
             Self::Local => transport.seekable(),
-            Self::Remote { steerable } => {
-                steerable && transport.duration_ms.is_some_and(|duration| duration > 0)
-            }
+            Self::Remote { steerable } => steerable && transport.length_known(),
         }
     }
 
@@ -4527,12 +4526,12 @@ mod tests {
             }),
             Some(Steer::SeekTo(42_000))
         );
-        assert_eq!(steer_of(&Command::Pause), Some(Steer::Pause));
-        assert_eq!(steer_of(&Command::Resume), Some(Steer::Resume));
         for command in [
             Command::Play {
                 uri: "t1".to_owned(),
             },
+            Command::Pause,
+            Command::Resume,
             Command::Stop,
             Command::Volume { percent: 50 },
         ] {

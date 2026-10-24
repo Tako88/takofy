@@ -314,12 +314,13 @@ pub fn queue_cut(queue: &mut Queue, ctx: &Context, row: usize, gate: Gate) {
     );
 }
 
-/// Opens Now Playing's menu on the entry it is playing.
+/// Opens Now Playing's menu on the entry the pane draws.
 ///
-/// The current entry is the queue's, and it is never removable: the menu lists
-/// what can be done with the track, not with a list it sits in.
+/// `entry` is the one the pane is drawing, handed in by the shell, and it is
+/// never removable: the menu lists what can be done with the track, not with a
+/// list it sits in. Nothing drawn means no menu.
 pub fn current_menu(
-    queue: &Queue,
+    entry: Option<&TrackEntry>,
     ctx: &Context,
     door: Door,
     gate: Gate,
@@ -329,7 +330,7 @@ pub fn current_menu(
     if !gate.allows() {
         return;
     }
-    let Some(entry) = queue.current().cloned() else {
+    let Some(entry) = entry.cloned() else {
         return;
     };
     let targets = std::slice::from_ref(&entry);
@@ -1575,7 +1576,7 @@ mod tests {
         queue.start(std::slice::from_ref(&named), 0, &mut transport);
 
         current_menu(
-            &queue,
+            queue.current(),
             &ctx,
             door(),
             Gate::default(),
@@ -1604,21 +1605,14 @@ mod tests {
     #[test]
     fn current_menu_with_no_current_entry_or_no_verbs_posts_nothing() {
         let ctx = context();
-        current_menu(
-            &Queue::default(),
-            &ctx,
-            door(),
-            Gate::default(),
-            &Likes::default(),
-            None,
-        );
+        current_menu(None, &ctx, door(), Gate::default(), &Likes::default(), None);
         assert_eq!(context_menu::take_request(&ctx), None, "an empty queue");
 
         let mut transport = Transport::default();
         let mut queue = Queue::default();
         queue.start(&[entry("0")], 0, &mut transport);
         current_menu(
-            &queue,
+            queue.current(),
             &ctx,
             door(),
             Gate::default(),
@@ -1640,7 +1634,7 @@ mod tests {
         queue.start(&[named_entry("spotify:track:a")], 0, &mut transport);
 
         current_menu(
-            &queue,
+            queue.current(),
             &ctx,
             door(),
             Gate {
