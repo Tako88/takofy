@@ -7,6 +7,7 @@
 
 pub mod album;
 pub mod artist;
+pub mod connect;
 pub mod context;
 pub mod credentials;
 pub mod engine;
