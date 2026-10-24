@@ -536,4 +536,64 @@ mod tests {
             assert!(card.contains_rect(at), "{word} at {at:?} left {card:?}");
         }
     }
+
+    /// The hint is the only line that says what to do instead, so it is painted
+    /// whole: a card that elides it tells the reader nothing.
+    #[test]
+    fn the_hint_is_painted_whole() {
+        let ctx = context();
+        let devices = watched();
+        let (mut list, _) = opened();
+        let output = settled(&ctx, &mut list, &devices);
+
+        let painted: Vec<String> = output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Text(shape) => Some(shape.galley.text().to_owned()),
+                _ => None,
+            })
+            .collect();
+        let hint = painted
+            .iter()
+            .find(|text| text.starts_with("Switch devices"))
+            .expect("the card paints the hint");
+        assert_eq!(hint, crate::devices::SWITCH_HINT, "the hint was elided");
+        assert!(!hint.contains('\u{2026}'), "the hint was elided: {hint:?}");
+    }
+
+    /// The empty-roster line is short enough to be painted whole too.
+    #[test]
+    fn the_empty_note_is_painted_whole() {
+        let ctx = context();
+        let (mut list, _) = opened();
+        let mut devices = Devices::default();
+        assert_eq!(
+            devices.watch_request(true),
+            Some(crate::message::Command::WatchDevices)
+        );
+        devices.apply(
+            &Update::Devices(DeviceUpdate::Roster {
+                devices: Vec::new(),
+                holder: None,
+            }),
+            Instant::now(),
+        );
+        let output = settled(&ctx, &mut list, &devices);
+
+        let painted: Vec<String> = output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Text(shape) => Some(shape.galley.text().to_owned()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            painted
+                .iter()
+                .any(|text| text == crate::devices::NO_DEVICES),
+            "{painted:?}"
+        );
+    }
 }

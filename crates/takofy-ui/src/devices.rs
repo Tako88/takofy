@@ -28,9 +28,9 @@ pub const FLASH_FOR: Duration = Duration::from_secs(4);
 /// What the caption says about a holder the roster does not name.
 const UNNAMED_HOLDER: &str = "another device";
 /// The last line of the card, always shown: no row is a control.
-const SWITCH_HINT: &str = "Switch devices from Spotify on the device that is playing.";
+pub(crate) const SWITCH_HINT: &str = "Switch devices on the device that is playing.";
 /// Shown when the account signed in no other device.
-const NO_DEVICES: &str = "No other devices are signed in.";
+pub(crate) const NO_DEVICES: &str = "No other devices are signed in.";
 
 /// Which transport the bar draws.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
