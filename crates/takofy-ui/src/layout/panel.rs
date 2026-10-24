@@ -35,11 +35,19 @@ pub struct Stack {
     pub pane: Rect,
 }
 
+/// The height the meta block reserves: title, artist, the gap before the state
+/// and the state line, whether or not each of them is drawn.
+///
+/// Nothing about a track enters it, so the art box and the tabs do not move when
+/// playback starts. The arguments are measured heights, which keeps this pure.
+pub fn meta_reserved(title_h: f32, secondary_h: f32, state_h: f32) -> f32 {
+    height(title_h) + height(secondary_h) + space::S1 + height(state_h)
+}
+
 /// Solves the stack inside `band`.
 ///
-/// `meta_h` is the height of the title, artist and state lines and `tabs_h` the
-/// height of the tab pair, both measured by the painter because they depend on
-/// the fonts.
+/// `meta_h` is what [`meta_reserved`] returns and `tabs_h` the height of the tab
+/// pair, both measured by the painter because they depend on the fonts.
 pub fn stack_for(band: Rect, meta_h: f32, tabs_h: f32) -> Stack {
     let band = sane(band);
     let meta_h = height(meta_h);
@@ -153,6 +161,138 @@ mod tests {
         grid.now_playing
             .expect("the panel is drawn at this width")
             .shrink(crate::theme::stroke::HAIRLINE)
+    }
+
+    #[test]
+    fn the_reservation_is_title_artist_gap_state() {
+        // The three lines the meta block can draw, at heights near what the
+        // fonts give: a title, an artist and a state, with space-1 before the
+        // state.
+        assert_eq!(meta_reserved(22.0, 18.0, 11.0), 55.0);
+        assert_eq!(space::S1, 4.0, "the gap before the state is space-1");
+        // Every component is named, so a state that draws no line still
+        // reserves one.
+        assert_eq!(meta_reserved(22.0, 18.0, 0.0), 44.0);
+        assert_eq!(meta_reserved(22.0, 0.0, 11.0), 37.0);
+        // A height that cannot be measured reads as none, like every other.
+        assert_eq!(meta_reserved(f32::NAN, 18.0, 11.0), 33.0);
+    }
+
+    /// The smallest band that still holds the art at its floor, the reservation
+    /// in full and the pane at its minimum: everything above and below the art.
+    fn smallest_band() -> f32 {
+        let reserved = meta_reserved(22.0, 18.0, 11.0);
+        space::S3
+            + HEAD_H
+            + space::S3
+            + extent::NOWPLAYING_ART_MIN
+            + space::S4
+            + reserved
+            + space::S3
+            + TABS
+            + space::S3
+            + PANE_MIN_H
+    }
+
+    /// The reservation, the gaps around it and the vertical order, all of which
+    /// a band large enough to hold the pane's minimum must keep.
+    fn assert_reserved_and_ordered(stack: Stack, band: Rect, reserved: f32) {
+        assert_eq!(stack.meta.height(), reserved, "the reserve is not honoured");
+        for (name, gap, above, below) in [
+            (
+                "art to meta",
+                space::S4,
+                stack.art.bottom(),
+                stack.meta.top(),
+            ),
+            (
+                "meta to tabs",
+                space::S3,
+                stack.meta.bottom(),
+                stack.tabs.top(),
+            ),
+            (
+                "tabs to pane",
+                space::S3,
+                stack.tabs.bottom(),
+                stack.pane.top(),
+            ),
+        ] {
+            assert!(
+                (above + gap - below).abs() < 0.01,
+                "{name} is {} wide of its {gap} gap",
+                above + gap - below
+            );
+        }
+        for pair in parts(stack).windows(2) {
+            let ((first, above), (second, below)) = (pair[0], pair[1]);
+            assert!(
+                above.bottom() <= below.top() + 0.01,
+                "{second} overlaps {first} in {band:?}"
+            );
+        }
+        for (name, rect) in parts(stack) {
+            assert!(
+                rect.top() >= band.top() - 0.01,
+                "{name} starts above {band:?}"
+            );
+            assert!(
+                rect.bottom() <= band.bottom() + 0.01,
+                "{name} ends below {band:?}"
+            );
+        }
+        assert!(
+            stack.art.height() >= extent::NOWPLAYING_ART_MIN,
+            "the art is {} in {band:?}",
+            stack.art.height()
+        );
+        assert!(
+            stack.pane.height() >= PANE_MIN_H - 0.01,
+            "the pane is {} in {band:?}",
+            stack.pane.height()
+        );
+    }
+
+    #[test]
+    fn every_band_size_keeps_the_reservation_and_the_vertical_order() {
+        // The state the pane reserves: a title, an artist and a state line.
+        // Nothing about a track enters it, so the stack that comes out depends
+        // on the band alone. From the smallest band that still holds the pane's
+        // minimum up to a tall one, the reserve is exact and nothing overlaps.
+        let reserved = meta_reserved(22.0, 18.0, 11.0);
+        let smallest = smallest_band();
+        // The sweep starts at the tight case, where the art sits on its floor
+        // and the pane on its minimum, so a larger reservation fails here first.
+        let tight = stack_for(band(270.0, smallest), reserved, TABS);
+        assert_eq!(tight.art.height(), extent::NOWPLAYING_ART_MIN);
+        assert!((tight.pane.height() - PANE_MIN_H).abs() < 0.01);
+        for width in [270.0, 240.0] {
+            let steps = (900.0 - smallest) as u32;
+            for step in 0..=steps {
+                let band = band(width, smallest + step as f32);
+                assert_reserved_and_ordered(stack_for(band, reserved, TABS), band, reserved);
+            }
+        }
+    }
+
+    #[test]
+    fn the_smallest_supported_window_keeps_the_reservation_and_both_floors() {
+        // The shortest window the user can reach, at the pane's narrowest and
+        // widest widths. The taller reservation must not squeeze the art to its
+        // floor or the pane below its minimum here.
+        let reserved = meta_reserved(22.0, 18.0, 11.0);
+        let widths = [crate::layout::NOWPLAYING_HIDDEN_MAX + 1.0, 1440.0];
+        for width in widths {
+            let band = band_at(vec2(width, crate::layout::WINDOW_MIN[1]));
+            assert_eq!(band.height(), 410.0, "the band at {width}");
+            let stack = stack_for(band, reserved, TABS);
+            assert_reserved_and_ordered(stack, band, reserved);
+            assert!(
+                stack.art.height() > extent::NOWPLAYING_ART_MIN,
+                "the art is squeezed to its floor at {width}: {}",
+                stack.art.height()
+            );
+        }
     }
 
     #[test]

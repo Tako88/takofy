@@ -5405,7 +5405,11 @@ mod tests {
         playlist_page(&mut window, &["p0", "p1"]);
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
         let from = row_line(&frame, view_rect(&window), "p1");
-        let to = pane_rect_when_shown(&window).center();
+        // The caption band is part of the pane's target and sits inside the pane
+        // whatever the art box above reserves; the panel's own centre may not.
+        let to = text_in(&frame, "NEXT IN QUEUE", pane_rect_when_shown(&window))
+            .expect("the caption is painted")
+            .center();
 
         assert_eq!(window.drag(&mut transport, &mut queue, from, to), None);
         assert_eq!(entries(&queue), ["list:p1"]);

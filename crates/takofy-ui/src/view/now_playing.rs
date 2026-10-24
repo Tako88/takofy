@@ -76,19 +76,25 @@ pub fn show(
 ) -> Reply {
     let tokens = frame.tokens;
     let band = ui.available_rect_before_wrap();
-    let meta_h = meta_height(ui, transport);
+    let meta_h = meta_height(ui);
     let tabs_h = tabs_height(ui, tokens);
     let stack = panel::stack_for(band, meta_h, tabs_h);
 
     let menu = head(ui, stack, queue, likes, tokens);
-    art::tile(
-        ui.painter(),
-        stack.art,
-        radius::SM,
-        tokens.palette.border_strong,
-        frame.cover,
-        tokens,
-    );
+    // Idle is the transport, never the cover: a track with no cover of its own
+    // still has a box to frame.
+    if transport.now_playing.is_none() {
+        art::hole(ui.painter(), stack.art, radius::SM, tokens);
+    } else {
+        art::tile(
+            ui.painter(),
+            stack.art,
+            radius::SM,
+            tokens.palette.border_strong,
+            frame.cover,
+            tokens,
+        );
+    }
     meta(ui, stack.meta, transport, tokens);
     let tab = tabs(ui, stack.tabs, tokens, lyrics.showing());
 
@@ -182,6 +188,9 @@ fn head(ui: &mut Ui, stack: Stack, queue: &Queue, likes: &Likes, tokens: &Tokens
 
 /// Title, artist and the transport's state, or the one line that says nothing is
 /// playing.
+///
+/// The idle line sits where a title would, at the top of the reserved rect: the
+/// same block with nothing in it.
 fn meta(ui: &Ui, rect: Rect, transport: &Transport, tokens: &Tokens) {
     if rect.width() <= 0.0 {
         return;
@@ -196,7 +205,7 @@ fn meta(ui: &Ui, rect: Rect, transport: &Transport, tokens: &Tokens) {
             rect.width(),
         );
         ui.painter().galley(
-            Pos2::new(rect.left(), rect.center().y - line.size().y / 2.0),
+            Pos2::new(rect.left(), rect.top()),
             line,
             tokens.palette.text_muted,
         );
@@ -276,19 +285,14 @@ fn tabs(ui: &mut Ui, rect: Rect, tokens: &Tokens, chosen: Tab) -> Option<Tab> {
     pressed
 }
 
-/// The height the three meta lines take, or the one line nothing playing takes.
-fn meta_height(ui: &Ui, transport: &Transport) -> f32 {
-    let Some(now) = &transport.now_playing else {
-        return line_height(ui, &recipe::track_secondary());
-    };
-    let mut height = line_height(ui, &recipe::panel_title());
-    if !now.artists.is_empty() {
-        height += line_height(ui, &recipe::track_secondary());
-    }
-    if !transport.state.label().is_empty() {
-        height += space::S1 + line_height(ui, &recipe::track_mono(text::XXS));
-    }
-    height
+/// The reservation, from the pane's own line heights: every state names all three
+/// lines, so the tabs and the art box are a function of the pane alone.
+fn meta_height(ui: &Ui) -> f32 {
+    panel::meta_reserved(
+        line_height(ui, &recipe::panel_title()),
+        line_height(ui, &recipe::track_secondary()),
+        line_height(ui, &recipe::track_mono(text::XXS)),
+    )
 }
 
 /// The height of the taller of the two chips.
@@ -325,8 +329,12 @@ mod tests {
     }
 
     fn input(events: Vec<Event>) -> egui::RawInput {
+        input_in(PROBE, events)
+    }
+
+    fn input_in(size: Vec2, events: Vec<Event>) -> egui::RawInput {
         egui::RawInput {
-            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, PROBE)),
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
             events,
             ..Default::default()
         }
@@ -356,6 +364,23 @@ mod tests {
                 Shape::Text(text) if text.galley.text() == label => Some(text.pos),
                 _ => None,
             })
+    }
+
+    /// Whether two rects are the same box, allowing for the pixel grid.
+    fn same_box(rect: Rect, other: Rect) -> bool {
+        (rect.min - other.min).length() < 0.01 && (rect.max - other.max).length() < 0.01
+    }
+
+    /// The rects the frame painted inside `area`.
+    fn rects_in(output: &egui::FullOutput, area: Rect) -> Vec<egui::epaint::RectShape> {
+        output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                Shape::Rect(rect) if rect.rect.intersects(area) => Some(rect.clone()),
+                _ => None,
+            })
+            .collect()
     }
 
     fn track(index: usize) -> TrackEntry {
@@ -507,6 +532,51 @@ mod tests {
         }
     }
 
+    /// The stack the panel solves for a `size` window, the cover it drew and the
+    /// frame it painted.
+    fn solve(panel: &mut Panel, ctx: &Context, size: Vec2) -> (Stack, Cover, egui::FullOutput) {
+        let tokens = Tokens::DARK;
+        let cover = panel.art.look(
+            panel
+                .transport
+                .now_playing
+                .as_ref()
+                .and_then(|now| now.cover.as_ref()),
+            panel.now,
+        );
+        panel.art.begin_frame();
+        let now = panel.now;
+        let mut stack = None;
+        let mut output = ctx.run_ui(input_in(size, Vec::new()), |ui| {
+            let band = ui.available_rect_before_wrap();
+            stack = Some(panel::stack_for(
+                band,
+                meta_height(ui),
+                tabs_height(ui, &tokens),
+            ));
+            let _ = show(
+                ui,
+                &panel.transport,
+                &panel.queue,
+                &panel.lyrics,
+                &panel.likes,
+                panel.transport.position_ms,
+                &mut Frame {
+                    art: &mut panel.art,
+                    now,
+                    cover,
+                    tokens: &tokens,
+                },
+            );
+        });
+        output.textures_delta.clear();
+        (
+            stack.expect("the panel solved its stack while drawing"),
+            cover,
+            output,
+        )
+    }
+
     /// A click at `at` over the three passes egui's hit test needs, returning the
     /// queue reply that asked for something.
     fn click(panel: &mut Panel, ctx: &Context, at: Pos2) -> queue_pane::Reply {
@@ -614,8 +684,8 @@ mod tests {
         let mut with = Panel::new(playing("A Title", "A Band"));
         let held = with.output(&ctx);
 
-        // The title stays where it was; the state label moves up when there is
-        // no artist line to reserve.
+        // The state moves up with no artist line to draw it under; the rect
+        // reserves that line anyway, so the tabs below it stay put.
         let title = painted_at(&without, "A Title").expect("the title is painted");
         let state = painted_at(&without, "Loading").expect("the state is painted");
         let held_title = painted_at(&held, "A Title").expect("the title is painted");
@@ -645,6 +715,190 @@ mod tests {
                 "the panel must draw {label:?}: {texts:?}"
             );
         }
+    }
+
+    #[test]
+    fn an_idle_pane_draws_its_art_box_as_a_hole_with_no_hairline() {
+        let ctx = context();
+        let tokens = Tokens::DARK;
+        let mut panel = Panel::new(Transport::default());
+        let (stack, _, output) = solve(&mut panel, &ctx, PROBE);
+
+        let painted = rects_in(&output, stack.art);
+        let hole = painted.iter().find(|rect| {
+            rect.fill == tokens.palette.surface_sunken && same_box(rect.rect, stack.art)
+        });
+        let hole =
+            hole.unwrap_or_else(|| panic!("the idle art box is not the sunken well: {painted:?}"));
+        assert!(hole.stroke.is_empty(), "the idle art box draws no hairline");
+
+        // Scoped to the art box: the Queue and Lyrics chips keep their strokes,
+        // so this is not a claim that the pane draws no edges at all.
+        for rect in painted {
+            assert!(
+                rect.stroke.is_empty(),
+                "a hairline crosses the idle art box: {:?}",
+                rect.rect
+            );
+        }
+        let chips = rects_in(&output, stack.tabs);
+        assert!(
+            chips.iter().any(|rect| !rect.stroke.is_empty()),
+            "the tab chips keep their strokes: {chips:?}"
+        );
+    }
+
+    #[test]
+    fn a_named_track_with_no_cover_keeps_its_tile_and_hairline() {
+        let ctx = context();
+        let tokens = Tokens::DARK;
+        let mut panel = Panel::new(playing("T", "A"));
+        let (stack, _, output) = solve(&mut panel, &ctx, PROBE);
+
+        let edged = rects_in(&output, stack.art)
+            .into_iter()
+            .find(|rect| !rect.stroke.is_empty() && same_box(rect.rect, stack.art))
+            .expect("a named track's art box keeps its hairline");
+        assert_eq!(edged.stroke.color, tokens.palette.border_strong);
+        assert_eq!(
+            edged.fill, tokens.palette.surface_sunken,
+            "no cover is still the sunken well, inside its frame"
+        );
+    }
+
+    #[test]
+    fn a_named_track_with_a_cover_paints_what_art_tile_paints() {
+        let ctx = context();
+        let tokens = Tokens::DARK;
+        let url = CoverUrl::from_wire("https://i.scdn.co/image/tile").expect("a cover url");
+        let mut transport = Transport::default();
+        transport.play("spotify:track:x", "T", "A", Some(url.clone()));
+        let mut panel = Panel::new(transport);
+        // One frame to want the cover and send the fetch, then the answer
+        // arrives, is uploaded, and the next frame draws it.
+        panel.art.begin_frame();
+        assert_eq!(panel.art.look(Some(&url), panel.now), Cover::Loading);
+        assert!(
+            !panel.art.requests(panel.now).is_empty(),
+            "the cover is fetched"
+        );
+        let image = CoverImage::new(1, 1, vec![0; 4]).expect("a 1x1 image");
+        panel.art.apply(&Update::Cover { url, image }, panel.now);
+        panel.art.upload(&ctx);
+        panel.art.begin_frame();
+
+        let (stack, cover, output) = solve(&mut panel, &ctx, PROBE);
+        assert!(matches!(cover, Cover::Ready(_)), "the cover is held");
+        let ours = rects_in(&output, stack.art);
+        assert!(
+            ours.iter().any(|rect| rect.brush.is_some()),
+            "the held cover is drawn, not a slot: {ours:?}"
+        );
+
+        let mut tile = ctx.run_ui(input(Vec::new()), |ui| {
+            art::tile(
+                ui.painter(),
+                stack.art,
+                radius::SM,
+                tokens.palette.border_strong,
+                cover,
+                &tokens,
+            );
+        });
+        tile.textures_delta.clear();
+        assert_eq!(
+            ours,
+            rects_in(&tile, stack.art),
+            "the pane draws the tile's own box"
+        );
+    }
+
+    #[test]
+    fn the_tabs_and_art_do_not_move_when_playback_starts() {
+        let ctx = context();
+        let labels = ["QUEUE", "LYRICS"];
+        let mut idle = Panel::new(Transport::default());
+        let (idle_stack, _, idle_frame) = solve(&mut idle, &ctx, PROBE);
+        let idle_tabs = labels.map(|label| {
+            painted_at(&idle_frame, label).unwrap_or_else(|| panic!("the idle pane draws {label}"))
+        });
+
+        for (title, artists) in [("T", "A"), ("T", "")] {
+            let mut panel = Panel::new(playing(title, artists));
+            let (stack, _, frame) = solve(&mut panel, &ctx, PROBE);
+            assert!(
+                same_box(stack.art, idle_stack.art),
+                "the art box moved when {title:?} with {artists:?} started: {:?} was {:?}",
+                stack.art,
+                idle_stack.art
+            );
+            for (label, at) in labels.iter().zip(idle_tabs) {
+                assert_eq!(
+                    painted_at(&frame, label),
+                    Some(at),
+                    "{label} moved when {title:?} with {artists:?} started"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_art_box_is_the_same_size_idle_and_playing_in_a_short_pane() {
+        // A window short enough that the reservation decides how much room the
+        // art gets, so a track that reserved fewer lines would show it here.
+        let short = Vec2::new(360.0, 360.0);
+        let ctx = context();
+        let mut idle = Panel::new(Transport::default());
+        let (idle_stack, _, _) = solve(&mut idle, &ctx, short);
+        assert!(
+            idle_stack.art.width() < extent::NOWPLAYING_ART_MAX,
+            "the pane must be short enough to squeeze the art: {}",
+            idle_stack.art.width()
+        );
+
+        for (title, artists) in [("T", "A"), ("T", "")] {
+            let mut panel = Panel::new(playing(title, artists));
+            let (stack, _, _) = solve(&mut panel, &ctx, short);
+            assert!(
+                (stack.art.width() - idle_stack.art.width()).abs() < 0.01,
+                "{title:?} with {artists:?} gives the art {} against the idle {}",
+                stack.art.width(),
+                idle_stack.art.width()
+            );
+        }
+    }
+
+    #[test]
+    fn the_idle_state_is_the_default_transport() {
+        let ctx = context();
+        let tokens = Tokens::DARK;
+        let transport = Transport::default();
+        assert!(transport.now_playing.is_none(), "a fresh transport is idle");
+
+        let mut panel = Panel::new(transport);
+        let (stack, _, output) = solve(&mut panel, &ctx, PROBE);
+        assert!(
+            rects_in(&output, stack.art)
+                .iter()
+                .any(|rect| rect.fill == tokens.palette.surface_sunken
+                    && rect.stroke.is_empty()
+                    && same_box(rect.rect, stack.art)),
+            "the default transport takes the hole path"
+        );
+    }
+
+    #[test]
+    fn the_idle_line_sits_at_the_top_of_the_reserved_meta() {
+        let ctx = context();
+        let mut panel = Panel::new(Transport::default());
+        let (stack, _, output) = solve(&mut panel, &ctx, PROBE);
+        let at = painted_at(&output, "Nothing playing").expect("the idle line is painted");
+        assert!(
+            (at.y - stack.meta.top()).abs() < 0.01,
+            "the idle line sits at {} in a meta block starting at {}",
+            at.y,
+            stack.meta.top()
+        );
     }
 
     #[test]

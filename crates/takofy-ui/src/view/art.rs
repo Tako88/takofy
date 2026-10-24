@@ -79,6 +79,16 @@ pub fn fill(painter: &Painter, rect: Rect, cover: Cover, tokens: &Tokens) {
     fill_rounded(painter, rect, CornerRadius::ZERO, cover, tokens);
 }
 
+/// Paints a box as a hole and nothing else: the sunken well at the caller's
+/// radius, with no stroke of its own.
+///
+/// The idle Now Playing art box, where no cover exists and none is coming, so an
+/// edge around it would frame nothing.
+pub fn hole(painter: &Painter, rect: Rect, radius: CornerRadius, tokens: &Tokens) {
+    let rect = rect.round_to_pixels(painter.pixels_per_point());
+    painter.rect_filled(rect, radius, tokens.palette.surface_sunken);
+}
+
 /// Paints four covers quartering `rect`, then one hairline around the whole box.
 ///
 /// Each quadrant rounds only its outside corner, so the four join without a
@@ -262,6 +272,18 @@ mod tests {
             .collect()
     }
 
+    fn holed(ctx: &egui::Context, rect: Rect, radius: CornerRadius, tokens: &Tokens) -> Vec<Shape> {
+        let mut output = ctx.run_ui(Default::default(), |ui| {
+            hole(ui.painter(), rect, radius, tokens);
+        });
+        output.textures_delta.clear();
+        output
+            .shapes
+            .into_iter()
+            .map(|clipped| clipped.shape)
+            .collect()
+    }
+
     fn mosaicked(ctx: &egui::Context, covers: [Cover; 4], tokens: &Tokens) -> Vec<Shape> {
         let mut output = ctx.run_ui(Default::default(), |ui| {
             mosaic(
@@ -331,6 +353,29 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn a_hole_is_the_sunken_fill_and_nothing_else() {
+        let tokens = Tokens::DARK;
+        let (ctx, _) = a_context_holding_a_cover();
+        let shapes = holed(&ctx, SQUARE, CornerRadius::ZERO, &tokens);
+        assert_eq!(shapes.len(), 1, "a hole is one shape: {shapes:?}");
+        let rects = rects(&shapes);
+        assert_eq!(rects.len(), 1, "a hole is a fill, not a stroke");
+        assert_eq!(rects[0].rect, SQUARE);
+        assert_eq!(rects[0].fill, tokens.palette.surface_sunken);
+        assert!(rects[0].stroke.is_empty(), "a hole draws no hairline");
+        assert!(rects[0].brush.is_none(), "a hole holds no texture");
+    }
+
+    #[test]
+    fn a_hole_honours_the_radius() {
+        let tokens = Tokens::DARK;
+        let (ctx, _) = a_context_holding_a_cover();
+        let radius = CornerRadius::same(2);
+        let shapes = holed(&ctx, SQUARE, radius, &tokens);
+        assert_eq!(rects(&shapes)[0].corner_radius, radius);
     }
 
     #[test]
