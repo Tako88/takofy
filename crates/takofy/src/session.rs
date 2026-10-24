@@ -7,6 +7,7 @@
 use std::future::Future;
 
 use librespot::core::SessionConfig;
+use takofy_core::connect::{ClusterEvent, ClusterView, ConnectError, Steer};
 use takofy_core::credentials::AccessToken;
 use takofy_core::engine::{Engine, EngineError, RootlistRead};
 use takofy_core::playback::{Playback, PlaybackError, PlaybackEvent, Volume};
@@ -44,6 +45,7 @@ impl SessionError {
             Self::Engine(EngineError::Lyrics(_)) => "lyrics",
             Self::Engine(EngineError::Playlist(_)) => "playlist",
             Self::Engine(EngineError::Followed(_)) => "followed",
+            Self::Engine(EngineError::Connect(_)) => "connect",
             Self::Playback(error) => match error {
                 PlaybackError::NoAudioBackend => "no audio backend",
                 PlaybackError::NoAudioDevice => "no audio device",
@@ -247,6 +249,27 @@ pub(crate) trait SessionHost: Send + 'static {
         follow: bool,
     ) -> impl Future<Output = Result<(), SessionError>> + Send;
 
+    /// Starts watching the account's devices, ignoring a watch already running.
+    fn watch_devices(&mut self) -> impl Future<Output = Result<(), SessionError>> + Send;
+
+    /// The event stream of a watch started since the last call, so the one
+    /// drain thread is handed it exactly once.
+    fn take_devices(&mut self) -> Option<UnboundedReceiver<ClusterEvent>>;
+
+    /// Asks the cluster for its roster again, answering what it says.
+    fn refresh_devices(&self) -> impl Future<Output = Result<ClusterView, SessionError>> + Send;
+
+    /// Sends one transport action to the device that holds the sound.
+    fn steer(
+        &self,
+        device: &str,
+        steer: Steer,
+    ) -> impl Future<Output = Result<(), SessionError>> + Send;
+
+    /// Takes this client off the account's device list. Best effort: the exit
+    /// draws nothing, so a failure is logged and dropped.
+    fn withdraw_devices(&self) -> impl Future<Output = Result<(), SessionError>> + Send;
+
     fn play(&mut self, uri: &str) -> Result<(), SessionError>;
 
     /// Jumps within the loaded track. A call with no player is a no-op.
@@ -287,6 +310,8 @@ pub(crate) struct LiveSession {
     engine: Option<Engine>,
     playback: Option<Playback>,
     events: Option<UnboundedReceiver<PlaybackEvent>>,
+    /// The watch's stream, kept until the drain thread takes it.
+    devices: Option<UnboundedReceiver<ClusterEvent>>,
     /// The level the player will read, kept here so a change before the player
     /// exists is still the level it starts with.
     volume: Volume,
@@ -299,6 +324,7 @@ impl LiveSession {
             engine: None,
             playback: None,
             events: None,
+            devices: None,
             volume: Volume::default(),
         }
     }
@@ -591,6 +617,58 @@ impl SessionHost for LiveSession {
         }
     }
 
+    async fn watch_devices(&mut self) -> Result<(), SessionError> {
+        // A second request hands back the stream the first one already has, or
+        // the engine's refusal when the drain thread has taken it: restarts are
+        // the bridge's guard, not this one.
+        if self.devices.is_some() {
+            return Ok(());
+        }
+        let Some(engine) = &mut self.engine else {
+            return Err(SessionError::NotConnected);
+        };
+        match engine.watch_devices().await {
+            Ok(events) => {
+                self.devices = Some(events);
+                Ok(())
+            }
+            Err(EngineError::Connect(ConnectError::AlreadyWatching)) => Ok(()),
+            Err(error) => Err(SessionError::Engine(error)),
+        }
+    }
+
+    fn take_devices(&mut self) -> Option<UnboundedReceiver<ClusterEvent>> {
+        self.devices.take()
+    }
+
+    async fn refresh_devices(&self) -> Result<ClusterView, SessionError> {
+        match &self.engine {
+            Some(engine) => engine.refresh_devices().await.map_err(SessionError::Engine),
+            None => Err(SessionError::NotConnected),
+        }
+    }
+
+    async fn steer(&self, device: &str, steer: Steer) -> Result<(), SessionError> {
+        match &self.engine {
+            Some(engine) => engine
+                .steer_device(device, &steer)
+                .await
+                .map_err(SessionError::Engine),
+            None => Err(SessionError::NotConnected),
+        }
+    }
+
+    async fn withdraw_devices(&self) -> Result<(), SessionError> {
+        let Some(engine) = &self.engine else {
+            return Err(SessionError::NotConnected);
+        };
+        if let Err(error) = engine.withdraw_devices().await {
+            // The window is closing; there is nothing left to draw this into.
+            log::warn!("device withdraw: {}", SessionError::Engine(error).kind());
+        }
+        Ok(())
+    }
+
     fn play(&mut self, uri: &str) -> Result<(), SessionError> {
         if self.playback.is_none() {
             let engine = self.engine.as_ref().ok_or(SessionError::NotConnected)?;
@@ -652,6 +730,7 @@ impl SessionHost for LiveSession {
 mod tests {
     use librespot::core::SessionConfig;
     use librespot::playback::mixer::VolumeGetter;
+    use takofy_core::connect::Steer;
     use takofy_core::playback::Volume;
     use tokio::sync::oneshot;
 
@@ -693,6 +772,42 @@ mod tests {
             Volume::at(60).attenuation_factor(),
             "a later change through the session is seen through the clone"
         );
+    }
+
+    #[tokio::test]
+    async fn the_device_calls_before_sign_in_report_the_missing_engine() {
+        let mut live = LiveSession::new(SessionConfig::default());
+
+        assert!(matches!(
+            SessionHost::watch_devices(&mut live).await,
+            Err(SessionError::NotConnected)
+        ));
+        assert!(matches!(
+            SessionHost::refresh_devices(&live).await,
+            Err(SessionError::NotConnected)
+        ));
+        assert!(matches!(
+            SessionHost::steer(&live, "phone", Steer::Pause).await,
+            Err(SessionError::NotConnected)
+        ));
+        assert!(matches!(
+            SessionHost::withdraw_devices(&live).await,
+            Err(SessionError::NotConnected)
+        ));
+        assert!(SessionHost::take_devices(&mut live).is_none());
+    }
+
+    #[tokio::test]
+    async fn a_watch_asked_for_twice_hands_back_the_stream_it_has() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut live = LiveSession::new(SessionConfig::default());
+        live.devices = Some(rx);
+
+        // The stream is the guard: a second request cannot start a second
+        // watch, and a window that asks again gets what already exists.
+        assert!(SessionHost::watch_devices(&mut live).await.is_ok());
+        assert!(SessionHost::take_devices(&mut live).is_some());
+        assert!(SessionHost::take_devices(&mut live).is_none());
     }
 
     #[test]

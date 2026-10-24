@@ -98,6 +98,7 @@ impl SignIn {
                 | Update::PortraitsFailed { .. }
                 | Update::Cover { .. }
                 | Update::CoverFailed { .. }
+                | Update::Devices(_)
                 | Update::Transport(_),
                 _,
             ) => {}
@@ -145,6 +146,9 @@ pub fn failure_message(failure: Failure) -> &'static str {
         Failure::Related => {
             "Could not load the artists this one is heard with. Check the connection and try again."
         }
+        Failure::Devices => "Could not reach your devices. Check your connection and try again.",
+        Failure::DevicesOff => "Could not reach your devices. Restart Takofy to try again.",
+        Failure::Steer => "That device did not respond. Try again.",
         Failure::Other => "Sign-in failed. Try again, or run with --headless for details.",
     }
 }
@@ -200,6 +204,8 @@ pub fn copy(state: SignIn) -> Option<Words> {
 
 #[cfg(test)]
 mod tests {
+    use crate::message::DeviceUpdate;
+
     use super::*;
 
     #[test]
@@ -403,6 +409,15 @@ mod tests {
     }
 
     #[test]
+    fn a_device_update_never_moves_the_sign_in() {
+        for state in every_state() {
+            let mut applied = state;
+            applied.apply(Update::Devices(DeviceUpdate::Failed(Failure::Devices)));
+            assert_eq!(applied, state, "{state:?} moved on a device update");
+        }
+    }
+
+    #[test]
     fn failure_message_is_non_empty_and_distinct_per_failure() {
         let mut messages = Vec::new();
         for failure in every_failure() {
@@ -429,7 +444,7 @@ mod tests {
     }
 
     /// Every `Failure` value there is, so a test can sweep them all.
-    fn every_failure() -> [Failure; 13] {
+    fn every_failure() -> [Failure; 17] {
         [
             Failure::PortBusy,
             Failure::Keychain,
@@ -440,9 +455,13 @@ mod tests {
             Failure::Rename,
             Failure::Followed,
             Failure::FollowedArtists,
+            Failure::Related,
             Failure::SavedAlbums,
             Failure::Lyrics,
             Failure::Search,
+            Failure::Devices,
+            Failure::DevicesOff,
+            Failure::Steer,
             Failure::Other,
         ]
     }

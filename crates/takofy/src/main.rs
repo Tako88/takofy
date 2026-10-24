@@ -7,6 +7,7 @@ mod app;
 mod bridge;
 mod cover;
 mod decode;
+mod devices;
 mod headless;
 mod keychain;
 mod preferences;
