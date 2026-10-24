@@ -349,6 +349,20 @@ pub mod actionbar {
     pub const FIELD_MIN_W: f32 = 120.0;
 }
 
+/// The discography's chip row carries a count and a name field at its trailing
+/// edge. The field is wider here than the action row's (`15rem`, not `11rem`) and
+/// does not shrink: the chips wrap around it instead.
+pub mod cluster {
+    use super::{extent, space};
+
+    /// The field's column, `15rem`, which it keeps at every width.
+    pub const FIELD_W: f32 = 240.0;
+    /// The field's height: the same 1.75rem row the other fields use.
+    pub const FIELD_H: f32 = extent::BUTTON;
+    /// The space between the count and the field, `space-4`.
+    pub const GAP: f32 = space::S4;
+}
+
 /// The equaliser that stands in for a playing row's number.
 ///
 /// Three bars, each starting its pulse a little after the one before it, so the

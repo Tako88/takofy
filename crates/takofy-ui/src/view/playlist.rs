@@ -349,10 +349,7 @@ pub fn tracks_view(
                             .edit(&tracks.playlist)
                             .trim()
                             .to_owned();
-                        ui.label(recipe::muted(
-                            &format!("Nothing in this list matches \u{201c}{query}\u{201d}"),
-                            tokens,
-                        ));
+                        ui.label(recipe::muted(&crate::format::list_nothing(&query), tokens));
                         selection.restrict(|_| false);
                         selection.finish(ui.ctx());
                     } else {
@@ -744,7 +741,7 @@ fn idle(
                 };
                 page_head(ui, &note, tokens);
 
-                let (picked, row) = filter_row::show_with(
+                let shown = filter_row::show_with(
                     ui,
                     tokens,
                     &library_filter::ROW,
@@ -753,8 +750,8 @@ fn idle(
                     root_filter_label,
                     filter_row::RowSlot::Trailing(view_toggle::reserved()),
                 );
-                choose = picked;
-                if let Some(layout) = view_toggle::show(ui, tokens, row, library.layout) {
+                choose = shown.picked;
+                if let Some(layout) = view_toggle::show(ui, tokens, shown.area, library.layout) {
                     relayout = Some(layout);
                 }
 
@@ -1603,7 +1600,7 @@ mod tests {
                         RootKind::All,
                         RootKind::control,
                         root_filter_label,
-                        filter_row::RowSlot::None,
+                        filter_row::RowSlot::Trailing(0.0),
                     );
                     let solved = media_grid(ui);
                     found = Some(solved.card_rect(index));
@@ -7339,7 +7336,7 @@ mod root_tests {
                         RootKind::All,
                         RootKind::control,
                         root_filter_label,
-                        filter_row::RowSlot::None,
+                        filter_row::RowSlot::Trailing(0.0),
                     );
                     let solved = media_grid(ui);
                     found = Some(solved.card_rect(index));

@@ -11,6 +11,7 @@ pub mod actionbar;
 pub mod cards;
 pub mod chips;
 pub mod episode;
+pub mod filter_row;
 pub mod hero;
 pub mod menu;
 pub mod panel;

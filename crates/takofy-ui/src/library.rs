@@ -8055,6 +8055,33 @@ mod tests {
     }
 
     #[test]
+    fn a_reload_of_the_same_artist_keeps_the_query_and_another_artist_drops_it() {
+        let mut library = Library::default();
+        library.open(artist("spotify:artist:a"));
+        library.apply(&Update::Artist(artist_detail("spotify:artist:a")));
+        library.filter.edit().push_str("  Midnight  ");
+
+        library.to_playlists();
+        let _ = library.back();
+        assert_eq!(
+            library.filter.needle().as_deref(),
+            Some("midnight"),
+            "a reload of the artist the query was typed on keeps it"
+        );
+
+        library.open(artist("spotify:artist:b"));
+        assert_eq!(
+            library.filter.needle(),
+            None,
+            "another artist's releases are not the ones the query named"
+        );
+        assert!(
+            library.filter.edit().is_empty(),
+            "nor does the field carry the words over"
+        );
+    }
+
+    #[test]
     fn retrying_the_same_artist_keeps_the_filter() {
         let mut library = Library::default();
         library.open(artist("spotify:artist:a"));

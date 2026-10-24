@@ -23,6 +23,7 @@
 use egui::{FontId, Pos2, Rect, Sense, Ui, vec2};
 
 use crate::availability::Control;
+use crate::format::filter_count_label;
 use crate::icon::Icon;
 use crate::layout;
 use crate::layout::actionbar::Kind;
@@ -32,7 +33,7 @@ use crate::theme::icon::Size;
 use crate::theme::{Tokens, Weight, actionbar, fonts, stroke, text, tracking};
 
 use super::filter_field::Rule;
-use super::{context_menu, controls, pin, playlist_filter, text as recipe};
+use super::{context_menu, controls, filter_count, pin, playlist_filter, text as recipe};
 
 /// What the row acts on, and what it is called.
 pub struct Bar<'a> {
@@ -184,12 +185,13 @@ pub(super) fn show(
     let mut count = None;
     if let (Some(hits), Some(filter)) = (&reply.hits, &filter) {
         let total = filter.entries.len();
-        let label = playlist_filter::count_label(ui, hits.len(), total, tokens);
+        let words = filter_count_label(hits.len(), total);
+        let label = filter_count::layout(ui, &words, tokens);
         count = layout::actionbar::count(&placed, bar.kind, label.size().x);
         if let Some(rect) = count {
-            playlist_filter::paint_count(ui, rect, label, tokens);
+            filter_count::paint(ui, rect, label, tokens);
         }
-        playlist_filter::announce(ui, hits.len(), total);
+        filter_count::announce(ui, ui.scope_id().with("track-count"), &words);
     }
 
     // The page's text control stands between the field and the tools, which is
@@ -205,10 +207,19 @@ pub(super) fn show(
     // may not bring a second line. A box too narrow for the name holds no
     // message either.
     let name_box = layout::actionbar::title(rect, &placed, count, bar.kind, filter.is_some());
-    if let Some(failure) = bar.text.as_ref().and_then(|text| text.failed)
-        && let Some(label_box) = name_box
-    {
-        paint_failure(ui, label_box, failure, tokens);
+    if let Some(failure) = bar.text.as_ref().and_then(|text| text.failed) {
+        if let Some(label_box) = name_box {
+            paint_failure(ui, label_box, failure, tokens);
+        } else {
+            // A row too narrow for the name's box has nowhere to paint the
+            // message, but the press must not become silent: the status node is
+            // the one channel left.
+            filter_count::announce(
+                ui,
+                ui.scope_id().with("bar-status"),
+                crate::signin::failure_message(failure),
+            );
+        }
     } else if stuck
         && let Some(title) = bar.title
         && let Some(label_box) = name_box
@@ -1493,6 +1504,7 @@ mod tests {
     #[test]
     fn a_failure_with_no_box_paints_nothing() {
         let ctx = context();
+        ctx.enable_accesskit();
         // Narrow enough that the row has no name's box between the play tile and
         // the text control.
         let size = Vec2::new(300.0, 400.0);
@@ -1504,13 +1516,24 @@ mod tests {
             }),
             ..text_bar(kind(size))
         };
-        let frame = frame_of(&ctx, &failed, size, 0.0, Vec::new(), None);
+        let mut announced = None;
+        let (frame, _) = frame_of_probed(&ctx, &failed, size, 0.0, Vec::new(), None, |ui| {
+            announced = ui
+                .ctx()
+                .accesskit_node_builder(ui.scope_id().with("bar-status"), |node| {
+                    (node.role(), node.live(), node.label().map(str::to_owned))
+                });
+        });
         let copy = crate::signin::failure_message(Failure::Save);
         assert!(
             text_rect(&frame.output, copy).is_none(),
             "a message with no box to sit in paints nothing: {:?}",
             text_rect(&frame.output, copy)
         );
+        let announced = announced.expect("the failure still speaks through the status node");
+        assert_eq!(announced.0, egui::Role::Status);
+        assert_eq!(announced.1, Some(egui::accesskit::Live::Polite));
+        assert_eq!(announced.2.as_deref(), Some(copy));
         assert!(
             text_rect(&frame.output, "Vela Moreno").is_none(),
             "and the name has no box either, so neither is drawn"
