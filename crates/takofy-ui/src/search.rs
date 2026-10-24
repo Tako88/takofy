@@ -13,8 +13,18 @@ use takofy_model::TrackEntry;
 
 use crate::library::Load;
 use crate::message::{Command, Failure, Update};
-use crate::portraits::{Portrait, Portraits};
-use crate::search_index::{Index, Kind, MENU, Row, Shape};
+use crate::portraits::{Ask, Portrait, Portraits, Surface};
+use crate::reveal::Reveal;
+use crate::search_index::{Index, Kind, MENU, PAGE, Row, Shape};
+
+/// The most tracks the search route answers. The page's note says "Top N" only
+/// when an answer reaches it: a shorter answer hides nothing, so "Top" would
+/// promise results that do not exist.
+///
+/// There is no constant to import, so this is kept in step by hand with
+/// `Engine::search`'s doc in the core (`engine.rs`): the route answers twenty
+/// and offers no paging.
+pub const SEARCH_CAP: usize = 20;
 
 /// Trims and joins runs of whitespace with one space, or `None` when blank.
 ///
@@ -125,6 +135,27 @@ pub enum MenuView<'a> {
     Nothing,
 }
 
+/// The results page's bands, and the whole answer they came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PageListing<'a> {
+    pub answer: &'a [TrackEntry],
+    pub index: &'a Index,
+    pub shape: Shape,
+}
+
+/// What the results page has to say, from the page read alone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PageView<'a> {
+    /// Nothing true to say yet: idle, in flight, or another query's answer.
+    Waiting,
+    /// The read failed.
+    Failed(Failure),
+    /// The answer was empty: the page's own two lines.
+    Empty,
+    /// The whole answer and the bands its blocks draw.
+    Ready(PageListing<'a>),
+}
+
 /// The search field's state.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Search {
@@ -146,8 +177,15 @@ pub struct Search {
     /// The key on the wire. One read at a time, so a burst of keystrokes cannot
     /// queue twenty requests.
     inflight: Option<String>,
-    /// The artists' portraits the menu draws, and the read that fills them.
+    /// The artists' portraits both surfaces draw, and the read that fills them.
     portraits: Portraits,
+    /// Whether a results page was open the last frame the shell asked. Set from
+    /// [`Self::portraits_due`]'s `page` argument and cleared when it is `None`,
+    /// so a reply that lands after the page is left is not taken for the page on
+    /// screen.
+    page_open: bool,
+    /// How much of each block the page has been asked to show.
+    reveal: Reveal,
 }
 
 impl Search {
@@ -159,6 +197,15 @@ impl Search {
     /// Whether the drop-down is drawn.
     pub fn is_open(&self) -> bool {
         self.open
+    }
+
+    /// Which visit to the results page's query this is.
+    ///
+    /// It moves exactly when the page's reveal starts a query over (see
+    /// [`Reveal::point`]), so a view keyed by it starts at the top on a fresh
+    /// page and keeps its offset on a Retry or a re-entry of the same query.
+    pub fn page_visit(&self) -> u32 {
+        self.reveal.visit()
     }
 
     /// The marked row's ordinal in the walk, or `None` for the field.
@@ -266,6 +313,46 @@ impl Search {
         }
     }
 
+    /// The results page's state for `query`, capped by what the reader has
+    /// asked for.
+    ///
+    /// `None` means the page is not holding this query's answer, so the view
+    /// must not draw another query's tracks under this heading. The bands come
+    /// from the whole answer, never from the rows a block shows.
+    pub fn page_view(&self, query: &str) -> Option<PageView<'_>> {
+        let load = self.page_answer(query)?;
+        Some(match load {
+            Load::Idle | Load::Loading => PageView::Waiting,
+            Load::Failed(failure) => PageView::Failed(*failure),
+            Load::Ready(tracks) if tracks.is_empty() => PageView::Empty,
+            Load::Ready(tracks) => {
+                let index = self.page.index.as_ref()?;
+                PageView::Ready(PageListing {
+                    answer: tracks,
+                    index,
+                    shape: index.shape(self.reveal.caps(query, PAGE)),
+                })
+            }
+        })
+    }
+
+    /// Takes `kind`'s reveal on the page `query`, if that page is the answer on
+    /// screen. A late click on a page that has moved on changes nothing.
+    ///
+    /// Returns whether the reveal was taken, so the caller only moves the
+    /// keyboard to a revealed row that actually exists.
+    pub fn take_more(&mut self, query: &str, kind: Kind) -> bool {
+        if self.page.key.as_deref() != Some(query) {
+            return false;
+        }
+        if !matches!(self.page.load, Load::Ready(_)) {
+            return false;
+        }
+        self.reveal.point(query);
+        self.reveal.take(kind);
+        true
+    }
+
     /// Points the menu at the text as it now stands.
     ///
     /// An edit that moves the key drops the old answer, so a superseded reply
@@ -273,8 +360,7 @@ impl Search {
     /// this too, because only the text edit itself reports `typed`.
     pub fn text_changed(&mut self) {
         let key = collapse(&self.text);
-        Self::want(&mut self.menu, key.clone());
-        self.portraits.note(key.as_deref());
+        Self::want(&mut self.menu, key);
     }
 
     /// Whether Escape has something to undo.
@@ -482,7 +568,7 @@ impl Search {
     /// `logic` runs before `ui`, so a read armed by that frame would otherwise
     /// wait for the next input event.
     pub fn wants(&mut self, page: Option<&str>) -> bool {
-        if self.portraits_due().is_some() {
+        if self.portraits_due(page).is_some() {
             return true;
         }
         let Some(target) = self.due(page) else {
@@ -508,10 +594,15 @@ impl Search {
             Update::Search { query, tracks } => self.fill(query, &Load::Ready(tracks.clone())),
             Update::SearchFailed { query, failure } => self.fill(query, &Load::Failed(*failure)),
             Update::Portraits { .. } | Update::PortraitsFailed { .. } => {
-                let current = self.key();
-                let shown = self.shown_artists();
-                self.portraits.set_shown(&shown);
-                self.portraits.apply(update, current.as_deref());
+                let page = self.page.key.clone().unwrap_or_default();
+                self.portraits.set_shown(&self.portrait_windows(&page));
+                let current = self.on_screen();
+                self.portraits.apply(
+                    update,
+                    current
+                        .as_ref()
+                        .map(|(surface, key)| (*surface, key.as_str())),
+                );
             }
             _ => {}
         }
@@ -522,16 +613,15 @@ impl Search {
         let Some(listing) = self.listing() else {
             return Vec::new();
         };
-        let Some(band) = listing
-            .shape
-            .bands
-            .iter()
-            .find(|band| band.kind == Kind::Artists)
-        else {
+        Self::window(listing.index, &listing.shape)
+    }
+
+    /// The artists a shape's artist band shows, in order.
+    fn window(index: &Index, shape: &Shape) -> Vec<String> {
+        let Some(band) = shape.bands.iter().find(|band| band.kind == Kind::Artists) else {
             return Vec::new();
         };
-        listing
-            .index
+        index
             .artists
             .iter()
             .take(band.shown)
@@ -539,29 +629,80 @@ impl Search {
             .collect()
     }
 
-    /// The portrait read this frame would send, if one is due.
-    fn portraits_due(&mut self) -> Option<(String, Vec<String>)> {
-        // A key change frees the single ask slot, so coming back to a failed
-        // query is not blocked by the query that is no longer current.
-        self.portraits.note(self.key().as_deref());
-        if !self.open {
+    /// The artists the page's artist band shows for `query`, in order.
+    fn page_artists(&self, query: &str) -> Vec<String> {
+        let Some(PageView::Ready(listing)) = self.page_view(query) else {
+            return Vec::new();
+        };
+        Self::window(listing.index, &listing.shape)
+    }
+
+    /// The faces on screen this frame: the menu's key while it is open, else the
+    /// page's.
+    fn on_screen(&self) -> Option<(Surface, String)> {
+        if self.open
+            && let Some(key) = self.key()
+        {
+            return Some((Surface::Menu, key));
+        }
+        // The stored flag, not the page read's key: the read outlives the page
+        // it was asked for, so a reply that lands after the page is left must
+        // not be judged against it as if the page were still on screen.
+        if !self.page_open {
             return None;
         }
-        let key = self.key()?;
-        let shown = self.shown_artists();
-        if shown.is_empty() {
+        self.page.key.clone().map(|key| (Surface::Page, key))
+    }
+
+    /// The portrait read this frame would send, and the surface asking for it.
+    ///
+    /// The menu asks while it is open; the page asks while it is the page on
+    /// screen and its answer is ready. The menu is never passed over for the
+    /// page: an open menu with nothing due returns `None`.
+    fn portraits_due(&mut self, page: Option<&str>) -> Option<Ask> {
+        // The page is open exactly while the shell hands us its query. Recording
+        // it here — where every ask already reads it — is what lets a reply
+        // landed after the page is left be judged against nothing.
+        self.page_open = page.is_some();
+        let (surface, key, window) = if self.open && self.key().is_some() {
+            let key = self.key()?;
+            let window = self.shown_artists();
+            (Surface::Menu, key, window)
+        } else {
+            let key = page?;
+            let window = self.page_artists(key);
+            (Surface::Page, key.to_owned(), window)
+        };
+        // The surface on screen owns the slot, so a changed one frees it for the
+        // artists it is about to draw.
+        self.portraits.note(Some((surface, key.as_str())));
+        if window.is_empty() {
             return None;
         }
-        self.portraits.set_shown(&shown);
-        let refs: Vec<&str> = shown.iter().map(String::as_str).collect();
-        let due = self.portraits.due(&key, &refs)?;
-        Some((key, due))
+        self.portraits
+            .set_shown(&self.portrait_windows(page.unwrap_or_default()));
+        let refs: Vec<&str> = window.iter().map(String::as_str).collect();
+        self.portraits.due(surface, &key, &refs)
+    }
+
+    /// Every artist either surface is showing, so a full cache keeps both.
+    fn portrait_windows(&self, page: &str) -> Vec<String> {
+        let mut artists = self.shown_artists();
+        for artist in self.page_artists(page) {
+            if !artists.contains(&artist) {
+                artists.push(artist);
+            }
+        }
+        artists
     }
 
     /// The portrait read this frame wants, if one is due.
-    pub fn request_portraits(&mut self) -> Option<Command> {
-        let (key, artists) = self.portraits_due()?;
-        Some(self.portraits.ask(&key, artists))
+    ///
+    /// `page` is the query of the open results page, as [`Self::request`] takes
+    /// it, so both surfaces ask through one slot.
+    pub fn request_portraits(&mut self, page: Option<&str>) -> Option<Command> {
+        let ask = self.portraits_due(page)?;
+        Some(self.portraits.ask(ask))
     }
 
     /// Points the results page at `query`, seeding it from the menu when the
@@ -571,6 +712,7 @@ impl Search {
     /// action, so it re-asks exactly once. `Library::settle` is what keeps an
     /// answer that is already held and in flight.
     pub fn open_results(&mut self, query: &str) {
+        self.reveal.point(query);
         if self.menu.key.as_deref() == Some(query)
             && let Load::Ready(tracks) = &self.menu.load
         {
@@ -596,6 +738,7 @@ impl Search {
     /// key that must not be drawn again. The read is left `Idle`, so the next
     /// [`Self::request_page`] asks exactly once.
     pub fn retry_page(&mut self, query: &str) {
+        self.reveal.point(query);
         self.page = Read {
             key: Some(query.to_owned()),
             ..Read::default()
@@ -1573,44 +1716,113 @@ mod tests {
         }
     }
 
+    /// The page ready on `abc` with `count` distinct artists, and the menu
+    /// closed, as landing on the page leaves it.
+    fn paged(count: usize) -> Search {
+        let mut state = typed("abc");
+        state.open_results("abc");
+        state.apply(&rich_reply("abc", count));
+        state.close();
+        state
+    }
+
+    fn artist(n: usize) -> String {
+        format!("spotify:artist:r{n}")
+    }
+
+    fn uris(range: std::ops::Range<usize>) -> Vec<String> {
+        range.map(artist).collect()
+    }
+
     #[test]
     fn no_portraits_are_asked_for_while_the_menu_has_nothing_to_draw() {
         // Loading, not open, blank, and answering another key.
         let mut loading = typed("abc");
         assert_eq!(loading.request(None), Some(search("abc")));
-        assert_eq!(loading.request_portraits(), None);
+        assert_eq!(loading.request_portraits(None), None);
 
         let mut closed = banded();
         closed.close();
-        assert_eq!(closed.request_portraits(), None);
+        assert_eq!(closed.request_portraits(None), None);
 
         let mut blank = banded();
         blank.text.clear();
         blank.text_changed();
-        assert_eq!(blank.request_portraits(), None);
+        assert_eq!(blank.request_portraits(None), None);
 
         let mut moved = banded();
         type_text(&mut moved, "abcd");
-        assert_eq!(moved.request_portraits(), None);
+        assert_eq!(moved.request_portraits(None), None);
     }
 
     #[test]
-    fn the_portrait_read_carries_the_two_menu_artists_in_band_order() {
+    fn the_menu_asks_for_its_two_artists_in_band_order() {
         let mut state = banded();
         assert_eq!(
-            state.request_portraits(),
+            state.request_portraits(None),
             Some(portrait_command(
                 "abc",
                 &["spotify:artist:r0", "spotify:artist:r1"]
             ))
         );
-        assert_eq!(state.request_portraits(), None, "one read at a time");
+        assert_eq!(state.request_portraits(None), None, "one read at a time");
+    }
+
+    #[test]
+    fn the_closed_menu_leaves_the_page_asking_for_its_ten() {
+        let mut state = paged(25);
+        assert!(!state.is_open());
+        let expected: Vec<String> = uris(0..10);
+        let expected: Vec<&str> = expected.iter().map(String::as_str).collect();
+        assert_eq!(
+            state.request_portraits(Some("abc")),
+            Some(portrait_command("abc", &expected))
+        );
+    }
+
+    #[test]
+    fn an_open_menu_with_nothing_due_never_falls_through_to_the_page() {
+        let mut state = banded();
+        assert!(state.request_portraits(None).is_some());
+        state.apply(&portrait("spotify:artist:r0", Some("0")));
+        state.apply(&portrait("spotify:artist:r1", Some("1")));
+        assert_eq!(
+            state.request_portraits(Some("abc")),
+            None,
+            "the menu's two are answered, so no read is due"
+        );
+    }
+
+    #[test]
+    fn a_loading_failed_or_empty_page_asks_for_no_face() {
+        let mut loading = typed("abc");
+        loading.open_results("page");
+        assert_eq!(loading.page_view("page"), Some(PageView::Waiting));
+        assert_eq!(loading.request_portraits(Some("page")), None);
+
+        let mut failed = typed("abc");
+        failed.open_results("page");
+        failed.apply(&Update::SearchFailed {
+            query: "page".to_owned(),
+            failure: Failure::Search,
+        });
+        assert_eq!(
+            failed.page_view("page"),
+            Some(PageView::Failed(Failure::Search))
+        );
+        assert_eq!(failed.request_portraits(Some("page")), None);
+
+        let mut empty = typed("abc");
+        empty.open_results("page");
+        empty.apply(&reply("page", &[]));
+        assert_eq!(empty.page_view("page"), Some(PageView::Empty));
+        assert_eq!(empty.request_portraits(Some("page")), None);
     }
 
     #[test]
     fn a_newer_query_never_asks_for_the_previous_answers_artists() {
         let mut state = banded();
-        assert!(state.request_portraits().is_some());
+        assert!(state.request_portraits(None).is_some());
         state.apply(&portrait("spotify:artist:r0", Some("old")));
         type_text(&mut state, "abcd");
         state.apply(&Update::Search {
@@ -1627,7 +1839,7 @@ mod tests {
         });
         // The new answer's own first two artists, never the held answer's.
         assert_eq!(
-            state.request_portraits(),
+            state.request_portraits(None),
             Some(portrait_command(
                 "abcd",
                 &["spotify:artist:s0", "spotify:artist:s1"]
@@ -1636,18 +1848,38 @@ mod tests {
     }
 
     #[test]
+    fn a_newer_page_query_never_asks_for_the_previous_answers_artists() {
+        let mut state = paged(25);
+        assert!(state.request_portraits(Some("abc")).is_some());
+        state.apply(&Update::Search {
+            query: "abc".to_owned(),
+            tracks: Vec::new(),
+        });
+        // A page for another query is the one on screen; the old answer's faces
+        // are not asked for.
+        state.open_results("xy");
+        assert_eq!(state.request_portraits(Some("xy")), None);
+    }
+
+    #[test]
     fn wants_is_true_exactly_when_request_portraits_would_send() {
         let mut state = banded();
         assert!(state.wants(None));
-        assert!(state.request_portraits().is_some());
+        assert!(state.request_portraits(None).is_some());
         assert!(!state.wants(None));
-        assert_eq!(state.request_portraits(), None);
+        assert_eq!(state.request_portraits(None), None);
+
+        let mut page = paged(25);
+        assert!(page.wants(Some("abc")));
+        assert!(page.request_portraits(Some("abc")).is_some());
+        assert!(!page.wants(Some("abc")));
+        assert_eq!(page.request_portraits(Some("abc")), None);
     }
 
     #[test]
     fn an_artist_met_in_a_previous_query_is_known_and_asks_nothing() {
         let mut state = banded();
-        assert!(state.request_portraits().is_some());
+        assert!(state.request_portraits(None).is_some());
         state.apply(&portrait("spotify:artist:r0", Some("0")));
         state.apply(&portrait("spotify:artist:r1", Some("1")));
         type_text(&mut state, "abcd");
@@ -1660,7 +1892,7 @@ mod tests {
             )
         );
         assert_eq!(
-            state.request_portraits(),
+            state.request_portraits(None),
             None,
             "both rows the new answer shows are already held"
         );
@@ -1669,14 +1901,278 @@ mod tests {
     #[test]
     fn a_portrait_failure_settles_the_rows_on_the_stand_in() {
         let mut state = banded();
-        assert!(state.request_portraits().is_some());
+        assert!(state.request_portraits(None).is_some());
         state.apply(&Update::PortraitsFailed {
             query: "abc".to_owned(),
         });
-        assert_eq!(state.request_portraits(), None, "a failed key is kept");
+        assert_eq!(state.request_portraits(None), None, "a failed key is kept");
         for artist in ["spotify:artist:r0", "spotify:artist:r1"] {
             assert_eq!(state.portrait(artist), Portrait::Absent);
         }
+    }
+
+    #[test]
+    fn a_page_ask_is_not_current_after_the_page_is_left() {
+        let mut state = paged(25);
+        assert!(state.request_portraits(Some("abc")).is_some());
+        // The reader navigates to a playlist: no page is open this frame, and
+        // the reply lands after it is gone.
+        assert_eq!(state.request_portraits(None), None);
+        state.apply(&Update::PortraitsFailed {
+            query: "abc".to_owned(),
+        });
+        assert_eq!(
+            state.portrait("spotify:artist:r0"),
+            Portrait::Unread,
+            "a failure that lands after the page is left must not mark its artists absent"
+        );
+    }
+
+    #[test]
+    fn a_menu_reply_that_lands_on_its_own_page_is_current() {
+        let mut state = banded();
+        assert_eq!(
+            state.request_portraits(None),
+            Some(portrait_command(
+                "abc",
+                &["spotify:artist:r0", "spotify:artist:r1"]
+            ))
+        );
+        // Enter opens the page under the same key before the menu's reply
+        // lands; the page's own ask waits for the read already on the wire, but
+        // the frame that opens it is what makes the page the surface on screen.
+        state.open_results("abc");
+        state.close();
+        assert_eq!(state.request_portraits(Some("abc")), None);
+        state.apply(&Update::Portraits {
+            query: "abc".to_owned(),
+            portraits: vec![
+                takofy_model::ArtistPortrait {
+                    artist: "spotify:artist:r0".to_owned(),
+                    portrait: Some(
+                        takofy_model::CoverUrl::from_wire("https://i.scdn.co/image/0")
+                            .expect("a cover url"),
+                    ),
+                },
+                takofy_model::ArtistPortrait {
+                    artist: "spotify:artist:r1".to_owned(),
+                    portrait: Some(
+                        takofy_model::CoverUrl::from_wire("https://i.scdn.co/image/1")
+                            .expect("a cover url"),
+                    ),
+                },
+            ],
+        });
+        assert_eq!(
+            state.portrait("spotify:artist:r0"),
+            Portrait::Known(
+                &takofy_model::CoverUrl::from_wire("https://i.scdn.co/image/0")
+                    .expect("a cover url")
+            ),
+            "the menu's faces are the faces the page draws"
+        );
+        let expected: Vec<String> = uris(2..8);
+        let expected: Vec<&str> = expected.iter().map(String::as_str).collect();
+        assert_eq!(
+            state.request_portraits(Some("abc")),
+            Some(portrait_command("abc", &expected)),
+            "the page asks only for the artists the menu did not answer"
+        );
+    }
+
+    #[test]
+    fn the_menu_closing_hands_the_page_a_distinct_slot_in_the_next_frame() {
+        let mut state = banded();
+        state.open_results("abc");
+        assert_eq!(
+            state.request_portraits(Some("abc")),
+            Some(portrait_command(
+                "abc",
+                &["spotify:artist:r0", "spotify:artist:r1"]
+            )),
+            "the menu wins the slot while it is open"
+        );
+        state.apply(&portrait("spotify:artist:r0", Some("0")));
+        state.apply(&portrait("spotify:artist:r1", Some("1")));
+        state.close();
+        let expected: Vec<String> = uris(2..8);
+        let expected: Vec<&str> = expected.iter().map(String::as_str).collect();
+        assert_eq!(
+            state.request_portraits(Some("abc")),
+            Some(portrait_command("abc", &expected)),
+            "the page asks under the same query for the rest"
+        );
+    }
+
+    #[test]
+    fn taking_the_artists_reveal_widens_the_page_window() {
+        let mut state = paged(25);
+        assert!(state.request_portraits(Some("abc")).is_some());
+        state.apply(&Update::Portraits {
+            query: "abc".to_owned(),
+            portraits: uris(0..10)
+                .into_iter()
+                .map(|artist| takofy_model::ArtistPortrait {
+                    artist,
+                    portrait: None,
+                })
+                .collect(),
+        });
+        state.take_more("abc", Kind::Artists);
+        let expected: Vec<String> = uris(10..20);
+        let expected: Vec<&str> = expected.iter().map(String::as_str).collect();
+        assert_eq!(
+            state.request_portraits(Some("abc")),
+            Some(portrait_command("abc", &expected)),
+            "the next ten unknowns, in window order"
+        );
+    }
+
+    // The page's own view.
+
+    fn shares(state: &Search, query: &str) -> Vec<String> {
+        match state.page_view(query) {
+            Some(PageView::Ready(listing)) => listing
+                .shape
+                .bands
+                .iter()
+                .map(crate::search_index::Band::share)
+                .collect(),
+            other => panic!("expected a ready page, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_page_view_is_none_for_another_query() {
+        let state = typed("abc");
+        assert_eq!(state.page_view("xyz"), None);
+    }
+
+    #[test]
+    fn the_page_view_follows_the_load() {
+        let mut state = typed("abc");
+        state.open_results("abc");
+        assert_eq!(state.page_view("abc"), Some(PageView::Waiting));
+        state.request_page(Some("abc"));
+        assert_eq!(state.page_view("abc"), Some(PageView::Waiting));
+        state.apply(&failed("abc"));
+        assert_eq!(
+            state.page_view("abc"),
+            Some(PageView::Failed(Failure::Search))
+        );
+        state.retry_page("abc");
+        state.apply(&reply("abc", &[]));
+        assert_eq!(state.page_view("abc"), Some(PageView::Empty));
+
+        let ready = paged(2);
+        let Some(PageView::Ready(listing)) = ready.page_view("abc") else {
+            panic!("a ready page");
+        };
+        assert_eq!(listing.answer.len(), 2);
+        assert_eq!(listing.index.tracks, 2);
+    }
+
+    #[test]
+    fn a_ready_page_is_capped_at_ten_of_each_kind_until_a_reveal_is_taken() {
+        let mut state = paged(25);
+        assert_eq!(shares(&state, "abc"), ["10 of 25", "10 of 25", "10 of 25"]);
+
+        state.take_more("abc", Kind::Tracks);
+        assert_eq!(shares(&state, "abc"), ["25", "10 of 25", "10 of 25"]);
+
+        state.take_more("abc", Kind::Artists);
+        assert_eq!(shares(&state, "abc"), ["25", "10 of 25", "25"]);
+    }
+
+    #[test]
+    fn a_reveal_changes_one_block_and_leaves_the_others_whole() {
+        let before = paged(25);
+        let Some(PageView::Ready(before)) = before.page_view("abc") else {
+            panic!("a ready page");
+        };
+        let albums = before.index.albums.clone();
+        let artists = before.index.artists.clone();
+
+        let mut after = paged(25);
+        after.take_more("abc", Kind::Tracks);
+        let Some(PageView::Ready(after)) = after.page_view("abc") else {
+            panic!("a ready page");
+        };
+        assert_eq!(after.index.albums, albums);
+        assert_eq!(after.index.artists, artists);
+        assert_eq!(after.shape.bands[0].shown, 25);
+        assert_eq!(
+            (after.shape.bands[1].shown, after.shape.bands[2].shown),
+            (10, 10)
+        );
+    }
+
+    #[test]
+    fn a_take_for_another_query_or_a_read_that_is_not_ready_does_nothing() {
+        let mut state = paged(25);
+        state.take_more("xy", Kind::Tracks);
+        assert_eq!(shares(&state, "abc"), ["10 of 25", "10 of 25", "10 of 25"]);
+
+        let mut waiting = typed("abc");
+        waiting.open_results("abc");
+        assert_eq!(waiting.page_view("abc"), Some(PageView::Waiting));
+        waiting.take_more("abc", Kind::Tracks);
+        waiting.apply(&rich_reply("abc", 25));
+        assert_eq!(
+            shares(&waiting, "abc"),
+            ["10 of 25", "10 of 25", "10 of 25"]
+        );
+    }
+
+    #[test]
+    fn a_new_query_resets_the_reveal_and_the_same_one_keeps_it() {
+        let mut state = paged(25);
+        state.take_more("abc", Kind::Tracks);
+        state.open_results("abc");
+        assert_eq!(shares(&state, "abc")[0], "25");
+        state.retry_page("abc");
+        state.apply(&rich_reply("abc", 25));
+        assert_eq!(shares(&state, "abc")[0], "25", "a retry keeps it");
+
+        state.open_results("abcd");
+        state.apply(&rich_reply("abcd", 25));
+        assert_eq!(
+            shares(&state, "abcd")[0],
+            "10 of 25",
+            "a new query starts over"
+        );
+        state.open_results("abc");
+        state.apply(&rich_reply("abc", 25));
+        assert_eq!(
+            shares(&state, "abc")[0],
+            "10 of 25",
+            "and coming back through another query starts over too"
+        );
+    }
+
+    #[test]
+    fn a_page_visit_moves_for_a_new_query_and_keeps_a_reentry() {
+        let mut state = paged(25);
+        let first = state.page_visit();
+        state.open_results("abc");
+        assert_eq!(
+            state.page_visit(),
+            first,
+            "the same query is the same visit, so the page keeps its offset"
+        );
+        state.retry_page("abc");
+        assert_eq!(state.page_visit(), first, "a retry keeps its offset too");
+
+        state.open_results("abcd");
+        let second = state.page_visit();
+        assert_ne!(second, first, "another query is another visit");
+        state.open_results("abc");
+        assert_ne!(
+            state.page_visit(),
+            first,
+            "A→B→A is a fresh page, so it starts at the top"
+        );
+        assert_ne!(state.page_visit(), second);
     }
 
     #[test]

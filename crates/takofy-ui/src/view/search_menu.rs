@@ -32,7 +32,6 @@ use crate::icon::{self, Icon};
 use crate::layout::search_menu as geometry;
 use crate::menu::{Device, Tier};
 use crate::player::Transport;
-use crate::portraits::Portrait;
 use crate::search::{Act, MenuView, Search};
 use crate::search_index::Band;
 use crate::theme::icon::Size;
@@ -200,7 +199,7 @@ pub fn show(
                                 }
                                 crate::search_index::Kind::Artists => {
                                     let artist = &listing.index.artists[row_index];
-                                    let cover = artist_cover(
+                                    let cover = art::artist_cover(
                                         drawer.search.portrait(&artist.uri),
                                         artist.record_cover.as_ref(),
                                         drawer.art,
@@ -307,7 +306,7 @@ fn track_row_spec<'a>(
 impl Drawer<'_> {
     /// Draws one band's heading: its label at the left, its share at the right.
     fn heading(&mut self, ui: &mut Ui, band: &Band, rect: Rect, base: egui::Id) {
-        let spoken = format!("{}, {}", band.heading(), band.share());
+        let spoken = band.spoken();
         let hit = ui.interact(rect, base.with(("head", band.kind)), Sense::hover());
         hit.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, spoken.clone()));
 
@@ -505,22 +504,6 @@ impl Drawer<'_> {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
         clicked_on(ui, &hit, row).then_some(Act::OpenResults)
-    }
-}
-
-/// The artist row's cover rule: a portrait when there is one, the record's own
-/// cover when the artist has no portrait group, and the raised slot while the
-/// read has not answered so the row cannot flash from album art to a face.
-fn artist_cover(
-    portrait: Portrait<'_>,
-    record_cover: Option<&takofy_model::CoverUrl>,
-    art: &mut Art,
-    now: Instant,
-) -> Cover {
-    match portrait {
-        Portrait::Known(url) => art.look(Some(url), now),
-        Portrait::Absent => art.look(record_cover, now),
-        Portrait::Unread => Cover::Loading,
     }
 }
 
@@ -1113,52 +1096,6 @@ mod tests {
                 url: portrait.clone()
             }),
             "the drawn artist row asks for its portrait, not the record cover: {requested:?}"
-        );
-    }
-
-    #[test]
-    fn an_unread_artist_draws_the_raised_slot_without_looking_at_the_record_cover() {
-        let mut art = Art::default();
-        art.begin_frame();
-        let record = cover("record");
-        let drawn = artist_cover(Portrait::Unread, Some(&record), &mut art, Instant::now());
-        assert_eq!(drawn, Cover::Loading, "an unread row is the raised slot");
-        assert!(
-            art.requests(Instant::now()).is_empty(),
-            "it must not look at the album cover first, or the row flashes"
-        );
-    }
-
-    #[test]
-    fn an_absent_artist_looks_at_the_record_cover() {
-        let mut art = Art::default();
-        art.begin_frame();
-        let record = cover("record");
-        let drawn = artist_cover(Portrait::Absent, Some(&record), &mut art, Instant::now());
-        assert_eq!(drawn, Cover::Loading, "a new cover is fetched");
-        assert_eq!(
-            art.requests(Instant::now()),
-            vec![crate::message::Command::Fetch { url: record }],
-            "the fallback is the record's own cover"
-        );
-    }
-
-    #[test]
-    fn a_known_artist_looks_at_its_portrait() {
-        let mut art = Art::default();
-        art.begin_frame();
-        let portrait = cover("portrait");
-        let drawn = artist_cover(
-            Portrait::Known(&portrait),
-            Some(&cover("record")),
-            &mut art,
-            Instant::now(),
-        );
-        assert_eq!(drawn, Cover::Loading);
-        assert_eq!(
-            art.requests(Instant::now()),
-            vec![crate::message::Command::Fetch { url: portrait }],
-            "the portrait wins over the record cover"
         );
     }
 

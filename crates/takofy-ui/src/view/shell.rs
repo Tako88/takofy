@@ -2779,6 +2779,18 @@ mod tests {
         });
     }
 
+    /// Takes the reveal row labelled `label`, which the page applies itself.
+    fn reveal(window: &mut Window, transport: &mut Transport, queue: &mut Queue, label: &str) {
+        let (_, frame) = window.frame(transport, queue, Vec::new());
+        let at = painted_at(&frame, label).unwrap_or_else(|| panic!("{label:?} is painted"))
+            + Vec2::new(4.0, 4.0);
+        assert_eq!(
+            window.click(transport, queue, at),
+            None,
+            "a reveal asks for nothing"
+        );
+    }
+
     /// Asks the search state for the read a frame wants, the way `logic` does.
     fn search_read(window: &mut Window) -> Option<Command> {
         let page = window.library.page_search_query().map(str::to_owned);
@@ -2814,8 +2826,12 @@ mod tests {
             "the heading names the query"
         );
         assert!(
-            painted_at(&frame, "20 RESULTS").is_some(),
-            "the head's right slot counts what the wire answered"
+            painted_at(&frame, "TOP 20 TRACKS").is_some(),
+            "the page's note states the cap once"
+        );
+        assert!(
+            painted_at(&frame, "10 OF 20").is_some(),
+            "the track block's head says how much of it is shown"
         );
         assert!(
             painted_at(&frame, "t0").is_some(),
@@ -2868,16 +2884,24 @@ mod tests {
             Some(&Load::Loading)
         );
 
-        // Empty: one muted line naming the query, nothing to press, and no
-        // rows held open any more.
+        // Empty: the page head with nothing to count, then the two-line empty
+        // state, nothing to press, and no rows held open any more.
         window.library.apply(&Update::Search {
             query: "never gonna".to_owned(),
             tracks: Vec::new(),
         });
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
         assert!(
-            painted_at(&frame, "No tracks match “never gonna”.").is_some(),
+            painted_at(&frame, "0 TRACKS").is_some(),
+            "an empty answer still says how many tracks it found"
+        );
+        assert!(
+            painted_at(&frame, "Nothing in the catalogue matches that").is_some(),
             "an empty answer says so"
+        );
+        assert!(
+            painted_at(&frame, "Retry").is_none(),
+            "an empty answer offers nothing to retry"
         );
         assert_eq!(
             skeleton_rects(&frame, view_rect(&window)),
@@ -2983,14 +3007,24 @@ mod tests {
 
     /// The scroll area is salted with the query, so a new query starts at the
     /// top rather than where the last one was left.
+    ///
+    /// Ten rows fit the window, so a page only scrolls once its reveal is taken
+    /// — which is also the press that grows it.
     #[test]
     fn a_new_query_starts_at_the_top_of_the_results() {
         let mut transport = Transport::default();
         let mut queue = Queue::default();
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
-        answered(&mut window, "a", 20);
+        answered(&mut window, "a", 40);
+        reveal(
+            &mut window,
+            &mut transport,
+            &mut queue,
+            "Show 30 more tracks",
+        );
 
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let first = painted_at(&frame, "t0").expect("row t0 is painted").y;
         let top = painted_at(&frame, "t5").expect("row t5 is painted").y;
         // The wheel only reaches the area the pointer is over.
         let _ = window.frame(
@@ -3020,7 +3054,13 @@ mod tests {
 
         // The offset is stored under this query's own id: another query's page
         // is a different area, so it starts at the top.
-        answered(&mut window, "b", 20);
+        answered(&mut window, "b", 40);
+        reveal(
+            &mut window,
+            &mut transport,
+            &mut queue,
+            "Show 30 more tracks",
+        );
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
         let fresh = painted_at(&frame, "t5").expect("row t5 is painted").y;
         assert!(
@@ -3028,20 +3068,36 @@ mod tests {
             "a new query starts at the top: {fresh} against {top}"
         );
 
-        // Back onto a, whose answer b dropped: answered again, the page comes
-        // back to the offset it was left on, so the salt is per query and not
-        // per frame.
+        // Back onto a, whose answer b dropped: the page is answered again and
+        // its blocks start at ten, because the read the reveal belonged to is
+        // gone. It is a fresh page, so it starts at the top too — not where a
+        // was left, and not at the shortened page's bottom.
         assert_eq!(window.library.back(), None, "a search page never settles");
         assert_eq!(window.library.page_search_query(), Some("a"));
         window.library.apply(&Update::Search {
             query: "a".to_owned(),
-            tracks: (0..20).map(|index| track(index, None)).collect(),
+            tracks: (0..40).map(|index| track(index, None)).collect(),
         });
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let kept = painted_at(&frame, "t5").expect("row t5 is painted").y;
+        assert!(painted_at(&frame, "Results for “a”").is_some());
         assert!(
-            (kept - scrolled).abs() < 0.01,
-            "a keeps its own offset while b started at the top: {kept} against {scrolled}"
+            painted_at(&frame, "Results for “b”").is_none(),
+            "b's page is gone"
+        );
+        assert!(
+            painted_at(&frame, "Show 30 more tracks").is_some(),
+            "a's blocks start at ten again"
+        );
+        assert!(
+            painted_at(&frame, "t39").is_none(),
+            "so only ten of a's rows are drawn"
+        );
+        let back = painted_at(&frame, "t0")
+            .expect("a's first row is painted")
+            .y;
+        assert!(
+            (back - first).abs() < 0.01,
+            "a page that starts fresh starts at the top: {back} against {first}"
         );
     }
 

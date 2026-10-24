@@ -28,6 +28,7 @@ pub mod releases;
 pub mod removal;
 pub mod reorder;
 pub mod repeat;
+pub mod reveal;
 pub mod route;
 pub mod scroll;
 pub mod search;

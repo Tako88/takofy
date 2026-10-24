@@ -49,6 +49,7 @@ const SCOPE: &[(&str, &str)] = &[
     ("i-arrow-left", "ArrowLeft"),
     ("i-arrow-right", "ArrowRight"),
     ("i-chevron-right", "ChevronRight"),
+    ("i-chevron-down", "ChevronDown"),
     ("i-heart", "Heart"),
     ("i-heart-filled", "HeartFilled"),
     ("i-more", "More"),

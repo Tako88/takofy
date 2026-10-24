@@ -21,6 +21,13 @@ pub const MENU: Caps = Caps {
     artists: 2,
 };
 
+/// The results page's caps: ten of each kind until a block's reveal is taken.
+pub const PAGE: Caps = Caps {
+    tracks: 10,
+    albums: 10,
+    artists: 10,
+};
+
 /// One album an answer's tracks sit on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Album {
@@ -161,14 +168,21 @@ pub struct Band {
     pub total: usize,
 }
 
-impl Band {
-    /// The band's heading, in the menu's head grammar.
-    pub fn heading(&self) -> &'static str {
-        match self.kind {
+impl Kind {
+    /// The kind's heading: what a menu band or a page block is called.
+    pub fn heading(self) -> &'static str {
+        match self {
             Kind::Tracks => "Tracks",
             Kind::Albums => "Albums",
             Kind::Artists => "Artists",
         }
+    }
+}
+
+impl Band {
+    /// The band's heading, in the menu's head grammar.
+    pub fn heading(&self) -> &'static str {
+        self.kind.heading()
     }
 
     /// The showing-versus-total phrase beside the heading.
@@ -178,6 +192,28 @@ impl Band {
         } else {
             self.total.to_string()
         }
+    }
+
+    /// The heading and share as one phrase, for a screen reader: `Tracks, 10 of 20`.
+    pub fn spoken(&self) -> String {
+        format!("{}, {}", self.heading(), self.share())
+    }
+
+    /// The reveal row's words, or `None` when nothing is hidden.
+    pub fn more(&self) -> Option<String> {
+        let hidden = self
+            .total
+            .checked_sub(self.shown)
+            .filter(|hidden| *hidden > 0)?;
+        let noun = match (self.kind, hidden) {
+            (Kind::Tracks, 1) => "track",
+            (Kind::Tracks, _) => "tracks",
+            (Kind::Albums, 1) => "album",
+            (Kind::Albums, _) => "albums",
+            (Kind::Artists, 1) => "artist",
+            (Kind::Artists, _) => "artists",
+        };
+        Some(format!("Show {hidden} more {noun}"))
     }
 }
 
@@ -256,7 +292,7 @@ pub enum Row {
 mod tests {
     use takofy_model::{CoverUrl, TrackEntry};
 
-    use super::{Album, Artist, Caps, Index, Kind, MENU, Row, tracks_phrase};
+    use super::{Album, Artist, Band, Caps, Index, Kind, MENU, PAGE, Row, tracks_phrase};
 
     fn entry(uri: &str) -> TrackEntry {
         TrackEntry {
@@ -646,5 +682,49 @@ mod tests {
             artists: 11,
         };
         assert!(!index(25, 12, 11).shape(all).floor);
+    }
+
+    #[test]
+    fn the_page_shows_ten_of_each_kind() {
+        assert_eq!((PAGE.tracks, PAGE.albums, PAGE.artists), (10, 10, 10));
+        let shape = index(25, 12, 11).shape(PAGE);
+        let shares: Vec<String> = shape.bands.iter().map(Band::share).collect();
+        assert_eq!(shares, ["10 of 25", "10 of 12", "10 of 11"]);
+    }
+
+    fn band(kind: Kind, shown: usize, total: usize) -> Band {
+        Band { kind, shown, total }
+    }
+
+    #[test]
+    fn a_band_offers_the_rest_only_while_something_is_hidden() {
+        assert_eq!(band(Kind::Tracks, 10, 10).more(), None);
+        assert_eq!(band(Kind::Tracks, 3, 3).more(), None);
+        assert_eq!(
+            band(Kind::Tracks, 10, 20).more().as_deref(),
+            Some("Show 10 more tracks")
+        );
+        assert_eq!(
+            band(Kind::Albums, 10, 13).more().as_deref(),
+            Some("Show 3 more albums")
+        );
+        assert_eq!(
+            band(Kind::Artists, 10, 11).more().as_deref(),
+            Some("Show 1 more artist")
+        );
+        assert_eq!(
+            band(Kind::Tracks, 10, 11).more().as_deref(),
+            Some("Show 1 more track")
+        );
+        assert_eq!(
+            band(Kind::Albums, 10, 11).more().as_deref(),
+            Some("Show 1 more album")
+        );
+    }
+
+    #[test]
+    fn a_band_speaks_its_heading_and_share() {
+        assert_eq!(band(Kind::Tracks, 10, 20).spoken(), "Tracks, 10 of 20");
+        assert_eq!(band(Kind::Albums, 6, 6).spoken(), "Albums, 6");
     }
 }

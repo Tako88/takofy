@@ -195,8 +195,7 @@ pub fn track_mono(size: f32) -> FontId {
 
 /// A page head's title: the reference's `--text-2xl` at 800, tracked tight.
 ///
-/// Only the library root draws one today; the hero's title is its own recipe
-/// because its size follows the window.
+/// The hero's title is its own recipe because its size follows the window.
 pub fn page_title() -> FontId {
     FontId::new(text::XXL, fonts::sans(Weight::Black))
 }

@@ -70,7 +70,7 @@ impl TakofyApp {
         }
         // The portraits are a second read, so a reply that landed this frame is
         // asked for in this same pass.
-        if let Some(command) = self.library.search.request_portraits() {
+        if let Some(command) = self.library.search.request_portraits(page.as_deref()) {
             let _ = self.ui_end.commands.send(command);
         }
     }
@@ -1032,6 +1032,48 @@ mod tests {
         );
         logic_frame(&mut app);
         assert!(received.try_recv().is_err(), "one portrait read at a time");
+    }
+
+    #[test]
+    fn logic_asks_for_the_pages_portraits_once_its_answer_lands() {
+        let (mut app, mut received) = test_window();
+        app.state = SignIn::SignedIn;
+        app.library
+            .open(takofy_ui::route::Page::Search("a".to_owned()));
+
+        logic_frame(&mut app);
+        assert_eq!(
+            received.try_recv().expect("the page's search read"),
+            Command::Search {
+                query: "a".to_owned()
+            }
+        );
+
+        let mut tracks = Vec::new();
+        for n in 0..3 {
+            let mut entry = track(&format!("t{n}"));
+            entry.artist_uris = vec![format!("spotify:artist:{n}")];
+            entry.artist_names = vec![format!("{n}")];
+            tracks.push(entry);
+        }
+        app.library.apply(&Update::Search {
+            query: "a".to_owned(),
+            tracks,
+        });
+
+        logic_frame(&mut app);
+        assert_eq!(
+            received.try_recv().expect("the page's portrait read"),
+            Command::LoadPortraits {
+                query: "a".to_owned(),
+                artists: vec![
+                    "spotify:artist:0".to_owned(),
+                    "spotify:artist:1".to_owned(),
+                    "spotify:artist:2".to_owned(),
+                ],
+            },
+            "the page asks for the artists its cards draw"
+        );
     }
 
     #[test]

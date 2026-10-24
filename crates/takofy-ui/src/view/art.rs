@@ -21,11 +21,14 @@
 //! which is why those are arguments and the fill is not. Callers keep the rects
 //! and radii they chose; only this body changes.
 
+use std::time::Instant;
+
 use egui::emath::GuiRounding;
 use egui::epaint::RectShape;
 use egui::{Color32, CornerRadius, Painter, Rect, Stroke, StrokeKind, TextureId};
 
-use crate::cover::Cover;
+use crate::cover::{Art, Cover};
+use crate::portraits::Portrait;
 use crate::theme::{Tokens, art, stroke};
 
 /// Paints a cover's box in one of four states.
@@ -140,12 +143,33 @@ fn cover_fit(target: egui::Vec2, size: [usize; 2]) -> Rect {
     }
 }
 
+/// The artist row's cover rule: a portrait when there is one, the record's own
+/// cover when the artist has no portrait group, and the raised slot while the
+/// read has not answered so the row cannot flash from album art to a face.
+pub(super) fn artist_cover(
+    portrait: Portrait<'_>,
+    record_cover: Option<&takofy_model::CoverUrl>,
+    art: &mut Art,
+    now: Instant,
+) -> Cover {
+    match portrait {
+        Portrait::Known(url) => art.look(Some(url), now),
+        Portrait::Absent => art.look(record_cover, now),
+        Portrait::Unread => Cover::Loading,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use egui::{Shape, Vec2, pos2};
 
     use super::*;
     use crate::theme::Tokens;
+    use takofy_model::CoverUrl;
+
+    fn cover(tail: &str) -> CoverUrl {
+        CoverUrl::from_wire(&format!("https://i.scdn.co/image/{tail}")).expect("a cover url")
+    }
 
     const SQUARE: Rect = Rect {
         min: pos2(0.0, 0.0),
@@ -321,5 +345,51 @@ mod tests {
         let full = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
         assert_eq!(cover_fit(Vec2::new(64.0, 64.0), [0, 0]), full);
         assert_eq!(cover_fit(Vec2::ZERO, [300, 300]), full);
+    }
+
+    #[test]
+    fn an_unread_artist_draws_the_raised_slot_without_looking_at_the_record_cover() {
+        let mut art = Art::default();
+        art.begin_frame();
+        let record = cover("record");
+        let drawn = artist_cover(Portrait::Unread, Some(&record), &mut art, Instant::now());
+        assert_eq!(drawn, Cover::Loading, "an unread row is the raised slot");
+        assert!(
+            art.requests(Instant::now()).is_empty(),
+            "it must not look at the album cover first, or the row flashes"
+        );
+    }
+
+    #[test]
+    fn an_absent_artist_looks_at_the_record_cover() {
+        let mut art = Art::default();
+        art.begin_frame();
+        let record = cover("record");
+        let drawn = artist_cover(Portrait::Absent, Some(&record), &mut art, Instant::now());
+        assert_eq!(drawn, Cover::Loading, "a new cover is fetched");
+        assert_eq!(
+            art.requests(Instant::now()),
+            vec![crate::message::Command::Fetch { url: record }],
+            "the fallback is the record's own cover"
+        );
+    }
+
+    #[test]
+    fn a_known_artist_looks_at_its_portrait() {
+        let mut art = Art::default();
+        art.begin_frame();
+        let portrait = cover("portrait");
+        let drawn = artist_cover(
+            Portrait::Known(&portrait),
+            Some(&cover("record")),
+            &mut art,
+            Instant::now(),
+        );
+        assert_eq!(drawn, Cover::Loading);
+        assert_eq!(
+            art.requests(Instant::now()),
+            vec![crate::message::Command::Fetch { url: portrait }],
+            "the portrait wins over the record cover"
+        );
     }
 }

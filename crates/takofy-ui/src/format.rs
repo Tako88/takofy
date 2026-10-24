@@ -7,6 +7,7 @@ use takofy_model::{AddedAt, PlaylistEntry, PublishedAt, ReleaseKind, TrackEntry}
 use crate::discography::Chip;
 use crate::library::SidebarWrite;
 use crate::library_filter::RootKind;
+use crate::search_index::tracks_phrase;
 use crate::sidebar_kind::SidebarKind;
 
 /// One day in milliseconds.
@@ -280,6 +281,26 @@ pub fn library_note(count: usize) -> String {
     format!("{count} saved")
 }
 
+/// The results page's head note: how many tracks the answer holds.
+///
+/// "Top" is a statement about a cap, so it appears only when the answer reaches
+/// `cap`, the most the route returns; a shorter answer has nothing hidden.
+pub fn search_note(tracks: usize, cap: usize) -> String {
+    if tracks >= cap {
+        format!("Top {tracks} tracks")
+    } else {
+        tracks_phrase(tracks)
+    }
+}
+
+/// The heading and hint the results page shows when nothing matched.
+pub fn search_empty_copy() -> (&'static str, &'static str) {
+    (
+        "Nothing in the catalogue matches that",
+        "Check the spelling, drop the year, or search an artist instead.",
+    )
+}
+
 /// The sidebar's size readout: the whole library, or what a filter leaves.
 pub fn library_count(shown: usize, total: usize) -> String {
     if shown == total {
@@ -499,7 +520,30 @@ pub fn plain_description(raw: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use takofy_model::{PlaylistAccess, Revision};
+
+    #[test]
+    fn the_search_note_says_top_only_when_the_answer_reaches_the_cap() {
+        let note = |tracks| search_note(tracks, 20);
+        assert_eq!(note(0), "0 tracks");
+        assert_eq!(note(1), "1 track");
+        assert_eq!(note(7), "7 tracks");
+        assert_eq!(note(19), "19 tracks");
+        assert_eq!(note(20), "Top 20 tracks");
+        assert_eq!(note(25), "Top 25 tracks");
+    }
+
+    #[test]
+    fn the_empty_copy_is_the_references_words() {
+        assert_eq!(
+            search_empty_copy(),
+            (
+                "Nothing in the catalogue matches that",
+                "Check the spelling, drop the year, or search an artist instead."
+            )
+        );
+    }
 
     fn entry(
         owner: Option<&str>,

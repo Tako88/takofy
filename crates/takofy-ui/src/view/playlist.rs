@@ -36,6 +36,7 @@ use super::filter_row;
 use super::heart;
 use super::hero;
 use super::media;
+use super::page_head;
 use super::pin;
 use super::playlist_filter;
 use super::skeleton;
@@ -739,7 +740,7 @@ fn idle(
                 } else {
                     String::new()
                 };
-                page_head(ui, &note, tokens);
+                page_head::show(ui, "Your Library", &note, tokens);
 
                 let shown = filter_row::show_with(
                     ui,
@@ -816,62 +817,6 @@ fn idle(
         return library.open(page);
     }
     None
-}
-
-/// The page head: the title, the note at the far end and the rule under both.
-///
-/// The reference sets the title at `--text-2xl` in 800 and the note as a small
-/// tracked mono line sitting on the title's baseline, then closes the head with
-/// a hairline and one `S5` of air before the chips.
-fn page_head(ui: &mut Ui, note: &str, tokens: &Tokens) {
-    let width = ui.available_width();
-    let font = recipe::page_title();
-    let title_h = ui.ctx().fonts_mut(|fonts| fonts.row_height(&font));
-    let height = space::S3 + title_h + space::S4;
-    let (rect, _) = ui.allocate_exact_size(vec2(width, height), egui::Sense::hover());
-
-    let top = rect.top() + space::S3;
-    let title = recipe::line(
-        ui,
-        "Your Library",
-        font,
-        tokens.palette.text,
-        recipe::tracking_pts(crate::theme::text::XXL, crate::theme::tracking::TIGHT),
-        width,
-    );
-    ui.painter().galley(
-        egui::Pos2::new(rect.left(), top),
-        title,
-        tokens.palette.text,
-    );
-
-    if !note.is_empty() {
-        let line = recipe::spaced(
-            ui,
-            &note.to_uppercase(),
-            egui::FontId::new(
-                crate::theme::text::XXS,
-                crate::theme::fonts::mono(crate::theme::MonoWeight::Medium),
-            ),
-            tokens.palette.text_subtle,
-            recipe::tracking_pts(crate::theme::text::XXS, crate::theme::tracking::WIDE),
-        );
-        ui.painter().galley(
-            egui::Pos2::new(rect.right() - line.size().x, top + title_h - line.size().y),
-            line,
-            tokens.palette.text_subtle,
-        );
-    }
-
-    ui.painter().rect_filled(
-        Rect::from_min_size(
-            egui::Pos2::new(rect.left(), rect.bottom() - crate::theme::stroke::HAIRLINE),
-            vec2(rect.width(), crate::theme::stroke::HAIRLINE),
-        ),
-        0.0,
-        tokens.palette.border,
-    );
-    ui.add_space(space::S5);
 }
 
 /// The saved things for the chosen chip, in the density the user chose.
@@ -1595,7 +1540,7 @@ mod tests {
             ui.add_space(space::S3);
             egui::ScrollArea::vertical().show(ui, |ui| {
                 crate::view::inner(ui, |ui| {
-                    page_head(ui, &library_note(2), &tokens);
+                    page_head::show(ui, "Your Library", &library_note(2), &tokens);
                     let _ = filter_row::show_with(
                         ui,
                         &tokens,
@@ -7333,7 +7278,7 @@ mod root_tests {
             ui.add_space(space::S3);
             egui::ScrollArea::vertical().show(ui, |ui| {
                 crate::view::inner(ui, |ui| {
-                    page_head(ui, &library_note(count), &tokens);
+                    page_head::show(ui, "Your Library", &library_note(count), &tokens);
                     let _ = filter_row::show_with(
                         ui,
                         &tokens,
@@ -7426,7 +7371,7 @@ mod root_tests {
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         crate::view::inner(ui, |ui| {
-                            page_head(ui, "", &tokens);
+                            page_head::show(ui, "Your Library", "", &tokens);
                             let _ = filter_row::show_with(
                                 ui,
                                 &tokens,
