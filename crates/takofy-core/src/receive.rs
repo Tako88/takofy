@@ -17,6 +17,10 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::instruction::{Kind, kind_of, summarise};
 use crate::registry::{Ack, Registry, Responder, Verdict};
 
+/// The log target of this module, so the binary can let its one summary line
+/// through the app's `Warn` floor without raising it for everything.
+pub const RECEIVE_LOG_TARGET: &str = "takofy_core::receive";
+
 /// One request the window has to deal with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Inbound {
@@ -119,6 +123,17 @@ mod tests {
     use super::*;
     use crate::testing::fed;
     use crate::watch::Timing;
+
+    /// The summary reaches the log only if the binary names this exact target,
+    /// so the name is derived from the module rather than typed twice.
+    #[test]
+    fn the_log_target_is_the_module_that_logs() {
+        assert_eq!(
+            module_path!().strip_suffix("::tests"),
+            Some(RECEIVE_LOG_TARGET),
+            "the summary's target must be the module that logs it"
+        );
+    }
 
     /// Longer than any test takes, so only the loop itself can answer a request.
     const PATIENT: Duration = Duration::from_secs(30);
