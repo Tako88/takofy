@@ -11,10 +11,11 @@ use takofy_core::connect::{ClusterEvent, ClusterView, ConnectError, Steer};
 use takofy_core::credentials::AccessToken;
 use takofy_core::engine::{Engine, EngineError, RootlistRead};
 use takofy_core::playback::{Playback, PlaybackError, PlaybackEvent, Volume};
+use takofy_core::receive::Inbound;
 use takofy_model::{
     AlbumDetail, ArtistDetail, ArtistPortrait, CoverUrl, FollowedArtist, FollowedShow, Move,
-    PlaylistAccess, PlaylistEntry, Removal, Revision, SavedAlbum, ShowDetail, TrackEntry,
-    TrackLyrics,
+    PlaylistAccess, PlaylistEntry, Removal, RequestId, Revision, SavedAlbum, ShowDetail,
+    TrackEntry, TrackLyrics,
 };
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::oneshot::Receiver;
@@ -264,6 +265,18 @@ pub(crate) trait SessionHost: Send + 'static {
     /// drain thread is handed it exactly once.
     fn take_devices(&mut self) -> Option<UnboundedReceiver<ClusterEvent>>;
 
+    /// The request stream of a watch started since the last call, so the one
+    /// command loop is handed it exactly once.
+    fn take_inbound(&mut self) -> Option<UnboundedReceiver<Inbound>>;
+
+    /// Says whether this device can play. A call with no session is a no-op, so
+    /// a play before sign-in reports nothing here.
+    fn set_playable(&self, playable: bool);
+
+    /// Answers one incoming request `Failure`. A call with no session is a
+    /// no-op, like the stage above it.
+    fn refuse(&self, id: RequestId);
+
     /// Asks the cluster for its roster again, answering what it says.
     fn refresh_devices(&self) -> impl Future<Output = Result<ClusterView, SessionError>> + Send;
 
@@ -320,6 +333,8 @@ pub(crate) struct LiveSession {
     events: Option<UnboundedReceiver<PlaybackEvent>>,
     /// The watch's stream, kept until the drain thread takes it.
     devices: Option<UnboundedReceiver<ClusterEvent>>,
+    /// The watch's request stream, kept until the command loop takes it.
+    inbound: Option<UnboundedReceiver<Inbound>>,
     /// The level the player will read, kept here so a change before the player
     /// exists is still the level it starts with.
     volume: Volume,
@@ -333,6 +348,7 @@ impl LiveSession {
             playback: None,
             events: None,
             devices: None,
+            inbound: None,
             volume: Volume::default(),
         }
     }
@@ -626,21 +642,38 @@ impl SessionHost for LiveSession {
     }
 
     async fn watch_devices(&mut self) -> Result<(), SessionError> {
-        // A second request hands back the stream the first one already holds.
-        // Once the drain thread has taken it, the engine's refusal stands.
+        // A second request hands back the streams the first one already holds.
+        // Once the drains have taken them, the engine's refusal stands.
         if self.devices.is_some() {
             return Ok(());
         }
         let Some(engine) = &mut self.engine else {
             return Err(SessionError::NotConnected);
         };
-        let events = engine.watch_devices().await.map_err(SessionError::Engine)?;
-        self.devices = Some(events);
+        let watching = engine.watch_devices().await.map_err(SessionError::Engine)?;
+        self.devices = Some(watching.events);
+        self.inbound = Some(watching.inbound);
         Ok(())
     }
 
     fn take_devices(&mut self) -> Option<UnboundedReceiver<ClusterEvent>> {
         self.devices.take()
+    }
+
+    fn take_inbound(&mut self) -> Option<UnboundedReceiver<Inbound>> {
+        self.inbound.take()
+    }
+
+    fn set_playable(&self, playable: bool) {
+        if let Some(engine) = &self.engine {
+            engine.set_playable(playable);
+        }
+    }
+
+    fn refuse(&self, id: RequestId) {
+        if let Some(engine) = &self.engine {
+            engine.refuse(id);
+        }
     }
 
     async fn refresh_devices(&self) -> Result<ClusterView, SessionError> {
@@ -734,6 +767,7 @@ mod tests {
     use librespot::playback::mixer::VolumeGetter;
     use takofy_core::connect::Steer;
     use takofy_core::playback::Volume;
+    use takofy_model::RequestId;
     use tokio::sync::oneshot;
 
     use super::{LiveSession, SessionError, SessionHost, stop_or};
@@ -810,6 +844,46 @@ mod tests {
         assert!(SessionHost::watch_devices(&mut live).await.is_ok());
         assert!(SessionHost::take_devices(&mut live).is_some());
         assert!(SessionHost::take_devices(&mut live).is_none());
+    }
+
+    #[tokio::test]
+    async fn a_second_watch_after_success_returns_ok_without_a_second_start() {
+        let (_devices_tx, devices) = tokio::sync::mpsc::unbounded_channel();
+        let (_inbound_tx, inbound) = tokio::sync::mpsc::unbounded_channel();
+        let mut live = LiveSession::new(SessionConfig::default());
+        live.devices = Some(devices);
+        live.inbound = Some(inbound);
+
+        // The stored streams are the guard: a second request answers `Ok`
+        // without reaching the engine, whose dealer start is already spent.
+        assert!(SessionHost::watch_devices(&mut live).await.is_ok());
+        assert!(SessionHost::take_devices(&mut live).is_some());
+        assert!(SessionHost::take_inbound(&mut live).is_some());
+        assert!(
+            SessionHost::take_inbound(&mut live).is_none(),
+            "the request stream is handed out once"
+        );
+    }
+
+    #[tokio::test]
+    async fn take_inbound_hands_the_stream_out_once() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut live = LiveSession::new(SessionConfig::default());
+        live.inbound = Some(rx);
+
+        assert!(SessionHost::take_inbound(&mut live).is_some());
+        assert!(SessionHost::take_inbound(&mut live).is_none());
+    }
+
+    #[test]
+    fn set_playable_and_refuse_before_sign_in_do_nothing_and_do_not_panic() {
+        let live = LiveSession::new(SessionConfig::default());
+
+        // Both are safe before there is an engine: the playability report and
+        // the refusal have nowhere to go, and neither panics.
+        SessionHost::set_playable(&live, true);
+        SessionHost::set_playable(&live, false);
+        SessionHost::refuse(&live, RequestId(1));
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! The account's devices: what this client announces and what the cluster says.
 //!
-//! The announcement is the safety boundary. Its one constructor describes a
-//! device that cannot play and carries no player state, so announcing can never
+//! The announcement is the safety boundary: every constructor builds an
+//! inactive body, and the receiver's carries no track, so announcing can never
 //! take the account's sound. Parsing only reads; nothing here hands the sound
 //! anywhere.
 
@@ -12,12 +12,18 @@ use librespot::protocol::connect::{
     PutStateReason, PutStateRequest,
 };
 use librespot::protocol::devices::DeviceType;
-use librespot::protocol::player::{PlayerState, ProvidedTrack};
+use librespot::protocol::media::AudioQuality;
+use librespot::protocol::player::{
+    ContextPlayerOptions, PlayOrigin, PlayerState, ProvidedTrack, Suppressions,
+};
 use protobuf::{EnumOrUnknown, MessageField};
 use takofy_model::{Device, DeviceKind, RemotePlayback, RemoteState, TrackEntry};
 
 /// The name this client announces itself under.
 pub const DEVICE_NAME: &str = "Takofy";
+
+/// The spirc version the picker reads on every body this client announces.
+const SPIRC_VERSION: &str = "3.2.4";
 
 /// The ceiling on a push's elapsed time when the cluster names no duration.
 ///
@@ -49,7 +55,7 @@ impl Announcement {
             }),
             device_software_version: env!("CARGO_PKG_VERSION").to_owned(),
             device_type: EnumOrUnknown::new(DeviceType::COMPUTER),
-            spirc_version: "3.2.4".to_owned(),
+            spirc_version: SPIRC_VERSION.to_owned(),
             device_id: device_id.to_owned(),
             client_id: client_id.to_owned(),
             ..Default::default()
@@ -66,9 +72,96 @@ impl Announcement {
         })
     }
 
+    /// The body of a device that can play: a receiver waiting to be picked.
+    ///
+    /// The capabilities are librespot's own receiver set, because that is the
+    /// shape the picker has been proven to accept. Volume is disabled rather
+    /// than obeyed, and the player state is idle and trackless, so this body
+    /// cannot take the sound until a landing fills it in.
+    pub fn ready(device_id: &str, client_id: &str, session_id: &str) -> Self {
+        let info = DeviceInfo {
+            can_play: true,
+            volume: 0,
+            name: DEVICE_NAME.to_owned(),
+            capabilities: MessageField::some(receiver_capabilities()),
+            device_software_version: env!("CARGO_PKG_VERSION").to_owned(),
+            device_type: EnumOrUnknown::new(DeviceType::COMPUTER),
+            spirc_version: SPIRC_VERSION.to_owned(),
+            device_id: device_id.to_owned(),
+            client_id: client_id.to_owned(),
+            ..Default::default()
+        };
+        Self(PutStateRequest {
+            member_type: EnumOrUnknown::new(MemberType::CONNECT_STATE),
+            put_state_reason: EnumOrUnknown::new(PutStateReason::NEW_DEVICE),
+            device: MessageField::some(WireDevice {
+                device_info: MessageField::some(info),
+                player_state: MessageField::some(idle_player_state(session_id)),
+                ..Default::default()
+            }),
+            is_active: false,
+            ..Default::default()
+        })
+    }
+
     /// The body the wire sends.
     pub fn message(&self) -> &PutStateRequest {
         &self.0
+    }
+}
+
+/// Librespot's receiver capabilities, with volume disabled.
+fn receiver_capabilities() -> Capabilities {
+    Capabilities {
+        volume_steps: 0,
+        disable_volume: true,
+
+        gaia_eq_connect_id: true,
+        can_be_player: true,
+        needs_full_player_state: true,
+        is_observable: true,
+        is_controllable: true,
+        hidden: false,
+
+        supports_gzip_pushes: true,
+        supports_logout: false,
+        supported_types: vec![
+            "audio/episode".to_owned(),
+            "audio/track".to_owned(),
+            "audio/local".to_owned(),
+        ],
+        supports_playlist_v2: true,
+        supports_transfer_command: true,
+        supports_command_request: true,
+        supports_set_options_command: true,
+
+        is_voice_enabled: false,
+        restrict_to_local: false,
+        connect_disabled: false,
+        supports_rename: false,
+        supports_external_episodes: false,
+        supports_set_backend_metadata: false,
+        supports_hifi: MessageField::none(),
+        supports_dj: false,
+        supports_rooms: false,
+        supported_audio_quality: EnumOrUnknown::new(AudioQuality::VERY_HIGH),
+
+        command_acks: true,
+
+        ..Default::default()
+    }
+}
+
+/// The player state librespot resets to: nothing loaded, nothing playing.
+fn idle_player_state(session_id: &str) -> PlayerState {
+    PlayerState {
+        session_id: session_id.to_owned(),
+        is_system_initiated: true,
+        playback_speed: 1.0,
+        play_origin: MessageField::some(PlayOrigin::new()),
+        suppressions: MessageField::some(Suppressions::new()),
+        options: MessageField::some(ContextPlayerOptions::new()),
+        ..Default::default()
     }
 }
 
@@ -113,6 +206,8 @@ pub enum ConnectError {
     DealerSpent,
     #[error("the withdraw did not finish in time")]
     WithdrawTimedOut,
+    #[error("the state put did not answer in time")]
+    PutTimedOut,
 }
 
 /// A transport action sent to the device that holds the sound.
@@ -309,7 +404,10 @@ mod tests {
         PutStateReason, PutStateRequest,
     };
     use librespot::protocol::devices::DeviceType;
-    use librespot::protocol::player::{PlayerState, ProvidedTrack, Restrictions};
+    use librespot::protocol::media::AudioQuality;
+    use librespot::protocol::player::{
+        ContextPlayerOptions, PlayOrigin, PlayerState, ProvidedTrack, Restrictions, Suppressions,
+    };
     use protobuf::{EnumOrUnknown, Message as _, MessageField};
     use takofy_model::{DeviceKind, RemoteState};
 
@@ -494,6 +592,162 @@ mod tests {
         );
         assert_eq!(info.spirc_version, "3.2.4");
         assert_eq!(info.device_software_version, env!("CARGO_PKG_VERSION"));
+    }
+
+    #[test]
+    fn ready_announcement_is_the_receiver_shape_but_inactive() {
+        let announcement = Announcement::ready("device-id", "client-id", "session-id");
+        let expected = PutStateRequest {
+            member_type: EnumOrUnknown::new(MemberType::CONNECT_STATE),
+            put_state_reason: EnumOrUnknown::new(PutStateReason::NEW_DEVICE),
+            device: MessageField::some(WireDevice {
+                device_info: MessageField::some(DeviceInfo {
+                    can_play: true,
+                    volume: 0,
+                    name: "Takofy".to_owned(),
+                    capabilities: MessageField::some(Capabilities {
+                        volume_steps: 0,
+                        disable_volume: true,
+                        gaia_eq_connect_id: true,
+                        can_be_player: true,
+                        needs_full_player_state: true,
+                        is_observable: true,
+                        is_controllable: true,
+                        hidden: false,
+                        supports_gzip_pushes: true,
+                        supports_logout: false,
+                        supported_types: vec![
+                            "audio/episode".to_owned(),
+                            "audio/track".to_owned(),
+                            "audio/local".to_owned(),
+                        ],
+                        supports_playlist_v2: true,
+                        supports_transfer_command: true,
+                        supports_command_request: true,
+                        supports_set_options_command: true,
+                        is_voice_enabled: false,
+                        restrict_to_local: false,
+                        connect_disabled: false,
+                        supports_rename: false,
+                        supports_external_episodes: false,
+                        supports_set_backend_metadata: false,
+                        supports_hifi: MessageField::none(),
+                        supports_dj: false,
+                        supports_rooms: false,
+                        supported_audio_quality: EnumOrUnknown::new(AudioQuality::VERY_HIGH),
+                        command_acks: true,
+                        ..Default::default()
+                    }),
+                    device_software_version: env!("CARGO_PKG_VERSION").to_owned(),
+                    device_type: EnumOrUnknown::new(DeviceType::COMPUTER),
+                    spirc_version: "3.2.4".to_owned(),
+                    device_id: "device-id".to_owned(),
+                    client_id: "client-id".to_owned(),
+                    ..Default::default()
+                }),
+                player_state: MessageField::some(PlayerState {
+                    session_id: "session-id".to_owned(),
+                    is_system_initiated: true,
+                    playback_speed: 1.0,
+                    play_origin: MessageField::some(PlayOrigin::new()),
+                    suppressions: MessageField::some(Suppressions::new()),
+                    options: MessageField::some(ContextPlayerOptions::new()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            is_active: false,
+            ..Default::default()
+        };
+
+        assert_eq!(announcement.message(), &expected);
+        assert_eq!(
+            announcement.message().write_to_bytes().expect("serialises"),
+            expected.write_to_bytes().expect("serialises"),
+        );
+    }
+
+    fn ready_body() -> PutStateRequest {
+        Announcement::ready("device-id", "client-id", "session-id")
+            .message()
+            .clone()
+    }
+
+    fn ready_device(body: &PutStateRequest) -> &WireDevice {
+        body.device
+            .as_ref()
+            .expect("an announcement names a device")
+    }
+
+    fn ready_info(body: &PutStateRequest) -> &DeviceInfo {
+        ready_device(body)
+            .device_info
+            .as_ref()
+            .expect("a device names its info")
+    }
+
+    fn ready_capabilities(body: &PutStateRequest) -> &Capabilities {
+        ready_info(body)
+            .capabilities
+            .as_ref()
+            .expect("a receiver names its capabilities")
+    }
+
+    fn ready_player(body: &PutStateRequest) -> &PlayerState {
+        ready_device(body)
+            .player_state
+            .as_ref()
+            .expect("a receiver names its player state")
+    }
+
+    #[test]
+    fn ready_is_inactive_and_carries_no_track() {
+        let body = ready_body();
+
+        assert!(!body.is_active);
+        assert!(ready_player(&body).track.is_none());
+    }
+
+    #[test]
+    fn ready_claims_to_play_and_be_commanded() {
+        let body = ready_body();
+        let capabilities = ready_capabilities(&body);
+
+        assert!(ready_info(&body).can_play);
+        assert!(capabilities.can_be_player);
+        assert!(capabilities.supports_transfer_command);
+        assert!(capabilities.supports_command_request);
+        assert!(capabilities.supports_set_options_command);
+        assert!(capabilities.command_acks);
+    }
+
+    #[test]
+    fn ready_disables_volume() {
+        let body = ready_body();
+
+        assert!(ready_capabilities(&body).disable_volume);
+        assert_eq!(ready_capabilities(&body).volume_steps, 0);
+        assert_eq!(ready_info(&body).volume, 0);
+    }
+
+    #[test]
+    fn ready_carries_the_session_id() {
+        assert_eq!(ready_player(&ready_body()).session_id, "session-id");
+    }
+
+    #[test]
+    fn ready_player_state_has_the_idle_shape() {
+        let body = ready_body();
+        let player = ready_player(&body);
+
+        assert!(player.is_system_initiated);
+        assert_eq!(player.playback_speed, 1.0);
+        assert_eq!(player.play_origin, MessageField::some(PlayOrigin::new()));
+        assert_eq!(player.suppressions, MessageField::some(Suppressions::new()));
+        assert_eq!(
+            player.options,
+            MessageField::some(ContextPlayerOptions::new())
+        );
     }
 
     fn rust_files(dir: &Path, files: &mut Vec<PathBuf>) {

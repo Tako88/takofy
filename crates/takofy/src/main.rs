@@ -22,6 +22,7 @@ use log::LevelFilter;
 use takofy_core::credentials::StoreError;
 use takofy_core::login::{AuthError, LoginMethod, SourceErrorKind, authenticate};
 use takofy_core::oauth::{OAUTH_LOG_TARGET, RedirectMode, SpotifyOAuth};
+use takofy_core::receive::RECEIVE_LOG_TARGET;
 use takofy_ui::message::Failure;
 use takofy_ui::signin::failure_message;
 
@@ -188,6 +189,10 @@ fn logger_builder() -> env_logger::Builder {
     builder.filter_level(LevelFilter::Warn);
     // librespot-oauth logs tokens and auth codes at trace level.
     builder.filter_module(OAUTH_LOG_TARGET, LevelFilter::Off);
+    // The one line that says a device asked this window to play something. It is
+    // counts and kinds, never a URI, and it is the only evidence that a request
+    // arrived at all.
+    builder.filter_module(RECEIVE_LOG_TARGET, LevelFilter::Info);
     builder
 }
 
@@ -214,6 +219,7 @@ mod tests {
 
     use log::{Level, Metadata, Record};
     use takofy_core::oauth::{OAUTH_LOG_TARGET, RedirectMode};
+    use takofy_core::receive::RECEIVE_LOG_TARGET;
 
     use super::{Flags, Mode, USAGE, logger_builder, mode_for, parse_flags};
 
@@ -235,6 +241,17 @@ mod tests {
         let logger = logger_builder().build();
         assert!(!logger.matches(&record(OAUTH_LOG_TARGET, Level::Error)));
         assert!(!logger.matches(&record(OAUTH_LOG_TARGET, Level::Trace)));
+    }
+
+    #[test]
+    fn the_receiver_summary_is_the_one_info_line_that_shows() {
+        let logger = logger_builder().build();
+        assert!(logger.matches(&record(RECEIVE_LOG_TARGET, Level::Info)));
+        assert!(logger.matches(&record(RECEIVE_LOG_TARGET, Level::Warn)));
+        // Everything else keeps the Warn floor, so the summary cannot become a
+        // door for librespot's own chatter.
+        assert!(!logger.matches(&record("takofy_core::watch", Level::Info)));
+        assert!(!logger.matches(&record("librespot_core", Level::Debug)));
     }
 
     #[test]

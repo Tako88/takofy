@@ -13,8 +13,8 @@ publish = false
 # is a Cargo.lock pin to vergen 9.0.6, which `cargo update` undoes — re-run
 # `cargo update -p vergen --precise 9.0.6` if the build breaks.
 #
-# rustls over native-tls and no mdns: Windows needs no OpenSSL, and nothing here
-# is a Spotify Connect receiver.
+# rustls over native-tls and no mdns: Windows needs no OpenSSL, and the receiver
+# announces itself through the account's device list rather than on the network.
 librespot = { version = "0.8.0", default-features = false, features = [
     "rustls-tls-native-roots",
     "rodio-backend",
@@ -26,6 +26,8 @@ env_logger = "0.11"
 log = "0.4"
 protobuf = "3.7"
 protobuf-json-mapping = "3.7"
+# Only tests build raw dealer payloads; librespot already locks the same version.
+serde_json = "1"
 futures-util = "0.3"
 # The collection endpoints want their own media type and an HTTP method, and
 # hyper does not re-export either; `http` is the same 1.5.0 librespot has locked.
