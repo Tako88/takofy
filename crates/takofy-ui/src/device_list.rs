@@ -16,6 +16,9 @@ pub struct DeviceList {
     anchor: Option<Anchor>,
     /// The button that opened it, which the keyboard goes back to.
     opener: Option<Id>,
+    /// The frame the open card first painted on, so the click that opened it is
+    /// not also a click outside it.
+    first_drawn: Option<f64>,
 }
 
 impl DeviceList {
@@ -29,6 +32,7 @@ impl DeviceList {
         self.open = true;
         self.anchor = Some(anchor);
         self.opener = Some(opener);
+        self.first_drawn = None;
         true
     }
 
@@ -49,6 +53,19 @@ impl DeviceList {
 
     pub fn is_open(&self) -> bool {
         self.open
+    }
+
+    /// Whether `now` is still the frame the card first drew on, where the press
+    /// that opened it is not yet a press outside it.
+    pub fn just_opened(&self, now: f64) -> bool {
+        self.first_drawn.is_none_or(|drawn| now <= drawn)
+    }
+
+    /// Marks `now` as the frame the card drew on. The pass egui repeats within
+    /// that frame shares the clock, so the opening is one frame however many
+    /// times it is drawn.
+    pub fn mark_drawn(&mut self, now: f64) {
+        self.first_drawn.get_or_insert(now);
     }
 
     /// Where the card hangs from, while it is open.
@@ -101,6 +118,23 @@ mod tests {
             assert_eq!(list.close(reason), None, "{reason:?}");
         }
         assert!(!list.is_open());
+    }
+
+    #[test]
+    fn the_frame_that_opened_it_is_not_a_press_outside() {
+        let mut list = DeviceList::default();
+        list.press(anchor(), opener());
+        assert!(list.just_opened(1.0), "nothing has drawn it yet");
+        list.mark_drawn(1.0);
+        assert!(list.just_opened(1.0), "a second pass of the same frame");
+        assert!(
+            !list.just_opened(1.016),
+            "a later frame is not the opening, or its own press would close it"
+        );
+
+        list.close(Reason::Outside);
+        list.press(anchor(), opener());
+        assert!(list.just_opened(2.0), "a reopen is an opening of its own");
     }
 
     #[test]

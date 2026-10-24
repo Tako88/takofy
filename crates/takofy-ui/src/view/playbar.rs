@@ -711,12 +711,8 @@ fn centre_column(
     );
     // The holder's own length decides whether its seek can act; the local
     // transport's rule would ask this window's player instead.
-    let seekable = match remote {
-        Some(remote) => {
-            remote.steerable && transport.duration_ms.is_some_and(|duration| duration > 0)
-        }
-        None => transport.seekable(),
-    };
+    let scope = SeekScope::of(remote);
+    let seekable = scope.enabled(transport);
     let slot = controls::slider(
         ui,
         tokens,
@@ -755,7 +751,7 @@ fn centre_column(
         tokens.palette.text_subtle,
     );
 
-    let command = seek_command(ui, transport, &slot, track);
+    let command = seek_command(ui, transport, &slot, track, position_ms, scope);
     // egui reports a focused button's Enter or Space as a click and counts the
     // repeats too, so a held key must not step a mode or a toggle again. The
     // press is dropped here, before anything reads it.
@@ -863,19 +859,85 @@ fn drag_volume(ui: &Ui, volume: &mut Volume, slot: &controls::Slot, rect: Rect) 
     });
 }
 
+/// What a seek needs before it can act.
+///
+/// This window's player needs a track it has loaded; a holder's transport is
+/// only drawn, so its known length is what the bar enables its slider on.
+#[derive(Clone, Copy)]
+enum SeekScope {
+    Local,
+    Remote { steerable: bool },
+}
+
+impl SeekScope {
+    fn of(remote: Option<Remote<'_>>) -> Self {
+        match remote {
+            Some(remote) => Self::Remote {
+                steerable: remote.steerable,
+            },
+            None => Self::Local,
+        }
+    }
+
+    /// Whether the seek track can act. The slider is drawn from this and the
+    /// scrub runs under it, so the two cannot disagree.
+    fn enabled(self, transport: &Transport) -> bool {
+        match self {
+            Self::Local => transport.seekable(),
+            Self::Remote { steerable } => {
+                steerable && transport.duration_ms.is_some_and(|duration| duration > 0)
+            }
+        }
+    }
+
+    /// Points the bar at the place a fraction of the track lands on, until the
+    /// transport reports the seek it asks for.
+    fn preview(self, transport: &mut Transport, fraction: f32) {
+        match self {
+            Self::Local => transport.scrub_to(fraction),
+            Self::Remote { .. } => {
+                transport.scrub = transport.length_target(fraction);
+                transport.dragging = true;
+            }
+        }
+    }
+
+    /// The command a fraction of the track asks for.
+    fn to(self, transport: &Transport, fraction: f32) -> Option<Command> {
+        match self {
+            Self::Local => transport.seek_to_fraction(fraction),
+            Self::Remote { .. } => transport
+                .length_target(fraction)
+                .map(|position_ms| Command::Seek { position_ms }),
+        }
+    }
+
+    /// The command that jumps `delta_ms` from `position_ms`.
+    fn by(self, transport: &Transport, position_ms: u32, delta_ms: i64) -> Option<Command> {
+        match self {
+            Self::Local => transport.seek_by(delta_ms),
+            Self::Remote { .. } => transport
+                .length_by(position_ms, delta_ms)
+                .map(|position_ms| Command::Seek { position_ms }),
+        }
+    }
+}
+
 /// The seek a click or a key on the focused track asks for.
 fn seek_command(
     ui: &Ui,
     transport: &mut Transport,
     slot: &controls::Slot,
     track: Rect,
+    position_ms: u32,
+    scope: SeekScope,
 ) -> Option<Command> {
     // A drag follows the pointer and asks once, on release; the bar is drawn from
     // the transport's own position, so the preview comes for free.
     if slot.response.dragged() {
         if let Some(pointer) = slot.response.interact_pointer_pos() {
             let fraction = controls::fraction_at(pointer.x, track.left(), track.width());
-            transport.scrub_to(fraction);
+            scope.preview(transport, fraction);
         }
         return None;
     }
@@ -885,7 +947,7 @@ fn seek_command(
     if slot.response.clicked() {
         let pointer = slot.response.interact_pointer_pos()?;
         let fraction = controls::fraction_at(pointer.x, track.left(), track.width());
-        return transport.seek_to_fraction(fraction);
+        return scope.to(transport, fraction);
     }
     if !slot.response.has_focus() {
         return None;
@@ -905,15 +967,15 @@ fn seek_command(
     let mut command = None;
     ui.input(|input| {
         if input.key_pressed(Key::Home) {
-            command = transport.seek_to_fraction(0.0);
+            command = scope.to(transport, 0.0);
         } else if input.key_pressed(Key::End) {
-            command = transport.seek_to_fraction(1.0);
+            command = scope.to(transport, 1.0);
         } else {
             let step = i64::from(SEEK_STEP_MS) * if input.modifiers.shift { 4 } else { 1 };
             if input.key_pressed(Key::ArrowLeft) {
-                command = transport.seek_by(-step);
+                command = scope.by(transport, position_ms, -step);
             } else if input.key_pressed(Key::ArrowRight) {
-                command = transport.seek_by(step);
+                command = scope.by(transport, position_ms, step);
             }
         }
     });
@@ -1276,7 +1338,7 @@ mod tests {
         if !seek.response.has_focus() {
             seek.response.request_focus();
         }
-        let command = seek_command(ui, transport, &seek, track);
+        let command = seek_command(ui, transport, &seek, track, 0, SeekScope::Local);
         (command, seek.response.has_focus())
     }
 
@@ -4379,6 +4441,55 @@ mod tests {
         assert!(
             replies.iter().all(|reply| reply.command.is_none()),
             "a remote scrub reached the local player: {replies:?}"
+        );
+    }
+
+    #[test]
+    fn a_remote_scrub_seeks_a_holder_that_is_still_loading() {
+        // The slider is enabled on the holder's known length, so a scrub must
+        // act on exactly that: a load is not a state where the bar goes dead.
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        ctx.enable_accesskit();
+        let mut queue = Queue::default();
+        let mut transport = Transport {
+            state: TransportState::Loading,
+            duration_ms: Some(222_000),
+            ..Transport::default()
+        };
+        let centre = layout::playbar_for(heart_bar(), Playbar::Full).columns(heart_bar())[1];
+        let (_, output) = remote_frame(
+            &ctx,
+            &tokens,
+            &mut transport,
+            &mut queue,
+            Playbar::Full,
+            Bar::default(),
+            remote("Phone", true),
+            Vec::new(),
+        );
+        assert!(
+            !announced_disabled(&output, "Seek"),
+            "the slider is inert while the holder loads"
+        );
+        let track = painted_track(&output, centre);
+        let at = Pos2::new(track.center().x, track.center().y);
+
+        let replies = remote_click(
+            &ctx,
+            &tokens,
+            &mut transport,
+            &mut queue,
+            Bar::default(),
+            remote("Phone", true),
+            at,
+        );
+
+        assert!(
+            replies
+                .iter()
+                .any(|reply| matches!(reply.steer, Some(Steer::SeekTo(ms)) if ms == 111_000)),
+            "a live slider yielded nothing: {replies:?}"
         );
     }
 

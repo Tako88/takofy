@@ -176,17 +176,13 @@ impl Devices {
     /// before the command is sent cannot send it somewhere else.
     pub fn steer(&mut self, steer: Steer, now: Instant) -> Option<Command> {
         let device = self.holder.clone()?;
-        let (steerable, seekable) = self.playback.as_ref().map(|playback| {
-            (
-                playback.steerable,
-                playback.duration_ms.is_some_and(|duration| duration > 0),
-            )
-        })?;
-        if !steerable {
+        if !self.steerable() {
             return None;
         }
         if let Steer::SeekTo(position_ms) = steer {
-            if !seekable {
+            // The slider is enabled on the display transport's known length
+            // alone, so a seek is refused on exactly that.
+            if !self.remote.duration_ms.is_some_and(|duration| duration > 0) {
                 return None;
             }
             // The bar holds the new place until the push confirms it.
@@ -195,6 +191,16 @@ impl Devices {
             self.anchored = Some(now);
         }
         Some(Command::Steer { device, steer })
+    }
+
+    /// Whether the holder's transport can be steered at all: a known holder
+    /// that lets remote control.
+    pub fn steerable(&self) -> bool {
+        self.holder.is_some()
+            && self
+                .playback
+                .as_ref()
+                .is_some_and(|playback| playback.steerable)
     }
 
     /// The play/pause steer for the holder, or nothing when its state is not
@@ -1064,6 +1070,57 @@ mod tests {
                 device: "a".to_owned(),
                 steer: Steer::Pause,
             })
+        );
+    }
+
+    #[test]
+    fn steerable_names_a_known_holder_that_allows_remote_control() {
+        let now = base();
+        assert!(!Devices::default().steerable(), "nothing is known yet");
+
+        let mut devices = watching(now);
+        assert!(
+            !devices.steerable(),
+            "nothing is known about what the holder plays"
+        );
+
+        devices.apply(
+            &playing(Some(playback(
+                RemoteState::Playing,
+                "spotify:track:a",
+                Some(10_000),
+            ))),
+            now,
+        );
+        assert!(devices.steerable());
+
+        devices.apply(&playing(None), now);
+        assert!(
+            !devices.steerable(),
+            "a holder with no playback is not a transport"
+        );
+    }
+
+    #[test]
+    fn a_seek_is_allowed_while_the_holder_is_still_loading() {
+        let now = base();
+        let mut devices = watching(now);
+        devices.apply(
+            &playing(Some(playback(
+                RemoteState::Loading,
+                "spotify:track:a",
+                Some(10_000),
+            ))),
+            now,
+        );
+
+        assert_eq!(
+            devices.steer(Steer::SeekTo(4_000), now),
+            Some(Command::Steer {
+                device: "a".to_owned(),
+                steer: Steer::SeekTo(4_000),
+            }),
+            "the bar enables a seek on the length, so the app must act on that"
         );
     }
 

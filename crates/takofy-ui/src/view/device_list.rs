@@ -88,6 +88,10 @@ pub fn show(ui: &mut Ui, frame: Frame<'_>) -> Option<Id> {
 
     let area_id = ui.make_persistent_id("device-list");
     let surface_id = area_id.with("surface");
+    // The frame the card opens on is its own: the click that is the button is
+    // also a click outside the card.
+    let now = ui.input(|input| input.time);
+    let fresh = list.just_opened(now);
     let area = egui::Area::new(area_id)
         .order(Order::Foreground)
         .fixed_pos(rect.min)
@@ -112,6 +116,10 @@ pub fn show(ui: &mut Ui, frame: Frame<'_>) -> Option<Id> {
             surface.widget_info(|| WidgetInfo::labeled(Role::List, true, LIST_LABEL));
         });
 
+    list.mark_drawn(now);
+    if fresh {
+        return None;
+    }
     let escape = ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape));
     if escape {
         return list.close(Reason::Escape);
