@@ -4,8 +4,8 @@
 //! token or an auth error, so the compiler keeps secrets out of a view.
 
 use takofy_model::{
-    AlbumDetail, ArtistDetail, CoverImage, CoverUrl, FollowedArtist, FollowedShow, Move,
-    PlaylistAccess, PlaylistEntry, Removal, Revision, SavedAlbum, ShowDetail, TrackEntry,
+    AlbumDetail, ArtistDetail, ArtistPortrait, CoverImage, CoverUrl, FollowedArtist, FollowedShow,
+    Move, PlaylistAccess, PlaylistEntry, Removal, Revision, SavedAlbum, ShowDetail, TrackEntry,
     TrackLyrics,
 };
 
@@ -105,6 +105,8 @@ pub enum Command {
     SetLiked { tracks: Vec<String>, liked: bool },
     /// The tracks one search query answers.
     Search { query: String },
+    /// The portraits of the artists a search answer draws.
+    LoadPortraits { query: String, artists: Vec<String> },
     /// Start playing a track.
     Play { uri: String },
     /// Pause playback.
@@ -351,6 +353,17 @@ pub enum Update {
     },
     /// A search's results could not be loaded; echoed with the query that asked.
     SearchFailed { query: String, failure: Failure },
+    /// The portraits of the artists a search answer draws, echoed with the
+    /// query that asked.
+    Portraits {
+        query: String,
+        portraits: Vec<ArtistPortrait>,
+    },
+    /// The portraits could not be read; echoed with the query that asked.
+    ///
+    /// Silent on screen: a portrait that does not arrive is drawn like a cover
+    /// that has not been fetched.
+    PortraitsFailed { query: String },
     /// A playback change.
     Transport(TransportUpdate),
 }

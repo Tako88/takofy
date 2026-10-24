@@ -982,8 +982,12 @@ impl Library {
                 self.lyrics.apply(update);
             }
             // A search reply is about a query, not a page, so it is forwarded
-            // whatever page is on screen; the state keeps its own guard.
-            Update::Search { .. } | Update::SearchFailed { .. } => {
+            // whatever page is on screen; the state keeps its own guard. The
+            // same holds for the portraits a search answer draws.
+            Update::Search { .. }
+            | Update::SearchFailed { .. }
+            | Update::Portraits { .. }
+            | Update::PortraitsFailed { .. } => {
                 self.search.apply(update);
             }
             Update::NeedsAuthorization
@@ -2444,9 +2448,9 @@ impl Library {
 #[cfg(test)]
 mod tests {
     use takofy_model::{
-        AddedAt, AlbumDetail, ArtistDetail, CoverUrl, Episode, FollowedShow, Move, PlaylistAccess,
-        PlaylistCover, PlaylistEntry, ReleaseKind, Removal, Revision, Show, ShowDetail, TrackEntry,
-        TrackLyrics,
+        AddedAt, AlbumDetail, ArtistDetail, ArtistPortrait, CoverUrl, Episode, FollowedShow, Move,
+        PlaylistAccess, PlaylistCover, PlaylistEntry, ReleaseKind, Removal, Revision, Show,
+        ShowDetail, TrackEntry, TrackLyrics,
     };
 
     use super::*;
@@ -2506,6 +2510,7 @@ mod tests {
             album: None,
             album_uri: None,
             artist_uris: Vec::new(),
+            artist_names: Vec::new(),
             added_at: None,
             duration_ms: None,
             named: true,
@@ -3308,7 +3313,7 @@ mod tests {
             focused: true,
             ..crate::search::KeyInput::default()
         };
-        let _ = library.search.step(input, 0, false);
+        let _ = library.search.step(input);
     }
 
     fn search(query: &str) -> Page {
@@ -3553,6 +3558,34 @@ mod tests {
         // Retry is only the search page's: nowhere else has a page to reload.
         let mut library = Library::default();
         assert_eq!(library.reload_search(), None);
+    }
+
+    #[test]
+    fn a_portrait_reply_does_not_disturb_the_search_reads() {
+        let mut library = Library::default();
+        library.open(search("never gonna"));
+        library.apply(&search_reply("never gonna", vec![track("t")]));
+        let menu = format!("{:?}", library.search.menu_view());
+        let page = library.search.page_answer("never gonna").cloned();
+
+        library.apply(&Update::Portraits {
+            query: "never gonna".to_owned(),
+            portraits: vec![ArtistPortrait {
+                artist: "spotify:artist:a".to_owned(),
+                portrait: CoverUrl::from_wire("https://i.scdn.co/image/abc"),
+            }],
+        });
+        library.apply(&Update::PortraitsFailed {
+            query: "never gonna".to_owned(),
+        });
+
+        assert_eq!(
+            format!("{:?}", library.search.menu_view()),
+            menu,
+            "a portrait reply is not a page or a menu answer"
+        );
+        assert_eq!(library.search.page_answer("never gonna"), page.as_ref());
+        assert_eq!(library.page_search_query(), Some("never gonna"));
     }
 
     #[test]

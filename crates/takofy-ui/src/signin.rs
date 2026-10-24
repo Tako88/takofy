@@ -94,6 +94,8 @@ impl SignIn {
                 | Update::LyricsFailed { .. }
                 | Update::Search { .. }
                 | Update::SearchFailed { .. }
+                | Update::Portraits { .. }
+                | Update::PortraitsFailed { .. }
                 | Update::Cover { .. }
                 | Update::CoverFailed { .. }
                 | Update::Transport(_),
@@ -263,6 +265,31 @@ mod tests {
                 SignIn::SignedIn,
                 "{update:?} moved a signed-in state"
             );
+        }
+    }
+
+    #[test]
+    fn a_portrait_reply_is_not_sign_in_news() {
+        for update in [
+            Update::Portraits {
+                query: "slow tide".to_owned(),
+                portraits: Vec::new(),
+            },
+            Update::PortraitsFailed {
+                query: "slow tide".to_owned(),
+            },
+        ] {
+            for mut state in [
+                SignIn::Starting,
+                SignIn::NeedsAuthorization,
+                SignIn::Authorizing,
+                SignIn::SignedIn,
+                SignIn::Failed(Failure::PortBusy),
+            ] {
+                let before = state;
+                state.apply(update.clone());
+                assert_eq!(state, before, "{update:?} moved {before:?}");
+            }
         }
     }
 

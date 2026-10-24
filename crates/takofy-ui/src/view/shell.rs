@@ -339,6 +339,29 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
                 }
                 None => None,
             },
+            Act::OpenAlbum(index) => {
+                // Resolve before `open` mutably borrows the library.
+                let uri = screen.library.search.album_uri(index);
+                if let Some(uri) = uri {
+                    if let Some(field) = bar.search_field {
+                        ui.memory_mut(|memory| memory.surrender_focus(field.id));
+                    }
+                    screen.library.open(Page::Album(uri))
+                } else {
+                    None
+                }
+            }
+            Act::OpenArtist(index) => {
+                let uri = screen.library.search.artist_uri(index);
+                if let Some(uri) = uri {
+                    if let Some(field) = bar.search_field {
+                        ui.memory_mut(|memory| memory.surrender_focus(field.id));
+                    }
+                    screen.library.open(Page::Artist(uri))
+                } else {
+                    None
+                }
+            }
             Act::OpenResults => {
                 // The page takes the keyboard with the menu it closes. Only an
                 // applied action does: a dropped `OpenResults` leaves the menu
@@ -1232,6 +1255,7 @@ mod tests {
             album: None,
             album_uri: None,
             artist_uris: Vec::new(),
+            artist_names: Vec::new(),
             added_at: None,
             duration_ms: None,
             named: true,
@@ -2755,6 +2779,18 @@ mod tests {
         });
     }
 
+    /// Takes the reveal row labelled `label`, which the page applies itself.
+    fn reveal(window: &mut Window, transport: &mut Transport, queue: &mut Queue, label: &str) {
+        let (_, frame) = window.frame(transport, queue, Vec::new());
+        let at = painted_at(&frame, label).unwrap_or_else(|| panic!("{label:?} is painted"))
+            + Vec2::new(4.0, 4.0);
+        assert_eq!(
+            window.click(transport, queue, at),
+            None,
+            "a reveal asks for nothing"
+        );
+    }
+
     /// Asks the search state for the read a frame wants, the way `logic` does.
     fn search_read(window: &mut Window) -> Option<Command> {
         let page = window.library.page_search_query().map(str::to_owned);
@@ -2790,8 +2826,12 @@ mod tests {
             "the heading names the query"
         );
         assert!(
-            painted_at(&frame, "20 RESULTS").is_some(),
-            "the head's right slot counts what the wire answered"
+            painted_at(&frame, "TOP 20 TRACKS").is_some(),
+            "the page's note states the cap once"
+        );
+        assert!(
+            painted_at(&frame, "10 OF 20").is_some(),
+            "the track block's head says how much of it is shown"
         );
         assert!(
             painted_at(&frame, "t0").is_some(),
@@ -2844,16 +2884,24 @@ mod tests {
             Some(&Load::Loading)
         );
 
-        // Empty: one muted line naming the query, nothing to press, and no
-        // rows held open any more.
+        // Empty: the page head with nothing to count, then the two-line empty
+        // state, nothing to press, and no rows held open any more.
         window.library.apply(&Update::Search {
             query: "never gonna".to_owned(),
             tracks: Vec::new(),
         });
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
         assert!(
-            painted_at(&frame, "No tracks match “never gonna”.").is_some(),
+            painted_at(&frame, "0 TRACKS").is_some(),
+            "an empty answer still says how many tracks it found"
+        );
+        assert!(
+            painted_at(&frame, "Nothing in the catalogue matches that").is_some(),
             "an empty answer says so"
+        );
+        assert!(
+            painted_at(&frame, "Retry").is_none(),
+            "an empty answer offers nothing to retry"
         );
         assert_eq!(
             skeleton_rects(&frame, view_rect(&window)),
@@ -2959,14 +3007,24 @@ mod tests {
 
     /// The scroll area is salted with the query, so a new query starts at the
     /// top rather than where the last one was left.
+    ///
+    /// Ten rows fit the window, so a page only scrolls once its reveal is taken
+    /// — which is also the press that grows it.
     #[test]
     fn a_new_query_starts_at_the_top_of_the_results() {
         let mut transport = Transport::default();
         let mut queue = Queue::default();
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
-        answered(&mut window, "a", 20);
+        answered(&mut window, "a", 40);
+        reveal(
+            &mut window,
+            &mut transport,
+            &mut queue,
+            "Show 30 more tracks",
+        );
 
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let first = painted_at(&frame, "t0").expect("row t0 is painted").y;
         let top = painted_at(&frame, "t5").expect("row t5 is painted").y;
         // The wheel only reaches the area the pointer is over.
         let _ = window.frame(
@@ -2996,7 +3054,13 @@ mod tests {
 
         // The offset is stored under this query's own id: another query's page
         // is a different area, so it starts at the top.
-        answered(&mut window, "b", 20);
+        answered(&mut window, "b", 40);
+        reveal(
+            &mut window,
+            &mut transport,
+            &mut queue,
+            "Show 30 more tracks",
+        );
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
         let fresh = painted_at(&frame, "t5").expect("row t5 is painted").y;
         assert!(
@@ -3004,20 +3068,36 @@ mod tests {
             "a new query starts at the top: {fresh} against {top}"
         );
 
-        // Back onto a, whose answer b dropped: answered again, the page comes
-        // back to the offset it was left on, so the salt is per query and not
-        // per frame.
+        // Back onto a, whose answer b dropped: the page is answered again and
+        // its blocks start at ten, because the read the reveal belonged to is
+        // gone. It is a fresh page, so it starts at the top too — not where a
+        // was left, and not at the shortened page's bottom.
         assert_eq!(window.library.back(), None, "a search page never settles");
         assert_eq!(window.library.page_search_query(), Some("a"));
         window.library.apply(&Update::Search {
             query: "a".to_owned(),
-            tracks: (0..20).map(|index| track(index, None)).collect(),
+            tracks: (0..40).map(|index| track(index, None)).collect(),
         });
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-        let kept = painted_at(&frame, "t5").expect("row t5 is painted").y;
+        assert!(painted_at(&frame, "Results for “a”").is_some());
         assert!(
-            (kept - scrolled).abs() < 0.01,
-            "a keeps its own offset while b started at the top: {kept} against {scrolled}"
+            painted_at(&frame, "Results for “b”").is_none(),
+            "b's page is gone"
+        );
+        assert!(
+            painted_at(&frame, "Show 30 more tracks").is_some(),
+            "a's blocks start at ten again"
+        );
+        assert!(
+            painted_at(&frame, "t39").is_none(),
+            "so only ten of a's rows are drawn"
+        );
+        let back = painted_at(&frame, "t0")
+            .expect("a's first row is painted")
+            .y;
+        assert!(
+            (back - first).abs() < 0.01,
+            "a page that starts fresh starts at the top: {back} against {first}"
         );
     }
 
@@ -3088,8 +3168,56 @@ mod tests {
         let _ = window.frame(transport, queue, Vec::new());
         let (_, frame) = window.frame(transport, queue, Vec::new());
         let field = search_field(&frame).expect("the topbar paints the field");
-        let height = layout::search_menu::rows_height(count.min(5), count > 5);
+        let (rows, floor) = window
+            .library
+            .search
+            .listing()
+            .map(|listing| (listing.shape.rows_per_band(), listing.shape.floor))
+            .expect("the answered menu has a shape");
+        let height = layout::search_menu::bands_height(&rows, floor);
         (menu_box(window, field, height), frame)
+    }
+
+    /// A track on its own album, by its own artist.
+    fn band_track(index: usize) -> TrackEntry {
+        let mut entry = track(index, None);
+        entry.artists = format!("Artist{index}");
+        entry.album = Some(format!("Album{index}"));
+        entry.album_uri = Some(format!("spotify:album:{index}"));
+        entry.artist_uris = vec![format!("spotify:artist:{index}")];
+        entry.artist_names = vec![format!("Artist{index}")];
+        entry
+    }
+
+    /// Types `a`, answers it with three bands, and returns the drawn menu.
+    fn banded_menu(window: &mut Window, transport: &mut Transport, queue: &mut Queue) -> Rect {
+        type_query(window, transport, queue, "a");
+        window.library.apply(&Update::Search {
+            query: "a".to_owned(),
+            tracks: (0..8).map(band_track).collect(),
+        });
+        let _ = window.frame(transport, queue, Vec::new());
+        let (_, frame) = window.frame(transport, queue, Vec::new());
+        let field = search_field(&frame).expect("the topbar paints the field");
+        let (rows, floor) = window
+            .library
+            .search
+            .listing()
+            .map(|listing| (listing.shape.rows_per_band(), listing.shape.floor))
+            .expect("the answered menu has a shape");
+        let height = layout::search_menu::bands_height(&rows, floor);
+        menu_box(window, field, height)
+    }
+
+    fn band_row(window: &Window, menu: Rect, band: usize, row: usize) -> Rect {
+        let (rows, floor) = window
+            .library
+            .search
+            .listing()
+            .map(|listing| (listing.shape.rows_per_band(), listing.shape.floor))
+            .expect("the answered menu has a shape");
+        layout::search_menu::place(menu, &rows, floor, window.ctx.pixels_per_point()).bands[band]
+            .rows[row]
     }
 
     /// One keyboard press, with a release behind it so the next press is a new
@@ -3184,7 +3312,7 @@ mod tests {
     }
 
     #[test]
-    fn an_answer_draws_five_rows_with_no_mark() {
+    fn an_answer_draws_its_capped_track_rows_with_no_mark() {
         let mut transport = Transport::default();
         let mut queue = Queue::default();
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
@@ -3195,15 +3323,15 @@ mod tests {
             None,
             "the menu opens with its first row unmarked (R1)"
         );
-        for index in 0..5 {
+        for index in 0..3 {
             assert!(
                 text_in(&frame, &format!("t{index}"), menu).is_some(),
                 "row {index} is drawn in the menu"
             );
         }
         assert!(
-            text_in(&frame, "t5", menu).is_none(),
-            "the menu shows five of the answer"
+            text_in(&frame, "t3", menu).is_none(),
+            "the tracks band shows three of the answer"
         );
     }
 
@@ -3254,7 +3382,7 @@ mod tests {
 
     #[test]
     fn up_from_the_field_marks_the_last_drawn_row() {
-        for (count, expected) in [(5, 4), (6, 5)] {
+        for (count, expected) in [(3, 2), (4, 3)] {
             let mut transport = Transport::default();
             let mut queue = Queue::default();
             let mut window = Window::new(Vec2::new(1400.0, 900.0));
@@ -3481,21 +3609,27 @@ mod tests {
 
     #[test]
     fn the_floor_appears_only_when_the_answer_is_longer_than_the_menu() {
-        for (count, floor) in [(5, false), (6, true)] {
+        for (count, floor) in [(3, false), (4, true)] {
             let mut transport = Transport::default();
             let mut queue = Queue::default();
             let mut window = Window::new(Vec2::new(1400.0, 900.0));
             let (menu, frame) = answered_menu(&mut window, &mut transport, &mut queue, "a", count);
-            let label = format!("SEE ALL {count} RESULTS FOR “A”");
+            let label = "See more results for “a”";
             assert_eq!(
-                text_in(&frame, &label, menu).is_some(),
+                text_in(&frame, label, menu).is_some(),
                 floor,
                 "an answer of {count} draws the floor: {floor}"
             );
+            let (rows, floor) = window
+                .library
+                .search
+                .listing()
+                .map(|listing| (listing.shape.rows_per_band(), listing.shape.floor))
+                .expect("the answered menu has a shape");
             assert_eq!(
                 menu.height(),
-                layout::search_menu::rows_height(5.min(count), floor),
-                "and the frame is exactly its rows"
+                layout::search_menu::bands_height(&rows, floor),
+                "and the frame is exactly its bands"
             );
         }
     }
@@ -3571,7 +3705,7 @@ mod tests {
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
         let (menu, frame) = answered_menu(&mut window, &mut transport, &mut queue, "a", 8);
         let one = text_in(&frame, "t1", menu).expect("row t1").center();
-        let other = text_in(&frame, "t3", menu).expect("row t3").center();
+        let other = text_in(&frame, "t2", menu).expect("row t2").center();
 
         let _ = window.frame(
             &mut transport,
@@ -3972,7 +4106,7 @@ mod tests {
             vec![key(egui::Key::ArrowUp, true)],
         );
         assert!(window.library.search.is_open());
-        assert_eq!(window.library.search.mark(), Some(5), "the floor is last");
+        assert_eq!(window.library.search.mark(), Some(3), "the floor is last");
     }
 
     /// R2, for the whole painted box: the text edit is the field, so a click on
@@ -4047,8 +4181,8 @@ mod tests {
                 .count()
         };
 
-        // The pointer arrives over row 3: it owns the highlight, so row 3 takes
-        // the row hover wash and the tick.
+        // The pointer arrives over the floor: it owns the highlight, so the
+        // floor takes the row hover wash and the tick.
         let third = layout::search_menu::row_rect(menu, 3).center();
         let _ = window.frame(
             &mut transport,
@@ -4099,6 +4233,81 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_click_on_an_album_row_opens_the_album_page() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let menu = banded_menu(&mut window, &mut transport, &mut queue);
+        let album = band_row(&window, menu, 1, 0).center();
+        let _ = window.click(&mut transport, &mut queue, album);
+        assert_eq!(
+            window.library.page(),
+            Some(&Page::Album("spotify:album:0".to_owned()))
+        );
+        assert!(
+            !window.library.search.is_open(),
+            "the album closes the menu"
+        );
+    }
+
+    #[test]
+    fn a_click_on_an_artist_row_opens_the_artist_page() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let menu = banded_menu(&mut window, &mut transport, &mut queue);
+        let artist = band_row(&window, menu, 2, 0).center();
+        let _ = window.click(&mut transport, &mut queue, artist);
+        assert_eq!(
+            window.library.page(),
+            Some(&Page::Artist("spotify:artist:0".to_owned()))
+        );
+        assert!(
+            !window.library.search.is_open(),
+            "the artist closes the menu"
+        );
+    }
+
+    #[test]
+    fn enter_on_an_album_and_an_artist_opens_the_same_pages() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let _ = banded_menu(&mut window, &mut transport, &mut queue);
+        for _ in 0..4 {
+            let _ = press(
+                &mut window,
+                &mut transport,
+                &mut queue,
+                egui::Key::ArrowDown,
+            );
+        }
+        let _ = press(&mut window, &mut transport, &mut queue, egui::Key::Enter);
+        assert_eq!(
+            window.library.page(),
+            Some(&Page::Album("spotify:album:0".to_owned()))
+        );
+
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let _ = banded_menu(&mut window, &mut transport, &mut queue);
+        for _ in 0..6 {
+            let _ = press(
+                &mut window,
+                &mut transport,
+                &mut queue,
+                egui::Key::ArrowDown,
+            );
+        }
+        let _ = press(&mut window, &mut transport, &mut queue, egui::Key::Enter);
+        assert_eq!(
+            window.library.page(),
+            Some(&Page::Artist("spotify:artist:0".to_owned()))
+        );
+    }
+
     /// R12: the floor row is an action, and a click on it opens the page — the
     /// same page Enter on the floor opens.
     #[test]
@@ -4107,9 +4316,17 @@ mod tests {
         let mut queue = Queue::default();
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
         let (menu, frame) = answered_menu(&mut window, &mut transport, &mut queue, "a", 8);
-        let floor = layout::search_menu::row_rect(menu, 5);
+        let (rows, capped) = window
+            .library
+            .search
+            .listing()
+            .map(|listing| (listing.shape.rows_per_band(), listing.shape.floor))
+            .expect("the answered menu has a shape");
+        let floor = layout::search_menu::place(menu, &rows, capped, window.ctx.pixels_per_point())
+            .floor
+            .expect("the answer is long enough to draw the floor");
         assert!(
-            text_in(&frame, "SEE ALL 8 RESULTS FOR “A”", menu).is_some(),
+            text_in(&frame, "See more results for “a”", menu).is_some(),
             "the answer is long enough to draw the floor"
         );
 
@@ -6382,6 +6599,7 @@ mod tests {
             album: None,
             album_uri: None,
             artist_uris: Vec::new(),
+            artist_names: Vec::new(),
             added_at: None,
             duration_ms: None,
             named: true,
@@ -8374,6 +8592,7 @@ mod tests {
             album: Some("A Record".to_owned()),
             album_uri: Some(ALBUM.to_owned()),
             artist_uris: vec!["spotify:artist:b".to_owned()],
+            artist_names: vec!["A Band".to_owned()],
             added_at: None,
             duration_ms: None,
             named: true,

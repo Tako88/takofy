@@ -281,6 +281,13 @@ const CHEVRON_RIGHT_LINES: &[Line] = &[Line {
 }];
 const CHEVRON_RIGHT_FILLS: &[&[Point]] = &[];
 
+const CHEVRON_DOWN_LINES: &[Line] = &[Line {
+    points: &[(6.0, 9.4), (12.0, 15.4), (18.0, 9.4)],
+    closed: false,
+    width: None,
+}];
+const CHEVRON_DOWN_FILLS: &[&[Point]] = &[];
+
 const HEART_LINES: &[Line] = &[Line {
     points: &[
         (20.4, 5.9),
@@ -1193,6 +1200,11 @@ pub(super) fn glyph(icon: Icon) -> Glyph {
             lines: CHEVRON_RIGHT_LINES,
             fills: CHEVRON_RIGHT_FILLS,
         },
+        Icon::ChevronDown => Glyph {
+            source: 0x5cd97bc0e5543858,
+            lines: CHEVRON_DOWN_LINES,
+            fills: CHEVRON_DOWN_FILLS,
+        },
         Icon::Heart => Glyph {
             source: 0x29434e8862291e7c,
             lines: HEART_LINES,
@@ -1291,6 +1303,7 @@ pub(super) fn symbol_id(icon: Icon) -> &'static str {
         Icon::ArrowLeft => "i-arrow-left",
         Icon::ArrowRight => "i-arrow-right",
         Icon::ChevronRight => "i-chevron-right",
+        Icon::ChevronDown => "i-chevron-down",
         Icon::Heart => "i-heart",
         Icon::HeartFilled => "i-heart-filled",
         Icon::More => "i-more",

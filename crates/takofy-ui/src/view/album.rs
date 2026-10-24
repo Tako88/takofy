@@ -397,6 +397,7 @@ mod tests {
             album: None,
             album_uri: None,
             artist_uris: Vec::new(),
+            artist_names: Vec::new(),
             added_at: None,
             duration_ms: Some(duration_ms),
             named: true,
@@ -1404,6 +1405,7 @@ mod tests {
         let row_track = TrackEntry {
             artists: "Guest".to_owned(),
             artist_uris: vec!["spotify:artist:guest".to_owned()],
+            artist_names: vec!["Guest".to_owned()],
             ..track("spotify:track:a", "One", "Guest", 222_000)
         };
         let mut library = library_with(detail(vec![row_track]));

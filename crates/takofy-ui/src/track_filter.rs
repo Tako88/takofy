@@ -71,6 +71,7 @@ mod tests {
             album: album.map(str::to_owned),
             album_uri: None,
             artist_uris: Vec::new(),
+            artist_names: Vec::new(),
             added_at: None,
             duration_ms: None,
             named: true,

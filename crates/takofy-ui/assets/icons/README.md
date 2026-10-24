@@ -1,6 +1,6 @@
 # Icon geometry
 
-The 28 icons the shell draws are the reference's own sprite, flattened once,
+The 30 icons the shell draws are the reference's own sprite, flattened once,
 offline, into `crates/takofy-ui/src/icon/data.rs`. There is no SVG parser in the
 binary: the runtime turns a committed polyline into an `egui::Shape`.
 
@@ -11,9 +11,8 @@ the table can be regenerated or audited with the example rather than by hand.
 ## Source
 
 `docs/reference/main.js`, the `SPRITE` array: 34 `<symbol>` elements, of which
-28 are in scope. The 6 left out (`mic chevron-down heart-filled download check
-verified`) have no consumer; `verified` would also need a literal `#fff`
-stroke.
+30 are in scope. The 4 left out (`mic download check verified`) have no
+consumer; `verified` would also need a literal `#fff` stroke.
 
 ## Conversion
 

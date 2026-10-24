@@ -58,6 +58,7 @@ pub enum Icon {
     ArrowLeft,
     ArrowRight,
     ChevronRight,
+    ChevronDown,
     Heart,
     HeartFilled,
     More,
@@ -77,7 +78,7 @@ pub enum Icon {
 }
 
 impl Icon {
-    pub const ALL: [Self; 29] = [
+    pub const ALL: [Self; 30] = [
         Self::Play,
         Self::Pause,
         Self::Previous,
@@ -91,6 +92,7 @@ impl Icon {
         Self::ArrowLeft,
         Self::ArrowRight,
         Self::ChevronRight,
+        Self::ChevronDown,
         Self::Heart,
         Self::HeartFilled,
         Self::More,
@@ -305,6 +307,17 @@ mod tests {
         lines: LINES,
         fills: &[],
     };
+
+    #[test]
+    fn chevron_down_is_one_open_polyline_matching_the_reference() {
+        let glyph = data::glyph(Icon::ChevronDown);
+        assert!(glyph.fills.is_empty());
+        let [line] = glyph.lines else {
+            panic!("expected one line");
+        };
+        assert!(!line.closed);
+        assert_eq!(line.points, &[(6.0, 9.4), (12.0, 15.4), (18.0, 9.4)]);
+    }
 
     #[test]
     fn a_fill_becomes_one_convex_polygon_per_piece() {

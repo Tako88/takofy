@@ -268,6 +268,11 @@ pub struct TrackEntry {
     /// does not resolve, so a link never points at a different artist than the
     /// one named in the same place.
     pub artist_uris: Vec<String>,
+    /// The artists' names, same length and order as [`Self::artist_uris`].
+    ///
+    /// The joined [`Self::artists`] cannot be split back into names, because a
+    /// name may itself contain the joining comma.
+    pub artist_names: Vec<String>,
     /// When the track joined *the playlist that drew it*; per position, not per
     /// track, and always `None` on an album's rows.
     pub added_at: Option<AddedAt>,
@@ -316,8 +321,12 @@ impl Episode {
     /// credit URI because there is nothing to link to.
     pub fn entry(&self) -> TrackEntry {
         let mut artist_uris = Vec::new();
-        if !self.show.is_empty() {
-            artist_uris.extend(self.show_uri.clone());
+        let mut artist_names = Vec::new();
+        if !self.show.is_empty()
+            && let Some(uri) = self.show_uri.clone()
+        {
+            artist_uris.push(uri);
+            artist_names.push(self.show.clone());
         }
         TrackEntry {
             uri: self.uri.clone(),
@@ -326,6 +335,7 @@ impl Episode {
             album: None,
             album_uri: None,
             artist_uris,
+            artist_names,
             added_at: None,
             duration_ms: self.duration_ms,
             named: self.named,
@@ -451,6 +461,14 @@ pub struct FollowedArtist {
     pub portrait: Option<CoverUrl>,
     /// How many current releases the artist has, when they could be read.
     pub releases: Option<u32>,
+}
+
+/// One artist's portrait, as a search menu's artist row draws it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtistPortrait {
+    pub artist: String,
+    /// `None` when the artist's record carries no portrait group.
+    pub portrait: Option<CoverUrl>,
 }
 
 /// One album in the saved-albums list, as its card draws it.
@@ -586,6 +604,7 @@ mod tests {
             album: None,
             album_uri: None,
             artist_uris: Vec::new(),
+            artist_names: Vec::new(),
             added_at: None,
             duration_ms: None,
             named: true,
@@ -725,6 +744,10 @@ mod tests {
         let entry = episode().entry();
         assert_eq!(entry.artists, "Lateral with Tom Scott");
         assert_eq!(entry.artist_uris, vec!["spotify:show:abc".to_owned()]);
+        assert_eq!(
+            entry.artist_names,
+            vec!["Lateral with Tom Scott".to_owned()]
+        );
     }
 
     #[test]
@@ -732,6 +755,7 @@ mod tests {
         let mut value = episode();
         value.show = String::new();
         assert!(value.entry().artist_uris.is_empty());
+        assert!(value.entry().artist_names.is_empty());
     }
 
     #[test]
@@ -741,6 +765,7 @@ mod tests {
         let entry = value.entry();
         assert_eq!(entry.artists, "Lateral with Tom Scott");
         assert!(entry.artist_uris.is_empty());
+        assert!(entry.artist_names.is_empty());
     }
 
     #[test]

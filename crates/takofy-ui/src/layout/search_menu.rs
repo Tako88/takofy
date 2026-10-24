@@ -115,6 +115,109 @@ pub fn line_height() -> f32 {
     extent::ROW_H
 }
 
+/// One band's vertical slice: the rule above it, its heading, and its rows.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BandRects {
+    /// The hairline that separates this band from the one above; `None` on the
+    /// first band.
+    pub rule: Option<Rect>,
+    pub head: Rect,
+    pub rows: Vec<Rect>,
+}
+
+/// Where each band and the floor row sit inside `menu`.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct Placement {
+    pub bands: Vec<BandRects>,
+    pub floor: Option<Rect>,
+}
+
+/// How tall `rows` bands are, with the rules between them and the floor row.
+///
+/// `rows` is the shown row count per band, so a band's own heading and the rule
+/// above it are part of its height. A heading is `extent::MENU_HEAD_H`; the
+/// first band has no rule because the menu's top edge is the rule.
+pub fn bands_height(rows: &[usize], floor: bool) -> f32 {
+    let bands = rows
+        .iter()
+        .enumerate()
+        .map(|(index, &count)| {
+            let rule = if index > 0 { stroke::HAIRLINE } else { 0.0 };
+            rule + extent::MENU_HEAD_H + count as f32 * extent::ROW_H
+        })
+        .sum::<f32>();
+    bands
+        + if floor && !rows.is_empty() {
+            extent::ROW_H
+        } else {
+            0.0
+        }
+}
+
+/// Stacks `rows` bands and the floor from `menu`'s top edge, with no gaps.
+///
+/// Every rect is the menu's full width and is stacked directly under the one
+/// before, so `bands_height(rows, floor)` is the height this needs to fill
+/// `menu` exactly. A zero or non-finite menu yields zero-width, finite rects.
+pub fn place(menu: Rect, rows: &[usize], floor: bool, pixels_per_point: f32) -> Placement {
+    let menu = sane(menu);
+    let left = menu.left().round_to_pixels(pixels_per_point);
+    let right = menu.right().round_to_pixels(pixels_per_point);
+
+    // Each shared edge is snapped once and read by both neighbours, so the bands
+    // meet on the pixel grid instead of a fraction of a point apart, which would
+    // draw a soft rule and a seam a hairline wide.
+    let mut edges = vec![menu.top()];
+    let mut top = menu.top();
+    for (index, &count) in rows.iter().enumerate() {
+        if index > 0 {
+            top += stroke::HAIRLINE;
+            edges.push(top);
+        }
+        top += extent::MENU_HEAD_H;
+        edges.push(top);
+        for _ in 0..count {
+            top += extent::ROW_H;
+            edges.push(top);
+        }
+    }
+    let floor = floor && !rows.is_empty();
+    if floor {
+        top += extent::ROW_H;
+        edges.push(top);
+    }
+    let edges: Vec<f32> = edges
+        .iter()
+        .map(|edge| edge.round_to_pixels(pixels_per_point))
+        .collect();
+
+    let mut cursor = 0;
+    let mut placement = Placement::default();
+    for (index, &count) in rows.iter().enumerate() {
+        let rule = (index > 0).then(|| slice(&edges, &mut cursor, left, right));
+        let head = slice(&edges, &mut cursor, left, right);
+        let row_rects = (0..count)
+            .map(|_| slice(&edges, &mut cursor, left, right))
+            .collect();
+        placement.bands.push(BandRects {
+            rule,
+            head,
+            rows: row_rects,
+        });
+    }
+    if floor {
+        placement.floor = Some(slice(&edges, &mut cursor, left, right));
+    }
+    placement
+}
+
+/// The slice between the cursor's edge and the next, advancing the cursor.
+fn slice(edges: &[f32], cursor: &mut usize, left: f32, right: f32) -> Rect {
+    let rect = Rect::from_min_max(pos2(left, edges[*cursor]), pos2(right, edges[*cursor + 1]));
+    *cursor += 1;
+    rect
+}
+
 /// The `index`-th row inside `menu`, the rows tiling with no gap.
 ///
 /// The pitch is the shared `extent::ROW_H`, so the floor and the empty line are
@@ -489,12 +592,182 @@ mod tests {
     fn the_minimum_window_holds_the_tallest_menu() {
         // The menu hangs from the field, which sits inside the topbar, so the
         // topbar's own height is the most room the field can take above it.
-        let tallest = extent::TOPBAR_H + extent::MENU_GAP + rows_height(5, true);
+        let tallest = extent::TOPBAR_H + extent::MENU_GAP + bands_height(&[3, 2, 2], true);
         assert!(
             WINDOW_MIN[1] >= tallest,
             "the minimum window is {} tall but the tallest menu needs {tallest}",
             WINDOW_MIN[1]
         );
+    }
+
+    #[test]
+    fn the_bands_height_stacks_heads_rows_and_the_rules_between_them() {
+        assert_close(bands_height(&[3, 2, 2], true), 435.0);
+        assert_close(bands_height(&[3], false), 159.0);
+        assert_close(bands_height(&[3, 2], false), 275.0);
+        assert_close(bands_height(&[1, 1], true), 187.0);
+        assert_close(bands_height(&[], false), 0.0);
+        // A floor under no band is a shape the index cannot produce, and the
+        // floor needs a band to sit under.
+        assert_close(bands_height(&[], true), 0.0);
+        assert_close(extent::MENU_HEAD_H, 27.0);
+    }
+
+    #[test]
+    fn place_tiles_every_band_and_the_floor_with_no_gap() {
+        let menu = menu_rect(field(), window(), bands_height(&[3, 2, 2], true));
+        let placed = place(menu, &[3, 2, 2], true, 1.0);
+        assert_eq!(placed.bands.len(), 3);
+        let mut bottom = menu.top();
+        for band in &placed.bands {
+            if let Some(rule) = band.rule {
+                assert_close(rule.top(), bottom);
+                assert_close(rule.height(), stroke::HAIRLINE);
+                assert_eq!(rule.width(), menu.width());
+                bottom = rule.bottom();
+            }
+            assert_close(band.head.top(), bottom);
+            assert_close(band.head.height(), extent::MENU_HEAD_H);
+            assert_eq!(band.head.width(), menu.width());
+            bottom = band.head.bottom();
+            for row in &band.rows {
+                assert_close(row.top(), bottom);
+                assert_close(row.height(), extent::ROW_H);
+                assert_eq!(row.width(), menu.width());
+                bottom = row.bottom();
+            }
+        }
+        let floor = placed.floor.expect("a floor was asked for");
+        assert_close(floor.top(), bottom);
+        assert_close(floor.height(), extent::ROW_H);
+        assert_close(floor.bottom(), menu.bottom());
+    }
+
+    #[test]
+    fn every_edge_lands_on_the_physical_pixel_grid() {
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            let menu = menu_rect(field(), window(), bands_height(&[3, 2, 2], true));
+            let placed = place(menu, &[3, 2, 2], true, scale);
+            let rects = placed
+                .bands
+                .iter()
+                .flat_map(|band| {
+                    band.rule
+                        .into_iter()
+                        .chain([band.head])
+                        .chain(band.rows.clone())
+                })
+                .chain(placed.floor);
+            let mut edges = Vec::new();
+            for rect in rects {
+                edges.push(rect.top());
+                edges.push(rect.bottom());
+            }
+            for edge in &edges {
+                let pixels = edge * scale;
+                assert_close(pixels, pixels.round());
+            }
+        }
+    }
+
+    #[test]
+    fn neighbouring_rects_share_one_edge() {
+        let menu = menu_rect(field(), window(), bands_height(&[3, 2, 2], true));
+        let placed = place(menu, &[3, 2, 2], true, 1.25);
+        let mut previous_bottom: Option<f32> = None;
+        let mut rects = Vec::new();
+        for band in &placed.bands {
+            rects.extend(band.rule);
+            rects.push(band.head);
+            rects.extend(band.rows.iter().copied());
+        }
+        rects.extend(placed.floor);
+        for rect in rects {
+            if let Some(bottom) = previous_bottom {
+                assert_eq!(rect.top(), bottom);
+            }
+            previous_bottom = Some(rect.bottom());
+        }
+    }
+
+    #[test]
+    fn the_first_band_has_no_rule_and_every_later_band_does() {
+        let menu = menu_rect(field(), window(), bands_height(&[2, 1, 1], false));
+        let placed = place(menu, &[2, 1, 1], false, 1.0);
+        assert_eq!(placed.bands[0].rule, None);
+        for band in &placed.bands[1..] {
+            let rule = band.rule.expect("a later band sits under a rule");
+            assert_eq!(rule.width(), menu.width());
+            assert_close(rule.top() + stroke::HAIRLINE, band.head.top());
+        }
+        assert_eq!(placed.floor, None);
+    }
+
+    #[test]
+    fn the_last_placed_rect_ends_at_the_menus_bottom() {
+        for (rows, floor) in [(&[3, 2, 2][..], true), (&[3][..], false)] {
+            let menu = menu_rect(field(), window(), bands_height(rows, floor));
+            let placed = place(menu, rows, floor, 1.0);
+            let last = placed.floor.unwrap_or_else(|| {
+                placed
+                    .bands
+                    .last()
+                    .and_then(|band| band.rows.last().copied())
+                    .expect("a band with rows")
+            });
+            assert_close(last.bottom(), menu.bottom());
+        }
+    }
+
+    #[test]
+    fn the_place_driven_menu_height_uses_the_pixel_grid_the_view_passes() {
+        let rows = [3, 2, 2];
+        let menu = menu_rect(field(), window(), bands_height(&rows, true));
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            let placed = place(menu, &rows, true, scale);
+            let last = placed.floor.expect("a floor was asked for");
+            assert_close(last.bottom(), menu.bottom().round_to_pixels(scale));
+            assert_close(menu.height(), bands_height(&rows, true));
+            for edge in [placed.bands[0].head.top(), last.bottom()] {
+                let pixels = edge * scale;
+                assert_close(pixels, pixels.round());
+            }
+        }
+    }
+
+    #[test]
+    fn place_yields_finite_non_negative_rects_for_a_degenerate_menu() {
+        let degenerate = [
+            Rect::ZERO,
+            Rect::from_min_size(pos2(f32::NAN, 0.0), vec2(100.0, 400.0)),
+            Rect::from_min_size(pos2(0.0, f32::NAN), vec2(100.0, 400.0)),
+            Rect::from_min_size(pos2(0.0, 0.0), vec2(f32::INFINITY, 400.0)),
+            Rect::from_min_size(pos2(0.0, 0.0), vec2(-100.0, -400.0)),
+        ];
+        for menu in degenerate {
+            let placed = place(menu, &[3, 2, 2], true, 1.0);
+            let rects = placed
+                .bands
+                .iter()
+                .flat_map(|band| {
+                    band.rule
+                        .into_iter()
+                        .chain([band.head])
+                        .chain(band.rows.clone())
+                })
+                .chain(placed.floor);
+            for rect in rects {
+                assert!(
+                    rect.min.x.is_finite()
+                        && rect.min.y.is_finite()
+                        && rect.width().is_finite()
+                        && rect.height().is_finite(),
+                    "{rect:?} in {menu:?} is not finite"
+                );
+                assert!(rect.width() >= 0.0, "{rect:?} in {menu:?}");
+                assert!(rect.height() >= 0.0, "{rect:?} in {menu:?}");
+            }
+        }
     }
 
     #[test]

@@ -174,6 +174,33 @@ area's own clip, and a child's shrunken clip never reaches it. So the pinned
 strips report how far down they reach, one seam sums that per frame, and every
 row that asks to be revealed is shifted by it.
 
+## One kind of result, three kinds of row
+
+The search route answers twenty tracks and nothing else; there is no mixed
+index this client can speak. So the menu and the results page derive the rest
+from those twenty: the albums the matches sit on, and every artist credited on
+them. The derivation is pure and lives beside the search state, and its bands
+are data — a kind, a shown count and a total — capped by the surface that draws
+them, three/two/two in the menu and ten apiece on the page, so another kind
+would be an entry rather than a redesign. The page can therefore only say what
+the twenty carry: the record a match sits on, and how many of the twenty name an
+artist. An artist or album that no track matches is not found.
+
+The faces are the one thing the answer cannot carry, so they arrive in a second,
+speculative read: one batched artist request for every artist a surface will
+draw, keyed by the record's own id rather than by the URI the answer echoes, and
+bounded in time because the worker answers commands in order and a speculative
+read must not hold a play behind it. A reply counts only while the surface that
+asked is the one on screen — with one exception, a menu's reply filling the page
+when Enter hands the overlay over, because the cache is keyed by artist and the
+faces are the same faces. An artist whose record carries no portrait, whose
+face never arrived, or whom the answer omitted falls back to the cover of the
+record the match sits on; only a read still in flight draws a raised slot.
+
+A revealed block belongs to the read on screen, not to the query: a new query
+starts every block at ten and at the top of the page, while a retry or a
+re-entry keeps both what was revealed and where the reader was.
+
 ## Who owns what
 
 - The binary owns the tokio runtime, and the `Engine` in headless mode. In the

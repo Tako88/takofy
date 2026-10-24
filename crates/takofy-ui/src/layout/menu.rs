@@ -403,7 +403,7 @@ mod tests {
 
     #[test]
     fn a_menu_taller_than_either_side_pins_to_the_top() {
-        let window = Rect::from_min_size(Pos2::ZERO, vec2(640.0, 480.0));
+        let window = Rect::from_min_size(Pos2::ZERO, vec2(WINDOW_MIN[0], WINDOW_MIN[1]));
         let button = Rect::from_min_size(pos2(300.0, 200.0), vec2(28.0, 28.0));
         let menu = place(Anchor::Button(button), vec2(200.0, 600.0), window);
         assert_eq!(menu.top(), window.top(), "the menu did not pin to the top");
@@ -476,7 +476,8 @@ mod tests {
     fn non_finite_inputs_fall_back_to_the_documented_rect() {
         let height = 4.0 * extent::ROW_H;
         let nan_button = Rect::from_min_size(pos2(f32::NAN, 0.0), vec2(28.0, 28.0));
-        let nan_window = Rect::from_min_size(pos2(0.0, f32::NAN), vec2(640.0, 480.0));
+        let nan_window =
+            Rect::from_min_size(pos2(0.0, f32::NAN), vec2(WINDOW_MIN[0], WINDOW_MIN[1]));
 
         for (anchor, size, window, expected_height) in [
             (Anchor::Button(nan_button), size(), window(), height),

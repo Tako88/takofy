@@ -355,6 +355,14 @@ pub(crate) fn start<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                         break;
                     }
                 }
+                Event::Command(Some(Command::LoadPortraits { query, artists })) => {
+                    let step =
+                        load_portraits(&mut host, &mut stop_rx, &task_notifier, &query, &artists)
+                            .await;
+                    if step.stopped() {
+                        break;
+                    }
+                }
                 Event::Command(Some(Command::LoadReleaseTracks { release, tracks })) => {
                     let step = load_release_tracks(
                         &mut host,
@@ -941,6 +949,36 @@ async fn load_search<H: SessionHost>(
             notifier.send(Update::SearchFailed {
                 query: query.to_owned(),
                 failure: search_failure(&error),
+            });
+            Step::Done
+        }
+    }
+}
+
+/// Reads one answer's artist portraits and announces them.
+///
+/// The query is echoed verbatim, like a search's, because the window drops a
+/// reply for a query it has typed past. A read that does not answer is silent:
+/// the row keeps the look of a cover that has not arrived.
+async fn load_portraits<H: SessionHost>(
+    host: &mut H,
+    stop: &mut StopReceiver<()>,
+    notifier: &Notifier,
+    query: &str,
+    artists: &[String],
+) -> Step {
+    match stop_or(stop, host.portraits(artists.to_vec())).await {
+        None => Step::Stopped,
+        Some(Some(portraits)) => {
+            notifier.send(Update::Portraits {
+                query: query.to_owned(),
+                portraits,
+            });
+            Step::Done
+        }
+        Some(None) => {
+            notifier.send(Update::PortraitsFailed {
+                query: query.to_owned(),
             });
             Step::Done
         }
@@ -1591,9 +1629,9 @@ mod tests {
     use takofy_core::engine::RootlistRead;
     use takofy_core::login::{SourceError, SourceErrorKind, TokenSet, TokenSource};
     use takofy_model::{
-        AlbumDetail, ArtistDetail, CoverImage, CoverUrl, Episode, FollowedArtist, FollowedShow,
-        LyricLine, Move, PlaylistAccess, PlaylistCover, PlaylistEntry, Removal, SavedAlbum, Show,
-        ShowDetail, TrackEntry, TrackLyrics,
+        AlbumDetail, ArtistDetail, ArtistPortrait, CoverImage, CoverUrl, Episode, FollowedArtist,
+        FollowedShow, LyricLine, Move, PlaylistAccess, PlaylistCover, PlaylistEntry, Removal,
+        SavedAlbum, Show, ShowDetail, TrackEntry, TrackLyrics,
     };
     use takofy_ui::signin::failure_message;
     use tokio::runtime::Runtime;
@@ -1969,6 +2007,23 @@ mod tests {
         }
     }
 
+    /// A scripted portrait read; the default is no portraits.
+    ///
+    /// `Pending` never answers, so a stop can be tested while the read is still
+    /// in flight (the same shape [`SearchScript`] uses).
+    #[derive(Clone)]
+    enum PortraitScript {
+        Ready(Vec<ArtistPortrait>),
+        Fail,
+        Pending,
+    }
+
+    impl Default for PortraitScript {
+        fn default() -> Self {
+            Self::Ready(Vec::new())
+        }
+    }
+
     /// A scripted release-label answer.
     #[derive(Clone, Default)]
     enum ReleaseScript {
@@ -2120,6 +2175,7 @@ mod tests {
         artist_script: Mutex<ArtistScript>,
         lyrics_script: Mutex<LyricsScript>,
         search_script: Mutex<SearchScript>,
+        portrait_script: Mutex<PortraitScript>,
         release_script: Mutex<ReleaseScript>,
         follow_script: Mutex<FollowScript>,
         move_script: Mutex<MoveScript>,
@@ -2148,6 +2204,9 @@ mod tests {
         searches: AtomicUsize,
         /// Every query asked for, in order, so an echo can be compared.
         searched: Mutex<Vec<String>>,
+        portrait_reads: AtomicUsize,
+        /// Every artist list asked for, in order.
+        portraited: Mutex<Vec<Vec<String>>>,
         releases: AtomicUsize,
         follow_writes: AtomicUsize,
         move_writes: AtomicUsize,
@@ -2163,6 +2222,7 @@ mod tests {
         artist_started: Mutex<Option<Sender<()>>>,
         lyrics_started: Mutex<Option<Sender<()>>>,
         search_started: Mutex<Option<Sender<()>>>,
+        portrait_started: Mutex<Option<Sender<()>>>,
         show_started: Mutex<Option<Sender<()>>>,
 
         last_follow: Mutex<Option<(String, bool)>>,
@@ -2555,6 +2615,29 @@ mod tests {
                     SearchScript::Ready(tracks) => Ok(tracks),
                     SearchScript::Fail => Err(SessionError::NotConnected),
                     SearchScript::Pending => std::future::pending().await,
+                }
+            }
+        }
+
+        fn portraits(
+            &self,
+            artists: Vec<String>,
+        ) -> impl Future<Output = Option<Vec<ArtistPortrait>>> + Send {
+            self.shared.portrait_reads.fetch_add(1, Ordering::SeqCst);
+            self.shared.portraited.lock().expect("lock").push(artists);
+            if let Some(tx) = self.shared.portrait_started.lock().expect("lock").take() {
+                let _ = tx.send(());
+            }
+            let connected = self.shared.connected.load(Ordering::SeqCst);
+            let script = self.shared.portrait_script.lock().expect("lock").clone();
+            async move {
+                if !connected {
+                    return None;
+                }
+                match script {
+                    PortraitScript::Ready(portraits) => Some(portraits),
+                    PortraitScript::Fail => None,
+                    PortraitScript::Pending => std::future::pending().await,
                 }
             }
         }
@@ -5103,6 +5186,7 @@ mod tests {
             album: None,
             album_uri: None,
             artist_uris: Vec::new(),
+            artist_names: Vec::new(),
             added_at: None,
             duration_ms: None,
             named: true,
@@ -6203,6 +6287,209 @@ mod tests {
         };
 
         run_ordered(runtime, window, teardown);
+    }
+
+    fn portrait(artist: &str) -> ArtistPortrait {
+        ArtistPortrait {
+            artist: artist.to_owned(),
+            portrait: CoverUrl::from_wire(&format!("https://i.scdn.co/image/{}", "ab".repeat(20))),
+        }
+    }
+
+    #[test]
+    fn a_scripted_portrait_read_echoes_the_query_and_the_list() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+        let portraits = vec![portrait("spotify:artist:a"), portrait("spotify:artist:b")];
+        *shared.portrait_script.lock().expect("lock") = PortraitScript::Ready(portraits.clone());
+        let query = "slow  tide";
+        let artists = vec!["spotify:artist:a".to_owned(), "spotify:artist:b".to_owned()];
+
+        let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::LoadPortraits {
+                    query: query.to_owned(),
+                    artists: artists.clone(),
+                })
+                .expect("portraits");
+            ui_end.updates.recv().expect("portraits")
+        });
+
+        assert_eq!(
+            update,
+            Update::Portraits {
+                query: query.to_owned(),
+                portraits,
+            }
+        );
+        assert_eq!(shared.portrait_reads.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            *shared.portraited.lock().expect("lock"),
+            vec![artists],
+            "the host must be asked for exactly the artists sent"
+        );
+    }
+
+    #[test]
+    fn a_failed_portrait_read_is_announced_silently() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+        *shared.portrait_script.lock().expect("lock") = PortraitScript::Fail;
+
+        let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::LoadPortraits {
+                    query: "slow tide".to_owned(),
+                    artists: vec!["spotify:artist:a".to_owned()],
+                })
+                .expect("portraits");
+            ui_end.updates.recv().expect("failure")
+        });
+
+        assert_eq!(
+            update,
+            Update::PortraitsFailed {
+                query: "slow tide".to_owned(),
+            },
+            "a failed portrait read carries no failure word"
+        );
+    }
+
+    #[test]
+    fn a_portrait_read_before_the_session_connects_is_announced_as_silent() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let host = FakeHost::new(ConnectScript::Fail, RootlistScript::default());
+        let shared = Arc::clone(&host.shared);
+
+        let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            ui_end
+                .commands
+                .send(Command::LoadPortraits {
+                    query: "slow tide".to_owned(),
+                    artists: vec!["spotify:artist:a".to_owned()],
+                })
+                .expect("portraits");
+            ui_end.updates.recv().expect("failure")
+        });
+
+        assert_eq!(
+            update,
+            Update::PortraitsFailed {
+                query: "slow tide".to_owned(),
+            }
+        );
+        assert_eq!(shared.portrait_reads.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_stop_during_a_portrait_read_shuts_down() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+        *shared.portrait_script.lock().expect("lock") = PortraitScript::Pending;
+        let (started_tx, started_rx) = channel();
+        *shared.portrait_started.lock().expect("lock") = Some(started_tx);
+
+        let runtime = runtime();
+        let (ui_end, _slot, worker) = start(runtime.handle(), host, store, source);
+
+        let window = move || {
+            loop {
+                if matches!(ui_end.updates.recv().expect("update"), Update::Playlists(_)) {
+                    break;
+                }
+            }
+            ui_end
+                .commands
+                .send(Command::LoadPortraits {
+                    query: "slow tide".to_owned(),
+                    artists: vec!["spotify:artist:a".to_owned()],
+                })
+                .expect("portraits");
+            started_rx.recv().expect("portraits started");
+        };
+        let teardown = move || async move {
+            // A hung stop must fail the test, not hang the suite.
+            tokio::time::timeout(Duration::from_secs(1), worker.finish())
+                .await
+                .expect("finish must resolve when the stop interrupts the portrait read");
+            assert_eq!(
+                shared.shutdowns.load(Ordering::SeqCst),
+                1,
+                "the shutdown must run when the stop interrupts the portrait read"
+            );
+        };
+
+        run_ordered(runtime, window, teardown);
+    }
+
+    #[test]
+    fn two_portrait_reads_queued_together_echo_their_own_queries() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let list = vec![playlist("spotify:playlist:a", "A")];
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+        let shared = Arc::clone(&host.shared);
+        let portraits = vec![portrait("spotify:artist:a")];
+        *shared.portrait_script.lock().expect("lock") = PortraitScript::Ready(portraits.clone());
+
+        let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            for query in ["first", "second"] {
+                ui_end
+                    .commands
+                    .send(Command::LoadPortraits {
+                        query: query.to_owned(),
+                        artists: vec!["spotify:artist:a".to_owned()],
+                    })
+                    .expect("portraits");
+            }
+            let mut received = Vec::new();
+            for _ in 0..2 {
+                received.push(ui_end.updates.recv().expect("portraits"));
+            }
+            received
+        });
+
+        assert_eq!(
+            updates,
+            vec![
+                Update::Portraits {
+                    query: "first".to_owned(),
+                    portraits: portraits.clone(),
+                },
+                Update::Portraits {
+                    query: "second".to_owned(),
+                    portraits,
+                },
+            ]
+        );
+        assert_eq!(
+            *shared.portraited.lock().expect("lock"),
+            vec![
+                vec!["spotify:artist:a".to_owned()],
+                vec!["spotify:artist:a".to_owned()],
+            ],
+            "each read asks for its own artists, in the order sent"
+        );
     }
 
     #[test]

@@ -39,6 +39,15 @@ impl Grid {
         items.div_ceil(self.columns)
     }
 
+    /// The height `items` cards occupy: their rows and the gaps between them.
+    pub fn height(&self, items: usize) -> f32 {
+        let rows = self.rows(items);
+        match rows {
+            0 => 0.0,
+            _ => rows as f32 * self.card_h + (rows - 1) as f32 * self.gap,
+        }
+    }
+
     /// The rect of the `index`-th card, in the same space as the area `grid`
     /// was given.
     ///
@@ -270,6 +279,29 @@ mod tests {
         let first = grid.card_rect(0);
         assert_eq!(first.min, available.min);
         assert_close(first.width(), grid.card_w);
+    }
+
+    #[test]
+    fn height_is_the_rows_and_the_gaps_between_them() {
+        let grid = grid(area(1000.0), CARD_MIN, GAP, EXTRA);
+        let card_h = grid.card_w + EXTRA;
+        assert_eq!(grid.height(0), 0.0);
+        assert_close(grid.height(1), card_h);
+        assert_close(grid.height(grid.columns), card_h);
+        assert_close(grid.height(grid.columns + 1), 2.0 * card_h + GAP);
+        for items in 1..=40 {
+            let last = grid.card_rect(items - 1);
+            assert_close(grid.height(items), last.bottom() - grid.card_rect(0).top());
+        }
+    }
+
+    #[test]
+    fn height_is_finite_for_degenerate_inputs() {
+        for width in [0.0, -5.0, f32::NAN, f32::INFINITY] {
+            let available = Rect::from_min_size(Pos2::ZERO, vec2(width, 10.0));
+            let grid = grid(available, f32::NAN, f32::NAN, f32::NAN);
+            assert!(grid.height(10).is_finite());
+        }
     }
 
     #[test]

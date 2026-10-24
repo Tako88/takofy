@@ -282,10 +282,10 @@ mod tests {
 
     #[test]
     fn the_narrowest_visible_window_clears_the_art_floor() {
-        // 1121 by 480 is the smallest window the panel is drawn at.
-        let band = band_at(vec2(1121.0, 480.0));
+        // Just above the width that hides the panel, at the shortest window.
+        let band = band_at(vec2(1121.0, crate::layout::WINDOW_MIN[1]));
         assert_eq!(band.width(), 270.0);
-        assert_eq!(band.height(), 390.0);
+        assert_eq!(band.height(), 410.0);
 
         let stack = stack_for(band, META, TABS);
         assert!(

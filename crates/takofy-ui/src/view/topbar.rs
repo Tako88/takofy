@@ -17,7 +17,7 @@ use crate::layout::{self, Sidebar};
 use crate::library::Library;
 use crate::library_filter::RootKind;
 use crate::route::Page;
-use crate::search::{Act, KeyInput, MenuView};
+use crate::search::{Act, KeyInput};
 use crate::theme::icon::Size;
 use crate::theme::{
     MonoWeight, Tokens, Weight, extent, fonts, radius, space, stroke, text, tracking,
@@ -313,7 +313,7 @@ fn trail(
 }
 
 /// The placeholder, in every topbar (R17).
-const PLACEHOLDER: &str = "Track names, artists, albums";
+const PLACEHOLDER: &str = "Artists, albums or tracks";
 
 /// The search field: a real text edit inside the painted box.
 ///
@@ -516,24 +516,15 @@ fn search(
         StrokeKind::Inside,
     );
 
-    let (shown, floor) = match search.menu_view() {
-        MenuView::Rows { tracks, floor, .. } => (tracks.len(), floor),
-        // There is no row to mark when the menu says nothing true (R14).
-        MenuView::Empty | MenuView::Failed(_) | MenuView::Nothing => (0, false),
-    };
-    let act = search.step(
-        KeyInput {
-            down,
-            up,
-            enter: enter_once,
-            escape,
-            typed,
-            clicked_field,
-            focused,
-        },
-        shown,
-        floor,
-    );
+    let act = search.step(KeyInput {
+        down,
+        up,
+        enter: enter_once,
+        escape,
+        typed,
+        clicked_field,
+        focused,
+    });
     // `OpenResults` is applied by the shell, and only when no other command took
     // the frame; the shell is the one that surrenders the field's focus, so a
     // dropped action leaves the menu open with the keyboard still in the field.
@@ -686,5 +677,10 @@ mod tests {
             x <= after_glyph + space::S5,
             "the text starts at {x}, far past the glyph"
         );
+    }
+
+    #[test]
+    fn the_placeholder_promises_artists_albums_and_tracks() {
+        assert_eq!(PLACEHOLDER, "Artists, albums or tracks");
     }
 }

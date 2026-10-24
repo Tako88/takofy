@@ -11,8 +11,9 @@ use takofy_core::credentials::AccessToken;
 use takofy_core::engine::{Engine, EngineError, RootlistRead};
 use takofy_core::playback::{Playback, PlaybackError, PlaybackEvent, Volume};
 use takofy_model::{
-    AlbumDetail, ArtistDetail, CoverUrl, FollowedArtist, FollowedShow, Move, PlaylistAccess,
-    PlaylistEntry, Removal, Revision, SavedAlbum, ShowDetail, TrackEntry, TrackLyrics,
+    AlbumDetail, ArtistDetail, ArtistPortrait, CoverUrl, FollowedArtist, FollowedShow, Move,
+    PlaylistAccess, PlaylistEntry, Removal, Revision, SavedAlbum, ShowDetail, TrackEntry,
+    TrackLyrics,
 };
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::oneshot::Receiver;
@@ -218,6 +219,15 @@ pub(crate) trait SessionHost: Send + 'static {
         query: &str,
     ) -> impl Future<Output = Result<Vec<TrackEntry>, SessionError>> + Send;
 
+    /// The artists' portraits, in the order asked for, from one batched read.
+    ///
+    /// `None` when the read failed: it is speculative, so it has no failure to
+    /// report to the window.
+    fn portraits(
+        &self,
+        artists: Vec<String>,
+    ) -> impl Future<Output = Option<Vec<ArtistPortrait>>> + Send;
+
     /// The artists an artist is heard with, named.
     fn related(
         &self,
@@ -307,6 +317,13 @@ impl SessionHost for LiveSession {
         match &self.engine {
             Some(engine) => engine.rootlist().await.map_err(SessionError::Engine),
             None => Err(SessionError::NotConnected),
+        }
+    }
+
+    async fn portraits(&self, artists: Vec<String>) -> Option<Vec<ArtistPortrait>> {
+        match &self.engine {
+            Some(engine) => engine.portraits(&artists).await,
+            None => None,
         }
     }
 
