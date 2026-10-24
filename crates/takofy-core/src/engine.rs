@@ -14,16 +14,18 @@ use crate::playlist_edit::{self, PlaylistError};
 use crate::remote::{
     ROOTLIST_WIRE, RemoteContext, RemoteRootlist, label_playlists, label_tracks, read_album,
     read_artist, read_followed_artists, read_followed_shows, read_liked_tracks, read_lyrics,
-    read_playlist_state, read_related, read_release_tracks, read_saved_albums, read_saved_state,
-    read_show, write_add, write_create, write_follow, write_like, write_move, write_remove,
-    write_rename, write_rootlist_add, write_rootlist_move, write_rootlist_remove, write_saved,
+    read_playlist_state, read_portraits, read_related, read_release_tracks, read_saved_albums,
+    read_saved_state, read_show, write_add, write_create, write_follow, write_like, write_move,
+    write_remove, write_rename, write_rootlist_add, write_rootlist_move, write_rootlist_remove,
+    write_saved,
 };
 use crate::rootlist::{RootlistError, fetch_all};
 use crate::search::search_uri;
 use crate::show::ShowError;
 use takofy_model::{
-    AlbumDetail, ArtistDetail, CoverUrl, FollowedArtist, FollowedShow, Move, PlaylistAccess,
-    PlaylistEntry, Removal, Revision, SavedAlbum, ShowDetail, TrackEntry, TrackLyrics,
+    AlbumDetail, ArtistDetail, ArtistPortrait, CoverUrl, FollowedArtist, FollowedShow, Move,
+    PlaylistAccess, PlaylistEntry, Removal, Revision, SavedAlbum, ShowDetail, TrackEntry,
+    TrackLyrics,
 };
 
 /// Why an [`Engine`] operation failed.
@@ -300,6 +302,14 @@ impl Engine {
         Ok(read_related(&self.session, uris).await?)
     }
 
+    /// The artists' portraits, in the order asked for, from one batched read.
+    ///
+    /// `None` when the request failed or was abandoned: a speculative read, so
+    /// its failure is silent and drawn like a cover that has not arrived.
+    pub async fn portraits(&self, artists: &[String]) -> Option<Vec<ArtistPortrait>> {
+        read_portraits(&self.session, artists).await
+    }
+
     /// One release's track names, in the release's own order.
     ///
     /// Cannot fail: a track that cannot be labelled falls back to its URI.
@@ -423,7 +433,7 @@ fn page_cover(context: Option<CoverUrl>, rows: &[TrackEntry]) -> Option<CoverUrl
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use super::{page_cover, search_page};
+    use super::{Engine, page_cover, search_page};
     use crate::context::{ContextError, Page, PageSource, PageTrack, Resolved};
     use takofy_model::{CoverUrl, TrackEntry};
 
@@ -507,11 +517,22 @@ mod tests {
             album: None,
             album_uri: None,
             artist_uris: Vec::new(),
+            artist_names: Vec::new(),
             added_at: None,
             duration_ms: None,
             named: true,
             cover: None,
         }
+    }
+
+    #[tokio::test]
+    async fn an_empty_portrait_request_answers_nothing_without_a_request() {
+        // The empty case returns before the session is touched, which is what
+        // makes a speculative ask free.
+        let engine = Engine {
+            session: librespot::core::Session::new(librespot::core::SessionConfig::default(), None),
+        };
+        assert_eq!(engine.portraits(&[]).await, Some(Vec::new()));
     }
 
     #[test]

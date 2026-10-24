@@ -28,7 +28,7 @@ use tracks::{Track, solve};
 /// touched: a default that hides a region is a region a user never finds.
 pub const WINDOW_DEFAULT: [f32; 2] = [1240.0, 720.0];
 /// Smallest the window may be dragged, in points.
-pub const WINDOW_MIN: [f32; 2] = [640.0, 480.0];
+pub const WINDOW_MIN: [f32; 2] = [640.0, 500.0];
 
 /// At and below this width the Now Playing column narrows.
 pub const NOWPLAYING_NARROW_MAX: f32 = 1360.0;

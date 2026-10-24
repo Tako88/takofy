@@ -366,6 +366,7 @@ mod tests {
             album: None,
             album_uri: None,
             artist_uris: Vec::new(),
+            artist_names: Vec::new(),
             added_at: None,
             duration_ms: None,
             named: true,
@@ -827,6 +828,7 @@ mod tests {
             uri: "spotify:track:a".to_owned(),
             album_uri: Some("spotify:album:a".to_owned()),
             artist_uris: vec!["spotify:artist:b".to_owned()],
+            artist_names: vec!["b".to_owned()],
             ..track(0)
         }
     }

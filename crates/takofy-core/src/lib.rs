@@ -22,6 +22,7 @@ pub mod show;
 mod collected;
 mod collection;
 mod cover;
+mod portrait;
 mod remote;
 mod search;
 mod wire;

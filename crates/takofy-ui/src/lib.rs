@@ -30,6 +30,7 @@ pub mod repeat;
 pub mod route;
 pub mod scroll;
 pub mod search;
+pub mod search_index;
 pub mod selection;
 pub mod shuffle;
 pub mod sidebar_kind;

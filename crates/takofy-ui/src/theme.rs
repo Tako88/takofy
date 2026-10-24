@@ -200,6 +200,10 @@ pub mod extent {
     /// A search menu row's cover tile, 2.25 rem. The same box as a library
     /// row's art, named for the row that reads it.
     pub const MENU_COVER: f32 = 36.0;
+    /// A band heading's box: the reference's `8 / 12 / 4` padding about one
+    /// line of mono caps.
+    pub const MENU_HEAD_H: f32 =
+        super::space::S2 + super::text::XXS * super::leading::NORMAL + super::space::S1;
     /// The narrowest title column a menu row keeps while it also draws
     /// `MENU_COVER`. Below it the row drops the cover and hands its width to the
     /// text: a narrow row loses a column before it loses a line. Not a reference
@@ -940,6 +944,11 @@ mod tests {
     #[test]
     fn the_rule_is_heavier_than_the_hairline() {
         const { assert!(stroke::HAIRLINE < stroke::RULE) };
+    }
+
+    #[test]
+    fn the_menu_heading_is_padding_about_one_line_of_caps() {
+        assert_eq!(extent::MENU_HEAD_H, 27.0);
     }
 
     #[test]

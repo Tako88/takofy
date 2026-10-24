@@ -889,6 +889,7 @@ mod tests {
             album: Some("A Record".to_owned()),
             album_uri: Some("spotify:album:a".to_owned()),
             artist_uris: vec!["spotify:artist:b".to_owned()],
+            artist_names: vec!["Slow Tide".to_owned()],
             added_at: None,
             duration_ms: None,
             named: true,
@@ -2030,8 +2031,11 @@ mod tests {
     }
 
     #[test]
-    fn the_menu_stays_inside_a_640_by_480_window_from_every_corner() {
-        let window = Rect::from_min_size(Pos2::ZERO, vec2(640.0, 480.0));
+    fn the_menu_stays_inside_the_minimum_window_from_every_corner() {
+        let window = Rect::from_min_size(
+            Pos2::ZERO,
+            vec2(crate::layout::WINDOW_MIN[0], crate::layout::WINDOW_MIN[1]),
+        );
         let corners = [
             pos2(0.0, 0.0),
             pos2(window.width() - 28.0, 0.0),

@@ -1293,6 +1293,7 @@ mod tests {
             album: None,
             album_uri: None,
             artist_uris: Vec::new(),
+            artist_names: Vec::new(),
             added_at: None,
             duration_ms: None,
             named: true,
@@ -1307,6 +1308,7 @@ mod tests {
             album: Some("Record".to_owned()),
             album_uri: Some("spotify:album:rec".to_owned()),
             artist_uris: vec!["spotify:artist:band".to_owned()],
+            artist_names: vec!["Band".to_owned()],
             ..track(uri, "t0")
         }
     }
@@ -1553,6 +1555,7 @@ mod tests {
             album: None,
             album_uri: None,
             artist_uris: Vec::new(),
+            artist_names: Vec::new(),
             added_at: None,
             duration_ms: None,
             named: true,
@@ -2595,6 +2598,7 @@ mod tests {
             album: Some("Record".to_owned()),
             album_uri: None,
             artist_uris: Vec::new(),
+            artist_names: Vec::new(),
             added_at: None,
             duration_ms: Some(222_000),
             named: true,
@@ -2907,6 +2911,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             album: Some("Record".to_owned()),
             album_uri: None,
             artist_uris: Vec::new(),
+            artist_names: Vec::new(),
             added_at: None,
             duration_ms: Some(222_000),
             named: true,

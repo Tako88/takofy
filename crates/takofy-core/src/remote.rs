@@ -4,6 +4,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use futures_util::StreamExt;
 use http::header::{ACCEPT, CONTENT_TYPE};
@@ -21,8 +22,8 @@ use librespot::protocol::metadata::{
 };
 use protobuf::Message as _;
 use takofy_model::{
-    AlbumDetail, ArtistDetail, CoverUrl, Episode, FollowedArtist, FollowedShow, Move,
-    PlaylistAccess, PlaylistCover, PlaylistEntry, PublishedAt, Removal, Revision, SavedAlbum,
+    AlbumDetail, ArtistDetail, ArtistPortrait, CoverUrl, Episode, FollowedArtist, FollowedShow,
+    Move, PlaylistAccess, PlaylistCover, PlaylistEntry, PublishedAt, Removal, Revision, SavedAlbum,
     ShowDetail, TrackEntry, TrackLyrics,
 };
 
@@ -40,6 +41,7 @@ use crate::cover::{pick_cover, pick_images_cover};
 use crate::followed::{self, FollowedError, ShowCard};
 use crate::lyrics::{self, LyricsError};
 use crate::playlist_edit;
+use crate::portrait::{bounded, portrait_from, portraits_of};
 use crate::rootlist::{RootlistError, RootlistPage, RootlistSource, RootlistWire, parse_rootlist};
 use crate::show::{ShowError, detail as show_detail, episode_uris};
 
@@ -965,6 +967,44 @@ pub(crate) async fn read_followed_artists(
     Ok(artists)
 }
 
+/// How long a speculative portrait read may take before it is abandoned.
+///
+/// A surface asks for at most ten artists in one request, so this is generous
+/// for the bytes and short enough that the queue behind it barely notices.
+const PORTRAIT_LIMIT: Duration = Duration::from_secs(3);
+
+/// The portraits for `artists`, in the order asked for, from one batched read.
+///
+/// An empty list asks for nothing and answers nothing. The read is bounded: it
+/// is speculative, and the worker answers commands one at a time, so a stalled
+/// request must not hold the queue behind it. A failed or abandoned request is
+/// `None`; a partial answer logs how short it was and is otherwise drawn as it
+/// came.
+pub(crate) async fn read_portraits(
+    session: &Session,
+    artists: &[String],
+) -> Option<Vec<ArtistPortrait>> {
+    if artists.is_empty() {
+        return Some(Vec::new());
+    }
+    let uris = distinct_uris(artists);
+    let answered = bounded(
+        request_parsed(session, &uris, ExtensionKind::ARTIST_V4, portrait_from),
+        PORTRAIT_LIMIT,
+    )
+    .await;
+    let Some(found) = answered else {
+        log::debug!("portrait read abandoned after {PORTRAIT_LIMIT:?}");
+        return None;
+    };
+    let found = found?;
+    let portraits = portraits_of(&uris, &found);
+    if portraits.len() < uris.len() {
+        log::warn!("{} of {} portraits came back", portraits.len(), uris.len());
+    }
+    Some(portraits)
+}
+
 /// The related artists an artist page shows as cards, in the payload's order.
 ///
 /// An empty list asks for no metadata at all. The cards are read one artist at a
@@ -1087,6 +1127,7 @@ struct TrackLabel {
     album: Option<String>,
     album_uri: Option<String>,
     artist_uris: Vec<String>,
+    artist_names: Vec<String>,
     duration_ms: Option<u32>,
     cover: Option<CoverUrl>,
 }
@@ -1161,6 +1202,7 @@ fn expand_labels(items: &[PageTrack], labels: &Labels) -> Vec<TrackEntry> {
                 album: label.album.clone(),
                 album_uri: label.album_uri.clone(),
                 artist_uris: label.artist_uris.clone(),
+                artist_names: label.artist_names.clone(),
                 added_at: item.added_at,
                 duration_ms: label.duration_ms,
                 named: true,
@@ -1173,6 +1215,7 @@ fn expand_labels(items: &[PageTrack], labels: &Labels) -> Vec<TrackEntry> {
                 album: None,
                 album_uri: None,
                 artist_uris: Vec::new(),
+                artist_names: Vec::new(),
                 added_at: item.added_at,
                 duration_ms: None,
                 named: false,
@@ -1214,6 +1257,7 @@ fn label_from_episode(episode: &Episode) -> TrackLabel {
         album: entry.album,
         album_uri: entry.album_uri,
         artist_uris: entry.artist_uris,
+        artist_names: entry.artist_names,
         duration_ms: entry.duration_ms,
         cover: entry.cover,
     }
@@ -1434,23 +1478,25 @@ fn label_of(track: &TrackMessage) -> Option<TrackLabel> {
         .album
         .as_ref()
         .and_then(|album| uri_of(album.gid.as_deref(), |id| SpotifyUri::Album { id }));
-    let artist_uris = track
+    // One pass builds both lists, so a name can never be paired with another
+    // artist's URI or outlive the list it describes.
+    let credits: Vec<(String, String)> = track
         .artist
         .iter()
         .map_while(|artist| {
-            artist
-                .name
-                .as_deref()
-                .filter(|name| !name.is_empty())
-                .and_then(|_| uri_of(artist.gid.as_deref(), |id| SpotifyUri::Artist { id }))
+            let name = artist.name.as_deref().filter(|name| !name.is_empty())?;
+            let uri = uri_of(artist.gid.as_deref(), |id| SpotifyUri::Artist { id })?;
+            Some((uri, name.to_owned()))
         })
         .collect();
+    let (artist_uris, artist_names) = credits.into_iter().unzip();
     Some(TrackLabel {
         title,
         artists,
         album,
         album_uri,
         artist_uris,
+        artist_names,
         duration_ms: duration_ms(track.duration),
         cover: track
             .album
@@ -1617,6 +1663,7 @@ mod tests {
                         album: None,
                         album_uri: None,
                         artist_uris: Vec::new(),
+                        artist_names: Vec::new(),
                         duration_ms: None,
                         cover: None,
                     },
@@ -1641,6 +1688,7 @@ mod tests {
                 album: album.map(str::to_owned),
                 album_uri: None,
                 artist_uris: Vec::new(),
+                artist_names: Vec::new(),
                 duration_ms,
                 cover: None,
             },
@@ -1723,6 +1771,7 @@ mod tests {
                 album: Some("Record".to_owned()),
                 album_uri: Some("spotify:album:x".to_owned()),
                 artist_uris: vec!["spotify:artist:y".to_owned()],
+                artist_names: vec!["Band".to_owned()],
                 duration_ms: None,
                 cover: None,
             },
@@ -1730,8 +1779,10 @@ mod tests {
         let entries = expand_labels(&items(&["a", "b"]), &labels);
         assert_eq!(entries[0].album_uri.as_deref(), Some("spotify:album:x"));
         assert_eq!(entries[0].artist_uris, vec!["spotify:artist:y".to_owned()]);
+        assert_eq!(entries[0].artist_names, vec!["Band".to_owned()]);
         assert_eq!(entries[1].album_uri, None);
         assert!(entries[1].artist_uris.is_empty());
+        assert!(entries[1].artist_names.is_empty());
     }
 
     #[test]
@@ -1984,6 +2035,60 @@ mod tests {
     }
 
     #[test]
+    fn label_of_reads_every_artist_name_in_order_with_its_uri() {
+        let first_gid: Vec<u8> = (17..=32).collect();
+        let second_gid: Vec<u8> = (33..=48).collect();
+        let track = track_with(
+            album(Some("Record"), None),
+            vec![
+                artist(Some("A"), Some(first_gid)),
+                artist(Some("B"), Some(second_gid)),
+            ],
+        );
+        let label = label_of(&track).expect("a named track");
+        assert_eq!(label.artist_names, vec!["A".to_owned(), "B".to_owned()]);
+        assert_eq!(label.artist_names.len(), label.artist_uris.len());
+    }
+
+    #[test]
+    fn a_gidless_artist_ends_the_artist_names_with_the_uris() {
+        let first_gid: Vec<u8> = (17..=32).collect();
+        let track = track_with(
+            album(Some("Record"), None),
+            vec![
+                artist(Some("A"), Some(first_gid)),
+                artist(Some("B"), None),
+                artist(Some("C"), Some(vec![49; 16])),
+            ],
+        );
+        let label = label_of(&track).expect("a named track");
+        assert_eq!(label.artist_names, vec!["A".to_owned()]);
+        assert_eq!(label.artist_names.len(), label.artist_uris.len());
+    }
+
+    #[test]
+    fn a_nameless_artist_ends_the_artist_names_with_the_uris() {
+        let track = track_with(
+            album(Some("Record"), None),
+            vec![
+                artist(Some("A"), Some(vec![5; 16])),
+                artist(None, Some(vec![6; 16])),
+                artist(Some("C"), Some(vec![7; 16])),
+            ],
+        );
+        let label = label_of(&track).expect("a named track");
+        assert_eq!(label.artist_names, vec!["A".to_owned()]);
+        assert_eq!(label.artist_names.len(), label.artist_uris.len());
+    }
+
+    #[test]
+    fn an_unlabelled_fallback_has_no_artist_names_or_uris() {
+        let entries = expand_labels(&items(&["a"]), &Labels::new());
+        assert!(entries[0].artist_names.is_empty());
+        assert!(entries[0].artist_uris.is_empty());
+    }
+
+    #[test]
     fn an_album_uri_survives_an_empty_album_name() {
         let album_gid: Vec<u8> = (33..=48).collect();
         let track = track_with(
@@ -2196,6 +2301,7 @@ mod tests {
                 album: None,
                 album_uri: None,
                 artist_uris: Vec::new(),
+                artist_names: Vec::new(),
                 duration_ms: None,
                 cover: Some(cover_url()),
             },
@@ -2217,6 +2323,7 @@ mod tests {
                 album: None,
                 album_uri: None,
                 artist_uris: Vec::new(),
+                artist_names: Vec::new(),
                 duration_ms: None,
                 cover: Some(cover_url()),
             },

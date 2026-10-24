@@ -750,6 +750,7 @@ mod tests {
             album: Some("A Record".to_owned()),
             album_uri: Some("spotify:album:a".to_owned()),
             artist_uris: vec!["spotify:artist:b".to_owned()],
+            artist_names: vec!["A Band".to_owned()],
             added_at: None,
             duration_ms: None,
             named: true,
