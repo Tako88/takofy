@@ -720,6 +720,22 @@ mod tests {
     }
 
     #[test]
+    fn the_place_driven_menu_height_uses_the_pixel_grid_the_view_passes() {
+        let rows = [3, 2, 2];
+        let menu = menu_rect(field(), window(), bands_height(&rows, true));
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            let placed = place(menu, &rows, true, scale);
+            let last = placed.floor.expect("a floor was asked for");
+            assert_close(last.bottom(), menu.bottom().round_to_pixels(scale));
+            assert_close(menu.height(), bands_height(&rows, true));
+            for edge in [placed.bands[0].head.top(), last.bottom()] {
+                let pixels = edge * scale;
+                assert_close(pixels, pixels.round());
+            }
+        }
+    }
+
+    #[test]
     fn place_yields_finite_non_negative_rects_for_a_degenerate_menu() {
         let degenerate = [
             Rect::ZERO,

@@ -68,6 +68,11 @@ impl TakofyApp {
         if let Some(command) = self.library.search.request(page.as_deref()) {
             let _ = self.ui_end.commands.send(command);
         }
+        // The portraits are a second read, so a reply that landed this frame is
+        // asked for in this same pass.
+        if let Some(command) = self.library.search.request_portraits() {
+            let _ = self.ui_end.commands.send(command);
+        }
     }
 
     /// Asks for the frame that sends the read the draw just armed.
@@ -76,7 +81,7 @@ impl TakofyApp {
     /// Forward onto a page that has to ask again — would otherwise wait for the
     /// next input event. The page's query is copied out for the same reason
     /// [`Self::request_search`] copies it.
-    fn wake_search(&self, ctx: &egui::Context) {
+    fn wake_search(&mut self, ctx: &egui::Context) {
         let page = self.library.page_search_query().map(str::to_owned);
         if self.library.search.wants(page.as_deref()) {
             ctx.request_repaint();
@@ -920,7 +925,7 @@ mod tests {
             focused: true,
             ..takofy_ui::search::KeyInput::default()
         };
-        let _ = library.search.step(input, 0, false);
+        let _ = library.search.step(input);
     }
 
     #[test]
@@ -954,15 +959,12 @@ mod tests {
         );
 
         assert!(commands.is_empty());
-        assert_eq!(
-            library.search.menu_view(),
-            takofy_ui::search::MenuView::Rows {
-                tracks: &[track("spotify:track:a")],
-                total: 1,
-                floor: false,
-            },
-            "a drained reply reaches the search state"
-        );
+        let listing = library
+            .search
+            .listing()
+            .expect("a drained reply reaches the search state");
+        assert_eq!(listing.answer, &[track("spotify:track:a")]);
+        assert_eq!(listing.shape.len(), 1);
     }
 
     /// Runs one frame of the real `logic` pass, which is where a search read is
@@ -995,13 +997,51 @@ mod tests {
     }
 
     #[test]
+    fn logic_asks_for_the_portraits_after_a_search_reply_with_artists() {
+        let (mut app, mut received) = test_window();
+        app.state = SignIn::SignedIn;
+        type_search(&mut app.library, "a");
+        logic_frame(&mut app);
+        assert_eq!(
+            received.try_recv().expect("the search read"),
+            Command::Search {
+                query: "a".to_owned()
+            }
+        );
+
+        let mut first = track("t0");
+        first.artists = "One".to_owned();
+        first.artist_uris = vec!["spotify:artist:1".to_owned()];
+        first.artist_names = vec!["One".to_owned()];
+        let mut second = track("t1");
+        second.artists = "Two".to_owned();
+        second.artist_uris = vec!["spotify:artist:2".to_owned()];
+        second.artist_names = vec!["Two".to_owned()];
+        app.library.apply(&Update::Search {
+            query: "a".to_owned(),
+            tracks: vec![first, second],
+        });
+
+        logic_frame(&mut app);
+        assert_eq!(
+            received.try_recv().expect("the portrait read"),
+            Command::LoadPortraits {
+                query: "a".to_owned(),
+                artists: vec!["spotify:artist:1".to_owned(), "spotify:artist:2".to_owned()],
+            }
+        );
+        logic_frame(&mut app);
+        assert!(received.try_recv().is_err(), "one portrait read at a time");
+    }
+
+    #[test]
     fn focus_alone_asks_for_no_search() {
         let (mut app, mut received) = test_window();
         let focused = takofy_ui::search::KeyInput {
             focused: true,
             ..takofy_ui::search::KeyInput::default()
         };
-        let _ = app.library.search.step(focused, 0, false);
+        let _ = app.library.search.step(focused);
 
         logic_frame(&mut app);
         assert!(

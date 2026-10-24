@@ -1235,15 +1235,11 @@ mod tests {
             query: "a".to_owned(),
             tracks: vec![track()],
         });
-        let _ = search.step(
-            crate::search::KeyInput {
-                focused: true,
-                clicked_field: true,
-                ..crate::search::KeyInput::default()
-            },
-            1,
-            false,
-        );
+        let _ = search.step(crate::search::KeyInput {
+            focused: true,
+            clicked_field: true,
+            ..crate::search::KeyInput::default()
+        });
         assert!(search.is_open(), "the search menu is drawn");
         search
     }
@@ -1451,7 +1447,10 @@ mod tests {
             .iter()
             .enumerate()
             .filter_map(|(index, clipped)| match &clipped.shape {
-                Shape::Rect(shape) if shape.fill == tokens.palette.surface_raised => {
+                Shape::Rect(shape)
+                    if shape.fill == tokens.palette.surface_raised
+                        && shape.rect.width() > extent::MENU_COVER =>
+                {
                     Some((index, shape.rect))
                 }
                 _ => None,

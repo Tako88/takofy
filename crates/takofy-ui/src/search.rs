@@ -4,8 +4,8 @@
 //! decides and never decide anything themselves. The rules it encodes are the
 //! brief's R1–R3 and R12–R14, and each one has a test below.
 //!
-//! Two reads share one key space. The menu holds the first five tracks the
-//! wire answered; the page holds the whole answer. They are keyed by the same
+//! Two reads share one key space. The menu holds the answer it derives its
+//! bands from; the page holds the whole answer. They are keyed by the same
 //! collapsed query, so one reply can fill both, and a reply for a query the
 //! user has typed past fills neither (R14).
 
@@ -13,9 +13,8 @@ use takofy_model::TrackEntry;
 
 use crate::library::Load;
 use crate::message::{Command, Failure, Update};
-
-/// How many tracks the drop-down shows; the wire answers twenty at most (R12).
-const SHOWN: usize = 5;
+use crate::portraits::{Portrait, Portraits};
+use crate::search_index::{Index, Kind, MENU, Row, Shape};
 
 /// Trims and joins runs of whitespace with one space, or `None` when blank.
 ///
@@ -41,6 +40,19 @@ pub use crate::menu::Device;
 struct Read {
     key: Option<String>,
     load: Load<Vec<TrackEntry>>,
+    /// The shape derived from `load` when it is `Ready`.
+    index: Option<Index>,
+}
+
+impl Read {
+    /// Takes `load` as this read's answer, deriving its index when it is ready.
+    fn settle(&mut self, load: Load<Vec<TrackEntry>>) {
+        self.index = match &load {
+            Load::Ready(tracks) => Some(Index::derive(tracks)),
+            Load::Idle | Load::Loading | Load::Failed(_) => None,
+        };
+        self.load = load;
+    }
 }
 
 /// Which of the two reads a request would take.
@@ -81,22 +93,29 @@ pub enum Act {
     None,
     /// Play the result at this index of the answer the menu came from (R16).
     Play(usize),
+    /// Open the album at this index of the derived index.
+    OpenAlbum(usize),
+    /// Open the artist at this index of the derived index.
+    OpenArtist(usize),
     /// Open the results page for the field's query (R1, R12).
     OpenResults,
     /// Escape cleared the query and closed the menu (R3 step two).
     Close,
 }
 
+/// The current answer with the bands the menu draws from it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Listing<'a> {
+    pub answer: &'a [TrackEntry],
+    pub index: &'a Index,
+    pub shape: Shape,
+}
+
 /// What the drop-down has to say, from the menu read alone.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MenuView<'a> {
-    /// The first [`SHOWN`] tracks, the total the wire answered, and whether a
-    /// floor row is drawn (R12).
-    Rows {
-        tracks: &'a [TrackEntry],
-        total: usize,
-        floor: bool,
-    },
+    /// The current answer, its derived index, and the bands the menu draws.
+    Bands(Listing<'a>),
     /// The answer was empty: one muted line, nothing to press (R13).
     Empty,
     /// The read failed: the same line with its own words (R13).
@@ -115,19 +134,20 @@ pub struct Search {
     /// Whether the drop-down is drawn. Typing sets it; only the shell closes it,
     /// once per frame, after the field and the menu have both been drawn.
     open: bool,
-    /// The marked row, `Some(shown)` for the floor row, `None` for the field
-    /// (R1).
+    /// The marked row's ordinal in the walk, or `None` for the field (R1).
     mark: Option<usize>,
     /// The input that chose the mark, so the two highlight tiers never mix
     /// (R9).
     device: Device,
-    /// The first five results the menu draws.
+    /// The answer the menu derives its bands from.
     menu: Read,
     /// The whole answer the results page draws.
     page: Read,
     /// The key on the wire. One read at a time, so a burst of keystrokes cannot
     /// queue twenty requests.
     inflight: Option<String>,
+    /// The artists' portraits the menu draws, and the read that fills them.
+    portraits: Portraits,
 }
 
 impl Search {
@@ -141,9 +161,56 @@ impl Search {
         self.open
     }
 
-    /// The marked row: `None` for the field, `Some(5)` for the floor row.
+    /// The marked row's ordinal in the walk, or `None` for the field.
     pub fn mark(&self) -> Option<usize> {
         self.mark
+    }
+
+    /// The current answer with its derived shape, or `None` when the menu read
+    /// is not about the text as it stands.
+    pub fn listing(&self) -> Option<Listing<'_>> {
+        let key = collapse(&self.text)?;
+        if self.menu.key.as_deref() != Some(key.as_str()) {
+            return None;
+        }
+        let Load::Ready(answer) = &self.menu.load else {
+            return None;
+        };
+        let index = self.menu.index.as_ref()?;
+        Some(Listing {
+            answer,
+            index,
+            shape: index.shape(MENU),
+        })
+    }
+
+    /// The row the mark resolves to in the current shape, or `None` for the
+    /// field and for a stale ordinal.
+    pub fn marked(&self) -> Option<Row> {
+        self.listing()?.shape.row(self.mark?)
+    }
+
+    /// The URI of derived album `index`, when the current answer has one.
+    pub fn album_uri(&self, index: usize) -> Option<String> {
+        self.listing()?
+            .index
+            .albums
+            .get(index)
+            .map(|album| album.uri.clone())
+    }
+
+    /// The URI of derived artist `index`, when the current answer has one.
+    pub fn artist_uri(&self, index: usize) -> Option<String> {
+        self.listing()?
+            .index
+            .artists
+            .get(index)
+            .map(|artist| artist.uri.clone())
+    }
+
+    /// What is known about `artist`'s portrait this frame.
+    pub fn portrait(&self, artist: &str) -> Portrait<'_> {
+        self.portraits.get(artist)
     }
 
     /// Which input last chose the mark.
@@ -163,10 +230,9 @@ impl Search {
             Load::Idle | Load::Loading => MenuView::Nothing,
             Load::Failed(failure) => MenuView::Failed(*failure),
             Load::Ready(tracks) if tracks.is_empty() => MenuView::Empty,
-            Load::Ready(tracks) => MenuView::Rows {
-                tracks: &tracks[..tracks.len().min(SHOWN)],
-                total: tracks.len(),
-                floor: tracks.len() > SHOWN,
+            Load::Ready(_) => match self.listing() {
+                Some(listing) => MenuView::Bands(listing),
+                None => MenuView::Nothing,
             },
         }
     }
@@ -174,9 +240,9 @@ impl Search {
     /// The whole answer the menu's query holds, or `None` when the menu has no
     /// answer for the text as it stands.
     ///
-    /// [`Self::menu_view`] carries only the five rows the menu draws; the queue
-    /// is the whole answer the wire returned (R16), so the shell asks for it
-    /// here rather than taking the menu's first five.
+    /// [`Self::menu_view`] carries only the rows the menu draws; the queue is
+    /// the whole answer the wire returned (R16), so the shell asks for it here
+    /// rather than taking the menu's capped prefix.
     pub fn answer(&self) -> Option<&[TrackEntry]> {
         let key = collapse(&self.text)?;
         if self.menu.key.as_deref() != Some(key.as_str()) {
@@ -206,7 +272,9 @@ impl Search {
     /// can never be drawn (R14). A programmatic edit — the clear control — calls
     /// this too, because only the text edit itself reports `typed`.
     pub fn text_changed(&mut self) {
-        Self::want(&mut self.menu, collapse(&self.text));
+        let key = collapse(&self.text);
+        Self::want(&mut self.menu, key.clone());
+        self.portraits.note(key.as_deref());
     }
 
     /// Whether Escape has something to undo.
@@ -219,9 +287,9 @@ impl Search {
 
     /// Routes one frame's keys and clicks while the field has the keyboard.
     ///
-    /// `shown` and `floor` come from [`Self::menu_view`], so the router works on
-    /// what is drawn. A frame that starts unfocused changes nothing (the field
-    /// is not the one the user is typing into).
+    /// The row count comes from [`Self::listing`], so the router works on what
+    /// the current key draws. A frame that starts unfocused changes nothing
+    /// (the field is not the one the user is typing into).
     ///
     /// The arrows only ever land on a row that exists:
     /// - With the menu closed and a query to re-open it on, Down and Up re-open
@@ -229,13 +297,12 @@ impl Search {
     ///   keystroke. With the menu closed and a blank key they do nothing.
     /// - With the menu open and no rows to mark — idle, empty, failed — they do
     ///   nothing, so a mark is never a row that is not drawn.
-    /// - Enter only plays a row that is drawn: the menu must be open, the mark
-    ///   must name a row, and that row must be inside `shown`.
-    pub fn step(&mut self, input: KeyInput, shown: usize, floor: bool) -> Act {
+    /// - Enter only acts on a row that is drawn: the menu must be open, and the
+    ///   mark must resolve through the current shape.
+    pub fn step(&mut self, input: KeyInput) -> Act {
         if !input.focused {
             return Act::None;
         }
-        let rows = shown + usize::from(floor);
         if input.typed || input.clicked_field {
             // R2: typing, and a click on the field, put the rule back on the
             // field and re-open the menu on the query it now stands for.
@@ -244,6 +311,8 @@ impl Search {
             self.text_changed();
             self.open = self.key().is_some();
         }
+        // Read after the edit above: the frame that types has no rows yet.
+        let rows = self.listing().map_or(0, |listing| listing.shape.len());
         if input.down {
             self.device = Device::Keyboard;
             if self.open {
@@ -291,13 +360,14 @@ impl Search {
             }
         }
         if input.enter {
-            // Only a drawn row can be played: a closed menu draws nothing, and
-            // the floor row opens the page instead.
-            if self.open
-                && let Some(index) = self.mark
-                && index < shown
-            {
-                return Act::Play(index);
+            // Only a drawn row can act: a closed menu draws nothing, and a
+            // stale ordinal resolves to no row.
+            let row = if self.open { self.marked() } else { None };
+            match row {
+                Some(Row::Track(index)) => return Act::Play(index),
+                Some(Row::Album(index)) => return Act::OpenAlbum(index),
+                Some(Row::Artist(index)) => return Act::OpenArtist(index),
+                Some(Row::Floor) | None => {}
             }
             // The floor row, the field itself, and a mark left above a shrunken
             // list all open the page — if there is a query to open it with.
@@ -403,13 +473,18 @@ impl Search {
         Some(Command::Search { query: key })
     }
 
-    /// Whether [`Self::request`] would send something, without changing
-    /// anything.
+    /// Whether [`Self::request`] or [`Self::request_portraits`] would send
+    /// something now.
     ///
-    /// The window asks after a frame's edits and requests a repaint on true:
+    /// It settles the portrait slot's bookkeeping (the key change and the
+    /// artists on screen) but sends nothing; the window asks after a frame's
+    /// edits and requests a repaint on true:
     /// `logic` runs before `ui`, so a read armed by that frame would otherwise
     /// wait for the next input event.
-    pub fn wants(&self, page: Option<&str>) -> bool {
+    pub fn wants(&mut self, page: Option<&str>) -> bool {
+        if self.portraits_due().is_some() {
+            return true;
+        }
         let Some(target) = self.due(page) else {
             return false;
         };
@@ -432,8 +507,61 @@ impl Search {
         match update {
             Update::Search { query, tracks } => self.fill(query, &Load::Ready(tracks.clone())),
             Update::SearchFailed { query, failure } => self.fill(query, &Load::Failed(*failure)),
+            Update::Portraits { .. } | Update::PortraitsFailed { .. } => {
+                let current = self.key();
+                let shown = self.shown_artists();
+                self.portraits.set_shown(&shown);
+                self.portraits.apply(update, current.as_deref());
+            }
             _ => {}
         }
+    }
+
+    /// The artists the menu's artist band is showing, in order.
+    fn shown_artists(&self) -> Vec<String> {
+        let Some(listing) = self.listing() else {
+            return Vec::new();
+        };
+        let Some(band) = listing
+            .shape
+            .bands
+            .iter()
+            .find(|band| band.kind == Kind::Artists)
+        else {
+            return Vec::new();
+        };
+        listing
+            .index
+            .artists
+            .iter()
+            .take(band.shown)
+            .map(|artist| artist.uri.clone())
+            .collect()
+    }
+
+    /// The portrait read this frame would send, if one is due.
+    fn portraits_due(&mut self) -> Option<(String, Vec<String>)> {
+        // A key change frees the single ask slot, so coming back to a failed
+        // query is not blocked by the query that is no longer current.
+        self.portraits.note(self.key().as_deref());
+        if !self.open {
+            return None;
+        }
+        let key = self.key()?;
+        let shown = self.shown_artists();
+        if shown.is_empty() {
+            return None;
+        }
+        self.portraits.set_shown(&shown);
+        let refs: Vec<&str> = shown.iter().map(String::as_str).collect();
+        let due = self.portraits.due(&key, &refs)?;
+        Some((key, due))
+    }
+
+    /// The portrait read this frame wants, if one is due.
+    pub fn request_portraits(&mut self) -> Option<Command> {
+        let (key, artists) = self.portraits_due()?;
+        Some(self.portraits.ask(&key, artists))
     }
 
     /// Points the results page at `query`, seeding it from the menu when the
@@ -446,15 +574,17 @@ impl Search {
         if self.menu.key.as_deref() == Some(query)
             && let Load::Ready(tracks) = &self.menu.load
         {
-            self.page = Read {
+            let mut page = Read {
                 key: Some(query.to_owned()),
-                load: Load::Ready(tracks.clone()),
+                ..Read::default()
             };
+            page.settle(Load::Ready(tracks.clone()));
+            self.page = page;
             return;
         }
         self.page = Read {
             key: Some(query.to_owned()),
-            load: Load::Idle,
+            ..Read::default()
         };
     }
 
@@ -468,7 +598,7 @@ impl Search {
     pub fn retry_page(&mut self, query: &str) {
         self.page = Read {
             key: Some(query.to_owned()),
-            load: Load::Idle,
+            ..Read::default()
         };
     }
 
@@ -477,7 +607,7 @@ impl Search {
         if read.key != key {
             *read = Read {
                 key,
-                load: Load::Idle,
+                ..Read::default()
             };
         }
     }
@@ -497,7 +627,7 @@ impl Search {
         for read in [&mut self.menu, &mut self.page] {
             if read.key.as_deref() == Some(query) && matches!(read.load, Load::Loading | Load::Idle)
             {
-                read.load = load.clone();
+                read.settle(load.clone());
             }
         }
     }
@@ -547,6 +677,61 @@ mod tests {
         }
     }
 
+    fn rich(uri: &str, album: &str, artist: &str) -> TrackEntry {
+        TrackEntry {
+            uri: uri.to_owned(),
+            title: uri.to_owned(),
+            artists: artist.to_owned(),
+            album: Some(album.to_owned()),
+            album_uri: Some(format!("spotify:album:{album}")),
+            artist_uris: vec![format!("spotify:artist:{artist}")],
+            artist_names: vec![artist.to_owned()],
+            added_at: None,
+            duration_ms: None,
+            named: true,
+            cover: None,
+        }
+    }
+
+    fn rich_reply(query: &str, count: usize) -> Update {
+        Update::Search {
+            query: query.to_owned(),
+            tracks: (0..count)
+                .map(|index| {
+                    rich(
+                        &format!("t{index}"),
+                        &format!("a{index}"),
+                        &format!("r{index}"),
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    /// The field with an answer for its key, open as typing leaves it.
+    fn answered_open(text: &str, uris: &[&str]) -> Search {
+        let mut state = typed(text);
+        state.apply(&reply(text, uris));
+        state
+    }
+
+    fn banded() -> Search {
+        let mut state = typed("abc");
+        state.apply(&rich_reply("abc", 8));
+        state
+    }
+
+    fn no_floor_reply(query: &str) -> Update {
+        Update::Search {
+            query: query.to_owned(),
+            tracks: vec![
+                rich("t0", "a0", "r0"),
+                rich("t1", "a1", "r1"),
+                rich("t2", "a1", "r1"),
+            ],
+        }
+    }
+
     /// Types `text` into the field, as one frame of the real path would.
     fn type_text(state: &mut Search, text: &str) {
         state.text = text.to_owned();
@@ -556,7 +741,7 @@ mod tests {
             ..KeyInput::default()
         };
         assert_eq!(
-            state.step(input, 0, false),
+            state.step(input),
             Act::None,
             "typing only changes the field"
         );
@@ -623,14 +808,9 @@ mod tests {
         assert_eq!(state.menu_view(), MenuView::Nothing);
         state.apply(&reply("abc", &["spotify:track:abc"]));
         let answer = tracks(&["spotify:track:abc"]);
-        assert_eq!(
-            state.menu_view(),
-            MenuView::Rows {
-                tracks: &answer,
-                total: 1,
-                floor: false,
-            }
-        );
+        let listing = state.listing().expect("the current answer has a shape");
+        assert_eq!(listing.answer, answer.as_slice());
+        assert_eq!(listing.shape, Index::derive(&answer).shape(MENU));
     }
 
     #[test]
@@ -641,10 +821,12 @@ mod tests {
         state.menu = Read {
             key: Some("abc".to_owned()),
             load: Load::Loading,
+            index: None,
         };
         state.page = Read {
             key: Some("abc".to_owned()),
             load: Load::Loading,
+            index: None,
         };
         state.inflight = Some("abc".to_owned());
 
@@ -677,13 +859,10 @@ mod tests {
         state.apply(&reply("abc", &["spotify:track:a"]));
 
         let answer = tracks(&["spotify:track:a"]);
+        let listing = state.listing().expect("the current answer has a shape");
         assert_eq!(
-            state.menu_view(),
-            MenuView::Rows {
-                tracks: &answer,
-                total: 1,
-                floor: false,
-            },
+            listing.answer,
+            answer.as_slice(),
             "the reply fills the idle read on its own key"
         );
         assert_eq!(state.inflight, None, "the reply was used, not orphaned");
@@ -694,7 +873,7 @@ mod tests {
     fn enter_while_the_menu_is_loading_still_fills_the_page() {
         let mut state = typed("abc");
         assert_eq!(state.request(None), Some(search("abc")));
-        assert_eq!(state.step(key("enter"), 0, false), Act::OpenResults);
+        assert_eq!(state.step(key("enter")), Act::OpenResults);
         state.open_results("abc");
         assert_eq!(
             state.page_answer("abc"),
@@ -735,6 +914,7 @@ mod tests {
         state.menu = Read {
             key: Some("abcd".to_owned()),
             load: Load::Loading,
+            index: None,
         };
         state.inflight = Some("abcd".to_owned());
 
@@ -745,6 +925,7 @@ mod tests {
             Read {
                 key: Some("abcd".to_owned()),
                 load: Load::Loading,
+                index: None,
             },
             "a stale failure is not drawn and does not fail the new key"
         );
@@ -773,10 +954,12 @@ mod tests {
             state.menu = Read {
                 key: Some("abc".to_owned()),
                 load: menu.clone(),
+                index: None,
             };
             state.page = Read {
                 key: Some(if same_key { "abc" } else { "xyz" }.to_owned()),
                 load: page.clone(),
+                index: None,
             };
 
             let case = format!("menu {menu:?}, page {page:?}, same key: {same_key}");
@@ -797,6 +980,7 @@ mod tests {
         state.page = Read {
             key: Some("abc".to_owned()),
             load: Load::Loading,
+            index: None,
         };
 
         assert_eq!(state.request(None), None);
@@ -827,6 +1011,7 @@ mod tests {
         state.menu = Read {
             key: Some("abc".to_owned()),
             load: Load::Loading,
+            index: None,
         };
 
         assert_eq!(state.request_page(Some("abc")), None);
@@ -857,7 +1042,7 @@ mod tests {
             focused: true,
             ..KeyInput::default()
         };
-        assert_eq!(state.step(focused, 0, false), Act::None);
+        assert_eq!(state.step(focused), Act::None);
         assert_eq!(state.request(None), None);
         assert!(!state.is_open(), "focus alone opens nothing (R6)");
 
@@ -962,57 +1147,201 @@ mod tests {
 
     #[test]
     fn down_marks_the_first_row_from_the_field() {
-        let mut state = typed("abc");
+        let mut state = answered_open("abc", &["a", "b", "c"]);
         assert_eq!(state.mark(), None, "the menu opens unmarked (R1)");
-        assert_eq!(state.step(key("down"), 5, false), Act::None);
+        assert_eq!(state.step(key("down")), Act::None);
         assert_eq!(state.mark(), Some(0));
         assert_eq!(state.device(), Device::Keyboard);
     }
 
     #[test]
     fn down_clamps_at_the_last_row() {
-        let mut state = typed("abc");
-        for expected in [0, 1, 2, 3, 4, 4, 4] {
-            state.step(key("down"), 5, false);
+        let mut state = answered_open("abc", &["a", "b", "c"]);
+        for expected in [0, 1, 2, 2, 2] {
+            state.step(key("down"));
             assert_eq!(state.mark(), Some(expected));
         }
-        let mut with_floor = typed("abc");
+        let mut with_floor = answered_open("abc", &["a", "b", "c", "d"]);
         for _ in 0..9 {
-            with_floor.step(key("down"), 5, true);
+            with_floor.step(key("down"));
         }
-        assert_eq!(with_floor.mark(), Some(5), "the floor is the last row");
+        assert_eq!(with_floor.mark(), Some(3), "three rows and a floor");
     }
 
     #[test]
     fn up_from_the_first_row_returns_to_the_field() {
-        let mut state = typed("abc");
-        state.step(key("down"), 5, false);
+        let mut state = answered_open("abc", &["a", "b", "c"]);
+        state.step(key("down"));
         assert_eq!(state.mark(), Some(0));
-        assert_eq!(state.step(key("up"), 5, false), Act::None);
+        assert_eq!(state.step(key("up")), Act::None);
         assert_eq!(state.mark(), None, "row 0 is one press from the field");
     }
 
     #[test]
     fn up_from_the_field_marks_the_last_row() {
-        let mut state = typed("abc");
-        state.step(key("up"), 5, false);
-        assert_eq!(state.mark(), Some(4));
+        let mut state = answered_open("abc", &["a", "b", "c"]);
+        state.step(key("up"));
+        assert_eq!(state.mark(), Some(2));
 
-        let mut with_floor = typed("abc");
-        with_floor.step(key("up"), 5, true);
+        let mut with_floor = answered_open("abc", &["a", "b", "c", "d"]);
+        with_floor.step(key("up"));
         assert_eq!(
             with_floor.mark(),
-            Some(5),
+            Some(3),
             "the floor is drawn, so it is last"
         );
+    }
+
+    #[test]
+    fn the_walk_crosses_tracks_then_albums_then_artists_then_the_floor() {
+        let mut state = banded();
+        let expected = [
+            Row::Track(0),
+            Row::Track(1),
+            Row::Track(2),
+            Row::Album(0),
+            Row::Album(1),
+            Row::Artist(0),
+            Row::Artist(1),
+            Row::Floor,
+        ];
+        for (ordinal, row) in expected.into_iter().enumerate() {
+            state.step(key("down"));
+            assert_eq!(state.mark(), Some(ordinal));
+            assert_eq!(state.marked(), Some(row), "ordinal {ordinal}");
+        }
+        state.step(key("down"));
+        assert_eq!(state.mark(), Some(7), "the floor is the last row");
+    }
+
+    #[test]
+    fn without_a_floor_the_walk_ends_on_the_last_shown_row() {
+        let mut state = typed("abc");
+        state.apply(&no_floor_reply("abc"));
+        for _ in 0..9 {
+            state.step(key("down"));
+        }
+        assert_eq!(state.marked(), Some(Row::Artist(1)));
+        assert_eq!(state.mark(), Some(6));
+    }
+
+    #[test]
+    fn enter_on_a_track_plays_its_whole_answer_index() {
+        let mut state = answered_open("abc", &["a", "b", "c"]);
+        state.step(key("down"));
+        state.step(key("down"));
+        assert_eq!(state.step(key("enter")), Act::Play(1));
+    }
+
+    #[test]
+    fn enter_on_an_album_and_an_artist_opens_the_derived_row() {
+        let mut state = banded();
+        for _ in 0..4 {
+            state.step(key("down"));
+        }
+        assert_eq!(state.marked(), Some(Row::Album(0)));
+        assert_eq!(state.step(key("enter")), Act::OpenAlbum(0));
+
+        let mut state = banded();
+        for _ in 0..6 {
+            state.step(key("down"));
+        }
+        assert_eq!(state.marked(), Some(Row::Artist(0)));
+        assert_eq!(state.step(key("enter")), Act::OpenArtist(0));
+    }
+
+    #[test]
+    fn enter_on_the_floor_opens_the_results() {
+        let mut state = answered_open("abc", &["a", "b", "c", "d"]);
+        for _ in 0..6 {
+            state.step(key("down"));
+        }
+        assert_eq!(state.marked(), Some(Row::Floor));
+        assert_eq!(state.step(key("enter")), Act::OpenResults);
+    }
+
+    #[test]
+    fn a_floor_does_not_exist_when_no_band_is_capped() {
+        let mut state = typed("abc");
+        state.apply(&no_floor_reply("abc"));
+        for _ in 0..12 {
+            state.step(key("down"));
+        }
+        assert_eq!(
+            state.marked(),
+            Some(Row::Artist(1)),
+            "the walk never lands on a floor"
+        );
+        assert!(state.listing().is_some_and(|listing| !listing.shape.floor));
+    }
+
+    #[test]
+    fn enter_on_a_stale_ordinal_opens_the_results() {
+        let mut state = banded();
+        state.step(key("down"));
+        state.step(key("down"));
+        state.step(key("down"));
+        state.step(key("down"));
+        assert_eq!(state.marked(), Some(Row::Album(0)));
+        // The key moves and the new answer is too short for the old ordinal.
+        type_text(&mut state, "abcd");
+        state.apply(&rich_reply("abcd", 1));
+        state.mark = Some(3);
+        assert_eq!(state.mark(), Some(3));
+        assert_eq!(state.marked(), None);
+        assert_eq!(state.step(key("enter")), Act::OpenResults);
+    }
+
+    #[test]
+    fn a_stale_key_counts_zero_rows_and_opens_nothing() {
+        let mut state = answered_open("abc", &["a", "b", "c"]);
+        state.step(key("down"));
+        assert_eq!(state.mark(), Some(0));
+
+        // The frame that types moves the key before the arrow is read.
+        state.text = "abcd".to_owned();
+        let typed_and_down = KeyInput {
+            typed: true,
+            down: true,
+            focused: true,
+            ..KeyInput::default()
+        };
+        assert_eq!(state.step(typed_and_down), Act::None);
+        assert_eq!(state.mark(), None, "the stale answer contributes no rows");
+    }
+
+    #[test]
+    fn album_and_artist_uris_resolve_only_for_the_current_key() {
+        let mut state = banded();
+        assert_eq!(state.album_uri(0).as_deref(), Some("spotify:album:a0"));
+        assert_eq!(state.artist_uri(0).as_deref(), Some("spotify:artist:r0"));
+        assert_eq!(state.album_uri(9), None, "out of range");
+        assert_eq!(state.artist_uri(9), None, "out of range");
+
+        type_text(&mut state, "abcd");
+        assert_eq!(state.album_uri(0), None, "the key moved");
+        assert_eq!(state.artist_uri(0), None, "the key moved");
+    }
+
+    #[test]
+    fn down_in_the_frame_that_types_is_a_no_op() {
+        let mut state = answered_open("abc", &["a", "b", "c"]);
+        let frame = KeyInput {
+            typed: true,
+            down: true,
+            focused: true,
+            ..KeyInput::default()
+        };
+        state.text = "abcd".to_owned();
+        assert_eq!(state.step(frame), Act::None);
+        assert_eq!(state.mark(), None);
+        assert_eq!(state.menu_view(), MenuView::Nothing);
     }
 
     /// The field with an answered menu, closed again as an applied action
     /// leaves it.
     fn answered_closed(text: &str, uris: &[&str]) -> Search {
-        let mut state = typed(text);
-        assert_eq!(state.request(None), Some(search(text)));
-        state.apply(&reply(text, uris));
+        let mut state = answered_open(text, uris);
         state.close();
         assert!(!state.is_open());
         state
@@ -1021,7 +1350,7 @@ mod tests {
     #[test]
     fn down_on_a_closed_menu_reopens_it_and_marks_the_first_row() {
         let mut state = answered_closed("abc", &["a", "b", "c"]);
-        assert_eq!(state.step(key("down"), 3, false), Act::None);
+        assert_eq!(state.step(key("down")), Act::None);
         assert!(state.is_open(), "the arrow re-opens the menu it acts on");
         assert_eq!(state.mark(), Some(0));
         assert_eq!(state.device(), Device::Keyboard);
@@ -1030,27 +1359,27 @@ mod tests {
     #[test]
     fn up_on_a_closed_menu_reopens_it_and_marks_the_last_row() {
         let mut state = answered_closed("abc", &["a", "b", "c"]);
-        assert_eq!(state.step(key("up"), 3, false), Act::None);
+        assert_eq!(state.step(key("up")), Act::None);
         assert!(state.is_open());
         assert_eq!(state.mark(), Some(2));
 
-        let mut with_floor = answered_closed("abc", &["a", "b", "c"]);
-        with_floor.step(key("up"), 3, true);
+        let mut with_floor = answered_closed("abc", &["a", "b", "c", "d"]);
+        with_floor.step(key("up"));
         assert_eq!(with_floor.mark(), Some(3), "the floor is the last row");
     }
 
     #[test]
     fn an_arrow_on_a_closed_blank_field_does_nothing() {
         let mut blank = Search::default();
-        assert_eq!(blank.step(key("down"), 0, false), Act::None);
-        assert_eq!(blank.step(key("up"), 0, false), Act::None);
+        assert_eq!(blank.step(key("down")), Act::None);
+        assert_eq!(blank.step(key("up")), Act::None);
         assert!(!blank.is_open(), "a blank key re-opens nothing");
         assert_eq!(blank.mark(), None);
 
         // Whitespace is not a key either.
         let mut spaces = typed("   ");
-        assert_eq!(spaces.step(key("down"), 0, false), Act::None);
-        assert_eq!(spaces.step(key("up"), 0, false), Act::None);
+        assert_eq!(spaces.step(key("down")), Act::None);
+        assert_eq!(spaces.step(key("up")), Act::None);
         assert!(!spaces.is_open());
         assert_eq!(spaces.mark(), None);
     }
@@ -1060,27 +1389,27 @@ mod tests {
         // Open, and the answer is still on the wire: nothing to mark.
         let mut loading = typed("abc");
         assert_eq!(loading.request(None), Some(search("abc")));
-        assert_eq!(loading.step(key("down"), 0, false), Act::None);
+        assert_eq!(loading.step(key("down")), Act::None);
         assert_eq!(loading.mark(), None);
-        assert_eq!(loading.step(key("up"), 0, false), Act::None);
+        assert_eq!(loading.step(key("up")), Act::None);
         assert_eq!(loading.mark(), None);
 
         // Open and failed: nothing to mark.
         loading.apply(&failed("abc"));
-        assert_eq!(loading.step(key("down"), 0, false), Act::None);
+        assert_eq!(loading.step(key("down")), Act::None);
         assert_eq!(loading.mark(), None);
 
         // Open and empty: nothing to mark.
         let mut empty = typed("abc");
         empty.apply(&reply("abc", &[]));
-        assert_eq!(empty.step(key("down"), 0, false), Act::None);
+        assert_eq!(empty.step(key("down")), Act::None);
         assert_eq!(empty.mark(), None);
 
         // Closed with a query but no answer to draw: it re-opens, marks
         // nothing, because a mark must be a row that exists.
         let mut closed = typed("abc");
         closed.close();
-        closed.step(key("down"), 0, false);
+        closed.step(key("down"));
         assert!(closed.is_open());
         assert_eq!(closed.mark(), None);
     }
@@ -1089,67 +1418,34 @@ mod tests {
     fn enter_after_close_is_the_fields_enter_not_a_play() {
         let mut state = answered_closed("abc", &["a", "b", "c"]);
         // A mark from before the close must not survive into an Enter.
-        state.step(key("down"), 3, false);
+        state.step(key("down"));
         assert_eq!(state.mark(), Some(0));
         state.close();
         assert_eq!(state.mark(), None);
-        assert_eq!(state.step(key("enter"), 3, false), Act::OpenResults);
-    }
-
-    #[test]
-    fn the_five_versus_six_boundary_counts_the_floor() {
-        let mut state = typed("abc");
-        for _ in 0..8 {
-            state.step(key("down"), SHOWN, true);
-        }
-        assert_eq!(state.mark(), Some(5), "five rows and a floor: 0..=5");
-
-        let mut no_floor = typed("abc");
-        for _ in 0..8 {
-            no_floor.step(key("down"), SHOWN, false);
-        }
-        assert_eq!(no_floor.mark(), Some(4), "five rows: 0..=4");
-    }
-
-    #[test]
-    fn enter_on_a_row_plays_it() {
-        let mut state = typed("abc");
-        state.step(key("down"), 5, false);
-        state.step(key("down"), 5, false);
-        assert_eq!(state.step(key("enter"), 5, false), Act::Play(1));
-    }
-
-    #[test]
-    fn enter_on_the_floor_opens_the_results() {
-        let mut state = typed("abc");
-        for _ in 0..6 {
-            state.step(key("down"), 5, true);
-        }
-        assert_eq!(state.mark(), Some(5));
-        assert_eq!(state.step(key("enter"), 5, true), Act::OpenResults);
+        assert_eq!(state.step(key("enter")), Act::OpenResults);
     }
 
     #[test]
     fn enter_on_the_field_opens_the_results() {
-        let mut state = typed("abc");
+        let mut state = answered_open("abc", &["a", "b", "c"]);
         assert_eq!(state.mark(), None);
-        assert_eq!(state.step(key("enter"), 5, false), Act::OpenResults);
+        assert_eq!(state.step(key("enter")), Act::OpenResults);
     }
 
     #[test]
     fn enter_with_a_blank_key_does_nothing() {
         let mut state = typed("   ");
-        assert_eq!(state.step(key("enter"), 0, false), Act::None);
+        assert_eq!(state.step(key("enter")), Act::None);
         // A mark left behind a blanked field opens nothing either.
-        state.step(key("down"), 0, false);
-        assert_eq!(state.step(key("enter"), 0, false), Act::None);
+        state.step(key("down"));
+        assert_eq!(state.step(key("enter")), Act::None);
     }
 
     #[test]
     fn escape_from_a_row_keeps_the_query_and_the_menu() {
-        let mut state = typed("abc");
-        state.step(key("down"), 5, false);
-        assert_eq!(state.step(key("escape"), 5, false), Act::None);
+        let mut state = answered_open("abc", &["a", "b", "c"]);
+        state.step(key("down"));
+        assert_eq!(state.step(key("escape")), Act::None);
         assert_eq!(state.mark(), None);
         assert_eq!(state.text, "abc", "the query is kept (R3)");
         assert!(state.is_open(), "and the menu stays up");
@@ -1159,7 +1455,7 @@ mod tests {
     #[test]
     fn escape_from_the_field_clears_the_query_and_closes_the_menu() {
         let mut state = typed("abc");
-        assert_eq!(state.step(key("escape"), 5, false), Act::Close);
+        assert_eq!(state.step(key("escape")), Act::Close);
         assert_eq!(state.text, "");
         assert!(!state.is_open());
         assert_eq!(state.mark(), None);
@@ -1170,20 +1466,20 @@ mod tests {
     fn escape_with_an_empty_closed_field_is_not_ours() {
         let mut state = Search::default();
         assert!(!state.escapes());
-        assert_eq!(state.step(key("escape"), 0, false), Act::None);
+        assert_eq!(state.step(key("escape")), Act::None);
         assert_eq!(state.text, "");
         assert!(!state.is_open());
     }
 
     #[test]
     fn a_frame_that_starts_unfocused_does_nothing() {
-        let mut state = typed("abc");
-        state.step(key("down"), 5, false);
+        let mut state = answered_open("abc", &["a", "b", "c"]);
+        state.step(key("down"));
         let blurred = KeyInput {
             focused: false,
             ..KeyInput::default()
         };
-        assert_eq!(state.step(blurred, 5, false), Act::None);
+        assert_eq!(state.step(blurred), Act::None);
         assert_eq!(state.mark(), Some(0), "the mark is the shell's to clear");
 
         let blurred_escape = KeyInput {
@@ -1191,15 +1487,15 @@ mod tests {
             focused: false,
             ..KeyInput::default()
         };
-        assert_eq!(state.step(blurred_escape, 5, false), Act::None);
+        assert_eq!(state.step(blurred_escape), Act::None);
         assert_eq!(state.text, "abc", "a blurred field does not eat keys");
         assert!(state.is_open());
     }
 
     #[test]
     fn typing_returns_the_rule_to_the_field() {
-        let mut state = typed("abc");
-        state.step(key("down"), 5, false);
+        let mut state = answered_open("abc", &["a", "b", "c"]);
+        state.step(key("down"));
         assert_eq!(state.mark(), Some(0));
         type_text(&mut state, "abcd");
         assert_eq!(state.mark(), None, "R2: typing puts the rule back");
@@ -1208,9 +1504,9 @@ mod tests {
 
     #[test]
     fn a_click_on_the_field_returns_the_rule_and_keeps_the_menu() {
-        let mut state = typed("abc");
+        let mut state = answered_open("abc", &["a", "b", "c"]);
         state.pointer_moved();
-        state.step(key("down"), 5, false);
+        state.step(key("down"));
         assert_eq!(state.device(), Device::Keyboard);
         state.settle(false, false);
         assert!(!state.is_open(), "the menu closes when the field is left");
@@ -1220,7 +1516,7 @@ mod tests {
             focused: true,
             ..KeyInput::default()
         };
-        assert_eq!(state.step(click, 5, false), Act::None);
+        assert_eq!(state.step(click), Act::None);
         state.pointer_moved();
         assert!(
             state.is_open(),
@@ -1249,12 +1545,138 @@ mod tests {
 
     #[test]
     fn closing_an_applied_action_keeps_the_query() {
-        let mut state = typed("abc");
-        state.step(key("down"), 5, false);
+        let mut state = answered_open("abc", &["a", "b", "c"]);
+        state.step(key("down"));
         state.close();
         assert!(!state.is_open());
         assert_eq!(state.mark(), None);
         assert_eq!(state.text, "abc");
+    }
+
+    fn portrait_command(query: &str, artists: &[&str]) -> Command {
+        Command::LoadPortraits {
+            query: query.to_owned(),
+            artists: artists.iter().map(|artist| (*artist).to_owned()).collect(),
+        }
+    }
+
+    fn portrait(artist: &str, cover: Option<&str>) -> Update {
+        Update::Portraits {
+            query: "abc".to_owned(),
+            portraits: vec![takofy_model::ArtistPortrait {
+                artist: artist.to_owned(),
+                portrait: cover.map(|tail| {
+                    takofy_model::CoverUrl::from_wire(&format!("https://i.scdn.co/image/{tail}"))
+                        .expect("a cover url")
+                }),
+            }],
+        }
+    }
+
+    #[test]
+    fn no_portraits_are_asked_for_while_the_menu_has_nothing_to_draw() {
+        // Loading, not open, blank, and answering another key.
+        let mut loading = typed("abc");
+        assert_eq!(loading.request(None), Some(search("abc")));
+        assert_eq!(loading.request_portraits(), None);
+
+        let mut closed = banded();
+        closed.close();
+        assert_eq!(closed.request_portraits(), None);
+
+        let mut blank = banded();
+        blank.text.clear();
+        blank.text_changed();
+        assert_eq!(blank.request_portraits(), None);
+
+        let mut moved = banded();
+        type_text(&mut moved, "abcd");
+        assert_eq!(moved.request_portraits(), None);
+    }
+
+    #[test]
+    fn the_portrait_read_carries_the_two_menu_artists_in_band_order() {
+        let mut state = banded();
+        assert_eq!(
+            state.request_portraits(),
+            Some(portrait_command(
+                "abc",
+                &["spotify:artist:r0", "spotify:artist:r1"]
+            ))
+        );
+        assert_eq!(state.request_portraits(), None, "one read at a time");
+    }
+
+    #[test]
+    fn a_newer_query_never_asks_for_the_previous_answers_artists() {
+        let mut state = banded();
+        assert!(state.request_portraits().is_some());
+        state.apply(&portrait("spotify:artist:r0", Some("old")));
+        type_text(&mut state, "abcd");
+        state.apply(&Update::Search {
+            query: "abcd".to_owned(),
+            tracks: (0..8)
+                .map(|index| {
+                    rich(
+                        &format!("u{index}"),
+                        &format!("b{index}"),
+                        &format!("s{index}"),
+                    )
+                })
+                .collect(),
+        });
+        // The new answer's own first two artists, never the held answer's.
+        assert_eq!(
+            state.request_portraits(),
+            Some(portrait_command(
+                "abcd",
+                &["spotify:artist:s0", "spotify:artist:s1"]
+            ))
+        );
+    }
+
+    #[test]
+    fn wants_is_true_exactly_when_request_portraits_would_send() {
+        let mut state = banded();
+        assert!(state.wants(None));
+        assert!(state.request_portraits().is_some());
+        assert!(!state.wants(None));
+        assert_eq!(state.request_portraits(), None);
+    }
+
+    #[test]
+    fn an_artist_met_in_a_previous_query_is_known_and_asks_nothing() {
+        let mut state = banded();
+        assert!(state.request_portraits().is_some());
+        state.apply(&portrait("spotify:artist:r0", Some("0")));
+        state.apply(&portrait("spotify:artist:r1", Some("1")));
+        type_text(&mut state, "abcd");
+        state.apply(&rich_reply("abcd", 8));
+        assert_eq!(
+            state.portrait("spotify:artist:r0"),
+            crate::portraits::Portrait::Known(
+                &takofy_model::CoverUrl::from_wire("https://i.scdn.co/image/0")
+                    .expect("a cover url")
+            )
+        );
+        assert_eq!(
+            state.request_portraits(),
+            None,
+            "both rows the new answer shows are already held"
+        );
+    }
+
+    #[test]
+    fn a_portrait_failure_settles_the_rows_on_the_stand_in() {
+        let mut state = banded();
+        assert!(state.request_portraits().is_some());
+        state.apply(&Update::PortraitsFailed {
+            query: "abc".to_owned(),
+        });
+        assert_eq!(state.request_portraits(), None, "a failed key is kept");
+        for artist in ["spotify:artist:r0", "spotify:artist:r1"] {
+            assert_eq!(state.portrait(artist), Portrait::Absent);
+        }
     }
 
     #[test]

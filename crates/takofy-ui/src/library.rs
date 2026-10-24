@@ -3313,7 +3313,7 @@ mod tests {
             focused: true,
             ..crate::search::KeyInput::default()
         };
-        let _ = library.search.step(input, 0, false);
+        let _ = library.search.step(input);
     }
 
     fn search(query: &str) -> Page {
@@ -3565,7 +3565,8 @@ mod tests {
         let mut library = Library::default();
         library.open(search("never gonna"));
         library.apply(&search_reply("never gonna", vec![track("t")]));
-        let held = library.search.clone();
+        let menu = format!("{:?}", library.search.menu_view());
+        let page = library.search.page_answer("never gonna").cloned();
 
         library.apply(&Update::Portraits {
             query: "never gonna".to_owned(),
@@ -3579,9 +3580,11 @@ mod tests {
         });
 
         assert_eq!(
-            library.search, held,
-            "a portrait reply is not a page or a menu answer, so the search state keeps its own"
+            format!("{:?}", library.search.menu_view()),
+            menu,
+            "a portrait reply is not a page or a menu answer"
         );
+        assert_eq!(library.search.page_answer("never gonna"), page.as_ref());
         assert_eq!(library.page_search_query(), Some("never gonna"));
     }
 
