@@ -42,6 +42,14 @@ impl SessionError {
         )
     }
 
+    /// Whether this failure means the move had no page to carry.
+    pub(crate) fn no_context(&self) -> bool {
+        matches!(
+            self,
+            Self::Engine(EngineError::Connect(ConnectError::NoContext))
+        )
+    }
+
     /// A fixed name for the log. The source error is never formatted: it can
     /// embed a response body.
     pub(crate) fn kind(&self) -> &'static str {
@@ -292,6 +300,9 @@ pub(crate) trait SessionHost: Send + 'static {
         device: &str,
         steer: Steer,
     ) -> impl Future<Output = Result<(), SessionError>> + Send;
+
+    /// Moves the account's sound to one device.
+    fn hand_over(&self, device: &str) -> impl Future<Output = Result<(), SessionError>> + Send;
 
     /// Takes this client off the account's device list. Best effort: the exit
     /// draws nothing, so a failure is logged and dropped.
@@ -769,6 +780,13 @@ impl SessionHost for LiveSession {
         Ok(())
     }
 
+    async fn hand_over(&self, device: &str) -> Result<(), SessionError> {
+        match &self.engine {
+            Some(engine) => engine.hand_over(device).await.map_err(SessionError::Engine),
+            None => Err(SessionError::NotConnected),
+        }
+    }
+
     fn play(&mut self, uri: &str) -> Result<(), SessionError> {
         self.load(uri, 0, true)
     }
@@ -942,6 +960,10 @@ mod tests {
         ));
         assert!(matches!(
             SessionHost::steer(&live, "phone", Steer::Pause).await,
+            Err(SessionError::NotConnected)
+        ));
+        assert!(matches!(
+            SessionHost::hand_over(&live, "phone").await,
             Err(SessionError::NotConnected)
         ));
         assert!(matches!(

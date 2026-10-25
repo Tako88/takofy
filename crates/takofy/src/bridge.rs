@@ -624,6 +624,14 @@ fn start_with<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                         break;
                     }
                 }
+                Event::Command(Some(Command::Transfer { to })) => {
+                    let step =
+                        transfer_device(&mut host, &mut stop_rx, &task_notifier, &to, connected)
+                            .await;
+                    if step.stopped() {
+                        break;
+                    }
+                }
                 Event::Command(Some(Command::LabelRemote { track })) => {
                     let step = label_remote(&mut host, &mut stop_rx, &task_notifier, &track).await;
                     if step.stopped() {
@@ -1987,6 +1995,41 @@ async fn steer_device<H: SessionHost>(
     }
 }
 
+/// Moves the account's sound to another device.
+///
+/// A hand-over that is acked reports nothing: the cluster push naming the new
+/// holder is what tells the window, so a guess here would race the truth.
+async fn transfer_device<H: SessionHost>(
+    host: &mut H,
+    stop: &mut StopReceiver<()>,
+    notifier: &Notifier,
+    to: &str,
+    connected: bool,
+) -> Step {
+    if !connected {
+        notifier.send(Update::Devices(DeviceUpdate::TransferFailed(
+            Failure::Transfer,
+        )));
+        return Step::Done;
+    }
+    match stop_or(stop, host.hand_over(to)).await {
+        None => Step::Stopped,
+        Some(Ok(())) => Step::Done,
+        Some(Err(error)) => {
+            log_device_error(&error);
+            // A window playing from no list has nothing to hand over, and no
+            // retry will change that until it plays one.
+            let failure = if error.no_context() {
+                Failure::NoContext
+            } else {
+                Failure::Transfer
+            };
+            notifier.send(Update::Devices(DeviceUpdate::TransferFailed(failure)));
+            Step::Done
+        }
+    }
+}
+
 /// Names the track another device is playing, when the label read answers.
 ///
 /// A miss is silent: the title stays `None` and the caption still draws.
@@ -2857,6 +2900,16 @@ mod tests {
         Fail,
     }
 
+    /// A scripted hand-over. The default moves the sound.
+    #[derive(Clone, Copy, Default)]
+    enum TransferScript {
+        #[default]
+        Ok,
+        Fail,
+        NoContext,
+        Pending,
+    }
+
     /// A scripted withdraw. The default answers.
     #[derive(Clone, Copy, Default)]
     enum WithdrawScript {
@@ -2937,6 +2990,7 @@ mod tests {
         Release,
         SetPlayable(bool),
         Refuse(RequestId),
+        HandOver(String),
     }
 
     #[derive(Default)]
@@ -2973,6 +3027,7 @@ mod tests {
         watch_scripts: Mutex<Vec<WatchScript>>,
         refresh_script: Mutex<RefreshScript>,
         steer_scripts: Mutex<Vec<SteerScript>>,
+        transfer_script: Mutex<TransferScript>,
         withdraw_script: Mutex<WithdrawScript>,
         play_script: Mutex<PlayScript>,
         prepare_script: Mutex<PrepareScript>,
@@ -3076,6 +3131,8 @@ mod tests {
         /// Every steer asked for, in order, so the target and the action can be
         /// compared.
         steers: Mutex<Vec<(String, CoreSteer)>>,
+        /// Every hand-over asked for, in order.
+        transfers: Mutex<Vec<String>>,
         withdrawals: AtomicUsize,
         /// The calls the exit tail made, in order, so a withdraw can be seen to
         /// precede the shutdown.
@@ -3087,6 +3144,7 @@ mod tests {
         watch_started: Mutex<Option<Sender<()>>>,
         refresh_started: Mutex<Option<Sender<()>>>,
         steer_started: Mutex<Option<Sender<()>>>,
+        transfer_started: Mutex<Option<Sender<()>>>,
         withdraw_started: Mutex<Option<Sender<()>>>,
         connect_started: Mutex<Option<Sender<()>>>,
         rootlist_started: Mutex<Option<Sender<()>>>,
@@ -3934,6 +3992,33 @@ mod tests {
                 match script {
                     SteerScript::Ok => Ok(()),
                     SteerScript::Fail => Err(SessionError::NotConnected),
+                }
+            }
+        }
+
+        fn hand_over(&self, device: &str) -> impl Future<Output = Result<(), SessionError>> + Send {
+            self.shared
+                .transfers
+                .lock()
+                .expect("lock")
+                .push(device.to_owned());
+            self.shared
+                .calls
+                .lock()
+                .expect("lock")
+                .push(Call::HandOver(device.to_owned()));
+            if let Some(tx) = self.shared.transfer_started.lock().expect("lock").take() {
+                let _ = tx.send(());
+            }
+            let script = *self.shared.transfer_script.lock().expect("lock");
+            async move {
+                match script {
+                    TransferScript::Ok => Ok(()),
+                    TransferScript::Fail => Err(SessionError::NotConnected),
+                    TransferScript::NoContext => Err(SessionError::Engine(EngineError::Connect(
+                        ConnectError::NoContext,
+                    ))),
+                    TransferScript::Pending => std::future::pending().await,
                 }
             }
         }
@@ -10372,6 +10457,180 @@ mod tests {
             *shared.steers.lock().expect("lock"),
             vec![(PHONE.to_owned(), CoreSteer::SeekTo(60_000))],
             "a refused steer is never retried"
+        );
+    }
+
+    #[test]
+    fn a_pick_before_connect_reports_failure_without_a_call() {
+        let store = Arc::new(MemoryStore::default());
+        let source = Arc::new(FixedSource::default());
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::default());
+        let shared = Arc::clone(&host.shared);
+
+        let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            assert_eq!(
+                ui_end.updates.recv().expect("resume update"),
+                Update::NeedsAuthorization
+            );
+            ui_end
+                .commands
+                .send(Command::Transfer {
+                    to: PHONE.to_owned(),
+                })
+                .expect("transfer");
+            ui_end.updates.recv().expect("transfer failed")
+        });
+
+        assert_eq!(
+            update,
+            Update::Devices(DeviceUpdate::TransferFailed(Failure::Transfer))
+        );
+        assert!(shared.transfers.lock().expect("lock").is_empty());
+    }
+
+    #[test]
+    fn a_successful_pick_sends_no_update() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+        let elsewhere = tablet().id;
+        // The first pick lands and reports nothing; the second is refused, and
+        // that failure is the receipt the first was processed. The two targets
+        // differ, so a failure raised by the landed pick names a target it was
+        // never sent to; and the script flips only once the host has the first
+        // call in hand, so it cannot answer for it.
+        let (transfer_tx, transfer_rx) = channel();
+        *shared.transfer_started.lock().expect("lock") = Some(transfer_tx);
+
+        let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            watch_now(&ui_end, &shared).recv().expect("watch started");
+            ui_end
+                .commands
+                .send(Command::Transfer {
+                    to: PHONE.to_owned(),
+                })
+                .expect("transfer");
+            transfer_rx.recv().expect("the hand-over started");
+            expect_no_update(&ui_end);
+            *shared.transfer_script.lock().expect("lock") = TransferScript::Fail;
+            ui_end
+                .commands
+                .send(Command::Transfer {
+                    to: elsewhere.clone(),
+                })
+                .expect("transfer");
+            ui_end.updates.recv().expect("the refused transfer")
+        });
+
+        assert_eq!(
+            update,
+            Update::Devices(DeviceUpdate::TransferFailed(Failure::Transfer))
+        );
+        assert_eq!(
+            *shared.transfers.lock().expect("lock"),
+            vec![PHONE.to_owned(), elsewhere],
+            "a landed pick is not retried and reports nothing"
+        );
+    }
+
+    #[test]
+    fn a_failed_pick_sends_transfer_failed() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+        *shared.transfer_script.lock().expect("lock") = TransferScript::Fail;
+
+        let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            watch_now(&ui_end, &shared).recv().expect("watch started");
+            ui_end
+                .commands
+                .send(Command::Transfer {
+                    to: PHONE.to_owned(),
+                })
+                .expect("transfer");
+            ui_end.updates.recv().expect("transfer failed")
+        });
+
+        assert_eq!(
+            update,
+            Update::Devices(DeviceUpdate::TransferFailed(Failure::Transfer))
+        );
+        assert_eq!(
+            *shared.transfers.lock().expect("lock"),
+            vec![PHONE.to_owned()],
+            "a refused pick is never retried"
+        );
+    }
+
+    #[test]
+    fn a_pick_with_nothing_to_hand_over_says_what_is_missing() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+        *shared.transfer_script.lock().expect("lock") = TransferScript::NoContext;
+
+        let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            watch_now(&ui_end, &shared).recv().expect("watch started");
+            ui_end
+                .commands
+                .send(Command::Transfer {
+                    to: PHONE.to_owned(),
+                })
+                .expect("transfer");
+            ui_end.updates.recv().expect("transfer failed")
+        });
+
+        assert_eq!(
+            update,
+            Update::Devices(DeviceUpdate::TransferFailed(Failure::NoContext)),
+            "the copy names the real problem: no list is playing"
+        );
+    }
+
+    #[test]
+    fn a_stop_during_a_pending_pick_leaves_the_loop() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+        *shared.transfer_script.lock().expect("lock") = TransferScript::Pending;
+
+        let (transfer_tx, transfer_rx) = channel();
+        *shared.transfer_started.lock().expect("lock") = Some(transfer_tx);
+
+        run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            watch_now(&ui_end, &shared).recv().expect("watch started");
+            ui_end
+                .commands
+                .send(Command::Transfer {
+                    to: PHONE.to_owned(),
+                })
+                .expect("transfer");
+            transfer_rx.recv().expect("the hand-over started");
+            expect_no_update(&ui_end);
+        });
+
+        assert_eq!(
+            shared.exit_calls.lock().expect("lock").as_slice(),
+            ["withdraw", "shutdown"],
+            "the stop leaves the pending hand-over and still withdraws"
+        );
+        assert_eq!(
+            *shared.transfers.lock().expect("lock"),
+            vec![PHONE.to_owned()],
+            "nothing is handed over twice"
         );
     }
 

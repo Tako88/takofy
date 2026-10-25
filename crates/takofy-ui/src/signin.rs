@@ -150,6 +150,8 @@ pub fn failure_message(failure: Failure) -> &'static str {
         Failure::Devices => "Could not reach your devices. Check your connection and try again.",
         Failure::DevicesOff => "Could not reach your devices. Restart Takofy to try again.",
         Failure::Steer => "That device did not respond. Try again.",
+        Failure::Transfer => "Could not move the sound. Try again.",
+        Failure::NoContext => "Play a list first: there is nothing to hand over.",
         Failure::Other => "Sign-in failed. Try again, or run with --headless for details.",
     }
 }
@@ -445,7 +447,7 @@ mod tests {
     }
 
     /// Every `Failure` value there is, so a test can sweep them all.
-    fn every_failure() -> [Failure; 17] {
+    fn every_failure() -> [Failure; 19] {
         [
             Failure::PortBusy,
             Failure::Keychain,
@@ -463,6 +465,8 @@ mod tests {
             Failure::Devices,
             Failure::DevicesOff,
             Failure::Steer,
+            Failure::Transfer,
+            Failure::NoContext,
             Failure::Other,
         ]
     }

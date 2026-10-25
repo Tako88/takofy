@@ -446,7 +446,8 @@ mod tests {
 
         fn with_queue(mut self, count: usize, current: usize) -> Self {
             let tracks: Vec<TrackEntry> = (0..count).map(track).collect();
-            self.queue.start(&tracks, current, &mut self.transport);
+            self.queue
+                .start(&tracks, current, None, &mut self.transport);
             self
         }
 
@@ -1130,7 +1131,7 @@ mod tests {
         let ctx = context();
         let mut panel = Panel::new(playing("A Title", "A Band"));
         let named = named_track();
-        panel.queue.start(&[named], 0, &mut panel.transport);
+        panel.queue.start(&[named], 0, None, &mut panel.transport);
 
         let reply = click_more(&mut panel, &ctx);
 
@@ -1146,7 +1147,7 @@ mod tests {
     fn the_more_button_waits_without_a_current_entry_that_has_verbs() {
         for queue in [Queue::default(), {
             let mut queue = Queue::default();
-            queue.start(&[track(0)], 0, &mut Transport::default());
+            queue.start(&[track(0)], 0, None, &mut Transport::default());
             queue
         }] {
             let ctx = context();
@@ -1166,7 +1167,9 @@ mod tests {
         // The queue holds a row with nothing to open, and the pane is handed a
         // different entry: the button follows the entry it draws.
         let mut panel = Panel::new(playing("A Title", "A Band"));
-        panel.queue.start(&[track(0)], 0, &mut Transport::default());
+        panel
+            .queue
+            .start(&[track(0)], 0, None, &mut Transport::default());
         panel.drawn = Some(named_track());
 
         let door = click_more(&mut panel, &ctx)

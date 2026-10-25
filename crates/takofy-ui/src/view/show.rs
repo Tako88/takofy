@@ -158,7 +158,12 @@ pub fn show_view(
                         );
                     }
                     if acted.played && !detail.episodes.is_empty() {
-                        command = queue.start(&entries(detail), 0, transport);
+                        command = queue.start(
+                            &entries(detail),
+                            0,
+                            Some(detail.show.uri.as_str()),
+                            transport,
+                        );
                     }
                     if let Some(asked) = acted.saved {
                         // The library is borrowed for the show for the whole draw,
@@ -221,7 +226,12 @@ pub fn show_view(
                             };
                             match episode_row::show(ui, rect, &row, tokens) {
                                 Some(Click::Play) => {
-                                    command = queue.start(&entries(detail), index, transport);
+                                    command = queue.start(
+                                        &entries(detail),
+                                        index,
+                                        Some(detail.show.uri.as_str()),
+                                        transport,
+                                    );
                                 }
                                 Some(Click::Select(press)) => selection.press(index, press),
                                 Some(Click::Lift) => {

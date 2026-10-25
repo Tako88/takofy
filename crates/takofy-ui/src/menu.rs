@@ -224,6 +224,8 @@ pub enum Reason {
     Tab,
     Outside,
     Page,
+    /// The pointer chose something in the card.
+    Pick,
 }
 
 /// What a close reports to the shell.

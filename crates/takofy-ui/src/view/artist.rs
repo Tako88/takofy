@@ -185,11 +185,21 @@ pub fn artist_view(
                         command = page.follow.pressed();
                     }
                     if acted.played {
-                        command = queue.start(&artist.top_tracks, 0, transport);
+                        command = queue.start(
+                            &artist.top_tracks,
+                            0,
+                            Some(artist.uri.as_str()),
+                            transport,
+                        );
                     }
                     if acted.shuffled {
-                        command = (queue.start_with_shuffle(&artist.top_tracks, 0, transport))
-                            .or(command.take());
+                        command = (queue.start_with_shuffle(
+                            &artist.top_tracks,
+                            0,
+                            Some(artist.uri.as_str()),
+                            transport,
+                        ))
+                        .or(command.take());
                     }
                     if let Some(door) = acted.more_door {
                         let item = LibraryItem {
@@ -331,10 +341,20 @@ pub fn artist_view(
                                 if clicked.played
                                     && let Some(tracks) = ready
                                 {
-                                    command = queue.start(tracks, 0, transport);
+                                    command = queue.start(
+                                        tracks,
+                                        0,
+                                        Some(release.uri.as_str()),
+                                        transport,
+                                    );
                                 }
                                 if let (Some(index), Some(tracks)) = (clicked.row, ready) {
-                                    command = queue.start(tracks, index, transport);
+                                    command = queue.start(
+                                        tracks,
+                                        index,
+                                        Some(release.uri.as_str()),
+                                        transport,
+                                    );
                                 }
                                 if let Some(asked) = clicked.saved {
                                     save = Some((release.uri.clone(), release.name.clone(), asked));
@@ -600,7 +620,12 @@ fn popular(
         };
         match track_row::show(ui, rect, columns, &row, tokens) {
             Some(Click::Play) => {
-                *command = queue.start(&artist.top_tracks, index, transport);
+                *command = queue.start(
+                    &artist.top_tracks,
+                    index,
+                    Some(artist.uri.as_str()),
+                    transport,
+                );
             }
             Some(Click::Select(press)) => selection.press(index, press),
             Some(Click::Like(liked)) => {

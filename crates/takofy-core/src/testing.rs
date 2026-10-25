@@ -20,6 +20,7 @@ use crate::latest::Latest;
 use crate::presence::Presence;
 use crate::publish;
 use crate::registry::{Registry, Responder, Verdict};
+use crate::transfer_out::ContextRow;
 use crate::watch::{Gate, Shared, Timing, Wire, pump};
 
 pub(crate) const DEVICE: &str = "device-1";
@@ -125,9 +126,16 @@ pub(crate) struct FakeWire {
     inactive_hangs: AtomicBool,
     inactive_fails: AtomicBool,
     now: Mutex<i64>,
-    /// Every hand-over the wire was asked to make, in order.
-    #[allow(dead_code)] // Nothing hands the sound over yet.
+    /// Whether the hand-over is refused.
+    hand_over_fails: AtomicBool,
+    /// Whether the hand-over never answers, so only its budget can end it.
+    hand_over_hangs: AtomicBool,
+    /// Every hand-over the wire was asked to make: the target, then the body.
     pub(crate) hand_overs: Mutex<Vec<(String, String)>>,
+    /// The rows a context read answers with, so a move has the account's uids.
+    pub(crate) resolved_rows: Mutex<Vec<ContextRow>>,
+    /// Whether that read fails, so a move can be tested without the rows.
+    context_rows_fail: AtomicBool,
 }
 
 impl FakeWire {
@@ -185,6 +193,26 @@ impl FakeWire {
         self.inactive_fails.store(true, Ordering::SeqCst);
     }
 
+    /// Makes the hand-over fail.
+    pub(crate) fn refuse_hand_over(&self) {
+        self.hand_over_fails.store(true, Ordering::SeqCst);
+    }
+
+    /// Lines up a context read: the rows a move will name.
+    pub(crate) fn rows(&self, rows: Vec<ContextRow>) {
+        *self.resolved_rows.lock().expect("lock") = rows;
+    }
+
+    /// Makes the context read fail, so a move has no rows to name.
+    pub(crate) fn refuse_context_rows(&self) {
+        self.context_rows_fail.store(true, Ordering::SeqCst);
+    }
+
+    /// Makes the hand-over hang, so only its budget can end it.
+    pub(crate) fn hang_hand_over(&self) {
+        self.hand_over_hangs.store(true, Ordering::SeqCst);
+    }
+
     pub(crate) fn commands(&self) -> Vec<(String, String, bool)> {
         self.commands.lock().expect("lock").clone()
     }
@@ -215,11 +243,30 @@ impl Wire for FakeWire {
         *self.now.lock().expect("lock")
     }
 
-    async fn hand_over(&self, from: &str, to: &str) -> Result<(), ConnectError> {
+    async fn context_rows(&self, _uri: &str) -> Result<Vec<ContextRow>, ConnectError> {
+        if self.context_rows_fail.load(Ordering::SeqCst) {
+            return Err(ConnectError::Session(
+                librespot::core::Error::failed_precondition("the context could not be read"),
+            ));
+        }
+        Ok(self.resolved_rows.lock().expect("lock").clone())
+    }
+
+    async fn hand_over(&self, to: &str, body: &str) -> Result<(), ConnectError> {
         self.hand_overs
             .lock()
             .expect("lock")
-            .push((from.to_owned(), to.to_owned()));
+            .push((to.to_owned(), body.to_owned()));
+        self.log.push("hand_over:start");
+        if self.hand_over_hangs.load(Ordering::SeqCst) {
+            std::future::pending::<()>().await;
+        }
+        if self.hand_over_fails.load(Ordering::SeqCst) {
+            return Err(ConnectError::Session(
+                librespot::core::Error::failed_precondition("the hand-over was refused"),
+            ));
+        }
+        self.log.push("hand_over:done");
         Ok(())
     }
 

@@ -465,7 +465,7 @@ mod tests {
     fn queue_of(count: usize, current: usize) -> Queue {
         let tracks: Vec<TrackEntry> = (0..count).map(track).collect();
         let mut queue = Queue::default();
-        queue.start(&tracks, current, &mut Transport::default());
+        queue.start(&tracks, current, None, &mut Transport::default());
         queue
     }
 
@@ -626,7 +626,7 @@ mod tests {
         let mut queue = Queue::default();
         let same = track(0);
         let tracks = vec![track(1), same.clone(), same];
-        queue.start(&tracks, 0, &mut Transport::default());
+        queue.start(&tracks, 0, None, &mut Transport::default());
 
         let mut art = Art::default();
         let now = Instant::now();
@@ -1126,7 +1126,7 @@ mod tests {
         let mut art = Art::default();
         let tracks: Vec<TrackEntry> = (0..20).map(track_with_cover).collect();
         let mut queue = Queue::default();
-        queue.start(&tracks, 0, &mut Transport::default());
+        queue.start(&tracks, 0, None, &mut Transport::default());
 
         let pane =
             Rect::from_min_size(Pos2::ZERO, Vec2::new(PANE.width(), CAPTION_H + 2.0 * ROW_H));
@@ -1182,7 +1182,7 @@ mod tests {
         // shows up as an extra request instead of hiding under the cap.
         let tracks: Vec<TrackEntry> = (0..20).map(track_with_cover).collect();
         let mut queue = Queue::default();
-        queue.start(&tracks, 0, &mut Transport::default());
+        queue.start(&tracks, 0, None, &mut Transport::default());
 
         let pane = Rect::from_min_size(
             Pos2::ZERO,
@@ -1255,7 +1255,7 @@ mod tests {
         let now = Instant::now();
         let mut queue = Queue::default();
         let tracks = vec![track(0), track_with_cover(1)];
-        queue.start(&tracks, 0, &mut Transport::default());
+        queue.start(&tracks, 0, None, &mut Transport::default());
 
         let _ = pass(&ctx, PANE, &queue, &mut art, now, Vec::new());
         let requested: Vec<CoverUrl> = art

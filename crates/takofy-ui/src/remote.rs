@@ -244,7 +244,7 @@ mod tests {
         let rows: Vec<TrackEntry> = tracks.iter().map(|uri| track(uri)).collect();
         let mut transport = Transport::default();
         let mut queue = Queue::default();
-        let _ = queue.start(&rows, index, &mut transport);
+        let _ = queue.start(&rows, index, None, &mut transport);
         transport.state = TransportState::Playing;
         transport.duration_ms = Some(200_000);
         (queue, transport)
