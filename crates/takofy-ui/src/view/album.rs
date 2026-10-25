@@ -1514,10 +1514,10 @@ mod tests {
     }
 
     #[test]
-    fn a_click_in_the_artist_cells_dead_zone_opens_the_artist_and_does_not_play() {
-        // The hit area is the whole artist cell, padding included. The cell is a
-        // tight share of a wide pane, so most of it is past the painted words; a
-        // click there is still the link, and never the row's play.
+    fn a_click_in_the_artist_cells_dead_zone_selects_the_row_and_does_not_open() {
+        // The link is the painted words, not the cell. The cell is a tight share
+        // of a wide pane, so most of it is past the words; a click there belongs
+        // to the row, and a double click there plays it.
         let ctx = context();
         let mut library = library_with(detail(vec![featured()]));
         let mut transport = Transport::default();
@@ -1558,18 +1558,39 @@ mod tests {
 
         assert_eq!(
             library.page(),
-            Some(&Page::Artist("spotify:artist:guest".to_owned())),
-            "a click on the cell's far edge still opens the artist"
+            Some(&Page::Album(ALBUM.to_owned())),
+            "a click past the credit must not navigate"
         );
-        assert_eq!(
-            command,
-            Some(Command::LoadArtist {
-                artist: "spotify:artist:guest".to_owned()
-            })
-        );
+        assert_eq!(command, None, "a click past the words is the row's own");
         assert!(
             !queue.can_next(),
-            "a click in the artist cell must not play the row"
+            "a click in the artist cell's dead zone must not play the row"
+        );
+
+        // A fresh page, so the double click is not the third of a sequence.
+        let ctx = context();
+        let mut library = library_with(detail(vec![featured()]));
+        let command = click(
+            &ctx,
+            dead,
+            2,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+
+        assert_eq!(
+            command,
+            Some(Command::Play {
+                uri: "spotify:track:a".to_owned()
+            }),
+            "a double click past the credit plays the row"
+        );
+        assert_eq!(
+            library.page(),
+            Some(&Page::Album(ALBUM.to_owned())),
+            "playing the row stays on the album"
         );
     }
 

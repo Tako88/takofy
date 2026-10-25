@@ -5479,11 +5479,20 @@ mod tests {
         let mut queue = Queue::default();
         let mut art = Art::default();
 
-        let (_, artist_cell, _) = popular_cells(&ctx, size, 0, 1);
+        let (_, output) = frame(
+            &ctx,
+            size,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let words = text_rect(&output, "Slow Tide").expect("the credit is painted");
         let command = click(
             &ctx,
             size,
-            artist_cell.center(),
+            words.center(),
             1,
             &mut library,
             &mut transport,
@@ -5503,6 +5512,90 @@ mod tests {
             })
         );
         assert!(!queue.can_next(), "opening a page must not start the queue");
+    }
+
+    #[test]
+    fn a_click_past_the_credit_selects_the_row_and_a_double_click_plays() {
+        // The link is the painted words, not the credit cell: a click past them
+        // belongs to the row.
+        let ctx = context();
+        let size = Vec2::new(900.0, 800.0);
+        let mut library = library_with(detail(
+            vec![on_album("spotify:album:slow-tide", "One", "Slow Tide")],
+            Vec::new(),
+        ));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let (_, credit, row) = popular_cells(&ctx, size, 0, 1);
+        let (_, output) = frame(
+            &ctx,
+            size,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let words = text_rect(&output, "Slow Tide").expect("the credit is painted");
+        let past = Pos2::new(
+            words.right() + (credit.right() - words.right()) / 2.0,
+            row.center().y,
+        );
+        assert!(
+            words.right() < past.x && past.x < credit.right(),
+            "the probe at x={} must be past the credit, which ends at x={}",
+            past.x,
+            words.right()
+        );
+
+        let command = click(
+            &ctx,
+            size,
+            past,
+            1,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        assert_eq!(command, None, "a click past the words is the row's own");
+        assert_eq!(
+            library.page(),
+            Some(&Page::Artist(ARTIST.to_owned())),
+            "a click past the credit must not navigate"
+        );
+        assert!(!queue.can_next(), "a click past the words must not play");
+
+        // A fresh page, so the double click is not the third of a sequence.
+        let ctx = context();
+        let mut library = library_with(detail(
+            vec![on_album("spotify:album:slow-tide", "One", "Slow Tide")],
+            Vec::new(),
+        ));
+        let command = click(
+            &ctx,
+            size,
+            past,
+            2,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        assert_eq!(
+            command,
+            Some(Command::Play {
+                uri: "spotify:track:a".to_owned()
+            }),
+            "a double click past the credit plays the row"
+        );
+        assert_eq!(
+            library.page(),
+            Some(&Page::Artist(ARTIST.to_owned())),
+            "playing the row stays on the artist"
+        );
     }
 
     #[test]
@@ -5564,8 +5657,18 @@ mod tests {
         // Both solves run before the focus is taken: a solve is a frame of its
         // own, and a frame that does not draw the focused row drops it.
         let (title, _, _) = popular_cells(&ctx, size, 0, 2);
-        let (_, credit, _) = popular_cells(&ctx, size, 1, 2);
-        let at = credit.center();
+        let (_, output) = frame(
+            &ctx,
+            size,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let at = text_rect(&output, "Slow Tide")
+            .expect("the second row's credit is painted")
+            .center();
 
         // Focus the first row, so Enter on it asks for a play.
         let _ = click(

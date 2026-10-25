@@ -1967,9 +1967,8 @@ mod tests {
     /// way the painter solves it: the row's own rect, then the columns at its
     /// origin.
     ///
-    /// The cell is the whole column, padding included. Its label is painted at
-    /// the left edge, so a point near the far edge is padding the cell must also
-    /// take a click on.
+    /// The cell is the whole column, padding included, but a credit's link is the
+    /// words painted at its left edge: a probe past those words is the row's.
     fn cell_rect_for(
         ctx: &Context,
         count: usize,
@@ -1978,6 +1977,13 @@ mod tests {
     ) -> Rect {
         let row = row_rect_for(ctx, count, index);
         cell(table_layout::columns(row.width(), Table::Full.columns()).at(row.min))
+    }
+
+    /// The rect the painted words of `label` occupy in one frame of the
+    /// tracklist, read back from the galleys the view painted.
+    fn words_of(ctx: &Context, library: &mut Library, label: &str) -> Rect {
+        let output = tracklist_frame(ctx, Table::Full, library);
+        text_rect(&output, label).unwrap_or_else(|| panic!("{label:?} was not painted"))
     }
 
     /// The rect `tracks_view` draws the `index`-th row into while the band is
@@ -3997,10 +4003,10 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         let mut transport = Transport::default();
         let mut queue = Queue::default();
 
-        let cell = cell_rect_for(&ctx, 1, 0, |columns| columns.album);
+        let words = words_of(&ctx, &mut library, "Record");
         let command = click(
             &ctx,
-            cell.center(),
+            words.center(),
             &mut library,
             &mut transport,
             &mut queue,
@@ -4009,7 +4015,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         assert_eq!(
             library.page(),
             Some(&Page::Album("spotify:album:rec".to_owned())),
-            "a single click on the album cell must open the album"
+            "a single click on the album cell's words must open the album"
         );
         assert_eq!(
             command,
@@ -4023,30 +4029,42 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
     }
 
     #[test]
-    fn a_click_in_the_album_cells_padding_opens_the_album() {
-        // The brief's link is the cell, not the painted text: a click past the end
-        // of "Record" is still a click on the album.
+    fn a_click_in_the_album_cells_padding_selects_the_row() {
+        // The link is the painted words, not the cell: a click past the end of
+        // "Record" reaches the row, which selects it.
         let ctx = context();
         let mut library = library_with(vec![linkable("a")]);
         let mut transport = Transport::default();
         let mut queue = Queue::default();
 
         let cell = cell_rect_for(&ctx, 1, 0, |columns| columns.album);
+        let words = words_of(&ctx, &mut library, "Record");
         let padding = Pos2::new(cell.right() - space::S3, cell.center().y);
-        let command = click(&ctx, padding, &mut library, &mut transport, &mut queue);
+        assert!(
+            words.right() < padding.x && padding.x < cell.right(),
+            "the probe at x={} must be past \"Record\", which ends at x={}",
+            padding.x,
+            words.right()
+        );
 
+        let command = click(&ctx, padding, &mut library, &mut transport, &mut queue);
+        assert_eq!(command, None, "a click past the words is the row's own");
         assert_eq!(
             library.page(),
-            Some(&Page::Album("spotify:album:rec".to_owned())),
-            "the whole album cell must take the click, padding included"
+            Some(&Page::Playlist("spotify:playlist:a".to_owned())),
+            "a click past the album's words must not navigate"
         );
+        assert!(!queue.can_next(), "a click past the words must not play");
+
+        // The cell still belongs to the row, so a double click there plays.
+        let command = double_click(&ctx, padding, &mut library, &mut transport, &mut queue);
         assert_eq!(
             command,
-            Some(Command::LoadAlbum {
-                album: "spotify:album:rec".to_owned()
-            })
+            Some(Command::Play {
+                uri: "a".to_owned()
+            }),
+            "a double click past the words must play the row"
         );
-        assert!(!queue.can_next());
     }
 
     #[test]
@@ -4056,10 +4074,10 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         let mut transport = Transport::default();
         let mut queue = Queue::default();
 
-        let cell = cell_rect_for(&ctx, 1, 0, |columns| columns.artist);
+        let words = words_of(&ctx, &mut library, "Band");
         let command = click(
             &ctx,
-            cell.center(),
+            words.center(),
             &mut library,
             &mut transport,
             &mut queue,
@@ -4068,7 +4086,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         assert_eq!(
             library.page(),
             Some(&Page::Artist("spotify:artist:band".to_owned())),
-            "a single click on the artist cell must open the first artist"
+            "a single click on the artist cell's words must open the first artist"
         );
         assert_eq!(
             command,
@@ -4082,28 +4100,39 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
     }
 
     #[test]
-    fn a_click_in_the_artist_cells_padding_opens_the_first_artist() {
+    fn a_click_in_the_artist_cells_padding_selects_the_row() {
         let ctx = context();
         let mut library = library_with(vec![linkable("a")]);
         let mut transport = Transport::default();
         let mut queue = Queue::default();
 
         let cell = cell_rect_for(&ctx, 1, 0, |columns| columns.artist);
+        let words = words_of(&ctx, &mut library, "Band");
         let padding = Pos2::new(cell.right() - space::S3, cell.center().y);
-        let command = click(&ctx, padding, &mut library, &mut transport, &mut queue);
+        assert!(
+            words.right() < padding.x && padding.x < cell.right(),
+            "the probe at x={} must be past \"Band\", which ends at x={}",
+            padding.x,
+            words.right()
+        );
 
+        let command = click(&ctx, padding, &mut library, &mut transport, &mut queue);
+        assert_eq!(command, None, "a click past the words is the row's own");
         assert_eq!(
             library.page(),
-            Some(&Page::Artist("spotify:artist:band".to_owned())),
-            "the whole artist cell must take the click, padding included"
+            Some(&Page::Playlist("spotify:playlist:a".to_owned())),
+            "a click past the artist's words must not navigate"
         );
+        assert!(!queue.can_next(), "a click past the words must not play");
+
+        let command = double_click(&ctx, padding, &mut library, &mut transport, &mut queue);
         assert_eq!(
             command,
-            Some(Command::LoadArtist {
-                artist: "spotify:artist:band".to_owned()
-            })
+            Some(Command::Play {
+                uri: "a".to_owned()
+            }),
+            "a double click past the words must play the row"
         );
-        assert!(!queue.can_next());
     }
 
     #[test]
@@ -4116,6 +4145,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         let mut transport = Transport::default();
         let mut queue = Queue::default();
         let cell = cell_rect_for(&ctx, 1, 0, |columns| columns.album);
+        let words = words_of(&ctx, &mut library, "Record");
 
         let mut frame = |events: Vec<Event>| {
             let mut output = run(&ctx, input(events), |ui| {
@@ -4132,42 +4162,62 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
                 );
             });
             output.textures_delta.clear();
-            let color = output
+            let ink = output
                 .shapes
                 .iter()
                 .find_map(|clipped| match &clipped.shape {
                     egui::epaint::Shape::Text(text) if text.galley.text() == "Record" => {
-                        Some(text.galley.job.sections[0].format.color)
+                        Some(text.fallback_color)
                     }
                     _ => None,
                 })
                 .expect("the album label is painted");
-            (output.platform_output.cursor_icon, color)
+            (output.platform_output.cursor_icon, ink)
         };
 
         // At rest the label is muted and the cursor is the window's own.
-        let (rest_cursor, rest_color) = frame(Vec::new());
-        assert_eq!(rest_color, tokens.palette.text_muted);
+        let (rest_cursor, rest_ink) = frame(Vec::new());
+        assert_eq!(rest_ink, tokens.palette.text_muted);
         assert_ne!(rest_cursor, egui::CursorIcon::PointingHand);
 
-        // Resting on the cell points the hand and brightens the label to the
-        // body colour, over the reveal's own time.
+        // Resting on the words points the hand and brightens them to the body
+        // colour, over the reveal's own time.
         for _ in 0..12 {
-            frame(vec![Event::PointerMoved(cell.center())]);
+            frame(vec![Event::PointerMoved(words.center())]);
         }
-        let (hover_cursor, hover_color) = frame(vec![Event::PointerMoved(cell.center())]);
+        let (hover_cursor, hover_ink) = frame(vec![Event::PointerMoved(words.center())]);
         assert_eq!(hover_cursor, egui::CursorIcon::PointingHand);
-        assert_eq!(hover_color, tokens.palette.text);
+        assert_eq!(hover_ink, tokens.palette.text);
+
+        // Resting past them is the row's: no hand, and the label goes muted.
+        let padding = Pos2::new(cell.right() - space::S3, cell.center().y);
+        assert!(
+            words.right() < padding.x && padding.x < cell.right(),
+            "the probe at x={} must be past \"Record\", which ends at x={}",
+            padding.x,
+            words.right()
+        );
+        for _ in 0..12 {
+            frame(vec![Event::PointerMoved(padding)]);
+        }
+        let (padding_cursor, padding_ink) = frame(vec![Event::PointerMoved(padding)]);
+        assert_ne!(
+            padding_cursor,
+            egui::CursorIcon::PointingHand,
+            "the empty part of the cell must not point the hand"
+        );
+        assert_eq!(padding_ink, tokens.palette.text_muted);
     }
 
     #[test]
     fn the_row_keeps_its_hover_over_a_link_cell() {
         // A link cell's interact is created after the row's, and egui marks only
         // the top hit widget as hovered, so the row's own `hovered()` goes false
-        // over the album and artist columns. The row must read where the pointer
-        // is instead, or its highlight, its index play glyph and its like all
-        // vanish there. The fill is the visible half of that; the glyph and the
-        // like follow the same `revealed` value.
+        // over the link's words. The row must read where the pointer is instead,
+        // or its highlight, its index play glyph and its like all vanish there.
+        // The fill is the visible half of that; the glyph and the like follow the
+        // same `revealed` value. The label's ink says which widget the hit test
+        // gave the pointer to.
         let ctx = context();
         let tokens = Tokens::DARK;
         let mut library = library_with(vec![linkable("a")]);
@@ -4175,9 +4225,11 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         let mut queue = Queue::default();
         let row = row_rect_for(&ctx, 1, 0);
         let cell = cell_rect_for(&ctx, 1, 0, |columns| columns.album);
+        let words = words_of(&ctx, &mut library, "Record");
 
-        // The frame's fill behind this row, read back from the shapes painted.
-        let mut fill = |events: Vec<Event>| {
+        // The frame's fill behind this row and the album label's ink, read back
+        // from the shapes painted.
+        let mut frame = |events: Vec<Event>| {
             let output = run(&ctx, input(events), |ui| {
                 let _ = tracks_view(
                     ui,
@@ -4191,27 +4243,63 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
                     &tokens,
                 );
             });
-            output
+            let fill = output
                 .shapes
                 .iter()
                 .find_map(|clipped| match &clipped.shape {
                     egui::epaint::Shape::Rect(shape) if shape.rect == row => Some(shape.fill),
                     _ => None,
-                })
+                });
+            let ink = output
+                .shapes
+                .iter()
+                .find_map(|clipped| match &clipped.shape {
+                    egui::epaint::Shape::Text(text) if text.galley.text() == "Record" => {
+                        Some(text.fallback_color)
+                    }
+                    _ => None,
+                });
+            (fill, ink)
         };
 
         // With the pointer away the row paints no fill at all.
-        assert_eq!(fill(Vec::new()), None, "a resting row paints no fill");
+        assert_eq!(
+            frame(Vec::new()),
+            (None, Some(tokens.palette.text_muted)),
+            "a resting row paints no fill"
+        );
 
-        // Resting on the album link must light the row to the same fill the
-        // title would, over the reveal's own time.
+        // Resting on the link's words lights the row to the same fill the title
+        // would, while the link itself takes the pointer's hover: both are true
+        // at once, which is the tie this pins.
         for _ in 0..12 {
-            fill(vec![Event::PointerMoved(cell.center())]);
+            frame(vec![Event::PointerMoved(words.center())]);
         }
         assert_eq!(
-            fill(vec![Event::PointerMoved(cell.center())]),
-            Some(tokens.palette.row_hover),
-            "the row must keep its hover fill over the album link"
+            frame(vec![Event::PointerMoved(words.center())]),
+            (Some(tokens.palette.row_hover), Some(tokens.palette.text)),
+            "the row must keep its hover fill over the album link's words"
+        );
+
+        // Past the words the row owns the point, so the fill stays and the link
+        // is not hovered.
+        let padding = Pos2::new(cell.right() - space::S3, cell.center().y);
+        assert!(
+            words.right() < padding.x && padding.x < cell.right(),
+            "the probe at x={} must be past \"Record\", which ends at x={}",
+            padding.x,
+            words.right()
+        );
+        for _ in 0..12 {
+            frame(vec![Event::PointerMoved(padding)]);
+        }
+        assert_eq!(
+            frame(vec![Event::PointerMoved(padding)]),
+            (
+                Some(tokens.palette.row_hover),
+                Some(tokens.palette.text_muted)
+            ),
+            "the row must keep its hover fill past the album link's words"
         );
     }
 
@@ -4222,10 +4310,10 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         let mut transport = Transport::default();
         let mut queue = Queue::default();
 
-        let cell = cell_rect_for(&ctx, 1, 0, |columns| columns.album);
+        let words = words_of(&ctx, &mut library, "Record");
         let command = double_click(
             &ctx,
-            cell.center(),
+            words.center(),
             &mut library,
             &mut transport,
             &mut queue,
@@ -4363,7 +4451,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             let mut library = library_with(vec![linkable("a")]);
             let mut transport = Transport::default();
             let mut queue = Queue::default();
-            let cell = cell_rect_for(&ctx, 1, 0, |columns| columns.album);
+            let words = words_of(&ctx, &mut library, "Record");
 
             // Warm up so focus traversal and the hit test read a previous pass.
             // The action row's widgets come before the list, so the keyboard is
@@ -4411,9 +4499,12 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             }
             assert!(focused.is_some(), "the keyboard never reached a row");
 
-            // Rest the pointer on the album cell, then press the key.
+            // Rest the pointer on the album cell's words, then press the key.
             let mut command = None;
-            for events in [vec![Event::PointerMoved(cell.center())], vec![key(pressed)]] {
+            for events in [
+                vec![Event::PointerMoved(words.center())],
+                vec![key(pressed)],
+            ] {
                 let command = &mut command;
                 let library = &mut library;
                 let transport = &mut transport;
