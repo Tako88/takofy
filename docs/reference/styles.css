@@ -1465,9 +1465,12 @@ svg {
   gap: 1px;
 }
 
-/* Play counts hug their content instead of floating in a fixed-width gutter. */
+/* The app exposes no play counts, so this is the artist's column: an album or
+   a popular list keeps the credit in its own cell — never stacked under the
+   title. These lists lead with the title, so the cell stays tight instead of
+   taking the playlist's half-width gutter. */
 .tracks--plays {
-  --track-cols: 2.25rem minmax(0, 1fr) max-content 1.75rem 3.5rem 1.75rem;
+  --track-cols: 2.25rem minmax(0, 1fr) minmax(0, 0.55fr) 1.75rem 3.5rem 1.75rem;
 }
 
 /* Inside an album block the album column is redundant — the block header
@@ -4236,37 +4239,26 @@ svg {
     margin-left: auto;
   }
 
-  /* A playlist and a track-results block are the one kind of list where the
-     artist cannot simply be dropped, so it wraps under the title, indented to
-     the title's text axis. */
-  :is(.tracks--playlist, .tracks--results) .track-row {
+  /* The lists whose credit changes row to row cannot simply drop the artist,
+     so it wraps to a second line, indented to the title's text axis. `order`
+     alone moves it past the actions; the cells before it keep DOM order. */
+  :is(.tracks--playlist, .tracks--results, .tracks--plays) .track-row {
     flex-wrap: wrap;
     row-gap: 0;
   }
 
-  :is(.tracks--playlist, .tracks--results) .track-row__index {
-    order: 0;
-  }
-
-  :is(.tracks--playlist, .tracks--results) .track-row__title {
+  :is(.tracks--playlist, .tracks--results, .tracks--plays) .track-row__artist {
     order: 1;
-  }
-
-  :is(.tracks--playlist, .tracks--results) .track-row__duration {
-    order: 2;
-  }
-
-  :is(.tracks--playlist, .tracks--results) .track-row__actions {
-    order: 3;
-  }
-
-  :is(.tracks--playlist, .tracks--results) .track-row__artist {
-    order: 4;
     flex: 1 1 100%;
-    /* Lands on the title's text axis: index (1.75rem) + gap + artwork (2.25rem)
-       + gap, which is where .track-row__text starts. */
-    padding-left: calc(4rem + var(--space-3) * 2);
+    /* Index (1.5rem) + gap lands on the title, and the artwork (2.25rem) plus
+       its gap lands on the text inside it. */
+    padding-left: calc(1.5rem + 2.25rem + var(--space-3) * 2);
     padding-bottom: var(--space-1);
+  }
+
+  /* A row with no artwork puts its title's text axis one artwork closer in. */
+  .tracks--plays .track-row__title:not(:has(.track-row__art)) + .track-row__artist {
+    padding-left: calc(1.5rem + var(--space-3));
   }
 
   .library-grid--list .media {
