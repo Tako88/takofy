@@ -590,9 +590,18 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
     }
 
     // The drawer is stepped after the regions, so a playlist picked from the rail
-    // closes it in the same frame it is picked.
+    // closes it in the same frame it is picked. Its pick is the frame's command
+    // when no earlier region took one, and the drawer refuses the pick when one
+    // did: a row that armed a load whose command was then dropped would leave the
+    // page waiting for a request nobody sent.
     let open = *screen.drawer == Drawer::Open;
-    let clicked_outside = open && drawer_overlay(ui, grid, screen, tokens);
+    let (clicked_outside, asked) = if open {
+        drawer_overlay(ui, grid, screen, tokens, command.is_none())
+    } else {
+        (false, sidebar::Asked::default())
+    };
+    let selected = asked.picked;
+    command = command.or(asked.command);
 
     let escape = ui.input(|input| input.key_pressed(egui::Key::Escape));
     let next = screen.drawer.step(Input {
@@ -600,7 +609,7 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
         toggle: bar.toggle.as_ref().is_some_and(egui::Response::clicked),
         escape,
         clicked_outside,
-        selected: command.is_some(),
+        selected,
     });
     // Closing with Escape hands focus back to the control that opened the drawer,
     // so the keyboard does not end up nowhere.
@@ -1109,7 +1118,16 @@ fn land(queue: &mut Queue, carry: &Carry, target: Target) {
 
 /// The rail's overflow panel: the full sidebar, over everything, above the
 /// playbar so the transport stays reachable.
-fn drawer_overlay(ui: &mut Ui, grid: Grid, screen: &mut Screen<'_>, tokens: &Tokens) -> bool {
+///
+/// Returns whether a click landed outside the drawer, and what the drawer asked
+/// the shell for.
+fn drawer_overlay(
+    ui: &mut Ui,
+    grid: Grid,
+    screen: &mut Screen<'_>,
+    tokens: &Tokens,
+    free: bool,
+) -> (bool, sidebar::Asked) {
     let shadow = tokens.palette.shadow_lg.as_shape(grid.drawer, radius::LG);
     ui.painter().add(shadow);
 
@@ -1119,30 +1137,40 @@ fn drawer_overlay(ui: &mut Ui, grid: Grid, screen: &mut Screen<'_>, tokens: &Tok
         .constrain(false)
         .fade_in(false);
 
-    let _ = area.show(ui.ctx(), |ui| {
-        ui.set_clip_rect(grid.drawer);
-        panel(ui, grid.drawer, tokens.palette.surface, tokens);
-        let mut child = ui.new_child(
-            UiBuilder::new()
-                .id_salt("drawer-sidebar")
-                .max_rect(grid.drawer)
-                .layout(Layout::top_down(Align::Min)),
-        );
-        child.set_clip_rect(grid.drawer);
-        sidebar::show(&mut child, screen.library, screen.art, screen.now, tokens);
-    });
+    let picked = area
+        .show(ui.ctx(), |ui| {
+            ui.set_clip_rect(grid.drawer);
+            panel(ui, grid.drawer, tokens.palette.surface, tokens);
+            let mut child = ui.new_child(
+                UiBuilder::new()
+                    .id_salt("drawer-sidebar")
+                    .max_rect(grid.drawer)
+                    .layout(Layout::top_down(Align::Min)),
+            );
+            child.set_clip_rect(grid.drawer);
+            sidebar::show(
+                &mut child,
+                screen.library,
+                screen.art,
+                screen.now,
+                tokens,
+                free,
+            )
+        })
+        .inner;
 
     // The area's own response is zero-sized: the column draws at explicit
     // rects rather than allocating in the area's child, so asking it whether a
     // click was elsewhere answers yes for a click on the drawer's own field.
     // The box the drawer covers is the one it was given.
-    ui.input(|input| {
+    let outside = ui.input(|input| {
         input.pointer.any_click()
             && input
                 .pointer
                 .interact_pos()
                 .is_some_and(|pos| !grid.drawer.contains(pos))
-    })
+    });
+    (outside, picked)
 }
 
 /// Applies the topbar's nav request, unless another region already asked for a
@@ -11365,7 +11393,7 @@ mod tests {
             command = if drag {
                 sidebar::column(ui, library, art, Instant::now(), &tokens)
             } else {
-                sidebar::show(ui, library, art, Instant::now(), &tokens)
+                sidebar::show(ui, library, art, Instant::now(), &tokens, true).command
             };
         });
         output.textures_delta.clear();
@@ -11585,6 +11613,117 @@ mod tests {
         );
         open_drawer(&mut window, transport, queue);
         window
+    }
+
+    #[test]
+    fn a_pick_in_the_drawer_loads_the_page_it_names() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = drawer_with_rows(&mut transport, &mut queue);
+        let drawer = drawer_rect(&window);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        // The page behind draws the same playlist as a card, so the drawer's own
+        // copy is the last one painted.
+        let row = frame
+            .shapes
+            .iter()
+            .rev()
+            .find_map(|clipped| match &clipped.shape {
+                egui::Shape::Text(text)
+                    if text.galley.text() == "Midnight City" && drawer.contains(text.pos) =>
+                {
+                    Some(Rect::from_min_size(text.pos, text.galley.size()))
+                }
+                _ => None,
+            })
+            .expect("the drawer drew the row");
+
+        let command = window.click(&mut transport, &mut queue, row.center());
+
+        assert_eq!(
+            command,
+            Some(Command::LoadTracks {
+                playlist: "playlist:Midnight City".to_owned()
+            }),
+            "the drawer's pick never reached the frame: {command:?}"
+        );
+        assert_eq!(window.drawer, Drawer::Closed, "a pick closes the drawer");
+        assert_eq!(
+            window.library.page(),
+            Some(&Page::Playlist("playlist:Midnight City".to_owned())),
+            "the page the row named did not open"
+        );
+    }
+
+    /// A page that is already open asks for nothing, so `settle` returns no
+    /// command. The press is still the user picking a row, so the drawer closes
+    /// rather than staying open over a page the press did nothing to.
+    #[test]
+    fn a_pick_of_the_page_already_open_closes_the_drawer_without_a_command() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(800.0, 900.0));
+        removable_rows(&mut window);
+        assert!(window.library.choose_kind(SidebarKind::Artists));
+        open_drawer(&mut window, &mut transport, &mut queue);
+        let drawer = drawer_rect(&window);
+        let row = |window: &mut Window, transport: &mut Transport, queue: &mut Queue| {
+            let (_, frame) = window.frame(transport, queue, Vec::new());
+            frame
+                .shapes
+                .iter()
+                .rev()
+                .find_map(|clipped| match &clipped.shape {
+                    egui::Shape::Text(text)
+                        if text.galley.text() == "Vela Moreno" && drawer.contains(text.pos) =>
+                    {
+                        Some(Rect::from_min_size(text.pos, text.galley.size()))
+                    }
+                    _ => None,
+                })
+                .expect("the drawer drew the row")
+                .center()
+        };
+
+        let first = row(&mut window, &mut transport, &mut queue);
+        assert!(window.click(&mut transport, &mut queue, first).is_some());
+        assert_eq!(window.drawer, Drawer::Closed);
+
+        open_drawer(&mut window, &mut transport, &mut queue);
+        let again = row(&mut window, &mut transport, &mut queue);
+        assert_eq!(
+            window.click(&mut transport, &mut queue, again),
+            None,
+            "a page already open asks for nothing"
+        );
+        assert_eq!(
+            window.drawer,
+            Drawer::Closed,
+            "the press was still a pick, so the drawer closes"
+        );
+    }
+
+    /// A failed list asks for itself on the frame it is drawn. That is a
+    /// command, not a pick: the drawer must stay open, or a list that failed
+    /// while the rail was narrow could never be retried from it.
+    #[test]
+    fn a_failed_list_retries_in_the_drawer_without_closing_it() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(800.0, 900.0));
+        window.library.playlists = Load::Failed(Failure::Load);
+
+        open_drawer(&mut window, &mut transport, &mut queue);
+
+        assert_eq!(
+            window.drawer,
+            Drawer::Open,
+            "a retry read as a picked row and closed the drawer"
+        );
+        assert!(
+            matches!(window.library.playlists, Load::Loading),
+            "the failed list did not ask for itself"
+        );
     }
 
     #[test]

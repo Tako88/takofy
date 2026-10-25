@@ -50,18 +50,26 @@ pub(super) const ROW_H: f32 = extent::LIBRARY_ART + 2.0 * space::S2;
 /// How many chips a row of the filter grid holds.
 const CHIP_COLUMNS: usize = 2;
 
-/// Draws the sidebar, returning a command if one of its controls asked for one.
+/// Draws the sidebar in the rail's drawer, returning a command if a row opened
+/// a page.
 ///
 /// Its rows do not lift: a write started here would leave a pending write that
-/// no command ever answers, because the drawer discards this form's command.
+/// no command ever answers, because the drawer form offers no drop target.
+///
+/// `free` is whether the frame still has room for this form's command. The
+/// drawer draws after every region, so a command already taken this frame means
+/// this one would be dropped after the row had already armed its load, and a
+/// page armed with no request behind it spins until the app restarts. A row
+/// picked in that frame is refused instead.
 pub fn show(
     ui: &mut Ui,
     library: &mut Library,
     art: &mut Art,
     now: Instant,
     tokens: &Tokens,
-) -> Option<Command> {
-    draw(ui, library, art, now, tokens, false)
+    free: bool,
+) -> Asked {
+    draw(ui, library, art, now, tokens, false, free)
 }
 
 /// Draws the sidebar as the column, whose rows lift and offer themselves.
@@ -72,7 +80,7 @@ pub fn column(
     now: Instant,
     tokens: &Tokens,
 ) -> Option<Command> {
-    draw(ui, library, art, now, tokens, true)
+    draw(ui, library, art, now, tokens, true, true).command
 }
 
 fn draw(
@@ -82,7 +90,8 @@ fn draw(
     now: Instant,
     tokens: &Tokens,
     drag: bool,
-) -> Option<Command> {
+    free: bool,
+) -> Asked {
     let band = ui.available_rect_before_wrap();
     let y = filters(ui, library, tokens, band);
     let head = head(ui, library, tokens, band, y, drag);
@@ -111,7 +120,17 @@ fn draw(
         Pos2::new(band.left() + space::S2, head.top),
         Vec2::new(band.width() - 2.0 * space::S2, band.bottom() - head.top),
     );
-    rows(ui, list, library, art, now, tokens, drag, kept.as_deref())
+    rows(
+        ui,
+        list,
+        library,
+        art,
+        now,
+        tokens,
+        drag,
+        kept.as_deref(),
+        free,
+    )
 }
 
 /// The four filters, in a fixed 2x2 block at the top of the sidebar.
@@ -634,6 +653,19 @@ enum Action {
     Retry(Retry),
 }
 
+/// What the drawer's form asked the shell for.
+///
+/// A retry wants its command sent too, but it is not a pick: a list that failed
+/// asks for itself on the frame it is drawn, and that must not read as the user
+/// choosing a row and closing the drawer.
+#[derive(Debug, Default)]
+pub struct Asked {
+    /// The command to send, when this form has one.
+    pub command: Option<Command>,
+    /// Whether a row was pressed this frame.
+    pub picked: bool,
+}
+
 /// Draws one list of items, whatever they are.
 ///
 /// The four kinds differ in three things only: what the row says under its name,
@@ -984,9 +1016,10 @@ fn rows(
     tokens: &Tokens,
     drag: bool,
     kept: Option<&[usize]>,
-) -> Option<Command> {
+    free: bool,
+) -> Asked {
     if rect.height() < ROW_H {
-        return None;
+        return Asked::default();
     }
     // The drawer draws the same column with no drag and no menu; a row field
     // there has no row to return to.
@@ -1131,11 +1164,13 @@ fn rows(
         );
     }
 
-    match action {
-        Some(Action::Open(uri)) => open.go(library, &uri),
-        Some(Action::Retry(retry)) => retry.go(library),
-        None => None,
-    }
+    let picked = free && matches!(action, Some(Action::Open(_)));
+    let command = match action {
+        Some(Action::Open(uri)) if free => open.go(library, &uri),
+        Some(Action::Retry(retry)) if free => retry.go(library),
+        _ => None,
+    };
+    Asked { command, picked }
 }
 
 /// The row's click target and the chrome all four kinds of row share: a selected
@@ -1481,7 +1516,7 @@ mod tests {
             ..Default::default()
         };
         let mut output = ctx.run_ui(input, |ui| {
-            let _ = show(ui, &mut library, &mut art, Instant::now(), &tokens);
+            let _ = show(ui, &mut library, &mut art, Instant::now(), &tokens, true).command;
         });
         output.textures_delta.clear();
 
@@ -1786,6 +1821,18 @@ mod tests {
         library: &mut Library,
         art: &mut Art,
     ) -> (egui::FullOutput, Option<Command>) {
+        run_gated(ctx, events, library, art, true)
+    }
+
+    /// The same frame with the drawer's own room for a command: `free` false is
+    /// what the shell passes when an earlier region has already taken the frame.
+    fn run_gated(
+        ctx: &egui::Context,
+        events: Vec<Event>,
+        library: &mut Library,
+        art: &mut Art,
+        free: bool,
+    ) -> (egui::FullOutput, Option<Command>) {
         let input = egui::RawInput {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(254.0, 800.0))),
             events,
@@ -1795,7 +1842,7 @@ mod tests {
         let mut command = None;
         let mut output = ctx.run_ui(input, |ui| {
             crate::view::focus::begin_frame(ui.ctx());
-            if let Some(next) = show(ui, library, art, Instant::now(), &tokens) {
+            if let Some(next) = show(ui, library, art, Instant::now(), &tokens, free).command {
                 command = Some(next);
             }
         });
@@ -2007,6 +2054,38 @@ mod tests {
         assert_eq!(library.selected(), Some("spotify:playlist:a"));
     }
 
+    /// The drawer draws after every region, so a frame an earlier region already
+    /// took has no room for the drawer's command. The row must be refused
+    /// *before* it arms its load: a page marked loading with no request behind it
+    /// never recovers, because `settle` sees the want and the in-flight read and
+    /// refuses to ask again.
+    #[test]
+    fn a_row_pick_is_refused_when_the_frame_cannot_take_its_command() {
+        let ctx = context();
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(vec![playlist(
+            "spotify:playlist:a",
+            "A list",
+        )]));
+        let mut art = Art::default();
+        let (output, _) = run_gated(&ctx, Vec::new(), &mut library, &mut art, false);
+
+        let (name, name_size) = painted_text(&output, "A list");
+        let (_, kind_size) = painted_text(&output, "Playlist");
+        let at = Pos2::new(name.x + 10.0, name.y + (name_size.y + kind_size.y) / 2.0);
+        let mut command = None;
+        for event in click_events(at) {
+            let (_, next) = run_gated(&ctx, vec![event], &mut library, &mut art, false);
+            if next.is_some() {
+                command = next;
+            }
+        }
+
+        assert_eq!(command, None, "a command with no room was produced");
+        assert_eq!(library.selected(), None, "the refused row still selected");
+        assert_eq!(library.page(), None, "the refused row opened a page");
+    }
+
     #[test]
     fn a_playlist_name_starts_past_the_art_slot() {
         let ctx = context();
@@ -2138,7 +2217,7 @@ mod tests {
             let next = if drag {
                 column(ui, library, art, Instant::now(), &tokens)
             } else {
-                show(ui, library, art, Instant::now(), &tokens)
+                show(ui, library, art, Instant::now(), &tokens, true).command
             };
             if let Some(next) = next {
                 command = Some(next);
@@ -3101,7 +3180,7 @@ mod tests {
             "a held block opened a menu"
         );
 
-        // The drawer's form discards its command, so it posts nothing.
+        // The drawer's form opens no menu, so it posts nothing.
         let ctx = context();
         let mut library = movable_playlists(&["A"], 7, true, None);
         let (output, _) = run_with(&ctx, Vec::new(), &mut library, &mut art, false);
