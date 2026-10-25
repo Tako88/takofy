@@ -884,56 +884,6 @@ const EXPAND_LINES: &[Line] = &[
 ];
 const EXPAND_FILLS: &[&[Point]] = &[];
 
-const SCREEN_LINES: &[Line] = &[
-    Line {
-        points: &[
-            (19.618, 4.498),
-            (20.176, 4.782),
-            (20.618, 5.224),
-            (20.902, 5.782),
-            (21.0, 6.4),
-            (20.848, 18.365),
-            (20.414, 19.014),
-            (19.765, 19.448),
-            (19.0, 19.6),
-            (4.235, 19.448),
-            (3.586, 19.014),
-            (3.152, 18.365),
-            (3.0, 17.6),
-            (3.152, 5.635),
-            (3.586, 4.986),
-            (4.235, 4.552),
-            (5.0, 4.4),
-        ],
-        closed: true,
-        width: None,
-    },
-    Line {
-        points: &[(3.0, 15.4), (21.0, 15.4)],
-        closed: false,
-        width: None,
-    },
-];
-const SCREEN_FILLS: &[&[Point]] = &[&[
-    (18.847, 16.839),
-    (19.07, 16.953),
-    (19.247, 17.13),
-    (19.361, 17.353),
-    (19.4, 17.6),
-    (19.339, 17.906),
-    (19.166, 18.166),
-    (18.906, 18.339),
-    (18.6, 18.4),
-    (5.094, 18.339),
-    (4.834, 18.166),
-    (4.661, 17.906),
-    (4.6, 17.6),
-    (4.661, 17.294),
-    (4.834, 17.034),
-    (5.094, 16.861),
-    (5.4, 16.8),
-]];
-
 const LOGO_LINES: &[Line] = &[];
 const LOGO_FILLS: &[&[Point]] = &[
     &[(2.5, 3.0), (21.5, 3.0), (21.5, 7.5), (2.5, 7.5)],
@@ -1260,11 +1210,6 @@ pub(super) fn glyph(icon: Icon) -> Glyph {
             lines: EXPAND_LINES,
             fills: EXPAND_FILLS,
         },
-        Icon::Screen => Glyph {
-            source: 0x8c46ec5b344de4ff,
-            lines: SCREEN_LINES,
-            fills: SCREEN_FILLS,
-        },
         Icon::Logo => Glyph {
             source: 0x344774e672a7683c,
             lines: LOGO_LINES,
@@ -1315,7 +1260,6 @@ pub(super) fn symbol_id(icon: Icon) -> &'static str {
         Icon::Devices => "i-devices",
         Icon::Queue => "i-queue",
         Icon::Expand => "i-expand",
-        Icon::Screen => "i-screen",
         Icon::Logo => "i-logo",
         Icon::Clock => "i-clock",
         Icon::Grid => "i-grid",

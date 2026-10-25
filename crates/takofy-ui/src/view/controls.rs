@@ -813,10 +813,10 @@ mod tests {
         run(&ctx, input(Vec::new()), |ui| {
             let slot = slot(
                 ui,
-                Control::Miniplayer,
+                Control::CardPlay,
                 Role::Button,
                 cell(0.0),
-                "Miniplayer",
+                "Play",
                 &Tokens::DARK,
                 true,
             );
@@ -990,10 +990,10 @@ mod tests {
         run(&ctx, input(Vec::new()), |ui| {
             let slot = slot(
                 ui,
-                Control::Miniplayer,
+                Control::CardPlay,
                 Role::Button,
                 cell(0.0),
-                "Miniplayer",
+                "Play",
                 &Tokens::DARK,
                 true,
             );
@@ -1004,7 +1004,7 @@ mod tests {
         });
         let (disabled, label) = node.expect("the slot has an AccessKit node");
         assert!(disabled, "a waiting control must be announced disabled");
-        assert_eq!(label.as_deref(), Some("Miniplayer"));
+        assert_eq!(label.as_deref(), Some("Play"));
     }
 
     /// Which chip filters the list is a selection, so it has to reach the
@@ -1058,7 +1058,7 @@ mod tests {
         let ctx = Context::default();
         let controls = [
             (Control::DrawerToggle, "Toggle"),
-            (Control::Miniplayer, "Miniplayer"),
+            (Control::CardPlay, "Play"),
             (Control::TrailPlaylists, "Playlists"),
         ];
         let [tab, _] = tab();
@@ -1087,7 +1087,7 @@ mod tests {
         }
 
         assert!(
-            !focused.contains(&Control::Miniplayer),
+            !focused.contains(&Control::CardPlay),
             "a waiting control took focus: {focused:?}"
         );
         assert!(focused.contains(&Control::DrawerToggle));
@@ -1107,10 +1107,10 @@ mod tests {
                 run(ctx, input(vec![event]), |ui| {
                     let waiting_slot = slot(
                         ui,
-                        Control::Miniplayer,
+                        Control::CardPlay,
                         Role::Button,
                         waiting,
-                        "Miniplayer",
+                        "Play",
                         &Tokens::DARK,
                         true,
                     );

@@ -61,7 +61,6 @@ const SCOPE: &[(&str, &str)] = &[
     ("i-devices", "Devices"),
     ("i-queue", "Queue"),
     ("i-expand", "Expand"),
-    ("i-screen", "Screen"),
     ("i-logo", "Logo"),
     ("i-clock", "Clock"),
     ("i-grid", "Grid"),

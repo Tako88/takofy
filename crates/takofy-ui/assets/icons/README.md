@@ -29,7 +29,7 @@ consumer; `verified` would also need a literal `#fff` stroke.
   `rx` of 1.5, so rects are not handed to egui as rects.
 - **Fill versus stroke is routed per element.** `fill="currentColor"` becomes a
   convex fill piece, `stroke="currentColor"` becomes a polyline, and an element
-  may be one or the other (`i-screen` and `i-queue` mix both inside one symbol).
+  may be one or the other (`i-queue` mixes both inside one symbol).
   A per-element `stroke-width` overrides the size's own (`i-search` carries
   `stroke-width="2"`).
 - **Rounding.** Coordinates are rounded to three decimals. `stroke` widths are

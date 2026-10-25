@@ -21,7 +21,6 @@ pub enum Control {
     TrailPlaylists,
     NowPlayingMore,
     Like,
-    Miniplayer,
     Shuffle,
     Previous,
     PlayPause,
@@ -78,7 +77,7 @@ pub enum Control {
 }
 
 impl Control {
-    pub const ALL: [Self; 50] = [
+    pub const ALL: [Self; 49] = [
         Self::NavHome,
         Self::LibraryCreate,
         Self::FilterPlaylists,
@@ -93,7 +92,6 @@ impl Control {
         Self::TrailPlaylists,
         Self::NowPlayingMore,
         Self::Like,
-        Self::Miniplayer,
         Self::Shuffle,
         Self::Previous,
         Self::PlayPause,
@@ -172,10 +170,9 @@ pub fn availability(control: Control) -> Availability {
         Control::Seek => Availability::Ready,      // #13
 
         // Playbar chrome with no separate issue yet.
-        Control::Like => Availability::Ready,    // #35
-        Control::Shuffle => Availability::Ready, // #35
-        Control::Repeat => Availability::Ready,  // #35
-        Control::Miniplayer => Availability::Waiting,
+        Control::Like => Availability::Ready,       // #35
+        Control::Shuffle => Availability::Ready,    // #35
+        Control::Repeat => Availability::Ready,     // #35
         Control::Queue => Availability::Ready,      // #35
         Control::Devices => Availability::Ready,    // #38
         Control::Mute => Availability::Ready,       // #35

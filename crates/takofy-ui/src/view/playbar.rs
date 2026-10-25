@@ -68,11 +68,8 @@ impl Run {
 ///
 /// The layout reserves the extras' width from the same shape, and a test here
 /// pins the two together so a control added to one cannot drift from the other.
-const NOW_FULL: [Run; 2] = [
-    Run::plain(Control::Like, Icon::Heart),
-    Run::plain(Control::Miniplayer, Icon::Screen),
-];
-const NOW_REDUCED: [Run; 1] = [Run::plain(Control::Like, Icon::Heart)];
+/// The now column's controls: the heart is the column's one button.
+const NOW: [Run; 1] = [Run::plain(Control::Like, Icon::Heart)];
 const EXTRAS_FULL: [Run; 5] = [
     Run::plain(Control::Queue, Icon::Queue),
     Run::plain(Control::Devices, Icon::Devices),
@@ -212,18 +209,11 @@ fn devices_run(devices: Button) -> Run {
     }
 }
 
-fn now_controls(form: Playbar) -> &'static [Run] {
-    match form {
-        Playbar::Full => &NOW_FULL,
-        Playbar::Reduced => &NOW_REDUCED,
-    }
-}
-
 /// The now column's runs with the heart the track's state asks for.
 ///
-/// The table is the width's, because a filled heart is the same size; only the
-/// glyph, the label and the tone change.
-fn now_runs(form: Playbar, liked: Option<bool>) -> Vec<Run> {
+/// A filled heart is the same size as an empty one; only the glyph, the label
+/// and the tone change.
+fn now_runs(liked: Option<bool>) -> Vec<Run> {
     let liked_now = liked == Some(true);
     let heart = Run {
         control: Control::Like,
@@ -236,7 +226,7 @@ fn now_runs(form: Playbar, liked: Option<bool>) -> Vec<Run> {
         lit: liked_now,
         badge: None,
     };
-    let mut runs = now_controls(form).to_vec();
+    let mut runs = NOW.to_vec();
     if let Some(first) = runs.first_mut() {
         *first = heart;
     }
@@ -373,7 +363,7 @@ pub fn show(
     let [now, centre, extras] = cols.columns(rect);
 
     let like = row_centred(ui, "playbar-now", now, |ui| {
-        now_column(ui, transport, cover, tokens, form, bar.like, remote)
+        now_column(ui, transport, cover, tokens, bar.like, remote)
     });
     if let Some(liked) = like
         && let Some(now) = transport.now_playing.as_ref()
@@ -476,7 +466,6 @@ fn now_column(
     transport: &Transport,
     cover: Cover,
     tokens: &Tokens,
-    form: Playbar,
     liked: Option<bool>,
     remote: Option<Remote<'_>>,
 ) -> Option<bool> {
@@ -496,7 +485,7 @@ fn now_column(
         tokens,
     );
 
-    let controls = run_width(now_controls(form));
+    let controls = run_width(&NOW);
     let title_font = egui::FontId::new(text::SM, fonts::sans(Weight::Medium));
     let state_font = FontId::new(text::XXS, fonts::mono(MonoWeight::Regular));
 
@@ -578,7 +567,7 @@ fn now_column(
             // A heart with no state to act on is inert, as a row's is.
             can_act: &|control| control != Control::Like || liked.is_some(),
         },
-        &now_runs(form, liked),
+        &now_runs(liked),
         &mut x,
         art_rect.center().y,
     );
@@ -2261,7 +2250,7 @@ mod tests {
             Vec::new(),
         );
         let heart = hovered_heart(&ctx, &tokens, &mut transport, Playbar::Full, cols[0]);
-        let controls_w = run_width(now_controls(Playbar::Full));
+        let controls_w = run_width(&NOW);
 
         assert!(
             (heart.left() - (cols[0].right() - controls_w)).abs() <= 1.0,
@@ -2330,7 +2319,7 @@ mod tests {
     fn the_queue_control_is_in_exactly_one_run_in_each_form() {
         for form in [Playbar::Full, Playbar::Reduced] {
             let runs = [
-                now_controls(form),
+                &NOW,
                 DOWN.as_slice(),
                 up_controls(form),
                 extras_controls(form),

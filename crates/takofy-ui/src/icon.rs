@@ -70,7 +70,6 @@ pub enum Icon {
     Devices,
     Queue,
     Expand,
-    Screen,
     Logo,
     Clock,
     Grid,
@@ -78,7 +77,7 @@ pub enum Icon {
 }
 
 impl Icon {
-    pub const ALL: [Self; 30] = [
+    pub const ALL: [Self; 29] = [
         Self::Play,
         Self::Pause,
         Self::Previous,
@@ -104,7 +103,6 @@ impl Icon {
         Self::Devices,
         Self::Queue,
         Self::Expand,
-        Self::Screen,
         Self::Logo,
         Self::Clock,
         Self::Grid,
