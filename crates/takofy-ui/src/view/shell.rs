@@ -641,6 +641,27 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
         };
     }
 
+    // Rows that landed for a shelf play start here, once nothing else took the
+    // frame: a start mutates the queue before it returns, so applying one whose
+    // command would then be dropped leaves the queue moved for nobody.
+    if command.is_none()
+        && !carry::carrying(ui.ctx())
+        && let Some(start) = screen.library.take_play()
+    {
+        command = screen.queue.start(
+            &start.tracks,
+            0,
+            Some(start.origin.as_str()),
+            screen.transport,
+        );
+    }
+    // A held start must not wait for the next input event: the frame that kept
+    // the rows may be the last one egui runs for a while, and that frame is
+    // exactly the one that took a command of its own.
+    if screen.library.has_landed_play() {
+        ui.ctx().request_repaint();
+    }
+
     // After every edit: `logic` runs before `ui`, so a read this frame armed —
     // the last keystroke, Back onto a dropped page, a Retry — would otherwise
     // wait for the next input event. `app.rs` asks the same question after the
@@ -14921,5 +14942,185 @@ mod tests {
             "a space steered a holder that forbids it"
         );
         assert!(queue.armed(), "a refused space started the local queue");
+    }
+
+    /// A library root holding one named playlist, with its rows already loaded.
+    fn shelf_with_rows(window: &mut Window, rows: usize) {
+        window.library.apply(&Update::Playlists(vec![PlaylistEntry {
+            uri: PLAYLIST.to_owned(),
+            name: "Mix".to_owned(),
+            named: true,
+            cover: None,
+            description: None,
+            owner: None,
+            tracks: None,
+            access: None,
+        }]));
+        window.library.select(PLAYLIST);
+        window.library.apply(&Update::Tracks {
+            playlist: PLAYLIST.to_owned(),
+            tracks: (0..rows).map(|index| track(index, None)).collect(),
+            cover: None,
+            access: None,
+        });
+        window.library.to_playlists();
+    }
+
+    #[test]
+    fn landed_shelf_rows_start_the_queue_at_the_first_track_with_the_object_as_origin() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        shelf_with_rows(&mut window, 2);
+        assert!(window.library.want_play(PLAYLIST, SidebarKind::Playlists));
+        assert!(window.library.has_landed_play());
+
+        let (command, _) = window.frame(&mut transport, &mut queue, Vec::new());
+
+        assert_eq!(
+            command,
+            Some(Command::Play {
+                uri: "t0".to_owned()
+            })
+        );
+        assert_eq!(queue.origin(), Some(PLAYLIST), "the queue named no object");
+        assert_eq!(queue.current().map(|entry| entry.uri.as_str()), Some("t0"));
+        assert_eq!(
+            transport.now_playing.as_ref().map(|now| now.uri.as_str()),
+            Some("t0"),
+            "the start never reached the transport"
+        );
+        assert!(
+            !window.library.has_landed_play(),
+            "the landed rows were kept after a start"
+        );
+    }
+
+    #[test]
+    fn a_frame_that_took_a_command_keeps_the_landed_rows_for_the_next() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        window.library.lyrics.select(crate::lyrics::Tab::Lyrics);
+        window.library.apply(&Update::Playlists(Vec::new()));
+        assert!(window.library.want_play(PLAYLIST, SidebarKind::Playlists));
+        window.library.apply(&Update::Tracks {
+            playlist: PLAYLIST.to_owned(),
+            tracks: vec![track(0, None), track(1, None)],
+            cover: None,
+            access: None,
+        });
+
+        let (command, output) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert_eq!(
+            command,
+            Some(Command::LoadLyrics {
+                track: "spotify:track:x".to_owned()
+            }),
+            "the frame was expected to take the lyrics read"
+        );
+        assert!(
+            window.library.has_landed_play(),
+            "a taken frame dropped the landed rows"
+        );
+        let delay = output
+            .viewport_output
+            .get(&egui::ViewportId::ROOT)
+            .map(|viewport| viewport.repaint_delay);
+        assert_eq!(
+            delay,
+            Some(std::time::Duration::ZERO),
+            "a held start asked for no frame of its own"
+        );
+        assert!(
+            queue.current().is_none(),
+            "a taken frame started the play anyway"
+        );
+
+        let (command, _) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert_eq!(
+            command,
+            Some(Command::Play {
+                uri: "t0".to_owned()
+            }),
+            "the held play never got its frame"
+        );
+        assert_eq!(queue.origin(), Some(PLAYLIST));
+    }
+
+    #[test]
+    fn a_navigation_in_the_frame_the_rows_land_starts_nothing() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        shelf_with_rows(&mut window, 1);
+        let _ = window.library.select(PLAYLIST);
+        window.library.apply(&Update::Tracks {
+            playlist: PLAYLIST.to_owned(),
+            tracks: vec![track(0, None)],
+            cover: None,
+            access: None,
+        });
+
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let crumb = text_in(&frame, "PLAYLISTS", topbar_rect(&window))
+            .expect("the trail's Playlists crumb is painted");
+        let [arrive, press, release] = crate::view::test_support::click_events(crumb.center());
+        let _ = window.frame(&mut transport, &mut queue, vec![arrive, press]);
+
+        assert!(window.library.want_play(PLAYLIST, SidebarKind::Playlists));
+        window.library.apply(&Update::Tracks {
+            playlist: PLAYLIST.to_owned(),
+            tracks: vec![track(1, None)],
+            cover: None,
+            access: None,
+        });
+        assert!(window.library.has_landed_play());
+
+        let _ = window.frame(&mut transport, &mut queue, vec![release]);
+        assert!(
+            queue.current().is_none(),
+            "a navigation frame started the play"
+        );
+        assert_eq!(
+            window.library.page(),
+            None,
+            "the press was expected to go home"
+        );
+
+        let (command, _) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert_eq!(command, None);
+        assert!(
+            queue.current().is_none(),
+            "a play outlived the page it was pressed on"
+        );
+    }
+
+    #[test]
+    fn a_carry_holds_a_landed_shelf_play_until_it_ends() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        shelf_with_rows(&mut window, 1);
+        assert!(window.library.want_play(PLAYLIST, SidebarKind::Playlists));
+
+        egui::DragAndDrop::set_payload(&window.ctx, ());
+        let (command, _) = window.frame(&mut transport, &mut queue, Vec::new());
+        egui::DragAndDrop::clear_payload(&window.ctx);
+
+        assert_eq!(command, None, "a carried block started the play");
+        assert!(
+            window.library.has_landed_play(),
+            "a carried frame dropped the landed rows"
+        );
+
+        let (command, _) = window.frame(&mut transport, &mut queue, Vec::new());
+        assert_eq!(
+            command,
+            Some(Command::Play {
+                uri: "t0".to_owned()
+            }),
+            "the play was not started once the carry ended"
+        );
     }
 }

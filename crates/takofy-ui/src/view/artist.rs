@@ -535,9 +535,10 @@ fn fans(
             size: "",
             round: true,
             shelf: SidebarKind::Artists,
+            playable: false,
             cover: art.look(card.portrait.as_ref(), now),
         };
-        if media::tile(ui, rect, &media, tokens) {
+        if media::tile(ui, rect, &media, tokens) == Some(media::Press::Open) {
             pressed = Some(card.uri.clone());
         }
     }

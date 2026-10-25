@@ -573,7 +573,29 @@ pub fn play_tile(
     label: &str,
     live: bool,
 ) -> Slot {
-    let slot = slot(ui, control, Role::Button, rect, label, tokens, live);
+    play_tile_keyed(ui, tokens, control, (), rect, glyph, label, live)
+}
+
+/// The accent tile, keyed so one control can appear once per card or row.
+///
+/// The library's play is one control over every item, so it has to carry the
+/// item's own key: without one, every card would share one hover, one focus node
+/// and one AccessKit node.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the same facts as a tile, plus which item it belongs to"
+)]
+pub fn play_tile_keyed(
+    ui: &mut Ui,
+    tokens: &Tokens,
+    control: Control,
+    key: impl Hash + std::fmt::Debug,
+    rect: Rect,
+    glyph: Icon,
+    label: &str,
+    live: bool,
+) -> Slot {
+    let slot = slot_keyed(ui, control, key, Role::Button, rect, label, tokens, live);
     let ready = slot.live;
     let fill = if !ready {
         tokens.palette.text_disabled
@@ -807,27 +829,6 @@ mod tests {
     }
 
     #[test]
-    fn a_waiting_control_is_not_interactive_and_not_focusable() {
-        let ctx = Context::default();
-        let mut sense = None;
-        run(&ctx, input(Vec::new()), |ui| {
-            let slot = slot(
-                ui,
-                Control::CardPlay,
-                Role::Button,
-                cell(0.0),
-                "Play",
-                &Tokens::DARK,
-                true,
-            );
-            sense = Some(slot.response.sense);
-        });
-        let sense = sense.expect("the slot drew");
-        assert!(!sense.senses_click());
-        assert!(!sense.is_focusable());
-    }
-
-    #[test]
     fn a_ready_control_is_focusable() {
         let ctx = Context::default();
         let mut sense = None;
@@ -981,6 +982,8 @@ mod tests {
         assert!(!sense.is_focusable());
     }
 
+    /// A ready control the moment makes inert is offered as waiting is: announced
+    /// disabled, with the label of the thing that would happen.
     #[test]
     fn a_waiting_control_is_announced_disabled_with_its_label() {
         let ctx = Context::default();
@@ -990,12 +993,12 @@ mod tests {
         run(&ctx, input(Vec::new()), |ui| {
             let slot = slot(
                 ui,
-                Control::CardPlay,
+                Control::PlayPause,
                 Role::Button,
                 cell(0.0),
                 "Play",
                 &Tokens::DARK,
-                true,
+                false,
             );
             assert!(ui.ctx().has_accesskit_node(slot.response.id));
             node = ui.ctx().accesskit_node_builder(slot.response.id, |node| {
@@ -1056,10 +1059,12 @@ mod tests {
     #[test]
     fn tab_never_lands_on_a_waiting_control() {
         let ctx = Context::default();
+        // A ready control made inert by the moment, named by a control no other
+        // slot in this test uses.
         let controls = [
-            (Control::DrawerToggle, "Toggle"),
-            (Control::CardPlay, "Play"),
-            (Control::TrailPlaylists, "Playlists"),
+            (Control::DrawerToggle, "Toggle", true),
+            (Control::PlayPause, "Play", false),
+            (Control::TrailPlaylists, "Playlists", true),
         ];
         let [tab, _] = tab();
 
@@ -1069,7 +1074,7 @@ mod tests {
         for _ in 0..6 {
             let focused = &mut focused;
             run(&ctx, input(vec![tab.clone()]), |ui| {
-                for (index, (control, label)) in controls.iter().enumerate() {
+                for (index, (control, label, live)) in controls.iter().enumerate() {
                     let slot = slot(
                         ui,
                         *control,
@@ -1077,7 +1082,7 @@ mod tests {
                         cell(index as f32),
                         label,
                         &Tokens::DARK,
-                        true,
+                        *live,
                     );
                     if slot.response.has_focus() {
                         focused.push(*control);
@@ -1087,8 +1092,8 @@ mod tests {
         }
 
         assert!(
-            !focused.contains(&Control::CardPlay),
-            "a waiting control took focus: {focused:?}"
+            !focused.contains(&Control::PlayPause),
+            "a control that cannot act took focus: {focused:?}"
         );
         assert!(focused.contains(&Control::DrawerToggle));
         assert!(focused.contains(&Control::TrailPlaylists));
@@ -1107,12 +1112,12 @@ mod tests {
                 run(ctx, input(vec![event]), |ui| {
                     let waiting_slot = slot(
                         ui,
-                        Control::CardPlay,
+                        Control::PlayPause,
                         Role::Button,
                         waiting,
                         "Play",
                         &Tokens::DARK,
-                        true,
+                        false,
                     );
                     let ready_slot = slot(
                         ui,

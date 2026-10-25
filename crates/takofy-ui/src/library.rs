@@ -117,6 +117,38 @@ pub struct ArtistPage<'a> {
     pub likes: &'a Likes,
 }
 
+/// A play pressed on a card or a row of the library root.
+///
+/// The rows are held here rather than in `tracks`, which belongs to the page: the
+/// press is not a navigation, and a page the user opens while the rows are in
+/// flight must keep its own list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PendingPlay {
+    uri: String,
+    kind: SidebarKind,
+    stage: Stage,
+}
+
+/// How far a pending play has got.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Stage {
+    /// Pressed, and the rows have not been asked for yet.
+    Wanted,
+    /// The rows are in flight.
+    Asked,
+    /// The rows landed and wait for a frame that can start them.
+    Landed(Vec<TrackEntry>),
+}
+
+/// What a landed shelf play hands the queue: the object's own rows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Start {
+    /// The page the rows came from, so a later move can tell its target what to
+    /// play.
+    pub origin: String,
+    pub tracks: Vec<TrackEntry>,
+}
+
 /// The sidebar's playlists and the tracks the current page has loaded.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Library {
@@ -231,6 +263,13 @@ pub struct Library {
     pub renaming: Renaming,
     /// Whether the sidebar list should show its first row once.
     pub reveal_top: bool,
+    /// The play pressed on the shelf, until it starts or is dropped.
+    play: Option<PendingPlay>,
+    /// Why the last shelf play could not fetch its rows, until the next press or
+    /// the next page change.
+    ///
+    /// Pressing play again is the retry, so the sentence stands alone.
+    pub play_notice: Option<Failure>,
 }
 
 /// Which sidebar write is in flight, and what it would put back.
@@ -731,8 +770,13 @@ impl Library {
                 cover,
                 access,
             } => {
-                // The cover upgrade is keyed by the update's own playlist, never
-                // the selected one, so a reply for A cannot land on B.
+                // A shelf play waiting on this playlist takes these rows, whatever
+                // page is on screen. The cover upgrade below is keyed by the
+                // update's own playlist, never the selected one, so a reply for A
+                // cannot land on B.
+                if self.wants(playlist) {
+                    self.land(playlist, tracks.clone());
+                }
                 let authoritative = self.cover_refresh.answer(playlist);
                 let entry = match &mut self.playlists {
                     Load::Ready(playlists) => {
@@ -794,6 +838,7 @@ impl Library {
                 }
             }
             Update::TracksFailed { playlist, failure } => {
+                self.fail_play(playlist, *failure);
                 // A failed read still answers the ask, so the count keeps step
                 // with the replies actually coming; otherwise a later ask never
                 // reaches zero and an emptied playlist's `None` never clears its
@@ -854,8 +899,13 @@ impl Library {
                 }
             }
             // A reply lands only while its own load is in flight: a stale one is
-            // discarded, and a second reply cannot replace the first.
+            // discarded, and a second reply cannot replace the first. A shelf
+            // play waiting on the same album takes it before that guard, because
+            // the page's load may not be the ask it is waiting on.
             Update::Album(detail) => {
+                if self.wants(&detail.uri) {
+                    self.land(&detail.uri, detail.tracks.clone());
+                }
                 if self.wanted_album.as_deref() == Some(detail.uri.as_str())
                     && matches!(self.album, Load::Loading)
                 {
@@ -863,6 +913,7 @@ impl Library {
                 }
             }
             Update::AlbumFailed { album, failure } => {
+                self.fail_play(album, *failure);
                 if self.wanted_album.as_deref() == Some(album.as_str())
                     && matches!(self.album, Load::Loading)
                 {
@@ -1040,6 +1091,143 @@ impl Library {
         if ready.is_some_and(|playlist| !present(&playlist)) {
             self.tracks = Load::Idle;
         }
+        // A shelf play names a playlist too, and one that is gone can never
+        // fetch its rows.
+        if self
+            .play
+            .as_ref()
+            .is_some_and(|play| play.kind == SidebarKind::Playlists && !present(&play.uri))
+        {
+            self.play = None;
+        }
+    }
+
+    /// Whether pressing play on a library item of `kind` starts that object.
+    ///
+    /// A show needs episode ordering and an artist needs top-tracks semantics,
+    /// and both have their own loaders, so neither draws a play.
+    pub fn playable(kind: SidebarKind) -> bool {
+        matches!(kind, SidebarKind::Playlists | SidebarKind::Albums)
+    }
+
+    /// Holds a play pressed on the shelf until its rows can start the queue.
+    ///
+    /// Rows the window already holds are taken as they stand, so a press on the
+    /// page's own playlist sends nothing. A second press replaces the first, and
+    /// the same object pressed again is the same play. Returns whether the press
+    /// was taken: a kind with no play refuses it.
+    pub fn want_play(&mut self, uri: &str, kind: SidebarKind) -> bool {
+        if !Self::playable(kind) {
+            return false;
+        }
+        self.play_notice = None;
+        if self.play.as_ref().is_some_and(|play| play.uri == uri) {
+            return true;
+        }
+        let held = match (kind, &self.tracks, &self.album) {
+            (SidebarKind::Playlists, Load::Ready(tracks), _) if tracks.playlist == uri => {
+                Some(tracks.tracks.clone())
+            }
+            (SidebarKind::Albums, _, Load::Ready(detail)) if detail.uri == uri => {
+                Some(detail.tracks.clone())
+            }
+            _ => None,
+        };
+        let stage = match held {
+            Some(rows) => Stage::Landed(rows),
+            None => Stage::Wanted,
+        };
+        self.play = Some(PendingPlay {
+            uri: uri.to_owned(),
+            kind,
+            stage,
+        });
+        true
+    }
+
+    /// The command that fetches the pending play's rows, if one is due.
+    ///
+    /// It is want-driven like the followed lists: one ask per press, and never
+    /// through [`Self::load`], so the page's own slot and want stay as they are.
+    pub fn play_request(&mut self) -> Option<Command> {
+        let play = self.play.as_mut()?;
+        if play.stage != Stage::Wanted {
+            return None;
+        }
+        let command = match play.kind {
+            SidebarKind::Playlists => Command::LoadTracks {
+                playlist: play.uri.clone(),
+            },
+            SidebarKind::Albums => Command::LoadAlbum {
+                album: play.uri.clone(),
+            },
+            SidebarKind::Artists | SidebarKind::Podcasts => return None,
+        };
+        play.stage = Stage::Asked;
+        Some(command)
+    }
+
+    /// Takes the rows a landed shelf play holds, clearing it.
+    ///
+    /// An empty list clears the play and starts nothing: there is no first track
+    /// to start on.
+    pub fn take_play(&mut self) -> Option<Start> {
+        match self.play.take() {
+            Some(PendingPlay {
+                uri,
+                stage: Stage::Landed(tracks),
+                ..
+            }) if !tracks.is_empty() => Some(Start {
+                origin: uri,
+                tracks,
+            }),
+            Some(PendingPlay {
+                stage: Stage::Landed(_),
+                ..
+            }) => None,
+            Some(play) => {
+                self.play = Some(play);
+                None
+            }
+            None => None,
+        }
+    }
+
+    /// Whether a shelf play's rows have landed and no frame has started them.
+    pub fn has_landed_play(&self) -> bool {
+        self.play
+            .as_ref()
+            .is_some_and(|play| matches!(play.stage, Stage::Landed(_)))
+    }
+
+    /// Whether a play is waiting on `uri`'s rows.
+    ///
+    /// A reply is copied out of the update only when this says so, because every
+    /// page read would otherwise pay for a play nobody pressed.
+    fn wants(&self, uri: &str) -> bool {
+        self.play.as_ref().is_some_and(|play| {
+            play.uri == uri && matches!(play.stage, Stage::Wanted | Stage::Asked)
+        })
+    }
+
+    /// Lands `rows` on the pending play for `uri`, while it waits on them.
+    fn land(&mut self, uri: &str, rows: Vec<TrackEntry>) {
+        let Some(play) = self.play.as_mut() else {
+            return;
+        };
+        if play.uri != uri || !matches!(play.stage, Stage::Wanted | Stage::Asked) {
+            return;
+        }
+        play.stage = Stage::Landed(rows);
+    }
+
+    /// Drops the pending play for `uri` and says why its rows did not arrive.
+    fn fail_play(&mut self, uri: &str, failure: Failure) {
+        if !self.wants(uri) {
+            return;
+        }
+        self.play = None;
+        self.play_notice = Some(failure);
     }
 
     /// Whether a saved write of `uri` is in flight, in this direction.
@@ -1311,11 +1499,13 @@ impl Library {
         self.settle()
     }
 
-    /// A page change ends the like sentence: it names the page the click was
-    /// made on.
+    /// A page change ends the like sentence and any play pressed on the shelf:
+    /// the row the play names is no longer on screen.
     fn left_page(&mut self) {
         self.likes.clear_notice();
         self.track_filter.clear();
+        self.play = None;
+        self.play_notice = None;
         if self.renaming.surface() == Surface::Band {
             self.renaming.dismiss();
         }
@@ -10864,5 +11054,437 @@ mod tests {
             },
             "the next move named the pre-rename base"
         );
+    }
+
+    /// The rows a landed shelf play hands the queue.
+    fn start(uri: &str, uris: &[&str]) -> Start {
+        Start {
+            origin: uri.to_owned(),
+            tracks: uris.iter().map(|uri| track(uri)).collect(),
+        }
+    }
+
+    #[test]
+    fn a_shelf_play_on_a_playlist_asks_for_its_tracks_once() {
+        let mut library = Library::default();
+        assert_eq!(library.play_request(), None, "nothing was pressed");
+        assert!(!library.has_landed_play());
+
+        assert!(library.want_play("a", SidebarKind::Playlists));
+        assert_eq!(
+            library.play_request(),
+            Some(Command::LoadTracks {
+                playlist: "a".to_owned()
+            })
+        );
+        assert_eq!(
+            library.play_request(),
+            None,
+            "one press is one ask on the wire"
+        );
+        assert_eq!(library.page(), None, "a shelf play navigates nowhere");
+        assert_eq!(library.tracks, Load::Idle, "the page's rows were marked");
+        assert_eq!(library.take_play(), None, "nothing has landed yet");
+    }
+
+    #[test]
+    fn a_shelf_play_on_an_album_asks_for_the_album() {
+        let mut library = Library::default();
+        assert!(library.want_play("spotify:album:r", SidebarKind::Albums));
+
+        assert_eq!(
+            library.play_request(),
+            Some(Command::LoadAlbum {
+                album: "spotify:album:r".to_owned()
+            })
+        );
+        assert_eq!(library.play_request(), None);
+        assert_eq!(library.page(), None);
+        assert_eq!(library.album, Load::Idle, "the album page was marked");
+    }
+
+    #[test]
+    fn a_shelf_play_on_held_playlist_rows_starts_without_a_load() {
+        let mut library = page_with("a", &["t0", "t1"], None);
+
+        assert!(library.want_play("a", SidebarKind::Playlists));
+        assert!(library.has_landed_play());
+        assert_eq!(
+            library.play_request(),
+            None,
+            "rows the window holds were asked for again"
+        );
+        assert_eq!(library.take_play(), Some(start("a", &["t0", "t1"])));
+        assert_eq!(library.take_play(), None, "a start was taken twice");
+        assert_eq!(
+            library.tracks,
+            Load::Ready(tracks_for("a", vec![track("t0"), track("t1")])),
+            "the page's own rows are still the page's"
+        );
+    }
+
+    #[test]
+    fn a_shelf_play_on_a_held_album_starts_without_a_load() {
+        let mut library = Library::default();
+        library.open(album("spotify:album:r"));
+        library.apply(&Update::Album(album_detail("spotify:album:r")));
+
+        assert!(library.want_play("spotify:album:r", SidebarKind::Albums));
+        assert!(library.has_landed_play());
+        assert_eq!(library.play_request(), None);
+        assert_eq!(library.take_play(), Some(start("spotify:album:r", &["t"])));
+    }
+
+    #[test]
+    fn held_rows_of_another_playlist_do_not_start_a_shelf_play() {
+        let mut library = page_with("b", &["p0"], None);
+
+        assert!(library.want_play("a", SidebarKind::Playlists));
+        assert!(
+            !library.has_landed_play(),
+            "another list's rows started this play"
+        );
+        assert_eq!(
+            library.play_request(),
+            Some(Command::LoadTracks {
+                playlist: "a".to_owned()
+            })
+        );
+    }
+
+    #[test]
+    fn rows_that_land_for_a_shelf_play_are_taken_once() {
+        let mut library = Library::default();
+        assert!(library.want_play("a", SidebarKind::Playlists));
+        assert_eq!(
+            library.play_request(),
+            Some(Command::LoadTracks {
+                playlist: "a".to_owned()
+            })
+        );
+        assert!(!library.has_landed_play());
+
+        let reply = Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: vec![track("t0"), track("t1")],
+            cover: None,
+            access: None,
+        };
+        library.apply(&reply);
+        assert!(library.has_landed_play());
+        assert_eq!(library.take_play(), Some(start("a", &["t0", "t1"])));
+        assert_eq!(library.take_play(), None, "a landed play started twice");
+        assert!(!library.has_landed_play());
+    }
+
+    #[test]
+    fn a_shelf_play_does_not_replace_the_page_rows() {
+        let mut library = page_with("b", &["p0"], None);
+        assert!(library.want_play("a", SidebarKind::Playlists));
+        assert_eq!(
+            library.play_request(),
+            Some(Command::LoadTracks {
+                playlist: "a".to_owned()
+            })
+        );
+
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: vec![track("t0")],
+            cover: None,
+            access: None,
+        });
+
+        assert!(library.has_landed_play());
+        assert_eq!(
+            library.tracks,
+            Load::Ready(tracks_for("b", vec![track("p0")])),
+            "the shelf play wrote the page's rows"
+        );
+        assert_eq!(library.take_play(), Some(start("a", &["t0"])));
+    }
+
+    #[test]
+    fn a_second_shelf_play_replaces_the_first_and_the_first_reply_is_ignored() {
+        let mut library = Library::default();
+        assert!(library.want_play("a", SidebarKind::Playlists));
+        assert_eq!(
+            library.play_request(),
+            Some(Command::LoadTracks {
+                playlist: "a".to_owned()
+            })
+        );
+        assert!(library.want_play("b", SidebarKind::Playlists));
+        assert_eq!(
+            library.play_request(),
+            Some(Command::LoadTracks {
+                playlist: "b".to_owned()
+            })
+        );
+
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: vec![track("ta")],
+            cover: None,
+            access: None,
+        });
+        assert!(
+            !library.has_landed_play(),
+            "the replaced play took its late reply"
+        );
+
+        library.apply(&Update::Tracks {
+            playlist: "b".to_owned(),
+            tracks: vec![track("tb")],
+            cover: None,
+            access: None,
+        });
+        assert_eq!(library.take_play(), Some(start("b", &["tb"])));
+    }
+
+    #[test]
+    fn pressing_the_same_shelf_play_twice_asks_once() {
+        let mut library = Library::default();
+
+        assert!(library.want_play("a", SidebarKind::Playlists));
+        assert!(library.want_play("a", SidebarKind::Playlists));
+        assert!(library.want_play("a", SidebarKind::Playlists));
+        assert_eq!(
+            library.play_request(),
+            Some(Command::LoadTracks {
+                playlist: "a".to_owned()
+            }),
+            "a repeat press asked twice"
+        );
+
+        assert!(library.want_play("a", SidebarKind::Playlists));
+        assert_eq!(
+            library.play_request(),
+            None,
+            "a repeat press while the rows are in flight asked again"
+        );
+    }
+
+    #[test]
+    fn the_same_rows_landing_twice_start_once() {
+        let mut library = Library::default();
+        assert!(library.want_play("a", SidebarKind::Playlists));
+        assert!(library.play_request().is_some());
+
+        for _ in 0..2 {
+            library.apply(&Update::Tracks {
+                playlist: "a".to_owned(),
+                tracks: vec![track("t0")],
+                cover: None,
+                access: None,
+            });
+        }
+
+        assert_eq!(library.take_play(), Some(start("a", &["t0"])));
+        assert_eq!(library.take_play(), None, "a second landing started again");
+    }
+
+    #[test]
+    fn a_failed_shelf_load_starts_nothing_and_says_so() {
+        let mut library = Library::default();
+        assert!(library.want_play("a", SidebarKind::Playlists));
+        assert!(library.play_request().is_some());
+
+        library.apply(&Update::TracksFailed {
+            playlist: "a".to_owned(),
+            failure: Failure::Load,
+        });
+
+        assert_eq!(library.play_notice, Some(Failure::Load));
+        assert_eq!(library.play_request(), None, "a failed play asked again");
+        assert_eq!(library.take_play(), None, "a failed play started rows");
+
+        // Pressing play again is the retry.
+        assert!(library.want_play("a", SidebarKind::Playlists));
+        assert_eq!(library.play_notice, None, "the retry kept the sentence");
+        assert_eq!(
+            library.play_request(),
+            Some(Command::LoadTracks {
+                playlist: "a".to_owned()
+            })
+        );
+    }
+
+    #[test]
+    fn a_failed_shelf_album_load_starts_nothing_and_says_so() {
+        let mut library = Library::default();
+        assert!(library.want_play("spotify:album:r", SidebarKind::Albums));
+        assert!(library.play_request().is_some());
+
+        library.apply(&Update::AlbumFailed {
+            album: "spotify:album:r".to_owned(),
+            failure: Failure::Other,
+        });
+
+        assert_eq!(library.play_notice, Some(Failure::Other));
+        assert_eq!(library.take_play(), None);
+    }
+
+    #[test]
+    fn a_failure_for_another_uri_leaves_the_shelf_play_waiting() {
+        let mut library = Library::default();
+        assert!(library.want_play("a", SidebarKind::Playlists));
+
+        library.apply(&Update::TracksFailed {
+            playlist: "b".to_owned(),
+            failure: Failure::Load,
+        });
+
+        assert_eq!(library.play_notice, None);
+        assert_eq!(
+            library.play_request(),
+            Some(Command::LoadTracks {
+                playlist: "a".to_owned()
+            }),
+            "another list's failure dropped this play"
+        );
+    }
+
+    #[test]
+    fn a_failure_for_the_same_uri_drops_the_play_and_says_so() {
+        // A page's own ask and a shelf play name the same object, and the reply
+        // cannot say which asked, so the failure is taken for both.
+        let mut library = Library::default();
+        library.select("a");
+        assert!(library.want_play("a", SidebarKind::Playlists));
+
+        library.apply(&Update::TracksFailed {
+            playlist: "a".to_owned(),
+            failure: Failure::Load,
+        });
+
+        assert_eq!(library.play_notice, Some(Failure::Load));
+        assert_eq!(library.take_play(), None);
+        assert_eq!(library.tracks, Load::Failed(Failure::Load));
+    }
+
+    #[test]
+    fn a_shelf_play_does_not_outlive_the_page_it_was_pressed_on() {
+        let landed = |library: &mut Library| {
+            library.apply(&Update::Tracks {
+                playlist: "a".to_owned(),
+                tracks: vec![track("t0")],
+                cover: None,
+                access: None,
+            });
+            library.take_play()
+        };
+
+        let mut select = Library::default();
+        assert!(select.want_play("a", SidebarKind::Playlists));
+        select.select("b");
+        assert_eq!(landed(&mut select), None, "a select kept the play");
+
+        let mut open = Library::default();
+        assert!(open.want_play("a", SidebarKind::Playlists));
+        open.open(album("album"));
+        assert_eq!(landed(&mut open), None, "an open kept the play");
+
+        let mut back = Library::default();
+        back.select("a");
+        back.open(album("album"));
+        assert!(back.want_play("a", SidebarKind::Playlists));
+        back.back();
+        assert_eq!(landed(&mut back), None, "a back kept the play");
+
+        let mut forward = Library::default();
+        forward.select("a");
+        forward.open(album("album"));
+        forward.back();
+        assert!(forward.want_play("a", SidebarKind::Playlists));
+        forward.forward();
+        assert_eq!(landed(&mut forward), None, "a forward kept the play");
+
+        let mut root = Library::default();
+        assert!(root.want_play("a", SidebarKind::Playlists));
+        root.select("a");
+        root.to_playlists();
+        assert_eq!(landed(&mut root), None, "a round trip kept the play");
+    }
+
+    #[test]
+    fn a_playlist_removed_while_its_play_is_pending_drops_the_play() {
+        let mut library = Library::default();
+        library.apply(&Update::Playlists(vec![
+            playlist("a", "A"),
+            playlist("b", "B"),
+        ]));
+        assert!(library.want_play("a", SidebarKind::Playlists));
+
+        library.apply(&Update::Playlists(vec![playlist("b", "B")]));
+
+        assert_eq!(library.play_request(), None, "a removed playlist was asked");
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: vec![track("t0")],
+            cover: None,
+            access: None,
+        });
+        assert_eq!(library.take_play(), None, "a removed playlist started");
+    }
+
+    #[test]
+    fn a_shelf_play_on_an_artist_or_a_show_is_refused() {
+        assert!(Library::playable(SidebarKind::Playlists));
+        assert!(Library::playable(SidebarKind::Albums));
+        assert!(!Library::playable(SidebarKind::Artists));
+        assert!(!Library::playable(SidebarKind::Podcasts));
+
+        let mut library = Library::default();
+        assert!(!library.want_play("spotify:artist:a", SidebarKind::Artists));
+        assert!(!library.want_play("spotify:show:s", SidebarKind::Podcasts));
+        assert_eq!(library.play_request(), None);
+        assert!(!library.has_landed_play());
+        assert_eq!(library.play_notice, None);
+    }
+
+    #[test]
+    fn an_empty_playlist_clears_the_shelf_play_and_starts_nothing() {
+        let mut library = Library::default();
+        assert!(library.want_play("a", SidebarKind::Playlists));
+        assert!(library.play_request().is_some());
+
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: Vec::new(),
+            cover: None,
+            access: None,
+        });
+
+        assert!(library.has_landed_play(), "the empty rows did not land");
+        assert_eq!(library.take_play(), None, "an empty list started");
+        assert_eq!(library.take_play(), None, "the empty play was kept");
+        assert_eq!(library.play_notice, None, "an empty list is not a failure");
+    }
+
+    #[test]
+    fn a_new_press_and_a_page_change_clear_the_shelf_notice() {
+        let mut library = Library::default();
+        library.select("held");
+        assert!(library.want_play("a", SidebarKind::Playlists));
+        assert!(library.play_request().is_some());
+        library.apply(&Update::TracksFailed {
+            playlist: "a".to_owned(),
+            failure: Failure::Load,
+        });
+        assert_eq!(library.play_notice, Some(Failure::Load));
+
+        assert!(library.want_play("b", SidebarKind::Playlists));
+        assert_eq!(library.play_notice, None, "a new press kept the sentence");
+
+        assert!(library.play_request().is_some());
+        library.apply(&Update::TracksFailed {
+            playlist: "b".to_owned(),
+            failure: Failure::Load,
+        });
+        assert_eq!(library.play_notice, Some(Failure::Load));
+
+        library.to_playlists();
+        assert_eq!(library.play_notice, None, "a page change kept the sentence");
     }
 }

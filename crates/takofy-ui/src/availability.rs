@@ -70,8 +70,8 @@ pub enum Control {
     /// The library page's two densities.
     LayoutGrid,
     LayoutList,
-    /// A card's own play control in the library grid. The card selects its playlist;
-    /// playing from the card needs the tracks loaded first, which no path does yet.
+    /// A library item's own play, in the grid and in the list. It is keyed by the
+    /// item's uri, so one control serves every card and every row.
     CardPlay,
     Authorize,
 }
@@ -195,7 +195,7 @@ pub fn availability(control: Control) -> Availability {
         Control::HeroLike => Availability::Ready,    // #35
         Control::HeroMore => Availability::Ready,
         Control::HeroPlay => Availability::Ready,
-        Control::CardPlay => Availability::Waiting,
+        Control::CardPlay => Availability::Ready,
 
         // The artist page: following is a real write, the filter row is state
         // the page already holds, and the other three are the reference's chrome
@@ -250,6 +250,7 @@ mod tests {
                     | Control::Volume
                     | Control::Fullscreen
                     | Control::HeroPlay
+                    | Control::CardPlay
                     | Control::HeroMore
                     | Control::HeroLike
                     | Control::HeroShuffle

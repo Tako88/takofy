@@ -37,6 +37,8 @@ pub struct Media<'a> {
     /// The sidebar list this item belongs to, so a menu on it is built without
     /// re-reading its uri.
     pub shelf: SidebarKind,
+    /// Whether pressing play on this item starts it, or it has no play.
+    pub playable: bool,
     pub cover: Cover,
 }
 
@@ -103,7 +105,11 @@ pub fn extra_height(ui: &Ui) -> f32 {
 }
 
 /// One tile: the cover over the name and the subline, raised when reached.
-pub fn tile(ui: &mut Ui, rect: Rect, media: &Media<'_>, tokens: &Tokens) -> bool {
+///
+/// The play sits in the tile's corner and is drawn only while the pointer is on
+/// the tile or the keyboard is on its play, so it covers no word the user came to
+/// read.
+pub fn tile(ui: &mut Ui, rect: Rect, media: &Media<'_>, tokens: &Tokens) -> Option<Press> {
     let response = ui.interact(
         rect,
         ui.scope_id().with(("library-media", media.uri)),
@@ -115,7 +121,14 @@ pub fn tile(ui: &mut Ui, rect: Rect, media: &Media<'_>, tokens: &Tokens) -> bool
         // picked.
         response.request_focus();
     }
-    if response.hovered() || response.has_focus() {
+    // Read before the play draws: a play that takes the keyboard would otherwise
+    // be revealed on the frame it is pressed and hidden on the next.
+    let play_focused = ui.memory(|memory| memory.focused())
+        == Some(controls::slot_id(ui, Control::CardPlay, media.uri));
+    // One predicate for the wash and the reveal: a live child under the pointer
+    // makes `hovered` false, and two predicates would flicker apart.
+    let over = response.hovered() || ui.rect_contains_pointer(rect);
+    if over || response.has_focus() {
         ui.painter()
             .rect_filled(rect, radius::MD, tokens.palette.surface_raised);
         ui.painter().rect_stroke(
@@ -169,7 +182,31 @@ pub fn tile(ui: &mut Ui, rect: Rect, media: &Media<'_>, tokens: &Tokens) -> bool
         tokens.palette.text_subtle,
     );
 
-    response.clicked()
+    let mut pressed = None;
+    if media.playable && (over || response.has_focus() || play_focused) {
+        let slot = controls::play_tile_keyed(
+            ui,
+            tokens,
+            Control::CardPlay,
+            media.uri,
+            tile_play_rect(rect),
+            Icon::Play,
+            &format!("Play {}", media.name),
+            !carry::carrying(ui.ctx()),
+        );
+        if slot.response.clicked() {
+            pressed = Some(Press::Play);
+        }
+    }
+    // A carried block makes the play inert, so egui reports the tile as the
+    // hovered widget on the release frame and the play as not hovered at all.
+    // Where the press landed is what tells them apart.
+    let on_play = media.playable
+        && response
+            .interact_pointer_pos()
+            .is_some_and(|at| tile_play_rect(rect).contains(at));
+
+    pressed.or((response.clicked() && !on_play).then_some(Press::Open))
 }
 
 /// The height of the head's one line of text, before its padding.
@@ -219,21 +256,24 @@ pub fn head(ui: &mut Ui, rect: Rect, tokens: &Tokens) {
     );
 }
 
-/// What one list row reports: the row itself was chosen, or a menu was asked for.
+/// What one list row reports: the row itself was chosen, its play was pressed,
+/// or a menu was asked for.
 ///
-/// A row has two things to say, so it reports one or the other; a tile keeps a
-/// plain flag, because the grid's cards carry no `⋯`.
+/// A row has three things to say, so it reports one of them.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Press {
     /// The row's own body was chosen.
     Open,
+    /// The play over the cover was pressed.
+    Play,
     /// One of the row's doors asked for its menu.
     Menu(Door),
 }
 
 /// One list row: the cover, the words, the type, the size and the more button.
 ///
-/// The `⋯` is its own control, so a press on it never falls through to the row.
+/// The `⋯` and the play are their own controls, so a press on either never falls
+/// through to the row.
 pub fn row(ui: &mut Ui, rect: Rect, media: &Media<'_>, tokens: &Tokens) -> Option<Press> {
     let columns = columns(rect);
     let response = ui.interact(
@@ -247,7 +287,12 @@ pub fn row(ui: &mut Ui, rect: Rect, media: &Media<'_>, tokens: &Tokens) -> Optio
         // picked.
         response.request_focus();
     }
-    if response.hovered() {
+    let live = !carry::carrying(ui.ctx());
+    // Read before the play draws, as the tile's is.
+    let play_focused = ui.memory(|memory| memory.focused())
+        == Some(controls::slot_id(ui, Control::CardPlay, media.uri));
+    let over = response.hovered() || ui.rect_contains_pointer(rect);
+    if over {
         ui.painter()
             .rect_filled(rect, radius::SM, tokens.palette.row_hover);
     }
@@ -319,11 +364,10 @@ pub fn row(ui: &mut Ui, rect: Rect, media: &Media<'_>, tokens: &Tokens) -> Optio
     // The menu's door, drawn where the `⋯` sits. It says its menu is up for
     // either opener: its own press, or a right-click and the keyboard from the
     // row.
-    let live = !carry::carrying(ui.ctx());
     let id = controls::slot_id(ui, Control::LibraryMore, media.uri);
     let opener = context_menu::open_opener(ui.ctx());
     let open = opener.is_some_and(|opener| opener == id || opener == response.id);
-    let slot = controls::icon_button_open(
+    let more = controls::icon_button_open(
         ui,
         tokens,
         Control::LibraryMore,
@@ -335,7 +379,7 @@ pub fn row(ui: &mut Ui, rect: Rect, media: &Media<'_>, tokens: &Tokens) -> Optio
         live,
         open,
     );
-    let _ = ui.ctx().accesskit_node_builder(slot.response.id, |node| {
+    let _ = ui.ctx().accesskit_node_builder(more.response.id, |node| {
         node.set_expanded(open);
         node.set_has_popup(egui::accesskit::HasPopup::Menu);
     });
@@ -344,17 +388,43 @@ pub fn row(ui: &mut Ui, rect: Rect, media: &Media<'_>, tokens: &Tokens) -> Optio
         .interact_pointer_pos()
         .is_some_and(|at| columns.more.contains(at));
 
+    // The play over the cover: the grid's own control, keyed by the same uri.
+    let mut pressed = None;
+    if media.playable && (over || response.has_focus() || play_focused) {
+        let slot = controls::play_tile_keyed(
+            ui,
+            tokens,
+            Control::CardPlay,
+            media.uri,
+            row_play_rect(rect),
+            Icon::Play,
+            &format!("Play {}", media.name),
+            live,
+        );
+        if slot.response.clicked() {
+            pressed = Some(Press::Play);
+        }
+    }
+
     // The three doors report a menu before the row reports itself: a menu opens
     // on the row the user pointed at, and never also selects or opens it.
     if live
-        && let Some(door) = context_menu::button_door(ui, &slot, columns.more, id)
-            .or_else(|| key_door(ui, &response, &slot, columns.more))
+        && let Some(door) = context_menu::button_door(ui, &more, columns.more, id)
+            .or_else(|| key_door(ui, &response, &more, columns.more))
             .or_else(|| context_menu::pointer_door(ui, rect, response.id, columns.more))
     {
         return Some(Press::Menu(door));
     }
 
-    (response.clicked() && !on_more).then_some(Press::Open)
+    if pressed.is_some() {
+        return pressed;
+    }
+    let on_play = media.playable
+        && response
+            .interact_pointer_pos()
+            .is_some_and(|at| row_play_rect(rect).contains(at));
+
+    (response.clicked() && !on_more && !on_play).then_some(Press::Open)
 }
 
 /// The keyboard's door: the context-menu key or Shift+F10, on the focused row or
@@ -409,6 +479,23 @@ pub fn art_rect(rect: Rect) -> Rect {
     Rect::from_min_size(inner.min, Vec2::splat(inner.width()))
 }
 
+/// Where a tile's play sits: `space::S2` in from the tile's bottom-right
+/// corner.
+pub fn tile_play_rect(rect: Rect) -> Rect {
+    Rect::from_min_size(
+        Pos2::new(
+            rect.right() - space::S2 - extent::CARD_PLAY,
+            rect.bottom() - space::S2 - extent::CARD_PLAY,
+        ),
+        Vec2::splat(extent::CARD_PLAY),
+    )
+}
+
+/// Where a row's play sits: centred on the cover, so no column moves for it.
+pub fn row_play_rect(rect: Rect) -> Rect {
+    Rect::from_center_size(columns(rect).art.center(), Vec2::splat(extent::CARD_PLAY))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -432,6 +519,7 @@ mod tests {
             size,
             round,
             shelf: SidebarKind::Albums,
+            playable: true,
             cover: Cover::Missing,
         }
     }
@@ -729,8 +817,13 @@ mod tests {
     fn door(answers: &[Option<Press>]) -> Option<Door> {
         answers.iter().flatten().find_map(|press| match press {
             Press::Menu(door) => Some(*door),
-            Press::Open => None,
+            Press::Open | Press::Play => None,
         })
+    }
+
+    /// Whether the run reported a play.
+    fn played(answers: &[Option<Press>]) -> bool {
+        answers.iter().flatten().any(|press| *press == Press::Play)
     }
 
     /// Whether the run reported the row itself.
@@ -962,5 +1055,272 @@ mod tests {
                 && (columns.size.width() - SIZE_W).abs() < 0.01
         );
         assert!(rect.contains_rect(columns.more));
+    }
+
+    /// The tile's rect at the standard corner, and what its pass reported.
+    fn tile_pass(
+        ctx: &egui::Context,
+        item: &Media<'_>,
+        events: Vec<Event>,
+    ) -> (Rect, Option<Press>, egui::FullOutput) {
+        let tokens = Tokens::DARK;
+        let mut rect = Rect::ZERO;
+        let mut pressed = None;
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(600.0, 400.0))),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                crate::view::focus::begin_frame(ui.ctx());
+                let width = 176.0;
+                rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(width, width + extra_height(ui)));
+                pressed = tile(ui, rect, item, &tokens);
+            },
+        );
+        output.textures_delta.clear();
+        (rect, pressed, output)
+    }
+
+    /// One pass per event, collecting what the tile reported each time.
+    fn tile_run(ctx: &egui::Context, item: &Media<'_>, events: &[Event]) -> Vec<Option<Press>> {
+        let _ = tile_pass(ctx, item, Vec::new());
+        events
+            .iter()
+            .map(|event| tile_pass(ctx, item, vec![event.clone()]).1)
+            .collect()
+    }
+
+    /// The tile's last pass with the pointer resting at `at`.
+    fn tile_rest(ctx: &egui::Context, item: &Media<'_>, at: Pos2) -> (Rect, egui::FullOutput) {
+        let mut last = tile_pass(ctx, item, Vec::new());
+        for _ in 0..2 {
+            last = tile_pass(ctx, item, vec![Event::PointerMoved(at)]);
+        }
+        (last.0, last.2)
+    }
+
+    /// Whether a frame painted the play tile in `rect`.
+    ///
+    /// The tile is the only thing that paints a whole rect there: its hover eases
+    /// the fill between two tones, so the fill itself is not the marker.
+    fn play_painted(output: &egui::FullOutput, rect: Rect) -> bool {
+        output.shapes.iter().any(|clipped| match &clipped.shape {
+            egui::epaint::Shape::Rect(shape) => shape.rect == rect,
+            _ => false,
+        })
+    }
+
+    /// Whether a frame painted the tile's raised wash.
+    fn washed(output: &egui::FullOutput, rect: Rect) -> bool {
+        output.shapes.iter().any(|clipped| match &clipped.shape {
+            egui::epaint::Shape::Rect(shape) => {
+                shape.rect == rect && shape.fill == Tokens::DARK.palette.surface_raised
+            }
+            _ => false,
+        })
+    }
+
+    #[test]
+    fn the_tile_play_rect_is_the_cards_corner() {
+        let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(176.0, 240.0));
+        let play = tile_play_rect(rect);
+
+        assert_eq!(play.size(), Vec2::splat(extent::CARD_PLAY));
+        assert_eq!(play.right(), rect.right() - space::S2);
+        assert_eq!(play.bottom(), rect.bottom() - space::S2);
+        assert!(rect.contains_rect(play), "the play hangs off the card");
+    }
+
+    #[test]
+    fn a_hovered_playable_tile_draws_its_play_and_an_unplayable_one_does_not() {
+        let ctx = context();
+        let item = media("spotify:album:a", false, "11 tracks");
+        let at = Pos2::new(88.0, 88.0);
+        let (rect, output) = tile_rest(&ctx, &item, at);
+        assert!(
+            play_painted(&output, tile_play_rect(rect)),
+            "a hovered playable tile drew no play"
+        );
+
+        let bare = Media {
+            playable: false,
+            ..media("spotify:artist:a", true, "")
+        };
+        let (rect, output) = tile_rest(&ctx, &bare, at);
+        assert!(
+            !play_painted(&output, tile_play_rect(rect)),
+            "an item with no play drew one"
+        );
+    }
+
+    #[test]
+    fn a_press_on_the_tiles_play_reports_play_and_not_open() {
+        let ctx = context();
+        let item = media("spotify:album:a", false, "11 tracks");
+        let (rect, _, _) = tile_pass(&ctx, &item, Vec::new());
+        let play = tile_play_rect(rect);
+        let answers = tile_run(&ctx, &item, &click_events(play.center()));
+
+        assert_eq!(
+            answers,
+            vec![None, None, Some(Press::Play)],
+            "a press on the play reported something else: {answers:?}"
+        );
+    }
+
+    #[test]
+    fn a_press_on_the_tile_body_still_reports_open() {
+        let ctx = context();
+        let item = media("spotify:album:a", false, "11 tracks");
+        let (rect, _, _) = tile_pass(&ctx, &item, Vec::new());
+        let body = art_rect(rect).center();
+        let answers = tile_run(&ctx, &item, &click_events(body));
+
+        assert_eq!(
+            answers,
+            vec![None, None, Some(Press::Open)],
+            "the tile body stopped opening the item: {answers:?}"
+        );
+    }
+
+    #[test]
+    fn the_play_tile_stays_drawn_while_the_pointer_is_on_it() {
+        let ctx = context();
+        let item = media("spotify:album:a", false, "11 tracks");
+        let (rect, _) = tile_rest(&ctx, &item, Pos2::new(88.0, 88.0));
+        let (rect, output) = tile_rest(&ctx, &item, tile_play_rect(rect).center());
+
+        assert!(
+            play_painted(&output, tile_play_rect(rect)),
+            "the pointer on the play took the play away"
+        );
+    }
+
+    #[test]
+    fn the_wash_stays_drawn_while_the_pointer_is_on_the_play() {
+        let ctx = context();
+        let item = media("spotify:album:a", false, "11 tracks");
+        let (rect, _) = tile_rest(&ctx, &item, Pos2::new(88.0, 88.0));
+        assert!(
+            washed(&tile_rest(&ctx, &item, Pos2::new(88.0, 88.0)).1, rect),
+            "a hovered tile away from its play washed with something else"
+        );
+
+        let (rect, output) = tile_rest(&ctx, &item, tile_play_rect(rect).center());
+        assert!(
+            washed(&output, rect),
+            "the live play child took the tile's wash away"
+        );
+        assert_eq!(
+            row_fills(Some(row_play_rect(row_rect()).center())),
+            vec![Tokens::DARK.palette.row_hover],
+            "the live play child took the row's wash away"
+        );
+    }
+
+    #[test]
+    fn tab_from_a_tile_reaches_its_play_and_keeps_it_drawn() {
+        let ctx = context();
+        let item = media("spotify:album:a", false, "11 tracks");
+        let mut ids = None;
+        let mut output = ctx.run_ui(input_with(Vec::new()), |ui| {
+            crate::view::focus::begin_frame(ui.ctx());
+            let width = 176.0;
+            let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(width, width + extra_height(ui)));
+            let _ = tile(ui, rect, &item, &Tokens::DARK);
+            ids = Some((
+                ui.scope_id().with(("library-media", item.uri)),
+                controls::slot_id(ui, Control::CardPlay, item.uri),
+            ));
+        });
+        output.textures_delta.clear();
+        let (tile_id, play_id) = ids.expect("a pass ran");
+
+        // The tile takes the keyboard, as its own click does.
+        let (rect, _, _) = tile_pass(&ctx, &item, Vec::new());
+        for event in click_events(art_rect(rect).center()) {
+            let _ = tile_pass(&ctx, &item, vec![event]);
+        }
+        assert_eq!(
+            ctx.memory(|memory| memory.focused()),
+            Some(tile_id),
+            "the click never took the keyboard"
+        );
+
+        let [press, release] = crate::view::test_support::tab();
+        let _ = tile_pass(&ctx, &item, vec![press]);
+        let (rect, _, output) = tile_pass(&ctx, &item, vec![release]);
+
+        assert_eq!(
+            ctx.memory(|memory| memory.focused()),
+            Some(play_id),
+            "Tab never reached the tile's play"
+        );
+        assert!(
+            play_painted(&output, tile_play_rect(rect)),
+            "a focused play was hidden again"
+        );
+    }
+
+    #[test]
+    fn a_press_on_the_rows_play_reports_play_and_not_open_or_a_door() {
+        let ctx = context();
+        let item = media("spotify:album:a", false, "11 tracks");
+        let play = row_play_rect(row_rect());
+        let answers = run(&ctx, &item, &click_events(play.center()));
+
+        assert!(
+            played(&answers),
+            "a press on the row's play reported nothing: {answers:?}"
+        );
+        assert!(!opened(&answers), "the play also opened the row");
+        assert_eq!(door(&answers), None, "the play also opened a menu");
+    }
+
+    #[test]
+    fn the_row_play_sits_inside_the_cover_and_clear_of_the_more() {
+        let columns = columns(row_rect());
+        let play = row_play_rect(row_rect());
+
+        assert_eq!(play.size(), Vec2::splat(extent::CARD_PLAY));
+        assert!(columns.art.contains_rect(play), "the play left the cover");
+        assert!(!play.intersects(columns.more), "the play reached the `⋯`");
+    }
+
+    #[test]
+    fn a_carried_tile_or_row_has_a_gated_play_that_does_not_open_it() {
+        let ctx = context();
+        let item = media("spotify:album:a", false, "11 tracks");
+        let (rect, _, _) = tile_pass(&ctx, &item, Vec::new());
+
+        // A release ends the carry, so each run is carried on its own.
+        egui::DragAndDrop::set_payload(&ctx, ());
+        let tile_answers = tile_run(&ctx, &item, &click_events(tile_play_rect(rect).center()));
+        egui::DragAndDrop::clear_payload(&ctx);
+
+        egui::DragAndDrop::set_payload(&ctx, ());
+        let row_answers = run(
+            &ctx,
+            &item,
+            &click_events(row_play_rect(row_rect()).center()),
+        );
+        egui::DragAndDrop::clear_payload(&ctx);
+
+        assert!(
+            !played(&tile_answers),
+            "a carried tile's play started something: {tile_answers:?}"
+        );
+        assert!(
+            tile_answers.iter().flatten().next().is_none(),
+            "a carried tile's play opened the item: {tile_answers:?}"
+        );
+        assert!(
+            !played(&row_answers),
+            "a carried row's play started something: {row_answers:?}"
+        );
+        assert!(!opened(&row_answers), "a carried row's play opened the row");
+        assert_eq!(door(&row_answers), None);
     }
 }
