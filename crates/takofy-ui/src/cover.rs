@@ -22,6 +22,9 @@ use cache::{Cache, Look};
 /// The most fetches the window has outstanding at once.
 pub const MAX_IN_FLIGHT: usize = 6;
 
+/// The target of the one line an uploaded texture writes.
+pub const COVER_LOG_TARGET: &str = "takofy_ui::cover";
+
 /// The device pixels a box `points` wide covers at `pixels_per_point`.
 ///
 /// A box always asks for at least one pixel, and a scale that is not finite
@@ -186,6 +189,13 @@ impl Art {
                 &image.rgba,
             );
             let texture = ctx.load_texture(url.as_str(), pixels, theme::art::TEXTURE);
+            // Dimensions only: a cover URL is a file id and stays out of the log.
+            log::info!(
+                target: COVER_LOG_TARGET,
+                "cover {}x{}",
+                image.width,
+                image.height
+            );
             self.textures.insert(url, texture);
         }
     }
@@ -210,6 +220,8 @@ impl Art {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Mutex, Once};
+
     use super::*;
 
     fn url(tail: &str) -> CoverUrl {
@@ -257,6 +269,74 @@ mod tests {
         assert_eq!(want_px(f32::NAN, 2.0), 1);
         assert_eq!(want_px(36.0, f32::NAN), 1);
         assert_eq!(want_px(f32::INFINITY, 2.0), 1);
+    }
+
+    /// The lines this module logged, so a test can read them.
+    static LOGGED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+    struct Recorder;
+
+    impl log::Log for Recorder {
+        fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+            metadata.level() <= log::Level::Info
+        }
+
+        fn log(&self, record: &log::Record<'_>) {
+            if record.target() != COVER_LOG_TARGET || !self.enabled(record.metadata()) {
+                return;
+            }
+            LOGGED.lock().expect("lock").push(record.args().to_string());
+        }
+
+        fn flush(&self) {}
+    }
+
+    #[test]
+    fn the_log_target_is_the_module_that_logs() {
+        assert_eq!(
+            module_path!().strip_suffix("::tests"),
+            Some(COVER_LOG_TARGET),
+            "the upload's target must be the module that logs it"
+        );
+    }
+
+    /// One line per uploaded texture, carrying its size and never its URL.
+    #[test]
+    fn an_upload_logs_its_size_and_no_url() {
+        static RECORDER: Recorder = Recorder;
+        static INSTALL: Once = Once::new();
+        INSTALL.call_once(|| {
+            if log::set_logger(&RECORDER).is_ok() {
+                log::set_max_level(log::LevelFilter::Info);
+            }
+        });
+        LOGGED.lock().expect("lock").clear();
+
+        let now = base();
+        let mut art = Art::new();
+        let url = url("secret");
+        let _ = art.look(Some(&set(&url)), 64, now);
+        let _ = art.requests(now);
+        // A size no other test uploads, so this line is the one it read.
+        let image = CoverImage::new(3, 5, vec![0; 60]).expect("a 3x5 image");
+        art.apply(
+            &Update::Cover {
+                url: url.clone(),
+                image,
+            },
+            now,
+        );
+        art.upload(&egui::Context::default());
+
+        let lines: Vec<String> = LOGGED
+            .lock()
+            .expect("lock")
+            .iter()
+            .filter(|line| line.starts_with("cover 3x5"))
+            .cloned()
+            .collect();
+        assert_eq!(lines, vec!["cover 3x5".to_owned()], "one line per texture");
+        assert!(!lines[0].contains("secret"), "a cover URL is a file id");
     }
 
     #[test]

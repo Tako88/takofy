@@ -26,6 +26,7 @@ use takofy_core::oauth::{OAUTH_LOG_TARGET, RedirectMode, SpotifyOAuth};
 use takofy_core::receive::RECEIVE_LOG_TARGET;
 
 use crate::bridge::LANDING_LOG_TARGET;
+use takofy_ui::cover::COVER_LOG_TARGET;
 use takofy_ui::message::Failure;
 use takofy_ui::remote::REMOTE_LOG_TARGET;
 use takofy_ui::signin::failure_message;
@@ -211,6 +212,9 @@ fn logger_builder() -> env_logger::Builder {
     // refused leaves the queue disagreeing with the phone, and the kind is the
     // only thing that says whose rows were wrong.
     builder.filter_module(REMOTE_LOG_TARGET, LevelFilter::Info);
+    // Which size each uploaded cover texture was. Dimensions only: a cover URL
+    // names a file and stays out of the log.
+    builder.filter_module(COVER_LOG_TARGET, LevelFilter::Info);
     builder
 }
 
@@ -240,6 +244,7 @@ mod tests {
     use takofy_core::oauth::{OAUTH_LOG_TARGET, RedirectMode};
     use takofy_core::playback::PLAYBACK_LOG_TARGET;
     use takofy_core::receive::RECEIVE_LOG_TARGET;
+    use takofy_ui::cover::COVER_LOG_TARGET;
     use takofy_ui::remote::REMOTE_LOG_TARGET;
 
     use crate::bridge::LANDING_LOG_TARGET;
@@ -297,6 +302,13 @@ mod tests {
         let logger = logger_builder().build();
         assert!(logger.matches(&record(REMOTE_LOG_TARGET, Level::Info)));
         assert!(!logger.matches(&record("takofy_ui::report", Level::Info)));
+    }
+
+    #[test]
+    fn the_cover_size_line_shows_and_its_neighbours_do_not() {
+        let logger = logger_builder().build();
+        assert!(logger.matches(&record(COVER_LOG_TARGET, Level::Info)));
+        assert!(!logger.matches(&record("takofy_ui::view", Level::Info)));
     }
 
     #[test]

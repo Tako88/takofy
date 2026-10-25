@@ -161,19 +161,15 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
     let caption = screen.devices.caption(screen.now);
     let steerable = screen.devices.steerable();
 
-    // The panel and the playbar share one tile: the track the source names,
-    // looked up each frame so a cover that arrives after `play` still reaches
-    // them.
+    // The panel and the playbar draw the track the source names. Each looks up
+    // its own size: the panel inside its own stack, the bar here.
     let playing = match source {
         DeviceSource::Local => screen.transport.now_playing.as_ref(),
         DeviceSource::Remote => screen.devices.display().now_playing.as_ref(),
     };
-    let now_playing_cover = screen.art.look(
+    let playbar_cover = screen.art.look(
         playing.and_then(|now| now.cover.as_ref()),
-        want_px(
-            crate::theme::extent::NOWPLAYING_ART_MAX,
-            ui.pixels_per_point(),
-        ),
+        want_px(crate::theme::extent::PLAYBAR_ART, ui.pixels_per_point()),
         screen.now,
     );
     let like = playing.and_then(|now| screen.library.likes.state(&now.uri));
@@ -219,7 +215,6 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
                 &mut now_playing::Frame {
                     art: screen.art,
                     now: screen.now,
-                    cover: now_playing_cover,
                     current,
                     tokens,
                 },
@@ -306,7 +301,7 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
             bar_state,
             remote,
             bar_rect,
-            now_playing_cover,
+            playbar_cover,
             tokens,
         )
     });
@@ -2682,6 +2677,23 @@ mod tests {
         window.requests()
     }
 
+    /// The covers a fresh window of `size` at `ppp` asks for, once the zoom has
+    /// settled.
+    fn asked_at(
+        size: Vec2,
+        ppp: f32,
+        transport: &mut Transport,
+        queue: &mut Queue,
+    ) -> Vec<CoverUrl> {
+        let mut window = Window::new(size);
+        window.ctx.set_pixels_per_point(ppp);
+        // A zoom change lands on the pass after it, so the window is measured
+        // once it has settled.
+        let _ = window.frame(transport, queue, Vec::new());
+        let _ = window.frame(transport, queue, Vec::new());
+        window.requests()
+    }
+
     /// Queues two tracks, so the transport has something to pause.
     fn two_tracks(transport: &mut Transport) -> Queue {
         let tracks = vec![track(0, None), track(1, None)];
@@ -2906,23 +2918,66 @@ mod tests {
     }
 
     #[test]
-    fn the_now_playing_lookup_asks_for_the_large_size_at_two_x() {
-        let mut window = Window::new(Vec2::new(1400.0, 900.0));
-        window.ctx.set_pixels_per_point(2.0);
-        let (set, small, _, large) = sized("panel");
+    fn the_panel_asks_for_the_size_its_own_art_box_takes() {
+        let (set, _, middle, large) = sized("panel");
+
+        let mut transport = playing(set.clone());
+        let mut queue = Queue::default();
+        let asked = asked_at(Vec2::new(1400.0, 900.0), 1.0, &mut transport, &mut queue);
+        assert!(
+            asked.contains(&middle),
+            "the 256pt panel box takes the 300 at 1x: {asked:?}"
+        );
+        assert!(
+            !asked.contains(&large),
+            "the panel must not fetch the 640 at 1x: {asked:?}"
+        );
+
+        let mut transport = playing(set);
+        let asked = asked_at(Vec2::new(1400.0, 900.0), 2.0, &mut transport, &mut queue);
+        assert!(
+            asked.contains(&large),
+            "the panel's 512px box takes the 640 at 2x: {asked:?}"
+        );
+        assert!(
+            !asked.contains(&middle),
+            "the panel must not keep the 300 at 2x: {asked:?}"
+        );
+    }
+
+    #[test]
+    fn a_hidden_panel_leaves_only_the_playbars_small_tile() {
+        let (set, small, _, _) = sized("panel");
         let mut transport = playing(set);
         let mut queue = Queue::default();
 
-        let (_, _) = window.frame(&mut transport, &mut queue, Vec::new());
-        let asked = window.requests();
+        let asked = asked_at(Vec2::new(900.0, 600.0), 2.0, &mut transport, &mut queue);
 
-        assert!(
-            asked.contains(&large),
-            "the panel's 512px box takes the 640: {asked:?}"
+        assert_eq!(
+            asked,
+            vec![small],
+            "the playbar's 88px box takes the 64, and nothing else is drawn"
+        );
+    }
+
+    #[test]
+    fn the_panel_and_the_playbar_ask_for_different_sizes_of_one_track() {
+        let (set, small, middle, large) = sized("panel");
+        let mut transport = playing(set);
+        let mut queue = Queue::default();
+
+        let mut asked = asked_at(Vec2::new(1400.0, 900.0), 1.0, &mut transport, &mut queue);
+        asked.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+        let mut expected = vec![small, middle];
+        expected.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+
+        assert_eq!(
+            asked, expected,
+            "the playbar takes the 64 and the panel the 300: {asked:?}"
         );
         assert!(
-            !asked.contains(&small),
-            "the panel must not fetch the 64: {asked:?}"
+            !asked.contains(&large),
+            "neither box needs the 640 at 1x: {asked:?}"
         );
     }
 
