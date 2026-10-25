@@ -225,7 +225,7 @@ mod tests {
 
     use librespot::protocol::connect::DeviceInfo;
     use librespot::protocol::player::PlayerState;
-    use takofy_model::{Options, Report, Status, TrackEntry};
+    use takofy_model::{Report, Status, TrackEntry};
 
     use super::*;
     use crate::connect::Announcement;
@@ -278,7 +278,8 @@ mod tests {
             prev: Vec::new(),
             next: Vec::new(),
             context: Some("spotify:album:context".to_owned()),
-            options: Options::default(),
+            queue_revision: String::new(),
+            options: None,
             position_ms: 10_000,
             duration_ms: Some(200_000),
         }

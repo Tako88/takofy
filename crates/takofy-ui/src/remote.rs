@@ -1,10 +1,10 @@
 //! What the window does when the phone sends a transport action.
 //!
 //! The phone is the account's sound's owner no more: it stopped playing and
-//! sends `pause`, `resume`, `seek_to`, `skip_next` and `skip_prev` instead. Each
-//! is a decision about the queue and the transport, and an answer the phone is
-//! waiting for, so the decision is a pure function the frame's own stores are
-//! handed to.
+//! sends `pause`, `resume`, `seek_to`, `skip_next` and `skip_prev` instead, and
+//! when it edits the queue or the modes it sends those too. Each is a decision
+//! about the queue and the transport, and an answer the phone is waiting for, so
+//! the decision is a pure function the frame's own stores are handed to.
 //!
 //! Every effect goes through the queue's own move, so a phone skip and a click
 //! on the bar cannot land on two different rows.
@@ -14,6 +14,12 @@ use takofy_model::Order;
 use crate::message::Command;
 use crate::player::{Transport, TransportState};
 use crate::queue::Queue;
+use crate::repeat::Repeat;
+
+/// The order path's own log target, so the binary can let the one line that says
+/// why a phone's order was not carried out through the app's floor without
+/// raising it for everything.
+pub const REMOTE_LOG_TARGET: &str = "takofy_ui::remote";
 
 /// What one order asked this window to do.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -49,6 +55,24 @@ pub fn react(
         Order::Seek(position_ms) => seek(transport, *position_ms),
         Order::Next(named) => next(queue, transport, named.as_deref()),
         Order::Prev => previous(queue, transport, position_ms),
+        Order::SetShuffle(on) => {
+            set_shuffle(queue, *on);
+            Reaction::carried_out(Vec::new())
+        }
+        Order::SetOptions {
+            shuffling,
+            repeating_context,
+            repeating_track,
+        } => options(queue, *shuffling, *repeating_context, *repeating_track),
+        Order::AddToQueue(Some(uri)) => add_to_queue(queue, uri),
+        // A queue addition with no track names nothing to put next, and a row
+        // invented for it would be a row the phone never sent.
+        Order::AddToQueue(None) => Reaction::refused(),
+        Order::SetQueue {
+            prev,
+            next,
+            revision,
+        } => set_queue(queue, prev, next, revision),
     }
 }
 
@@ -130,6 +154,66 @@ fn previous(queue: &mut Queue, transport: &mut Transport, position_ms: u32) -> R
         .map_or_else(Reaction::refused, |command| {
             Reaction::carried_out(vec![command])
         })
+}
+
+/// Turns shuffle on or off, drawing the coming rows again only when the mode
+/// really changes.
+///
+/// The phone's switch names a state, so an order that repeats the state the
+/// queue is in is obeyed and redraws nothing: the rows someone is looking at
+/// must not be permuted by an order that asked for what already holds.
+fn set_shuffle(queue: &mut Queue, on: bool) {
+    if queue.shuffle() != on {
+        queue.toggle_shuffle();
+    }
+}
+
+/// Applies the options the phone named, and only those.
+///
+/// Each field goes through the same path as the endpoint that names it alone, so
+/// a set of options and a run of single orders cannot land differently. Repeat is
+/// one three-state switch, so a half the phone left out keeps the mode it is in.
+fn options(
+    queue: &mut Queue,
+    shuffling: Option<bool>,
+    repeating_context: Option<bool>,
+    repeating_track: Option<bool>,
+) -> Reaction {
+    if let Some(on) = shuffling {
+        set_shuffle(queue, on);
+    }
+    let (context, track) = queue.repeat().flags();
+    queue.set_repeat(Repeat::from_flags(
+        repeating_context.unwrap_or(context),
+        repeating_track.unwrap_or(track),
+    ));
+    Reaction::carried_out(Vec::new())
+}
+
+/// Puts the track the phone named next in the queue.
+fn add_to_queue(queue: &mut Queue, uri: &str) -> Reaction {
+    if queue.add_next_uri(uri).is_none() {
+        return Reaction::refused();
+    }
+    // The row plays after the current one, so nothing is sent yet.
+    Reaction::carried_out(Vec::new())
+}
+
+/// Replaces the queue with the window the phone published around its current
+/// row.
+fn set_queue(queue: &mut Queue, prev: &[String], next: &[String], revision: &str) -> Reaction {
+    match queue.replace_window(prev, next, revision.to_owned()) {
+        Ok(()) => Reaction::carried_out(Vec::new()),
+        Err(refusal) => {
+            // The kind only: the rows are the user's data and the phone's.
+            log::info!(
+                target: REMOTE_LOG_TARGET,
+                "queue window refused: {}",
+                refusal.word()
+            );
+            Reaction::refused()
+        }
+    }
 }
 
 #[cfg(test)]
@@ -350,5 +434,368 @@ mod tests {
         assert_eq!(local, Some(play("c")), "the two drivers take turns");
         assert!(remote.ok);
         assert_eq!(queue.current().map(|entry| entry.uri.as_str()), Some("c"));
+    }
+
+    /// Every row the queue holds, in the order it has them.
+    fn uris(queue: &Queue) -> Vec<String> {
+        queue
+            .history(usize::MAX)
+            .chain(queue.current())
+            .chain(queue.upcoming().map(|(_, entry)| entry))
+            .map(|entry| entry.uri.clone())
+            .collect()
+    }
+
+    /// One row the phone's window carries, named the way the wire names it.
+    fn window(name: &str) -> String {
+        format!("spotify:track:{name}")
+    }
+
+    /// The target the binary has to name to let the refusal line through, so the
+    /// name is derived from the module rather than typed twice.
+    #[test]
+    fn the_log_target_is_the_module_that_logs() {
+        assert_eq!(
+            module_path!().strip_suffix("::tests"),
+            Some(REMOTE_LOG_TARGET),
+            "the refusal's target must be the module that logs it"
+        );
+    }
+
+    #[test]
+    fn set_shuffle_toggles_only_when_it_differs() {
+        let (mut queue, mut transport) = started(&["a", "b", "c", "d"], 0);
+        assert!(!queue.shuffle());
+
+        let reaction = react(&Order::SetShuffle(true), &mut queue, &mut transport, 0);
+        assert!(reaction.ok, "turning a mode on is always obeyed");
+        assert!(reaction.commands.is_empty(), "nothing is loaded by a mode");
+        assert!(queue.shuffle());
+        let drawn = uris(&queue);
+        assert_eq!(drawn.first().map(String::as_str), Some("a"));
+
+        let reaction = react(&Order::SetShuffle(true), &mut queue, &mut transport, 0);
+        assert!(reaction.ok);
+        assert_eq!(
+            uris(&queue),
+            drawn,
+            "an order asking for the mode already held redraws nothing"
+        );
+
+        let reaction = react(&Order::SetShuffle(false), &mut queue, &mut transport, 0);
+        assert!(reaction.ok);
+        assert!(!queue.shuffle());
+        assert_eq!(
+            uris(&queue),
+            vec![
+                "a".to_owned(),
+                "b".to_owned(),
+                "c".to_owned(),
+                "d".to_owned()
+            ],
+            "turning it off puts the list's own order back"
+        );
+    }
+
+    #[test]
+    fn every_pair_of_repeat_flags_names_a_mode() {
+        let (mut queue, mut transport) = started(&["a", "b"], 0);
+        let table = [
+            ((Some(false), Some(false)), Repeat::Off),
+            ((Some(true), Some(false)), Repeat::All),
+            ((Some(false), Some(true)), Repeat::One),
+            ((Some(true), Some(true)), Repeat::One),
+        ];
+
+        for ((context, track), expected) in table {
+            let reaction = react(
+                &Order::SetOptions {
+                    shuffling: None,
+                    repeating_context: context,
+                    repeating_track: track,
+                },
+                &mut queue,
+                &mut transport,
+                0,
+            );
+            assert!(reaction.ok, "context {context:?}, track {track:?}");
+            assert!(reaction.commands.is_empty(), "a mode loads nothing");
+            assert_eq!(
+                queue.repeat(),
+                expected,
+                "context {context:?}, track {track:?}: the track loop wins"
+            );
+        }
+    }
+
+    #[test]
+    fn turning_context_repeat_off_leaves_track_repeat_alone() {
+        let (mut queue, mut transport) = started(&["a", "b"], 0);
+        queue.set_repeat(Repeat::One);
+
+        // What `set_repeating_context(false)` decodes to: one half named.
+        let reaction = react(
+            &Order::SetOptions {
+                shuffling: None,
+                repeating_context: Some(false),
+                repeating_track: None,
+            },
+            &mut queue,
+            &mut transport,
+            0,
+        );
+
+        assert!(reaction.ok);
+        assert_eq!(
+            queue.repeat(),
+            Repeat::One,
+            "turning the context loop off does not turn the track loop off too"
+        );
+    }
+
+    #[test]
+    fn turning_track_repeat_off_leaves_context_repeat_alone() {
+        let (mut queue, mut transport) = started(&["a", "b"], 0);
+        queue.set_repeat(Repeat::All);
+
+        // What `set_repeating_track(false)` decodes to: the other half named.
+        let reaction = react(
+            &Order::SetOptions {
+                shuffling: None,
+                repeating_context: None,
+                repeating_track: Some(false),
+            },
+            &mut queue,
+            &mut transport,
+            0,
+        );
+
+        assert!(reaction.ok);
+        assert_eq!(
+            queue.repeat(),
+            Repeat::All,
+            "turning the track loop off does not turn the context loop off too"
+        );
+    }
+
+    #[test]
+    fn set_options_applies_only_the_fields_present() {
+        let (mut queue, mut transport) = started(&["a", "b", "c"], 0);
+        queue.set_repeat(Repeat::All);
+
+        // Only shuffle: the repeat mode the phone said nothing about stays.
+        let reaction = react(
+            &Order::SetOptions {
+                shuffling: Some(true),
+                repeating_context: None,
+                repeating_track: None,
+            },
+            &mut queue,
+            &mut transport,
+            0,
+        );
+        assert!(reaction.ok);
+        assert!(reaction.commands.is_empty());
+        assert!(queue.shuffle());
+        assert_eq!(queue.repeat(), Repeat::All, "an absent field is untouched");
+
+        // Both repeat fields, the track loop last: it wins.
+        let reaction = react(
+            &Order::SetOptions {
+                shuffling: None,
+                repeating_context: Some(true),
+                repeating_track: Some(true),
+            },
+            &mut queue,
+            &mut transport,
+            0,
+        );
+        assert!(reaction.ok);
+        assert_eq!(queue.repeat(), Repeat::One);
+        assert!(queue.shuffle(), "an absent shuffle is untouched too");
+
+        // Clearing the context loop leaves the track loop alone.
+        let reaction = react(
+            &Order::SetOptions {
+                shuffling: None,
+                repeating_context: Some(false),
+                repeating_track: None,
+            },
+            &mut queue,
+            &mut transport,
+            0,
+        );
+        assert!(reaction.ok);
+        assert_eq!(queue.repeat(), Repeat::One);
+
+        // Nothing named is nothing to apply, and it is still an answer.
+        let reaction = react(
+            &Order::SetOptions {
+                shuffling: None,
+                repeating_context: None,
+                repeating_track: None,
+            },
+            &mut queue,
+            &mut transport,
+            0,
+        );
+        assert!(reaction.ok);
+        assert!(queue.shuffle());
+        assert_eq!(queue.repeat(), Repeat::One);
+    }
+
+    #[test]
+    fn add_to_queue_inserts_after_the_current_row_and_after_earlier_adds() {
+        let (mut queue, mut transport) = started(&["a", "b", "c"], 0);
+
+        let reaction = react(
+            &Order::AddToQueue(Some(window("x"))),
+            &mut queue,
+            &mut transport,
+            0,
+        );
+        assert!(reaction.ok);
+        assert!(
+            reaction.commands.is_empty(),
+            "a queued row waits for the current one to end"
+        );
+
+        let reaction = react(
+            &Order::AddToQueue(Some(window("y"))),
+            &mut queue,
+            &mut transport,
+            0,
+        );
+        assert!(reaction.ok);
+
+        assert_eq!(
+            uris(&queue),
+            vec![
+                "a".to_owned(),
+                window("x"),
+                window("y"),
+                "b".to_owned(),
+                "c".to_owned()
+            ],
+            "each add goes behind the earlier ones"
+        );
+        assert_eq!(
+            queue.current().map(|entry| entry.uri.as_str()),
+            Some("a"),
+            "the row that plays does not move"
+        );
+    }
+
+    #[test]
+    fn add_to_queue_without_a_track_fails() {
+        let (mut queue, mut transport) = started(&["a", "b"], 0);
+        let before = uris(&queue);
+
+        let reaction = react(&Order::AddToQueue(None), &mut queue, &mut transport, 0);
+
+        assert!(reaction.commands.is_empty());
+        assert!(!reaction.ok, "there is nothing to add");
+        assert_eq!(uris(&queue), before, "and no row is invented for it");
+    }
+
+    #[test]
+    fn add_to_queue_with_an_unparsable_track_fails() {
+        let (mut queue, mut transport) = started(&["a", "b"], 0);
+        let before = uris(&queue);
+
+        for uri in [
+            "https://example.test/row",
+            "spotify:",
+            "spotify::x",
+            "spotify:foo:bar",
+            "spotify:track:",
+        ] {
+            let reaction = react(
+                &Order::AddToQueue(Some(uri.to_owned())),
+                &mut queue,
+                &mut transport,
+                0,
+            );
+
+            assert!(reaction.commands.is_empty(), "{uri}");
+            assert!(!reaction.ok, "{uri} names no row to play");
+            assert_eq!(uris(&queue), before, "{uri} invented a row");
+        }
+    }
+
+    #[test]
+    fn add_to_queue_with_nothing_playing_appends() {
+        let mut queue = Queue::default();
+        let mut transport = Transport::default();
+        queue.append(vec![track("a"), track("b")]);
+        assert!(queue.armed(), "the rows wait for a first play");
+
+        let reaction = react(
+            &Order::AddToQueue(Some(window("x"))),
+            &mut queue,
+            &mut transport,
+            0,
+        );
+
+        assert!(reaction.ok);
+        assert_eq!(
+            uris(&queue),
+            vec!["a".to_owned(), "b".to_owned(), window("x")],
+            "an add with no current row joins the end"
+        );
+        assert!(queue.armed(), "the queue still waits for its first play");
+    }
+
+    #[test]
+    fn set_queue_applies_the_window_and_is_ok() {
+        let (mut queue, mut transport) = started(&["a", "b", "c"], 1);
+
+        let reaction = react(
+            &Order::SetQueue {
+                prev: vec![window("p1"), window("p2")],
+                next: vec![window("n1")],
+                revision: "rev-2".to_owned(),
+            },
+            &mut queue,
+            &mut transport,
+            0,
+        );
+
+        assert!(reaction.ok);
+        assert!(reaction.commands.is_empty(), "the window loads nothing");
+        assert_eq!(
+            uris(&queue),
+            vec![window("p1"), window("p2"), "b".to_owned(), window("n1")],
+            "the window sits around the row that is playing"
+        );
+        assert_eq!(queue.current().map(|entry| entry.uri.as_str()), Some("b"));
+        assert_eq!(queue.queue_revision(), "rev-2");
+    }
+
+    #[test]
+    fn a_refused_window_fails_and_changes_nothing() {
+        let (mut queue, mut transport) = started(&["a", "b"], 1);
+        let before = uris(&queue);
+
+        let reaction = react(
+            &Order::SetQueue {
+                prev: vec!["https://example.test/row".to_owned()],
+                next: Vec::new(),
+                revision: "rev-9".to_owned(),
+            },
+            &mut queue,
+            &mut transport,
+            0,
+        );
+
+        assert!(reaction.commands.is_empty());
+        assert!(!reaction.ok, "a row that names nothing is not a window");
+        assert_eq!(uris(&queue), before, "the rows are left as they were");
+        assert_eq!(
+            queue.current().map(|entry| entry.uri.as_str()),
+            Some("b"),
+            "the row that plays does not move"
+        );
+        assert_eq!(queue.queue_revision(), "", "a refusal stores no revision");
     }
 }

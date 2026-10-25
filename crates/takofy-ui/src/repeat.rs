@@ -38,6 +38,21 @@ pub enum Hop {
 }
 
 impl Repeat {
+    /// The mode a pair of flags names, with the one-track loop winning because
+    /// both cannot hold at once.
+    pub fn from_flags(context: bool, track: bool) -> Self {
+        match (track, context) {
+            (true, _) => Self::One,
+            (false, true) => Self::All,
+            (false, false) => Self::Off,
+        }
+    }
+
+    /// The two halves this mode holds, as the flags name them.
+    pub fn flags(self) -> (bool, bool) {
+        (self == Self::All, self == Self::One)
+    }
+
     /// The next mode in the cycle.
     pub fn next(self) -> Self {
         match self {

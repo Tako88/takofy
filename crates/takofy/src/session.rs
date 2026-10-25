@@ -326,8 +326,13 @@ pub(crate) trait SessionHost: Send + 'static {
     /// Whether this device holds the account's sound.
     fn holding(&self) -> bool;
 
-    /// Answers one order the window carried out, and says whether it was still
-    /// pending.
+    /// Answers one incoming request with this window's verdict: taken, or
+    /// refused.
+    ///
+    /// `true` says the request was received and carried out as far as this
+    /// window could take it, which for a queue edit means the rows were adopted,
+    /// not that the phone's own action finished. A pending request's ack rides
+    /// the next state put either way.
     fn answer_order(&self, id: RequestId, ok: bool) -> bool;
 
     /// When a pending request's budget answers it.
@@ -1001,7 +1006,7 @@ mod tests {
 
     #[test]
     fn a_report_before_sign_in_is_ignored() {
-        use takofy_model::{Options, Report, Status, TrackEntry};
+        use takofy_model::{Report, Status, TrackEntry};
 
         let live = LiveSession::new(SessionConfig::default());
         let report = Report {
@@ -1022,7 +1027,8 @@ mod tests {
             prev: Vec::new(),
             next: Vec::new(),
             context: None,
-            options: Options::default(),
+            queue_revision: String::new(),
+            options: None,
             position_ms: 0,
             duration_ms: None,
         };

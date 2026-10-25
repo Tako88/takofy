@@ -72,7 +72,7 @@ impl Latest {
 mod tests {
     use std::time::Duration;
 
-    use takofy_model::{Options, Status, TrackEntry};
+    use takofy_model::{Status, TrackEntry};
 
     use super::*;
 
@@ -97,7 +97,8 @@ mod tests {
             prev: Vec::new(),
             next: Vec::new(),
             context: None,
-            options: Options::default(),
+            queue_revision: String::new(),
+            options: None,
             position_ms: 1_000,
             duration_ms: Some(200_000),
         }

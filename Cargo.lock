@@ -5468,6 +5468,7 @@ name = "takofy-ui"
 version = "0.1.0"
 dependencies = [
  "egui",
+ "log",
  "takofy-model",
 ]
 

@@ -288,14 +288,15 @@ mod tests {
             queue: Vec::new(),
             associated: None,
             pages: vec![TRACK_1.to_owned(), TRACK_2.to_owned(), TRACK_3.to_owned()],
+            start_index: None,
             context: Some(PLAYLIST.to_owned()),
             source: ContextSource::Pages,
             position_ms: Some(POSITION_MS),
             timestamp_ms: Some(SNAPSHOT_MS),
             paused: false,
-            shuffle: false,
-            repeat_context: false,
-            repeat_track: false,
+            shuffle: Some(false),
+            repeat_context: Some(false),
+            repeat_track: Some(false),
         }
     }
 

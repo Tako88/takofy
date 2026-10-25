@@ -27,6 +27,7 @@ use takofy_core::receive::RECEIVE_LOG_TARGET;
 
 use crate::bridge::LANDING_LOG_TARGET;
 use takofy_ui::message::Failure;
+use takofy_ui::remote::REMOTE_LOG_TARGET;
 use takofy_ui::signin::failure_message;
 
 use crate::keychain::KeychainStore;
@@ -203,6 +204,10 @@ fn logger_builder() -> env_logger::Builder {
     // The hand-over's decisions: which arm refused and whether the put was even
     // reached. Without it a failed hand-over leaves no trace but a retry.
     builder.filter_module(LANDING_LOG_TARGET, LevelFilter::Info);
+    // Which queue order the window refused and why. A phone's window that is
+    // refused leaves the queue disagreeing with the phone, and the kind is the
+    // only thing that says whose rows were wrong.
+    builder.filter_module(REMOTE_LOG_TARGET, LevelFilter::Info);
     builder
 }
 
@@ -231,6 +236,7 @@ mod tests {
     use takofy_core::hold::HOLD_LOG_TARGET;
     use takofy_core::oauth::{OAUTH_LOG_TARGET, RedirectMode};
     use takofy_core::receive::RECEIVE_LOG_TARGET;
+    use takofy_ui::remote::REMOTE_LOG_TARGET;
 
     use crate::bridge::LANDING_LOG_TARGET;
 
@@ -280,6 +286,13 @@ mod tests {
         assert!(logger.matches(&record(HOLD_LOG_TARGET, Level::Info)));
         assert!(!logger.matches(&record("takofy_core::publish", Level::Info)));
         assert!(!logger.matches(&record("librespot_playback", Level::Info)));
+    }
+
+    #[test]
+    fn the_order_refusal_line_shows_and_its_neighbours_do_not() {
+        let logger = logger_builder().build();
+        assert!(logger.matches(&record(REMOTE_LOG_TARGET, Level::Info)));
+        assert!(!logger.matches(&record("takofy_ui::report", Level::Info)));
     }
 
     #[test]

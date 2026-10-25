@@ -5,6 +5,7 @@
 //! of them to use, in that order of cost, and turns the answer into the rows and
 //! the row index the queue adopts.
 
+use librespot::core::dealer::protocol::{PlayCommand, SkipTo};
 use librespot::core::{SpotifyId, SpotifyUri};
 use librespot::protocol::context::Context;
 use librespot::protocol::context_track::ContextTrack;
@@ -77,6 +78,12 @@ pub struct TransferPlan {
     pub(crate) associated: Option<String>,
     /// The phone's inline pages, flattened in the order it sent them.
     pub(crate) pages: Vec<String>,
+    /// The row's position in the resolved rows, when a play named its row by
+    /// position rather than by uri.
+    ///
+    /// A transfer always lands by uri; only a play that names an index leaves
+    /// the row itself to the context read.
+    pub(crate) start_index: Option<usize>,
     /// The context the rows belong to, when the payload named a usable one.
     pub(crate) context: Option<String>,
     pub(crate) source: ContextSource,
@@ -85,9 +92,11 @@ pub struct TransferPlan {
     /// The phone's own instant for that snapshot, in unix milliseconds.
     pub(crate) timestamp_ms: Option<i64>,
     pub(crate) paused: bool,
-    pub(crate) shuffle: bool,
-    pub(crate) repeat_context: bool,
-    pub(crate) repeat_track: bool,
+    /// The modes the payload named, absent where it named none so the queue
+    /// keeps the mode it has.
+    pub(crate) shuffle: Option<bool>,
+    pub(crate) repeat_context: Option<bool>,
+    pub(crate) repeat_track: Option<bool>,
 }
 
 impl TransferPlan {
@@ -102,6 +111,21 @@ impl TransferPlan {
             ContextSource::Resolve { uri } => Some(uri),
             _ => None,
         }
+    }
+
+    /// The row this plan lands on, given what the context read answered.
+    ///
+    /// A play can name its row by position rather than by uri, so the row may
+    /// only be known once the read has answered. `None` means the landing would
+    /// sit on no row this window can load, which is a play to refuse rather than
+    /// take the sound with and then fail.
+    pub fn anchor(&self, resolution: &Resolution) -> Option<String> {
+        let resolved = match resolution {
+            Resolution::Resolved(uris) => uris.as_slice(),
+            Resolution::Failed => self.pages.as_slice(),
+        };
+        let (rows, index) = rows_of(self, resolved);
+        rows.get(index).filter(|row| playable(row)).cloned()
     }
 }
 
@@ -156,16 +180,7 @@ pub(crate) fn plan(state: &TransferState) -> Result<TransferPlan, Refusal> {
         return Err(Refusal::NotPlayable);
     }
 
-    let pages: Vec<String> = context
-        .map(|context| {
-            context
-                .pages
-                .iter()
-                .flat_map(|page| page.tracks.iter())
-                .filter_map(uri_of_track)
-                .collect()
-        })
-        .unwrap_or_default();
+    let pages: Vec<String> = context.map(pages_of).unwrap_or_default();
     let source = if kind.honoured() {
         if pages.is_empty() {
             ContextSource::Resolve {
@@ -189,6 +204,7 @@ pub(crate) fn plan(state: &TransferState) -> Result<TransferPlan, Refusal> {
             .and_then(|playback| playback.associated_current_track.as_ref())
             .and_then(uri_of_track),
         pages,
+        start_index: None,
         context: if kind.honoured() {
             context_uri.map(str::to_owned)
         } else {
@@ -202,11 +218,91 @@ pub(crate) fn plan(state: &TransferState) -> Result<TransferPlan, Refusal> {
         paused: playback
             .and_then(|playback| playback.is_paused)
             .unwrap_or_default(),
-        shuffle: options.is_some_and(|options| options.shuffling_context.unwrap_or_default()),
-        repeat_context: options
-            .is_some_and(|options| options.repeating_context.unwrap_or_default()),
-        repeat_track: options.is_some_and(|options| options.repeating_track.unwrap_or_default()),
+        shuffle: options.and_then(|options| options.shuffling_context),
+        repeat_context: options.and_then(|options| options.repeating_context),
+        repeat_track: options.and_then(|options| options.repeating_track),
     })
+}
+
+/// Reads one play, or says why the rows it named cannot be played here.
+///
+/// A play names a context rather than a snapshot, so the context is what is
+/// read; the phone's pages are kept because a failed read still has them. The
+/// row it starts on comes from `skip_to`, and the last resort is the head of
+/// the context.
+pub(crate) fn plan_play(command: &PlayCommand) -> Result<TransferPlan, Refusal> {
+    let context = &command.context;
+    let context_uri = context.uri.as_deref();
+    let kind = ContextKind::of_uri(context_uri);
+    if !kind.honoured() && kind != ContextKind::None {
+        return Err(Refusal::UnsupportedContext(kind));
+    }
+    let pages = pages_of(context);
+    let source = if kind.honoured() {
+        ContextSource::Resolve {
+            uri: context_uri.unwrap_or_default().to_owned(),
+        }
+    } else if pages.is_empty() {
+        return Err(Refusal::NoData);
+    } else {
+        ContextSource::Pages
+    };
+
+    let (current, start_index) = start_of(command.options.skip_to.as_ref(), &pages);
+    let overrides = command.options.player_options_override.as_ref();
+    Ok(TransferPlan {
+        current,
+        from_queue: false,
+        queue: Vec::new(),
+        associated: None,
+        pages,
+        start_index,
+        context: if kind.honoured() {
+            context_uri.map(str::to_owned)
+        } else {
+            None
+        },
+        source,
+        position_ms: command.options.seek_to,
+        // A play carries a position, not the instant it was taken at, so there
+        // is no age to add to it.
+        timestamp_ms: None,
+        paused: command.options.initially_paused.unwrap_or_default(),
+        shuffle: overrides.and_then(|options| options.shuffling_context),
+        repeat_context: overrides.and_then(|options| options.repeating_context),
+        repeat_track: overrides.and_then(|options| options.repeating_track),
+    })
+}
+
+/// The row a play starts on, and its position when the phone named it that way.
+///
+/// The phone's uid names a row in its own pages, and the rows that reach the
+/// landing carry uris, so a position is the only other way to say it. A play
+/// that names nothing starts the context, which is its first row.
+fn start_of(skip: Option<&SkipTo>, pages: &[String]) -> (String, Option<usize>) {
+    if let Some(uri) = skip
+        .and_then(|skip| skip.track_uri.as_deref())
+        .filter(|uri| !uri.is_empty())
+    {
+        return (uri.to_owned(), None);
+    }
+    let index = skip
+        .and_then(|skip| skip.track_index)
+        .and_then(|index| usize::try_from(index).ok())
+        .unwrap_or(0);
+    // The row is only known once the context resolves, so a page carrying it is
+    // the best this can say; the index is what the landing follows.
+    (pages.get(index).cloned().unwrap_or_default(), Some(index))
+}
+
+/// The phone's inline pages, flattened in the order it sent them.
+fn pages_of(context: &Context) -> Vec<String> {
+    context
+        .pages
+        .iter()
+        .flat_map(|page| page.tracks.iter())
+        .filter_map(uri_of_track)
+        .collect()
 }
 
 /// Turns a plan and what the context read answered into the rows to adopt.
@@ -275,7 +371,15 @@ fn rows_of(plan: &TransferPlan, resolved: &[String]) -> (Vec<String>, usize) {
         }
         return (rows, 0);
     }
-    let (mut rows, tail, index) = match resolved.iter().position(|uri| *uri == plan.current) {
+    // A position past the rows the read answered lands on the last one: the
+    // list the phone named is shorter than the one that came back, and the last
+    // row is the closest thing it meant.
+    let found = match plan.start_index {
+        Some(index) if !resolved.is_empty() => Some(index.min(resolved.len() - 1)),
+        Some(_) => None,
+        None => resolved.iter().position(|uri| *uri == plan.current),
+    };
+    let (mut rows, tail, index) = match found {
         Some(at) => (resolved[..=at].to_vec(), resolved[at + 1..].to_vec(), at),
         None => (vec![plan.current.clone()], Vec::new(), 0),
     };
@@ -807,9 +911,9 @@ mod tests {
         assert!(plan.paused);
         assert_eq!(plan.position_ms, Some(42_000));
         assert_eq!(plan.timestamp_ms, Some(1_700_000_000_000));
-        assert!(plan.shuffle);
-        assert!(plan.repeat_context);
-        assert!(plan.repeat_track);
+        assert_eq!(plan.shuffle, Some(true));
+        assert_eq!(plan.repeat_context, Some(true));
+        assert_eq!(plan.repeat_track, Some(true));
     }
 
     #[test]

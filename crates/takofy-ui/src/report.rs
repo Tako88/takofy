@@ -59,11 +59,14 @@ pub fn report_of(queue: &Queue, transport: &Transport, position_ms: u32) -> Opti
             .map(|(_, entry)| entry.clone())
             .collect(),
         context: queue.origin().map(str::to_owned),
-        options: Options {
+        // The phone's own window carries a revision, and echoing it is how the
+        // phone learns its push was taken rather than dropped.
+        queue_revision: queue.queue_revision().to_owned(),
+        options: Some(Options {
             shuffle: queue.shuffle(),
             repeat_context: queue.repeat() == Repeat::All,
             repeat_track: queue.repeat() == Repeat::One,
-        },
+        }),
         position_ms,
         duration_ms: transport.duration_ms,
     })
@@ -88,10 +91,11 @@ fn status_of(state: TransportState) -> Option<Status> {
 mod tests {
     use std::time::Duration;
 
-    use takofy_model::{Landing, TrackEntry};
+    use takofy_model::{Landing, Options, Order, TrackEntry};
 
     use super::*;
     use crate::message::Failure;
+    use crate::remote::react;
     use crate::repeat::Repeat;
 
     fn track(uri: &str) -> TrackEntry {
@@ -133,11 +137,16 @@ mod tests {
             position_ms: 7_000,
             playing: true,
             context: context.map(str::to_owned),
-            shuffle: false,
-            repeat_context: false,
-            repeat_track: false,
+            shuffle: Some(false),
+            repeat_context: Some(false),
+            repeat_track: Some(false),
             epoch: 1,
         }
+    }
+
+    /// The modes a report names, which a queue report always does.
+    fn options(report: &Report) -> Options {
+        report.options.expect("a queue report names its modes")
     }
 
     fn send(reporter: &mut Reporter, queue: &Queue, transport: &Transport) -> Option<Report> {
@@ -205,14 +214,14 @@ mod tests {
         queue.cycle_repeat();
         assert_eq!(queue.repeat(), Repeat::All);
         let report = report_of(&queue, &transport, 0).expect("a current entry");
-        assert!(report.options.repeat_context);
-        assert!(!report.options.repeat_track);
+        assert!(options(&report).repeat_context);
+        assert!(!options(&report).repeat_track);
 
         queue.cycle_repeat();
         assert_eq!(queue.repeat(), Repeat::One);
         let report = report_of(&queue, &transport, 0).expect("a current entry");
-        assert!(report.options.repeat_track);
-        assert!(!report.options.repeat_context);
+        assert!(options(&report).repeat_track);
+        assert!(!options(&report).repeat_context);
     }
 
     #[test]
@@ -221,7 +230,7 @@ mod tests {
         queue.toggle_shuffle();
 
         let report = report_of(&queue, &transport, 0).expect("a current entry");
-        assert!(report.options.shuffle);
+        assert!(options(&report).shuffle);
     }
 
     #[test]
@@ -318,5 +327,85 @@ mod tests {
 
         queue.cycle_repeat();
         assert!(reporter.next(&queue, &transport, 0).is_some());
+    }
+
+    /// One row the phone's window carries, named the way the wire names it.
+    fn window(name: &str) -> String {
+        format!("spotify:track:{name}")
+    }
+
+    #[test]
+    fn the_revision_is_published_back() {
+        let (mut queue, transport) = started(3, 1);
+        assert_eq!(
+            report_of(&queue, &transport, 0)
+                .expect("a current entry")
+                .queue_revision,
+            "",
+            "a queue the phone never pushed a window to has no revision"
+        );
+
+        assert_eq!(
+            queue.replace_window(&[window("p")], &[window("n")], "rev-7".to_owned()),
+            Ok(())
+        );
+
+        assert_eq!(
+            report_of(&queue, &transport, 0)
+                .expect("a current entry")
+                .queue_revision,
+            "rev-7",
+            "the revision the window came from is the one that travels back"
+        );
+    }
+
+    #[test]
+    fn a_new_revision_alone_is_a_change() {
+        let (mut queue, transport) = started(3, 1);
+        let prev = [window("t0")];
+        let next = [window("t2")];
+        assert_eq!(
+            queue.replace_window(&prev, &next, "rev-1".to_owned()),
+            Ok(())
+        );
+        let mut reporter = Reporter::default();
+        assert!(reporter.next(&queue, &transport, 0).is_some());
+        assert_eq!(
+            reporter.next(&queue, &transport, 0),
+            None,
+            "the same rows and the same revision are the same state"
+        );
+
+        // The same window again, so nothing but the revision differs.
+        assert_eq!(
+            queue.replace_window(&prev, &next, "rev-2".to_owned()),
+            Ok(())
+        );
+
+        assert!(
+            reporter.next(&queue, &transport, 0).is_some(),
+            "a revision the phone has not been told back is a change of its own"
+        );
+    }
+
+    #[test]
+    fn an_order_that_changes_the_queue_triggers_a_report() {
+        let (mut queue, mut transport) = started(3, 0);
+        let mut reporter = Reporter::default();
+        assert!(reporter.next(&queue, &transport, 0).is_some());
+        assert_eq!(reporter.next(&queue, &transport, 0), None);
+
+        let reaction = react(
+            &Order::AddToQueue(Some(window("x"))),
+            &mut queue,
+            &mut transport,
+            0,
+        );
+        assert!(reaction.ok, "a named row is added");
+
+        assert!(
+            reporter.next(&queue, &transport, 0).is_some(),
+            "the row the phone queued has to reach the account"
+        );
     }
 }

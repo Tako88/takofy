@@ -9,12 +9,12 @@
 
 use std::fmt;
 
-use librespot::core::dealer::protocol::{Command, Request};
+use librespot::core::dealer::protocol::{Command, PlayCommand, Request, SetQueueCommand};
 use librespot::protocol::transfer_state::TransferState;
 use takofy_model::Order;
 
-use crate::transfer::plan;
 pub use crate::transfer::{Refusal, TransferPlan};
+use crate::transfer::{plan, plan_play};
 
 /// The wire's way of saying a transfer has no context.
 const NO_CONTEXT: &str = "-";
@@ -175,12 +175,8 @@ impl fmt::Display for TransferSummary {
         write!(
             f,
             "track {}, uid {}, ",
-            if self.current_track {
-                "named"
-            } else {
-                "absent"
-            },
-            if self.current_uid { "named" } else { "absent" },
+            named(self.current_track),
+            named(self.current_uid),
         )?;
         match self.skew_ms {
             Some(skew) => write!(f, "skew {skew} ms"),
@@ -189,15 +185,74 @@ impl fmt::Display for TransferSummary {
     }
 }
 
+/// One payload's presence as a log may carry it.
+fn named(present: bool) -> &'static str {
+    if present { "named" } else { "absent" }
+}
+
+/// The counts a `set_queue` may log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QueueSummary {
+    pub prev: usize,
+    pub next: usize,
+}
+
+impl fmt::Display for QueueSummary {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "prev {} rows, next {} rows", self.prev, self.next)
+    }
+}
+
+/// What a `play` named: counts, and which fields its `skip_to` carried.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlaySummary {
+    pub context: ContextKind,
+    pub pages: usize,
+    pub tracks: usize,
+    /// Whether `skip_to` named the row by uri, by index, and by uid.
+    pub uri: bool,
+    pub index: bool,
+    pub uid: bool,
+    pub seek: bool,
+    pub paused: bool,
+}
+
+impl fmt::Display for PlaySummary {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "context {}, pages {}, tracks {}, skip uri {}, index {}, uid {}, ",
+            self.context.word(),
+            self.pages,
+            self.tracks,
+            named(self.uri),
+            named(self.index),
+            named(self.uid),
+        )?;
+        write!(
+            f,
+            "seek {}, paused {}",
+            named(self.seek),
+            named(self.paused)
+        )
+    }
+}
+
 /// What one incoming request asked this window to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Instruction {
     /// A hand-over this window can take, decoded into what the queue adopts.
     Transfer(TransferPlan),
+    /// A phone-side play, decoded into the same plan a hand-over makes so both
+    /// land through one path.
+    Play(TransferPlan),
     /// A hand-over it cannot take, and why, so nothing is put.
     Refused(Refusal),
     /// One transport action the window carries out and answers.
     Order(Order),
+    /// An endpoint that names no action and no row: there is nothing to read and
+    /// nothing to change.
+    Ignored,
     /// Any other endpoint: this window answers it without acting on it.
     Other(Kind),
 }
@@ -212,6 +267,10 @@ pub fn instruction_of(request: &Request) -> Instruction {
             },
             None => Instruction::Refused(Refusal::NoData),
         },
+        Command::Play(play) => match plan_play(play) {
+            Ok(plan) => Instruction::Play(plan),
+            Err(refusal) => Instruction::Refused(refusal),
+        },
         Command::Pause(_) => Instruction::Order(Order::Pause),
         Command::Resume(_) => Instruction::Order(Order::Resume),
         // The phone's position travels in `value`; `position` is never filled.
@@ -223,8 +282,43 @@ pub fn instruction_of(request: &Request) -> Instruction {
                 .filter(|uri| !uri.is_empty()),
         )),
         Command::SkipPrev(_) => Instruction::Order(Order::Prev),
+        Command::SetShufflingContext(value) => Instruction::Order(Order::SetShuffle(value.value)),
+        // The phone's repeat is one three-state switch, so an endpoint that names
+        // one half of it says nothing about the other: the mode it leaves unnamed
+        // is kept.
+        Command::SetRepeatingContext(value) => Instruction::Order(Order::SetOptions {
+            shuffling: None,
+            repeating_context: Some(value.value),
+            repeating_track: None,
+        }),
+        Command::SetRepeatingTrack(value) => Instruction::Order(Order::SetOptions {
+            shuffling: None,
+            repeating_context: None,
+            repeating_track: Some(value.value),
+        }),
+        Command::SetOptions(options) => Instruction::Order(Order::SetOptions {
+            shuffling: options.shuffling_context,
+            repeating_context: options.repeating_context,
+            repeating_track: options.repeating_track,
+        }),
+        Command::AddToQueue(add) => Instruction::Order(Order::AddToQueue(
+            Some(add.track.uri.clone()).filter(|uri| !uri.is_empty()),
+        )),
+        Command::SetQueue(queue) => Instruction::Order(Order::SetQueue {
+            prev: uris_of(&queue.prev_tracks),
+            next: uris_of(&queue.next_tracks),
+            revision: queue.queue_revision.clone(),
+        }),
+        // A context names where playback lives, not what to change here: the
+        // window's own rows are the queue, whatever the phone is browsing.
+        Command::UpdateContext(_) => Instruction::Ignored,
         other => Instruction::Other(kind_of(other)),
     }
+}
+
+/// The uris a queue window's list carries, in its own order.
+fn uris_of(tracks: &[librespot::protocol::player::ProvidedTrack]) -> Vec<String> {
+    tracks.iter().map(|track| track.uri.clone()).collect()
 }
 
 /// Which endpoint one command names.
@@ -272,23 +366,50 @@ pub fn summarise(state: &TransferState, now_ms: i64) -> TransferSummary {
     }
 }
 
+/// Reduces a `set_queue` window to the length of each of its lists.
+pub fn summarise_queue(command: &SetQueueCommand) -> QueueSummary {
+    QueueSummary {
+        prev: command.prev_tracks.len(),
+        next: command.next_tracks.len(),
+    }
+}
+
+/// Reduces a `play` to what it named, never to a uri.
+pub fn summarise_play(command: &PlayCommand) -> PlaySummary {
+    let context = &command.context;
+    let skip = command.options.skip_to.as_ref();
+    PlaySummary {
+        context: ContextKind::of_uri(context.uri.as_deref()),
+        pages: context.pages.len(),
+        tracks: context.pages.iter().map(|page| page.tracks.len()).sum(),
+        uri: skip.is_some_and(|skip| skip.track_uri.is_some()),
+        index: skip.is_some_and(|skip| skip.track_index.is_some()),
+        uid: skip.is_some_and(|skip| skip.track_uid.is_some()),
+        seek: command.options.seek_to.is_some(),
+        paused: command.options.initially_paused.is_some(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use librespot::core::dealer::protocol::{
         AddToQueueCommand, Command, GenericCommand, LoggingParams, PauseCommand, PlayCommand,
         PlayOptions, SeekToCommand, SetOptionsCommand, SetQueueCommand, SetValueCommand,
-        SkipNextCommand, TransferCommand, TransferOptions, UpdateContextCommand,
+        SkipNextCommand, SkipTo, TransferCommand, TransferOptions, UpdateContextCommand,
     };
     use librespot::protocol::context::Context;
     use librespot::protocol::context_page::ContextPage;
+    use librespot::protocol::context_player_options::ContextPlayerOptionOverrides;
     use librespot::protocol::context_track::ContextTrack;
     use librespot::protocol::playback::Playback;
     use librespot::protocol::player::{PlayOrigin, ProvidedTrack};
     use librespot::protocol::queue::Queue;
     use librespot::protocol::session::Session;
     use protobuf::MessageField;
+    use takofy_model::Landing;
 
     use super::*;
+    use crate::Resolution;
 
     fn logging() -> LoggingParams {
         LoggingParams {
@@ -563,8 +684,16 @@ mod tests {
     /// The wire's ids are 22 base62 characters, so a fixture has to be one.
     const TRACK_1: &str = "spotify:track:4uLU6hMCjMI75M1A2tKUQ1";
     const TRACK_2: &str = "spotify:track:4uLU6hMCjMI75M1A2tKUQ2";
+    const TRACK_3: &str = "spotify:track:4uLU6hMCjMI75M1A2tKUQ3";
+    const TRACK_4: &str = "spotify:track:4uLU6hMCjMI75M1A2tKUQ4";
     const PLAYLIST: &str = "spotify:playlist:37i9dQZF1DXcBWIGoYBM5M";
     const ARTIST: &str = "spotify:artist:0OdUWJ0sBjDrqHygGUXeCF";
+    const LOCAL: &str = "spotify:local:artist:album:title:200";
+
+    /// The uris of `rows`, in the order given.
+    fn uris(rows: &[&str]) -> Vec<String> {
+        rows.iter().map(|uri| (*uri).to_owned()).collect()
+    }
 
     fn request(command: Command) -> Request {
         Request {
@@ -635,35 +764,194 @@ mod tests {
     }
 
     #[test]
-    fn other_endpoints_keep_their_kind() {
-        for (command, expected) in commands() {
-            if expected == Kind::Transfer || is_order(expected) {
-                continue;
-            }
-            assert_eq!(
-                instruction_of(&request(command)),
-                Instruction::Other(expected),
-                "{expected:?}"
-            );
+    fn every_known_endpoint_decodes_to_its_own_instruction() {
+        let table = [
+            (transfer(None), Instruction::Refused(Refusal::NoData)),
+            (
+                play(None, Vec::new(), play_options()),
+                Instruction::Refused(Refusal::NoData),
+            ),
+            (
+                Command::Pause(PauseCommand {
+                    logging_params: logging(),
+                }),
+                Instruction::Order(Order::Pause),
+            ),
+            (
+                Command::Resume(GenericCommand {
+                    logging_params: logging(),
+                }),
+                Instruction::Order(Order::Resume),
+            ),
+            (
+                Command::SeekTo(SeekToCommand {
+                    value: 42_000,
+                    position: 0,
+                    logging_params: logging(),
+                }),
+                Instruction::Order(Order::Seek(42_000)),
+            ),
+            (
+                Command::SkipNext(SkipNextCommand {
+                    track: None,
+                    logging_params: logging(),
+                }),
+                Instruction::Order(Order::Next(None)),
+            ),
+            (
+                Command::SkipPrev(GenericCommand {
+                    logging_params: logging(),
+                }),
+                Instruction::Order(Order::Prev),
+            ),
+            (
+                Command::SetShufflingContext(SetValueCommand {
+                    value: true,
+                    logging_params: logging(),
+                }),
+                Instruction::Order(Order::SetShuffle(true)),
+            ),
+            (
+                Command::SetRepeatingContext(SetValueCommand {
+                    value: true,
+                    logging_params: logging(),
+                }),
+                Instruction::Order(Order::SetOptions {
+                    shuffling: None,
+                    repeating_context: Some(true),
+                    repeating_track: None,
+                }),
+            ),
+            (
+                Command::SetRepeatingTrack(SetValueCommand {
+                    value: true,
+                    logging_params: logging(),
+                }),
+                Instruction::Order(Order::SetOptions {
+                    shuffling: None,
+                    repeating_context: None,
+                    repeating_track: Some(true),
+                }),
+            ),
+            (
+                Command::SetOptions(SetOptionsCommand {
+                    shuffling_context: Some(true),
+                    repeating_context: Some(false),
+                    repeating_track: None,
+                    options: None,
+                    logging_params: logging(),
+                }),
+                Instruction::Order(Order::SetOptions {
+                    shuffling: Some(true),
+                    repeating_context: Some(false),
+                    repeating_track: None,
+                }),
+            ),
+            (
+                Command::AddToQueue(AddToQueueCommand {
+                    track: provided(TRACK_1),
+                    logging_params: logging(),
+                }),
+                Instruction::Order(Order::AddToQueue(Some(TRACK_1.to_owned()))),
+            ),
+            (
+                Command::SetQueue(SetQueueCommand {
+                    next_tracks: vec![provided(TRACK_2)],
+                    prev_tracks: vec![provided(TRACK_1)],
+                    queue_revision: "rev-7".to_owned(),
+                    logging_params: logging(),
+                }),
+                Instruction::Order(Order::SetQueue {
+                    prev: vec![TRACK_1.to_owned()],
+                    next: vec![TRACK_2.to_owned()],
+                    revision: "rev-7".to_owned(),
+                }),
+            ),
+            (
+                Command::UpdateContext(UpdateContextCommand {
+                    context: Context::default(),
+                    session_id: None,
+                }),
+                Instruction::Ignored,
+            ),
+        ];
+
+        assert_eq!(
+            table.len(),
+            commands().len(),
+            "every endpoint in the kind table decodes here too"
+        );
+        for (command, expected) in table {
+            assert_eq!(instruction_of(&request(command)), expected);
         }
+
+        assert!(
+            matches!(
+                instruction_of(&request(play(None, vec![page(&[TRACK_1])], play_options()))),
+                Instruction::Play(_)
+            ),
+            "a play that names rows decodes into the plan those rows land from"
+        );
 
         let payload = serde_json::json!({"endpoint": "something_new"});
         assert_eq!(
             instruction_of(&request(Command::Unknown(payload))),
-            Instruction::Other(Kind::Unknown)
+            Instruction::Other(Kind::Unknown),
+            "an endpoint nobody knows stays unknown"
         );
     }
 
-    /// The endpoints the window answers as orders.
-    fn is_order(kind: Kind) -> bool {
-        matches!(
-            kind,
-            Kind::Pause | Kind::Resume | Kind::SeekTo | Kind::SkipNext | Kind::SkipPrev
-        )
+    /// One row the phone sends as a queue entry, with the uid and metadata that
+    /// name nothing here.
+    fn provided(uri: &str) -> ProvidedTrack {
+        ProvidedTrack {
+            uri: uri.to_owned(),
+            uid: "a uid".to_owned(),
+            metadata: std::collections::HashMap::from([("title".to_owned(), "a title".to_owned())]),
+            ..Default::default()
+        }
+    }
+
+    /// A play naming `context`, carrying `pages`.
+    fn play(context: Option<&str>, pages: Vec<ContextPage>, options: PlayOptions) -> Command {
+        Command::Play(Box::new(PlayCommand {
+            context: Context {
+                uri: context.map(str::to_owned),
+                pages,
+                ..Default::default()
+            },
+            play_origin: PlayOrigin::default(),
+            options,
+            logging_params: logging(),
+        }))
+    }
+
+    fn play_plan(command: Command) -> TransferPlan {
+        match instruction_of(&request(command)) {
+            Instruction::Play(plan) => plan,
+            other => panic!("a playable play must decode into a plan: {other:?}"),
+        }
+    }
+
+    fn skip_to(uri: Option<&str>, index: Option<u32>, uid: Option<&str>) -> PlayOptions {
+        PlayOptions {
+            skip_to: Some(SkipTo {
+                track_uid: uid.map(str::to_owned),
+                track_uri: uri.map(str::to_owned),
+                track_index: index,
+            }),
+            ..play_options()
+        }
+    }
+
+    /// What one plan lands on, given the rows a context read answered.
+    fn landed(plan: &TransferPlan, rows: &[&str]) -> Landing {
+        let rows: Vec<String> = rows.iter().map(|row| (*row).to_owned()).collect();
+        crate::transfer::land(plan, crate::transfer::Resolution::Resolved(rows), 0)
     }
 
     #[test]
-    fn each_transport_endpoint_decodes_to_its_order() {
+    fn each_endpoint_decodes_to_its_order() {
         let table = [
             (
                 Command::Pause(PauseCommand {
@@ -677,6 +965,7 @@ mod tests {
                 }),
                 Order::Resume,
             ),
+            // The phone's position travels in `value`; `position` stays zero.
             (
                 Command::SeekTo(SeekToCommand {
                     value: 42_000,
@@ -694,10 +983,7 @@ mod tests {
             ),
             (
                 Command::SkipNext(SkipNextCommand {
-                    track: Some(ProvidedTrack {
-                        uri: TRACK_1.to_owned(),
-                        ..Default::default()
-                    }),
+                    track: Some(provided(TRACK_1)),
                     logging_params: logging(),
                 }),
                 Order::Next(Some(TRACK_1.to_owned())),
@@ -707,6 +993,105 @@ mod tests {
                     logging_params: logging(),
                 }),
                 Order::Prev,
+            ),
+            (
+                Command::SetShufflingContext(SetValueCommand {
+                    value: true,
+                    logging_params: logging(),
+                }),
+                Order::SetShuffle(true),
+            ),
+            (
+                Command::SetShufflingContext(SetValueCommand {
+                    value: false,
+                    logging_params: logging(),
+                }),
+                Order::SetShuffle(false),
+            ),
+            (
+                Command::SetRepeatingContext(SetValueCommand {
+                    value: true,
+                    logging_params: logging(),
+                }),
+                Order::SetOptions {
+                    shuffling: None,
+                    repeating_context: Some(true),
+                    repeating_track: None,
+                },
+            ),
+            (
+                Command::SetRepeatingContext(SetValueCommand {
+                    value: false,
+                    logging_params: logging(),
+                }),
+                Order::SetOptions {
+                    shuffling: None,
+                    repeating_context: Some(false),
+                    repeating_track: None,
+                },
+            ),
+            (
+                Command::SetRepeatingTrack(SetValueCommand {
+                    value: true,
+                    logging_params: logging(),
+                }),
+                Order::SetOptions {
+                    shuffling: None,
+                    repeating_context: None,
+                    repeating_track: Some(true),
+                },
+            ),
+            (
+                Command::SetRepeatingTrack(SetValueCommand {
+                    value: false,
+                    logging_params: logging(),
+                }),
+                Order::SetOptions {
+                    shuffling: None,
+                    repeating_context: None,
+                    repeating_track: Some(false),
+                },
+            ),
+            (
+                Command::SetOptions(SetOptionsCommand {
+                    shuffling_context: Some(true),
+                    repeating_context: Some(false),
+                    repeating_track: None,
+                    options: None,
+                    logging_params: logging(),
+                }),
+                Order::SetOptions {
+                    shuffling: Some(true),
+                    repeating_context: Some(false),
+                    repeating_track: None,
+                },
+            ),
+            (
+                Command::AddToQueue(AddToQueueCommand {
+                    track: provided(TRACK_1),
+                    logging_params: logging(),
+                }),
+                Order::AddToQueue(Some(TRACK_1.to_owned())),
+            ),
+            (
+                Command::AddToQueue(AddToQueueCommand {
+                    track: ProvidedTrack::default(),
+                    logging_params: logging(),
+                }),
+                Order::AddToQueue(None),
+            ),
+            (
+                Command::SetQueue(SetQueueCommand {
+                    next_tracks: vec![provided(TRACK_2), provided(TRACK_3)],
+                    prev_tracks: vec![provided(TRACK_1)],
+                    queue_revision: "rev-7".to_owned(),
+                    logging_params: logging(),
+                }),
+                Order::SetQueue {
+                    prev: vec![TRACK_1.to_owned()],
+                    next: vec![TRACK_2.to_owned(), TRACK_3.to_owned()],
+                    revision: "rev-7".to_owned(),
+                },
             ),
         ];
 
@@ -719,33 +1104,391 @@ mod tests {
     }
 
     #[test]
-    fn other_endpoints_are_not_orders() {
-        let outside = [
-            Kind::Play,
-            Kind::SetOptions,
-            Kind::SetQueue,
-            Kind::AddToQueue,
-            Kind::UpdateContext,
-        ];
-        let mut seen = Vec::new();
-        for (command, kind) in commands() {
-            if !outside.contains(&kind) {
-                continue;
-            }
-            assert_eq!(
-                instruction_of(&request(command)),
-                Instruction::Other(kind),
-                "{kind:?} is not an order"
-            );
-            seen.push(kind);
-        }
-        assert_eq!(seen, outside.to_vec(), "every endpoint outside the orders");
+    fn set_options_carries_only_the_fields_present() {
+        let order = |command: Command| match instruction_of(&request(command)) {
+            Instruction::Order(order) => order,
+            other => panic!("{other:?}"),
+        };
 
-        let payload = serde_json::json!({"endpoint": "something_new"});
         assert_eq!(
-            instruction_of(&request(Command::Unknown(payload))),
-            Instruction::Other(Kind::Unknown)
+            order(Command::SetOptions(SetOptionsCommand {
+                shuffling_context: None,
+                repeating_context: None,
+                repeating_track: None,
+                options: None,
+                logging_params: logging(),
+            })),
+            Order::SetOptions {
+                shuffling: None,
+                repeating_context: None,
+                repeating_track: None,
+            },
+            "a set_options that names nothing must not invent a value"
         );
+        assert_eq!(
+            order(Command::SetOptions(SetOptionsCommand {
+                shuffling_context: None,
+                repeating_context: None,
+                repeating_track: Some(true),
+                options: None,
+                logging_params: logging(),
+            })),
+            Order::SetOptions {
+                shuffling: None,
+                repeating_context: None,
+                repeating_track: Some(true),
+            }
+        );
+    }
+
+    #[test]
+    fn update_context_decodes_to_ignored() {
+        assert_eq!(
+            instruction_of(&request(Command::UpdateContext(UpdateContextCommand {
+                context: Context::default(),
+                session_id: None,
+            }))),
+            Instruction::Ignored
+        );
+    }
+
+    #[test]
+    fn set_queue_decodes_both_lists_and_the_revision_string() {
+        let instruction = instruction_of(&request(Command::SetQueue(SetQueueCommand {
+            next_tracks: vec![provided(TRACK_2), provided(TRACK_3)],
+            prev_tracks: vec![provided(TRACK_1)],
+            queue_revision: "rev-7".to_owned(),
+            logging_params: logging(),
+        })));
+
+        assert_eq!(
+            instruction,
+            Instruction::Order(Order::SetQueue {
+                prev: vec![TRACK_1.to_owned()],
+                next: vec![TRACK_2.to_owned(), TRACK_3.to_owned()],
+                revision: "rev-7".to_owned(),
+            }),
+            "a window carries uris and the previous revision, nothing else"
+        );
+    }
+
+    #[test]
+    fn play_with_a_uri_resolves_it() {
+        let plan = play_plan(play(
+            Some(PLAYLIST),
+            vec![page(&[TRACK_1, TRACK_2])],
+            play_options(),
+        ));
+
+        assert_eq!(plan.resolve_uri(), Some(PLAYLIST));
+        assert_eq!(plan.context.as_deref(), Some(PLAYLIST));
+        assert_eq!(plan.current, TRACK_1, "a play with no skip_to starts it");
+        assert_eq!(
+            plan.pages.len(),
+            2,
+            "the phone's pages are kept for a read that fails"
+        );
+    }
+
+    #[test]
+    fn play_with_pages_only_uses_them() {
+        for context in [None, Some(""), Some("-")] {
+            let plan = play_plan(play(
+                context,
+                vec![page(&[TRACK_1, TRACK_2, TRACK_3])],
+                play_options(),
+            ));
+
+            assert_eq!(plan.resolve_uri(), None, "{context:?}");
+            assert_eq!(plan.context, None, "{context:?}");
+            assert_eq!(
+                plan.pages,
+                vec![TRACK_1.to_owned(), TRACK_2.to_owned(), TRACK_3.to_owned()],
+                "{context:?}"
+            );
+            assert_eq!(plan.current, TRACK_1, "{context:?}");
+        }
+    }
+
+    #[test]
+    fn play_with_neither_is_refused() {
+        assert_eq!(
+            instruction_of(&request(play(None, Vec::new(), play_options()))),
+            Instruction::Refused(Refusal::NoData)
+        );
+    }
+
+    #[test]
+    fn play_skip_to_by_uri_lands_on_that_row() {
+        let plan = play_plan(play(
+            Some(PLAYLIST),
+            Vec::new(),
+            skip_to(Some(TRACK_3), Some(0), Some("uid-1")),
+        ));
+
+        let landing = landed(&plan, &[TRACK_1, TRACK_2, TRACK_3, TRACK_4]);
+        assert_eq!(landing.index, 2, "the uri names the row, not the index");
+        assert_eq!(landing.rows.len(), 4);
+    }
+
+    #[test]
+    fn play_skip_to_by_index_lands_on_that_row_when_there_is_no_uri() {
+        let plan = play_plan(play(
+            Some(PLAYLIST),
+            Vec::new(),
+            skip_to(None, Some(3), Some("uid-4")),
+        ));
+
+        let landing = landed(&plan, &[TRACK_1, TRACK_2, TRACK_3, TRACK_4]);
+        assert_eq!(landing.index, 3);
+        assert_eq!(landing.rows[3], TRACK_4);
+    }
+
+    #[test]
+    fn play_skip_to_with_no_fields_starts_the_context() {
+        let plan = play_plan(play(Some(PLAYLIST), Vec::new(), skip_to(None, None, None)));
+
+        let landing = landed(&plan, &[TRACK_1, TRACK_2, TRACK_3]);
+        assert_eq!(landing.index, 0);
+        assert_eq!(landing.rows[0], TRACK_1);
+    }
+
+    #[test]
+    fn play_skip_to_an_index_past_the_context_lands_on_its_last_row() {
+        let plan = play_plan(play(
+            Some(PLAYLIST),
+            Vec::new(),
+            skip_to(None, Some(99), None),
+        ));
+
+        let landing = landed(&plan, &[TRACK_1, TRACK_2]);
+        assert_eq!(
+            landing.index, 1,
+            "a position past the rows the read answered is the last one"
+        );
+        assert_eq!(landing.rows.len(), 2);
+    }
+
+    #[test]
+    fn play_applies_seek_and_initially_paused() {
+        let options = PlayOptions {
+            seek_to: Some(42_000),
+            initially_paused: Some(true),
+            ..play_options()
+        };
+        let plan = play_plan(play(
+            Some(PLAYLIST),
+            vec![page(&[TRACK_1, TRACK_2])],
+            options,
+        ));
+
+        assert_eq!(plan.position_ms, Some(42_000));
+        assert!(plan.paused);
+        let landing = landed(&plan, &[TRACK_1, TRACK_2]);
+        assert_eq!(landing.position_ms, 42_000, "a seek is taken as it is");
+        assert!(!landing.playing, "initially paused means it does not start");
+
+        let playing = play_plan(play(Some(PLAYLIST), vec![page(&[TRACK_1])], play_options()));
+        assert_eq!(playing.position_ms, None);
+        assert!(!playing.paused, "a play that says nothing starts at once");
+    }
+
+    #[test]
+    fn play_carries_the_options_override() {
+        let options = PlayOptions {
+            player_options_override: Some(ContextPlayerOptionOverrides {
+                shuffling_context: Some(true),
+                repeating_context: Some(false),
+                repeating_track: Some(true),
+                ..Default::default()
+            }),
+            ..play_options()
+        };
+        let plan = play_plan(play(None, vec![page(&[TRACK_1])], options));
+
+        assert_eq!(plan.shuffle, Some(true));
+        assert_eq!(plan.repeat_context, Some(false));
+        assert_eq!(plan.repeat_track, Some(true));
+
+        // A play that names no options names no mode, so the queue keeps the
+        // ones it has rather than having them read back as off.
+        let bare = play_plan(play(None, vec![page(&[TRACK_1])], play_options()));
+        assert_eq!(bare.shuffle, None);
+        assert_eq!(bare.repeat_context, None);
+        assert_eq!(bare.repeat_track, None);
+    }
+
+    #[test]
+    fn play_of_an_unsupported_context_is_refused() {
+        assert_eq!(
+            instruction_of(&request(play(
+                Some(ARTIST),
+                Vec::new(),
+                skip_to(Some(TRACK_1), None, None),
+            ))),
+            Instruction::Refused(Refusal::UnsupportedContext(ContextKind::Artist))
+        );
+    }
+
+    #[test]
+    fn a_play_that_names_its_row_by_position_anchors_once_the_read_answers() {
+        let plan = play_plan(play(
+            Some(PLAYLIST),
+            Vec::new(),
+            skip_to(None, Some(1), None),
+        ));
+
+        assert_eq!(
+            plan.anchor(&Resolution::Failed),
+            None,
+            "nothing was named by uri and the read brought no rows"
+        );
+        assert_eq!(
+            plan.anchor(&Resolution::Resolved(Vec::new())),
+            None,
+            "an empty read is nothing to load either"
+        );
+        assert_eq!(
+            plan.anchor(&Resolution::Resolved(vec![
+                TRACK_1.to_owned(),
+                TRACK_2.to_owned()
+            ])),
+            Some(TRACK_2.to_owned()),
+            "the row the position names is the one to load"
+        );
+    }
+
+    #[test]
+    fn a_play_that_names_its_row_by_uri_anchors_without_a_read() {
+        let plan = play_plan(play(
+            Some(PLAYLIST),
+            Vec::new(),
+            skip_to(Some(TRACK_3), None, None),
+        ));
+
+        assert_eq!(
+            plan.anchor(&Resolution::Failed),
+            Some(TRACK_3.to_owned()),
+            "a named row is the row even when the context read fails"
+        );
+    }
+
+    #[test]
+    fn a_play_of_a_local_or_unsupported_row_has_nothing_to_anchor_on() {
+        let by_uri = play_plan(play(
+            Some(PLAYLIST),
+            Vec::new(),
+            skip_to(Some(LOCAL), None, None),
+        ));
+        assert_eq!(
+            by_uri.anchor(&Resolution::Resolved(uris(&[TRACK_1, TRACK_2]))),
+            None,
+            "a local file cannot be fetched, so a play of one is not a load"
+        );
+
+        let by_index = play_plan(play(
+            Some(PLAYLIST),
+            Vec::new(),
+            skip_to(None, Some(1), None),
+        ));
+        assert_eq!(
+            by_index.anchor(&Resolution::Resolved(uris(&[TRACK_1, LOCAL]))),
+            None,
+            "the row a position lands on is refused when that row is a local file"
+        );
+    }
+
+    #[test]
+    fn a_failed_read_resolves_the_named_position_against_the_phones_pages() {
+        // The read brought nothing, so the pages the play carried are all there
+        // is to find the row its position names.
+        let plan = play_plan(play(
+            Some(PLAYLIST),
+            vec![page(&[TRACK_1, TRACK_2, TRACK_3])],
+            skip_to(None, Some(1), None),
+        ));
+
+        assert_eq!(
+            plan.anchor(&Resolution::Failed),
+            Some(TRACK_2.to_owned()),
+            "a failed read still has the pages the phone sent"
+        );
+
+        // Past the pages, the last row they carry is the closest the position
+        // can mean; the row it names is not among them.
+        let past = play_plan(play(
+            Some(PLAYLIST),
+            vec![page(&[TRACK_1, TRACK_2])],
+            skip_to(None, Some(3), None),
+        ));
+        assert_eq!(
+            past.anchor(&Resolution::Failed),
+            Some(TRACK_2.to_owned()),
+            "the position is resolved against the pages, not against nothing"
+        );
+    }
+
+    #[test]
+    fn a_play_with_a_track_uri_the_rows_lack_lands_on_that_row_alone() {
+        // The phone named a row the context does not carry. It is still the row
+        // it asked for, so it lands on that row alone rather than on a neighbour
+        // or on nothing at all.
+        let plan = play_plan(play(
+            Some(PLAYLIST),
+            Vec::new(),
+            skip_to(Some(TRACK_4), None, None),
+        ));
+
+        assert_eq!(
+            plan.anchor(&Resolution::Resolved(uris(&[TRACK_1, TRACK_2]))),
+            Some(TRACK_4.to_owned())
+        );
+        let landing = landed(&plan, &[TRACK_1, TRACK_2]);
+        assert_eq!(landing.rows, vec![TRACK_4.to_owned()]);
+        assert_eq!(landing.index, 0);
+    }
+
+    #[test]
+    fn a_queue_summary_counts_and_never_names() {
+        let summary = summarise_queue(&SetQueueCommand {
+            next_tracks: vec![provided(TRACK_1), provided(TRACK_2)],
+            prev_tracks: vec![provided(TRACK_3)],
+            queue_revision: "rev-7".to_owned(),
+            logging_params: logging(),
+        });
+        let shown = summary.to_string();
+
+        assert_eq!(summary.prev, 1);
+        assert_eq!(summary.next, 2);
+        assert!(shown.contains("prev 1 rows"), "{shown}");
+        assert!(shown.contains("next 2 rows"), "{shown}");
+        assert!(!shown.contains("spotify:"), "{shown}");
+    }
+
+    #[test]
+    fn a_play_summary_names_presence_only() {
+        let summary = summarise_play(&PlayCommand {
+            context: Context {
+                uri: Some(PLAYLIST.to_owned()),
+                pages: vec![page(&[TRACK_1])],
+                ..Default::default()
+            },
+            play_origin: PlayOrigin::default(),
+            options: PlayOptions {
+                seek_to: Some(42_000),
+                ..skip_to(Some(TRACK_1), Some(0), Some("uid-1"))
+            },
+            logging_params: logging(),
+        });
+        let shown = summary.to_string();
+
+        assert_eq!(summary.context, ContextKind::Playlist);
+        assert_eq!((summary.pages, summary.tracks), (1, 1));
+        assert!(summary.uri && summary.index && summary.uid);
+        assert!(summary.seek && !summary.paused);
+        assert!(shown.contains("skip uri named"), "{shown}");
+        assert!(shown.contains("paused absent"), "{shown}");
+        assert!(!shown.contains("spotify:"), "{shown}");
     }
 
     #[test]

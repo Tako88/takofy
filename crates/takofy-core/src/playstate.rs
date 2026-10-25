@@ -76,6 +76,9 @@ pub(crate) fn player_state_of(
             ..Default::default()
         }),
         context_uri: report.context.clone().unwrap_or_default(),
+        // The phone's own window carries a revision, and a put that leaves it
+        // out tells the phone its push was never seen.
+        queue_revision: report.queue_revision.clone(),
         position_as_of_timestamp: position_of(report, age_ms),
         duration: report.duration_ms.map_or(0, i64::from),
         is_playing,
@@ -87,7 +90,8 @@ pub(crate) fn player_state_of(
             PLAYING_SPEED
         },
         is_system_initiated: true,
-        options: MessageField::some(options_of(report.options)),
+        // A report that names no mode asserts none, so the phone keeps its own.
+        options: report.options.map(options_of).into(),
         play_origin: MessageField::some(PlayOrigin::new()),
         suppressions: MessageField::some(Suppressions::new()),
         ..Default::default()
@@ -174,7 +178,8 @@ mod tests {
             prev: Vec::new(),
             next: Vec::new(),
             context: Some("spotify:album:context".to_owned()),
-            options: Options::default(),
+            queue_revision: String::new(),
+            options: None,
             position_ms: 10_000,
             duration_ms: Some(200_000),
         }
@@ -235,11 +240,11 @@ mod tests {
     #[test]
     fn the_track_context_options_and_duration_are_carried() {
         let mut report = report(Status::Playing);
-        report.options = Options {
+        report.options = Some(Options {
             shuffle: true,
             repeat_context: true,
             repeat_track: true,
-        };
+        });
 
         let state = player_state_of(&report, AGE_MS, NOW_MS, "session");
         let options = state.options.as_ref().expect("the options are carried");
@@ -253,6 +258,36 @@ mod tests {
         assert!(options.repeating_context);
         assert!(options.repeating_track);
         assert_eq!(state.duration, 200_000);
+    }
+
+    #[test]
+    fn a_report_that_names_no_mode_asserts_none() {
+        let report = report(Status::Playing);
+        assert_eq!(report.options, None, "the fixture names no mode");
+
+        let state = player_state_of(&report, AGE_MS, NOW_MS, "session");
+
+        assert!(
+            state.options.is_none(),
+            "a put that names no mode must not read back as the modes being off"
+        );
+    }
+
+    #[test]
+    fn the_queue_revision_is_published_back() {
+        let mut report = report(Status::Playing);
+        assert_eq!(
+            player_state_of(&report, AGE_MS, NOW_MS, "session").queue_revision,
+            "",
+            "a report with no revision puts none"
+        );
+
+        report.queue_revision = "rev-4".to_owned();
+        assert_eq!(
+            player_state_of(&report, AGE_MS, NOW_MS, "session").queue_revision,
+            "rev-4",
+            "the revision the phone pushed is the one it reads back"
+        );
     }
 
     #[test]

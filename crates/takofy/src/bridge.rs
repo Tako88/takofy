@@ -1693,11 +1693,11 @@ fn serve_order<H: SessionHost>(
     Step::Done
 }
 
-/// Serves one hand-over: prepare, read what is missing, take the sound, name the
-/// track and load it.
+/// Serves one hand-over or one phone-side play: prepare, read what is missing,
+/// take the sound, name the track and load it.
 ///
-/// Every refusal is answered before anything is put, so a transfer this window
-/// cannot play leaves the phone's own playback untouched.
+/// Every refusal is answered before anything is put, so a transfer or a play
+/// this window cannot carry out leaves the phone's own playback untouched.
 /// The hand-over path's own log target. It carries decisions, never a URI: which
 /// arm refused, whether the player was ready, and what the put answered.
 pub(crate) const LANDING_LOG_TARGET: &str = "takofy::bridge";
@@ -1710,7 +1710,9 @@ async fn serve_landing<H: SessionHost>(
     instruction: Instruction,
 ) -> Step {
     let plan = match instruction {
-        Instruction::Transfer(plan) => plan,
+        // A phone-side play is the same load as a hand-over: one path, so the
+        // two cannot prepare, put or land differently.
+        Instruction::Transfer(plan) | Instruction::Play(plan) => plan,
         Instruction::Refused(refusal) => {
             log::info!(target: LANDING_LOG_TARGET, "landing refused: {}", refusal.word());
             host.refuse(id);
@@ -1721,6 +1723,15 @@ async fn serve_landing<H: SessionHost>(
         Instruction::Order(_) => {
             log::info!(target: LANDING_LOG_TARGET, "landing other: order");
             host.refuse(id);
+            return Step::Done;
+        }
+        // A context the phone asked us to adopt says where its own playback
+        // lives, not what to change here: the rows this window holds are the
+        // queue. `Failure` would only make the phone retry, and the ack still
+        // rides the next put like any other command's.
+        Instruction::Ignored => {
+            log::info!(target: LANDING_LOG_TARGET, "landing ignored: answered");
+            host.answer_order(id, true);
             return Step::Done;
         }
         Instruction::Other(kind) => {
@@ -1757,6 +1768,15 @@ async fn serve_landing<H: SessionHost>(
         },
     };
 
+    // A play can name its row by position alone, so the row may only be known
+    // once the read has answered. A landing on no row would take the sound with
+    // nothing to play, so it is refused before the put.
+    if plan.anchor(&resolution).is_none() {
+        log::info!(target: LANDING_LOG_TARGET, "landing refused: no row to anchor on");
+        host.refuse(id);
+        return Step::Done;
+    }
+
     // Accept answers the phone itself, either way, so a failure here is the
     // whole answer and nothing is loaded.
     let landing = match stop_or(stop, host.accept(id, &plan, resolution)).await {
@@ -1772,7 +1792,19 @@ async fn serve_landing<H: SessionHost>(
         }
     };
 
-    let current = plan.current().to_owned();
+    // The row to load is the landing's, not the plan's: a play may have named
+    // its row by position, so only the landing knows which uri that position
+    // found. `accept` refuses a landing that names no track, so this only keeps
+    // a row the landing left empty from being loaded.
+    let Some(current) = landing
+        .rows
+        .get(landing.index)
+        .filter(|row| !row.is_empty())
+        .cloned()
+    else {
+        log::info!(target: LANDING_LOG_TARGET, "landing names no row to load");
+        return Step::Done;
+    };
 
     // The loss rule may have ended this activation while the accept ran, so the
     // landing is not announced and the player is left alone.
@@ -2265,7 +2297,7 @@ mod tests {
     use takofy_core::{Resolution, TransferPlan};
     use takofy_model::{
         AlbumDetail, ArtistDetail, ArtistPortrait, CoverImage, CoverUrl, Device, DeviceKind,
-        Episode, FollowedArtist, FollowedShow, Landing, LyricLine, Move, Options, PlaylistAccess,
+        Episode, FollowedArtist, FollowedShow, Landing, LyricLine, Move, PlaylistAccess,
         PlaylistCover, PlaylistEntry, RemotePlayback, RemoteState, Removal, Report, RequestId,
         SavedAlbum, Show, ShowDetail, Status, TrackEntry, TrackLyrics,
     };
@@ -4166,6 +4198,15 @@ mod tests {
     /// The track the lyrics tests open.
     const TRACK: &str = "spotify:track:4uLU6hMCjMI75M1A2tKUQ1";
 
+    /// The playlist the landing tests hand over and play from.
+    const PLAYLIST: &str = "spotify:playlist:p";
+
+    /// A row the context read answers with, after [`TRACK`].
+    const SECOND: &str = "spotify:track:4uLU6hMCjMI75M1A2tKUQ2";
+
+    /// A local file the phone can hold in its queue and this window cannot fetch.
+    const LOCAL: &str = "spotify:local:artist:album:title:200";
+
     /// The landing the fake accept answers with unless a test scripts its own.
     fn default_landing() -> Landing {
         Landing {
@@ -4174,9 +4215,9 @@ mod tests {
             position_ms: 0,
             playing: true,
             context: None,
-            shuffle: false,
-            repeat_context: false,
-            repeat_track: false,
+            shuffle: Some(false),
+            repeat_context: Some(false),
+            repeat_track: Some(false),
             epoch: 1,
         }
     }
@@ -4281,6 +4322,71 @@ mod tests {
                     command_id: None,
                 },
             }),
+        };
+        instruction_of(&request)
+    }
+
+    /// One phone-side play, decoded the way the receiver decodes it.
+    ///
+    /// The row it starts on comes from `skip`; a play whose pages are empty is
+    /// read from its context instead.
+    fn play_instruction(
+        context: &str,
+        pages: &[&str],
+        skip: Option<librespot::core::dealer::protocol::SkipTo>,
+    ) -> Instruction {
+        use librespot::core::dealer::protocol::{
+            Command as WireCommand, LoggingParams, PlayCommand, PlayOptions, Request,
+        };
+        use librespot::protocol::context::Context;
+        use librespot::protocol::context_page::ContextPage;
+        use librespot::protocol::context_track::ContextTrack;
+        use librespot::protocol::player::PlayOrigin;
+        use takofy_core::instruction::instruction_of;
+
+        let page = ContextPage {
+            tracks: pages
+                .iter()
+                .map(|uri| ContextTrack {
+                    uri: Some((*uri).to_owned()),
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let request = Request {
+            message_id: 1,
+            sent_by_device_id: "phone".to_owned(),
+            command: WireCommand::Play(Box::new(PlayCommand {
+                context: Context {
+                    uri: Some(context.to_owned()),
+                    pages: if pages.is_empty() {
+                        Vec::new()
+                    } else {
+                        vec![page]
+                    },
+                    ..Default::default()
+                },
+                play_origin: PlayOrigin::default(),
+                options: PlayOptions {
+                    skip_to: skip,
+                    player_options_override: None,
+                    license: None,
+                    seek_to: None,
+                    always_play_something: None,
+                    audio_stream: None,
+                    initially_paused: None,
+                    prefetch_level: None,
+                    system_initiated: None,
+                },
+                logging_params: LoggingParams {
+                    interaction_ids: None,
+                    device_identifier: None,
+                    command_initiated_time: None,
+                    page_instance_ids: None,
+                    command_id: None,
+                },
+            })),
         };
         instruction_of(&request)
     }
@@ -6453,7 +6559,8 @@ mod tests {
             prev: Vec::new(),
             next: Vec::new(),
             context: None,
-            options: Options::default(),
+            queue_revision: String::new(),
+            options: None,
             position_ms: 0,
             duration_ms: None,
         }
@@ -11016,6 +11123,192 @@ mod tests {
             shared.event_takes.load(Ordering::SeqCst),
             1,
             "the player's events are handed to one drain"
+        );
+    }
+
+    #[test]
+    fn a_play_command_lands_like_a_transfer() {
+        use librespot::core::dealer::protocol::SkipTo;
+
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+        let id = RequestId(44);
+        let rows = vec![TRACK.to_owned(), SECOND.to_owned()];
+        *shared.resolve_script.lock().expect("lock") = ResolveScript::Ok(rows.clone());
+        // The row the position named is the row the landing anchors on.
+        *shared.accept_script.lock().expect("lock") = AcceptScript::Landed(Box::new(Landing {
+            rows: rows.clone(),
+            index: 1,
+            position_ms: 4_000,
+            ..default_landing()
+        }));
+        hold_with(&shared, &[true]);
+
+        run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            watch_now(&ui_end, &shared).recv().expect("watch started");
+            inbound(
+                &shared,
+                44,
+                Kind::Play,
+                play_instruction(
+                    PLAYLIST,
+                    &[],
+                    Some(SkipTo {
+                        track_index: Some(1),
+                        ..Default::default()
+                    }),
+                ),
+            );
+            until("the label to run", || {
+                calls(&shared)
+                    .iter()
+                    .any(|call| matches!(call, Call::Label(_)))
+            });
+        });
+
+        assert_eq!(
+            calls(&shared),
+            vec![
+                Call::Prepare,
+                Call::SetPlayable(true),
+                Call::Resolve(PLAYLIST.to_owned()),
+                Call::Accept(id),
+                Call::Answer(id, true),
+                Call::Load {
+                    uri: SECOND.to_owned(),
+                    position_ms: 4_000,
+                    play: true,
+                },
+                Call::Label(vec![SECOND.to_owned()]),
+            ],
+            "a play runs the hand-over's own steps and loads the row it anchored on"
+        );
+    }
+
+    #[test]
+    fn a_play_with_nothing_to_anchor_on_is_refused() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+        let id = RequestId(45);
+        // A play that names its row neither by uri nor by pages has only the
+        // read to say what to load, and this read brought nothing.
+        *shared.resolve_script.lock().expect("lock") = ResolveScript::Fail;
+        hold_with(&shared, &[true]);
+
+        run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            watch_now(&ui_end, &shared).recv().expect("watch started");
+            inbound(
+                &shared,
+                45,
+                Kind::Play,
+                play_instruction(PLAYLIST, &[], None),
+            );
+            until("the play to be refused", || answers(&shared, id) == 1);
+            expect_no_update(&ui_end);
+        });
+
+        assert_eq!(
+            calls(&shared),
+            vec![
+                Call::Prepare,
+                Call::SetPlayable(true),
+                Call::Resolve(PLAYLIST.to_owned()),
+                Call::Refuse(id),
+            ],
+            "nothing is put and nothing is loaded when there is no row to play"
+        );
+    }
+
+    #[test]
+    fn a_play_of_a_local_or_unsupported_row_is_refused_before_the_put() {
+        use librespot::core::dealer::protocol::SkipTo;
+
+        // A local file is a row the phone can hold and this window cannot fetch,
+        // whether it names that row by uri or lands on it by position.
+        let cases = [
+            (
+                47,
+                vec![TRACK.to_owned(), SECOND.to_owned()],
+                SkipTo {
+                    track_uri: Some(LOCAL.to_owned()),
+                    ..Default::default()
+                },
+            ),
+            (
+                48,
+                vec![TRACK.to_owned(), LOCAL.to_owned()],
+                SkipTo {
+                    track_index: Some(1),
+                    ..Default::default()
+                },
+            ),
+        ];
+
+        for (number, rows, skip) in cases {
+            let store = Arc::new(MemoryStore::seeded("stored"));
+            let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+            let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+            let shared = Arc::clone(&host.shared);
+            let id = RequestId(number);
+            *shared.resolve_script.lock().expect("lock") = ResolveScript::Ok(rows);
+            hold_with(&shared, &[true]);
+
+            run_window(runtime(), host, store, source, |ui_end, slot| {
+                slot.install(Arc::new(RecordingWaker::default()));
+                let _ = expect_updates(&ui_end, 2);
+                watch_now(&ui_end, &shared).recv().expect("watch started");
+                inbound(
+                    &shared,
+                    number,
+                    Kind::Play,
+                    play_instruction(PLAYLIST, &[], Some(skip)),
+                );
+                until("the play to be refused", || answers(&shared, id) == 1);
+                expect_no_update(&ui_end);
+            });
+
+            assert_eq!(
+                calls(&shared),
+                vec![
+                    Call::Prepare,
+                    Call::SetPlayable(true),
+                    Call::Resolve(PLAYLIST.to_owned()),
+                    Call::Refuse(id),
+                ],
+                "a row that cannot be fetched must not take the sound and fail"
+            );
+        }
+    }
+
+    #[test]
+    fn update_context_is_answered_without_changing_anything() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+        let id = RequestId(46);
+
+        run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            watch_now(&ui_end, &shared).recv().expect("watch started");
+            inbound(&shared, 46, Kind::UpdateContext, Instruction::Ignored);
+            until("the context to be answered", || answers(&shared, id) == 1);
+            expect_no_update(&ui_end);
+        });
+
+        assert_eq!(
+            calls(&shared),
+            vec![Call::Answer(id, true)],
+            "a context this window does not use is answered, not refused"
         );
     }
 

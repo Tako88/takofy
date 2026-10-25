@@ -1322,9 +1322,9 @@ mod tests {
             position_ms: 0,
             playing: true,
             context: Some("spotify:playlist:p".to_owned()),
-            shuffle: false,
-            repeat_context: false,
-            repeat_track: false,
+            shuffle: Some(false),
+            repeat_context: Some(false),
+            repeat_track: Some(false),
             epoch: 1,
         }
     }
