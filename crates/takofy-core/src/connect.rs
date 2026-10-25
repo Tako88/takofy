@@ -273,6 +273,28 @@ pub enum ConnectError {
     NotPlayable,
 }
 
+impl ConnectError {
+    /// The one word a log may carry. A hand-over that fails silently is the
+    /// hardest failure to read, and the wire's own error text is not ours to log.
+    pub fn word(&self) -> &'static str {
+        match self {
+            Self::Session(_) => "session",
+            Self::NoConnectionId => "no connection id",
+            Self::Cluster(_) => "cluster parse",
+            Self::AlreadyWatching => "already watching",
+            Self::Withdrawn => "withdrawn",
+            Self::Busy => "wire busy",
+            Self::InvalidTarget => "invalid target",
+            Self::DealerSpent => "dealer spent",
+            Self::WithdrawTimedOut => "withdraw timed out",
+            Self::PutTimedOut => "put timed out",
+            Self::Expired => "request expired",
+            Self::NoTrack => "no track",
+            Self::NotPlayable => "not playable",
+        }
+    }
+}
+
 /// A transport action sent to the device that holds the sound.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Steer {
@@ -998,6 +1020,31 @@ mod tests {
         for (active, own, expected) in cases {
             let view = view_of(&cluster(Vec::new(), active), own);
             assert_eq!(view.held_here, expected, "active={active:?} own={own:?}");
+        }
+    }
+
+    #[test]
+    fn every_error_has_its_own_word() {
+        let words = [
+            ConnectError::NoConnectionId,
+            ConnectError::AlreadyWatching,
+            ConnectError::Withdrawn,
+            ConnectError::Busy,
+            ConnectError::InvalidTarget,
+            ConnectError::DealerSpent,
+            ConnectError::WithdrawTimedOut,
+            ConnectError::PutTimedOut,
+            ConnectError::Expired,
+            ConnectError::NoTrack,
+            ConnectError::NotPlayable,
+        ]
+        .map(|error| error.word());
+        let mut distinct = words.to_vec();
+        distinct.sort_unstable();
+        distinct.dedup();
+        assert_eq!(distinct.len(), words.len(), "{words:?}");
+        for word in words {
+            assert!(!word.is_empty());
         }
     }
 

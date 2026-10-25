@@ -24,6 +24,8 @@ use takofy_core::hold::HOLD_LOG_TARGET;
 use takofy_core::login::{AuthError, LoginMethod, SourceErrorKind, authenticate};
 use takofy_core::oauth::{OAUTH_LOG_TARGET, RedirectMode, SpotifyOAuth};
 use takofy_core::receive::RECEIVE_LOG_TARGET;
+
+use crate::bridge::LANDING_LOG_TARGET;
 use takofy_ui::message::Failure;
 use takofy_ui::signin::failure_message;
 
@@ -198,6 +200,9 @@ fn logger_builder() -> env_logger::Builder {
     // the loss rule took, and whether the reply named this device. Both words,
     // never a URI.
     builder.filter_module(HOLD_LOG_TARGET, LevelFilter::Info);
+    // The hand-over's decisions: which arm refused and whether the put was even
+    // reached. Without it a failed hand-over leaves no trace but a retry.
+    builder.filter_module(LANDING_LOG_TARGET, LevelFilter::Info);
     builder
 }
 
@@ -226,6 +231,8 @@ mod tests {
     use takofy_core::hold::HOLD_LOG_TARGET;
     use takofy_core::oauth::{OAUTH_LOG_TARGET, RedirectMode};
     use takofy_core::receive::RECEIVE_LOG_TARGET;
+
+    use crate::bridge::LANDING_LOG_TARGET;
 
     use super::{Flags, Mode, USAGE, logger_builder, mode_for, parse_flags};
 
@@ -258,6 +265,13 @@ mod tests {
         // door for librespot's own chatter.
         assert!(!logger.matches(&record("takofy_core::watch", Level::Info)));
         assert!(!logger.matches(&record("librespot_core", Level::Debug)));
+    }
+
+    #[test]
+    fn the_hand_over_path_shows_and_its_neighbours_do_not() {
+        let logger = logger_builder().build();
+        assert!(logger.matches(&record(LANDING_LOG_TARGET, Level::Info)));
+        assert!(!logger.matches(&record("takofy::app", Level::Info)));
     }
 
     #[test]

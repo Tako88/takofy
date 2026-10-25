@@ -1611,6 +1611,10 @@ fn ensure_drain<H: SessionHost>(host: &mut H, notifier: &Notifier) {
 ///
 /// Every refusal is answered before anything is put, so a transfer this window
 /// cannot play leaves the phone's own playback untouched.
+/// The hand-over path's own log target. It carries decisions, never a URI: which
+/// arm refused, whether the player was ready, and what the put answered.
+pub(crate) const LANDING_LOG_TARGET: &str = "takofy::bridge";
+
 async fn serve_landing<H: SessionHost>(
     host: &mut H,
     stop: &mut StopReceiver<()>,
@@ -1620,7 +1624,13 @@ async fn serve_landing<H: SessionHost>(
 ) -> Step {
     let plan = match instruction {
         Instruction::Transfer(plan) => plan,
-        Instruction::Refused(_) | Instruction::Other(_) => {
+        Instruction::Refused(refusal) => {
+            log::info!(target: LANDING_LOG_TARGET, "landing refused: {}", refusal.word());
+            host.refuse(id);
+            return Step::Done;
+        }
+        Instruction::Other(kind) => {
+            log::info!(target: LANDING_LOG_TARGET, "landing other: {}", kind.word());
             host.refuse(id);
             return Step::Done;
         }
@@ -1636,6 +1646,7 @@ async fn serve_landing<H: SessionHost>(
     }
     host.set_playable(true);
     ensure_drain(host, notifier);
+    log::info!(target: LANDING_LOG_TARGET, "landing player ready");
 
     // The phone's own pages cost no read; a context is read only when they are
     // absent, and a failed read falls back to the one track rather than
@@ -1658,7 +1669,11 @@ async fn serve_landing<H: SessionHost>(
         None => return Step::Stopped,
         Some(Ok(landing)) => landing,
         Some(Err(error)) => {
-            log::warn!("landing accept failed: {}", error.kind());
+            log::info!(
+                target: LANDING_LOG_TARGET,
+                "landing accept failed: {}",
+                error.kind()
+            );
             return Step::Done;
         }
     };
@@ -1668,7 +1683,10 @@ async fn serve_landing<H: SessionHost>(
     // The loss rule may have ended this activation while the accept ran, so the
     // landing is not announced and the player is left alone.
     if !host.holding() {
-        log::debug!("landing lost the sound before it was announced");
+        log::info!(
+            target: LANDING_LOG_TARGET,
+            "landing lost the sound before it was announced"
+        );
         return Step::Done;
     }
 

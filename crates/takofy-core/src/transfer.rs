@@ -41,6 +41,20 @@ pub enum Refusal {
     NotPlayable,
 }
 
+impl Refusal {
+    /// The word a log carries. Refusing a hand-over is ordinary, and which
+    /// refusal it was is the only thing that says whether the phone's context or
+    /// its track was the problem.
+    pub fn word(&self) -> &'static str {
+        match self {
+            Self::NoData => "no data",
+            Self::UnsupportedContext(_) => "unsupported context",
+            Self::NoTrack => "no track",
+            Self::NotPlayable => "not playable",
+        }
+    }
+}
+
 /// What a context read answered.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Resolution {
@@ -562,6 +576,21 @@ mod tests {
         }))
         .expect("an episode is playable");
         assert_eq!(episode.current, EPISODE);
+    }
+
+    #[test]
+    fn every_refusal_has_its_own_word() {
+        let words = [
+            Refusal::NoData,
+            Refusal::UnsupportedContext(ContextKind::Artist),
+            Refusal::NoTrack,
+            Refusal::NotPlayable,
+        ]
+        .map(|refusal| refusal.word());
+        let mut distinct = words.to_vec();
+        distinct.sort_unstable();
+        distinct.dedup();
+        assert_eq!(distinct.len(), words.len(), "{words:?}");
     }
 
     #[test]

@@ -40,26 +40,31 @@ pub(crate) async fn accept<W: Wire>(
     // The budget may have answered the phone already, in which case there is
     // nothing left to take.
     let Some(ack) = shared.registry.ack_of(id) else {
+        said(&ConnectError::Expired);
         return Err(ConnectError::Expired);
     };
     // A device that cannot play must never take the sound, whatever its caller
     // believes about the player.
     if !shared.presence.playable() {
+        said(&ConnectError::NotPlayable);
         shared.registry.refuse(id);
         return Err(ConnectError::NotPlayable);
     }
     let _guard = match tokio::time::timeout(timing.gate_wait, gate.take()).await {
         Ok(guard) => guard,
         Err(_) => {
+            said(&ConnectError::Busy);
             shared.registry.refuse(id);
             return Err(ConnectError::Busy);
         }
     };
     if gate.withdrawn() {
+        said(&ConnectError::Withdrawn);
         shared.registry.refuse(id);
         return Err(ConnectError::Withdrawn);
     }
     if wire.connection_id().is_empty() {
+        said(&ConnectError::NoConnectionId);
         shared.registry.refuse(id);
         return Err(ConnectError::NoConnectionId);
     }
@@ -68,6 +73,7 @@ pub(crate) async fn accept<W: Wire>(
     let started_at_ms = u64::try_from(now_ms).unwrap_or(0);
     let mut landing = transfer::land(plan, resolution, now_ms);
     let Some(state) = ActiveState::new(landing.report(), 0) else {
+        said(&ConnectError::NoTrack);
         shared.registry.refuse(id);
         return Err(ConnectError::NoTrack);
     };
@@ -89,9 +95,11 @@ pub(crate) async fn accept<W: Wire>(
     // The answer to this put can be dropped with this future, so the account
     // may take the sound with no activation recorded here.
     shared.presence.put_issued();
+    log::info!(target: HOLD_LOG_TARGET, "accept putting active");
     let reply = match bounded(gate, timing.put, wire.put(&announcement)).await {
         Ok(reply) => reply,
         Err(error) => {
+            said(&error);
             // The server may have applied a put whose answer never came, so the
             // sound is given back before the phone is told it failed.
             refuse_after_the_put(wire, shared, id, timing, held_before).await;
@@ -102,6 +110,7 @@ pub(crate) async fn accept<W: Wire>(
     // The budget can answer during the put. When it did, the phone was told
     // `Failure` and the hold is not ours to keep.
     if shared.registry.ack_of(id).is_none() {
+        said(&ConnectError::Expired);
         refuse_after_the_put(wire, shared, id, timing, held_before).await;
         return Err(ConnectError::Expired);
     }
@@ -109,6 +118,7 @@ pub(crate) async fn accept<W: Wire>(
     // The player can die while the put is on the wire, and the phone would then
     // be told this device took the sound and cannot play it.
     if !shared.presence.playable() {
+        said(&ConnectError::NotPlayable);
         refuse_after_the_put(wire, shared, id, timing, held_before).await;
         return Err(ConnectError::NotPlayable);
     }
@@ -138,6 +148,12 @@ pub(crate) async fn accept<W: Wire>(
         return Err(ConnectError::Expired);
     }
     Ok(landing)
+}
+
+/// One line per refusal, because an arm that answers the phone and says nothing
+/// here is a hand-over nobody can debug from the outside.
+fn said(error: &ConnectError) {
+    log::info!(target: HOLD_LOG_TARGET, "accept refused: {}", error.word());
 }
 
 /// Gives back what a put may have taken and answers the phone `Failure`.
