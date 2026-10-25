@@ -2038,7 +2038,7 @@ mod tests {
         assert!(commands.is_empty());
         assert_eq!(devices.caption(now), "Phone");
         assert_eq!(
-            devices.rows(&Transport::default()).len(),
+            devices.rows(&Transport::default(), false).len(),
             1,
             "the roster did not reach the card"
         );

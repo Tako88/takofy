@@ -38,6 +38,9 @@ pub struct Frame<'a> {
     /// This window's own transport, which decides whether a press on a row can
     /// move the sound.
     pub local: &'a Transport,
+    /// Whether that transport has a current queue entry, which is the state a
+    /// press would hand over.
+    pub has_row: bool,
     /// The clock the notes and the caption are read at.
     pub now: Instant,
     pub tokens: &'a Tokens,
@@ -59,6 +62,7 @@ pub fn show(ui: &mut Ui, frame: Frame<'_>) -> Outcome {
         list,
         devices,
         local,
+        has_row,
         now,
         tokens,
     } = frame;
@@ -73,7 +77,7 @@ pub fn show(ui: &mut Ui, frame: Frame<'_>) -> Outcome {
     // The list never scrolls: the holder and the first names win, and the rest
     // are found in Spotify until this card can do more than read.
     let rows: Vec<Row> = devices
-        .rows(local)
+        .rows(local, has_row)
         .into_iter()
         .take(extent::SUBMENU_ROWS)
         .collect();
@@ -344,6 +348,7 @@ mod tests {
                     list,
                     devices,
                     local: &idle(),
+                    has_row: true,
                     now: Instant::now(),
                     tokens: &tokens,
                 },
@@ -460,7 +465,7 @@ mod tests {
         let output = settled(&ctx, &mut list, &devices);
         let at = painted_text(&output, "Laptop").center();
         assert!(
-            devices.rows(&idle()).iter().all(|row| !row.pickable),
+            devices.rows(&idle(), true).iter().all(|row| !row.pickable),
             "an inert card offered a press"
         );
 

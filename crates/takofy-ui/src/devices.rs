@@ -274,19 +274,24 @@ impl Devices {
     /// Whether the sound can be moved from here: this window must have
     /// something to hand over.
     ///
-    /// Holding it is enough. Playing here while the account reports a player is
-    /// enough too, because a hand-over that does not come from the sound's owner
-    /// never lands: the pick makes this window active first, then hands over.
-    /// Otherwise a paused or reportless window has nothing to carry, so its rows
-    /// stay inert.
-    pub fn can_pick(&self, local: &Transport, held_here: bool) -> bool {
+    /// Holding it is enough. Playing here is enough too, because a hand-over
+    /// that does not come from the sound's owner never lands: the pick makes
+    /// this window active first, then hands over.
+    ///
+    /// `has_row` is what makes playing here enough: it is the queue's current
+    /// entry, without which this window has no state of its own to publish and
+    /// the account would be handed a body naming nothing. It is not this card's
+    /// `playback`, which reports the device that is playing — `None` exactly
+    /// when nothing plays anywhere else, and so false whenever this window is
+    /// the only one making sound.
+    pub fn can_pick(&self, local: &Transport, held_here: bool, has_row: bool) -> bool {
         held_here
             || (self.source(local) == Source::Local
                 && matches!(
                     local.state,
                     TransportState::Playing | TransportState::Loading
                 )
-                && self.playback.is_some())
+                && has_row)
     }
 
     /// A press on a row: the transfer that moves the sound there.
@@ -319,7 +324,7 @@ impl Devices {
 
     /// The device rows: the holder first, then by name. Every row carries the
     /// one answer this window's own transport gives.
-    pub fn rows(&self, local: &Transport) -> Vec<Row> {
+    pub fn rows(&self, local: &Transport, has_row: bool) -> Vec<Row> {
         let Some(roster) = &self.roster else {
             return Vec::new();
         };
@@ -331,7 +336,7 @@ impl Devices {
             let first = devices.remove(index);
             devices.insert(0, first);
         }
-        let pickable = self.can_pick(local, self.held_here);
+        let pickable = self.can_pick(local, self.held_here, has_row);
         devices
             .into_iter()
             .map(|device| {
@@ -784,7 +789,7 @@ mod tests {
         );
 
         assert!(devices.apply(&roster(vec![laptop()], Some("b")), now));
-        let rows = devices.rows(&Transport::default());
+        let rows = devices.rows(&Transport::default(), false);
         let names: Vec<&str> = rows.iter().map(|row| row.device.name.as_str()).collect();
         assert_eq!(names, vec!["Laptop"]);
     }
@@ -797,7 +802,7 @@ mod tests {
         assert!(devices.apply(&roster(Vec::new(), None), now));
         assert_eq!(devices.watch, Watch::Live);
         assert_eq!(devices.button(), Button::Ready);
-        assert!(devices.rows(&Transport::default()).is_empty());
+        assert!(devices.rows(&Transport::default(), false).is_empty());
         assert_eq!(
             devices.notes(now),
             vec![NO_DEVICES.to_owned(), SWITCH_HINT.to_owned()]
@@ -1518,7 +1523,7 @@ mod tests {
             ),
             now,
         );
-        let rows = devices.rows(&Transport::default());
+        let rows = devices.rows(&Transport::default(), false);
         let names: Vec<&str> = rows.iter().map(|row| row.device.name.as_str()).collect();
         assert_eq!(names, vec!["Zed", "Alpha", "Beta"]);
         let holders: Vec<bool> = rows.iter().map(|row| row.holder).collect();
@@ -1533,9 +1538,9 @@ mod tests {
         devices.apply(&roster_of(vec![phone(), laptop()], None, true), now);
 
         let local = Transport::default();
-        assert!(devices.can_pick(&local, true));
+        assert!(devices.can_pick(&local, true, false));
         let pickable: Vec<bool> = devices
-            .rows(&local)
+            .rows(&local, false)
             .iter()
             .map(|row| row.pickable)
             .collect();
@@ -1543,23 +1548,38 @@ mod tests {
     }
 
     #[test]
-    fn a_row_is_pickable_while_this_window_plays_locally_with_a_report() {
+    fn a_row_is_pickable_while_this_window_plays_locally() {
         let now = base();
-        // The phone holds the sound, but this window plays on its own and the
-        // account already reports a player: there is something to carry over.
-        let devices = remote(now);
+        // Nothing plays anywhere else, so the account reports no player at all.
+        // This window is the one making sound, and that is enough to carry it.
+        let devices = watching(now);
         let local = Transport {
             state: TransportState::Playing,
             ..Transport::default()
         };
 
-        assert!(devices.can_pick(&local, false));
+        assert!(devices.can_pick(&local, false, true));
         let pickable: Vec<bool> = devices
-            .rows(&local)
+            .rows(&local, true)
             .iter()
             .map(|row| row.pickable)
             .collect();
         assert_eq!(pickable, vec![true, true]);
+    }
+
+    #[test]
+    fn a_row_is_not_pickable_without_a_current_row() {
+        let now = base();
+        // The transport plays but the queue holds no current entry, so there is
+        // no state of this window's own to hand over.
+        let devices = watching(now);
+        let local = Transport {
+            state: TransportState::Playing,
+            ..Transport::default()
+        };
+
+        assert!(!devices.can_pick(&local, false, false));
+        assert!(devices.rows(&local, false).iter().all(|row| !row.pickable));
     }
 
     #[test]
@@ -1576,21 +1596,12 @@ mod tests {
                 state,
                 ..Transport::default()
             };
-            assert!(!devices.can_pick(&local, false), "{state:?}");
+            assert!(!devices.can_pick(&local, false, true), "{state:?}");
             assert!(
-                devices.rows(&local).iter().all(|row| !row.pickable),
+                devices.rows(&local, true).iter().all(|row| !row.pickable),
                 "{state:?}"
             );
         }
-
-        // Playing here is not enough on its own: nothing can be handed over
-        // until the account reports a player.
-        let betwixt = watching(now);
-        let local = Transport {
-            state: TransportState::Playing,
-            ..Transport::default()
-        };
-        assert!(!betwixt.can_pick(&local, false));
     }
 
     #[test]

@@ -573,6 +573,7 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
             list: screen.list,
             devices: screen.devices,
             local: screen.transport,
+            has_row: screen.queue.current().is_some(),
             now: screen.now,
             tokens,
         },
