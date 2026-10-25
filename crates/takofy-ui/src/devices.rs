@@ -83,6 +83,8 @@ pub struct Devices {
     /// `None` until a roster arrives. An empty roster is an answer of its own.
     roster: Option<Vec<Device>>,
     holder: Option<String>,
+    /// Whether this window is the device holding the sound.
+    held_here: bool,
     playback: Option<RemotePlayback>,
     /// The holder's transport. Display only: the shell copies the local level
     /// into it, because volume is inert while remote.
@@ -110,9 +112,11 @@ impl Devices {
             return false;
         };
         match update {
-            DeviceUpdate::Roster { devices, holder } => {
-                self.take_roster(devices.clone(), holder.clone(), now)
-            }
+            DeviceUpdate::Roster {
+                devices,
+                holder,
+                held_here,
+            } => self.take_roster(devices.clone(), holder.clone(), *held_here, now),
             DeviceUpdate::Playing(playback) => self.take_playback(playback.clone(), now),
             DeviceUpdate::Labelled(entry) => self.take_label(entry),
             DeviceUpdate::Failed(failure) => self.take_failure(*failure),
@@ -213,8 +217,12 @@ impl Devices {
     }
 
     /// Which transport the bar draws.
+    ///
+    /// A window that holds the sound draws its own transport however still it
+    /// is: a hand-over that landed paused is still this window's track.
     pub fn source(&self, local: &Transport) -> Source {
-        let holds = self.holder.is_some()
+        let holds = !self.held_here
+            && self.holder.is_some()
             && self.playback.is_some()
             && !matches!(
                 local.state,
@@ -334,9 +342,16 @@ impl Devices {
         changed
     }
 
-    fn take_roster(&mut self, devices: Vec<Device>, holder: Option<String>, now: Instant) -> bool {
-        let mut changed =
-            self.roster.as_deref() != Some(devices.as_slice()) || self.holder != holder;
+    fn take_roster(
+        &mut self,
+        devices: Vec<Device>,
+        holder: Option<String>,
+        held_here: bool,
+        now: Instant,
+    ) -> bool {
+        let mut changed = self.roster.as_deref() != Some(devices.as_slice())
+            || self.holder != holder
+            || self.held_here != held_here;
         // A device that held the sound and is no longer on the roster is the one
         // that left; one that is still signed in merely stopped holding it.
         let vacated = if self.holder != holder {
@@ -352,6 +367,7 @@ impl Devices {
         }
         self.roster = Some(devices);
         self.holder = holder;
+        self.held_here = held_here;
         self.review_naming();
         let answered = self.reach_answer();
         answered || changed
@@ -584,9 +600,15 @@ mod tests {
     }
 
     fn roster(devices: Vec<Device>, holder: Option<&str>) -> Update {
+        roster_of(devices, holder, false)
+    }
+
+    /// The same, saying whether this window is the device holding the sound.
+    fn roster_of(devices: Vec<Device>, holder: Option<&str>, held_here: bool) -> Update {
         Update::Devices(DeviceUpdate::Roster {
             devices,
             holder: holder.map(str::to_owned),
+            held_here,
         })
     }
 
@@ -1329,6 +1351,50 @@ mod tests {
         assert_eq!(devices.caption(now), failure_message(Failure::Steer));
         assert!(devices.expire(now + FLASH_FOR));
         assert_eq!(devices.caption(now + FLASH_FOR), "Phone");
+    }
+
+    #[test]
+    fn holding_here_makes_the_source_local_even_when_the_local_transport_is_paused() {
+        let now = base();
+        let local = Transport {
+            state: TransportState::Paused,
+            ..Transport::default()
+        };
+
+        let mut devices = watching(now);
+        devices.apply(
+            &playing(Some(playback(
+                RemoteState::Playing,
+                "spotify:track:a",
+                Some(10_000),
+            ))),
+            now,
+        );
+        assert_eq!(
+            devices.source(&local),
+            Source::Remote,
+            "a still window that does not hold the sound shows the holder"
+        );
+
+        assert!(devices.apply(&roster_of(vec![phone(), laptop()], Some("a"), true), now));
+        assert_eq!(
+            devices.source(&local),
+            Source::Local,
+            "a landed transfer that settled paused is still ours"
+        );
+    }
+
+    #[test]
+    fn a_roster_that_only_changes_who_holds_is_applied() {
+        let now = base();
+        let mut devices = Devices::default();
+        devices.watch_request(true);
+        assert!(devices.apply(&roster_of(vec![phone(), laptop()], Some("a"), false), now));
+
+        assert!(
+            devices.apply(&roster_of(vec![phone(), laptop()], Some("a"), true), now),
+            "a change of who holds the sound went unseen"
+        );
     }
 
     #[test]

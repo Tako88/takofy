@@ -45,6 +45,9 @@ pub enum ContextError {
     /// More than [`MAX_PAGES`] pages were returned.
     #[error("context has more than {MAX_PAGES} pages")]
     TooManyPages,
+    /// The read did not answer inside the budget it was given.
+    #[error("context read timed out")]
+    TimedOut,
 }
 
 /// A resolved context: its pages and the image the context itself carries.
@@ -123,6 +126,22 @@ pub fn parse_page_json(bytes: &[u8]) -> Result<Page, ContextError> {
     Ok(page)
 }
 
+/// Every track URI a context holds, in the order the walker produces them.
+///
+/// Duplicates are kept: a playlist that lists a track twice must stay
+/// resolvable at both rows, so this is a concatenation and not a set.
+pub(crate) async fn resolve_uris<S: PageSource>(
+    source: S,
+    uri: &str,
+) -> Result<Vec<String>, ContextError> {
+    let mut walker = Walker::new(source, uri);
+    let mut uris = Vec::new();
+    while let Some(page) = walker.next_page().await? {
+        uris.extend(page.tracks.into_iter().map(|track| track.uri));
+    }
+    Ok(uris)
+}
+
 /// Walks a context: all inline pages first, then pending URLs in discovery order.
 pub(crate) struct Walker<S> {
     source: S,
@@ -193,7 +212,7 @@ mod tests {
 
     use super::{
         ContextError, MAX_PAGES, Page, PageSource, PageTrack, Resolved, Walker, page_from_proto,
-        parse_page_json,
+        parse_page_json, resolve_uris,
     };
     use takofy_model::{AddedAt, CoverUrl};
 
@@ -318,6 +337,36 @@ mod tests {
                 page(&["d"], None),
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn resolve_uris_walks_every_page_in_order() {
+        let fake = Fake::new(vec![page(&["a", "b"], Some("u1")), page(&["c"], None)])
+            .with_next("u1", page(&["d"], None));
+        assert_eq!(
+            resolve_uris(fake, "context").await.expect("walk"),
+            vec!["a", "b", "c", "d"]
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_uris_keeps_duplicates() {
+        let fake =
+            Fake::new(vec![page(&["a", "a"], Some("u1"))]).with_next("u1", page(&["a"], None));
+        assert_eq!(
+            resolve_uris(fake, "context").await.expect("walk"),
+            vec!["a", "a", "a"],
+            "a row repeated in the context must resolve at every row"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_uris_propagates_a_cycle() {
+        let fake = Fake::new(vec![page(&["a"], Some("u1")), page(&["b"], Some("u1"))]);
+        let error = resolve_uris(fake, "context")
+            .await
+            .expect_err("a repeated next is a cycle");
+        assert!(matches!(error, ContextError::Cycle { url } if url == "u1"));
     }
 
     #[tokio::test]

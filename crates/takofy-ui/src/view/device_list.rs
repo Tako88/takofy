@@ -258,6 +258,7 @@ mod tests {
                     device("b", "Laptop", DeviceKind::Computer),
                 ],
                 holder: Some("a".to_owned()),
+                held_here: false,
             }),
             now,
         );
@@ -441,6 +442,7 @@ mod tests {
             &Update::Devices(DeviceUpdate::Roster {
                 devices: roster,
                 holder: Some("d7".to_owned()),
+                held_here: false,
             }),
             now,
         );
@@ -576,6 +578,7 @@ mod tests {
             &Update::Devices(DeviceUpdate::Roster {
                 devices: Vec::new(),
                 holder: None,
+                held_here: false,
             }),
             Instant::now(),
         );

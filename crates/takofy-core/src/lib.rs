@@ -12,6 +12,7 @@ pub mod context;
 pub mod credentials;
 pub mod engine;
 pub mod followed;
+pub mod hold;
 pub mod instruction;
 pub mod login;
 pub mod lyrics;
@@ -25,6 +26,9 @@ pub mod show;
 mod collected;
 mod collection;
 mod cover;
+mod latest;
+mod loss;
+mod playstate;
 mod portrait;
 mod presence;
 mod publish;
@@ -33,6 +37,7 @@ mod remote;
 mod search;
 #[cfg(test)]
 mod testing;
+mod transfer;
 mod watch;
 mod wire;
 
@@ -40,4 +45,5 @@ pub use context::{ContextError, Page, PageTrack, page_from_proto, parse_page_jso
 pub use engine::{Engine, EngineError, PlaylistPage, TrackPages};
 pub use playback::{Outcome, Playback, PlaybackError, PlaybackEvent, drive, map_event};
 pub use rootlist::{RootlistError, RootlistPage, RootlistWire, parse_rootlist};
-pub use watch::Watching;
+pub use transfer::{Resolution, TransferPlan};
+pub use watch::{ORDER_MARGIN, Watching};

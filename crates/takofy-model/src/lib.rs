@@ -9,7 +9,9 @@ pub mod device;
 pub mod remote;
 
 pub use device::{Device, DeviceKind, RemotePlayback, RemoteState};
-pub use remote::RequestId;
+pub use remote::{
+    Landing, MAX_NEXT_TRACKS, MAX_PREV_TRACKS, Options, Order, Report, RequestId, Status,
+};
 
 /// An absolute URL for a cover image, restricted to the hosts Takofy fetches.
 ///

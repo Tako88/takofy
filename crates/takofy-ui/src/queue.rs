@@ -25,12 +25,12 @@
 //! The rows an edit may move all sit after the current entry, so the playing
 //! entry keeps its place and a load in flight keeps its guard.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
-use takofy_model::TrackEntry;
+use takofy_model::{Landing, TrackEntry};
 
-use crate::message::{Command, TransportUpdate, Update};
+use crate::message::{Command, RemoteUpdate, TransportUpdate, Update};
 use crate::player::{RESTART_AFTER_MS, Transport, TransportState};
 use crate::reorder;
 use crate::repeat::{self, Cause, Hop, Repeat};
@@ -41,6 +41,13 @@ use crate::shuffle;
 /// the failure. A free account fails every track, and an uncapped run would
 /// fire a load per entry.
 pub const MAX_CONSECUTIVE_SKIPS: u32 = 5;
+
+/// The most rows one label request may name.
+///
+/// A hand-over can adopt thousands of rows, and one command carrying every URI
+/// would grow without bound on every frame; the rest wait for the next pass, so
+/// a row stays a URI a little longer instead of the request growing.
+pub const LABEL_BATCH: usize = 256;
 
 /// The direction a block of rows steps in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -75,6 +82,15 @@ pub struct Queue {
     snapshot: Vec<String>,
     /// The generator's state, advanced once per draw.
     rng: u64,
+    /// The context the current rows came from, when a hand-over adopted them.
+    /// A local start owns its rows, so it has no context to name.
+    origin: Option<String>,
+    /// The newest activation epoch a loss named. A landing that names it or an
+    /// older one was overtaken by that loss and is not adopted.
+    lost_epoch: u64,
+    /// Row URIs a label was asked for, so a row that never comes back named
+    /// does not become a request per frame.
+    label_asked: HashSet<String>,
 }
 
 impl Queue {
@@ -118,6 +134,7 @@ impl Queue {
         self.skips = 0;
         self.selection.clear();
         self.refocus = None;
+        self.origin = None;
         self.index = None;
         let first = self.start_shuffled(index);
         self.goto(first, transport)
@@ -184,9 +201,18 @@ impl Queue {
 
     /// Folds one update in and returns the command it implies, if any.
     pub fn apply(&mut self, update: &Update, transport: &mut Transport) -> Option<Command> {
-        let Update::Transport(update) = update else {
-            return None;
-        };
+        match update {
+            Update::Transport(update) => self.apply_transport(update, transport),
+            Update::Remote(update) => self.apply_remote(update, transport),
+            _ => None,
+        }
+    }
+
+    fn apply_transport(
+        &mut self,
+        update: &TransportUpdate,
+        transport: &mut Transport,
+    ) -> Option<Command> {
         match update {
             TransportUpdate::Loading => {
                 self.awaiting_start = false;
@@ -226,6 +252,139 @@ impl Queue {
         }
     }
 
+    fn apply_remote(
+        &mut self,
+        update: &RemoteUpdate,
+        transport: &mut Transport,
+    ) -> Option<Command> {
+        match update {
+            // The bridge loads next, so adopting asks for nothing.
+            RemoteUpdate::Landed(landing) => {
+                self.adopt(landing, transport);
+                None
+            }
+            // The sound belongs to another device now, so a running player is
+            // paused rather than stopped: the rows, the index and the position
+            // stay, and a local resume continues.
+            RemoteUpdate::Lost { epoch } => {
+                self.lost_epoch = self.lost_epoch.max(*epoch);
+                matches!(
+                    transport.state,
+                    TransportState::Playing | TransportState::Loading
+                )
+                .then_some(Command::Pause)
+            }
+            RemoteUpdate::Labelled(entries) => {
+                self.relabel(entries);
+                // The bar names the loaded row itself, so a row that was only a
+                // URI when it landed stays that way until the label is copied
+                // across.
+                self.rename_loaded(transport);
+                None
+            }
+            // An order is applied by the frame, which owns the clock it needs.
+            RemoteUpdate::Order { .. } => None,
+        }
+    }
+
+    /// Adopts a hand-over: its rows, its current row and the state the landed
+    /// track starts in.
+    ///
+    /// `false` when the landing names an activation a loss has already
+    /// overtaken, or names no row; nothing changes then, so the local transport
+    /// is not set to a track another device is playing.
+    pub fn adopt(&mut self, landing: &Landing, transport: &mut Transport) -> bool {
+        if landing.epoch <= self.lost_epoch {
+            return false;
+        }
+        // The landing names rows only by URI, and its report shapes exactly
+        // those rows as entries, so the queue starts on what the phone was told.
+        let report = landing.report();
+        let Some(landed) = report.track else {
+            return false;
+        };
+
+        self.tracks = report
+            .prev
+            .into_iter()
+            .chain([landed.clone()])
+            .chain(report.next)
+            .collect();
+        self.skips = 0;
+        self.selection.clear();
+        self.refocus = None;
+        self.label_asked.clear();
+        self.repeat = match (landing.repeat_track, landing.repeat_context) {
+            (true, _) => Repeat::One,
+            (false, true) => Repeat::All,
+            (false, false) => Repeat::Off,
+        };
+        self.shuffle = landing.shuffle;
+        self.origin = landing.context.clone();
+        self.index = Some(landing.index);
+        if self.shuffle {
+            // Only the rows after the landed one are drawn, so it stays the
+            // current row, and the order the phone had is what turning shuffle
+            // off puts back.
+            self.snapshot = self.uris();
+            self.draw_after(landing.index + 1);
+        } else {
+            self.snapshot.clear();
+        }
+        // The bridge loads the landed track, so the events of the previous
+        // track's load are no longer this queue's.
+        self.awaiting_start = true;
+        transport.landed(&landed, landing.position_ms, landing.playing);
+        true
+    }
+
+    /// The rows after the current one that are still only a URI, asked for once.
+    pub fn label_wants(&mut self) -> Option<Command> {
+        let mut uris = Vec::new();
+        for entry in self.tracks.iter().skip(self.first_upcoming()) {
+            if entry.named || self.label_asked.contains(&entry.uri) {
+                continue;
+            }
+            uris.push(entry.uri.clone());
+            if uris.len() == LABEL_BATCH {
+                break;
+            }
+        }
+        if uris.is_empty() {
+            return None;
+        }
+        self.label_asked.extend(uris.iter().cloned());
+        Some(Command::LabelRows { uris })
+    }
+
+    /// Names the rows a label answered for, leaving the order and the current
+    /// row alone.
+    pub fn relabel(&mut self, entries: &[TrackEntry]) {
+        for named in entries {
+            for row in &mut self.tracks {
+                if row.uri == named.uri {
+                    *row = named.clone();
+                }
+            }
+        }
+    }
+
+    /// Copies a newly named current row into the playbar.
+    fn rename_loaded(&self, transport: &mut Transport) {
+        let Some(current) = self.current() else {
+            return;
+        };
+        let Some(now) = transport.now_playing.as_mut() else {
+            return;
+        };
+        if now.uri != current.uri {
+            return;
+        }
+        now.title = current.title.clone();
+        now.artists = current.artists.clone();
+        now.cover = current.cover.clone();
+    }
+
     /// Whether Next would move: the same answer `next` gives, without playing.
     pub fn can_next(&self) -> bool {
         self.hop(Cause::Manual).is_some()
@@ -257,6 +416,18 @@ impl Queue {
     pub fn upcoming(&self) -> impl ExactSizeIterator<Item = (usize, &TrackEntry)> + '_ {
         let first = self.first_upcoming();
         self.tracks.iter().enumerate().skip(first)
+    }
+
+    /// The entries before the current one, at most `count`, nearest last.
+    pub fn history(&self, count: usize) -> impl ExactSizeIterator<Item = &TrackEntry> + '_ {
+        let end = self.index.unwrap_or(0);
+        let start = end.saturating_sub(count);
+        self.tracks[start..end].iter()
+    }
+
+    /// The context the current rows came from, when a hand-over adopted them.
+    pub fn origin(&self) -> Option<&str> {
+        self.origin.as_deref()
     }
 
     /// The first index an edit may touch: the entry after the current one, or
@@ -3343,5 +3514,360 @@ mod tests {
         assert_eq!(queue.remove_rows(&[5, 1, 2], &expect), Some(3));
         assert_eq!(order(&queue), uris(&["t0", "t3", "t4", "t6", "t7"]));
         assert_eq!(queue.refocus(), Some(1));
+    }
+
+    /// A hand-over landing on `rows` at `index`, playing, at the first
+    /// activation epoch.
+    fn landing(rows: &[&str], index: usize) -> Landing {
+        Landing {
+            rows: rows.iter().map(|uri| (*uri).to_owned()).collect(),
+            index,
+            position_ms: 7_000,
+            playing: true,
+            context: Some("spotify:playlist:p".to_owned()),
+            shuffle: false,
+            repeat_context: false,
+            repeat_track: false,
+            epoch: 1,
+        }
+    }
+
+    fn landed(landing: &Landing) -> Update {
+        Update::Remote(RemoteUpdate::Landed(landing.clone()))
+    }
+
+    fn lost(epoch: u64) -> Update {
+        Update::Remote(RemoteUpdate::Lost { epoch })
+    }
+
+    fn labelled(entries: Vec<TrackEntry>) -> Update {
+        Update::Remote(RemoteUpdate::Labelled(entries))
+    }
+
+    #[test]
+    fn adopting_replaces_the_rows_and_sits_on_the_landing_index_without_a_play() {
+        let mut queue = started(4, 0);
+        let mut transport = Transport::default();
+
+        assert!(queue.adopt(&landing(&["a", "b", "c"], 1), &mut transport));
+        assert_eq!(order(&queue), uris(&["a", "b", "c"]));
+        assert_eq!(queue.index, Some(1));
+        assert_eq!(queue.current().map(|entry| entry.uri.as_str()), Some("b"));
+        assert_eq!(upcoming(&queue), vec![(2, "c".to_owned())]);
+    }
+
+    #[test]
+    fn adopt_arms_the_load_guard() {
+        let mut queue = started(3, 0);
+        let mut transport = Transport::default();
+        queue.adopt(&landing(&["a", "b", "c"], 1), &mut transport);
+
+        // The landed track's load has not started yet, so a failure naming the
+        // previous track must not advance the landed queue.
+        assert_eq!(
+            feed(&mut queue, &mut transport, TransportUpdate::Unavailable),
+            None
+        );
+        assert_eq!(queue.index, Some(1));
+
+        clear_guard(&mut queue, &mut transport);
+        assert_eq!(
+            feed(&mut queue, &mut transport, TransportUpdate::Unavailable),
+            Some(play("c"))
+        );
+    }
+
+    #[test]
+    fn adopt_sets_the_transport_to_the_landed_track() {
+        let mut queue = Queue::default();
+        let mut transport = Transport::default();
+        let playing = landing(&["a", "b"], 1);
+
+        assert!(queue.adopt(&playing, &mut transport));
+        assert_eq!(transport.state, TransportState::Loading);
+        let now_playing = transport.now_playing.clone().expect("a named track");
+        assert_eq!(now_playing.uri, "b");
+        assert_eq!(now_playing.title, "b", "a row the label owes is its URI");
+        assert_eq!(transport.position_ms, 7_000, "the phone's own position");
+        assert_eq!(transport.duration_ms, None, "the length is not known yet");
+
+        assert!(queue.adopt(
+            &Landing {
+                playing: false,
+                ..playing
+            },
+            &mut transport
+        ));
+        assert_eq!(transport.state, TransportState::Paused);
+    }
+
+    #[test]
+    fn adopt_carries_shuffle_and_repeat() {
+        let mut queue = Queue::default();
+        let mut transport = Transport::default();
+
+        assert!(queue.adopt(
+            &Landing {
+                shuffle: true,
+                repeat_context: true,
+                repeat_track: true,
+                ..landing(&["a", "b", "c"], 0)
+            },
+            &mut transport
+        ));
+        assert!(queue.shuffle());
+        assert_eq!(
+            queue.repeat(),
+            Repeat::One,
+            "repeat one outranks repeat all"
+        );
+
+        assert!(queue.adopt(
+            &Landing {
+                repeat_context: true,
+                ..landing(&["a", "b"], 0)
+            },
+            &mut transport
+        ));
+        assert_eq!(queue.repeat(), Repeat::All);
+        assert!(!queue.shuffle(), "a landing that does not ask shuffles not");
+
+        assert!(queue.adopt(&landing(&["a", "b"], 0), &mut transport));
+        assert_eq!(queue.repeat(), Repeat::Off);
+    }
+
+    #[test]
+    fn adopt_clears_the_selection_and_refocus() {
+        let mut queue = started(5, 0);
+        let mut transport = Transport::default();
+        queue.press(1, Press::Replace);
+        queue.press(3, Press::Toggle);
+        queue.refocus_at(3);
+        assert_eq!(picked(&queue), vec![1, 3]);
+
+        queue.adopt(&landing(&["a", "b", "c", "d", "e"], 0), &mut transport);
+        assert!(
+            picked(&queue).is_empty(),
+            "a pick cannot survive other rows"
+        );
+        assert_eq!(queue.refocus(), None);
+    }
+
+    #[test]
+    fn adopt_keeps_the_landed_row_current_under_a_shuffle_draw() {
+        let mut queue = Queue::default();
+        let mut transport = Transport::default();
+        let rows = ["n0", "n1", "n2", "n3", "n4", "n5"];
+
+        assert!(queue.adopt(
+            &Landing {
+                shuffle: true,
+                ..landing(&rows, 2)
+            },
+            &mut transport
+        ));
+        assert_eq!(queue.current().map(|entry| entry.uri.as_str()), Some("n2"));
+        assert_eq!(
+            order(&queue)[..3],
+            uris(&["n0", "n1", "n2"]),
+            "the rows before the current one keep the phone's order"
+        );
+
+        let mut drawn: Vec<String> = order(&queue)[3..].to_vec();
+        assert_ne!(
+            drawn,
+            uris(&["n3", "n4", "n5"]),
+            "the coming rows are drawn, not listed"
+        );
+        drawn.sort();
+        assert_eq!(drawn, uris(&["n3", "n4", "n5"]), "the draw moved no row");
+
+        queue.toggle_shuffle();
+        assert_eq!(order(&queue), uris(&rows), "the snapshot was the landing's");
+        assert_eq!(queue.current().map(|entry| entry.uri.as_str()), Some("n2"));
+    }
+
+    #[test]
+    fn an_out_of_range_index_is_refused_and_changes_nothing() {
+        let mut queue = started(3, 1);
+        let mut transport = Transport::default();
+        queue.jump(1, &mut transport);
+        let before = transport.clone();
+        let rows = order(&queue);
+
+        assert!(!queue.adopt(&landing(&["a", "b"], 2), &mut transport));
+        assert_eq!(order(&queue), rows, "a refused landing replaced the rows");
+        assert_eq!(queue.index, Some(1));
+        assert_eq!(
+            transport, before,
+            "a refused landing must not touch the transport"
+        );
+    }
+
+    #[test]
+    fn lost_pauses_a_playing_or_loading_transport() {
+        for state in [TransportState::Playing, TransportState::Loading] {
+            let mut queue = started(2, 0);
+            let mut transport = Transport {
+                state,
+                ..Transport::default()
+            };
+            assert_eq!(
+                queue.apply(&lost(1), &mut transport),
+                Some(Command::Pause),
+                "{state:?} was not paused"
+            );
+            assert_eq!(queue.lost_epoch, 1);
+        }
+    }
+
+    #[test]
+    fn lost_while_paused_sends_nothing() {
+        let mut queue = started(2, 0);
+        let mut transport = Transport {
+            state: TransportState::Paused,
+            ..Transport::default()
+        };
+
+        assert_eq!(queue.apply(&lost(2), &mut transport), None);
+        assert_eq!(queue.lost_epoch, 2, "a loss while paused is still a loss");
+        assert_eq!(
+            queue.apply(&lost(1), &mut transport),
+            None,
+            "an older epoch does not lower the mark"
+        );
+        assert_eq!(queue.lost_epoch, 2);
+    }
+
+    #[test]
+    fn lost_then_landed_does_not_play() {
+        let mut queue = started(2, 0);
+        let mut transport = Transport {
+            state: TransportState::Playing,
+            ..Transport::default()
+        };
+        assert_eq!(queue.apply(&lost(1), &mut transport), Some(Command::Pause));
+        let rows = order(&queue);
+        let before = transport.clone();
+
+        assert_eq!(
+            queue.apply(&landed(&landing(&["a", "b"], 0)), &mut transport),
+            None
+        );
+        assert_eq!(order(&queue), rows, "a stale landing replaced the rows");
+        assert_eq!(queue.index, Some(0));
+        assert_eq!(transport, before, "a stale landing moved the transport");
+    }
+
+    #[test]
+    fn a_landed_with_a_newer_epoch_after_a_loss_is_adopted() {
+        let mut queue = started(2, 0);
+        let mut transport = Transport {
+            state: TransportState::Playing,
+            ..Transport::default()
+        };
+        assert_eq!(queue.apply(&lost(1), &mut transport), Some(Command::Pause));
+
+        let landing = Landing {
+            epoch: 2,
+            ..landing(&["a", "b", "c"], 1)
+        };
+        assert_eq!(queue.apply(&landed(&landing), &mut transport), None);
+        assert_eq!(order(&queue), uris(&["a", "b", "c"]));
+        assert_eq!(queue.index, Some(1));
+        assert_eq!(transport.state, TransportState::Loading);
+    }
+
+    #[test]
+    fn label_wants_name_the_unnamed_rows_after_the_current_once() {
+        let mut queue = Queue::default();
+        let mut transport = Transport::default();
+        queue.adopt(&landing(&["a", "b", "c", "d"], 1), &mut transport);
+
+        assert_eq!(
+            queue.label_wants(),
+            Some(Command::LabelRows {
+                uris: uris(&["c", "d"]),
+            }),
+            "only the rows after the current one owe a name"
+        );
+        assert_eq!(queue.label_wants(), None, "a row is asked for once");
+    }
+
+    #[test]
+    fn a_label_batch_is_capped_and_the_rest_wait_for_the_next_pass() {
+        let mut queue = Queue::default();
+        let mut transport = Transport::default();
+        let rows: Vec<String> = (0..LABEL_BATCH + 40)
+            .map(|row| format!("spotify:track:{row}"))
+            .collect();
+        let borrowed: Vec<&str> = rows.iter().map(String::as_str).collect();
+        queue.adopt(&landing(&borrowed, 0), &mut transport);
+
+        let Some(Command::LabelRows { uris: first }) = queue.label_wants() else {
+            panic!("the unnamed rows owe a request");
+        };
+        assert_eq!(first.len(), LABEL_BATCH, "one request names one batch");
+        assert_eq!(first, rows[1..=LABEL_BATCH].to_vec());
+
+        let Some(Command::LabelRows { uris: second }) = queue.label_wants() else {
+            panic!("the rows left over owe the next request");
+        };
+        assert_eq!(
+            second,
+            rows[LABEL_BATCH + 1..].to_vec(),
+            "the next pass names the rest, and nothing twice"
+        );
+        assert_eq!(queue.label_wants(), None);
+    }
+
+    #[test]
+    fn relabel_fills_rows_by_uri_and_leaves_the_index() {
+        let mut queue = Queue::default();
+        let mut transport = Transport::default();
+        queue.adopt(&landing(&["a", "b", "a"], 1), &mut transport);
+
+        let mut a = track("a");
+        a.title = "Alpha".to_owned();
+        let mut b = track("b");
+        b.title = "Beta".to_owned();
+        assert_eq!(
+            queue.apply(&labelled(vec![a, b, track("gone")]), &mut transport),
+            None
+        );
+
+        assert_eq!(queue.index, Some(1), "the label moved the current row");
+        assert_eq!(order(&queue), uris(&["a", "b", "a"]));
+        assert_eq!(queue.tracks[0].title, "Alpha", "the row by URI, not index");
+        assert_eq!(queue.tracks[1].title, "Beta");
+        assert_eq!(queue.tracks[2].title, "Alpha", "every row with that URI");
+        assert!(queue.tracks.iter().all(|entry| entry.named));
+        assert_eq!(queue.label_wants(), None, "nothing left to ask for");
+    }
+
+    #[test]
+    fn a_label_that_names_the_loaded_row_renames_the_playbar() {
+        let mut queue = Queue::default();
+        let mut transport = Transport::default();
+        queue.adopt(&landing(&["a", "b"], 1), &mut transport);
+        assert_eq!(
+            transport.now_playing.as_ref().map(|now| now.title.as_str()),
+            Some("b"),
+            "the bar starts on the URI the landing carried"
+        );
+
+        let mut b = track("b");
+        b.title = "Beta".to_owned();
+        b.artists = "The Band".to_owned();
+        assert_eq!(
+            queue.apply(&labelled(vec![b]), &mut transport),
+            None,
+            "naming a row asks for nothing"
+        );
+
+        let now = transport.now_playing.expect("the loaded row is named");
+        assert_eq!(now.uri, "b");
+        assert_eq!(now.title, "Beta");
+        assert_eq!(now.artists, "The Band");
     }
 }

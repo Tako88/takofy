@@ -1,6 +1,7 @@
 //! Session facade: the calls the command task makes on a live session.
 
 use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 
 use librespot::core::authentication::Credentials;
 use librespot::core::{Session, SessionConfig};
@@ -8,14 +9,16 @@ use librespot::core::{Session, SessionConfig};
 use crate::album::AlbumError;
 use crate::artist::ArtistError;
 use crate::connect::{ClusterView, ConnectError, Steer};
-use crate::context::{ContextError, Page, PageSource, Walker};
+use crate::context::{ContextError, Page, PageSource, Walker, resolve_uris};
 use crate::credentials::AccessToken;
 use crate::followed::FollowedError;
+use crate::hold;
+use crate::latest::Latest;
 use crate::lyrics::LyricsError;
 use crate::playback::{Playback, PlaybackError, PlaybackEvent, Volume};
 use crate::playlist_edit::{self, PlaylistError};
 use crate::presence::Presence;
-use crate::registry::Registry;
+use crate::registry::{Registry, Verdict};
 use crate::remote::{
     ROOTLIST_WIRE, RemoteContext, RemoteRootlist, label_playlists, label_tracks, read_album,
     read_artist, read_followed_artists, read_followed_shows, read_liked_tracks, read_lyrics,
@@ -27,11 +30,12 @@ use crate::remote::{
 use crate::rootlist::{RootlistError, fetch_all};
 use crate::search::search_uri;
 use crate::show::ShowError;
+use crate::transfer::{Resolution, TransferPlan};
 use crate::watch::{self, Gate};
 use takofy_model::{
-    AlbumDetail, ArtistDetail, ArtistPortrait, CoverUrl, FollowedArtist, FollowedShow, Move,
-    PlaylistAccess, PlaylistEntry, Removal, RequestId, Revision, SavedAlbum, ShowDetail,
-    TrackEntry, TrackLyrics,
+    AlbumDetail, ArtistDetail, ArtistPortrait, CoverUrl, FollowedArtist, FollowedShow, Landing,
+    Move, PlaylistAccess, PlaylistEntry, Removal, Report, RequestId, Revision, SavedAlbum,
+    ShowDetail, TrackEntry, TrackLyrics,
 };
 
 /// Why an [`Engine`] operation failed.
@@ -66,9 +70,15 @@ pub struct Engine {
     /// What this device announces about itself, held so a play can be reported
     /// before anything is watching.
     presence: Arc<Presence>,
+    /// The newest report the window published, kept before a watch so the first
+    /// body already describes what plays here.
+    latest: Arc<Latest>,
     /// The requests in flight, held so one can be refused before anything is
     /// watching.
     registry: Arc<Registry>,
+    /// The bundle a call made before a watch reads, held for the engine's life
+    /// so the hold a transfer records is not dropped with the call.
+    detached: Arc<watch::Shared>,
     /// What the watch announced through, once one has started.
     shared: OnceLock<Arc<watch::Shared>>,
     /// Whether the pump was started; the dealer's one start cannot be repeated.
@@ -79,11 +89,20 @@ impl Engine {
     /// The stage and the registry exist before any watch, because the window can
     /// report a playable device before it asks for its own entry.
     fn new(session: Session) -> Self {
+        let presence = Arc::new(Presence::default());
+        let latest = Arc::new(Latest::default());
+        let registry = Arc::new(Registry::new(watch::Timing::default()));
         Self {
             session,
             gate: Arc::default(),
-            presence: Arc::new(Presence::default()),
-            registry: Arc::new(Registry::new(watch::Timing::default())),
+            detached: watch::Shared::detached(
+                Arc::clone(&presence),
+                Arc::clone(&latest),
+                Arc::clone(&registry),
+            ),
+            presence,
+            latest,
+            registry,
             shared: OnceLock::new(),
             watching: false,
         }
@@ -111,6 +130,7 @@ impl Engine {
             &self.session,
             Arc::clone(&self.gate),
             Arc::clone(&self.presence),
+            Arc::clone(&self.latest),
             Arc::clone(&self.registry),
         )
         .await?;
@@ -137,16 +157,40 @@ impl Engine {
         self.registry.refuse(id);
     }
 
+    /// Publishes what the window is playing, or that it has nothing to publish.
+    ///
+    /// The slot lives here rather than in the watch, so setting it before the
+    /// watch starts is not lost with the call that set it.
+    pub fn report(&self, report: Option<Report>) {
+        self.latest.set(report);
+    }
+
+    /// Answers one order the window carried out, and says whether the entry was
+    /// still pending.
+    ///
+    /// The verdict is the window's own. Either way its ack is recorded, because
+    /// the next state put is what tells the phone the order was heard.
+    pub fn answer_order(&self, id: RequestId, ok: bool) -> bool {
+        let verdict = if ok {
+            Verdict::Success
+        } else {
+            Verdict::Failure
+        };
+        self.registry.answer_order(id, verdict)
+    }
+
+    /// When a pending request's budget answers it.
+    pub fn expires(&self, id: RequestId) -> Option<Instant> {
+        self.registry.expires(id)
+    }
+
     /// Asks the cluster for its roster again, answering what it says.
     pub async fn refresh_devices(&self) -> Result<ClusterView, EngineError> {
         let wire = watch::SessionWire::new(&self.session);
         let timing = watch::Timing::default();
         // A refresh before any watch still announces the stage this engine
         // holds, so it reads the same bundle rather than a throwaway one.
-        let shared = match self.shared.get() {
-            Some(shared) => Arc::clone(shared),
-            None => watch::Shared::detached(Arc::clone(&self.presence), Arc::clone(&self.registry)),
-        };
+        let shared = self.bundle();
         Ok(watch::refresh(&wire, &self.gate, &shared, timing).await?)
     }
 
@@ -159,7 +203,67 @@ impl Engine {
     /// Takes this client off the account's device list.
     pub async fn withdraw_devices(&self) -> Result<(), EngineError> {
         let wire = watch::SessionWire::new(&self.session);
-        Ok(watch::withdraw(&wire, &self.gate, watch::Timing::default()).await?)
+        Ok(watch::withdraw(&wire, &self.gate, &self.presence, watch::Timing::default()).await?)
+    }
+
+    /// Every track URI a context holds, in the walker's order.
+    ///
+    /// Bounded by the transfer's resolve budget: a read that hangs would hold a
+    /// hand-over's answer open, and the phone is waiting for one.
+    pub async fn resolve_context(&self, uri: &str) -> Result<Vec<String>, EngineError> {
+        let source = RemoteContext {
+            session: &self.session,
+        };
+        let budget = watch::Timing::default().resolve;
+        Ok(resolve_within(source, uri, budget).await?)
+    }
+
+    /// Takes the account's sound for one hand-over, answering the phone.
+    ///
+    /// The hold is recorded in the bundle the pump announces from, so the report
+    /// outlives this call and every later body describes the same hold.
+    pub async fn accept_transfer(
+        &self,
+        id: RequestId,
+        plan: &TransferPlan,
+        resolution: Resolution,
+    ) -> Result<Landing, EngineError> {
+        let wire = watch::SessionWire::new(&self.session);
+        let shared = self.bundle();
+        Ok(hold::accept(
+            &wire,
+            &self.gate,
+            &shared,
+            id,
+            plan,
+            resolution,
+            watch::Timing::default(),
+        )
+        .await?)
+    }
+
+    /// Gives the account's sound back, announcing what the device is now.
+    pub async fn release_sound(&self) -> Result<(), EngineError> {
+        let wire = watch::SessionWire::new(&self.session);
+        let shared = self.bundle();
+        hold::release(&wire, &self.gate, &shared, watch::Timing::default()).await?;
+        Ok(())
+    }
+
+    /// Whether this device holds the account's sound.
+    pub fn holding(&self) -> bool {
+        self.presence.active()
+    }
+
+    /// The bundle the pump announces from, or the detached one before a watch.
+    ///
+    /// A transfer can only be accepted once the pump has named a connection, so
+    /// the detached bundle answers refusals and never keeps a hold of its own.
+    fn bundle(&self) -> Arc<watch::Shared> {
+        match self.shared.get() {
+            Some(shared) => Arc::clone(shared),
+            None => Arc::clone(&self.detached),
+        }
     }
 
     /// The user's playlists, labelled, with what the column may write.
@@ -491,6 +595,18 @@ async fn search_page<S: PageSource>(source: S, query: &str) -> Result<Option<Pag
     Walker::new(source, uri).next_page().await
 }
 
+/// Walks a context inside the budget a transfer can afford.
+async fn resolve_within<S: PageSource>(
+    source: S,
+    uri: &str,
+    budget: Duration,
+) -> Result<Vec<String>, ContextError> {
+    match tokio::time::timeout(budget, resolve_uris(source, uri)).await {
+        Ok(result) => result,
+        Err(_) => Err(ContextError::TimedOut),
+    }
+}
+
 /// The track pages of one playlist.
 pub struct TrackPages<'a> {
     session: &'a Session,
@@ -528,8 +644,9 @@ fn page_cover(context: Option<CoverUrl>, rows: &[TrackEntry]) -> Option<CoverUrl
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
-    use super::{Engine, page_cover, search_page};
+    use super::{Engine, page_cover, resolve_within, search_page};
     use crate::context::{ContextError, Page, PageSource, PageTrack, Resolved};
     use takofy_model::{CoverUrl, TrackEntry};
 
@@ -599,6 +716,31 @@ mod tests {
             None
         );
         assert_eq!(source.resolved(), Vec::<String>::new());
+    }
+
+    /// A source that never answers, so the budget is the only thing that can
+    /// end the read.
+    struct Silent;
+
+    impl PageSource for Silent {
+        async fn resolve(&self, _uri: &str) -> Result<Resolved, ContextError> {
+            std::future::pending().await
+        }
+
+        async fn next(&self, _url: &str) -> Result<Page, ContextError> {
+            std::future::pending().await
+        }
+    }
+
+    #[tokio::test]
+    async fn a_context_that_never_answers_times_out() {
+        let error = resolve_within(Silent, "spotify:playlist:abc", Duration::from_millis(20))
+            .await
+            .expect_err("a read with no answer must not hold the caller open");
+        assert!(
+            matches!(error, ContextError::TimedOut),
+            "the budget names itself, so a caller can tell it from a source failure"
+        );
     }
 
     fn cover(tail: &str) -> CoverUrl {

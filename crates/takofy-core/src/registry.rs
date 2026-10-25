@@ -5,10 +5,13 @@
 //! answered `Failure` by its timer, so a stuck window cannot hang the phone;
 //! dropping the registry drops the responders unanswered, which the dealer
 //! reads as failure too.
+//!
+//! Only an order's answer becomes the ack the next put carries: a hand-over's
+//! ack rides the put that answers it, and a refusal has nothing to add.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use takofy_model::RequestId;
 use tokio::sync::Notify;
@@ -19,8 +22,8 @@ use crate::watch::Timing;
 /// What one request is told.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Verdict {
-    /// The request was taken, which only an accepting path answers.
-    #[allow(dead_code)]
+    /// The request was carried out: a hand-over the server took, or an order
+    /// the window applied.
     Success,
     Failure,
 }
@@ -41,6 +44,9 @@ pub(crate) trait Responder: Send {
 struct Entry {
     ack: Ack,
     responder: Box<dyn Responder>,
+    /// When the budget answers this request, so a reader can tell whether an
+    /// answer is still worth waiting for.
+    expires: Instant,
 }
 
 #[derive(Default)]
@@ -70,7 +76,17 @@ impl Registry {
     /// The timer holds only a weak count, so dropping the registry frees its
     /// responders at once instead of waiting out a budget nobody will read.
     pub(crate) fn insert(self: &Arc<Self>, id: RequestId, ack: Ack, responder: Box<dyn Responder>) {
-        self.state().entries.insert(id, Entry { ack, responder });
+        let expires = Instant::now()
+            .checked_add(self.answer)
+            .unwrap_or_else(Instant::now);
+        self.state().entries.insert(
+            id,
+            Entry {
+                ack,
+                responder,
+                expires,
+            },
+        );
         let budget = self.answer;
         let registry = Arc::downgrade(self);
         tokio::spawn(async move {
@@ -80,18 +96,39 @@ impl Registry {
     }
 
     /// Reads a request's ack without answering it, so a put can carry it.
-    // An ack rides on a put, and this path answers by refusing, which carries
-    // none.
-    #[allow(dead_code)]
     pub(crate) fn ack_of(&self, id: RequestId) -> Option<Ack> {
         self.state().entries.get(&id).map(|entry| entry.ack.clone())
     }
 
+    /// When the budget answers the request, while it is still pending.
+    pub(crate) fn expires(&self, id: RequestId) -> Option<Instant> {
+        self.state().entries.get(&id).map(|entry| entry.expires)
+    }
+
     /// Answers the dealer, and returns whether the entry was still pending.
+    ///
+    /// The answer is not carried by any announcement and asks for no put: the
+    /// phone already has its reply, and a refusal changes nothing this device
+    /// has to say about itself.
     pub(crate) fn answer(&self, id: RequestId, verdict: Verdict) -> bool {
-        let Some(mut entry) = self.take(id) else {
+        let Some(mut entry) = self.state().entries.remove(&id) else {
             return false;
         };
+        entry.responder.answer(verdict);
+        true
+    }
+
+    /// Answers an order, whose ack the next announcement carries.
+    ///
+    /// The publisher is woken because the transport has just moved: without a
+    /// put the phone's display of this device stays where the order found it.
+    pub(crate) fn answer_order(&self, id: RequestId, verdict: Verdict) -> bool {
+        let mut state = self.state();
+        let Some(mut entry) = state.entries.remove(&id) else {
+            return false;
+        };
+        state.last_ack = Some(entry.ack.clone());
+        drop(state);
         entry.responder.answer(verdict);
         self.changed.notify_one();
         true
@@ -102,29 +139,17 @@ impl Registry {
         self.answer(id, Verdict::Failure);
     }
 
-    /// The last command the phone sent, which an announcement carries.
-    // This path's announcements carry no command, so nothing reads it.
-    #[allow(dead_code)]
+    /// The ack of the last order answered here, which an announcement carries.
     pub(crate) fn last_ack(&self) -> Option<Ack> {
         self.state().last_ack.clone()
     }
 
-    /// Wakes whoever is waiting for an answer, so a queued put can be sent.
-    // This path never queues a put behind an answer; it refuses at once.
-    #[allow(dead_code)]
+    /// Waits for an order's answer, so it reaches the next put.
+    ///
+    /// With `command_acks` announced, the phone reads the answer from the state
+    /// this device puts next, and nothing else would ask for that put.
     pub(crate) fn changed(&self) -> Notified<'_> {
         self.changed.notified()
-    }
-
-    /// Takes the entry out and makes its ack the sticky one.
-    ///
-    /// librespot records the last command once handling begins, so the ack
-    /// sticks even when the answer is a failure.
-    fn take(&self, id: RequestId) -> Option<Entry> {
-        let mut state = self.state();
-        let entry = state.entries.remove(&id)?;
-        state.last_ack = Some(entry.ack.clone());
-        Some(entry)
     }
 
     /// A panic elsewhere must not make the registry unusable: a request is
@@ -136,8 +161,8 @@ impl Registry {
     }
 }
 
-/// Fails a request whose budget ran out. Its ack is not the last one the phone
-/// sent, so the announcement is untouched.
+/// Fails a request whose budget ran out. Its ack is not the last order answered
+/// here, so the announcement is untouched.
 fn expire(registry: &Weak<Registry>, id: RequestId) {
     let Some(registry) = registry.upgrade() else {
         return;
@@ -163,6 +188,9 @@ mod tests {
 
     /// Long enough that an answer that must arrive has arrived.
     const ARRIVAL_WAIT: Duration = Duration::from_secs(1);
+
+    /// Long enough for a wake that should have happened to reach the publisher.
+    const QUIET: Duration = Duration::from_millis(20);
 
     fn ack(message_id: u32) -> Ack {
         Ack {
@@ -285,12 +313,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_answer_makes_its_ack_the_last_and_wakes_the_publisher() {
+    async fn an_order_answer_makes_its_ack_the_last_and_wakes_the_publisher() {
         let registry = patient();
         let id = RequestId(7);
         registry.insert(id, ack(70), Box::new(FakeResponder::new(Log::default())));
 
-        assert!(registry.answer(id, Verdict::Success));
+        assert!(registry.answer_order(id, Verdict::Success));
         assert_eq!(
             registry.last_ack().map(|ack| ack.message_id),
             Some(70),
@@ -299,6 +327,33 @@ mod tests {
         tokio::time::timeout(ARRIVAL_WAIT, registry.changed())
             .await
             .expect("an answer wakes the publisher");
+    }
+
+    #[tokio::test]
+    async fn an_answer_that_is_not_an_order_leaves_the_ack_and_the_publisher_alone() {
+        for (verdict, said) in [
+            (Verdict::Success, "reply:success"),
+            (Verdict::Failure, "reply:failure"),
+        ] {
+            let log = Log::default();
+            let registry = patient();
+            let id = RequestId(11);
+            registry.insert(id, ack(110), Box::new(FakeResponder::new(log.clone())));
+
+            assert!(registry.answer(id, verdict));
+
+            assert_eq!(log.entries(), vec![said], "the phone hears its answer");
+            assert!(
+                registry.last_ack().is_none(),
+                "a request that moved no transport is not the command a put names"
+            );
+            assert!(
+                tokio::time::timeout(QUIET, registry.changed())
+                    .await
+                    .is_err(),
+                "nothing else would ask for a put, so nothing is asked for"
+            );
+        }
     }
 
     #[tokio::test]
@@ -312,6 +367,38 @@ mod tests {
         assert!(
             registry.last_ack().is_none(),
             "an expiry is not an ack the phone sent"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unanswered_order_fails_after_the_budget() {
+        let log = Log::default();
+        let registry = registry();
+        let id = RequestId(9);
+        registry.insert(id, ack(90), Box::new(FakeResponder::new(log.clone())));
+
+        // An order that reached the window leaves its entry pending: only the
+        // window's answer or this budget ends it.
+        assert!(registry.expires(id).is_some());
+
+        until("the order's budget to answer failure", || {
+            log.entries() == vec!["reply:failure"]
+        })
+        .await;
+        assert!(registry.expires(id).is_none(), "a budgeted order is gone");
+    }
+
+    #[tokio::test]
+    async fn an_answered_order_no_longer_waits_for_its_budget() {
+        let registry = patient();
+        let id = RequestId(10);
+        registry.insert(id, ack(100), Box::new(FakeResponder::new(Log::default())));
+
+        assert!(registry.expires(id).is_some());
+        assert!(registry.answer_order(id, Verdict::Success));
+        assert!(
+            registry.expires(id).is_none(),
+            "an answered request is gone"
         );
     }
 }
