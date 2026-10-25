@@ -33,7 +33,20 @@ futures-util = "0.3"
 # hyper does not re-export either; `http` is the same 1.5.0 librespot has locked.
 http = "1"
 # The window: eframe runs the event loop and egui draws each frame.
-eframe = "0.37.0"
+#
+# Glow (OpenGL), not wgpu. wgpu 30 does not compile for Windows: wgpu-hal 30
+# wants the `windows` 0.62 bindings and its gpu-allocator 0.28 dependency still
+# wants 0.61, so the D3D12 backend fails on mismatched types. The UI is 2D and
+# draws through egui either way, so the smaller backend costs nothing and is the
+# one that builds everywhere we ship.
+eframe = { version = "0.37.0", default-features = false, features = [
+    "accesskit",
+    "clipboard",
+    "default_fonts",
+    "glow",
+    "wayland",
+    "x11",
+] }
 egui = "0.37.0"
 # Cover art: `image` decodes JPEG under explicit limits; `reqwest` fetches the
 # public CDN URL with a timeout and a cancellable request.

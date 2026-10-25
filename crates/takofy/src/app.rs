@@ -291,7 +291,8 @@ impl eframe::App for TakofyApp {
         window_clear_color(&self.tokens)
     }
 
-    fn on_exit(&mut self) {
+    // Glow's exit hook carries the GL context; nothing here needs it.
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.prefs
             .close(&Prefs::of(&self.transport.volume, &self.queue));
     }
@@ -1869,7 +1870,7 @@ mod tests {
         assert!(app.transport.volume.set_fraction(0.6));
         let changed = Prefs::of(&app.transport.volume, &app.queue);
 
-        App::on_exit(&mut app);
+        App::on_exit(&mut app, None);
         drop(app);
 
         assert_eq!(
@@ -1899,7 +1900,7 @@ mod tests {
             "quiet has passed, so the value is written"
         );
 
-        App::on_exit(&mut app);
+        App::on_exit(&mut app, None);
         drop(app);
 
         assert_eq!(
@@ -1925,7 +1926,7 @@ mod tests {
             "the restored level went out once, so the frames did run"
         );
 
-        App::on_exit(&mut app);
+        App::on_exit(&mut app, None);
         drop(app);
 
         assert!(
