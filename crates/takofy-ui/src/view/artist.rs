@@ -1,5 +1,5 @@
-//! The artist page's body: the photograph hero, the shared action bar, Popular,
-//! and the Discography. The hero is only the band and the name; the page draws
+//! The artist page's body: the plate hero, the shared action bar, Popular, and
+//! the Discography. The hero is the band, its name and its shelf; the page draws
 //! the row and owns the presses it reports.
 //!
 //! The page draws only what the library already has. `Load::Idle` has nothing to
@@ -168,15 +168,14 @@ pub fn artist_view(
                         return;
                     };
 
-                    // The portrait is only held for its colour until the plate
-                    // arrives; the look keeps its fetch going.
-                    let want = want_px(crate::theme::hero::ART, ui.pixels_per_point());
-                    let _ = art.look(artist.portrait.as_ref(), want, now);
+                    // The hero holds the plate at its own size and draws the
+                    // wash from the same pixels.
                     let hero = ArtistHero {
                         name: &artist.name,
-                        tint: art.tint_held(artist.portrait.as_ref(), want, &tokens.palette.tint),
+                        portrait: artist.portrait.as_ref(),
+                        releases: &artist.releases,
                     };
-                    artist_hero::show(ui, &hero, tokens);
+                    artist_hero::show(ui, &hero, art, now, tokens);
 
                     // The action row is the shared one, so it pins while the
                     // discography scrolls under it. The artist's difference is a
@@ -1171,10 +1170,8 @@ mod tests {
         let mut found = None;
         run(ctx, input(size, Vec::new()), |ui| {
             ui.add_space(space::S3);
-            let _ = ui.allocate_exact_size(
-                vec2(ui.available_width(), hero::ARTIST_MIN_H),
-                Sense::hover(),
-            );
+            let band = crate::layout::hero::artist_frame(ui.ctx().content_rect().width(), 0).min_h;
+            let _ = ui.allocate_exact_size(vec2(ui.available_width(), band), Sense::hover());
             found = Some(actionbar::row_rect(ui));
         });
         found.expect("the band and its action row lay out")
@@ -1249,10 +1246,8 @@ mod tests {
         let mut found = None;
         run(ctx, input(size, Vec::new()), |ui| {
             ui.add_space(space::S3);
-            let _ = ui.allocate_exact_size(
-                vec2(ui.available_width(), hero::ARTIST_MIN_H),
-                Sense::hover(),
-            );
+            let band = crate::layout::hero::artist_frame(ui.ctx().content_rect().width(), 0).min_h;
+            let _ = ui.allocate_exact_size(vec2(ui.available_width(), band), Sense::hover());
             actionbar::row_rect(ui);
             crate::view::inner(ui, |ui| {
                 section::head(ui, "Popular", "", &tokens);
@@ -1293,7 +1288,10 @@ mod tests {
             texts.contains(&"Vela Moreno"),
             "the hero's title: {texts:?}"
         );
-        assert!(texts.contains(&"ARTIST"), "the hero's eyebrow: {texts:?}");
+        assert!(
+            !texts.contains(&"ARTIST"),
+            "the plate band carries no eyebrow: {texts:?}"
+        );
     }
 
     /// Whether `artist`'s popular list holds `index` as part of its selection.
@@ -2442,11 +2440,12 @@ mod tests {
             probe.x - space::GUTTER
         );
 
-        // The hero above them is still full-bleed: its title starts at the
-        // gutter because the band pads itself, and its photograph spans the pane.
+        // The hero's words start beside the plate, and the plate at the gutter.
         let title = text_rect(&output, "Vela Moreno").expect("the hero title is painted");
         assert!(
-            (title.left() - space::GUTTER).abs() < 0.01,
+            (title.left() - (space::GUTTER + crate::layout::hero::plate_side(probe.x) + space::S5))
+                .abs()
+                < 0.01,
             "the hero title sits at {}",
             title.left()
         );
@@ -2949,9 +2948,31 @@ mod tests {
     fn a_hidden_block_has_no_wants() {
         let ctx = context();
         let size = tall();
-        let mut releases = mixed();
-        releases[0].cover = Some(cover("album"));
-        releases[1].cover = Some(cover("ep"));
+        // The shelf takes the oldest, the middle and the newest covered
+        // release, so putting the two blocks at the unpicked middle positions
+        // keeps their art out of the band: a fetch of it can only be the
+        // block's own.
+        let mut releases = vec![
+            release("spotify:album:zero", "Zero", &["spotify:track:0"]),
+            release("spotify:album:r1", "Album One", &["spotify:track:1"]),
+            release("spotify:album:two", "Two", &["spotify:track:2"]),
+            release_of_kind(
+                "spotify:ep:r2",
+                "An EP",
+                ReleaseKind::Ep,
+                &["spotify:track:3"],
+            ),
+            release("spotify:album:four", "Four", &["spotify:track:4"]),
+        ];
+        for (index, tail) in [
+            (0, "zero"),
+            (1, "album"),
+            (2, "two"),
+            (3, "ep"),
+            (4, "four"),
+        ] {
+            releases[index].cover = Some(cover(tail));
+        }
         let now = Instant::now();
 
         // The control: unfiltered, both blocks are on screen and ask.
@@ -5822,7 +5843,7 @@ mod tests {
     }
 
     #[test]
-    fn the_head_names_an_album_column_beside_the_hero_eyebrow() {
+    fn the_head_names_the_album_column() {
         let ctx = context();
         let mut library = library_with(detail(
             vec![track("spotify:track:a", "One", "Vela Moreno", 222_000)],
@@ -5845,8 +5866,8 @@ mod tests {
 
         assert_eq!(
             texts.iter().filter(|text| **text == "ARTIST").count(),
-            1,
-            "the hero's eyebrow alone: {texts:?}"
+            0,
+            "the hero's eyebrow is gone: {texts:?}"
         );
         assert_eq!(
             texts.iter().filter(|text| **text == "ALBUM").count(),

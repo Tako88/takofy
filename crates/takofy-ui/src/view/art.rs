@@ -108,7 +108,7 @@ pub fn mosaic(
 ///
 /// The three non-ready states fall back to the same slot and hole [`tile`] draws,
 /// so a quadrant with nothing to draw is still a box rather than a gap.
-fn fill_rounded(
+pub(crate) fn fill_rounded(
     painter: &Painter,
     rect: Rect,
     radius: CornerRadius,

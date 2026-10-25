@@ -136,6 +136,23 @@ pub(super) fn wash(ui: &Ui, rect: Rect, tint: Option<Color32>, tokens: &Tokens) 
     );
 }
 
+/// The byline's plain line: one muted, tracked mono row at `width`.
+pub(super) fn byline_line(
+    ui: &Ui,
+    words: &str,
+    width: f32,
+    tokens: &Tokens,
+) -> std::sync::Arc<egui::Galley> {
+    recipe::line(
+        ui,
+        words,
+        recipe::hero_description(),
+        tokens.palette.text_muted,
+        recipe::tracking_pts(text::XS, tracking::SLIGHT),
+        width,
+    )
+}
+
 struct TitleDrawn {
     id: Option<Id>,
     activated: bool,
@@ -342,7 +359,7 @@ fn byline(
             Some(name) => format!("{name} · {facts}"),
             None => facts,
         };
-        let line = recipe::line(ui, &words, font, ink, tracking, width);
+        let line = byline_line(ui, &words, width, tokens);
         let top = bottom - line.size().y;
         ui.painter().galley(Pos2::new(left, top), line, ink);
         return (top, None);
@@ -387,14 +404,7 @@ fn byline(
         .x
     });
     if !facts.is_empty() && room >= least {
-        let line = recipe::line(
-            ui,
-            &format!(" · {facts}"),
-            recipe::hero_description(),
-            ink,
-            tracking,
-            room,
-        );
+        let line = byline_line(ui, &format!(" · {facts}"), room, tokens);
         ui.painter()
             .galley(Pos2::new(shown.rect.right(), top), line, ink);
     }
