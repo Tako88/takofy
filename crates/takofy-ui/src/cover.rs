@@ -8,16 +8,18 @@
 //! itself exactly when the next attempt is due.
 
 pub mod cache;
+pub mod tint;
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use egui::{ColorImage, TextureHandle, TextureId};
+use egui::{Color32, ColorImage, TextureHandle, TextureId};
 use takofy_model::{CoverImage, CoverSet, CoverUrl};
 
 use crate::message::{Command, Update};
-use crate::theme;
+use crate::theme::{self, TintParams, tint_color};
 use cache::{Cache, Look};
+use tint::{Mean, normalise};
 
 /// The most fetches the window has outstanding at once.
 pub const MAX_IN_FLIGHT: usize = 6;
@@ -50,6 +52,15 @@ pub enum Cover {
     Failed,
 }
 
+/// An uploaded cover: the texture and the mean of the pixels it came from.
+///
+/// The mean is kept rather than the finished colour, so another palette can
+/// normalise the same pixels without fetching the cover again.
+struct Held {
+    texture: TextureHandle,
+    mean: Option<Mean>,
+}
+
 /// The decoded covers the window holds, and the fetch state that fills them.
 #[derive(Default)]
 pub struct Art {
@@ -58,8 +69,8 @@ pub struct Art {
     in_flight: HashMap<CoverUrl, Instant>,
     /// Decoded images waiting to be uploaded, in arrival order.
     pending: Vec<(CoverUrl, CoverImage)>,
-    /// Uploaded textures, keyed by the URL they came from.
-    textures: HashMap<CoverUrl, TextureHandle>,
+    /// Uploaded covers, keyed by the URL they came from.
+    textures: HashMap<CoverUrl, Held>,
 }
 
 impl Art {
@@ -86,7 +97,7 @@ impl Art {
         self.reap();
         match look {
             Look::Ready => match self.textures.get(url) {
-                Some(texture) => Cover::Ready(texture.id()),
+                Some(held) => Cover::Ready(held.texture.id()),
                 // A cover that arrived this frame and has not been uploaded yet.
                 None => Cover::Loading,
             },
@@ -109,22 +120,58 @@ impl Art {
         want_px: u32,
         now: Instant,
     ) -> Option<Cover> {
-        let set = cover?;
+        let held = self.held_url(cover?, want_px)?;
+        self.cache.look(held, now);
+        self.reap();
+        self.textures
+            .get(held)
+            .map(|held| Cover::Ready(held.texture.id()))
+    }
+
+    /// The URL whose pixels the box should draw for its tint: the exact pick
+    /// when it is held, otherwise the nearest held size.
+    fn held_url<'a>(&self, set: &'a CoverSet, want_px: u32) -> Option<&'a CoverUrl> {
         let sized = set
             .variants()
             .iter()
             .rev()
             .filter(|variant| variant.effective().is_some())
             .map(|variant| &variant.url);
-        let held = std::iter::once(set.pick(want_px)?)
+        std::iter::once(set.pick(want_px)?)
             .chain(sized)
             .chain(set.variants().iter().rev().map(|variant| &variant.url))
-            .find(|url| self.textures.contains_key(*url))?;
-        self.cache.look(held, now);
-        self.reap();
-        self.textures
-            .get(held)
-            .map(|texture| Cover::Ready(texture.id()))
+            .find(|url| self.textures.contains_key(*url))
+    }
+
+    /// The tint of the exact size the box would draw, when it is held.
+    ///
+    /// Neither this nor [`Art::tint_held`] touches the cache or the LRU: the band
+    /// has already looked at the cover this frame.
+    pub fn tint(
+        &self,
+        cover: Option<&CoverSet>,
+        want_px: u32,
+        params: &TintParams,
+    ) -> Option<Color32> {
+        self.tint_of(cover?.pick(want_px)?, params)
+    }
+
+    /// The tint of whatever size is held, preferring the box's own pick.
+    ///
+    /// A tint is a colour, not a resolution: the band colours itself as soon as
+    /// any size exists, and barely moves when the larger one lands.
+    pub fn tint_held(
+        &self,
+        cover: Option<&CoverSet>,
+        want_px: u32,
+        params: &TintParams,
+    ) -> Option<Color32> {
+        self.tint_of(self.held_url(cover?, want_px)?, params)
+    }
+
+    fn tint_of(&self, url: &CoverUrl, params: &TintParams) -> Option<Color32> {
+        let mean = self.textures.get(url)?.mean?;
+        Some(tint_color(normalise(mean, params)))
     }
 
     /// Stores an arrived cover's pixels, or records a failure.
@@ -192,9 +239,10 @@ impl Art {
         commands
     }
 
-    /// Uploads every pending cover once and drops its pixels.
-    pub fn upload(&mut self, ctx: &egui::Context) {
+    /// Uploads every pending cover once, records its mean, and drops its pixels.
+    pub fn upload(&mut self, ctx: &egui::Context, params: &TintParams) {
         for (url, image) in std::mem::take(&mut self.pending) {
+            let mean = tint::mean(&image.rgba, params.alpha_floor);
             let pixels = ColorImage::from_rgba_unmultiplied(
                 [image.width as usize, image.height as usize],
                 &image.rgba,
@@ -207,7 +255,7 @@ impl Art {
                 image.width,
                 image.height
             );
-            self.textures.insert(url, texture);
+            self.textures.insert(url, Held { texture, mean });
         }
     }
 
@@ -337,7 +385,7 @@ mod tests {
             },
             now,
         );
-        art.upload(&egui::Context::default());
+        art.upload(&egui::Context::default(), &TintParams::DARK);
 
         let lines: Vec<String> = LOGGED
             .lock()
@@ -402,7 +450,7 @@ mod tests {
         ])
         .expect("a cover set");
         cover(&mut art, &small, now);
-        art.upload(&egui::Context::default());
+        art.upload(&egui::Context::default(), &TintParams::DARK);
         let held = match art.look(Some(&set), 72, now) {
             Cover::Ready(texture) => texture,
             other => panic!("the 64 should be held: {other:?}"),
@@ -441,6 +489,123 @@ mod tests {
         );
     }
 
+    /// Holds `url` with a one-pixel cover of `rgba`.
+    fn hold_pixel(art: &mut Art, url: &CoverUrl, rgba: [u8; 4], now: Instant) {
+        let _ = art.look(Some(&set(url)), 64, now);
+        let _ = art.requests(now);
+        art.apply(
+            &Update::Cover {
+                url: url.clone(),
+                image: CoverImage::new(1, 1, rgba.to_vec()).expect("a 1x1 image"),
+            },
+            now,
+        );
+        art.upload(&egui::Context::default(), &TintParams::DARK);
+    }
+
+    /// The tint of a pure red cover, from the reference table.
+    fn red_tint() -> Color32 {
+        theme::tint_color([116, 27, 27])
+    }
+
+    #[test]
+    fn a_held_cover_answers_its_tint() {
+        let now = base();
+        let mut art = Art::new();
+        let url = url("red");
+        hold_pixel(&mut art, &url, [255, 0, 0, 255], now);
+
+        assert_eq!(
+            art.tint(Some(&set(&url)), 64, &TintParams::DARK),
+            Some(red_tint())
+        );
+        assert_eq!(
+            art.tint_held(Some(&set(&url)), 640, &TintParams::DARK),
+            Some(red_tint()),
+            "a set of one answers whatever size is asked for"
+        );
+    }
+
+    #[test]
+    fn a_cover_that_is_not_held_answers_no_tint() {
+        let art = Art::new();
+        assert_eq!(art.tint(None, 64, &TintParams::DARK), None);
+        assert_eq!(art.tint_held(None, 64, &TintParams::DARK), None);
+        assert_eq!(
+            art.tint(Some(&set(&url("loading"))), 64, &TintParams::DARK),
+            None,
+            "a loading cover has no pixels"
+        );
+        assert_eq!(
+            art.tint_held(Some(&set(&url("missing"))), 64, &TintParams::DARK),
+            None
+        );
+    }
+
+    #[test]
+    fn the_tint_follows_the_size_but_tint_held_falls_back() {
+        let now = base();
+        let mut art = Art::new();
+        let small = url("small");
+        let large = url("large");
+        let set = CoverSet::from_sizes([
+            (Some((64, 64)), small.clone()),
+            (Some((640, 640)), large.clone()),
+        ])
+        .expect("a cover set");
+        hold_pixel(&mut art, &small, [255, 0, 0, 255], now);
+
+        assert_eq!(
+            art.tint(Some(&set), 64, &TintParams::DARK),
+            Some(red_tint()),
+            "the picked 64 is held"
+        );
+        assert_eq!(
+            art.tint(Some(&set), 352, &TintParams::DARK),
+            None,
+            "the picked 640 is not held"
+        );
+        assert_eq!(
+            art.tint_held(Some(&set), 352, &TintParams::DARK),
+            Some(red_tint()),
+            "the band colours itself from the 64"
+        );
+    }
+
+    #[test]
+    fn an_all_transparent_cover_has_no_mean_and_no_tint() {
+        let now = base();
+        let mut art = Art::new();
+        let url = url("clear");
+        cover(&mut art, &url, now);
+        art.upload(&egui::Context::default(), &TintParams::DARK);
+
+        assert!(art.textures[&url].mean.is_none());
+        assert_eq!(art.tint_held(Some(&set(&url)), 64, &TintParams::DARK), None);
+    }
+
+    #[test]
+    fn an_evicted_cover_answers_no_tint() {
+        let now = base();
+        let mut art = Art::new();
+        let url = url("evicted");
+        hold_pixel(&mut art, &url, [255, 0, 0, 255], now);
+        assert!(
+            art.tint_held(Some(&set(&url)), 64, &TintParams::DARK)
+                .is_some()
+        );
+
+        // Two quiet frames unpin the entry, then its own pixels overflow the
+        // budget and evict it.
+        art.begin_frame();
+        art.begin_frame();
+        art.cache.insert(&url, cache::MAX_BYTES + 1);
+        art.reap();
+
+        assert!(!art.textures.contains_key(&url), "the texture is freed");
+        assert_eq!(art.tint_held(Some(&set(&url)), 64, &TintParams::DARK), None);
+    }
+
     #[test]
     fn none_is_missing() {
         let mut art = Art::new();
@@ -459,7 +624,7 @@ mod tests {
             Cover::Loading,
             "not uploaded yet"
         );
-        art.upload(&egui::Context::default());
+        art.upload(&egui::Context::default(), &TintParams::DARK);
         assert!(matches!(
             art.look(Some(&set(&url)), 64, now),
             Cover::Ready(_)
@@ -473,10 +638,10 @@ mod tests {
         let url = url("a");
         cover(&mut art, &url, now);
         let ctx = egui::Context::default();
-        art.upload(&ctx);
+        art.upload(&ctx, &TintParams::DARK);
         assert!(art.pending.is_empty(), "the buffer is dropped");
         let first = art.look(Some(&set(&url)), 64, now);
-        art.upload(&ctx);
+        art.upload(&ctx, &TintParams::DARK);
         assert_eq!(
             art.look(Some(&set(&url)), 64, now),
             first,
@@ -691,7 +856,7 @@ mod tests {
             },
             now,
         );
-        art.upload(&egui::Context::default());
+        art.upload(&egui::Context::default(), &TintParams::DARK);
         assert!(matches!(
             art.look(Some(&set(&flying)), 64, now),
             Cover::Ready(_)

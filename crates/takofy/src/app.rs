@@ -267,7 +267,7 @@ impl eframe::App for TakofyApp {
         self.devices.expire(now);
         // After the drain and before the draw, so a cover that just arrived is
         // ready in this same frame's `ui()`.
-        self.art.upload(ctx);
+        self.art.upload(ctx, &self.tokens.palette.tint);
         if self.transport.anchor() != before {
             self.since = Some(now);
         }
@@ -1222,7 +1222,7 @@ mod tests {
             &mut Playclock::at(now),
         );
         let ctx = egui::Context::default();
-        art.upload(&ctx);
+        art.upload(&ctx, &Tokens::DARK.palette.tint);
 
         assert!(matches!(
             art.look(Some(&set(&url)), 64, now),

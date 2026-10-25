@@ -777,7 +777,7 @@ mod tests {
             },
             now,
         );
-        art.upload(&ctx);
+        art.upload(&ctx, &crate::theme::TintParams::DARK);
         art.begin_frame();
         let cover = art.look(Some(&CoverSet::single(url.clone())), 256, now);
         assert!(matches!(cover, Cover::Ready(_)));
@@ -974,7 +974,7 @@ mod tests {
         );
         let image = CoverImage::new(1, 1, vec![0; 4]).expect("a 1x1 image");
         panel.art.apply(&Update::Cover { url, image }, panel.now);
-        panel.art.upload(&ctx);
+        panel.art.upload(&ctx, &crate::theme::TintParams::DARK);
         panel.art.begin_frame();
 
         let (stack, cover, output) = solve(&mut panel, &ctx, PROBE);

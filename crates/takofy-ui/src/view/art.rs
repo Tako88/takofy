@@ -68,17 +68,6 @@ pub fn tile(
     }
 }
 
-/// Paints a cover's box as a picture and nothing else: no stroke, no rounded
-/// edge of its own.
-///
-/// This is the artist hero's photograph, which the band clips at its own rect
-/// and fades under its scrim. The three non-ready states fall back to the same
-/// slot and hole [`tile`] draws, so a hero with no portrait is a flat band
-/// rather than a blank one.
-pub fn fill(painter: &Painter, rect: Rect, cover: Cover, tokens: &Tokens) {
-    fill_rounded(painter, rect, CornerRadius::ZERO, cover, tokens);
-}
-
 /// Paints a box as a hole and nothing else: the sunken well at the caller's
 /// radius, with no stroke of its own.
 ///
@@ -265,18 +254,6 @@ mod tests {
             .collect()
     }
 
-    fn filled(ctx: &egui::Context, cover: Cover, tokens: &Tokens) -> Vec<Shape> {
-        let mut output = ctx.run_ui(Default::default(), |ui| {
-            fill(ui.painter(), SQUARE, cover, tokens);
-        });
-        output.textures_delta.clear();
-        output
-            .shapes
-            .into_iter()
-            .map(|clipped| clipped.shape)
-            .collect()
-    }
-
     fn holed(ctx: &egui::Context, rect: Rect, radius: CornerRadius, tokens: &Tokens) -> Vec<Shape> {
         let mut output = ctx.run_ui(Default::default(), |ui| {
             hole(ui.painter(), rect, radius, tokens);
@@ -381,40 +358,6 @@ mod tests {
         let radius = CornerRadius::same(2);
         let shapes = holed(&ctx, SQUARE, radius, &tokens);
         assert_eq!(rects(&shapes)[0].corner_radius, radius);
-    }
-
-    #[test]
-    fn a_filled_cover_is_the_picture_alone() {
-        let tokens = Tokens::DARK;
-        let (ctx, texture) = a_context_holding_a_cover();
-        let shapes = filled(&ctx, Cover::Ready(texture.id()), &tokens);
-        let rects = rects(&shapes);
-        assert_eq!(rects.len(), 1, "the photograph and no hairline");
-        assert_eq!(
-            rects[0].brush.as_ref().expect("a texture").fill_texture_id,
-            texture.id()
-        );
-    }
-
-    #[test]
-    fn a_missing_fill_is_the_sunken_well() {
-        let tokens = Tokens::DARK;
-        let (ctx, _) = a_context_holding_a_cover();
-        let shapes = filled(&ctx, Cover::Missing, &tokens);
-        assert_eq!(rects(&shapes)[0].fill, tokens.palette.surface_sunken);
-    }
-
-    #[test]
-    fn a_loading_or_failed_fill_is_the_raised_slot() {
-        let tokens = Tokens::DARK;
-        let (ctx, _) = a_context_holding_a_cover();
-        for state in [Cover::Loading, Cover::Failed] {
-            assert_eq!(
-                rects(&filled(&ctx, state, &tokens))[0].fill,
-                tokens.palette.surface_raised,
-                "{state:?} should read as a slot, not a hole"
-            );
-        }
     }
 
     #[test]

@@ -340,8 +340,6 @@ pub mod hero {
     pub const ARTIST_TITLE_MAX: f32 = 72.0;
     /// The artist title's share of the viewport width, 5.5 vw, as a fraction.
     pub const ARTIST_TITLE_VW: f32 = 0.055;
-    /// Where the artist scrim's middle stop sits down the hero, 45%.
-    pub const SCRIM_MID_STOP: f32 = 0.45;
 }
 
 /// The action row under a band: the row of things that act on the whole context.
@@ -517,6 +515,51 @@ pub mod stroke {
     pub const RULE: f32 = 2.0;
 }
 
+/// The band tint's knobs, so one mean yields a colour for any palette.
+///
+/// The derivation reads the artwork's mean in HSL, normalises it to a tone that
+/// reads as a tinted header, and steps that tone down until the band clears the
+/// ink drawn on it. A light theme supplies another value of these, not another
+/// derivation.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TintParams {
+    /// The lowest alpha a pixel needs to count toward the mean.
+    pub alpha_floor: u8,
+    /// The narrowest tone the artwork's lightness may ask for.
+    pub tone_min: f64,
+    /// The widest tone it may ask for.
+    pub tone_max: f64,
+    /// Below this saturation the mean is grey, and the band stays neutral.
+    pub neutral_below: f64,
+    /// How far the mean's saturation is pushed past a photograph's near-grey.
+    pub saturation_gain: f64,
+    /// The least saturation a band is given.
+    pub saturation_min: f64,
+    /// The most saturation a band is given.
+    pub saturation_max: f64,
+    /// The WCAG relative luminance a band must stay at or under.
+    pub luminance_ceiling: f64,
+    /// How far one step down the lightness scale moves.
+    pub lightness_step: f64,
+    /// The lightness the stepping stops at.
+    pub lightness_floor: f64,
+}
+
+impl TintParams {
+    pub const DARK: Self = Self {
+        alpha_floor: 8,
+        tone_min: 0.16,
+        tone_max: 0.28,
+        neutral_below: 0.03,
+        saturation_gain: 2.2,
+        saturation_min: 0.32,
+        saturation_max: 0.62,
+        luminance_ceiling: 0.05,
+        lightness_step: 0.015,
+        lightness_floor: 0.04,
+    };
+}
+
 /// The only `Color32` values in the codebase.
 ///
 /// A palette is a value rather than a branch: a component reads
@@ -577,15 +620,12 @@ pub struct Palette {
     /// The rule that shows where a carried row will land. Opaque bone, never
     /// the accent.
     pub mark: Color32,
-    /// The wash a header band sits on. The reference writes this as `#3a3a3a`
-    /// under a 0.4 opacity; a fill has one channel to carry that, so it is
-    /// folded into the alpha here.
+    /// The band's fill before its art has arrived, and whenever it has none:
+    /// the reference's `--color-hero-tint`, painted opaque.
     pub hero_wash: Color32,
-    /// The artist hero's photo scrim at its top edge: black at 32%.
-    pub hero_scrim_top: Color32,
-    /// The artist hero's photo scrim at its middle: black at 58%, where the
-    /// name sits.
-    pub hero_scrim_mid: Color32,
+    /// The band tint's parameters, so a light palette can re-normalise a mean
+    /// that is already stored rather than fetch the cover again.
+    pub tint: TintParams,
     /// A verified mark, which is not the playback colour.
     pub verified: Color32,
     pub shadow_sm: egui::Shadow,
@@ -620,9 +660,8 @@ impl Palette {
         row_hover: Color32::from_rgba_unmultiplied_const(0xf2, 0xf0, 0xea, 15),
         row_selected: Color32::from_rgba_unmultiplied_const(0xf2, 0xf0, 0xea, 41),
         mark: Color32::from_rgb(0xf2, 0xf0, 0xea),
-        hero_wash: Color32::from_rgba_unmultiplied_const(0x3a, 0x3a, 0x3a, 102),
-        hero_scrim_top: Color32::from_rgba_unmultiplied_const(0x00, 0x00, 0x00, 82),
-        hero_scrim_mid: Color32::from_rgba_unmultiplied_const(0x00, 0x00, 0x00, 148),
+        hero_wash: Color32::from_rgb(0x2a, 0x2a, 0x31),
+        tint: TintParams::DARK,
         verified: Color32::from_rgb(0x9f, 0xc6, 0xe8),
         shadow_sm: egui::Shadow {
             offset: [0, 1],
@@ -643,6 +682,14 @@ impl Palette {
             color: Color32::from_rgba_unmultiplied_const(0x00, 0x00, 0x00, 166),
         },
     };
+}
+
+/// The colour a band paints from a mean the tint derivation has normalised.
+///
+/// `Color32` is built here because this is the token layer: the derivation and
+/// the store work in plain bytes.
+pub(crate) fn tint_color(rgb: [u8; 3]) -> Color32 {
+    Color32::from_rgb(rgb[0], rgb[1], rgb[2])
 }
 
 /// What a theme can vary. Everything else — geometry, type, motion — is a
@@ -780,7 +827,6 @@ mod tests {
         assert_eq!(p.scrim.to_srgba_unmultiplied()[3], 199);
         assert_eq!(p.row_hover.to_srgba_unmultiplied()[3], 15);
         assert_eq!(p.row_selected.to_srgba_unmultiplied()[3], 41);
-        assert_eq!(p.hero_wash.to_srgba_unmultiplied()[3], 102);
     }
 
     #[test]
@@ -930,36 +976,24 @@ mod tests {
     }
 
     #[test]
-    fn the_hero_wash_is_the_reference_tint_at_its_own_opacity() {
-        let [r, g, b, a] = Palette::DARK.hero_wash.to_srgba_unmultiplied();
-        // The reference's `--hero-tint` is #3a3a3a under a 0.4 opacity.
-        for (got, want) in [(r, 0x3a), (g, 0x3a), (b, 0x3a)] {
-            assert!(got.abs_diff(want) <= 6, "hero_wash is {r},{g},{b},{a}");
-        }
+    fn the_hero_wash_is_the_reference_fallback() {
+        assert_eq!(
+            Palette::DARK.hero_wash.to_srgba_unmultiplied(),
+            [0x2a, 0x2a, 0x31, 255],
+            "the fallback is the reference's own opaque tint"
+        );
     }
 
     #[test]
-    fn the_artist_scrim_darkens_from_top_to_middle() {
-        let p = &Palette::DARK;
-        // The reference's gradient: black at 0.32, then black at 0.58.
-        for (name, color) in [
-            ("hero_scrim_top", p.hero_scrim_top),
-            ("hero_scrim_mid", p.hero_scrim_mid),
-        ] {
-            let [r, g, b, _] = color.to_srgba_unmultiplied();
-            assert_eq!((r, g, b), (0, 0, 0), "{name} is not black: {r},{g},{b}");
-        }
-        assert_eq!(p.hero_scrim_top.to_srgba_unmultiplied()[3], 82);
-        assert_eq!(p.hero_scrim_mid.to_srgba_unmultiplied()[3], 148);
+    fn the_tint_parameters_are_ordered() {
+        let p = TintParams::DARK;
+        assert!(p.tone_min < p.tone_max, "a tone range needs two ends");
+        assert!(p.saturation_min < p.saturation_max);
         assert!(
-            p.hero_scrim_top.to_srgba_unmultiplied()[3]
-                < p.hero_scrim_mid.to_srgba_unmultiplied()[3],
-            "the scrim darkens toward the middle"
+            p.lightness_floor < p.tone_min,
+            "the floor is below every tone the artwork can ask for"
         );
-        // The hero's title is drawn over the middle of the scrim, so the text
-        // tier must stay readable there.
-        let ratio = contrast_ratio(p.text, p.hero_scrim_mid);
-        assert!(ratio >= 4.5, "text over the artist scrim is {ratio:.2}:1");
+        assert!(p.lightness_step > 0.0, "a step has to move");
     }
 
     #[test]
@@ -1054,7 +1088,6 @@ mod tests {
             assert!(hero::ARTIST_TITLE_MIN == 2.25 * REM);
             assert!(hero::ARTIST_TITLE_MAX == 4.5 * REM);
             assert!(hero::ARTIST_TITLE_VW > hero::TITLE_VW);
-            assert!(hero::SCRIM_MID_STOP > 0.0 && hero::SCRIM_MID_STOP < 1.0);
             assert!(extent::CARD_PLAY == 2.0 * REM);
             assert!(hero::MIN_H == 11.0 * REM);
             assert!(hero::ART == 11.0 * REM);

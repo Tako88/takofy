@@ -130,11 +130,9 @@ pub fn album_view(
                     };
                     // The one cover lookup on this page: the rows carry none, so the
                     // band's picture is the only fetch a frame can ask for.
-                    let cover = art.look(
-                        album.cover.as_ref(),
-                        want_px(crate::theme::hero::ART, ui.pixels_per_point()),
-                        now,
-                    );
+                    let want = want_px(crate::theme::hero::ART, ui.pixels_per_point());
+                    let cover = art.look(album.cover.as_ref(), want, now);
+                    let tint = art.tint_held(album.cover.as_ref(), want, &tokens.palette.tint);
                     let meta = album_meta(
                         album.year,
                         (album.tracks.len(), total_duration_ms(&album.tracks)),
@@ -152,6 +150,7 @@ pub fn album_view(
                         // there is no second byline to draw.
                         description: "",
                         cover,
+                        tint,
                     };
                     let reply = hero::show_with(ui, &band, tokens, hero::Title::Plain);
                     open = open.take().or(reply.open);
@@ -352,7 +351,7 @@ mod tests {
         Context, Event, Modifiers, MouseWheelSource, MouseWheelUnit, Pos2, RawInput, Rect,
         TouchPhase, Vec2,
     };
-    use takofy_model::{AlbumDetail, CoverSet, CoverUrl, PlaylistEntry, TrackEntry};
+    use takofy_model::{AlbumDetail, CoverImage, CoverSet, CoverUrl, PlaylistEntry, TrackEntry};
 
     use super::*;
     use crate::cover::Cover;
@@ -513,6 +512,7 @@ mod tests {
                 credit: None,
                 description: "",
                 cover: Cover::Missing,
+                tint: None,
             };
             let _ = hero::show_with(ui, &band, &tokens, hero::Title::Plain);
             actionbar::row_rect(ui);
@@ -541,6 +541,7 @@ mod tests {
                 credit: None,
                 description: "",
                 cover: Cover::Missing,
+                tint: None,
             };
             let _ = hero::show_with(ui, &band, &tokens, hero::Title::Plain);
             actionbar::row_rect(ui);
@@ -571,6 +572,7 @@ mod tests {
                 credit: None,
                 description: "",
                 cover: Cover::Missing,
+                tint: None,
             };
             let _ = hero::show_with(ui, &band, &tokens, hero::Title::Plain);
             actionbar::row_rect(ui);
@@ -600,6 +602,7 @@ mod tests {
                     credit: None,
                     description: "",
                     cover: Cover::Missing,
+                    tint: None,
                 };
                 let _ = hero::show_with(ui, &band, &tokens, hero::Title::Plain);
                 let row = actionbar::row_rect(ui);
@@ -634,6 +637,7 @@ mod tests {
                     credit: None,
                     description: "",
                     cover: Cover::Missing,
+                    tint: None,
                 };
                 let _ = hero::show_with(ui, &band, &tokens, hero::Title::Plain);
                 let row = actionbar::row_rect(ui);
@@ -1990,6 +1994,81 @@ mod tests {
     }
 
     #[test]
+    fn a_held_cover_tints_the_band() {
+        let ctx = context();
+        let tokens = Tokens::DARK;
+        let url = CoverUrl::from_wire("https://i.scdn.co/image/tint").expect("a cover url");
+        let set = CoverSet::single(url.clone());
+        let mut library = library_with(AlbumDetail {
+            cover: Some(set.clone()),
+            ..detail(Vec::new())
+        });
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+        let now = Instant::now();
+
+        art.begin_frame();
+        let _ = art.look(Some(&set), 176, now);
+        let _ = art.requests(now);
+        art.apply(
+            &Update::Cover {
+                url,
+                image: CoverImage::new(1, 1, vec![255, 0, 0, 255]).expect("a 1x1 image"),
+            },
+            now,
+        );
+        art.upload(&ctx, &tokens.palette.tint);
+
+        let (_, output) = frame(
+            &ctx,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        assert_eq!(
+            band_fill(&output),
+            Some(crate::theme::tint_color([116, 27, 27])),
+            "the album's own mean tints its band"
+        );
+    }
+
+    #[test]
+    fn a_loading_cover_leaves_the_band_on_the_wash() {
+        let ctx = context();
+        let url = CoverUrl::from_wire("https://i.scdn.co/image/loading").expect("a cover url");
+        let mut library = library_with(AlbumDetail {
+            cover: Some(CoverSet::single(url)),
+            ..detail(Vec::new())
+        });
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+        let now = Instant::now();
+
+        art.begin_frame();
+        let (_, output) = frame(
+            &ctx,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        assert!(
+            !art.requests(now).is_empty(),
+            "the band asks for the cover it has not got"
+        );
+        assert_eq!(
+            band_fill(&output),
+            Some(Tokens::DARK.palette.hero_wash),
+            "an unheld cover leaves the fallback in place"
+        );
+    }
+
+    #[test]
     fn one_frame_asks_for_the_albums_cover_once() {
         let ctx = context();
         let mut library = library_with(AlbumDetail {
@@ -2029,6 +2108,23 @@ mod tests {
     /// The band's height: the art plus its padding, or the band's own minimum.
     fn band_height() -> f32 {
         (crate::theme::hero::ART + 2.0 * space::S5).max(crate::theme::hero::MIN_H)
+    }
+
+    /// The fill of the band's wash: the one full-pane-width rect as tall as the
+    /// band itself.
+    fn band_fill(output: &egui::FullOutput) -> Option<egui::Color32> {
+        output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Rect(rect)
+                    if (rect.rect.width() - PROBE.x).abs() < 0.5
+                        && (rect.rect.height() - band_height()).abs() < 0.5 =>
+                {
+                    Some(rect.fill)
+                }
+                _ => None,
+            })
     }
 
     /// The top of the band a frame painted, read back from the frame: the band's

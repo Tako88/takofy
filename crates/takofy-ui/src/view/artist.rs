@@ -168,13 +168,13 @@ pub fn artist_view(
                         return;
                     };
 
+                    // The portrait is only held for its colour until the plate
+                    // arrives; the look keeps its fetch going.
+                    let want = want_px(crate::theme::hero::ART, ui.pixels_per_point());
+                    let _ = art.look(artist.portrait.as_ref(), want, now);
                     let hero = ArtistHero {
                         name: &artist.name,
-                        portrait: art.look(
-                            artist.portrait.as_ref(),
-                            want_px(ui.available_width(), ui.pixels_per_point()),
-                            now,
-                        ),
+                        tint: art.tint_held(artist.portrait.as_ref(), want, &tokens.palette.tint),
                     };
                     artist_hero::show(ui, &hero, tokens);
 
