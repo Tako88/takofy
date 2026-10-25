@@ -21,6 +21,7 @@ use crate::layout::{Table, table as table_layout};
 use crate::likes::Likes;
 use crate::player::Transport;
 use crate::releases::Labels;
+use crate::route::Page;
 use crate::theme::icon::Size;
 use crate::theme::{
     MonoWeight, Tokens, Weight, extent, fonts, radius, space, stroke, text, tracking,
@@ -31,6 +32,7 @@ use crate::menu::Door;
 use super::carry::{self, Ghost};
 use super::context_menu;
 use super::heart;
+use super::link;
 use super::track_row::{self, Click, Row, state_of};
 use super::{art, controls, text as recipe};
 
@@ -74,7 +76,7 @@ pub fn height(count: usize) -> f32 {
 }
 
 /// What a click inside the block asked for.
-#[derive(Clone, Copy, PartialEq, Debug, Default)]
+#[derive(Clone, PartialEq, Debug, Default)]
 pub struct Clicked {
     /// The block's own play control: the release from its first track.
     pub played: bool,
@@ -84,6 +86,8 @@ pub struct Clicked {
     pub more: Option<Door>,
     /// A row's double click, as an index into the release's tracks.
     pub row: Option<usize>,
+    /// The name was pressed: the release's own page.
+    pub open: Option<Page>,
 }
 
 /// Draws one release block and reports what its controls asked for.
@@ -227,12 +231,15 @@ fn body(
     let left = art.right() + space::S5;
     let text_width = (right - left).max(0.0);
     if text_width > 0.0 {
-        let name = recipe::line(
+        // Once, for both the measured head and the paint: the name is a link,
+        // and its galley sets the height the facts sit under.
+        let name = link::lay(
             ui,
             &release.name,
-            FontId::new(text::XL, fonts::sans(Weight::Black)),
-            tokens.palette.text,
-            recipe::tracking_pts(text::XL, tracking::TIGHT),
+            &link::Face {
+                font: FontId::new(text::XL, fonts::sans(Weight::Black)),
+                tracking: recipe::tracking_pts(text::XL, tracking::TIGHT),
+            },
             text_width,
         );
         let facts = recipe::spaced(
@@ -245,8 +252,19 @@ fn body(
         let name_height = name.size().y;
         let height = name_height + space::S2 + facts.size().y;
         let top = head.center().y - height / 2.0;
-        ui.painter()
-            .galley(pos2(left, top), name, tokens.palette.text);
+        let shown = link::Placed {
+            pos: pos2(left, top),
+            galley: name,
+        }
+        .link(
+            ui,
+            ui.scope_id().with("release-name"),
+            ui.clip_rect(),
+            Some(link::Target::Album(&release.uri)),
+            tokens.palette.text,
+            tokens,
+        );
+        clicked.open = shown.page;
         ui.painter().galley(
             pos2(left, top + name_height + space::S2),
             facts,
@@ -500,6 +518,7 @@ mod tests {
             saved: None,
             more: None,
             row: None,
+            open: None,
         };
 
         let input = |events| RawInput {
@@ -598,15 +617,181 @@ mod tests {
 
     /// The rect a painted label occupies, read back from the frame.
     fn text_rect(output: &egui::FullOutput, label: &str) -> Option<Rect> {
+        text_runs(output, label).first().copied()
+    }
+
+    /// Every run of a painted label, so a test can tell once from twice.
+    fn text_runs(output: &egui::FullOutput, label: &str) -> Vec<Rect> {
         output
             .shapes
             .iter()
-            .find_map(|clipped| match &clipped.shape {
+            .filter_map(|clipped| match &clipped.shape {
                 egui::epaint::Shape::Text(text) if text.galley.text() == label => {
                     Some(Rect::from_min_size(text.pos, text.galley.size()))
                 }
                 _ => None,
             })
+            .collect()
+    }
+
+    /// Every label a pass gave a link node.
+    fn link_labels(output: &egui::FullOutput) -> Vec<String> {
+        output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .map(|update| {
+                update
+                    .nodes
+                    .iter()
+                    .filter_map(|(_, node)| {
+                        (node.role() == egui::accesskit::Role::Link)
+                            .then(|| node.label().map(str::to_owned))
+                            .flatten()
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn the_release_name_is_a_link_to_its_album() {
+        let ctx = context();
+        let release = release(0);
+        let (_, output) = painted(&ctx, &release, &[], Vec::new());
+        let name = text_rect(&output, &release.name).expect("the release's name is painted");
+
+        let mut clicked = Clicked::default();
+        for event in click_events(name.center()) {
+            clicked = painted(&ctx, &release, &[], vec![event]).0;
+        }
+
+        assert_eq!(
+            clicked.open,
+            Some(Page::Album(release.uri.clone())),
+            "the release's name does not open its album"
+        );
+    }
+
+    #[test]
+    fn a_click_beside_the_name_opens_nothing() {
+        let ctx = context();
+        let release = release(0);
+        let (_, output) = painted(&ctx, &release, &[], Vec::new());
+        let name = text_rect(&output, &release.name).expect("the release's name is painted");
+        // The head is mostly empty between the name and the controls.
+        let beside = pos2(name.right() + 20.0, name.center().y);
+
+        let mut clicked = Clicked::default();
+        for event in click_events(beside) {
+            clicked = painted(&ctx, &release, &[], vec![event]).0;
+        }
+
+        assert_eq!(clicked.open, None, "the head opened a page beside the name");
+        assert!(
+            !clicked.played,
+            "a press beside the name started the release"
+        );
+    }
+
+    #[test]
+    fn the_head_lays_the_name_once_over_its_facts() {
+        let ctx = context();
+        let release = release(0);
+        let (_, output) = painted(&ctx, &release, &[], Vec::new());
+
+        let names = text_runs(&output, &release.name);
+        assert_eq!(
+            names.len(),
+            1,
+            "the head laid its name {} times",
+            names.len()
+        );
+        let name = names[0];
+
+        let facts = release_meta(release.kind, release.year, (release.tracks.len(), 0))
+            .join(" · ")
+            .to_uppercase();
+        let facts = text_rect(&output, &facts).expect("the head paints its facts");
+
+        // The head's own box, from its hairline, the art's height and the gap.
+        let head = Rect::from_min_size(
+            pos2(0.0, stroke::HAIRLINE + space::S5),
+            vec2(900.0, extent::RELEASE_ART),
+        );
+        assert!(
+            name.bottom() < facts.top(),
+            "the name {name:?} sits on its facts {facts:?}"
+        );
+        for (what, rect) in [("name", name), ("facts", facts)] {
+            assert!(
+                head.contains_rect(rect),
+                "the head's {what} {rect:?} leaves the head {head:?}"
+            );
+        }
+
+        for width in [420.0, 900.0] {
+            assert_eq!(advance(width, 2), height(2), "the head grew at {width} px");
+        }
+    }
+
+    /// One pass of an idle block drawn inside `clip`.
+    fn clipped(ctx: &Context, release: &Release, clip: Rect) -> (Clicked, egui::FullOutput) {
+        let tokens = Tokens::DARK;
+        let transport = Transport::default();
+        let likes = Likes::default();
+        let block = Block {
+            release,
+            labels: Labels::Idle,
+            cover: Cover::Missing,
+            on_screen: false,
+            playable: false,
+            here: None,
+            writing: false,
+            likes: &likes,
+            saved: None,
+        };
+        let mut clicked = Clicked::default();
+        let mut output = ctx.run_ui(
+            RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 2000.0))),
+                ..Default::default()
+            },
+            |ui| {
+                ui.set_clip_rect(clip);
+                clicked = show(ui, Table::Full, &block, &transport, &tokens);
+            },
+        );
+        output.textures_delta.clear();
+        (clicked, output)
+    }
+
+    #[test]
+    fn a_culled_block_adds_no_link_node() {
+        let ctx = context();
+        ctx.enable_accesskit();
+        let release = release(0);
+        let want = format!("Open album {}", release.name);
+
+        // The control: a clip that covers the block does give its name a link
+        // node, so an empty list below is the cull and not a missing harness.
+        let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 2000.0));
+        let (_, visible) = clipped(&ctx, &release, screen);
+        assert!(
+            link_labels(&visible).iter().any(|label| label == &want),
+            "the visible block's name is no link: {:?}",
+            link_labels(&visible)
+        );
+
+        // A block scrolled clear of the pane still draws its head, but none of
+        // it is visible, so none of it is a link.
+        let clear = Rect::from_min_size(Pos2::new(0.0, 1500.0), Vec2::new(900.0, 400.0));
+        let (clicked, culled) = clipped(&ctx, &release, clear);
+        assert!(
+            link_labels(&culled).is_empty(),
+            "a culled block registered a link"
+        );
+        assert_eq!(clicked.open, None, "a culled block opened a page");
     }
 
     /// The menu names the release alone, so the `…` must open whether or not a
