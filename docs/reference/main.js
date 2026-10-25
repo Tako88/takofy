@@ -47,7 +47,6 @@
     '<symbol id="i-devices" viewBox="0 0 24 24"><rect x="2.8" y="4.4" width="12.4" height="9.4" rx="1.5" fill="none" stroke="currentColor"/><path d="M6.6 18.2h6M9 13.8v4.4" fill="none" stroke="currentColor"/><rect x="17.4" y="8.8" width="4" height="10.4" rx="1.4" fill="none" stroke="currentColor"/></symbol>',
     '<symbol id="i-queue" viewBox="0 0 24 24"><path d="M3.4 6.4h11M3.4 12h11M3.4 17.6h6.6" fill="none" stroke="currentColor"/><path d="M17 17.2V7.4l4.2-1.1v9.8" fill="none" stroke="currentColor"/><ellipse cx="15.4" cy="17.2" rx="1.8" ry="1.5" fill="currentColor" stroke="none"/><ellipse cx="19.6" cy="16.1" rx="1.8" ry="1.5" fill="currentColor" stroke="none"/></symbol>',
     '<symbol id="i-expand" viewBox="0 0 24 24"><path d="M4 9.4V4h5.4M20 9.4V4h-5.4M4 14.6V20h5.4M20 14.6V20h-5.4" fill="none" stroke="currentColor"/></symbol>',
-    '<symbol id="i-screen" viewBox="0 0 24 24"><rect x="3" y="4.4" width="18" height="15.2" rx="2" fill="none" stroke="currentColor"/><path d="M3 15.4h18" fill="none" stroke="currentColor"/><rect x="4.6" y="16.8" width="14.8" height="1.6" rx="0.8" fill="currentColor" stroke="none"/></symbol>',
     '<symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.2" fill="none" stroke="currentColor"/><path d="M12 7.4V12l3.2 2" fill="none" stroke="currentColor"/></symbol>',
     '<symbol id="i-grid" viewBox="0 0 24 24"><rect x="3.6" y="3.6" width="7.2" height="7.2" rx="1.2" fill="currentColor" stroke="none"/><rect x="13.2" y="3.6" width="7.2" height="7.2" rx="1.2" fill="currentColor" stroke="none"/><rect x="3.6" y="13.2" width="7.2" height="7.2" rx="1.2" fill="currentColor" stroke="none"/><rect x="13.2" y="13.2" width="7.2" height="7.2" rx="1.2" fill="currentColor" stroke="none"/></symbol>',
     '<symbol id="i-list" viewBox="0 0 24 24"><path d="M4 6.6h2.4M9.4 6.6H20M4 12h2.4M9.4 12H20M4 17.4h2.4M9.4 17.4H20" fill="none" stroke="currentColor" stroke-width="2"/></symbol>',
@@ -426,8 +425,17 @@
           else if (max === g) h = ((b - r) / (max - min) + 2) / 6;
           else h = ((r - g) / (max - min) + 4) / 6;
         }
-        var tint = "hsl(" + Math.round(h * 360) + ", " + Math.round(Math.min(0.55, s * 1.5) * 100) + "%, " +
-          Math.round(Math.min(0.34, Math.max(0.16, l)) * 100) + "%)";
+        // Same hue, mirrored tone: 16–34% lightness is a tinted band under bone
+        // ink on black, and a slate band under charcoal ink on paper. The light
+        // theme takes the artwork's colour near the top of the scale instead,
+        // with the saturation pulled in harder — over paper a 40% wash of a
+        // mid-saturation tint reads as a coloured header block, not as a tint.
+        var isLight = document.documentElement.getAttribute("data-theme") === "light";
+        var tone = Math.min(0.34, Math.max(0.16, l));
+        var band = isLight ? 0.94 - tone * 0.2 : tone;
+        var saturation = Math.min(isLight ? 0.32 : 0.55, s * 1.5);
+        var tint = "hsl(" + Math.round(h * 360) + ", " + Math.round(saturation * 100) + "%, " +
+          Math.round(band * 100) + "%)";
         hero.style.setProperty("--hero-tint", tint);
       } catch (err) {
         /* Cross-origin or canvas-less: the CSS fallback tint stands. */
@@ -908,6 +916,48 @@
      Wire everything up
      ---------------------------------------------------------------------- */
 
+  /* ----------------------------------------------------------------------
+     Theme — dark is the app; light is the documented inversion. The stored
+     value is applied by theme.js in <head>; this only owns the switch.
+     ---------------------------------------------------------------------- */
+
+  function applyTheme(theme) {
+    var root = document.documentElement;
+    if (theme === "light") root.setAttribute("data-theme", "light");
+    else root.removeAttribute("data-theme");
+
+    try {
+      window.localStorage.setItem("takofy-theme", theme);
+    } catch (err) {
+      /* No storage: the choice holds for this page and no longer. */
+    }
+
+    $$("[data-theme-set]").forEach(function (button) {
+      button.setAttribute("aria-pressed", String(button.getAttribute("data-theme-set") === theme));
+    });
+
+    // The header band is sampled from the artwork, so it has to be sampled
+    // again: the tone that reads under bone ink is a slate band under charcoal.
+    $$("[data-tint-scope]").forEach(tintFromArtwork);
+  }
+
+  function bindTheme() {
+    var buttons = $$("[data-theme-set]");
+    if (!buttons.length) return;
+    var current = document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark";
+    buttons.forEach(function (button) {
+      button.setAttribute("aria-pressed", String(button.getAttribute("data-theme-set") === current));
+      button.addEventListener("click", function () {
+        var next = button.getAttribute("data-theme-set");
+        if (next === "light" || next === "dark") applyTheme(next);
+      });
+    });
+  }
+
+  /* ----------------------------------------------------------------------
+     Boot
+     ---------------------------------------------------------------------- */
+
   function init() {
     markCurrentPage();
     renderLibrary();
@@ -1004,6 +1054,7 @@
     });
 
     $$("[data-tint-scope]").forEach(tintFromArtwork);
+    bindTheme();
     bindScroll();
     render();
     window.requestAnimationFrame(tick);

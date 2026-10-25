@@ -58,6 +58,31 @@ html:root {
      ghost travels. 0.55 steps back and still reads. */
   --opacity-lifted: 0.55;
 
+  /* ── Artwork ──────────────────────────────────────────────── */
+  /* Ink and veils that sit on a photograph, a cover, or a tint painted from
+     artwork. These are the only colours in the store that do NOT invert in light
+     mode: the artwork does not get lighter, so the type on top of it cannot get
+     darker. --color-accent-on-art is the one place green keeps its bright step
+     after darkening — over a 58% veil the light-theme green would disappear
+     into the picture. */
+  --color-on-art: #f2f0ea;
+  --color-accent-on-art: #7da566;
+  --color-art-veil-a: rgba(0, 0, 0, 0.32);
+  --color-art-veil-b: rgba(0, 0, 0, 0.58);
+  --color-hero-tint: #3a3a3a;
+  --color-liked-from: #1a1a20;
+  --color-liked-to: #33333c;
+
+  /* ── Chrome ───────────────────────────────────────────────── */
+  /* Three inks the shell draws rather than paints: a scrollbar, the unfilled
+     part of a track, and the hairline rules a themed browser otherwise keeps
+     grey. All three are ink over whatever surface they land on, so all three
+     have to flip with the theme — a bone scrollbar on paper is the tell that a
+     dark palette was pasted onto a light one. */
+  --color-scrollbar: rgba(242, 240, 234, 0.16);
+  --color-scrollbar-hover: rgba(242, 240, 234, 0.3);
+  --color-track: rgba(242, 240, 234, 0.2);
+
   /* ── Type ─────────────────────────────────────────────────── */
   --font-sans: "Archivo", system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;

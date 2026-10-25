@@ -1,0 +1,109 @@
+/* ==========================================================================
+   Light mode — the same palette, inverted once.
+
+   Dark is the app; this file is the documented second reading of it. Nothing
+   below is a new name: every property is an existing token being given its
+   light value, so no component has to know that a light theme exists and no
+   component can be left behind by it. Two rules carry the whole inversion:
+
+   1. The ladder flips direction, not content. In dark a panel sits above true
+      black, so the window is the darkest thing on screen. In light a panel sits
+      above paper, so the window is the deepest thing on screen and a popup is
+      the lightest. The 8px channels between panels stay visible because the
+      ground stays a step away from the panel — they read as seams instead of
+      gaps.
+
+   2. Washes flip ink, not opacity. Every hover, selection and hairline in the
+      dark set is bone held at a low alpha. Bone at 11% on paper is invisible, so
+      the ink becomes charcoal at a comparable alpha; the percentages barely
+      move. This is why the hairline stays readable and the hover stays a hover.
+
+   Scoped to html[data-theme="light"] — the same specificity as the dark block's
+   html:root, declared later, so it wins without !important. theme.js in <head>
+   applies it before first paint; the default remains dark.
+   ========================================================================== */
+
+html[data-theme="light"] {
+  color-scheme: light;
+
+  /* ── Surfaces ─────────────────────────────────────────────── */
+  /* Warm paper, not white: #faf9f5 keeps the bone cast the dark set has, so the
+     two themes are the same material under different light. The window is a
+     desk, the panel is a sheet on it, the popup is the sheet lifted. */
+  --color-window: #e6e2d9;
+  --color-surface: #faf9f5;
+  --color-surface-raised: #ffffff;
+  --color-surface-hover: #efece4;
+  --color-surface-sunken: #e9e5db;
+  --color-panel: #f4f2ea;
+  --color-border: rgba(28, 26, 22, 0.14);
+  --color-border-strong: rgba(28, 26, 22, 0.3);
+  /* A modal on paper needs less veil than on black to hide the page, and more
+     of it would read as a grey filter rather than as depth. */
+  --color-scrim: rgba(28, 26, 22, 0.42);
+
+  /* ── Loading ──────────────────────────────────────────────── */
+  /* On black a skeleton is a bone block that brightens as the sheen crosses it.
+     On paper the block is charcoal at 7% and the sheen has to go the other way
+     — toward the page — or it reads as a stain spreading. */
+  --color-skeleton: rgba(28, 26, 22, 0.07);
+  --color-skeleton-sheen: rgba(255, 255, 255, 0.7);
+  --color-skeleton-rule: rgba(28, 26, 22, 0.12);
+
+  /* ── Text ─────────────────────────────────────────────────── */
+  /* 16.6:1, 7.4:1, 6.2:1 on a panel — and 5.2:1 on the sunken well the specimens
+     sit in, which is the ground that actually decides the floor. The dark set runs
+     17.5, 7.7, 4.4; the hierarchy is identical because it was built out of size
+     and weight, not out of dimming, so it survives the ground changing under it. */
+  --color-text: #1b1a17;
+  --color-text-muted: #55524b;
+  --color-text-subtle: #605d56;
+  --color-text-inverse: #faf9f5;
+
+  /* ── Brand ────────────────────────────────────────────────── */
+  /* The dark theme's #7da566 is 2.7:1 on paper: fine as a 2pt rule, a failure as
+     a play glyph or a liked heart. Darkened two steps to #3f6b33 — 5.9:1, the
+     same weight of signal the dark theme had. Hover goes darker rather than
+     brighter, because on paper emphasis is depth, not light. Green still means
+     "sound is coming out" and nothing else. */
+  --color-accent: #3f6b33;
+  --color-accent-hover: #35592b;
+  --color-verified: #2f5f86;
+
+  /* ── Selection ────────────────────────────────────────────── */
+  /* Ink at 6% and 15%: the dark set's 6% and 16% hold the same two-and-a-half
+     times lift, which is the only part of these two values that has to survive
+     the flip. Ink reads a touch stronger than bone at equal alpha, so the
+     selected wash comes down a point rather than up. */
+  --color-row-hover: rgba(28, 26, 22, 0.06);
+  --color-row-selected: rgba(28, 26, 22, 0.15);
+  --color-mark: #1b1a17;
+
+  /* ── Artwork ──────────────────────────────────────────────── */
+  /* The pictures stay pictures. Two of these tokens are deliberately *not*
+     inverted to dark ink: --color-on-art stays bone, because it is the ink of
+     something printed on a photograph, and --color-accent-on-art keeps the
+     bright green, because the veil beneath it stayed dark. The veils themselves
+     do flip: a photograph washed with black at 58% would put light-theme text on
+     a near-black band, so on paper the veil is the paper. */
+  --color-art-veil-a: rgba(250, 249, 245, 0.55);
+  --color-art-veil-b: rgba(250, 249, 245, 0.86);
+  --color-accent-on-art: #93bb7c;
+  --color-hero-tint: #ded9cb;
+  --color-liked-from: #eae4d6;
+  --color-liked-to: #c7bfa9;
+
+  /* ── Chrome ───────────────────────────────────────────────── */
+  --color-scrollbar: rgba(28, 26, 22, 0.22);
+  --color-scrollbar-hover: rgba(28, 26, 22, 0.34);
+  --color-track: rgba(28, 26, 22, 0.18);
+
+  /* ── Shadow ───────────────────────────────────────────────── */
+  /* On black a shadow is depth and can be heavy; on paper the same values are
+     soot. The light ladder leans on the hairline border instead and keeps the
+     shadow as a soft contact — enough to lift a menu off a page, never enough to
+     read as a drop-shadow filter. */
+  --shadow-sm: 0 1px 2px rgba(35, 30, 20, 0.1);
+  --shadow-md: 0 6px 18px rgba(35, 30, 20, 0.12);
+  --shadow-lg: 0 18px 44px rgba(35, 30, 20, 0.16);
+}

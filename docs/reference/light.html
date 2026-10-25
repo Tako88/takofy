@@ -1,0 +1,606 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Light mode · Takofy</title>
+<link rel="stylesheet" href="styles.css" />
+<!-- Theme before paint: dark is the app; this sheet overrides it to light. -->
+<script src="theme.js"></script>
+</head>
+<body class="app" data-page="light">
+
+<!-- ===================== Sidebar ===================== -->
+<aside class="sidebar" aria-label="Your library">
+  <div class="chips" role="group" aria-label="Filter your library" data-chip-group data-chip-target="#library-list" data-count-target="[data-library-count]">
+    <button class="chip" type="button" data-chip="playlist" aria-pressed="false">Playlists</button>
+    <button class="chip" type="button" data-chip="artist" aria-pressed="false">Artists</button>
+    <button class="chip" type="button" data-chip="album" aria-pressed="false">Albums</button>
+    <button class="chip" type="button" data-chip="podcast" aria-pressed="false">Podcasts</button>
+  </div>
+
+  <div class="library">
+    <div class="library__head">
+      <form class="filter-field" role="search" onsubmit="return false">
+        <svg class="icon icon--sm" aria-hidden="true"><use href="#i-search"></use></svg>
+        <input type="search" data-library-filter aria-label="Filter your library" placeholder="28 saved" autocomplete="off" />
+        <button class="filter-field__clear" type="button" data-library-filter-clear aria-label="Clear filter" hidden>
+          <svg class="icon icon--sm" aria-hidden="true"><use href="#i-close"></use></svg>
+        </button>
+      </form>
+      <span class="visually-hidden" role="status" aria-live="polite" data-library-count></span>
+      <span class="library__head-actions">
+        <button class="icon-button" type="button" aria-label="Create playlist or folder">
+          <svg class="icon icon--md" aria-hidden="true"><use href="#i-plus"></use></svg>
+        </button>
+      </span>
+    </div>
+
+    <ul class="library__list" id="library-list" data-library-list></ul>
+  </div>
+</aside>
+
+<!-- ===================== Main ===================== -->
+<div class="app__main">
+  <header class="topbar">
+    <button class="icon-button topbar__drawer-toggle" type="button" data-drawer-toggle aria-expanded="false" aria-label="Open your library panel">
+      <svg class="icon icon--lg" aria-hidden="true"><use href="#i-panel"></use></svg>
+    </button>
+    <div class="topbar__nav">
+      <a class="round-button" href="index.html" data-nav="home" aria-label="Home">
+        <svg class="icon" aria-hidden="true"><use href="#i-home"></use></svg>
+      </a>
+      <button class="round-button" type="button" data-back aria-label="Go back">
+        <svg class="icon" aria-hidden="true"><use href="#i-arrow-left"></use></svg>
+      </button>
+      <button class="round-button" type="button" data-forward aria-label="Go forward">
+        <svg class="icon" aria-hidden="true"><use href="#i-arrow-right"></use></svg>
+      </button>
+    </div>
+    <form class="searchbar" role="search" onsubmit="return false">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-search"></use></svg>
+      <input type="search" placeholder="Artists, albums or tracks" aria-label="Search" />
+    </form>
+    <nav class="trail" aria-label="You are here">
+      <a href="index.html">Home</a>
+      <span class="trail__sep">/</span>
+      <span aria-current="page">Light mode</span>
+    </nav>
+  </header>
+
+  <main class="view states-page">
+    <div class="view__inner">
+      <div class="page-head">
+        <h1 class="page-head__title">Light mode</h1>
+        <div class="page-head__aside">
+          <p class="page-head__note">7 decisions · 1 inversion</p>
+          <div class="theme-switch" role="group" aria-label="Preview theme">
+            <span class="theme-switch__label" aria-hidden="true">Preview</span>
+            <button class="chip" type="button" data-theme-set="dark" aria-pressed="false">Dark</button>
+            <button class="chip" type="button" data-theme-set="light" aria-pressed="true">Light</button>
+          </div>
+        </div>
+      </div>
+
+      <p class="states__intro">
+        Dark is still what ships. This sheet is light because it is being read, not because the
+        product changed, and the switch at the top right of this sheet is the real one: two buttons,
+        one attribute on <code>&lt;html&gt;</code>, a stored word, and the whole app re-skins because
+        nothing in it knows a colour that is not a token. No component carries a second stylesheet and
+        no specimen below is redrawn in a lighter grey — every one of them is the app's own markup,
+        rendered by the light values of the same names. Where the other sheets say <i>bone</i>, read
+        <i>ink</i>: they were written in the dark theme, and this sheet is the record of what changes
+        when the ground does.
+      </p>
+
+      <!-- ============ 01 · The ladder ============ -->
+      <section class="section section--first" aria-labelledby="ref-ladder">
+        <div class="section__head">
+          <h2 class="section__title" id="ref-ladder"><span class="states__no">01</span>The ladder does not flip</h2>
+          <p class="label states__meta">same order · new floor</p>
+        </div>
+
+        <div class="states__stage">
+          <div class="ladder">
+            <div class="ladder__row ladder__row--head">
+              <span>Token</span><span>Dark</span><span>Light</span><span>Why</span>
+            </div>
+
+            <div class="ladder__row">
+              <code class="ladder__token">--color-window</code>
+              <span class="ladder__pair"><i class="ladder__chip" style="--chip:#000000"></i><span class="ladder__hex">#000000</span></span>
+              <span class="ladder__pair"><i class="ladder__chip" style="--chip:#e6e2d9"></i><span class="ladder__hex">#e6e2d9</span></span>
+              <p class="ladder__note">The desk behind the panels. It was the darkest thing on screen and it becomes the deepest thing on screen — that is the whole trick, and it is why the 8px channels still read as seams rather than as gaps.</p>
+            </div>
+
+            <div class="ladder__row">
+              <code class="ladder__token">--color-surface</code>
+              <span class="ladder__pair"><i class="ladder__chip" style="--chip:#070708"></i><span class="ladder__hex">#070708</span></span>
+              <span class="ladder__pair"><i class="ladder__chip" style="--chip:#faf9f5"></i><span class="ladder__hex">#faf9f5</span></span>
+              <p class="ladder__note">A panel. Warm paper, not white: the bone cast survives the flip, which is the reason the two themes still look like one material and not like a brand and its screenshots.</p>
+            </div>
+
+            <div class="ladder__row">
+              <code class="ladder__token">--color-surface-raised</code>
+              <span class="ladder__pair"><i class="ladder__chip" style="--chip:#121215"></i><span class="ladder__hex">#121215</span></span>
+              <span class="ladder__pair"><i class="ladder__chip" style="--chip:#ffffff"></i><span class="ladder__hex">#ffffff</span></span>
+              <p class="ladder__note">Popups. Elevation is “lighter than the ground” in both themes — this is the value that proves the ladder is not inverted, only re-based. On paper the popup is the only pure white in the interface.</p>
+            </div>
+
+            <div class="ladder__row">
+              <code class="ladder__token">--color-surface-hover</code>
+              <span class="ladder__pair"><i class="ladder__chip" style="--chip:#1c1c20"></i><span class="ladder__hex">#1c1c20</span></span>
+              <span class="ladder__pair"><i class="ladder__chip" style="--chip:#efece4"></i><span class="ladder__hex">#efece4</span></span>
+              <p class="ladder__note">Under the pointer, and the fill of every pressed control. One step toward the ink in light, one step toward the light in dark: both are “one step”, which is why the chips and the panel tabs needed no new rule.</p>
+            </div>
+
+            <div class="ladder__row">
+              <code class="ladder__token">--color-panel</code>
+              <span class="ladder__pair"><i class="ladder__chip" style="--chip:#0b0b0d"></i><span class="ladder__hex">#0b0b0d</span></span>
+              <span class="ladder__pair"><i class="ladder__chip" style="--chip:#f4f2ea"></i><span class="ladder__hex">#f4f2ea</span></span>
+              <p class="ladder__note">The Now Playing pane — the one region that is neither the page nor a popup, so it sits a shade off the panel in both directions.</p>
+            </div>
+
+            <div class="ladder__row">
+              <code class="ladder__token">--color-surface-sunken</code>
+              <span class="ladder__pair"><i class="ladder__chip" style="--chip:#000000"></i><span class="ladder__hex">#000000</span></span>
+              <span class="ladder__pair"><i class="ladder__chip" style="--chip:#e9e5db"></i><span class="ladder__hex">#e9e5db</span></span>
+              <p class="ladder__note">A well — it reads deeper than the window. The frame around every specimen on this page, and the reason the specimens do not bleed into the sheet.</p>
+            </div>
+          </div>
+        </div>
+
+        <p class="states__note">
+          The mistake this section exists to prevent: treating light mode as “the same ladder, upside
+          down”. Invert the order and popups end up darker than panels, which reads as a hole rather
+          than as a layer, and the skeleton you see on <a href="loading.html">the loading sheet</a>
+          stops matching the panel it predicts.
+        </p>
+      </section>
+
+      <!-- ============ 02 · Ink ============ -->
+      <section class="section" aria-labelledby="ref-ink">
+        <div class="section__head">
+          <h2 class="section__title" id="ref-ink"><span class="states__no">02</span>Ink, and the hairline problem</h2>
+          <p class="label states__meta">16.6 : 7.4 : 6.2</p>
+        </div>
+
+        <div class="states__stage states__stage--tight">
+          <div class="ink-spec">
+            <p class="ink-spec__title">Every green room has a window</p>
+            <p class="ink-spec__body">
+              Muted ink, at reading size on a panel. The hierarchy was built out of size, weight and
+              the mono/roman split, so it survives the ground changing under it — the three tiers run
+              16.6:1, 7.4:1 and 6.2:1 against paper, 5.2:1 for the last one on the well these specimens
+              sit in, and 17.5:1, 7.7:1 and 4.4:1 against black.
+            </p>
+            <p class="ink-spec__label">Subtle · mono caps · 11px</p>
+          </div>
+        </div>
+
+        <div class="ladder">
+          <div class="ladder__row ladder__row--head">
+            <span>Token</span><span>Dark</span><span>Light</span><span>Why</span>
+          </div>
+          <div class="ladder__row">
+            <code class="ladder__token">--color-text</code>
+            <span class="ladder__pair"><i class="ladder__chip" style="--chip:#f2f0ea"></i><span class="ladder__hex">#f2f0ea</span></span>
+            <span class="ladder__pair"><i class="ladder__chip" style="--chip:#1b1a17"></i><span class="ladder__hex">#1b1a17</span></span>
+            <p class="ladder__note">Bone becomes charcoal. Not black: #1b1a17 is the same warm ink the bone is, one end of the scale further.</p>
+          </div>
+          <div class="ladder__row">
+            <code class="ladder__token">--color-text-muted</code>
+            <span class="ladder__pair"><i class="ladder__chip" style="--chip:#b0aca4"></i><span class="ladder__hex">#b0aca4</span></span>
+            <span class="ladder__pair"><i class="ladder__chip" style="--chip:#55524b"></i><span class="ladder__hex">#55524b</span></span>
+            <p class="ladder__note">The paragraph above. Muted still has to be readable — a dim tier is a rank, not an excuse.</p>
+          </div>
+          <div class="ladder__row">
+            <code class="ladder__token">--color-text-subtle</code>
+            <span class="ladder__pair"><i class="ladder__chip" style="--chip:#83807a"></i><span class="ladder__hex">#83807a</span></span>
+            <span class="ladder__pair"><i class="ladder__chip" style="--chip:#605d56"></i><span class="ladder__hex">#605d56</span></span>
+            <p class="ladder__note">The mono label above. 6.2:1 on a panel and 5.2:1 on the well — the darkest the type scale ever goes, and it still clears AA at 11px. The dark theme held this tier at 4.4:1; on paper a dimmer label does not read as quiet, it reads as a mistake, so the floor moved up.</p>
+          </div>
+          <div class="ladder__row">
+            <code class="ladder__token">--color-border</code>
+            <span class="ladder__pair"><i class="ladder__chip" style="--chip:rgba(242,240,234,0.11)"></i><span class="ladder__hex">bone 11%</span></span>
+            <span class="ladder__pair"><i class="ladder__chip" style="--chip:rgba(28,26,22,0.14)"></i><span class="ladder__hex">ink 14%</span></span>
+            <p class="ladder__note">The one genuinely new arithmetic. Bone at 11% on paper is invisible, and ink at 11% on paper is a heavier line than bone at 11% on black — so the alpha steps up a little and the ink changes owner.</p>
+          </div>
+          <div class="ladder__row">
+            <code class="ladder__token">--color-border-strong</code>
+            <span class="ladder__pair"><i class="ladder__chip" style="--chip:rgba(242,240,234,0.26)"></i><span class="ladder__hex">bone 26%</span></span>
+            <span class="ladder__pair"><i class="ladder__chip" style="--chip:rgba(28,26,22,0.3)"></i><span class="ladder__hex">ink 30%</span></span>
+            <p class="ladder__note">The edge of a pressed control. Same relationship to the hairline in both themes, so a hovered chip is a hovered chip.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ 03 · Green ============ -->
+      <section class="section" aria-labelledby="ref-green">
+        <div class="section__head">
+          <h2 class="section__title" id="ref-green"><span class="states__no">03</span>Green, deepened</h2>
+          <p class="label states__meta">2.7:1 → 5.9:1 · still sound only</p>
+        </div>
+
+        <div class="states__pair">
+          <div>
+            <p class="label spec-cap">Why the dark green fails</p>
+            <p class="states__note">
+              #7da566 on paper is 2.7:1. As the 2pt rule at the margin of a playing row that is
+              survivable — a rule is a mark, not text — but as the play glyph on a cover, or the
+              filled heart in a tracklist, it is a control drawn in a colour you have to hunt for. The
+              accent is the one token whose light value could not simply be lifted from the dark set.
+            </p>
+          </div>
+          <div>
+            <p class="label spec-cap">What ships instead</p>
+            <p class="states__note">
+              #3f6b33 — the same moss, two steps deeper, 5.9:1 on a panel. Hover goes darker rather
+              than brighter (#35592b), because on paper emphasis is depth. Everything green already
+              meant still means it: the sounding row's rule, the equaliser, the play tile, the focused
+              field, the liked heart.
+            </p>
+          </div>
+        </div>
+
+        <div class="states__stage">
+          <div class="green-spec">
+            <div class="green-spec__item">
+              <button class="play-button" type="button" aria-label="Play">
+                <svg class="icon icon--md" aria-hidden="true"><use href="#i-play"></use></svg>
+              </button>
+              <p class="label">Play tile</p>
+            </div>
+            <div class="green-spec__item">
+              <span class="eq" aria-hidden="true"><i></i><i></i><i></i></span>
+              <p class="label">Equaliser</p>
+            </div>
+            <div class="green-spec__item">
+              <span class="green-spec__rule" aria-hidden="true"></span>
+              <p class="label">Playing rule</p>
+            </div>
+            <div class="green-spec__item">
+              <button class="icon-button is-liked" type="button" aria-label="Saved">
+                <svg class="icon icon--md" aria-hidden="true"><use href="#i-heart-filled"></use></svg>
+              </button>
+              <p class="label">Liked heart</p>
+            </div>
+            <p class="green-spec__note">
+              A solid accent tile with paper ink on it — the inverse of the dark theme's black ink on
+              green, and 5.9:1 either way. The one place the rule does <b>not</b> hold is ink on
+              artwork: over a 58% veil the darkened green would disappear, so the bright step survives
+              as <code>--color-accent-on-art</code>.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ 04 · Rows ============ -->
+      <section class="section" aria-labelledby="ref-rows">
+        <div class="section__head">
+          <h2 class="section__title" id="ref-rows"><span class="states__no">04</span>Rows, in light</h2>
+          <p class="label states__meta">6% · 15% · 2pt</p>
+        </div>
+
+        <div class="states__stage">
+          <p class="label spec-cap">Rest · hover · selected · selected and sounding</p>
+          <div class="tracks tracks--slim">
+            <ol class="tracklist">
+              <li class="track-row">
+                <span class="track-row__index"><span class="track-row__number">1</span><span class="track-row__toggle"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play"></use></svg></span></span>
+                <span class="track-row__title"><img class="track-row__art" src="img/covers/signal-decay.jpg" alt="" loading="lazy" /><span class="track-row__text"><span class="track-row__name truncate">Signal Decay</span></span></span>
+                <span class="track-row__like" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-heart"></use></svg></span>
+                <span class="track-row__duration">4:12</span>
+                <span class="track-row__actions" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-more"></use></svg></span>
+              </li>
+              <li class="track-row is-demo-hover">
+                <span class="track-row__index"><span class="track-row__number">2</span><span class="track-row__toggle"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play"></use></svg></span></span>
+                <span class="track-row__title"><img class="track-row__art" src="img/covers/wintering.jpg" alt="" loading="lazy" /><span class="track-row__text"><span class="track-row__name truncate">Wintering</span></span></span>
+                <span class="track-row__like" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-heart"></use></svg></span>
+                <span class="track-row__duration">3:58</span>
+                <span class="track-row__actions" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-more"></use></svg></span>
+              </li>
+              <li class="track-row is-selected">
+                <span class="track-row__index"><span class="track-row__number">3</span><span class="track-row__toggle"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play"></use></svg></span></span>
+                <span class="track-row__title"><img class="track-row__art" src="img/covers/slow-tide.jpg" alt="" loading="lazy" /><span class="track-row__text"><span class="track-row__name truncate">Harbour Wall</span></span></span>
+                <button class="icon-button is-liked track-row__like" type="button" aria-label="Saved Harbour Wall"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-heart-filled"></use></svg></button>
+                <span class="track-row__duration">4:05</span>
+                <span class="track-row__actions" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-more"></use></svg></span>
+              </li>
+              <li class="track-row is-selected is-playing">
+                <span class="track-row__index"><span class="track-row__number">4</span><span class="track-row__toggle"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-play"></use></svg></span><span class="track-row__eq" aria-hidden="true"><span class="eq"><i></i><i></i><i></i></span></span></span>
+                <span class="track-row__title"><img class="track-row__art" src="img/covers/low-country.jpg" alt="" loading="lazy" /><span class="track-row__text"><span class="track-row__name truncate">Low Country</span></span></span>
+                <span class="track-row__like" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-heart"></use></svg></span>
+                <span class="track-row__duration">4:31</span>
+                <span class="track-row__actions" aria-hidden="true"><svg class="icon icon--sm"><use href="#i-more"></use></svg></span>
+              </li>
+            </ol>
+          </div>
+        </div>
+
+        <p class="states__note">
+          Rest, hover, selected, selected and sounding. The three claims keep the shapes they had —
+          an area for hover, a bigger area for selection, a 2pt rule for sound — and only the ink
+          under them changed owner: 6% and 15% charcoal instead of 6% and 16% bone. The percentages
+          are close because they were tuned as a relationship, and the relationship is the contract:
+          read the drop from hover to selected on paper, then flip the switch and read it again.
+        </p>
+      </section>
+
+      <!-- ============ 05 · Menus ============ -->
+      <section class="section" aria-labelledby="ref-menus">
+        <div class="section__head">
+          <h2 class="section__title" id="ref-menus"><span class="states__no">05</span>Menus, veils and shadows</h2>
+          <p class="label states__meta">white on paper · softer lift</p>
+        </div>
+
+        <div class="states__stage">
+          <div class="search-sheet">
+            <ul class="search-menu menu" role="listbox" aria-label="Light menu specimen">
+              <li class="search-menu__group" role="group" aria-labelledby="light-group-tracks">
+                <p class="search-menu__group-label" id="light-group-tracks">Tracks <span>3 of 20</span></p>
+                <ul class="search-menu__rows" role="none">
+                  <li class="search-menu__row is-active" role="option" aria-selected="true" data-kind="track">
+                    <img class="search-menu__art" src="img/covers/slow-tide.jpg" alt="" />
+                    <span class="search-menu__text">
+                      <span class="search-menu__title truncate">Harbour Wall</span>
+                      <span class="search-menu__sub truncate">Vela Moreno · Slow Tide</span>
+                    </span>
+                    <span class="search-menu__go"><svg class="icon" aria-hidden="true"><use href="#i-play"></use></svg></span>
+                  </li>
+                  <li class="search-menu__row is-hover" role="option" aria-selected="false" data-kind="track">
+                    <img class="search-menu__art" src="img/covers/cold-storage.jpg" alt="" />
+                    <span class="search-menu__text">
+                      <span class="search-menu__title truncate">Harbour Fog</span>
+                      <span class="search-menu__sub truncate">Nils Aker · Cold Storage</span>
+                    </span>
+                    <span class="search-menu__go"><svg class="icon" aria-hidden="true"><use href="#i-chevron-right"></use></svg></span>
+                  </li>
+                  <li class="search-menu__row is-playing" role="option" aria-selected="false" data-kind="track">
+                    <img class="search-menu__art" src="img/covers/halcyon-street.jpg" alt="" />
+                    <span class="search-menu__text">
+                      <span class="search-menu__title truncate">Harbour Bell</span>
+                      <span class="search-menu__sub truncate">The Rookery · Halcyon Street</span>
+                    </span>
+                    <span class="search-menu__eq" aria-hidden="true"><span class="eq"><i></i><i></i><i></i></span></span>
+                  </li>
+                </ul>
+              </li>
+            </ul>
+          </div>
+        </div>
+
+        <dl class="spec-list">
+          <dt>Menu · <code>--shadow-lg</code></dt>
+          <dd>0 20px 50px rgba(0, 0, 0, 0.65) → 0 18px 44px rgba(35, 30, 20, 0.16). The lift is carried by the popup's hairline and its one step of extra lightness; the shadow only has to prove contact with the page.</dd>
+          <dt>Popover · <code>--shadow-md</code></dt>
+          <dd>0 6px 20px rgba(0, 0, 0, 0.55) → 0 6px 18px rgba(35, 30, 20, 0.12).</dd>
+          <dt>Control · <code>--shadow-sm</code></dt>
+          <dd>0 1px 2px rgba(0, 0, 0, 0.5) → 0 1px 2px rgba(35, 30, 20, 0.10). Barely there in either theme, which is the point of a small control's shadow.</dd>
+          <dt>Scrim · <code>--color-scrim</code></dt>
+          <dd>black 78% → ink 42%. A modal needs less veil to hide paper than to hide black, and more of it reads as a grey filter laid over the page rather than as depth.</dd>
+        </dl>
+
+        <p class="states__note">
+          The menu is the only surface that goes <b>up</b> in the light set: pure white, a hairline, and
+          a shadow that is now a contact shadow rather than a hole in the page. The lift is carried by
+          the border, which is why the shadow can be this quiet — a dark-theme shadow at 55% black on
+          paper does not read as depth, it reads as soot. The scrim lightens for the same reason: 78%
+          black over a white page is a grey filter, 42% still hides it.
+        </p>
+      </section>
+
+      <!-- ============ 06 · Artwork ============ -->
+      <section class="section" aria-labelledby="ref-art">
+        <div class="section__head">
+          <h2 class="section__title" id="ref-art"><span class="states__no">06</span>Artwork does not invert</h2>
+          <p class="label states__meta">3 tokens held · 2 veiled</p>
+        </div>
+
+        <div class="states__stage">
+          <ul class="genre-grid">
+            <li><a class="genre" href="search.html" style="--genre-tint:#2f3f3a">Ambient<img src="img/covers/nocturne-field.jpg" alt="" loading="lazy" /></a></li>
+            <li><a class="genre" href="search.html" style="--genre-tint:#3d2f2a">Indie folk<img src="img/covers/fieldwork.jpg" alt="" loading="lazy" /></a></li>
+            <li><a class="genre" href="search.html" style="--genre-tint:#2a3242">Post-rock<img src="img/covers/long-way-down.jpg" alt="" loading="lazy" /></a></li>
+            <li><a class="genre" href="search.html" style="--genre-tint:#3a2a38">Dark pop<img src="img/covers/blue-hour.jpg" alt="" loading="lazy" /></a></li>
+          </ul>
+        </div>
+
+        <p class="states__note">
+          A photograph is not a surface, so it does not get a light value. Every tint above is still the
+          artwork's own dark colour, which is why its label is still bone
+          (<code>--color-on-art</code>) in both themes and why nothing about the browse grid changed
+          between them. What did flip is the <b>veil</b>: the artist hero washes its photograph with
+          ink in dark and with paper in light, so the title underneath stays legible either way, and
+          the play glyph that sits on a cover keeps the bright green
+          (<code>--color-accent-on-art</code>) because the veil under it is the one thing that never
+          gets lighter. The liked-songs tile likewise swaps its charcoal gradient for sand rather than
+          for white — it is a cover, not a panel.
+        </p>
+      </section>
+
+      <!-- ============ 07 · What gets built ============ -->
+      <section class="section" aria-labelledby="ref-tokens">
+        <div class="section__head">
+          <h2 class="section__title" id="ref-tokens"><span class="states__no">07</span>What gets built</h2>
+          <p class="label states__meta">1 file · 0 component forks</p>
+        </div>
+
+        <p class="states__note">
+          Ten lines of CSS, two files, and one promise about the dark theme. Nothing below is a
+          component rule — if a component needed one, its dark rule would have been wrong.
+        </p>
+
+        <dl class="spec-list">
+          <dt>styles/light.css</dt>
+          <dd>Every token above in one <code>html[data-theme="light"]</code> block, imported after the dark store. Same specificity, later in the cascade, so no <code>!important</code> anywhere in the file.</dd>
+          <dt>theme.js</dt>
+          <dd>Eleven lines in <code>&lt;head&gt;</code> that read one stored word before paint. Without it a light window flashes dark for a frame; with it the switch costs nothing on reload. <code>?theme=light</code> overrides without storing, which is how each page gets reviewed.</dd>
+          <dt>--color-on-art</dt>
+          <dd>#f2f0ea in both themes. Ink printed on artwork or on a tint taken from artwork; it is the one ink that cannot follow the ground.</dd>
+          <dt>--color-accent-on-art</dt>
+          <dd>#7da566 dark · #93bb7c light. Green over a dark veil keeps its bright step for the reason given in 03 — the veil is the only surface that stays dark.</dd>
+          <dt>--color-art-veil-a / -b</dt>
+          <dd>ink 32% and 58% → paper 55% and 86%. The artist hero's wash, and the reason type over a photograph survives the flip.</dd>
+          <dt>--color-hero-tint</dt>
+          <dd>#3a3a3a → #ded9cb. The fallback band before the canvas has sampled the cover; the sampled band is re-tinted in main.js, because 16–34% lightness is a slate slab under charcoal ink.</dd>
+          <dt>--color-liked-from / -to</dt>
+          <dd>#1a1a20 → #eae4d6 and #33333c → #c7bfa9. The liked-songs tile is a cover, so it gets a sand gradient and the normal ink, not a white one.</dd>
+          <dt>--color-scrollbar / -hover</dt>
+          <dd>Bone washes → charcoal washes. Extracted from the stylesheet's literals with <code>--color-track</code>: a scrollbar or an unfilled track that keeps its bone value is the tell that a dark palette was pasted onto paper.</dd>
+          <dt>--color-track</dt>
+          <dd>rgba(242, 240, 234, 0.2) → rgba(28, 26, 22, 0.18). The unfilled half of a seek bar, a progress strip and the phone's minibar — one value for all three.</dd>
+          <dt>--color-row-hover / -selected</dt>
+          <dd>6% and 16% bone → 6% and 15% ink. Also extracted from three literals (4%, 5%, 8%) that had drifted apart, so every row in the app now hovers by the same amount in both themes.</dd>
+        </dl>
+
+        <p class="states__note">
+          And the promise: <b>dark did not move.</b> Nothing in the dark theme changed except those
+          literals collapsing into tokens, which is why this page can be checked by switching it off —
+          if the dark sheet looks different after the light one shipped, the light one took something
+          it did not pay for. Dark stays the default and remains the only thing a first-time reader
+          sees.
+        </p>
+      </section>
+
+      <footer class="tracklist__foot">
+        <p>
+          Reference sheet for the Takofy concept — the app is dark by default; this is the one
+          inversion, written down. See also <a href="search-reference.html">the search reference</a>,
+          <a href="drag.html">drag and drop</a>, <a href="loading.html">loading states</a>,
+          <a href="menu.html">the context menu</a> and <a href="credits.html">art credits</a>.
+        </p>
+      </footer>
+    </div>
+  </main>
+</div>
+
+<!-- ===================== Now playing panel ===================== -->
+<aside class="now-playing" aria-label="Now playing">
+  <div class="now-playing__head">
+    <h2>Now playing</h2>
+    <button class="icon-button" type="button" aria-label="More options for the current track">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-more"></use></svg>
+    </button>
+  </div>
+
+  <div class="now-playing__art">
+    <img data-now-art src="img/covers/slow-tide.jpg" alt="Slow Tide cover" />
+  </div>
+
+  <div class="now-playing__meta">
+    <div>
+      <a class="now-playing__title truncate" href="album.html" data-now-title>Slow Tide</a>
+      <a class="now-playing__artist truncate" href="artist.html" data-now-artist>Vela Moreno</a>
+    </div>
+    <button class="icon-button icon-button--lg" type="button" data-like data-like-group="now" aria-pressed="false" aria-label="Save to your library">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-heart"></use></svg>
+    </button>
+  </div>
+
+  <p class="now-playing__spec">
+    <span><b>320</b> kbps</span><span>Ogg Vorbis</span><span>44.1 kHz</span><span>Stereo</span>
+  </p>
+
+  <div class="panel-tabs" role="tablist" aria-label="Now playing views">
+    <button class="panel-tab" type="button" role="tab" aria-selected="true" aria-controls="pane-queue" data-panel-tab>Queue</button>
+    <button class="panel-tab" type="button" role="tab" aria-selected="false" aria-controls="pane-lyrics" data-panel-tab>Lyrics</button>
+  </div>
+
+  <div class="panel-pane is-active" id="pane-queue" role="tabpanel" data-panel-pane>
+    <p class="queue-head">Next in queue</p>
+    <ul class="queue" data-queue-list data-playing-scope></ul>
+  </div>
+
+  <div class="panel-pane" id="pane-lyrics" role="tabpanel" data-panel-pane>
+    <div class="lyrics">
+      <p>Harbour wall, salt in the air</p>
+      <p>Nothing moves here but the light</p>
+      <p class="is-current">I keep the tide in a jar by the door</p>
+      <p>Count the bells, count them twice</p>
+      <p>Every green room has a window</p>
+      <p>Every window has your name</p>
+      <p>Slow tide, take your time</p>
+      <p>I am in no hurry tonight</p>
+    </div>
+  </div>
+</aside>
+
+<!-- ===================== Mobile tab bar ===================== -->
+<nav class="tabbar" aria-label="Primary">
+  <a href="index.html" data-nav="home"><svg class="icon icon--lg" aria-hidden="true"><use href="#i-home"></use></svg>Home</a>
+  <a href="search.html" data-nav="search"><svg class="icon icon--lg" aria-hidden="true"><use href="#i-search"></use></svg>Search</a>
+  <a href="podcasts.html" data-nav="podcasts"><svg class="icon icon--lg" aria-hidden="true"><use href="#i-mic"></use></svg>Podcasts</a>
+</nav>
+
+<!-- ===================== Playbar ===================== -->
+<footer class="playbar">
+  <div class="playbar__now">
+    <img class="playbar__art" data-now-art src="img/covers/slow-tide.jpg" alt="Slow Tide cover" />
+    <div class="playbar__text">
+      <a class="playbar__title truncate" href="album.html" data-now-title>Slow Tide</a>
+      <a class="playbar__artist truncate" href="artist.html" data-now-artist>Vela Moreno</a>
+    </div>
+    <button class="icon-button" type="button" data-like data-like-group="now" aria-pressed="false" aria-label="Save to your library">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-heart"></use></svg>
+    </button>
+  </div>
+
+  <div class="playbar__center">
+    <div class="playbar__buttons">
+      <button class="icon-button" type="button" data-toggle aria-pressed="false" aria-label="Shuffle">
+        <svg class="icon icon--md" aria-hidden="true"><use href="#i-shuffle"></use></svg>
+      </button>
+      <button class="icon-button" type="button" data-prev aria-label="Previous track">
+        <svg class="icon icon--md" aria-hidden="true"><use href="#i-prev"></use></svg>
+      </button>
+      <button class="play-button playbar__play" type="button" data-transport aria-label="Play or pause">
+        <svg class="icon icon--md" aria-hidden="true"><use href="#i-pause" data-transport-icon></use></svg>
+      </button>
+      <button class="icon-button" type="button" data-next aria-label="Next track">
+        <svg class="icon icon--md" aria-hidden="true"><use href="#i-next"></use></svg>
+      </button>
+      <button class="icon-button" type="button" data-toggle aria-pressed="false" aria-label="Repeat">
+        <svg class="icon icon--md" aria-hidden="true"><use href="#i-repeat"></use></svg>
+      </button>
+    </div>
+
+    <div class="playbar__progress">
+      <span class="playbar__time" data-elapsed>1:14</span>
+      <div class="slider" data-seek role="slider" tabindex="0" aria-label="Seek" aria-valuemin="0" aria-valuenow="74" aria-valuemax="222">
+        <div class="slider__track"></div>
+        <div class="slider__fill" data-seek-fill></div>
+        <div class="slider__thumb"></div>
+      </div>
+      <span class="playbar__time playbar__time--end" data-remaining>-2:28</span>
+    </div>
+  </div>
+
+  <div class="playbar__extras">
+    <button class="icon-button" type="button" aria-label="Queue">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-queue"></use></svg>
+    </button>
+    <button class="icon-button" type="button" aria-label="Connect to a device">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-devices"></use></svg>
+    </button>
+    <button class="icon-button" type="button" aria-label="Mute">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-volume" data-volume-icon></use></svg>
+    </button>
+    <div class="slider playbar__volume" data-volume role="slider" tabindex="0" aria-label="Volume" aria-valuemin="0" aria-valuenow="72" aria-valuemax="100">
+      <div class="slider__track"></div>
+      <div class="slider__fill"></div>
+      <div class="slider__thumb"></div>
+    </div>
+    <button class="icon-button" type="button" aria-label="Full screen">
+      <svg class="icon icon--md" aria-hidden="true"><use href="#i-expand"></use></svg>
+    </button>
+  </div>
+
+  <div class="playbar__minibar" aria-hidden="true">
+    <div class="progress-bar__fill" data-mini-fill></div>
+  </div>
+</footer>
+
+<script src="main.js"></script>
+</body>
+</html>

@@ -10,6 +10,7 @@
    ========================================================================== */
 
 @import "styles/tokens.css";
+@import "styles/light.css";
 @import "styles/fonts.css";
 
 /* --------------------------------------------------------------------------
@@ -24,6 +25,8 @@
 
 html {
   height: 100%;
+  /* Dark is the app. light.css sets light for html[data-theme="light"]. */
+  color-scheme: dark;
 }
 
 body {
@@ -146,7 +149,7 @@ svg {
 /* Hairline scrollbars — the app should not read as a web page. */
 * {
   scrollbar-width: thin;
-  scrollbar-color: rgba(242, 240, 234, 0.2) transparent;
+  scrollbar-color: var(--color-scrollbar) transparent;
 }
 
 ::-webkit-scrollbar {
@@ -159,13 +162,13 @@ svg {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(242, 240, 234, 0.16);
+  background: var(--color-scrollbar);
   background-clip: content-box;
   border: 3px solid transparent;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(242, 240, 234, 0.3);
+  background: var(--color-scrollbar-hover);
   background-clip: content-box;
 }
 
@@ -339,7 +342,7 @@ svg {
 
 .slider__track {
   right: 0;
-  background: rgba(242, 240, 234, 0.2);
+  background: var(--color-track);
 }
 
 .slider__fill {
@@ -718,7 +721,7 @@ svg {
 
 .chip[aria-pressed="true"] {
   border-color: var(--color-text);
-  background: rgba(242, 240, 234, 0.08);
+  background: var(--color-surface-hover);
   color: var(--color-text);
 }
 
@@ -1176,8 +1179,8 @@ svg {
 .tile__art--liked {
   display: grid;
   place-items: center;
-  background: linear-gradient(140deg, #1a1a20, #33333c);
-  color: #f2f0ea;
+  background: linear-gradient(140deg, var(--color-liked-from), var(--color-liked-to));
+  color: var(--color-text);
 }
 
 .tile__art--liked .icon {
@@ -1263,13 +1266,14 @@ svg {
   min-height: 11rem;
   padding: var(--space-5) var(--space-gutter);
   border-bottom: 1px solid var(--color-border);
-  --hero-tint: #3a3a3a;
 }
 
 .hero__bg {
   position: absolute;
   inset: 0;
-  background: var(--hero-tint);
+  /* The band's tint is sampled from the artwork at run time; the token is the
+     fallback before the canvas has read a pixel. */
+  background: var(--hero-tint, var(--color-hero-tint));
   opacity: 0.4;
 }
 
@@ -1357,8 +1361,8 @@ svg {
 .hero--artist .hero__bg {
   background: linear-gradient(
     180deg,
-    rgba(0, 0, 0, 0.32) 0%,
-    rgba(0, 0, 0, 0.58) 45%,
+    var(--color-art-veil-a) 0%,
+    var(--color-art-veil-b) 45%,
     var(--color-surface) 100%
   );
   opacity: 1;
@@ -1698,6 +1702,7 @@ svg {
 
 .track-row:hover .track-row__like,
 .track-row:focus-within .track-row__like,
+.track-row.is-demo-hover .track-row__like,
 .track-row__like.is-liked {
   opacity: 1;
 }
@@ -1929,7 +1934,8 @@ svg {
   display: grid;
   place-items: center;
   background: rgba(0, 0, 0, 0.58);
-  color: var(--color-accent);
+  /* Over artwork, so it keeps the bright green: the veil under it never inverts. */
+  color: var(--color-accent-on-art);
   opacity: 0;
   transition: opacity var(--dur-base) var(--ease-out);
 }
@@ -1975,7 +1981,7 @@ svg {
 
 .progress-bar {
   height: 3px;
-  background: rgba(242, 240, 234, 0.2);
+  background: var(--color-track);
   overflow: hidden;
 }
 
@@ -2004,7 +2010,7 @@ svg {
 }
 
 .episode:hover {
-  background: rgba(242, 240, 234, 0.05);
+  background: var(--color-row-hover);
 }
 
 .episode__toggle {
@@ -2096,7 +2102,7 @@ svg {
 
 .view-toggle button[aria-pressed="true"] {
   border-color: var(--color-text);
-  background: rgba(242, 240, 234, 0.08);
+  background: var(--color-surface-hover);
   color: var(--color-text);
 }
 
@@ -2279,6 +2285,9 @@ svg {
   overflow: hidden;
   font-size: var(--text-md);
   font-weight: 700;
+  /* The tint is a painted surface taken from artwork, not a theme surface: the
+     label on it stays bone in both themes. */
+  color: var(--color-on-art);
   letter-spacing: var(--tracking-tight);
   transition: border-color var(--dur-fast) var(--ease-out);
 }
@@ -2419,7 +2428,7 @@ svg {
 
 .panel-tab[aria-selected="true"] {
   border-color: var(--color-text);
-  background: rgba(242, 240, 234, 0.08);
+  background: var(--color-surface-hover);
   color: var(--color-text);
 }
 
@@ -3285,7 +3294,7 @@ svg {
 /* A grouped menu keeps its rows one level deeper, inside a kind's group, so the
    two tiers reach in rather than being restated. */
 :is(.menu, .menu__body, .search-menu__rows) > li.is-hover {
-  background: rgba(242, 240, 234, 0.04);
+  background: var(--color-row-hover);
 }
 
 :is(.menu, .menu__body, .search-menu__rows) > li.is-hover::before {
@@ -3874,7 +3883,7 @@ svg {
 .spec-list,
 .drag-tokens {
   display: grid;
-  grid-template-columns: 13rem minmax(0, 1fr);
+  grid-template-columns: 15rem minmax(0, 1fr);
   gap: 0;
   margin: var(--space-4) 0 0;
   border-top: 1px solid var(--color-border);
@@ -4101,7 +4110,7 @@ svg {
     grid-column: 1 / -1;
     display: block;
     height: 2px;
-    background: rgba(242, 240, 234, 0.18);
+    background: var(--color-track);
     overflow: hidden;
   }
 
@@ -4461,5 +4470,246 @@ svg {
   .drag-tokens dt {
     padding-bottom: 0;
     border-bottom: 0;
+  }
+}
+
+/* --------------------------------------------------------------------------
+   25. Light mode sheet — one ladder, two columns, dark then light
+   -------------------------------------------------------------------------- */
+
+/* The sheet's own control sits in the page head, in the chip grammar the sidebar
+already uses, so the thing that changes the theme is made of the theme. */
+.page-head__aside {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-3);
+}
+
+.theme-switch {
+  display: flex;
+  gap: var(--space-2);
+  flex: none;
+}
+
+.theme-switch__label {
+  color: var(--color-text-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-medium);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+}
+
+/* Grown past the sidebar's chip so it reads as a named control rather than a
+filter, and the target is drawn 6px past its border so a 34px control can be hit
+without aiming. */
+.theme-switch .chip {
+  position: relative;
+  padding: 0.45rem 0.7rem;
+}
+
+.theme-switch .chip::after {
+  content: "";
+  position: absolute;
+  inset: -0.4rem;
+}
+
+/* The one control in the app that states its state as a solid: a theme switch
+whose selected half is a 1.1:1 tint is a switch you cannot read. Pressed means
+ink, in both themes, and it is the only place a chip fills solid. */
+.theme-switch .chip[aria-pressed="true"] {
+  background: var(--color-text);
+  border-color: var(--color-text);
+  color: var(--color-surface);
+}
+
+.theme-switch .chip[aria-pressed="true"]:hover {
+  background: var(--color-text);
+  color: var(--color-surface);
+}
+
+/* Each token gets two chips: the dark value and the light value, in that order,
+because the point of the ladder is the distance travelled. The chips quote the
+token file — they do not read it — so the table stays a record while the sheet
+around it stays the build. */
+.ladder {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  border-top: 1px solid var(--color-border);
+}
+
+.ladder__row {
+  display: grid;
+  grid-template-columns: 10.5rem 6.5rem 6.5rem minmax(0, 1fr);
+  gap: var(--space-3);
+  /* Top-aligned, so the token column is a single scan axis whatever the note's
+     length does to the row's height. */
+  align-items: start;
+  min-width: 0;
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.ladder__row--head {
+  padding-block: var(--space-1);
+}
+
+.ladder__row--head > * {
+  color: var(--color-text-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-medium);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+}
+
+.ladder__token {
+  color: var(--color-text);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+}
+
+.ladder__pair {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.ladder__chip {
+  flex: none;
+  width: 1.25rem;
+  height: 1.25rem;
+  /* Strong, not hairline: half of these chips are quoted on a ground within a
+     few points of their own value, so the edge is what makes the pair readable. */
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-xs);
+  background: var(--chip);
+}
+
+.ladder__hex {
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  overflow-wrap: anywhere;
+}
+
+.ladder__note {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+/* The ink tiers as text rather than as chips: a palette that reads 16.6:1 is not
+something a swatch can show. */
+.ink-spec {
+  display: grid;
+  gap: var(--space-2);
+  max-width: 46ch;
+}
+
+/* A specimen that is a paragraph rather than a board does not need a well the
+width of the pane behind it. */
+.states__stage--tight {
+  width: fit-content;
+  max-width: 100%;
+}
+
+.ink-spec__title {
+  font-size: var(--text-xl);
+  font-weight: var(--weight-black);
+  letter-spacing: var(--tracking-tight);
+  line-height: var(--leading-tight);
+}
+
+.ink-spec__body {
+  color: var(--color-text-muted);
+  font-size: var(--text-md);
+}
+
+.ink-spec__label {
+  color: var(--color-text-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-medium);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+}
+
+/* The three things green is allowed to paint, on one line, at the size they are
+in the app — each one named, because a 40px rule on its own is a dash. */
+.green-spec {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-5);
+}
+
+.green-spec__item {
+  display: grid;
+  grid-template-rows: 2.5rem auto;
+  align-items: center;
+  justify-items: start;
+  gap: var(--space-1);
+}
+
+.green-spec__rule {
+  width: 2.5rem;
+  height: 2px;
+  background: var(--color-accent);
+}
+
+.green-spec__note {
+  flex: 1 1 18rem;
+  max-width: 46ch;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+@media (max-width: 900px) {
+  /* Fixed narrow columns for both the head and the rows, so the two names sit
+     over the two chips instead of over the width their own text happens to need. */
+  .ladder__row {
+    grid-template-columns: minmax(0, 12rem) 4.75rem 4.75rem;
+    row-gap: var(--space-1);
+  }
+
+  /* Three columns at this width: the note is the row, not a fourth column. */
+  .ladder__row--head > :last-child {
+    display: none;
+  }
+
+  .ladder__note,
+  .spec-list dd,
+  .drag-tokens dd {
+    max-width: 62ch;
+  }
+
+  .ladder__note {
+    grid-column: 1 / -1;
+  }
+
+  .page-head__aside {
+    justify-content: flex-start;
+    padding-top: var(--space-2);
+  }
+}
+
+/* Below the width where a token name and two chip pairs fit one line, the name
+keeps its own line and the pairs sit under it. The third track stays flexible so
+the note is not squeezed into the chips' 152px. */
+@media (max-width: 480px) {
+  .ladder__row {
+    grid-template-columns: repeat(2, 4.75rem) minmax(0, 1fr);
+  }
+
+  .ladder__token,
+  .ladder__note {
+    grid-column: 1 / -1;
+  }
+
+  .ladder__row--head {
+    display: none;
   }
 }
