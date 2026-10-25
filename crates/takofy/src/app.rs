@@ -502,8 +502,8 @@ mod tests {
 
     use eframe::App;
     use takofy_model::{
-        CoverImage, CoverUrl, Device, DeviceKind, Landing, Order, RemotePlayback, RemoteState,
-        RequestId, Status, TrackEntry,
+        CoverImage, CoverSet, CoverUrl, Device, DeviceKind, Landing, Order, RemotePlayback,
+        RemoteState, RequestId, Status, TrackEntry,
     };
     use takofy_ui::library::Load;
     use takofy_ui::message::{Command, DeviceUpdate, Failure, RemoteUpdate, TransportUpdate};
@@ -513,6 +513,10 @@ mod tests {
 
     use super::*;
     use crate::preferences::PrefsWriter;
+
+    fn set(url: &CoverUrl) -> CoverSet {
+        CoverSet::single(url.clone())
+    }
 
     fn track(uri: &str) -> TrackEntry {
         TrackEntry {
@@ -1162,7 +1166,10 @@ mod tests {
         let url = CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover url");
         // The URL must be known before its failure arrives, as it is in a frame:
         // the draw looks it, sends the fetch, and the failure answers it.
-        assert_eq!(art.look(Some(&url), now), takofy_ui::cover::Cover::Loading);
+        assert_eq!(
+            art.look(Some(&set(&url)), 64, now),
+            takofy_ui::cover::Cover::Loading
+        );
         let _ = art.requests(now);
         tx.send(Update::CoverFailed { url: url.clone() })
             .expect("send");
@@ -1179,7 +1186,10 @@ mod tests {
         );
 
         assert!(commands.is_empty());
-        assert_eq!(art.look(Some(&url), now), takofy_ui::cover::Cover::Failed);
+        assert_eq!(
+            art.look(Some(&set(&url)), 64, now),
+            takofy_ui::cover::Cover::Failed
+        );
     }
 
     #[test]
@@ -1193,7 +1203,7 @@ mod tests {
         let mut art = Art::default();
         let now = Instant::now();
         let url = CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover url");
-        art.look(Some(&url), now);
+        art.look(Some(&set(&url)), 64, now);
         let _ = art.requests(now);
         tx.send(Update::Cover {
             url: url.clone(),
@@ -1215,7 +1225,7 @@ mod tests {
         art.upload(&ctx);
 
         assert!(matches!(
-            art.look(Some(&url), now),
+            art.look(Some(&set(&url)), 64, now),
             takofy_ui::cover::Cover::Ready(_)
         ));
     }
@@ -1226,11 +1236,14 @@ mod tests {
         let now = Instant::now();
         let url = CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover url");
         art.begin_frame();
-        art.look(Some(&url), now);
+        art.look(Some(&set(&url)), 64, now);
         let _ = art.requests(now);
         art.apply(&Update::CoverFailed { url: url.clone() }, now);
         art.begin_frame();
-        assert_eq!(art.look(Some(&url), now), takofy_ui::cover::Cover::Failed);
+        assert_eq!(
+            art.look(Some(&set(&url)), 64, now),
+            takofy_ui::cover::Cover::Failed
+        );
 
         let ctx = egui::Context::default();
         // Warm up so egui's own first-frame work (the font atlas and its

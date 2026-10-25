@@ -127,26 +127,26 @@ pub enum CoverOrigin {
 
 /// A playlist's cover together with where it came from.
 ///
-/// The url is never absent: an origin with nothing to name cannot be built.
+/// The set is never absent: an origin with nothing to name cannot be built.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlaylistCover {
-    pub url: CoverUrl,
+    pub set: CoverSet,
     pub origin: CoverOrigin,
 }
 
 impl PlaylistCover {
     /// A cover a user set.
-    pub fn chosen(url: CoverUrl) -> Self {
+    pub fn chosen(cover: impl Into<CoverSet>) -> Self {
         Self {
-            url,
+            set: cover.into(),
             origin: CoverOrigin::Chosen,
         }
     }
 
     /// A cover copied from the playlist's first track.
-    pub fn derived(url: CoverUrl) -> Self {
+    pub fn derived(cover: impl Into<CoverSet>) -> Self {
         Self {
-            url,
+            set: cover.into(),
             origin: CoverOrigin::Derived,
         }
     }
@@ -208,14 +208,14 @@ pub const COMPOSED_MIN: usize = 2;
 /// covers, and an entry whose label did not arrive contributes nothing rather
 /// than a hole. A chosen picture is the list's own and a mosaic may never
 /// replace it; fewer than two covers have nothing to tile, so both give nothing.
-pub fn composed_from<'a, I>(origin: Option<CoverOrigin>, head: I) -> Vec<CoverUrl>
+pub fn composed_from<'a, I>(origin: Option<CoverOrigin>, head: I) -> Vec<CoverSet>
 where
-    I: IntoIterator<Item = Option<&'a CoverUrl>>,
+    I: IntoIterator<Item = Option<&'a CoverSet>>,
 {
     if origin == Some(CoverOrigin::Chosen) {
         return Vec::new();
     }
-    let mut picked: Vec<CoverUrl> = Vec::new();
+    let mut picked: Vec<CoverSet> = Vec::new();
     for cover in head.into_iter().flatten() {
         if picked.len() == COMPOSED_MAX {
             break;
@@ -249,7 +249,7 @@ pub struct PlaylistEntry {
     /// A derived cover arriving does not empty this, because the band goes on
     /// tiling the same head and the card must keep agreeing with it. Only a
     /// change to the rows does.
-    pub composed: Vec<CoverUrl>,
+    pub composed: Vec<CoverSet>,
     /// The playlist's own description, collapsed to a line, when it has one.
     ///
     /// `None` is the wire giving nothing; an empty description is `None` rather
@@ -273,9 +273,9 @@ pub struct PlaylistEntry {
 }
 
 impl PlaylistEntry {
-    /// The playlist's cover image url, whatever its origin.
-    pub fn cover_url(&self) -> Option<&CoverUrl> {
-        self.cover.as_ref().map(|cover| &cover.url)
+    /// The playlist's cover image, whatever its origin.
+    pub fn cover_set(&self) -> Option<&CoverSet> {
+        self.cover.as_ref().map(|cover| &cover.set)
     }
 
     /// The revision and length an add would be based on, when one may be made.
@@ -380,7 +380,7 @@ pub struct TrackEntry {
     /// `false` when `title` is the URI fallback.
     pub named: bool,
     /// The track's own album cover, when the metadata carried one.
-    pub cover: Option<CoverUrl>,
+    pub cover: Option<CoverSet>,
 }
 
 impl TrackEntry {
@@ -408,7 +408,7 @@ pub struct Episode {
     pub published: Option<PublishedAt>,
     /// The episode's length in milliseconds, when the metadata carried one.
     pub duration_ms: Option<u32>,
-    pub cover: Option<CoverUrl>,
+    pub cover: Option<CoverSet>,
     /// `false` when `title` is the URI fallback.
     pub named: bool,
 }
@@ -465,7 +465,7 @@ pub struct AlbumDetail {
     /// A `time::Date` cannot hold a year past 9999, so a wider integer is not a
     /// case this can see.
     pub year: Option<u16>,
-    pub cover: Option<CoverUrl>,
+    pub cover: Option<CoverSet>,
     /// Every track, in the album's own order. [`TrackEntry::added_at`] is always
     /// `None`: an album position carries no membership date.
     pub tracks: Vec<TrackEntry>,
@@ -494,7 +494,7 @@ pub struct Release {
     pub kind: ReleaseKind,
     /// The release year, or `None` for a wire year of zero or none at all.
     pub year: Option<u16>,
-    pub cover: Option<CoverUrl>,
+    pub cover: Option<CoverSet>,
     /// The release's track URIs in disc order.
     ///
     /// Names are fetched only while the block is on screen, so this is what a
@@ -510,7 +510,7 @@ pub struct ArtistDetail {
     /// The artist's name, or the URI when the wire gave no name.
     pub name: String,
     /// The portrait the hero draws, when the wire carried one.
-    pub portrait: Option<CoverUrl>,
+    pub portrait: Option<CoverSet>,
     /// The artist's top tracks for the session's country.
     pub top_tracks: Vec<TrackEntry>,
     /// Every release the artist payload named: albums, then singles, then
@@ -530,7 +530,7 @@ pub struct Show {
     pub publisher: String,
     /// The show's own description as the wire sends it, empty when it has none.
     pub description: String,
-    pub cover: Option<CoverUrl>,
+    pub cover: Option<CoverSet>,
 }
 
 /// A loaded show, as its page draws it.
@@ -552,7 +552,7 @@ pub struct FollowedShow {
     pub publisher: Option<String>,
     /// How many episodes the show lists, when its metadata answered.
     pub episodes: Option<usize>,
-    pub cover: Option<CoverUrl>,
+    pub cover: Option<CoverSet>,
 }
 
 /// One artist in the followed-artists list, as its card draws it.
@@ -563,7 +563,7 @@ pub struct FollowedArtist {
     pub name: String,
     /// `false` when `name` is the URI fallback.
     pub named: bool,
-    pub portrait: Option<CoverUrl>,
+    pub portrait: Option<CoverSet>,
     /// How many current releases the artist has, when they could be read.
     pub releases: Option<u32>,
 }
@@ -573,7 +573,7 @@ pub struct FollowedArtist {
 pub struct ArtistPortrait {
     pub artist: String,
     /// `None` when the artist's record carries no portrait group.
-    pub portrait: Option<CoverUrl>,
+    pub portrait: Option<CoverSet>,
 }
 
 /// One album in the saved-albums list, as its card draws it.
@@ -587,7 +587,7 @@ pub struct SavedAlbum {
     /// The album's artists, joined with ", ". Empty when none were named.
     pub artists: String,
     pub year: Option<u16>,
-    pub cover: Option<CoverUrl>,
+    pub cover: Option<CoverSet>,
     /// The album's track count, when its discs could be read.
     pub tracks: Option<u32>,
 }
@@ -673,7 +673,7 @@ pub struct PlaylistAccess {
 #[cfg(test)]
 mod tests {
     use super::{
-        AddedAt, CoverImage, CoverOrigin, CoverUrl, Episode, Move, Owner, OwnerName,
+        AddedAt, CoverImage, CoverOrigin, CoverSet, CoverUrl, Episode, Move, Owner, OwnerName,
         PlaylistAccess, PlaylistCover, PlaylistEntry, PublishedAt, Removal, Revision, TrackEntry,
         TrackLyrics, composed_from,
     };
@@ -748,26 +748,26 @@ mod tests {
         assert_eq!(
             PlaylistCover::chosen(url.clone()),
             PlaylistCover {
-                url: url.clone(),
+                set: CoverSet::single(url.clone()),
                 origin: CoverOrigin::Chosen,
             }
         );
         assert_eq!(
             PlaylistCover::derived(url.clone()),
             PlaylistCover {
-                url,
+                set: CoverSet::single(url),
                 origin: CoverOrigin::Derived,
             }
         );
     }
 
     #[test]
-    fn a_playlist_entry_hands_out_its_cover_url() {
+    fn a_playlist_entry_hands_out_its_cover_set() {
         let url = CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover url");
         let mut entry = playlist(Some(1), access(true));
-        assert_eq!(entry.cover_url(), None, "no cover named");
+        assert_eq!(entry.cover_set(), None, "no cover named");
         entry.cover = Some(PlaylistCover::derived(url.clone()));
-        assert_eq!(entry.cover_url(), Some(&url));
+        assert_eq!(entry.cover_set(), Some(&CoverSet::single(url)));
     }
 
     fn cover(tail: &str) -> CoverUrl {
@@ -776,9 +776,16 @@ mod tests {
 
     /// `composed_from` over a head whose entries are a cover tail or a label
     /// that did not arrive.
-    fn composed(origin: Option<CoverOrigin>, head: &[Option<&str>]) -> Vec<CoverUrl> {
-        let covers: Vec<Option<CoverUrl>> = head.iter().map(|tail| tail.map(cover)).collect();
+    fn composed(origin: Option<CoverOrigin>, head: &[Option<&str>]) -> Vec<CoverSet> {
+        let covers: Vec<Option<CoverSet>> = head
+            .iter()
+            .map(|tail| tail.map(|tail| CoverSet::single(cover(tail))))
+            .collect();
         composed_from(origin, covers.iter().map(Option::as_ref))
+    }
+
+    fn set(tail: &str) -> CoverSet {
+        CoverSet::single(cover(tail))
     }
 
     #[test]
@@ -787,7 +794,7 @@ mod tests {
         assert!(composed(Some(CoverOrigin::Chosen), &head).is_empty());
         assert_eq!(
             composed(Some(CoverOrigin::Derived), &head),
-            vec![cover("a"), cover("b"), cover("c"), cover("d")],
+            vec![set("a"), set("b"), set("c"), set("d")],
             "a derived cover is not the list's own"
         );
         assert_eq!(composed(None, &head).len(), 4);
@@ -816,32 +823,26 @@ mod tests {
         ];
         assert_eq!(
             composed(None, &head),
-            vec![cover("a"), cover("b"), cover("c"), cover("d")]
+            vec![set("a"), set("b"), set("c"), set("d")]
         );
     }
 
     #[test]
     fn composed_covers_keep_their_head_order() {
         let head = [Some("c"), None, Some("a"), Some("b")];
-        assert_eq!(
-            composed(None, &head),
-            vec![cover("c"), cover("a"), cover("b")]
-        );
+        assert_eq!(composed(None, &head), vec![set("c"), set("a"), set("b")]);
     }
 
     #[test]
     fn a_repeated_album_composes_once() {
         let head = [Some("a"), Some("b"), Some("a"), Some("c"), Some("b")];
-        assert_eq!(
-            composed(None, &head),
-            vec![cover("a"), cover("b"), cover("c")]
-        );
+        assert_eq!(composed(None, &head), vec![set("a"), set("b"), set("c")]);
     }
 
     #[test]
     fn a_failed_label_is_skipped() {
         let head = [Some("a"), None, Some("b"), None];
-        assert_eq!(composed(None, &head), vec![cover("a"), cover("b")]);
+        assert_eq!(composed(None, &head), vec![set("a"), set("b")]);
         assert!(
             composed(None, &[Some("a"), None]).is_empty(),
             "one named cover cannot tile"
@@ -901,7 +902,9 @@ mod tests {
             description: Some("A description".to_owned()),
             published: PublishedAt::from_millis(1_761_134_400_000),
             duration_ms: Some(2_773_461),
-            cover: Some(CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover url")),
+            cover: Some(CoverSet::single(
+                CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover url"),
+            )),
             named: true,
         }
     }

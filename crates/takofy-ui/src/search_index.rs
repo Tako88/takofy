@@ -3,7 +3,7 @@
 //!
 //! Pure, so the derivation and its caps are testable without a window.
 
-use takofy_model::{CoverUrl, TrackEntry};
+use takofy_model::{CoverSet, TrackEntry};
 
 /// How many rows of each kind a surface shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,7 +36,7 @@ pub struct Album {
     /// The first crediting track's first artist: the payload names no album
     /// performer of its own.
     pub artist: String,
-    pub cover: Option<CoverUrl>,
+    pub cover: Option<CoverSet>,
 }
 
 /// One artist credited on an answer's tracks.
@@ -48,7 +48,7 @@ pub struct Artist {
     /// counts once.
     pub tracks: usize,
     /// The cover of the record the match sits on, for an artist with no portrait.
-    pub record_cover: Option<CoverUrl>,
+    pub record_cover: Option<CoverSet>,
 }
 
 /// The lists an answer derives, in first-appearance order.
@@ -290,7 +290,7 @@ pub enum Row {
 
 #[cfg(test)]
 mod tests {
-    use takofy_model::{CoverUrl, TrackEntry};
+    use takofy_model::{CoverSet, CoverUrl, TrackEntry};
 
     use super::{Album, Artist, Band, Caps, Index, Kind, MENU, PAGE, Row, tracks_phrase};
 
@@ -310,8 +310,10 @@ mod tests {
         }
     }
 
-    fn cover(name: &str) -> CoverUrl {
-        CoverUrl::from_wire(&format!("https://i.scdn.co/image/{name}")).expect("a cover url")
+    fn cover(name: &str) -> CoverSet {
+        CoverSet::single(
+            CoverUrl::from_wire(&format!("https://i.scdn.co/image/{name}")).expect("a cover url"),
+        )
     }
 
     fn on_album(mut entry: TrackEntry, name: &str, uri: &str) -> TrackEntry {

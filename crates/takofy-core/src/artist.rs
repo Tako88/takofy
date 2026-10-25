@@ -18,10 +18,10 @@ use librespot::protocol::extended_metadata::BatchedExtensionResponse;
 use librespot::protocol::metadata::Album as AlbumMessage;
 use librespot::protocol::metadata::album::Type as AlbumType;
 use protobuf::Message as _;
-use takofy_model::{ArtistDetail, CoverUrl, Release, ReleaseKind};
+use takofy_model::{ArtistDetail, CoverSet, Release, ReleaseKind};
 
 use crate::context::PageTrack;
-use crate::cover::{pick_cover, pick_images_cover};
+use crate::cover::{covers_in_group, covers_in_images};
 
 /// Why an artist read failed.
 #[derive(Debug, thiserror::Error)]
@@ -146,8 +146,8 @@ pub(crate) fn detail(
 /// Only `portrait_group` is read: `portraits` came back empty on every artist
 /// the probe asked, and `is_portrait_album_cover` is a hint about one of the
 /// group's tiles rather than a second source.
-pub(crate) fn portrait_of(artist: &Artist) -> Option<CoverUrl> {
-    pick_images_cover(&artist.portrait_group)
+pub(crate) fn portrait_of(artist: &Artist) -> Option<CoverSet> {
+    covers_in_images(&artist.portrait_group)
 }
 
 /// One release, from the URI the artist named and the album the batched answer
@@ -168,7 +168,7 @@ pub(crate) fn release_of(uri: &str, album: &AlbumMessage) -> Release {
         year: u16::try_from(album.date.as_ref().map_or(0, |date| date.year()))
             .ok()
             .filter(|year| *year != 0),
-        cover: pick_cover(album.cover_group.as_ref()),
+        cover: covers_in_group(album.cover_group.as_ref()),
         tracks: track_uris(album),
     }
 }
@@ -273,7 +273,7 @@ mod tests {
     use protobuf::Message as _;
     use protobuf::MessageField;
     use protobuf::well_known_types::any::Any;
-    use takofy_model::{CoverUrl, ReleaseKind};
+    use takofy_model::{CoverSet, CoverUrl, ReleaseKind};
 
     use super::{
         RELATED_MAX, RELEASE_CHUNK, TOP_TRACKS, detail, portrait_of, related_uris, release_chunks,
@@ -585,9 +585,13 @@ mod tests {
 
         let cover = release_of("spotify:album:x", &album).cover;
         assert!(
-            cover.as_ref().is_some_and(|cover| cover
-                .as_str()
-                .ends_with("0102030405060708090a0b0c0d0e0f1011121314")),
+            cover
+                .as_ref()
+                .and_then(|cover| cover.variants().first())
+                .is_some_and(|variant| variant
+                    .url
+                    .as_str()
+                    .ends_with("0102030405060708090a0b0c0d0e0f1011121314")),
             "{cover:?}"
         );
     }
@@ -628,6 +632,7 @@ mod tests {
         let mut portrait = Image::default();
         portrait.set_size(librespot::protocol::metadata::image::Size::DEFAULT);
         portrait.set_width(300);
+        portrait.set_height(300);
         portrait.set_file_id(vec![9; 20]);
         message.portrait.push(portrait.clone());
         message.portrait_group = MessageField::some(ImageGroup {
@@ -637,8 +642,12 @@ mod tests {
 
         let products = portrait_of(&artist(message));
         assert_eq!(
-            products.map(|cover: CoverUrl| cover.as_str().to_owned()),
-            Some(format!("https://i.scdn.co/image/{}", "09".repeat(20)))
+            products,
+            CoverSet::from_sizes([(
+                Some((300, 300)),
+                CoverUrl::from_wire(&format!("https://i.scdn.co/image/{}", "09".repeat(20)))
+                    .expect("a cover url"),
+            )])
         );
     }
 

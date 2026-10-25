@@ -17,7 +17,7 @@ use std::time::Instant;
 
 use egui::{FontId, Id, RichText, Sense, Ui};
 
-use crate::cover::Art;
+use crate::cover::{Art, want_px};
 use crate::format::{format_position, search_note};
 use crate::layout::{Table, table as table_layout};
 use crate::library::Library;
@@ -252,6 +252,7 @@ fn tracks(
     let visible = ui.clip_rect();
     let mut selection = carry::List::open(ui.ctx(), Id::unique(("search-tracks", query)), shown);
     let gate = selection.gate(stores.writing);
+    let want = want_px(crate::theme::extent::LIBRARY_ART, ui.pixels_per_point());
 
     for (index, entry) in listing.answer.iter().take(shown).enumerate() {
         let rect = table_layout::row_rect(list, index, extent::ROW_H);
@@ -271,7 +272,7 @@ fn tracks(
             added: None,
             duration: duration.as_deref(),
             state: state_of(&entry.uri, stores.transport),
-            cover: Some(stores.art.look(entry.cover.as_ref(), stores.now)),
+            cover: Some(stores.art.look(entry.cover.as_ref(), want, stores.now)),
             look: selection.look(index),
             menu: gate.allows(),
             liked: stores.library.likes.state(&entry.uri),
@@ -390,7 +391,7 @@ fn page_of(kind: Kind, index: &Index, position: usize) -> Option<Page> {
 #[cfg(test)]
 mod tests {
     use egui::{Context, Event, FullOutput, Pos2, RawInput, Rect, Vec2};
-    use takofy_model::{CoverUrl, TrackEntry};
+    use takofy_model::{CoverSet, CoverUrl, TrackEntry};
 
     use super::*;
     use crate::message::{Failure, Update};
@@ -410,8 +411,10 @@ mod tests {
         ctx
     }
 
-    fn cover(index: usize) -> CoverUrl {
-        CoverUrl::from_wire(&format!("https://i.scdn.co/image/{index}")).expect("a cover url")
+    fn cover(index: usize) -> CoverSet {
+        CoverSet::single(
+            CoverUrl::from_wire(&format!("https://i.scdn.co/image/{index}")).expect("a cover url"),
+        )
     }
 
     /// One answer track for `index`, on `album` and by `artist`.
@@ -1039,7 +1042,9 @@ mod tests {
         });
         assert_eq!(
             fetched(&ctx, &mut absent),
-            vec![Command::Fetch { url: record }],
+            vec![Command::Fetch {
+                url: record.variants()[0].url.clone()
+            }],
             "an artist with no portrait shows the record's cover"
         );
 
@@ -1055,7 +1060,7 @@ mod tests {
         assert_eq!(
             fetched(&ctx, &mut known),
             vec![Command::Fetch {
-                url: portrait.clone()
+                url: portrait.variants()[0].url.clone()
             }],
             "a known portrait is fetched instead"
         );

@@ -12,6 +12,7 @@ use egui::{
 
 use takofy_model::TrackEntry;
 
+use crate::cover::want_px;
 use crate::devices::Source as DeviceSource;
 use crate::drawer::{Drawer, Input};
 use crate::landing::{self, Area, Landing, Target};
@@ -167,9 +168,14 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
         DeviceSource::Local => screen.transport.now_playing.as_ref(),
         DeviceSource::Remote => screen.devices.display().now_playing.as_ref(),
     };
-    let now_playing_cover = screen
-        .art
-        .look(playing.and_then(|now| now.cover.as_ref()), screen.now);
+    let now_playing_cover = screen.art.look(
+        playing.and_then(|now| now.cover.as_ref()),
+        want_px(
+            crate::theme::extent::NOWPLAYING_ART_MAX,
+            ui.pixels_per_point(),
+        ),
+        screen.now,
+    );
     let like = playing.and_then(|now| screen.library.likes.state(&now.uri));
 
     // The panel's lyrics follow the transport: a different track drops the load
@@ -1418,7 +1424,7 @@ mod tests {
     use std::time::Instant;
 
     use takofy_model::{
-        ArtistDetail, CoverUrl, Device, DeviceKind, FollowedArtist, FollowedShow, Move,
+        ArtistDetail, CoverSet, CoverUrl, Device, DeviceKind, FollowedArtist, FollowedShow, Move,
         PlaylistAccess, PlaylistEntry, Release, ReleaseKind, RemotePlayback, RemoteState, Removal,
         Revision, SavedAlbum, TrackEntry,
     };
@@ -1440,11 +1446,32 @@ mod tests {
     use crate::signin::SignIn;
     use crate::theme::{extent, fonts, icon, space, style};
 
-    fn cover(tail: &str) -> CoverUrl {
+    fn cover_url(tail: &str) -> CoverUrl {
         CoverUrl::from_wire(&format!("https://i.scdn.co/image/{tail}")).expect("a cover url")
     }
 
-    fn playing(cover: CoverUrl) -> Transport {
+    fn cover(tail: &str) -> CoverSet {
+        CoverSet::single(cover_url(tail))
+    }
+
+    /// A cover offering 64, 300 and 640 squares, with their URLs.
+    fn sized(tail: &str) -> (CoverSet, CoverUrl, CoverUrl, CoverUrl) {
+        let small = CoverUrl::from_wire(&format!("https://i.scdn.co/image/{tail}-64"))
+            .expect("a cover url");
+        let middle = CoverUrl::from_wire(&format!("https://i.scdn.co/image/{tail}-300"))
+            .expect("a cover url");
+        let large = CoverUrl::from_wire(&format!("https://i.scdn.co/image/{tail}-640"))
+            .expect("a cover url");
+        let set = CoverSet::from_sizes([
+            (Some((64, 64)), small.clone()),
+            (Some((300, 300)), middle.clone()),
+            (Some((640, 640)), large.clone()),
+        ])
+        .expect("a cover set");
+        (set, small, middle, large)
+    }
+
+    fn playing(cover: CoverSet) -> Transport {
         Transport {
             now_playing: Some(NowPlaying {
                 uri: "spotify:track:x".to_owned(),
@@ -1457,7 +1484,7 @@ mod tests {
         }
     }
 
-    fn track(index: usize, cover: Option<CoverUrl>) -> TrackEntry {
+    fn track(index: usize, cover: Option<CoverSet>) -> TrackEntry {
         TrackEntry {
             uri: format!("t{index}"),
             title: format!("t{index}"),
@@ -2879,6 +2906,27 @@ mod tests {
     }
 
     #[test]
+    fn the_now_playing_lookup_asks_for_the_large_size_at_two_x() {
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        window.ctx.set_pixels_per_point(2.0);
+        let (set, small, _, large) = sized("panel");
+        let mut transport = playing(set);
+        let mut queue = Queue::default();
+
+        let (_, _) = window.frame(&mut transport, &mut queue, Vec::new());
+        let asked = window.requests();
+
+        assert!(
+            asked.contains(&large),
+            "the panel's 512px box takes the 640: {asked:?}"
+        );
+        assert!(
+            !asked.contains(&small),
+            "the panel must not fetch the 64: {asked:?}"
+        );
+    }
+
+    #[test]
     fn the_playbar_tile_is_requested_even_with_the_panel_hidden() {
         // Narrower than the panel breakpoint, so the Now Playing panel is not
         // drawn and only the playbar can want a cover — the queue's rows too.
@@ -2893,7 +2941,7 @@ mod tests {
 
         assert_eq!(
             requested(Vec2::new(900.0, 600.0), &mut transport, &mut queue),
-            vec![cover("abc")],
+            vec![cover_url("abc")],
             "a hidden panel must not ask for its rows' covers"
         );
     }
@@ -2912,7 +2960,7 @@ mod tests {
         let mut asked = requested(Vec2::new(1400.0, 900.0), &mut transport, &mut queue);
         asked.sort_by(|left, right| left.as_str().cmp(right.as_str()));
 
-        let mut expected = vec![cover("abc"), cover("row1"), cover("row2")];
+        let mut expected = vec![cover_url("abc"), cover_url("row1"), cover_url("row2")];
         expected.sort_by(|left, right| left.as_str().cmp(right.as_str()));
         assert_eq!(
             asked, expected,

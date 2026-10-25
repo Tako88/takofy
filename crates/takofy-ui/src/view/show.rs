@@ -16,7 +16,7 @@ use std::time::Instant;
 use egui::{Id, Sense, Ui};
 use takofy_model::Episode;
 
-use crate::cover::Art;
+use crate::cover::{Art, want_px};
 use crate::format::{episode_meta, plain_description, show_meta, total_label};
 use crate::layout::actionbar::Kind;
 use crate::layout::{episode as episode_layout, table as table_layout};
@@ -106,7 +106,11 @@ pub fn show_view(
                     };
                     let detail = show;
                     // The one cover lookup on this page: the rows carry none.
-                    let cover = art.look(detail.show.cover.as_ref(), now);
+                    let cover = art.look(
+                        detail.show.cover.as_ref(),
+                        want_px(crate::theme::hero::ART, ui.pixels_per_point()),
+                        now,
+                    );
                     let meta = show_meta(
                         &detail.show.name,
                         &detail.show.publisher,
@@ -302,7 +306,7 @@ mod tests {
         TouchPhase, Vec2,
     };
 
-    use takofy_model::{CoverUrl, Episode, PublishedAt, Show, ShowDetail};
+    use takofy_model::{CoverSet, CoverUrl, Episode, PublishedAt, Show, ShowDetail};
 
     use super::*;
     use crate::cover::Cover;
@@ -1260,8 +1264,9 @@ mod tests {
     fn the_band_cover_is_fetched_once() {
         let ctx = context();
         let mut detail = detail(vec![episode(1), episode(2)]);
-        detail.show.cover =
-            Some(CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover url"));
+        detail.show.cover = Some(CoverSet::single(
+            CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover url"),
+        ));
         let mut library = library_with(detail);
         let mut transport = Transport::default();
         let mut queue = Queue::default();

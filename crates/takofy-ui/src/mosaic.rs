@@ -8,7 +8,7 @@
 //! Nothing here touches the window: the selection is a function of the track
 //! list, and the arrangement a function of the covers the store answered with.
 
-use takofy_model::{CoverOrigin, CoverUrl, TrackEntry, composed_from};
+use takofy_model::{CoverOrigin, CoverSet, TrackEntry, composed_from};
 
 use crate::cover::Cover;
 
@@ -19,7 +19,7 @@ pub const QUADRANTS: usize = 4;
 ///
 /// The band's own origin is checked by [`wanted`]: a chosen picture is never
 /// replaced, so picking covers does not need to know where they came from.
-pub fn urls(tracks: &[TrackEntry]) -> Vec<CoverUrl> {
+pub fn urls(tracks: &[TrackEntry]) -> Vec<CoverSet> {
     composed_from(None, tracks.iter().map(|track| track.cover.as_ref()))
 }
 
@@ -28,7 +28,7 @@ pub fn urls(tracks: &[TrackEntry]) -> Vec<CoverUrl> {
 /// Empty when the playlist carries a cover a user chose, because that picture is
 /// the list's own and a mosaic would replace it. A list with fewer than two
 /// covers has already composed nothing.
-pub fn wanted(origin: Option<CoverOrigin>, urls: &[CoverUrl]) -> Vec<CoverUrl> {
+pub fn wanted(origin: Option<CoverOrigin>, urls: &[CoverSet]) -> Vec<CoverSet> {
     if origin == Some(CoverOrigin::Chosen) {
         return Vec::new();
     }
@@ -59,12 +59,12 @@ pub fn arrange(covers: &[Cover]) -> Option<[Cover; QUADRANTS]> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Kept {
     playlist: String,
-    urls: Vec<CoverUrl>,
+    urls: Vec<CoverSet>,
 }
 
 impl Kept {
     /// Remembers `urls` as `playlist`'s mosaic.
-    pub fn new(playlist: String, urls: Vec<CoverUrl>) -> Self {
+    pub fn new(playlist: String, urls: Vec<CoverSet>) -> Self {
         Self { playlist, urls }
     }
 
@@ -72,7 +72,7 @@ impl Kept {
     ///
     /// Another list's covers are none of this page's business, so they answer
     /// nothing rather than leaking across a page change.
-    pub fn urls_for(&self, playlist: &str) -> Option<&[CoverUrl]> {
+    pub fn urls_for(&self, playlist: &str) -> Option<&[CoverSet]> {
         (self.playlist == playlist).then_some(self.urls.as_slice())
     }
 }
@@ -80,12 +80,14 @@ impl Kept {
 #[cfg(test)]
 mod tests {
     use egui::TextureId;
-    use takofy_model::{CoverOrigin, CoverUrl, TrackEntry};
+    use takofy_model::{CoverOrigin, CoverSet, CoverUrl, TrackEntry};
 
     use super::*;
 
-    fn url(tail: &str) -> CoverUrl {
-        CoverUrl::from_wire(&format!("https://i.scdn.co/image/{tail}")).expect("a cover url")
+    fn url(tail: &str) -> CoverSet {
+        CoverSet::single(
+            CoverUrl::from_wire(&format!("https://i.scdn.co/image/{tail}")).expect("a cover url"),
+        )
     }
 
     fn track(cover: &str) -> TrackEntry {

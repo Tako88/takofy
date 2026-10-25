@@ -9,7 +9,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use takofy_model::{ArtistPortrait, CoverUrl};
+use takofy_model::{ArtistPortrait, CoverSet};
 
 use crate::message::{Command, Update};
 
@@ -29,7 +29,7 @@ pub enum Portrait<'a> {
     /// The record answered and carries no portrait group.
     Absent,
     /// The record's portrait, for the art store to fetch.
-    Known(&'a CoverUrl),
+    Known(&'a CoverSet),
 }
 
 /// Which surface a face was asked for: the drop-down, or the results page.
@@ -61,7 +61,7 @@ pub struct Ask {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Portraits {
     /// Artist URI → portrait; `None` means the record has no portrait group.
-    known: HashMap<String, Option<CoverUrl>>,
+    known: HashMap<String, Option<CoverSet>>,
     /// Insertion order, so an eviction can drop the oldest face first.
     order: VecDeque<String>,
     /// The query on the wire, if a read is out.
@@ -232,7 +232,7 @@ impl Portraits {
     }
 
     /// Inserts one artist, evicting the oldest face neither surface is showing.
-    fn remember(&mut self, artist: String, portrait: Option<CoverUrl>) {
+    fn remember(&mut self, artist: String, portrait: Option<CoverSet>) {
         if let Some(slot) = self.known.get_mut(&artist) {
             *slot = portrait;
             return;
@@ -259,13 +259,15 @@ impl Portraits {
 mod tests {
     use super::{ASK_MAX, Ask, KNOWN_MAX, Portrait, Portraits, Slot, Surface};
     use crate::message::{Command, Update};
-    use takofy_model::{ArtistPortrait, CoverUrl};
+    use takofy_model::{ArtistPortrait, CoverSet, CoverUrl};
 
-    fn cover(tail: &str) -> CoverUrl {
-        CoverUrl::from_wire(&format!("https://i.scdn.co/image/{tail}")).expect("a cover url")
+    fn cover(tail: &str) -> CoverSet {
+        CoverSet::single(
+            CoverUrl::from_wire(&format!("https://i.scdn.co/image/{tail}")).expect("a cover url"),
+        )
     }
 
-    fn portrait(artist: &str, cover: Option<CoverUrl>) -> ArtistPortrait {
+    fn portrait(artist: &str, cover: Option<CoverSet>) -> ArtistPortrait {
         ArtistPortrait {
             artist: artist.to_owned(),
             portrait: cover,

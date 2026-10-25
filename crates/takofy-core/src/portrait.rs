@@ -11,9 +11,9 @@ use std::time::Duration;
 use librespot::core::{SpotifyId, SpotifyUri};
 use librespot::protocol::metadata::Artist as ArtistMessage;
 use protobuf::Message as _;
-use takofy_model::{ArtistPortrait, CoverUrl};
+use takofy_model::{ArtistPortrait, CoverSet};
 
-use crate::cover::pick_cover;
+use crate::cover::covers_in_group;
 
 /// One artist's answer, keyed by the artist URI the record itself names.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,12 +23,12 @@ pub struct Portrait {
     /// URI, and is `None` when neither names one.
     pub artist: Option<String>,
     /// `None` when the record carries no portrait group.
-    pub portrait: Option<CoverUrl>,
+    pub portrait: Option<CoverSet>,
 }
 
 /// The portrait group's image, or `None` when the record carries none.
-pub fn portrait_of(message: &ArtistMessage) -> Option<CoverUrl> {
-    pick_cover(message.portrait_group.as_ref())
+pub fn portrait_of(message: &ArtistMessage) -> Option<CoverSet> {
+    covers_in_group(message.portrait_group.as_ref())
 }
 
 /// The portrait an encoded artist answer carries, or `None` when the bytes are
@@ -99,7 +99,7 @@ mod tests {
     use librespot::protocol::metadata::image::Size;
     use librespot::protocol::metadata::{Artist as ArtistMessage, Image, ImageGroup};
     use protobuf::Message as _;
-    use takofy_model::CoverUrl;
+    use takofy_model::{CoverSet, CoverUrl};
 
     use super::{Portrait, bounded, portrait_from, portrait_of, portraits_of};
 
@@ -107,6 +107,7 @@ mod tests {
         let mut image = Image::new();
         image.set_size(size);
         image.set_width(width);
+        image.set_height(width);
         image.set_file_id(id.to_vec());
         image
     }
@@ -124,15 +125,32 @@ mod tests {
         format!("https://i.scdn.co/image/{}", format!("{id:02x}").repeat(20))
     }
 
+    fn set(id: u8, size: u32) -> CoverSet {
+        CoverSet::from_sizes([(
+            Some((size, size)),
+            CoverUrl::from_wire(&url(id)).expect("a cover url"),
+        )])
+        .expect("a cover set")
+    }
+
     #[test]
-    fn the_default_size_tile_wins() {
+    fn a_record_keeps_every_portrait_size() {
         let message = with_group(vec![
             image(Size::LARGE, 640, &[1; 20]),
             image(Size::DEFAULT, 300, &[9; 20]),
         ]);
         assert_eq!(
-            portrait_of(&message).map(|cover| cover.as_str().to_owned()),
-            Some(url(9))
+            portrait_of(&message),
+            CoverSet::from_sizes([
+                (
+                    Some((640, 640)),
+                    CoverUrl::from_wire(&url(1)).expect("a cover url")
+                ),
+                (
+                    Some((300, 300)),
+                    CoverUrl::from_wire(&url(9)).expect("a cover url")
+                ),
+            ])
         );
     }
 
@@ -151,10 +169,7 @@ mod tests {
             image(Size::DEFAULT, 300, &[0; 20]),
             image(Size::LARGE, 640, &[9; 20]),
         ]);
-        assert_eq!(
-            portrait_of(&usable_after).map(|cover| cover.as_str().to_owned()),
-            Some(url(9))
-        );
+        assert_eq!(portrait_of(&usable_after), Some(set(9, 640)));
     }
 
     #[test]
@@ -173,7 +188,7 @@ mod tests {
             portrait,
             Portrait {
                 artist: Some(artist_uri),
-                portrait: CoverUrl::from_wire(&url(9)),
+                portrait: Some(set(9, 300)),
             }
         );
     }
@@ -185,7 +200,7 @@ mod tests {
             .expect("a serialised artist");
         let portrait = portrait_from(&bytes, "spotify:artist:echoed").expect("a portrait");
         assert_eq!(portrait.artist.as_deref(), Some("spotify:artist:echoed"));
-        assert_eq!(portrait.portrait, CoverUrl::from_wire(&url(9)));
+        assert_eq!(portrait.portrait, Some(set(9, 300)));
     }
 
     #[test]
@@ -212,7 +227,7 @@ mod tests {
         assert_eq!(portrait_from(&[0xff, 0x00, 0x13], "spotify:artist:a"), None);
     }
 
-    fn found(entries: &[(&str, Option<CoverUrl>)]) -> HashMap<String, Portrait> {
+    fn found(entries: &[(&str, Option<CoverSet>)]) -> HashMap<String, Portrait> {
         entries
             .iter()
             .map(|(artist, portrait)| {
@@ -234,7 +249,7 @@ mod tests {
     #[test]
     fn portraits_of_keeps_the_requested_order_and_dedups() {
         let found = found(&[
-            ("spotify:artist:a", CoverUrl::from_wire(&url(1))),
+            ("spotify:artist:a", Some(set(1, 300))),
             ("spotify:artist:b", None),
         ]);
         let requested = artist_uris(&["spotify:artist:b", "spotify:artist:a", "spotify:artist:b"]);
@@ -245,7 +260,7 @@ mod tests {
             .collect();
         assert_eq!(order, vec!["spotify:artist:b", "spotify:artist:a"]);
         assert_eq!(portraits[0].portrait, None);
-        assert_eq!(portraits[1].portrait, CoverUrl::from_wire(&url(1)));
+        assert_eq!(portraits[1].portrait, Some(set(1, 300)));
     }
 
     #[test]

@@ -1283,6 +1283,28 @@ mod tests {
 
     use crate::view::test_support::{button, click_events};
 
+    #[test]
+    fn the_playbar_box_at_two_x_asks_for_the_small_size() {
+        let small = takofy_model::CoverUrl::from_wire("https://i.scdn.co/image/pb-64")
+            .expect("a cover url");
+        let middle = takofy_model::CoverUrl::from_wire("https://i.scdn.co/image/pb-300")
+            .expect("a cover url");
+        let large = takofy_model::CoverUrl::from_wire("https://i.scdn.co/image/pb-640")
+            .expect("a cover url");
+        let set = takofy_model::CoverSet::from_sizes([
+            (Some((64, 64)), small.clone()),
+            (Some((300, 300)), middle),
+            (Some((640, 640)), large),
+        ])
+        .expect("a cover set");
+
+        assert_eq!(
+            set.pick(crate::cover::want_px(extent::PLAYBAR_ART, 2.0)),
+            Some(&small),
+            "an 88px tile takes the 64"
+        );
+    }
+
     fn key(key: Key, modifiers: Modifiers) -> Event {
         Event::Key {
             key,

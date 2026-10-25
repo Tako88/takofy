@@ -13,7 +13,7 @@ use librespot::metadata::Album;
 use takofy_model::{AlbumDetail, TrackEntry};
 
 use crate::context::PageTrack;
-use crate::cover::pick_images_cover;
+use crate::cover::covers_in_images;
 
 /// Why an album read failed.
 #[derive(Debug, thiserror::Error)]
@@ -80,7 +80,7 @@ pub(crate) fn detail(uri: &str, album: &Album, tracks: Vec<TrackEntry>) -> Album
         artists,
         artist_uri,
         year: year_of(album),
-        cover: pick_images_cover(&album.cover_group),
+        cover: covers_in_images(&album.cover_group),
         tracks,
     }
 }
@@ -430,9 +430,13 @@ mod tests {
         let album = Album::try_from(&message).expect("a valid album message");
         let cover = detail("spotify:album:x", &album, Vec::new()).cover;
         assert!(
-            cover.as_ref().is_some_and(|cover| cover
-                .as_str()
-                .ends_with("0102030405060708090a0b0c0d0e0f1011121314")),
+            cover
+                .as_ref()
+                .and_then(|cover| cover.variants().first())
+                .is_some_and(|variant| variant
+                    .url
+                    .as_str()
+                    .ends_with("0102030405060708090a0b0c0d0e0f1011121314")),
             "{cover:?}"
         );
     }

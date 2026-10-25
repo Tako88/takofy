@@ -26,7 +26,7 @@ use std::time::Instant;
 use egui::{Id, Rect, Sense, Ui, Vec2, vec2};
 use takofy_model::{FollowedArtist, Release};
 
-use crate::cover::{Art, Cover};
+use crate::cover::{Art, Cover, want_px};
 use crate::format::{discography_meta, format_position};
 use crate::layout::actionbar::Kind;
 use crate::layout::sticky;
@@ -170,7 +170,11 @@ pub fn artist_view(
 
                     let hero = ArtistHero {
                         name: &artist.name,
-                        portrait: art.look(artist.portrait.as_ref(), now),
+                        portrait: art.look(
+                            artist.portrait.as_ref(),
+                            want_px(ui.available_width(), ui.pixels_per_point()),
+                            now,
+                        ),
                     };
                     artist_hero::show(ui, &hero, tokens);
 
@@ -342,7 +346,11 @@ pub fn artist_view(
                                     continue;
                                 }
                                 let labels = page.releases.look(&release.uri);
-                                let cover = art.look(release.cover.as_ref(), now);
+                                let cover = art.look(
+                                    release.cover.as_ref(),
+                                    want_px(extent::RELEASE_ART, ui.pixels_per_point()),
+                                    now,
+                                );
                                 let block = Block {
                                     release,
                                     labels,
@@ -546,6 +554,7 @@ fn fans(
     ui.allocate_rect(list, egui::Sense::hover());
     let visible = ui.clip_rect();
 
+    let want = want_px(solved.card_w, ui.pixels_per_point());
     let mut pressed = None;
     for (index, card) in cards.iter().enumerate() {
         let rect = solved.card_rect(index);
@@ -561,7 +570,7 @@ fn fans(
             round: true,
             shelf: SidebarKind::Artists,
             playable: false,
-            cover: art.look(card.portrait.as_ref(), now),
+            cover: art.look(card.portrait.as_ref(), want, now),
             picture: hero::Picture::Cover,
         };
         if media::tile(ui, rect, &media, tokens) == Some(media::Press::Open) {
@@ -646,7 +655,11 @@ fn popular(
             duration: duration.as_deref(),
             state: state_of(&entry.uri, transport),
             // Built inside the cull, so a row off screen asks for no art.
-            cover: Some(art.look(entry.cover.as_ref(), now)),
+            cover: Some(art.look(
+                entry.cover.as_ref(),
+                want_px(extent::LIBRARY_ART, ui.pixels_per_point()),
+                now,
+            )),
             look: selection.look(index),
             menu: gate.allows(),
             liked: likes.state(&entry.uri),
@@ -715,7 +728,7 @@ fn block_rect(ui: &Ui, release: &Release) -> Rect {
 mod tests {
     use egui::{Context, Event, Pos2, RawInput, Rect, Vec2, pos2, vec2};
     use takofy_model::{
-        ArtistDetail, CoverUrl, Release, Release as _Release, ReleaseKind, TrackEntry,
+        ArtistDetail, CoverSet, CoverUrl, Release, Release as _Release, ReleaseKind, TrackEntry,
     };
 
     use super::*;
@@ -884,8 +897,12 @@ mod tests {
         drawn_texts(output).contains(&name)
     }
 
-    fn cover(tail: &str) -> CoverUrl {
+    fn cover_url(tail: &str) -> CoverUrl {
         CoverUrl::from_wire(&format!("https://i.scdn.co/image/{tail}")).expect("a cover url")
+    }
+
+    fn cover(tail: &str) -> CoverSet {
+        CoverSet::single(cover_url(tail))
     }
 
     const PAGE: Vec2 = Vec2::new(900.0, 1500.0);
@@ -2963,9 +2980,9 @@ mod tests {
             "the control frame asks for the album's labels: {wanted_labels:?}"
         );
         assert!(
-            wanted_covers
-                .iter()
-                .any(|command| matches!(command, Command::Fetch { url } if *url == cover("album"))),
+            wanted_covers.iter().any(
+                |command| matches!(command, Command::Fetch { url } if *url == cover_url("album"))
+            ),
             "the control frame asks for the album's cover: {wanted_covers:?}"
         );
 
@@ -2993,15 +3010,15 @@ mod tests {
             "a hidden block asks for no labels: {wanted_labels:?}"
         );
         assert!(
-            !wanted_covers
-                .iter()
-                .any(|command| matches!(command, Command::Fetch { url } if *url == cover("album"))),
+            !wanted_covers.iter().any(
+                |command| matches!(command, Command::Fetch { url } if *url == cover_url("album"))
+            ),
             "a hidden block fetches no cover: {wanted_covers:?}"
         );
         assert!(
-            wanted_covers
-                .iter()
-                .any(|command| matches!(command, Command::Fetch { url } if *url == cover("ep"))),
+            wanted_covers.iter().any(
+                |command| matches!(command, Command::Fetch { url } if *url == cover_url("ep"))
+            ),
             "the block the filter keeps still fetches its cover: {wanted_covers:?}"
         );
     }

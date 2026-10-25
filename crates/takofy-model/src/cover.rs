@@ -36,6 +36,12 @@ impl CoverVariant {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CoverSet(Vec<CoverVariant>);
 
+impl From<CoverUrl> for CoverSet {
+    fn from(url: CoverUrl) -> Self {
+        Self::single(url)
+    }
+}
+
 impl CoverSet {
     /// Builds the set the wire offered, dropping unusable entries.
     ///

@@ -2678,7 +2678,7 @@ mod tests {
         let cover =
             takofy_model::CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover url");
         let mut entry = track("a");
-        entry.cover = Some(cover.clone());
+        entry.cover = Some(takofy_model::CoverSet::single(cover.clone()));
         let mut queue = Queue::default();
         let mut transport = Transport::default();
 
@@ -2686,7 +2686,7 @@ mod tests {
 
         assert_eq!(
             transport.now_playing.expect("a named track").cover,
-            Some(cover)
+            Some(takofy_model::CoverSet::single(cover))
         );
     }
 

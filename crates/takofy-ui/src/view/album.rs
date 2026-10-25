@@ -14,7 +14,7 @@ use std::time::Instant;
 
 use egui::{Id, Sense, Ui};
 
-use crate::cover::Art;
+use crate::cover::{Art, want_px};
 use crate::format::{album_meta, format_position, total_duration_ms};
 use crate::layout::actionbar::Kind;
 use crate::layout::{Table, table as table_layout};
@@ -130,7 +130,11 @@ pub fn album_view(
                     };
                     // The one cover lookup on this page: the rows carry none, so the
                     // band's picture is the only fetch a frame can ask for.
-                    let cover = art.look(album.cover.as_ref(), now);
+                    let cover = art.look(
+                        album.cover.as_ref(),
+                        want_px(crate::theme::hero::ART, ui.pixels_per_point()),
+                        now,
+                    );
                     let meta = album_meta(
                         album.year,
                         (album.tracks.len(), total_duration_ms(&album.tracks)),
@@ -348,7 +352,7 @@ mod tests {
         Context, Event, Modifiers, MouseWheelSource, MouseWheelUnit, Pos2, RawInput, Rect,
         TouchPhase, Vec2,
     };
-    use takofy_model::{AlbumDetail, CoverUrl, PlaylistEntry, TrackEntry};
+    use takofy_model::{AlbumDetail, CoverSet, CoverUrl, PlaylistEntry, TrackEntry};
 
     use super::*;
     use crate::cover::Cover;
@@ -1926,11 +1930,72 @@ mod tests {
         assert_eq!(library.album, Load::Loading);
     }
 
+    /// A cover offering 64, 300 and 640 squares, with their URLs.
+    fn sized(tail: &str) -> (CoverSet, CoverUrl, CoverUrl, CoverUrl) {
+        let small = CoverUrl::from_wire(&format!("https://i.scdn.co/image/{tail}-64"))
+            .expect("a cover url");
+        let middle = CoverUrl::from_wire(&format!("https://i.scdn.co/image/{tail}-300"))
+            .expect("a cover url");
+        let large = CoverUrl::from_wire(&format!("https://i.scdn.co/image/{tail}-640"))
+            .expect("a cover url");
+        let set = CoverSet::from_sizes([
+            (Some((64, 64)), small.clone()),
+            (Some((300, 300)), middle.clone()),
+            (Some((640, 640)), large.clone()),
+        ])
+        .expect("a cover set");
+        (set, small, middle, large)
+    }
+
+    #[test]
+    fn the_band_asks_for_the_large_size_at_two_x() {
+        let ctx = context();
+        ctx.set_pixels_per_point(2.0);
+        let (set, small, _, large) = sized("album");
+        let mut library = library_with(AlbumDetail {
+            cover: Some(set),
+            ..detail(Vec::new())
+        });
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+        let now = Instant::now();
+
+        art.begin_frame();
+        let _ = frame(
+            &ctx,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let requests = art.requests(now);
+        let fetched: Vec<CoverUrl> = requests
+            .into_iter()
+            .filter_map(|command| match command {
+                Command::Fetch { url } => Some(url),
+                _ => None,
+            })
+            .collect();
+
+        assert!(
+            fetched.contains(&large),
+            "a 352px band takes the 640: {fetched:?}"
+        );
+        assert!(
+            !fetched.contains(&small),
+            "a band must not fetch the 64: {fetched:?}"
+        );
+    }
+
     #[test]
     fn one_frame_asks_for_the_albums_cover_once() {
         let ctx = context();
         let mut library = library_with(AlbumDetail {
-            cover: Some(CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover url")),
+            cover: Some(CoverSet::single(
+                CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover url"),
+            )),
             tracks: vec![
                 track("spotify:track:a", "One", "Band", 222_000),
                 track("spotify:track:b", "Two", "Band", 198_000),

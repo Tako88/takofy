@@ -15,7 +15,7 @@ use takofy_core::playback::{Playback, PlaybackError, PlaybackEvent, Volume};
 use takofy_core::receive::Inbound;
 use takofy_core::{Resolution, TransferPlan};
 use takofy_model::{
-    AlbumDetail, ArtistDetail, ArtistPortrait, CoverUrl, FollowedArtist, FollowedShow, Landing,
+    AlbumDetail, ArtistDetail, ArtistPortrait, CoverSet, FollowedArtist, FollowedShow, Landing,
     Move, PlaylistAccess, PlaylistEntry, Removal, Report, RequestId, Revision, SavedAlbum,
     ShowDetail, TrackEntry, TrackLyrics,
 };
@@ -80,7 +80,7 @@ impl SessionError {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct TrackPage {
     pub tracks: Vec<TrackEntry>,
-    pub cover: Option<CoverUrl>,
+    pub cover: Option<CoverSet>,
     pub access: Option<PlaylistAccess>,
 }
 

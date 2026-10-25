@@ -27,7 +27,7 @@ use egui::text::LayoutJob;
 use egui::{FontId, Order, Rect, Sense, TextFormat, Ui, pos2, vec2};
 use takofy_model::TrackEntry;
 
-use crate::cover::{Art, Cover};
+use crate::cover::{Art, Cover, want_px};
 use crate::icon::{self, Icon};
 use crate::layout::search_menu as geometry;
 use crate::menu::{Device, Tier};
@@ -76,6 +76,7 @@ struct RowSpec<'a> {
 struct Drawer<'a> {
     search: &'a Search,
     art: &'a mut Art,
+    want: u32,
     now: Instant,
     tokens: &'a Tokens,
 }
@@ -138,6 +139,10 @@ pub fn show(
             let mut drawer = Drawer {
                 search,
                 art,
+                want: want_px(
+                    crate::theme::extent::MENU_COVER,
+                    ui.ctx().pixels_per_point(),
+                ),
                 now,
                 tokens,
             };
@@ -185,7 +190,11 @@ pub fn show(
                                         current: false,
                                         held: false,
                                         state: None,
-                                        cover: drawer.art.look(album.cover.as_ref(), now),
+                                        cover: drawer.art.look(
+                                            album.cover.as_ref(),
+                                            drawer.want,
+                                            now,
+                                        ),
                                         art_radius: radius::XS,
                                         title: &album.name,
                                         subtitle: album.artist.clone(),
@@ -203,6 +212,7 @@ pub fn show(
                                         drawer.search.portrait(&artist.uri),
                                         artist.record_cover.as_ref(),
                                         drawer.art,
+                                        drawer.want,
                                         now,
                                     );
                                     RowSpec {
@@ -293,7 +303,9 @@ fn track_row_spec<'a>(
         current: !matches!(state, State::Resting),
         held: hold.held,
         state: Some(state),
-        cover: drawer.art.look(entry.cover.as_ref(), drawer.now),
+        cover: drawer
+            .art
+            .look(entry.cover.as_ref(), drawer.want, drawer.now),
         art_radius: radius::XS,
         title: &entry.title,
         subtitle: subtitle(entry),
@@ -590,7 +602,7 @@ mod tests {
     use std::time::Instant;
 
     use egui::{Pos2, RawInput, Rect, Shape, vec2};
-    use takofy_model::{ArtistPortrait, CoverUrl, TrackEntry};
+    use takofy_model::{ArtistPortrait, CoverSet, CoverUrl, TrackEntry};
 
     use super::*;
     use crate::cover::Art;
@@ -628,11 +640,13 @@ mod tests {
         }
     }
 
-    fn cover(tail: &str) -> CoverUrl {
-        CoverUrl::from_wire(&format!("https://i.scdn.co/image/{tail}")).expect("a cover url")
+    fn cover(tail: &str) -> CoverSet {
+        CoverSet::single(
+            CoverUrl::from_wire(&format!("https://i.scdn.co/image/{tail}")).expect("a cover url"),
+        )
     }
 
-    fn rich(index: usize, cover: Option<CoverUrl>) -> TrackEntry {
+    fn rich(index: usize, cover: Option<CoverSet>) -> TrackEntry {
         TrackEntry {
             uri: format!("t{index}"),
             title: format!("t{index}"),
@@ -1093,7 +1107,7 @@ mod tests {
         }
         assert!(
             requested.contains(&crate::message::Command::Fetch {
-                url: portrait.clone()
+                url: portrait.variants()[0].url.clone()
             }),
             "the drawn artist row asks for its portrait, not the record cover: {requested:?}"
         );

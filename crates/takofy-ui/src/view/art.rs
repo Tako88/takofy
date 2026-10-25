@@ -200,13 +200,14 @@ fn cover_fit(target: egui::Vec2, size: [usize; 2]) -> Rect {
 /// read has not answered so the row cannot flash from album art to a face.
 pub(super) fn artist_cover(
     portrait: Portrait<'_>,
-    record_cover: Option<&takofy_model::CoverUrl>,
+    record_cover: Option<&takofy_model::CoverSet>,
     art: &mut Art,
+    want: u32,
     now: Instant,
 ) -> Cover {
     match portrait {
-        Portrait::Known(url) => art.look(Some(url), now),
-        Portrait::Absent => art.look(record_cover, now),
+        Portrait::Known(set) => art.look(Some(set), want, now),
+        Portrait::Absent => art.look(record_cover, want, now),
         Portrait::Unread => Cover::Loading,
     }
 }
@@ -217,10 +218,14 @@ mod tests {
 
     use super::*;
     use crate::theme::Tokens;
-    use takofy_model::CoverUrl;
+    use takofy_model::{CoverSet, CoverUrl};
 
-    fn cover(tail: &str) -> CoverUrl {
+    fn url(tail: &str) -> CoverUrl {
         CoverUrl::from_wire(&format!("https://i.scdn.co/image/{tail}")).expect("a cover url")
+    }
+
+    fn cover(tail: &str) -> CoverSet {
+        CoverSet::single(url(tail))
     }
 
     const SQUARE: Rect = Rect {
@@ -642,7 +647,13 @@ mod tests {
         let mut art = Art::default();
         art.begin_frame();
         let record = cover("record");
-        let drawn = artist_cover(Portrait::Unread, Some(&record), &mut art, Instant::now());
+        let drawn = artist_cover(
+            Portrait::Unread,
+            Some(&record),
+            &mut art,
+            64,
+            Instant::now(),
+        );
         assert_eq!(drawn, Cover::Loading, "an unread row is the raised slot");
         assert!(
             art.requests(Instant::now()).is_empty(),
@@ -655,11 +666,17 @@ mod tests {
         let mut art = Art::default();
         art.begin_frame();
         let record = cover("record");
-        let drawn = artist_cover(Portrait::Absent, Some(&record), &mut art, Instant::now());
+        let drawn = artist_cover(
+            Portrait::Absent,
+            Some(&record),
+            &mut art,
+            64,
+            Instant::now(),
+        );
         assert_eq!(drawn, Cover::Loading, "a new cover is fetched");
         assert_eq!(
             art.requests(Instant::now()),
-            vec![crate::message::Command::Fetch { url: record }],
+            vec![crate::message::Command::Fetch { url: url("record") }],
             "the fallback is the record's own cover"
         );
     }
@@ -673,12 +690,15 @@ mod tests {
             Portrait::Known(&portrait),
             Some(&cover("record")),
             &mut art,
+            64,
             Instant::now(),
         );
         assert_eq!(drawn, Cover::Loading);
         assert_eq!(
             art.requests(Instant::now()),
-            vec![crate::message::Command::Fetch { url: portrait }],
+            vec![crate::message::Command::Fetch {
+                url: url("portrait")
+            }],
             "the portrait wins over the record cover"
         );
     }

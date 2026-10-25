@@ -22,9 +22,9 @@ use librespot::protocol::metadata::{
 };
 use protobuf::Message as _;
 use takofy_model::{
-    AlbumDetail, ArtistDetail, ArtistPortrait, CoverUrl, Episode, FollowedArtist, FollowedShow,
-    Move, PlaylistAccess, PlaylistCover, PlaylistEntry, PublishedAt, Removal, Revision, SavedAlbum,
-    ShowDetail, TrackEntry, TrackLyrics, composed_from,
+    AlbumDetail, ArtistDetail, ArtistPortrait, CoverSet, CoverUrl, Episode, FollowedArtist,
+    FollowedShow, Move, PlaylistAccess, PlaylistCover, PlaylistEntry, PublishedAt, Removal,
+    Revision, SavedAlbum, ShowDetail, TrackEntry, TrackLyrics, composed_from,
 };
 
 use crate::album::{AlbumError, detail, positions};
@@ -37,7 +37,7 @@ use crate::collection::{self, Item};
 use crate::context::{
     ContextError, Page, PageSource, PageTrack, Resolved, page_from_proto, parse_page_json,
 };
-use crate::cover::{pick_cover, pick_images_cover};
+use crate::cover::{covers_in_group, covers_in_images};
 use crate::followed::{self, FollowedError, ShowCard};
 use crate::label_cache::UriCache;
 use crate::lyrics::{self, LyricsError};
@@ -155,7 +155,7 @@ fn head_candidates(metas: &[PlaylistMeta]) -> Vec<String> {
 }
 
 /// The composed covers a playlist's head tiles, from the labels it was named by.
-fn composed_of(head: &[String], cover: Option<&PlaylistCover>, labels: &Labels) -> Vec<CoverUrl> {
+fn composed_of(head: &[String], cover: Option<&PlaylistCover>, labels: &Labels) -> Vec<CoverSet> {
     composed_from(
         cover.map(|cover| cover.origin),
         head.iter()
@@ -173,7 +173,7 @@ struct PlaylistMeta {
     /// replace that picture, so naming the head would be a request for nothing.
     head: Vec<String>,
     /// The picture the user set, when the playlist carries a usable one.
-    picture: Option<CoverUrl>,
+    picture: Option<CoverSet>,
     /// The playlist's own description, collapsed to a line, when it has one.
     description: Option<String>,
     /// The playlist's declared track count.
@@ -242,7 +242,7 @@ async fn playlist_meta(session: &Session, uri: &str) -> PlaylistMeta {
     let Ok(playlist) = Playlist::get(session, &id).await else {
         return PlaylistMeta::empty();
     };
-    let picture = CoverUrl::from_file_id(&playlist.attributes.picture);
+    let picture = CoverUrl::from_file_id(&playlist.attributes.picture).map(CoverSet::single);
     PlaylistMeta {
         name: Some(playlist.name().to_owned()),
         head: head_track_uris(picture.as_ref(), playlist.tracks()),
@@ -263,7 +263,7 @@ async fn playlist_meta(session: &Session, uri: &str) -> PlaylistMeta {
 /// derivation never pages. Episodes and local files are not tracks, so they
 /// contribute nothing.
 fn head_track_uris<'a>(
-    picture: Option<&CoverUrl>,
+    picture: Option<&CoverSet>,
     uris: impl Iterator<Item = &'a SpotifyUri>,
 ) -> Vec<String> {
     if picture.is_some() {
@@ -280,7 +280,7 @@ fn head_track_uris<'a>(
 /// The picture as a chosen cover, else the first track's album cover as a
 /// derived one.
 fn playlist_cover(
-    picture: Option<CoverUrl>,
+    picture: Option<CoverSet>,
     first_track: Option<&str>,
     labels: &Labels,
 ) -> Option<PlaylistCover> {
@@ -1161,11 +1161,11 @@ impl PageSource for RemoteContext<'_> {
 ///
 /// A value that fails the host allowlist falls through to the next key rather
 /// than ending the search.
-fn context_cover(metadata: &HashMap<String, String>) -> Option<CoverUrl> {
+fn context_cover(metadata: &HashMap<String, String>) -> Option<CoverSet> {
     ["image_url", "header_image_url_desktop"]
         .iter()
         .filter_map(|key| metadata.get(*key))
-        .find_map(|value| CoverUrl::from_wire(value))
+        .find_map(|value| CoverUrl::from_wire(value).map(CoverSet::single))
 }
 
 /// What the wire says about one track: the name and artists the row already
@@ -1179,7 +1179,7 @@ pub(crate) struct TrackLabel {
     artist_uris: Vec<String>,
     artist_names: Vec<String>,
     duration_ms: Option<u32>,
-    cover: Option<CoverUrl>,
+    cover: Option<CoverSet>,
 }
 
 /// Labels for tracks, keyed by URI.
@@ -1604,7 +1604,7 @@ fn label_of(track: &TrackMessage) -> Option<TrackLabel> {
         cover: track
             .album
             .as_ref()
-            .and_then(|album| pick_cover(album.cover_group.as_ref())),
+            .and_then(|album| covers_in_group(album.cover_group.as_ref())),
     })
 }
 
@@ -1632,7 +1632,7 @@ fn episode_of(episode: &EpisodeMessage, entity_uri: &str) -> Option<Episode> {
         description: non_blank(episode.description.as_deref().unwrap_or_default()),
         published: published_at(episode.publish_time.as_ref()),
         duration_ms: duration_ms(episode.duration),
-        cover: pick_cover(episode.cover_image.as_ref()),
+        cover: covers_in_group(episode.cover_image.as_ref()),
         named: true,
     })
 }
@@ -1653,7 +1653,7 @@ fn show_card(show: &Show) -> Option<ShowCard> {
     Some(ShowCard {
         name,
         publisher: non_blank(&show.publisher),
-        cover: pick_images_cover(&show.covers),
+        cover: covers_in_images(&show.covers),
         episodes: show.episodes.len(),
     })
 }
@@ -1696,7 +1696,9 @@ mod tests {
         Show as ShowMessage, Track as TrackMessage,
     };
     use protobuf::{Message as _, MessageField};
-    use takofy_model::{AddedAt, CoverOrigin, CoverUrl, Episode, PlaylistCover, PublishedAt};
+    use takofy_model::{
+        AddedAt, CoverOrigin, CoverSet, CoverUrl, Episode, PlaylistCover, PublishedAt,
+    };
 
     use crate::context::PageTrack;
     use crate::playlist_edit::owned as owned_by;
@@ -1720,6 +1722,14 @@ mod tests {
         CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover url")
     }
 
+    fn cover_set() -> CoverSet {
+        CoverSet::single(cover_url())
+    }
+
+    fn single(url: &str) -> CoverSet {
+        CoverSet::single(CoverUrl::from_wire(url).expect("a cover url"))
+    }
+
     fn first_track() -> SpotifyUri {
         SpotifyUri::Track {
             id: SpotifyId::from_base62(TRACK_ID).expect("a track id"),
@@ -1737,7 +1747,8 @@ mod tests {
     /// A label naming one cover, so a head can be tiled in a test.
     fn covered_label(uri: &str, tail: &str) -> (String, TrackLabel) {
         let mut label = titled_label(uri);
-        label.cover = CoverUrl::from_wire(&format!("https://i.scdn.co/image/{tail}"));
+        label.cover =
+            CoverUrl::from_wire(&format!("https://i.scdn.co/image/{tail}")).map(CoverSet::single);
         (uri.to_owned(), label)
     }
 
@@ -2361,7 +2372,8 @@ mod tests {
         let label = label_of(&wire_track_with_image(Size::DEFAULT, &[7; 20])).unwrap();
         let cover = label.cover.expect("a cover");
         assert!(
-            cover
+            cover.variants()[0]
+                .url
                 .as_str()
                 .ends_with("0707070707070707070707070707070707070707")
         );
@@ -2385,8 +2397,8 @@ mod tests {
             "https://i.scdn.co/image/b".to_owned(),
         );
         assert_eq!(
-            context_cover(&metadata).map(|cover| cover.as_str().to_owned()),
-            Some("https://i.scdn.co/image/a".to_owned())
+            context_cover(&metadata),
+            Some(single("https://i.scdn.co/image/a"))
         );
     }
 
@@ -2398,8 +2410,8 @@ mod tests {
             "https://i.scdn.co/image/b".to_owned(),
         );
         assert_eq!(
-            context_cover(&metadata).map(|cover| cover.as_str().to_owned()),
-            Some("https://i.scdn.co/image/b".to_owned())
+            context_cover(&metadata),
+            Some(single("https://i.scdn.co/image/b"))
         );
     }
 
@@ -2415,8 +2427,8 @@ mod tests {
             "https://pickasso.spotifycdn.com/image/b".to_owned(),
         );
         assert_eq!(
-            context_cover(&metadata).map(|cover| cover.as_str().to_owned()),
-            Some("https://pickasso.spotifycdn.com/image/b".to_owned())
+            context_cover(&metadata),
+            Some(single("https://pickasso.spotifycdn.com/image/b"))
         );
     }
 
@@ -2453,11 +2465,11 @@ mod tests {
     fn a_playlist_with_a_chosen_picture_costs_no_head_labels() {
         let uris = [first_track(), track_uri(1), track_uri(2)];
         assert!(
-            head_track_uris(Some(&cover_url()), uris.iter()).is_empty(),
+            head_track_uris(Some(&cover_set()), uris.iter()).is_empty(),
             "a chosen picture is never replaced, so its head is never named"
         );
         let chosen = PlaylistMeta {
-            picture: Some(cover_url()),
+            picture: Some(cover_set()),
             ..PlaylistMeta::empty()
         };
         assert!(head_candidates(&[chosen]).is_empty());
@@ -2518,7 +2530,7 @@ mod tests {
                 ..PlaylistMeta::empty()
             },
             PlaylistMeta {
-                picture: Some(cover_url()),
+                picture: Some(cover_set()),
                 ..PlaylistMeta::empty()
             },
         ];
@@ -2586,11 +2598,11 @@ mod tests {
                 artist_uris: Vec::new(),
                 artist_names: Vec::new(),
                 duration_ms: None,
-                cover: Some(cover_url()),
+                cover: Some(CoverSet::single(cover_url())),
             },
         );
         assert_eq!(
-            playlist_cover(Some(cover_url()), Some("t"), &labels),
+            playlist_cover(Some(cover_set()), Some("t"), &labels),
             Some(PlaylistCover::chosen(cover_url()))
         );
     }
@@ -2608,7 +2620,7 @@ mod tests {
                 artist_uris: Vec::new(),
                 artist_names: Vec::new(),
                 duration_ms: None,
-                cover: Some(cover_url()),
+                cover: Some(CoverSet::single(cover_url())),
             },
         );
         let cover = playlist_cover(None, Some("t"), &labels).expect("a derived cover");
@@ -2847,7 +2859,11 @@ mod tests {
         );
         assert_eq!(episode.duration_ms, Some(2_773_461));
         assert_eq!(
-            episode.cover.as_ref().map(CoverUrl::as_str),
+            episode
+                .cover
+                .as_ref()
+                .and_then(|cover| cover.variants().first())
+                .map(|variant| variant.url.as_str()),
             Some("https://i.scdn.co/image/0707070707070707070707070707070707070707")
         );
         assert!(episode.named);
@@ -3035,7 +3051,10 @@ mod tests {
         assert_eq!(card.name, "A Show");
         assert_eq!(card.publisher.as_deref(), Some("A Publisher"));
         assert_eq!(
-            card.cover.as_ref().map(CoverUrl::as_str),
+            card.cover
+                .as_ref()
+                .and_then(|cover| cover.variants().first())
+                .map(|variant| variant.url.as_str()),
             Some("https://i.scdn.co/image/0707070707070707070707070707070707070707")
         );
     }

@@ -15,7 +15,7 @@ use librespot::core::SpotifyUri;
 use librespot::metadata::Artist;
 use librespot::protocol::extended_metadata::BatchedExtensionResponse;
 use librespot::protocol::metadata::Album as AlbumMessage;
-use takofy_model::{CoverUrl, FollowedArtist, SavedAlbum};
+use takofy_model::{CoverSet, FollowedArtist, SavedAlbum};
 
 use crate::artist::{answered_albums, portrait_of, release_chunks, release_of, release_uris};
 use crate::collection::Item;
@@ -45,7 +45,7 @@ pub(crate) fn track_order(items: Vec<Item>) -> Vec<String> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArtistCard {
     pub name: String,
-    pub portrait: Option<CoverUrl>,
+    pub portrait: Option<CoverSet>,
     pub releases: u32,
 }
 
@@ -171,7 +171,7 @@ mod tests {
     use protobuf::Message as _;
     use protobuf::MessageField;
     use protobuf::well_known_types::any::Any;
-    use takofy_model::CoverUrl;
+    use takofy_model::{CoverSet, CoverUrl};
 
     use super::{
         ArtistCard, album_order, artist_card, artist_entries, artist_order, saved_album_entries,
@@ -377,7 +377,9 @@ mod tests {
     fn a_carded_artist_reads_named_with_its_portrait_and_count() {
         let card = ArtistCard {
             name: "Vela".to_owned(),
-            portrait: Some(CoverUrl::from_file_id(&[1; 20]).expect("a file id")),
+            portrait: Some(CoverSet::single(
+                CoverUrl::from_file_id(&[1; 20]).expect("a file id"),
+            )),
             releases: 7,
         };
         let mut cards = HashMap::new();
