@@ -82,6 +82,9 @@ pub struct Queue {
     snapshot: Vec<String>,
     /// The generator's state, advanced once per draw.
     rng: u64,
+    /// The context the current rows came from, when a hand-over adopted them.
+    /// A local start owns its rows, so it has no context to name.
+    origin: Option<String>,
     /// The newest activation epoch a loss named. A landing that names it or an
     /// older one was overtaken by that loss and is not adopted.
     lost_epoch: u64,
@@ -131,6 +134,7 @@ impl Queue {
         self.skips = 0;
         self.selection.clear();
         self.refocus = None;
+        self.origin = None;
         self.index = None;
         let first = self.start_shuffled(index);
         self.goto(first, transport)
@@ -278,6 +282,8 @@ impl Queue {
                 self.rename_loaded(transport);
                 None
             }
+            // An order is applied by the frame, which owns the clock it needs.
+            RemoteUpdate::Order { .. } => None,
         }
     }
 
@@ -314,6 +320,7 @@ impl Queue {
             (false, false) => Repeat::Off,
         };
         self.shuffle = landing.shuffle;
+        self.origin = landing.context.clone();
         self.index = Some(landing.index);
         if self.shuffle {
             // Only the rows after the landed one are drawn, so it stays the
@@ -409,6 +416,18 @@ impl Queue {
     pub fn upcoming(&self) -> impl ExactSizeIterator<Item = (usize, &TrackEntry)> + '_ {
         let first = self.first_upcoming();
         self.tracks.iter().enumerate().skip(first)
+    }
+
+    /// The entries before the current one, at most `count`, nearest last.
+    pub fn history(&self, count: usize) -> impl ExactSizeIterator<Item = &TrackEntry> + '_ {
+        let end = self.index.unwrap_or(0);
+        let start = end.saturating_sub(count);
+        self.tracks[start..end].iter()
+    }
+
+    /// The context the current rows came from, when a hand-over adopted them.
+    pub fn origin(&self) -> Option<&str> {
+        self.origin.as_deref()
     }
 
     /// The first index an edit may touch: the entry after the current one, or

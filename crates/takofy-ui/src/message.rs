@@ -3,14 +3,20 @@
 //! These types carry state, never credentials: `takofy-ui` has no path to a
 //! token or an auth error, so the compiler keeps secrets out of a view.
 
+use std::time::Instant;
+
 use takofy_model::{
     AlbumDetail, ArtistDetail, ArtistPortrait, CoverImage, CoverUrl, Device, FollowedArtist,
-    FollowedShow, Landing, Move, PlaylistAccess, PlaylistEntry, RemotePlayback, Removal, Revision,
-    SavedAlbum, ShowDetail, TrackEntry, TrackLyrics,
+    FollowedShow, Landing, Move, Order, PlaylistAccess, PlaylistEntry, RemotePlayback, Removal,
+    Report, RequestId, Revision, SavedAlbum, ShowDetail, TrackEntry, TrackLyrics,
 };
 
 /// A request from the window to the worker.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "a report is the frame's state, and one command carries it"
+)]
 pub enum Command {
     /// Begin the interactive sign-in flow.
     Authorize,
@@ -136,6 +142,10 @@ pub enum Command {
     ReloadLibrary,
     /// Fetch one cover image from the worker.
     Fetch { url: CoverUrl },
+    /// Answer one request the phone sent: whether this window carried it out.
+    Answer { id: RequestId, ok: bool },
+    /// Publish what this window is playing, or that it has nothing to publish.
+    Report(Option<Report>),
 }
 
 /// Why an operation failed, with no field that could carry a secret.
@@ -226,6 +236,13 @@ pub enum RemoteUpdate {
     Lost { epoch: u64 },
     /// The rows a label named.
     Labelled(Vec<TrackEntry>),
+    /// A transport action the phone sent, and when its answer is no longer
+    /// worth asking for.
+    Order {
+        id: RequestId,
+        order: Order,
+        expires: Instant,
+    },
 }
 
 /// A playback change the worker reports to the window.

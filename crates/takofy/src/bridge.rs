@@ -13,14 +13,14 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use takofy_core::Resolution;
 use takofy_core::connect::{ClusterEvent, Steer as CoreSteer, WITHDRAW_TIMEOUT};
 use takofy_core::credentials::{AccessToken, CredentialStore};
-use takofy_core::instruction::Instruction;
+use takofy_core::instruction::{Instruction, Kind};
 use takofy_core::login::{AuthError, SourceErrorKind, TokenSource, authorize, resume};
 use takofy_core::playback::{PlaybackError, PlaybackEvent};
 use takofy_core::receive::Inbound;
-use takofy_model::{CoverUrl, Move, Owner, PlaylistEntry, Removal, RequestId, Revision};
+use takofy_core::{ORDER_MARGIN, Resolution};
+use takofy_model::{CoverUrl, Move, Order, Owner, PlaylistEntry, Removal, RequestId, Revision};
 use takofy_ui::message::{
     Command, DeviceUpdate, Failure, RemoteUpdate, Steer, TransportUpdate, Update,
 };
@@ -74,15 +74,19 @@ pub(crate) struct Notifier {
 }
 
 impl Notifier {
-    pub(crate) fn send(&self, update: Update) {
+    /// Queues an update, then wakes the window.
+    ///
+    /// `false` means the window is gone and the update reached nobody, which a
+    /// caller that owes the phone an answer has to know.
+    pub(crate) fn send(&self, update: Update) -> bool {
         // The update must be readable before the waker runs: a wake that beats
         // the queue into the channel would be spent on a frame with nothing to
         // drain.
         if self.tx.send(update).is_err() {
-            // The window is gone; the task is being torn down anyway.
-            return;
+            return false;
         }
         self.slot.wake();
+        true
     }
 }
 
@@ -635,6 +639,26 @@ fn start_with<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                 Event::Command(Some(Command::Play { uri })) => {
                     play(&mut host, &task_notifier, &uri);
                 }
+                // The window applied an order, or could not. An entry the budget
+                // already answered is gone: the phone has been told `Failure`,
+                // and the next report put corrects what it shows.
+                Event::Command(Some(Command::Answer { id, ok })) => {
+                    if host.answer_order(id, ok) {
+                        log::info!(target: LANDING_LOG_TARGET, "answer delivered");
+                    } else {
+                        log::info!(
+                            target: LANDING_LOG_TARGET,
+                            "answer found the entry gone"
+                        );
+                    }
+                }
+                // A report only has a wire to reach while the device is on the
+                // account; before that the engine's own slot is not announced.
+                Event::Command(Some(Command::Report(report))) => {
+                    if devices.watching {
+                        host.report(report);
+                    }
+                }
                 Event::Command(Some(Command::Pause)) => host.pause(),
                 Event::Command(Some(Command::Resume)) => host.resume(),
                 Event::Command(Some(Command::Stop)) => host.stop(),
@@ -655,19 +679,27 @@ fn start_with<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                     );
                 }
                 Event::Command(None) => break,
-                // Every request is answered. A hand-over is served in full; the
-                // rest are refused at once, so the phone is never left waiting
-                // out its budget.
+                // Every request is answered. A hand-over is served in full, a
+                // transport order is handed to the window that owns the sound,
+                // and the rest are refused at once, so the phone is never left
+                // waiting out its budget.
                 Event::Inbound(Some(request)) => {
                     log::info!("connect inbound: {}", request.kind.word());
-                    let step = serve_landing(
-                        &mut host,
-                        &mut stop_rx,
-                        &task_notifier,
-                        request.id,
-                        request.instruction,
-                    )
-                    .await;
+                    let step = match request.instruction {
+                        Instruction::Order(order) => {
+                            serve_order(&host, &task_notifier, request.id, request.kind, order)
+                        }
+                        instruction => {
+                            serve_landing(
+                                &mut host,
+                                &mut stop_rx,
+                                &task_notifier,
+                                request.id,
+                                instruction,
+                            )
+                            .await
+                        }
+                    };
                     if step.stopped() {
                         break;
                     }
@@ -776,7 +808,7 @@ pub(crate) fn announce<T>(
     match result {
         Ok(value) => notifier.send(ready(value)),
         Err(error) => notifier.send(failed(library_failure(&error))),
-    }
+    };
 }
 
 /// Loads the first page of a playlist's tracks and announces it.
@@ -1606,6 +1638,61 @@ fn ensure_drain<H: SessionHost>(host: &mut H, notifier: &Notifier) {
     }
 }
 
+/// Hands one transport order to the window, which applies it and answers.
+///
+/// The entry stays pending here: the window's answer is the phone's, and until
+/// it arrives the registry's own budget is what ends the order. Nothing is
+/// applied without an answer, so a phone that hears nothing is never obeyed in
+/// secret.
+fn serve_order<H: SessionHost>(
+    host: &H,
+    notifier: &Notifier,
+    id: RequestId,
+    kind: Kind,
+    order: Order,
+) -> Step {
+    if !host.holding() {
+        log::info!(
+            target: LANDING_LOG_TARGET,
+            "order refused, nothing is held: {}",
+            kind.word()
+        );
+        host.refuse(id);
+        return Step::Done;
+    }
+    // A deadline is what a pending entry has: one the budget already answered is
+    // gone, and the phone has been told it failed.
+    let Some(deadline) = host.expires(id) else {
+        log::info!(
+            target: LANDING_LOG_TARGET,
+            "order refused, entry gone: {}",
+            kind.word()
+        );
+        host.refuse(id);
+        return Step::Done;
+    };
+    // The window drops an order it receives within the margin of the budget:
+    // the effect could not be answered before the phone is told it failed.
+    let expires = deadline.checked_sub(ORDER_MARGIN).unwrap_or(deadline);
+    if !notifier.send(Update::Remote(RemoteUpdate::Order { id, order, expires })) {
+        // A window that has closed cannot carry the order out, and leaving the
+        // phone to wait out its budget costs it the whole of it.
+        log::info!(
+            target: LANDING_LOG_TARGET,
+            "order refused, no window: {}",
+            kind.word()
+        );
+        host.refuse(id);
+        return Step::Done;
+    }
+    log::info!(
+        target: LANDING_LOG_TARGET,
+        "order forwarded: {}",
+        kind.word()
+    );
+    Step::Done
+}
+
 /// Serves one hand-over: prepare, read what is missing, take the sound, name the
 /// track and load it.
 ///
@@ -1626,6 +1713,13 @@ async fn serve_landing<H: SessionHost>(
         Instruction::Transfer(plan) => plan,
         Instruction::Refused(refusal) => {
             log::info!(target: LANDING_LOG_TARGET, "landing refused: {}", refusal.word());
+            host.refuse(id);
+            return Step::Done;
+        }
+        // The order path dispatches before this call, so this arm only keeps a
+        // misplaced order from being dropped unanswered.
+        Instruction::Order(_) => {
+            log::info!(target: LANDING_LOG_TARGET, "landing other: order");
             host.refuse(id);
             return Step::Done;
         }
@@ -1961,7 +2055,9 @@ fn spawn_device_drain(
                         notifier.send(update);
                     }
                 }
-                ClusterEvent::Failed => notifier.send(device_failure(Failure::Devices)),
+                ClusterEvent::Failed => {
+                    notifier.send(device_failure(Failure::Devices));
+                }
                 // A loss is not a fault: its epoch is what orders it against a
                 // landing still in flight, so it reaches the window as itself.
                 ClusterEvent::Lost { epoch } => {
@@ -2159,7 +2255,7 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
     use std::sync::{Arc, Mutex};
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use takofy_core::connect::{ClusterView, ConnectError};
     use takofy_core::credentials::{AccessToken, CredentialStore, RefreshToken, StoreError};
@@ -2169,9 +2265,9 @@ mod tests {
     use takofy_core::{Resolution, TransferPlan};
     use takofy_model::{
         AlbumDetail, ArtistDetail, ArtistPortrait, CoverImage, CoverUrl, Device, DeviceKind,
-        Episode, FollowedArtist, FollowedShow, Landing, LyricLine, Move, PlaylistAccess,
-        PlaylistCover, PlaylistEntry, RemotePlayback, RemoteState, Removal, RequestId, SavedAlbum,
-        Show, ShowDetail, TrackEntry, TrackLyrics,
+        Episode, FollowedArtist, FollowedShow, Landing, LyricLine, Move, Options, PlaylistAccess,
+        PlaylistCover, PlaylistEntry, RemotePlayback, RemoteState, Removal, Report, RequestId,
+        SavedAlbum, Show, ShowDetail, Status, TrackEntry, TrackLyrics,
     };
     use takofy_ui::signin::failure_message;
     use tokio::runtime::Runtime;
@@ -2799,6 +2895,7 @@ mod tests {
         Resolve(String),
         Accept(RequestId),
         Answer(RequestId, bool),
+        Report(Box<Option<takofy_model::Report>>),
         Label(Vec<String>),
         Load {
             uri: String,
@@ -2857,6 +2954,9 @@ mod tests {
         sound_release_fails: AtomicBool,
         /// The answer each holding check gives; the last entry repeats.
         holding_script: Mutex<Vec<bool>>,
+        /// The requests the fake registry still holds, with the deadline each
+        /// was given. One leaves when it is answered.
+        pending: Mutex<Vec<(RequestId, Instant)>>,
         /// What the accept was handed, so a fallback can be asserted.
         last_resolution: Mutex<Option<Resolution>>,
         /// Every call that moved the account's view of this device, in order.
@@ -3742,6 +3842,14 @@ mod tests {
                 .push(Call::SetPlayable(playable));
         }
 
+        fn report(&self, report: Option<takofy_model::Report>) {
+            self.shared
+                .calls
+                .lock()
+                .expect("lock")
+                .push(Call::Report(Box::new(report)));
+        }
+
         fn refuse(&self, id: RequestId) {
             self.shared
                 .calls
@@ -3987,6 +4095,28 @@ mod tests {
             }
         }
 
+        fn answer_order(&self, id: RequestId, ok: bool) -> bool {
+            self.shared
+                .calls
+                .lock()
+                .expect("lock")
+                .push(Call::Answer(id, ok));
+            let mut pending = self.shared.pending.lock().expect("lock");
+            let held = pending.len();
+            pending.retain(|(waiting, _)| *waiting != id);
+            pending.len() != held
+        }
+
+        fn expires(&self, id: RequestId) -> Option<Instant> {
+            self.shared
+                .pending
+                .lock()
+                .expect("lock")
+                .iter()
+                .find(|(waiting, _)| *waiting == id)
+                .map(|(_, expires)| *expires)
+        }
+
         fn pause(&self) {
             self.shared.pauses.fetch_add(1, Ordering::SeqCst);
         }
@@ -4054,6 +4184,37 @@ mod tests {
     /// Scripts the answers the landing's holding checks get; the last repeats.
     fn hold_with(shared: &FakeState, script: &[bool]) {
         *shared.holding_script.lock().expect("lock") = script.to_vec();
+    }
+
+    /// The deadline the fake registry gives each request, standing in for the
+    /// answer budget the real one runs on.
+    const ORDER_BUDGET: Duration = Duration::from_secs(5);
+
+    /// Registers one request in the fake registry, so an order finds it pending,
+    /// and answers with the deadline its budget ends it at.
+    fn hold_request(shared: &FakeState, id: RequestId) -> Instant {
+        let deadline = Instant::now() + ORDER_BUDGET;
+        shared.pending.lock().expect("lock").push((id, deadline));
+        deadline
+    }
+
+    /// Reads updates until the one naming `id`, which an order sends to the
+    /// window; anything else the watch sends on its own is passed over.
+    fn order_update(ui_end: &UiEnd, id: RequestId) -> (Order, Instant) {
+        let started = std::time::Instant::now();
+        while started.elapsed() < Duration::from_secs(2) {
+            match ui_end.updates.recv_timeout(Duration::from_millis(100)) {
+                Ok(Update::Remote(RemoteUpdate::Order {
+                    id: named,
+                    order,
+                    expires,
+                })) if named == id => return (order, expires),
+                Ok(_) => {}
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => panic!("the worker went away"),
+            }
+        }
+        panic!("timed out waiting for the order update");
     }
 
     /// A decoded transfer, built from the wire shape the request loop reads.
@@ -6282,6 +6443,19 @@ mod tests {
             duration_ms: None,
             named: true,
             cover: None,
+        }
+    }
+
+    fn report(uri: &str) -> Report {
+        Report {
+            status: Status::Playing,
+            track: Some(track(uri)),
+            prev: Vec::new(),
+            next: Vec::new(),
+            context: None,
+            options: Options::default(),
+            position_ms: 0,
+            duration_ms: None,
         }
     }
 
@@ -10531,6 +10705,54 @@ mod tests {
     }
 
     #[test]
+    fn a_report_reaches_the_host_only_when_watching() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+
+        run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+
+            // This command is in front of the watch in the same channel, so it
+            // is handled before the watch starts.
+            ui_end
+                .commands
+                .send(Command::Report(Some(report("spotify:track:before"))))
+                .expect("report");
+            watch_now(&ui_end, &shared).recv().expect("watch started");
+            assert!(
+                !calls(&shared)
+                    .iter()
+                    .any(|call| matches!(call, Call::Report(_))),
+                "a report before the watch has no wire to reach"
+            );
+
+            ui_end
+                .commands
+                .send(Command::Report(Some(report("spotify:track:after"))))
+                .expect("report");
+            until("the report to reach the host", || {
+                calls(&shared).iter().any(|call| {
+                    matches!(
+                        call,
+                        Call::Report(report)
+                            if report.as_ref() == &Some(self::report("spotify:track:after"))
+                    )
+                })
+            });
+
+            ui_end.commands.send(Command::Report(None)).expect("report");
+            until("the clearing to reach the host", || {
+                calls(&shared)
+                    .iter()
+                    .any(|call| matches!(call, Call::Report(report) if report.is_none()))
+            });
+        });
+    }
+
+    #[test]
     fn playing_a_track_makes_the_device_playable() {
         let store = Arc::new(MemoryStore::seeded("stored"));
         let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
@@ -10694,6 +10916,43 @@ mod tests {
     }
 
     // ---- serving a landing ----
+
+    /// The lines the bridge logged about its own decisions, so a test can tell
+    /// two arms that answer the same request apart.
+    static LOGGED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+    struct Recorder;
+
+    impl log::Log for Recorder {
+        fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+            metadata.level() <= log::Level::Info
+        }
+
+        fn log(&self, record: &log::Record<'_>) {
+            if record.target() != LANDING_LOG_TARGET || !self.enabled(record.metadata()) {
+                return;
+            }
+            LOGGED.lock().expect("lock").push(record.args().to_string());
+        }
+
+        fn flush(&self) {}
+    }
+
+    /// Begins recording the bridge's log lines, once for the whole test binary.
+    fn record_logs() {
+        static RECORDER: Recorder = Recorder;
+        static INSTALL: std::sync::Once = std::sync::Once::new();
+        INSTALL.call_once(|| {
+            if log::set_logger(&RECORDER).is_ok() {
+                log::set_max_level(log::LevelFilter::Info);
+            }
+        });
+    }
+
+    /// Whether the bridge logged exactly `line` about one of its decisions.
+    fn logged(line: &str) -> bool {
+        LOGGED.lock().expect("lock").iter().any(|seen| seen == line)
+    }
 
     fn inbound(shared: &FakeState, id: u64, kind: Kind, instruction: Instruction) {
         inbound_sender(shared)
@@ -11355,18 +11614,162 @@ mod tests {
                 Kind::Transfer,
                 transfer_instruction(TRACK, Some("spotify:playlist:p"), &[TRACK]),
             );
+            // An order is answered by the window, so this test answers it the
+            // way a frame does: once, after the effect.
+            hold_request(&shared, RequestId(58));
+            inbound(&shared, 58, Kind::Resume, Instruction::Order(Order::Resume));
+            let _ = order_update(&ui_end, RequestId(58));
+            ui_end
+                .commands
+                .send(Command::Answer {
+                    id: RequestId(58),
+                    ok: true,
+                })
+                .expect("answer");
             until("every inbound to be answered", || {
                 (54..=57).all(|id| answers(&shared, RequestId(id)) == 1)
+                    && answers(&shared, RequestId(58)) == 1
             });
         });
 
-        for id in 54..=57 {
+        for id in 54..=58 {
             assert_eq!(
                 answers(&shared, RequestId(id)),
                 1,
                 "request {id} is answered exactly once"
             );
         }
+    }
+
+    #[test]
+    fn an_order_while_not_holding_is_refused() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+        hold_with(&shared, &[false]);
+
+        run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            watch_now(&ui_end, &shared).recv().expect("watch started");
+            hold_request(&shared, RequestId(60));
+            inbound(&shared, 60, Kind::Pause, Instruction::Order(Order::Pause));
+            until("the order to be refused", || !refusals(&shared).is_empty());
+            expect_no_update(&ui_end);
+        });
+
+        assert_eq!(
+            calls(&shared),
+            vec![Call::Refuse(RequestId(60))],
+            "a window with no sound to move refuses, and never forwards"
+        );
+    }
+
+    #[test]
+    fn an_order_for_an_expired_entry_is_not_forwarded() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+        hold_with(&shared, &[true]);
+
+        run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            record_logs();
+            let _ = expect_updates(&ui_end, 2);
+            watch_now(&ui_end, &shared).recv().expect("watch started");
+            // The budget answered this one already, so the phone has been told
+            // it failed and the window is never asked about it.
+            inbound(&shared, 61, Kind::Pause, Instruction::Order(Order::Pause));
+            until("the order to be refused", || !refusals(&shared).is_empty());
+            expect_no_update(&ui_end);
+            until("the order path to say why", || {
+                logged("order refused, entry gone: pause")
+            });
+        });
+
+        assert_eq!(calls(&shared), vec![Call::Refuse(RequestId(61))]);
+        assert!(
+            !calls(&shared).contains(&Call::Prepare),
+            "the order path hands nothing to a player it never prepares"
+        );
+    }
+
+    #[test]
+    fn an_order_with_no_window_is_refused_rather_than_left_to_the_budget() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+        hold_with(&shared, &[true]);
+
+        run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            watch_now(&ui_end, &shared).recv().expect("watch started");
+            hold_request(&shared, RequestId(63));
+            // The window is gone: the receiver its updates would land on is
+            // dropped, so the order reaches nobody.
+            let UiEnd { updates, commands } = ui_end;
+            drop(updates);
+            inbound(&shared, 63, Kind::Pause, Instruction::Order(Order::Pause));
+            until("the order to be refused", || !refusals(&shared).is_empty());
+            drop(commands);
+        });
+
+        assert_eq!(
+            calls(&shared),
+            vec![Call::Refuse(RequestId(63))],
+            "the phone hears at once instead of waiting out its budget"
+        );
+    }
+
+    #[test]
+    fn an_order_is_forwarded_and_answered_only_after_the_ui_replies() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+        hold_with(&shared, &[true]);
+
+        run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            watch_now(&ui_end, &shared).recv().expect("watch started");
+            let deadline = hold_request(&shared, RequestId(62));
+            inbound(&shared, 62, Kind::Pause, Instruction::Order(Order::Pause));
+
+            let (order, expires) = order_update(&ui_end, RequestId(62));
+            assert_eq!(order, Order::Pause);
+            assert_eq!(
+                deadline.checked_sub(ORDER_MARGIN),
+                Some(expires),
+                "the window drops the order the margin before the entry's budget"
+            );
+            assert_eq!(
+                answers(&shared, RequestId(62)),
+                0,
+                "the bridge does not answer for the window"
+            );
+
+            ui_end
+                .commands
+                .send(Command::Answer {
+                    id: RequestId(62),
+                    ok: true,
+                })
+                .expect("answer");
+            until("the window's answer", || {
+                answers(&shared, RequestId(62)) == 1
+            });
+        });
+
+        assert_eq!(
+            calls(&shared),
+            vec![Call::Answer(RequestId(62), true)],
+            "the order is neither refused nor answered before the window replies"
+        );
     }
 
     #[test]

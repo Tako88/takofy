@@ -126,6 +126,7 @@ mod tests {
     use librespot::protocol::session::Session;
     use librespot::protocol::transfer_state::TransferState;
     use protobuf::MessageField;
+    use takofy_model::Order;
     use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
     use tokio::task::JoinHandle;
 
@@ -214,7 +215,7 @@ mod tests {
 
         let received = recv(&mut inbound).await;
         assert_eq!(received.kind, Kind::Pause);
-        assert_eq!(received.instruction, Instruction::Other(Kind::Pause));
+        assert_eq!(received.instruction, Instruction::Order(Order::Pause));
         assert_eq!(received.id, RequestId(0), "the first request is id zero");
     }
 

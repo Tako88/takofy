@@ -8,8 +8,8 @@
 //! the next writer waits on.
 
 use std::future::Future;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
@@ -30,6 +30,7 @@ use crate::connect::{
     Announcement, ClusterEvent, ClusterView, ConnectError, Steer, WITHDRAW_TIMEOUT, repeatable,
     steer_body, view_of, view_of_update,
 };
+use crate::latest::Latest;
 use crate::playstate::ActiveState;
 use crate::presence::{Observation, Presence, Stage};
 use crate::publish;
@@ -60,6 +61,13 @@ pub(crate) const GATE_WAIT: Duration = Duration::from_secs(2);
 /// Under the phone's own retry and over the longest accept path, so a slow
 /// transfer is never cut off and a stuck one is never left hanging.
 pub(crate) const ANSWER_BUDGET: Duration = Duration::from_secs(10);
+
+/// How much of an answer budget an order leaves unspent.
+///
+/// The window drops an order it receives this close to the budget running out:
+/// once the phone has been told the order failed, carrying it out would move
+/// the transport behind a phone that has already moved on.
+pub const ORDER_MARGIN: Duration = Duration::from_millis(500);
 
 /// How long a context walk may take before it gives up.
 pub(crate) const RESOLVE_BUDGET: Duration = Duration::from_secs(3);
@@ -315,77 +323,45 @@ impl Drop for Restore<'_> {
     }
 }
 
-/// What every announcement reads: the stage this device is in, the sound it
-/// holds, the requests in flight and the stream the window reads.
+/// What every announcement reads: the stage this device is in, the newest
+/// report, the requests in flight and the stream the window reads.
 ///
-/// The active body is built from the report of the landing that took the sound.
-/// The window's own report replaces it once the queue publishes one, which is
-/// what the announce path is shaped to take.
+/// The active body is built from the report the window last published, aged by
+/// the time since it was taken. A landing's report is published the same way,
+/// so there is one source of truth for what this device is playing.
 ///
 /// The events sender is weak because the pump holds the only strong one: when
 /// its streams end the stream closes, and the window reads that as a dead watch.
 pub(crate) struct Shared {
     pub(crate) presence: Arc<Presence>,
+    pub(crate) latest: Arc<Latest>,
     pub(crate) registry: Arc<Registry>,
-    held: Mutex<Option<Held>>,
     pub(crate) events: WeakUnboundedSender<ClusterEvent>,
-}
-
-/// The sound this window took, and when.
-#[derive(Clone)]
-struct Held {
-    /// The report the landing carried, and the position it was taken at.
-    state: ActiveState,
-    /// The instant the sound was taken, which the phone's bar counts from.
-    started_at_ms: u64,
 }
 
 impl Shared {
     pub(crate) fn new(
         presence: Arc<Presence>,
+        latest: Arc<Latest>,
         registry: Arc<Registry>,
         events: WeakUnboundedSender<ClusterEvent>,
     ) -> Arc<Self> {
         Arc::new(Self {
             presence,
+            latest,
             registry,
-            held: Mutex::new(None),
             events,
         })
     }
 
     /// A bundle with no window behind it, for a call made outside the pump.
-    pub(crate) fn detached(presence: Arc<Presence>, registry: Arc<Registry>) -> Arc<Self> {
+    pub(crate) fn detached(
+        presence: Arc<Presence>,
+        latest: Arc<Latest>,
+        registry: Arc<Registry>,
+    ) -> Arc<Self> {
         let (events, _) = unbounded_channel();
-        Self::new(presence, registry, events.downgrade())
-    }
-
-    /// Whether an active body can be built at all.
-    pub(crate) fn has_report(&self) -> bool {
-        self.held().is_some()
-    }
-
-    /// Remembers the report the sound was taken with, so every body put while
-    /// it is held describes the same hold.
-    pub(crate) fn hold(&self, state: ActiveState, started_at_ms: u64) {
-        self.slot().replace(Held {
-            state,
-            started_at_ms,
-        });
-    }
-
-    /// The hold, if any. It is read only through `stage`'s verdict, so it never
-    /// describes a hold that ended.
-    fn held(&self) -> Option<Held> {
-        self.slot().clone()
-    }
-
-    /// A panic elsewhere must not make the bundle unusable: the slot is one
-    /// optional value, and refusing to read it would freeze every announce.
-    fn slot(&self) -> std::sync::MutexGuard<'_, Option<Held>> {
-        self.held
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+        Self::new(presence, latest, registry, events.downgrade())
     }
 
     /// Sends to the window, or says that nothing is reading any more.
@@ -400,25 +376,37 @@ impl Shared {
 /// The one place an announcement is built, so a put always says what the stage
 /// says.
 ///
-/// `has_report` is what says an active body can be built: the landing's report
-/// until the window publishes its own, and the window's from then on.
-fn body<W: Wire>(wire: &W, shared: &Shared, has_report: bool) -> Announcement {
-    match shared.presence.stage(has_report) {
+/// The active body is built from the newest report and its age. A report whose
+/// track cannot be published falls back to the ready body, so the account is
+/// never told this device holds a track it cannot name.
+fn body<W: Wire>(wire: &W, shared: &Shared) -> Announcement {
+    match shared.presence.stage(shared.latest.has_report()) {
         Stage::Controller => Announcement::controller(&wire.device_id(), &wire.client_id()),
         Stage::Ready => {
             Announcement::ready(&wire.device_id(), &wire.client_id(), &wire.session_id())
         }
-        // A stage of active with nothing to build from cannot happen: the stage
-        // says active only when `has_report` held, and that is the slot below.
-        Stage::Active => match shared.held() {
-            Some(held) => Announcement::active(
-                &wire.device_id(),
-                &wire.client_id(),
-                &wire.session_id(),
-                &held.state,
-                shared.registry.last_ack(),
-                held.started_at_ms,
-            ),
+        Stage::Active => match shared.latest.report() {
+            Some((report, age)) => {
+                let age_ms = i64::try_from(age.as_millis()).unwrap_or(i64::MAX);
+                match ActiveState::new(report, age_ms) {
+                    Some(state) => {
+                        let now_ms = wire.now_ms();
+                        Announcement::active(
+                            &wire.device_id(),
+                            &wire.client_id(),
+                            &wire.session_id(),
+                            &state,
+                            shared.registry.last_ack(),
+                            u64::try_from(now_ms).unwrap_or(0),
+                        )
+                    }
+                    None => Announcement::ready(
+                        &wire.device_id(),
+                        &wire.client_id(),
+                        &wire.session_id(),
+                    ),
+                }
+            }
             None => Announcement::ready(&wire.device_id(), &wire.client_id(), &wire.session_id()),
         },
     }
@@ -497,6 +485,7 @@ pub(crate) async fn watch(
     session: &Session,
     gate: Arc<Gate>,
     presence: Arc<Presence>,
+    latest: Arc<Latest>,
     registry: Arc<Registry>,
 ) -> Result<Watching, ConnectError> {
     let dealer = session.dealer();
@@ -518,7 +507,7 @@ pub(crate) async fn watch(
 
     let (events, event_rx) = unbounded_channel();
     let (inbound_tx, inbound_rx) = unbounded_channel();
-    let shared = Shared::new(presence, registry, events.downgrade());
+    let shared = Shared::new(presence, latest, registry, events.downgrade());
     let wire = Arc::new(SessionWire::new(session));
     let timing = Timing::default();
 
@@ -644,8 +633,7 @@ pub(crate) async fn put_and_view<W: Wire>(
     if wire.connection_id().is_empty() {
         return Err(ConnectError::NoConnectionId);
     }
-    let has_report = shared.has_report();
-    let announcement = body(wire, shared, has_report);
+    let announcement = body(wire, shared);
     let reply = bounded(gate, timing.put, wire.put(&announcement)).await?;
     let own = wire.device_id();
     let view = Cluster::parse_from_bytes(&reply)
@@ -1253,6 +1241,7 @@ mod tests {
         let (events, mut rx) = unbounded_channel();
         let shared = Shared::new(
             Arc::new(Presence::default()),
+            Arc::new(Latest::default()),
             Arc::new(Registry::new(timing())),
             events.downgrade(),
         );

@@ -5,6 +5,7 @@
 //! thin: a call-through or one `Option` check.
 
 use std::future::Future;
+use std::time::Instant;
 
 use librespot::core::SessionConfig;
 use takofy_core::connect::{ClusterEvent, ClusterView, ConnectError, Steer};
@@ -15,8 +16,8 @@ use takofy_core::receive::Inbound;
 use takofy_core::{Resolution, TransferPlan};
 use takofy_model::{
     AlbumDetail, ArtistDetail, ArtistPortrait, CoverUrl, FollowedArtist, FollowedShow, Landing,
-    Move, PlaylistAccess, PlaylistEntry, Removal, RequestId, Revision, SavedAlbum, ShowDetail,
-    TrackEntry, TrackLyrics,
+    Move, PlaylistAccess, PlaylistEntry, Removal, Report, RequestId, Revision, SavedAlbum,
+    ShowDetail, TrackEntry, TrackLyrics,
 };
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::oneshot::Receiver;
@@ -274,6 +275,10 @@ pub(crate) trait SessionHost: Send + 'static {
     /// a play before sign-in reports nothing here.
     fn set_playable(&self, playable: bool);
 
+    /// Publishes what the window is playing. A call with no session is a no-op,
+    /// like the stage above it.
+    fn report(&self, report: Option<Report>);
+
     /// Answers one incoming request `Failure`. A call with no session is a
     /// no-op, like the stage above it.
     fn refuse(&self, id: RequestId);
@@ -320,6 +325,13 @@ pub(crate) trait SessionHost: Send + 'static {
 
     /// Whether this device holds the account's sound.
     fn holding(&self) -> bool;
+
+    /// Answers one order the window carried out, and says whether it was still
+    /// pending.
+    fn answer_order(&self, id: RequestId, ok: bool) -> bool;
+
+    /// When a pending request's budget answers it.
+    fn expires(&self, id: RequestId) -> Option<Instant>;
 
     /// Jumps within the loaded track. A call with no player is a no-op.
     fn seek(&self, position_ms: u32);
@@ -712,6 +724,12 @@ impl SessionHost for LiveSession {
         }
     }
 
+    fn report(&self, report: Option<Report>) {
+        if let Some(engine) = &self.engine {
+            engine.report(report);
+        }
+    }
+
     fn refuse(&self, id: RequestId) {
         if let Some(engine) = &self.engine {
             engine.refuse(id);
@@ -796,6 +814,20 @@ impl SessionHost for LiveSession {
         match &self.engine {
             Some(engine) => engine.holding(),
             None => false,
+        }
+    }
+
+    fn answer_order(&self, id: RequestId, ok: bool) -> bool {
+        match &self.engine {
+            Some(engine) => engine.answer_order(id, ok),
+            None => false,
+        }
+    }
+
+    fn expires(&self, id: RequestId) -> Option<Instant> {
+        match &self.engine {
+            Some(engine) => engine.expires(id),
+            None => None,
         }
     }
 
@@ -965,6 +997,40 @@ mod tests {
         SessionHost::set_playable(&live, true);
         SessionHost::set_playable(&live, false);
         SessionHost::refuse(&live, RequestId(1));
+    }
+
+    #[test]
+    fn a_report_before_sign_in_is_ignored() {
+        use takofy_model::{Options, Report, Status, TrackEntry};
+
+        let live = LiveSession::new(SessionConfig::default());
+        let report = Report {
+            status: Status::Playing,
+            track: Some(TrackEntry {
+                uri: "spotify:track:x".to_owned(),
+                title: "x".to_owned(),
+                artists: String::new(),
+                album: None,
+                album_uri: None,
+                artist_uris: Vec::new(),
+                artist_names: Vec::new(),
+                added_at: None,
+                duration_ms: None,
+                named: true,
+                cover: None,
+            }),
+            prev: Vec::new(),
+            next: Vec::new(),
+            context: None,
+            options: Options::default(),
+            position_ms: 0,
+            duration_ms: None,
+        };
+
+        // There is no engine to report to yet, so the call has nowhere to go and
+        // must not panic.
+        SessionHost::report(&live, Some(report));
+        SessionHost::report(&live, None);
     }
 
     #[test]

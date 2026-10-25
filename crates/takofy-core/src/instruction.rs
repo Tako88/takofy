@@ -11,6 +11,7 @@ use std::fmt;
 
 use librespot::core::dealer::protocol::{Command, Request};
 use librespot::protocol::transfer_state::TransferState;
+use takofy_model::Order;
 
 use crate::transfer::plan;
 pub use crate::transfer::{Refusal, TransferPlan};
@@ -195,6 +196,8 @@ pub enum Instruction {
     Transfer(TransferPlan),
     /// A hand-over it cannot take, and why, so nothing is put.
     Refused(Refusal),
+    /// One transport action the window carries out and answers.
+    Order(Order),
     /// Any other endpoint: this window answers it without acting on it.
     Other(Kind),
 }
@@ -209,6 +212,17 @@ pub fn instruction_of(request: &Request) -> Instruction {
             },
             None => Instruction::Refused(Refusal::NoData),
         },
+        Command::Pause(_) => Instruction::Order(Order::Pause),
+        Command::Resume(_) => Instruction::Order(Order::Resume),
+        // The phone's position travels in `value`; `position` is never filled.
+        Command::SeekTo(seek) => Instruction::Order(Order::Seek(seek.value)),
+        Command::SkipNext(next) => Instruction::Order(Order::Next(
+            next.track
+                .as_ref()
+                .map(|track| track.uri.clone())
+                .filter(|uri| !uri.is_empty()),
+        )),
+        Command::SkipPrev(_) => Instruction::Order(Order::Prev),
         other => Instruction::Other(kind_of(other)),
     }
 }
@@ -623,7 +637,7 @@ mod tests {
     #[test]
     fn other_endpoints_keep_their_kind() {
         for (command, expected) in commands() {
-            if expected == Kind::Transfer {
+            if expected == Kind::Transfer || is_order(expected) {
                 continue;
             }
             assert_eq!(
@@ -632,6 +646,100 @@ mod tests {
                 "{expected:?}"
             );
         }
+
+        let payload = serde_json::json!({"endpoint": "something_new"});
+        assert_eq!(
+            instruction_of(&request(Command::Unknown(payload))),
+            Instruction::Other(Kind::Unknown)
+        );
+    }
+
+    /// The endpoints the window answers as orders.
+    fn is_order(kind: Kind) -> bool {
+        matches!(
+            kind,
+            Kind::Pause | Kind::Resume | Kind::SeekTo | Kind::SkipNext | Kind::SkipPrev
+        )
+    }
+
+    #[test]
+    fn each_transport_endpoint_decodes_to_its_order() {
+        let table = [
+            (
+                Command::Pause(PauseCommand {
+                    logging_params: logging(),
+                }),
+                Order::Pause,
+            ),
+            (
+                Command::Resume(GenericCommand {
+                    logging_params: logging(),
+                }),
+                Order::Resume,
+            ),
+            (
+                Command::SeekTo(SeekToCommand {
+                    value: 42_000,
+                    position: 0,
+                    logging_params: logging(),
+                }),
+                Order::Seek(42_000),
+            ),
+            (
+                Command::SkipNext(SkipNextCommand {
+                    track: None,
+                    logging_params: logging(),
+                }),
+                Order::Next(None),
+            ),
+            (
+                Command::SkipNext(SkipNextCommand {
+                    track: Some(ProvidedTrack {
+                        uri: TRACK_1.to_owned(),
+                        ..Default::default()
+                    }),
+                    logging_params: logging(),
+                }),
+                Order::Next(Some(TRACK_1.to_owned())),
+            ),
+            (
+                Command::SkipPrev(GenericCommand {
+                    logging_params: logging(),
+                }),
+                Order::Prev,
+            ),
+        ];
+
+        for (command, expected) in table {
+            assert_eq!(
+                instruction_of(&request(command)),
+                Instruction::Order(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn other_endpoints_are_not_orders() {
+        let outside = [
+            Kind::Play,
+            Kind::SetOptions,
+            Kind::SetQueue,
+            Kind::AddToQueue,
+            Kind::UpdateContext,
+        ];
+        let mut seen = Vec::new();
+        for (command, kind) in commands() {
+            if !outside.contains(&kind) {
+                continue;
+            }
+            assert_eq!(
+                instruction_of(&request(command)),
+                Instruction::Other(kind),
+                "{kind:?} is not an order"
+            );
+            seen.push(kind);
+        }
+        assert_eq!(seen, outside.to_vec(), "every endpoint outside the orders");
 
         let payload = serde_json::json!({"endpoint": "something_new"});
         assert_eq!(

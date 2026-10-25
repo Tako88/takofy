@@ -137,7 +137,7 @@ pub(crate) async fn accept<W: Wire>(
         }
     );
 
-    shared.hold(state, started_at_ms);
+    shared.latest.set(Some(landing.report()));
     let epoch = shared.presence.activate(baseline);
     landing.epoch = epoch;
     // The last answer can find the entry gone too, in the instant between the
@@ -230,6 +230,7 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
+    use librespot::protocol::connect::PutStateRequest;
     use takofy_model::RequestId;
 
     use super::*;
@@ -350,7 +351,11 @@ mod tests {
             let presence = Arc::new(Presence::default());
             // Only a device that can play is ever handed the sound.
             presence.set_playable(true);
-            let shared = Shared::detached(presence, Arc::new(Registry::new(timing)));
+            let shared = Shared::detached(
+                presence,
+                Arc::new(crate::latest::Latest::default()),
+                Arc::new(Registry::new(timing)),
+            );
             Self {
                 wire,
                 gate: Arc::default(),
@@ -752,6 +757,31 @@ mod tests {
         );
     }
 
+    /// A body without the echoed command, which only the put that answers a
+    /// request carries.
+    fn without_command(announcement: &Announcement) -> PutStateRequest {
+        let mut body = announcement.message().clone();
+        body.last_command_message_id = 0;
+        body.last_command_sent_by_device_id.clear();
+        body
+    }
+
+    /// A body without the command or the instants a report's age moves.
+    fn without_command_or_age(announcement: &Announcement) -> PutStateRequest {
+        let mut body = without_command(announcement);
+        body.started_playing_at = 0;
+        body.client_side_timestamp = 0;
+        if let Some(state) = body
+            .device
+            .as_mut()
+            .and_then(|device| device.player_state.as_mut())
+        {
+            state.timestamp = 0;
+            state.position_as_of_timestamp = 0;
+        }
+        body
+    }
+
     #[tokio::test]
     async fn refresh_while_active_sends_the_active_body() {
         let world = World::new(timing());
@@ -769,10 +799,21 @@ mod tests {
         let puts = world.wire.puts();
         assert_eq!(puts.len(), 2);
         assert_eq!(
-            puts[1], held,
+            without_command_or_age(&puts[1]),
+            without_command_or_age(&held),
             "a refresh re-asserts the hold, not the stage below it"
         );
         assert!(puts[1].message().is_active);
+        assert_eq!(
+            held.message().last_command_message_id,
+            ack().message_id,
+            "the phone's command rides the put that answers it"
+        );
+        assert_eq!(
+            puts[1].message().last_command_message_id,
+            0,
+            "a later put of the same hold does not claim to answer it again"
+        );
         assert!(
             world.shared.presence.active(),
             "the refresh's own reply names this device"
@@ -825,7 +866,8 @@ mod tests {
             .collect();
         assert_eq!(active.len(), 2, "one accept and one flip, one body each");
         assert_eq!(
-            active[0], active[1],
+            without_command_or_age(&active[1]),
+            without_command_or_age(&active[0]),
             "a flip while active re-announces the hold, not a waiting device"
         );
     }

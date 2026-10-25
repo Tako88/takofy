@@ -1,7 +1,7 @@
 //! Session facade: the calls the command task makes on a live session.
 
 use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use librespot::core::authentication::Credentials;
 use librespot::core::{Session, SessionConfig};
@@ -13,11 +13,12 @@ use crate::context::{ContextError, Page, PageSource, Walker, resolve_uris};
 use crate::credentials::AccessToken;
 use crate::followed::FollowedError;
 use crate::hold;
+use crate::latest::Latest;
 use crate::lyrics::LyricsError;
 use crate::playback::{Playback, PlaybackError, PlaybackEvent, Volume};
 use crate::playlist_edit::{self, PlaylistError};
 use crate::presence::Presence;
-use crate::registry::Registry;
+use crate::registry::{Registry, Verdict};
 use crate::remote::{
     ROOTLIST_WIRE, RemoteContext, RemoteRootlist, label_playlists, label_tracks, read_album,
     read_artist, read_followed_artists, read_followed_shows, read_liked_tracks, read_lyrics,
@@ -33,8 +34,8 @@ use crate::transfer::{Resolution, TransferPlan};
 use crate::watch::{self, Gate};
 use takofy_model::{
     AlbumDetail, ArtistDetail, ArtistPortrait, CoverUrl, FollowedArtist, FollowedShow, Landing,
-    Move, PlaylistAccess, PlaylistEntry, Removal, RequestId, Revision, SavedAlbum, ShowDetail,
-    TrackEntry, TrackLyrics,
+    Move, PlaylistAccess, PlaylistEntry, Removal, Report, RequestId, Revision, SavedAlbum,
+    ShowDetail, TrackEntry, TrackLyrics,
 };
 
 /// Why an [`Engine`] operation failed.
@@ -69,6 +70,9 @@ pub struct Engine {
     /// What this device announces about itself, held so a play can be reported
     /// before anything is watching.
     presence: Arc<Presence>,
+    /// The newest report the window published, kept before a watch so the first
+    /// body already describes what plays here.
+    latest: Arc<Latest>,
     /// The requests in flight, held so one can be refused before anything is
     /// watching.
     registry: Arc<Registry>,
@@ -86,12 +90,18 @@ impl Engine {
     /// report a playable device before it asks for its own entry.
     fn new(session: Session) -> Self {
         let presence = Arc::new(Presence::default());
+        let latest = Arc::new(Latest::default());
         let registry = Arc::new(Registry::new(watch::Timing::default()));
         Self {
             session,
             gate: Arc::default(),
-            detached: watch::Shared::detached(Arc::clone(&presence), Arc::clone(&registry)),
+            detached: watch::Shared::detached(
+                Arc::clone(&presence),
+                Arc::clone(&latest),
+                Arc::clone(&registry),
+            ),
             presence,
+            latest,
             registry,
             shared: OnceLock::new(),
             watching: false,
@@ -120,6 +130,7 @@ impl Engine {
             &self.session,
             Arc::clone(&self.gate),
             Arc::clone(&self.presence),
+            Arc::clone(&self.latest),
             Arc::clone(&self.registry),
         )
         .await?;
@@ -144,6 +155,33 @@ impl Engine {
     /// request loop handed over.
     pub fn refuse(&self, id: RequestId) {
         self.registry.refuse(id);
+    }
+
+    /// Publishes what the window is playing, or that it has nothing to publish.
+    ///
+    /// The slot lives here rather than in the watch, so setting it before the
+    /// watch starts is not lost with the call that set it.
+    pub fn report(&self, report: Option<Report>) {
+        self.latest.set(report);
+    }
+
+    /// Answers one order the window carried out, and says whether the entry was
+    /// still pending.
+    ///
+    /// The verdict is the window's own. Either way its ack is recorded, because
+    /// the next state put is what tells the phone the order was heard.
+    pub fn answer_order(&self, id: RequestId, ok: bool) -> bool {
+        let verdict = if ok {
+            Verdict::Success
+        } else {
+            Verdict::Failure
+        };
+        self.registry.answer_order(id, verdict)
+    }
+
+    /// When a pending request's budget answers it.
+    pub fn expires(&self, id: RequestId) -> Option<Instant> {
+        self.registry.expires(id)
     }
 
     /// Asks the cluster for its roster again, answering what it says.

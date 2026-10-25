@@ -16,6 +16,7 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
 use crate::connect::{Announcement, ClusterEvent, ConnectError};
+use crate::latest::Latest;
 use crate::presence::Presence;
 use crate::publish;
 use crate::registry::{Registry, Responder, Verdict};
@@ -395,6 +396,7 @@ pub(crate) async fn quiet(
 pub(crate) fn bundle(timing: Timing) -> Arc<Shared> {
     Shared::detached(
         Arc::new(Presence::default()),
+        Arc::new(Latest::default()),
         Arc::new(Registry::new(timing)),
     )
 }
@@ -418,6 +420,7 @@ pub(crate) fn start_pump(wire: Arc<FakeWire>, gate: Arc<Gate>, timing: Timing) -
     let (events, event_rx) = unbounded_channel();
     let shared = Shared::new(
         Arc::new(Presence::default()),
+        Arc::new(Latest::default()),
         Arc::new(Registry::new(timing)),
         events.downgrade(),
     );

@@ -32,6 +32,14 @@ pub struct Options {
     pub repeat_track: bool,
 }
 
+/// The most rows behind the current one a report carries.
+///
+/// The phone's window draws no more, and the wire caps the same list again.
+pub const MAX_PREV_TRACKS: usize = 10;
+
+/// The most rows ahead of the current one a report carries.
+pub const MAX_NEXT_TRACKS: usize = 80;
+
 /// This window's player state, as the window itself sees it.
 ///
 /// A report is a snapshot: it names the rows around the current one, so the
@@ -50,6 +58,24 @@ pub struct Report {
     pub options: Options,
     pub position_ms: u32,
     pub duration_ms: Option<u32>,
+}
+
+/// One transport action the phone asked for while another device holds the
+/// account's sound.
+///
+/// The phone stopped playing on its own, so these arrive as commands the window
+/// has to carry out and answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Order {
+    Pause,
+    Resume,
+    /// Jump to this position within the loaded track.
+    Seek(u32),
+    /// Step forward, landing on this track when the phone named one.
+    Next(Option<String>),
+    /// Step back, or restart the loaded track when it is already past the
+    /// restart threshold.
+    Prev,
 }
 
 /// Where a hand-over landed: the rows to adopt, and where in them to sit.

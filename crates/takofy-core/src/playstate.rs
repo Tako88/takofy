@@ -10,11 +10,7 @@ use librespot::protocol::player::{
 use protobuf::MessageField;
 use takofy_model::{Options, Report, Status, TrackEntry};
 
-/// Librespot publishes at most this many rows behind the current one.
-pub(crate) const MAX_PREV_TRACKS: usize = 10;
-
-/// Librespot publishes at most this many rows ahead of the current one.
-pub(crate) const MAX_NEXT_TRACKS: usize = 80;
+pub(crate) use takofy_model::{MAX_NEXT_TRACKS, MAX_PREV_TRACKS};
 
 /// The name prefix for the uids this window invents for its own rows.
 const UID_PREFIX: &str = "takofy-";
