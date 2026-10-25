@@ -5,8 +5,9 @@
 //! of them to use, in that order of cost, and turns the answer into the rows and
 //! the row index the queue adopts.
 
-use librespot::core::SpotifyUri;
+use librespot::core::{SpotifyId, SpotifyUri};
 use librespot::protocol::context::Context;
+use librespot::protocol::context_track::ContextTrack;
 use librespot::protocol::transfer_state::TransferState;
 use takofy_model::Landing;
 
@@ -116,7 +117,7 @@ fn row_of_uid(uid: Option<&str>, context: Option<&Context>) -> Option<String> {
         .iter()
         .flat_map(|page| page.tracks.iter())
         .find(|track| track.uid.as_deref() == Some(uid))
-        .and_then(|track| uri_of(&track.uri))
+        .and_then(uri_of_track)
 }
 
 /// Reads one hand-over, or says why it cannot be played here.
@@ -143,7 +144,7 @@ pub(crate) fn plan(state: &TransferState) -> Result<TransferPlan, Refusal> {
     };
     // A real phone sends the row's uid and the pages, and sometimes no current
     // track at all, so the uid is what names the row it was playing.
-    let current = match current_track.and_then(|track| uri_of(&track.uri)) {
+    let current = match current_track.and_then(uri_of_track) {
         Some(uri) => uri,
         None => row_of_uid(
             session.and_then(|session| session.current_uid.as_deref()),
@@ -161,7 +162,7 @@ pub(crate) fn plan(state: &TransferState) -> Result<TransferPlan, Refusal> {
                 .pages
                 .iter()
                 .flat_map(|page| page.tracks.iter())
-                .filter_map(|track| uri_of(&track.uri))
+                .filter_map(uri_of_track)
                 .collect()
         })
         .unwrap_or_default();
@@ -183,14 +184,10 @@ pub(crate) fn plan(state: &TransferState) -> Result<TransferPlan, Refusal> {
     Ok(TransferPlan {
         current,
         from_queue,
-        queue: queue
-            .tracks
-            .iter()
-            .filter_map(|track| uri_of(&track.uri))
-            .collect(),
+        queue: queue.tracks.iter().filter_map(uri_of_track).collect(),
         associated: playback
             .and_then(|playback| playback.associated_current_track.as_ref())
-            .and_then(|track| uri_of(&track.uri)),
+            .and_then(uri_of_track),
         pages,
         context: if kind.honoured() {
             context_uri.map(str::to_owned)
@@ -285,6 +282,23 @@ fn rows_of(plan: &TransferPlan, resolved: &[String]) -> (Vec<String>, usize) {
     rows.extend(plan.queue.iter().cloned());
     rows.extend(tail);
     (rows, index)
+}
+
+/// A track's uri: the string the payload carries, or the id when it carries only
+/// that.
+///
+/// A phone sends rows with a raw id and no uri at all, so reading the uri alone
+/// makes every row of a real hand-over invisible. librespot's own receiver reads
+/// the two the same way (`state/context.rs`).
+fn uri_of_track(track: &ContextTrack) -> Option<String> {
+    if let Some(uri) = uri_of(&track.uri) {
+        return Some(uri);
+    }
+    let gid = track.gid.as_deref().filter(|gid| !gid.is_empty())?;
+    let id = SpotifyId::from_raw(gid).ok()?;
+    let uri = SpotifyUri::Track { id }.to_uri().ok()?;
+    // A bare id has no kind of its own, and a context row is always a track.
+    Some(uri.replace("unknown", "track"))
 }
 
 fn uri_of(uri: &Option<String>) -> Option<String> {
@@ -414,6 +428,51 @@ mod tests {
             }),
             ..Default::default()
         }
+    }
+
+    /// A row the phone sends with only its raw id, the way a real hand-over does.
+    fn id_only_track(gid: u8) -> ContextTrack {
+        ContextTrack {
+            gid: Some(vec![gid; 16]),
+            uid: Some(format!("uid-{gid}")),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_row_that_carries_only_its_id_still_names_the_track() {
+        let mut state = uid_state(&[("uid-1", TRACK_1)], Some("uid-1"), &[]);
+        if let Some(playback) = state.playback.as_mut() {
+            playback.current_track = MessageField::some(id_only_track(7));
+        }
+        if let Some(page) = state
+            .current_session
+            .as_mut()
+            .and_then(|session| session.context.as_mut())
+            .and_then(|context| context.pages.first_mut())
+        {
+            page.tracks = vec![id_only_track(7)];
+        }
+
+        let plan = plan(&state).expect("the id names a track");
+        assert_eq!(plan.current, "spotify:track:0dg9MKoV2L6aKsP3wSpXy7");
+        assert_eq!(plan.pages, vec![plan.current.clone()]);
+    }
+
+    #[test]
+    fn an_id_only_row_is_found_by_its_uid_too() {
+        let mut state = uid_state(&[("uid-1", TRACK_1)], Some("uid-9"), &[]);
+        if let Some(page) = state
+            .current_session
+            .as_mut()
+            .and_then(|session| session.context.as_mut())
+            .and_then(|context| context.pages.first_mut())
+        {
+            page.tracks = vec![id_only_track(9)];
+        }
+
+        let plan = plan(&state).expect("the uid finds the id-only row");
+        assert_eq!(plan.current, "spotify:track:0h33IXETCYyvxaudoyxnq9");
     }
 
     #[test]
