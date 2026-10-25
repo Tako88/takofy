@@ -1303,7 +1303,7 @@ mod tests {
             },
             now,
         );
-        art.upload(&ctx, &tokens.palette.tint);
+        art.upload(&ctx, tokens.palette.tint.alpha_floor);
 
         let (_, output) = frame(
             &ctx,

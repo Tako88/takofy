@@ -1795,7 +1795,7 @@ mod tests {
                 },
                 now,
             );
-            art.upload(ctx, &crate::theme::TintParams::DARK);
+            art.upload(ctx, crate::theme::TintParams::DARK.alpha_floor);
         }
     }
 
@@ -1811,7 +1811,7 @@ mod tests {
             },
             now,
         );
-        art.upload(ctx, &crate::theme::TintParams::DARK);
+        art.upload(ctx, crate::theme::TintParams::DARK.alpha_floor);
     }
 
     /// Drives `url` to a failure it will not retry, as three failed answers do.
@@ -4953,7 +4953,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             },
             now,
         );
-        art.upload(&ctx, &crate::theme::TintParams::DARK);
+        art.upload(&ctx, crate::theme::TintParams::DARK.alpha_floor);
         assert!(matches!(
             art.look(Some(&CoverSet::single(cover.clone())), 176, now),
             Cover::Ready(_)

@@ -55,7 +55,9 @@ pub enum Cover {
 /// An uploaded cover: the texture and the mean of the pixels it came from.
 ///
 /// The mean is kept rather than the finished colour, so another palette can
-/// normalise the same pixels without fetching the cover again.
+/// normalise the same pixels without fetching the cover again. The alpha floor
+/// is fixed at upload, when the mean is computed; the rest of the palette's
+/// normalisation happens per ask, from the stored mean.
 struct Held {
     texture: TextureHandle,
     mean: Option<Mean>,
@@ -143,19 +145,6 @@ impl Art {
             .find(|url| self.textures.contains_key(*url))
     }
 
-    /// The tint of the exact size the box would draw, when it is held.
-    ///
-    /// Neither this nor [`Art::tint_held`] touches the cache or the LRU: the band
-    /// has already looked at the cover this frame.
-    pub fn tint(
-        &self,
-        cover: Option<&CoverSet>,
-        want_px: u32,
-        params: &TintParams,
-    ) -> Option<Color32> {
-        self.tint_of(cover?.pick(want_px)?, params)
-    }
-
     /// The tint of whatever size is held, preferring the box's own pick.
     ///
     /// A tint is a colour, not a resolution: the band colours itself as soon as
@@ -240,9 +229,9 @@ impl Art {
     }
 
     /// Uploads every pending cover once, records its mean, and drops its pixels.
-    pub fn upload(&mut self, ctx: &egui::Context, params: &TintParams) {
+    pub fn upload(&mut self, ctx: &egui::Context, alpha_floor: u8) {
         for (url, image) in std::mem::take(&mut self.pending) {
-            let mean = tint::mean(&image.rgba, params.alpha_floor);
+            let mean = tint::mean(&image.rgba, alpha_floor);
             let pixels = ColorImage::from_rgba_unmultiplied(
                 [image.width as usize, image.height as usize],
                 &image.rgba,
@@ -385,7 +374,7 @@ mod tests {
             },
             now,
         );
-        art.upload(&egui::Context::default(), &TintParams::DARK);
+        art.upload(&egui::Context::default(), TintParams::DARK.alpha_floor);
 
         let lines: Vec<String> = LOGGED
             .lock()
@@ -450,7 +439,7 @@ mod tests {
         ])
         .expect("a cover set");
         cover(&mut art, &small, now);
-        art.upload(&egui::Context::default(), &TintParams::DARK);
+        art.upload(&egui::Context::default(), TintParams::DARK.alpha_floor);
         let held = match art.look(Some(&set), 72, now) {
             Cover::Ready(texture) => texture,
             other => panic!("the 64 should be held: {other:?}"),
@@ -500,7 +489,7 @@ mod tests {
             },
             now,
         );
-        art.upload(&egui::Context::default(), &TintParams::DARK);
+        art.upload(&egui::Context::default(), TintParams::DARK.alpha_floor);
     }
 
     /// The tint of a pure red cover, from the reference table.
@@ -516,7 +505,7 @@ mod tests {
         hold_pixel(&mut art, &url, [255, 0, 0, 255], now);
 
         assert_eq!(
-            art.tint(Some(&set(&url)), 64, &TintParams::DARK),
+            art.tint_held(Some(&set(&url)), 64, &TintParams::DARK),
             Some(red_tint())
         );
         assert_eq!(
@@ -529,10 +518,9 @@ mod tests {
     #[test]
     fn a_cover_that_is_not_held_answers_no_tint() {
         let art = Art::new();
-        assert_eq!(art.tint(None, 64, &TintParams::DARK), None);
         assert_eq!(art.tint_held(None, 64, &TintParams::DARK), None);
         assert_eq!(
-            art.tint(Some(&set(&url("loading"))), 64, &TintParams::DARK),
+            art.tint_held(Some(&set(&url("loading"))), 64, &TintParams::DARK),
             None,
             "a loading cover has no pixels"
         );
@@ -543,7 +531,7 @@ mod tests {
     }
 
     #[test]
-    fn the_tint_follows_the_size_but_tint_held_falls_back() {
+    fn held_url_prefers_the_pick_and_falls_back_to_a_held_size() {
         let now = base();
         let mut art = Art::new();
         let small = url("small");
@@ -556,14 +544,14 @@ mod tests {
         hold_pixel(&mut art, &small, [255, 0, 0, 255], now);
 
         assert_eq!(
-            art.tint(Some(&set), 64, &TintParams::DARK),
-            Some(red_tint()),
+            art.held_url(&set, 64),
+            Some(&small),
             "the picked 64 is held"
         );
         assert_eq!(
-            art.tint(Some(&set), 352, &TintParams::DARK),
-            None,
-            "the picked 640 is not held"
+            art.held_url(&set, 352),
+            Some(&small),
+            "the picked 640 is not held, so the 64 stands in"
         );
         assert_eq!(
             art.tint_held(Some(&set), 352, &TintParams::DARK),
@@ -578,7 +566,7 @@ mod tests {
         let mut art = Art::new();
         let url = url("clear");
         cover(&mut art, &url, now);
-        art.upload(&egui::Context::default(), &TintParams::DARK);
+        art.upload(&egui::Context::default(), TintParams::DARK.alpha_floor);
 
         assert!(art.textures[&url].mean.is_none());
         assert_eq!(art.tint_held(Some(&set(&url)), 64, &TintParams::DARK), None);
@@ -624,7 +612,7 @@ mod tests {
             Cover::Loading,
             "not uploaded yet"
         );
-        art.upload(&egui::Context::default(), &TintParams::DARK);
+        art.upload(&egui::Context::default(), TintParams::DARK.alpha_floor);
         assert!(matches!(
             art.look(Some(&set(&url)), 64, now),
             Cover::Ready(_)
@@ -638,10 +626,10 @@ mod tests {
         let url = url("a");
         cover(&mut art, &url, now);
         let ctx = egui::Context::default();
-        art.upload(&ctx, &TintParams::DARK);
+        art.upload(&ctx, TintParams::DARK.alpha_floor);
         assert!(art.pending.is_empty(), "the buffer is dropped");
         let first = art.look(Some(&set(&url)), 64, now);
-        art.upload(&ctx, &TintParams::DARK);
+        art.upload(&ctx, TintParams::DARK.alpha_floor);
         assert_eq!(
             art.look(Some(&set(&url)), 64, now),
             first,
@@ -856,7 +844,7 @@ mod tests {
             },
             now,
         );
-        art.upload(&egui::Context::default(), &TintParams::DARK);
+        art.upload(&egui::Context::default(), TintParams::DARK.alpha_floor);
         assert!(matches!(
             art.look(Some(&set(&flying)), 64, now),
             Cover::Ready(_)

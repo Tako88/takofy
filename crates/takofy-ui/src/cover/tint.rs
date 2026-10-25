@@ -43,12 +43,13 @@ pub fn normalise(mean: Mean, params: &TintParams) -> [u8; 3] {
     let rgb = [mean[0] / 255.0, mean[1] / 255.0, mean[2] / 255.0];
     let (hue, saturation, lightness) = to_hsl(rgb);
     let tone = lightness.clamp(params.tone_min, params.tone_max);
+    let lightness = params.tone_offset + params.tone_slope * tone;
     let saturation = if saturation < params.neutral_below {
         0.0
     } else {
         (saturation * params.saturation_gain).clamp(params.saturation_min, params.saturation_max)
     };
-    to_bytes(settle(hue, saturation, tone, params))
+    to_bytes(settle(hue, saturation, lightness, params))
 }
 
 /// The colour at `lightness`, stepped down while it is brighter than the
@@ -143,7 +144,7 @@ fn relative_luminance(rgb: [f64; 3]) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::theme::TintParams;
+    use crate::theme::{Palette, TintParams};
 
     fn uniform(rgb: [u8; 3]) -> Vec<u8> {
         vec![rgb[0], rgb[1], rgb[2], 255]
@@ -165,19 +166,111 @@ mod tests {
         ]
     }
 
+    fn color_channels(color: egui::Color32) -> [f64; 3] {
+        [
+            f64::from(color.r()) / 255.0,
+            f64::from(color.g()) / 255.0,
+            f64::from(color.b()) / 255.0,
+        ]
+    }
+
+    fn contrast(a: [f64; 3], b: [f64; 3]) -> f64 {
+        let (a, b) = (relative_luminance(a), relative_luminance(b));
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
     /// The reference's own table, re-derived by hand from `tintFromArtwork`.
+    const TABLE: [([u8; 3], [u8; 3]); 7] = [
+        ([51, 51, 51], [51, 51, 51]),
+        ([128, 128, 128], [60, 60, 60]),
+        ([255, 255, 255], [60, 60, 60]),
+        ([255, 0, 0], [116, 27, 27]),
+        ([0, 0, 0], [41, 41, 41]),
+        ([255, 255, 0], [60, 60, 14]),
+        ([0, 0, 255], [27, 27, 116]),
+    ];
+
     #[test]
     fn the_reference_table() {
-        for (mean, want) in [
-            ([51, 51, 51], [51, 51, 51]),
-            ([128, 128, 128], [60, 60, 60]),
-            ([255, 255, 255], [60, 60, 60]),
-            ([255, 0, 0], [116, 27, 27]),
-            ([0, 0, 0], [41, 41, 41]),
-            ([255, 255, 0], [60, 60, 14]),
-            ([0, 0, 255], [27, 27, 116]),
-        ] {
+        for (mean, want) in TABLE {
             assert_eq!(tinted(mean), want, "mean {mean:?}");
+        }
+    }
+
+    /// The light palette's constants only have to be expressible: light mode
+    /// is not built, but its mirrored tone has to fall out of the same params.
+    #[test]
+    fn the_light_tone_is_expressible_and_lighter_than_the_dark_one() {
+        let light = TintParams {
+            tone_offset: 0.9,
+            tone_slope: -0.18,
+            saturation_min: 0.14,
+            saturation_max: 0.34,
+            luminance_ceiling: 0.62,
+            ..TintParams::DARK
+        };
+        let mean = mean_of(&uniform([255, 0, 0]));
+        let dark = normalise(mean, &TintParams::DARK);
+        let got = normalise(mean, &light);
+        assert!(
+            relative_luminance(channels(got)) > relative_luminance(channels(dark)),
+            "light {got:?} is not lighter than dark {dark:?}"
+        );
+    }
+
+    /// A muted teal whose gain lands strictly inside the clamp, so the gain
+    /// itself, not the clamp, decides the colour.
+    #[test]
+    fn the_saturation_gain_is_the_reference_constant() {
+        let (_, raw, _) = to_hsl(channels([70, 95, 92]));
+        assert!(
+            raw * 2.2 > 0.32 && raw * 2.2 < 0.62,
+            "the case exercises the gain, not the clamp"
+        );
+        assert_eq!(tinted([70, 95, 92]), [32, 65, 61]);
+
+        let weaker = TintParams {
+            saturation_gain: 2.0,
+            ..TintParams::DARK
+        };
+        assert_ne!(
+            normalise(mean_of(&uniform([70, 95, 92])), &weaker),
+            tinted([70, 95, 92]),
+            "a weaker gain must change the colour"
+        );
+    }
+
+    /// Hue 1/3, the `max == g` branch: saturation 0.62, tone 0.28, stepped to
+    /// 0.175, which rounds to 17, 72, 17.
+    #[test]
+    fn a_green_mean_takes_the_green_hue_branch() {
+        let (hue, _, _) = to_hsl(channels([0, 255, 0]));
+        assert!((hue - 1.0 / 3.0).abs() < 1e-12, "hue is {hue}");
+        assert_eq!(tinted([0, 255, 0]), [17, 72, 17]);
+    }
+
+    /// Green under blue wraps the hue past 5/6: hue 0.9163, the same band as
+    /// red would take, so the channels land at 116, 27, 72.
+    #[test]
+    fn a_magenta_mean_wraps_the_hue() {
+        let mean = channels([255, 0, 128]);
+        let (hue, _, _) = to_hsl(mean);
+        assert!(mean[1] < mean[2], "green under blue takes the wrap");
+        assert!(hue > 5.0 / 6.0, "hue is {hue}");
+        assert_eq!(tinted([255, 0, 128]), [116, 27, 72]);
+    }
+
+    /// The band is what the ink sits on, so every pinned band must leave both
+    /// text tiers above AA. A bright lime is the worst case the tone allows.
+    #[test]
+    fn every_pinned_band_leaves_its_text_aa() {
+        let palette = &Palette::DARK;
+        for (mean, _) in TABLE.into_iter().chain([([128, 255, 0], [41, 66, 16])]) {
+            let band = channels(tinted(mean));
+            for (name, ink) in [("text", palette.text), ("text_muted", palette.text_muted)] {
+                let ratio = contrast(band, color_channels(ink));
+                assert!(ratio >= 4.5, "{name} on {mean:?} is {ratio:.2}:1");
+            }
         }
     }
 

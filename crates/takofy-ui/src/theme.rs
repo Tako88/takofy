@@ -520,11 +520,16 @@ pub mod stroke {
 /// The derivation reads the artwork's mean in HSL, normalises it to a tone that
 /// reads as a tinted header, and steps that tone down until the band clears the
 /// ink drawn on it. A light theme supplies another value of these, not another
-/// derivation.
+/// derivation; light mode is not built, only expressible.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TintParams {
     /// The lowest alpha a pixel needs to count toward the mean.
     pub alpha_floor: u8,
+    /// The lightness the narrowest tone maps to.
+    pub tone_offset: f64,
+    /// How far the lightness moves from the offset across the tone range. Light
+    /// mode mirrors the scale, so its slope is negative.
+    pub tone_slope: f64,
     /// The narrowest tone the artwork's lightness may ask for.
     pub tone_min: f64,
     /// The widest tone it may ask for.
@@ -548,6 +553,8 @@ pub struct TintParams {
 impl TintParams {
     pub const DARK: Self = Self {
         alpha_floor: 8,
+        tone_offset: 0.0,
+        tone_slope: 1.0,
         tone_min: 0.16,
         tone_max: 0.28,
         neutral_below: 0.03,
