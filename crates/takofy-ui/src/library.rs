@@ -2799,6 +2799,7 @@ mod tests {
             uri: uri.to_owned(),
             name: "Record".to_owned(),
             artists: "Band".to_owned(),
+            artist_uri: None,
             year: Some(1997),
             cover: None,
             tracks: vec![track("t")],

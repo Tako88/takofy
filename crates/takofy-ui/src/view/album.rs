@@ -431,6 +431,7 @@ mod tests {
             uri: ALBUM.to_owned(),
             name: "Signal Decay".to_owned(),
             artists: "Nils Aker".to_owned(),
+            artist_uri: None,
             year: Some(1997),
             cover: None,
             tracks,
