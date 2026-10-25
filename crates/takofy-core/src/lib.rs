@@ -26,6 +26,7 @@ pub mod show;
 mod collected;
 mod collection;
 mod cover;
+mod label_cache;
 mod latest;
 mod loss;
 mod playstate;
@@ -35,6 +36,7 @@ mod publish;
 mod registry;
 mod remote;
 mod search;
+mod status_tally;
 #[cfg(test)]
 mod testing;
 mod transfer;

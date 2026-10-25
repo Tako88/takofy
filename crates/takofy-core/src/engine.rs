@@ -20,12 +20,12 @@ use crate::playlist_edit::{self, PlaylistError};
 use crate::presence::Presence;
 use crate::registry::{Registry, Verdict};
 use crate::remote::{
-    ROOTLIST_WIRE, RemoteContext, RemoteRootlist, label_playlists, label_tracks, read_album,
-    read_artist, read_followed_artists, read_followed_shows, read_liked_tracks, read_lyrics,
-    read_playlist_state, read_portraits, read_related, read_release_tracks, read_saved_albums,
-    read_saved_state, read_show, write_add, write_create, write_follow, write_like, write_move,
-    write_remove, write_rename, write_rootlist_add, write_rootlist_move, write_rootlist_remove,
-    write_saved,
+    LabelCache, ROOTLIST_WIRE, RemoteContext, RemoteRootlist, label_playlists, label_tracks,
+    read_album, read_artist, read_followed_artists, read_followed_shows, read_liked_tracks,
+    read_lyrics, read_playlist_state, read_portraits, read_related, read_release_tracks,
+    read_saved_albums, read_saved_state, read_show, write_add, write_create, write_follow,
+    write_like, write_move, write_remove, write_rename, write_rootlist_add, write_rootlist_move,
+    write_rootlist_remove, write_saved,
 };
 use crate::rootlist::{RootlistError, fetch_all};
 use crate::search::search_uri;
@@ -83,6 +83,8 @@ pub struct Engine {
     shared: OnceLock<Arc<watch::Shared>>,
     /// Whether the pump was started; the dealer's one start cannot be repeated.
     watching: bool,
+    /// The track labels this session has already read.
+    labels: LabelCache,
 }
 
 impl Engine {
@@ -105,6 +107,7 @@ impl Engine {
             registry,
             shared: OnceLock::new(),
             watching: false,
+            labels: LabelCache::new(),
         }
     }
 
@@ -282,7 +285,7 @@ impl Engine {
         };
         let walked = fetch_all(&source).await?;
         Ok(RootlistRead {
-            entries: label_playlists(&self.session, walked.playlists).await,
+            entries: label_playlists(&self.session, walked.playlists, &self.labels).await,
             access: walked.access,
         })
     }
@@ -292,7 +295,7 @@ impl Engine {
     /// A created list has none of these in the write's replies, so this is the
     /// read that fills them in without waiting for the next rootlist reload.
     pub async fn playlist_entry(&self, playlist_uri: &str) -> Option<PlaylistEntry> {
-        label_playlists(&self.session, vec![playlist_uri.to_owned()])
+        label_playlists(&self.session, vec![playlist_uri.to_owned()], &self.labels)
             .await
             .pop()
     }
@@ -317,6 +320,7 @@ impl Engine {
     pub fn tracks(&self, playlist_uri: &str) -> TrackPages<'_> {
         TrackPages {
             session: &self.session,
+            labels: &self.labels,
             walker: Walker::new(
                 RemoteContext {
                     session: &self.session,
@@ -484,7 +488,7 @@ impl Engine {
         let Some(page) = search_page(source, query).await? else {
             return Ok(Vec::new());
         };
-        Ok(label_tracks(&self.session, page.tracks).await)
+        Ok(label_tracks(&self.session, page.tracks, &self.labels).await)
     }
 
     /// One album, its tracks labelled.
@@ -492,7 +496,7 @@ impl Engine {
     /// Unlike a playlist this is a single request and a single labelling pass:
     /// an album's order comes from the album, so there is no context to walk.
     pub async fn album(&self, album_uri: &str) -> Result<AlbumDetail, EngineError> {
-        Ok(read_album(&self.session, album_uri).await?)
+        Ok(read_album(&self.session, album_uri, &self.labels).await?)
     }
 
     /// One artist: its page data plus whether the user follows it.
@@ -500,7 +504,7 @@ impl Engine {
         &self,
         artist_uri: &str,
     ) -> Result<(ArtistDetail, Option<bool>), EngineError> {
-        Ok(read_artist(&self.session, artist_uri).await?)
+        Ok(read_artist(&self.session, artist_uri, &self.labels).await?)
     }
 
     /// The related artists an artist page shows as cards, in the order given.
@@ -522,7 +526,7 @@ impl Engine {
     ///
     /// Cannot fail: a track that cannot be labelled falls back to its URI.
     pub async fn release_tracks(&self, tracks: &[String]) -> Vec<TrackEntry> {
-        read_release_tracks(&self.session, tracks).await
+        read_release_tracks(&self.session, tracks, &self.labels).await
     }
 
     /// Writes the artist into the user's followed set, or out of it.
@@ -618,6 +622,7 @@ async fn resolve_within<S: PageSource>(
 /// The track pages of one playlist.
 pub struct TrackPages<'a> {
     session: &'a Session,
+    labels: &'a LabelCache,
     walker: Walker<RemoteContext<'a>>,
 }
 
@@ -627,7 +632,9 @@ impl TrackPages<'_> {
         let Some(page) = self.walker.next_page().await? else {
             return Ok(None);
         };
-        Ok(Some(label_tracks(self.session, page.tracks).await))
+        Ok(Some(
+            label_tracks(self.session, page.tracks, self.labels).await,
+        ))
     }
 
     /// The context's own image, once the first page has been resolved.
@@ -651,11 +658,13 @@ fn page_cover(context: Option<CoverUrl>, rows: &[TrackEntry]) -> Option<CoverUrl
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     use super::{Engine, page_cover, resolve_within, search_page};
     use crate::context::{ContextError, Page, PageSource, PageTrack, Resolved};
+    use crate::remote::titled_label;
     use takofy_model::{CoverUrl, TrackEntry};
 
     /// A source that records every URI it is asked to resolve and answers one
@@ -769,6 +778,45 @@ mod tests {
             named: true,
             cover: None,
         }
+    }
+
+    /// Each engine builds its own cache, so a session never reads another
+    /// account's labels.
+    #[tokio::test]
+    async fn a_new_engine_starts_with_an_empty_label_cache() {
+        let engine = Engine::new(librespot::core::Session::new(
+            librespot::core::SessionConfig::default(),
+            None,
+        ));
+        assert_eq!(engine.labels.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn the_cache_belongs_to_the_engine_not_the_process() {
+        let session =
+            || librespot::core::Session::new(librespot::core::SessionConfig::default(), None);
+        let first = Engine::new(session());
+        let second = Engine::new(session());
+
+        first.labels.store(&HashMap::from([(
+            "spotify:track:a".to_owned(),
+            titled_label("A Title"),
+        )]));
+
+        assert_eq!(first.labels.len(), 1);
+        assert_eq!(second.labels.len(), 0);
+    }
+
+    /// The pages a playlist read labels through are handed the engine's own
+    /// cache, so a second visit is served by the first.
+    #[tokio::test]
+    async fn track_pages_borrow_the_engines_cache() {
+        let engine = Engine::new(librespot::core::Session::new(
+            librespot::core::SessionConfig::default(),
+            None,
+        ));
+        let pages = engine.tracks("spotify:playlist:abc");
+        assert!(std::ptr::eq(pages.labels, &engine.labels));
     }
 
     #[tokio::test]

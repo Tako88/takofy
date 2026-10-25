@@ -288,6 +288,20 @@ pub fn library_note(count: usize) -> String {
     format!("{count} saved")
 }
 
+/// The note under a playlist when some of its rows could not be named.
+///
+/// `None` when every row is named, so a healthy list adds no line.
+pub fn unnamed_note(entries: &[TrackEntry]) -> Option<String> {
+    let unnamed = entries.iter().filter(|entry| !entry.named).count();
+    if unnamed == 0 {
+        return None;
+    }
+    Some(format!(
+        "{unnamed} of {} could not be named",
+        count_noun(entries.len(), "track")
+    ))
+}
+
 /// The results page's head note: how many tracks the answer holds.
 ///
 /// "Top" is a statement about a cap, so it appears only when the answer reaches
@@ -894,6 +908,55 @@ mod tests {
             named: true,
             cover: None,
         }
+    }
+
+    fn unnamed(uri: &str) -> TrackEntry {
+        TrackEntry {
+            named: false,
+            ..track(uri, None)
+        }
+    }
+
+    #[test]
+    fn unnamed_note_is_none_when_every_row_is_named() {
+        let entries = [track("a", None), track("b", None)];
+        assert_eq!(unnamed_note(&entries), None);
+    }
+
+    #[test]
+    fn unnamed_note_is_none_for_an_empty_list() {
+        assert_eq!(unnamed_note(&[]), None);
+    }
+
+    #[test]
+    fn unnamed_note_counts_unnamed_rows_against_the_whole_list() {
+        let mut entries: Vec<TrackEntry> = (0..10)
+            .map(|index| track(&format!("t{index}"), None))
+            .collect();
+        entries[1].named = false;
+        entries[4].named = false;
+        entries[9].named = false;
+        assert_eq!(
+            unnamed_note(&entries).as_deref(),
+            Some("3 of 10 tracks could not be named")
+        );
+    }
+
+    #[test]
+    fn unnamed_note_says_track_for_a_list_of_one() {
+        assert_eq!(
+            unnamed_note(&[unnamed("a")]).as_deref(),
+            Some("1 of 1 track could not be named")
+        );
+    }
+
+    #[test]
+    fn unnamed_note_counts_a_repeated_unnamed_uri_per_position() {
+        let entries = [unnamed("a"), unnamed("a")];
+        assert_eq!(
+            unnamed_note(&entries).as_deref(),
+            Some("2 of 2 tracks could not be named")
+        );
     }
 
     #[test]
