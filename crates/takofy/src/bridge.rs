@@ -1721,6 +1721,12 @@ async fn serve_landing<H: SessionHost>(
         return Step::Done;
     }
 
+    log::info!(
+        target: LANDING_LOG_TARGET,
+        "landing loaded at {} ms, playing={}",
+        landing.position_ms,
+        landing.playing
+    );
     // The phone was answered before either, and a row that lands as a bare URI
     // is renamed when its names arrive.
     let labelled = match stop_or(stop, host.release_tracks(std::slice::from_ref(&current))).await {

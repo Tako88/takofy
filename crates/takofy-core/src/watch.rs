@@ -468,6 +468,15 @@ pub(crate) async fn give_back<W: Wire>(wire: &W, timing: Timing) -> bool {
 /// same loss finds nothing left to report.
 pub(crate) fn report_loss(shared: &Shared, view: &ClusterView) {
     if let Observation::Lost { epoch } = shared.presence.observe(view, Instant::now()) {
+        // A hold that ends is the one thing the window cannot show while it is
+        // reading, so the log carries it: an unexpected loss looks exactly like
+        // audio that never started.
+        log::info!(
+            target: crate::hold::HOLD_LOG_TARGET,
+            "lost the sound: epoch {epoch} held_here={} changed_ms={}",
+            view.held_here,
+            view.changed_ms
+        );
         shared.emit(ClusterEvent::Lost { epoch });
     }
 }
