@@ -2896,11 +2896,11 @@ mod tests {
     }
 
     fn playlist_with_cover(uri: &str, name: &str, cover: CoverUrl) -> PlaylistEntry {
-        covered(uri, name, PlaylistCover::derived(cover))
+        covered(uri, name, PlaylistCover::derived(CoverSet::single(cover)))
     }
 
     fn playlist_with_chosen_cover(uri: &str, name: &str, cover: CoverUrl) -> PlaylistEntry {
-        covered(uri, name, PlaylistCover::chosen(cover))
+        covered(uri, name, PlaylistCover::chosen(CoverSet::single(cover)))
     }
 
     fn covered(uri: &str, name: &str, cover: PlaylistCover) -> PlaylistEntry {
@@ -6927,7 +6927,7 @@ mod tests {
     ) -> PlaylistEntry {
         PlaylistEntry {
             composed: tails.iter().map(|tail| cover_set(tail)).collect(),
-            ..covered(uri, name, PlaylistCover::derived(cover))
+            ..covered(uri, name, PlaylistCover::derived(CoverSet::single(cover)))
         }
     }
 
@@ -6954,7 +6954,7 @@ mod tests {
 
         assert_eq!(
             entry_cover(&library, "a"),
-            Some(PlaylistCover::derived(context)),
+            Some(PlaylistCover::derived(CoverSet::single(context))),
             "the reply replaces the derived cover"
         );
         assert_eq!(
@@ -7013,7 +7013,7 @@ mod tests {
 
         assert_eq!(
             entry_cover(&library, "a"),
-            Some(PlaylistCover::derived(context)),
+            Some(PlaylistCover::derived(CoverSet::single(context))),
             "the cached context image fills the row"
         );
         assert_eq!(
@@ -7430,7 +7430,7 @@ mod tests {
 
         assert_eq!(
             entry_cover(&library, "a"),
-            Some(PlaylistCover::derived(first)),
+            Some(PlaylistCover::derived(CoverSet::single(first))),
             "the first track is still the one the cover came from"
         );
         assert_eq!(
@@ -7484,7 +7484,7 @@ mod tests {
 
         assert_eq!(
             entry_cover(&library, "a"),
-            Some(PlaylistCover::derived(first)),
+            Some(PlaylistCover::derived(CoverSet::single(first))),
             "rows two and three swapped, so the first track the cover came from is unchanged"
         );
         assert_eq!(
@@ -7572,7 +7572,7 @@ mod tests {
 
         assert_eq!(
             entry_cover(&library, "a"),
-            Some(PlaylistCover::derived(first)),
+            Some(PlaylistCover::derived(CoverSet::single(first))),
             "an append names the end of the list, so it cannot change its first track"
         );
         assert_eq!(
@@ -7608,7 +7608,7 @@ mod tests {
         });
         assert_eq!(
             entry_cover(&library, "a"),
-            Some(PlaylistCover::chosen(chosen.clone())),
+            Some(PlaylistCover::chosen(CoverSet::single(chosen.clone()))),
             "a chosen picture is the user's own, so a removal cannot drop it"
         );
 
@@ -7619,7 +7619,7 @@ mod tests {
         });
         assert_eq!(
             entry_cover(&library, "a"),
-            Some(PlaylistCover::chosen(chosen.clone())),
+            Some(PlaylistCover::chosen(CoverSet::single(chosen.clone()))),
             "a chosen picture is the user's own, so a move cannot drop it"
         );
 
@@ -7631,7 +7631,7 @@ mod tests {
         });
         assert_eq!(
             entry_cover(&library, "a"),
-            Some(PlaylistCover::chosen(chosen)),
+            Some(PlaylistCover::chosen(CoverSet::single(chosen))),
             "a chosen picture is the user's own, so an add cannot drop it"
         );
         assert_eq!(
@@ -7654,7 +7654,7 @@ mod tests {
 
         assert_eq!(
             entry_cover(&library, "a"),
-            Some(PlaylistCover::derived(first)),
+            Some(PlaylistCover::derived(CoverSet::single(first))),
             "a reply with no write pending cannot say a row changed"
         );
         assert_eq!(
@@ -7687,7 +7687,7 @@ mod tests {
 
         assert_eq!(
             entry_cover(&library, "a"),
-            Some(PlaylistCover::derived(first)),
+            Some(PlaylistCover::derived(CoverSet::single(first))),
             "a reply for another playlist cannot drop the pending write's cover"
         );
         assert!(
@@ -7714,7 +7714,7 @@ mod tests {
 
         assert_eq!(
             entry_cover(&library, "a"),
-            Some(PlaylistCover::derived(first)),
+            Some(PlaylistCover::derived(CoverSet::single(first))),
             "a move reply with no write pending cannot say a row changed"
         );
         assert_eq!(
@@ -7999,7 +7999,7 @@ mod tests {
         });
         assert_eq!(
             entry_cover(&library, "a"),
-            Some(PlaylistCover::derived(stale)),
+            Some(PlaylistCover::derived(CoverSet::single(stale))),
             "arrange: the pre-edit reply is stored before the re-ask is issued"
         );
 
@@ -8151,7 +8151,11 @@ mod tests {
         assert!(library.create_playlist().is_some());
         library.apply(&Update::PlaylistCreated {
             entry: with_access(
-                covered(new, "Mix", PlaylistCover::derived(cover.clone())),
+                covered(
+                    new,
+                    "Mix",
+                    PlaylistCover::derived(CoverSet::single(cover.clone())),
+                ),
                 0x08,
                 true,
                 Some(0),
@@ -8160,7 +8164,7 @@ mod tests {
         });
         assert_eq!(
             entry_cover(&library, new),
-            Some(PlaylistCover::derived(cover.clone())),
+            Some(PlaylistCover::derived(CoverSet::single(cover.clone()))),
             "arrange: the created row carries the cover its reply named"
         );
 
@@ -8173,7 +8177,7 @@ mod tests {
 
         assert_eq!(
             entry_cover(&library, new),
-            Some(PlaylistCover::derived(cover)),
+            Some(PlaylistCover::derived(CoverSet::single(cover))),
             "an append cannot change which track a cover came from"
         );
         assert_eq!(
@@ -10796,7 +10800,7 @@ mod tests {
         );
         assert_eq!(
             entry_cover(&library, "a"),
-            Some(PlaylistCover::derived(first)),
+            Some(PlaylistCover::derived(CoverSet::single(first))),
             "the sidebar row and the library card keep the cover they showed"
         );
         assert_eq!(

@@ -136,17 +136,17 @@ pub struct PlaylistCover {
 
 impl PlaylistCover {
     /// A cover a user set.
-    pub fn chosen(cover: impl Into<CoverSet>) -> Self {
+    pub fn chosen(cover: CoverSet) -> Self {
         Self {
-            set: cover.into(),
+            set: cover,
             origin: CoverOrigin::Chosen,
         }
     }
 
     /// A cover copied from the playlist's first track.
-    pub fn derived(cover: impl Into<CoverSet>) -> Self {
+    pub fn derived(cover: CoverSet) -> Self {
         Self {
-            set: cover.into(),
+            set: cover,
             origin: CoverOrigin::Derived,
         }
     }
@@ -746,14 +746,14 @@ mod tests {
     fn a_chosen_cover_and_a_derived_cover_differ_only_in_origin() {
         let url = CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover url");
         assert_eq!(
-            PlaylistCover::chosen(url.clone()),
+            PlaylistCover::chosen(CoverSet::single(url.clone())),
             PlaylistCover {
                 set: CoverSet::single(url.clone()),
                 origin: CoverOrigin::Chosen,
             }
         );
         assert_eq!(
-            PlaylistCover::derived(url.clone()),
+            PlaylistCover::derived(CoverSet::single(url.clone())),
             PlaylistCover {
                 set: CoverSet::single(url),
                 origin: CoverOrigin::Derived,
@@ -766,7 +766,7 @@ mod tests {
         let url = CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover url");
         let mut entry = playlist(Some(1), access(true));
         assert_eq!(entry.cover_set(), None, "no cover named");
-        entry.cover = Some(PlaylistCover::derived(url.clone()));
+        entry.cover = Some(PlaylistCover::derived(CoverSet::single(url.clone())));
         assert_eq!(entry.cover_set(), Some(&CoverSet::single(url)));
     }
 

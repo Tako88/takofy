@@ -44,12 +44,18 @@ pub(crate) fn covers_in_images(images: &Images) -> Option<CoverSet> {
 
 /// The drawn size of one wire image, when the wire gave a usable one.
 ///
-/// A zero side is no size: the box is square, and a pixel count that is not
-/// positive says nothing about how it fills one.
+/// A zero side is no measurement: the known side fills the square box. A size
+/// with no known side at all is no size, because a pixel count that is not
+/// positive says nothing about how the image fills one.
 fn size_of(width: i32, height: i32) -> Option<(u32, u32)> {
-    let width = u32::try_from(width).ok().filter(|width| *width > 0)?;
-    let height = u32::try_from(height).ok().filter(|height| *height > 0)?;
-    Some((width, height))
+    let width = u32::try_from(width).ok().filter(|width| *width > 0);
+    let height = u32::try_from(height).ok().filter(|height| *height > 0);
+    match (width, height) {
+        (Some(width), Some(height)) => Some((width, height)),
+        (Some(width), None) => Some((width, width)),
+        (None, Some(height)) => Some((height, height)),
+        (None, None) => None,
+    }
 }
 
 #[cfg(test)]
@@ -123,6 +129,22 @@ mod tests {
             tail(&set.variants()[0].url).ends_with(&"01".repeat(20)),
             "the default tile is kept"
         );
+    }
+
+    #[test]
+    fn a_half_known_size_keeps_its_known_side() {
+        let group = group(vec![
+            image(Size::DEFAULT, 300, 0, &id(1)),
+            image(Size::LARGE, 0, 640, &id(2)),
+        ]);
+        let set = covers_in_group(Some(&group)).expect("a cover set");
+        let effective: Vec<Option<u32>> = set.variants().iter().map(|v| v.effective()).collect();
+        assert_eq!(
+            effective,
+            vec![Some(300), Some(640)],
+            "width and height both count"
+        );
+        assert_eq!(set.pick(352), Some(&set.variants()[1].url));
     }
 
     #[test]

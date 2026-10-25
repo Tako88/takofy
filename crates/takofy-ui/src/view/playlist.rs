@@ -1704,7 +1704,7 @@ mod tests {
             uri: uri.to_owned(),
             name: name.to_owned(),
             named: true,
-            cover: Some(PlaylistCover::derived(cover)),
+            cover: Some(PlaylistCover::derived(CoverSet::single(cover))),
             description: None,
             owner: None,
             tracks: None,
@@ -1750,7 +1750,7 @@ mod tests {
         let mut library = mosaic_library(covers);
         library.apply(&Update::Playlists(vec![PlaylistEntry {
             composed: Vec::new(),
-            cover: Some(PlaylistCover::derived(cover_url("m0"))),
+            cover: Some(PlaylistCover::derived(CoverSet::single(cover_url("m0")))),
             ..listed("Evening", Some(DESCRIPTION), None)
         }]));
         library
@@ -5576,7 +5576,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         let mut library = mosaic_library(&["m0", "m1", "m2", "m3"]);
         library.apply(&Update::Playlists(vec![PlaylistEntry {
             composed: Vec::new(),
-            cover: Some(PlaylistCover::chosen(cover_url("own"))),
+            cover: Some(PlaylistCover::chosen(CoverSet::single(cover_url("own")))),
             ..listed("Evening", Some(DESCRIPTION), None)
         }]));
         let urls: Vec<CoverUrl> = (0..4)
@@ -5645,7 +5645,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         let now = Instant::now();
         let mut art = Art::default();
         let entry = PlaylistEntry {
-            cover: Some(PlaylistCover::derived(cover_url("m0"))),
+            cover: Some(PlaylistCover::derived(CoverSet::single(cover_url("m0")))),
             composed: (0..4)
                 .map(|index| cover_set(&format!("m{index}")))
                 .collect(),
@@ -5680,7 +5680,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         let mut art = Art::default();
         let library = Library::default();
         let entry = PlaylistEntry {
-            cover: Some(PlaylistCover::derived(cover_url("m0"))),
+            cover: Some(PlaylistCover::derived(CoverSet::single(cover_url("m0")))),
             composed: (0..4)
                 .map(|index| cover_set(&format!("m{index}")))
                 .collect(),
@@ -5722,7 +5722,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             "one album repeated has nothing to tile"
         );
         let entry = PlaylistEntry {
-            cover: Some(PlaylistCover::derived(cover_url("one"))),
+            cover: Some(PlaylistCover::derived(CoverSet::single(cover_url("one")))),
             composed,
             ..listed("Evening", None, None)
         };
@@ -5747,7 +5747,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         let mut library = library_detailed(tracks, "Evening", None, None);
         library.apply(&Update::Playlists(vec![PlaylistEntry {
             composed: Vec::new(),
-            cover: Some(PlaylistCover::derived(cover_url("one"))),
+            cover: Some(PlaylistCover::derived(CoverSet::single(cover_url("one")))),
             ..listed("Evening", None, None)
         }]));
         hold(&ctx, &mut art, &[cover_url("one")], now);

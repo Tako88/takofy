@@ -2603,7 +2603,7 @@ mod tests {
         );
         assert_eq!(
             playlist_cover(Some(cover_set()), Some("t"), &labels),
-            Some(PlaylistCover::chosen(cover_url()))
+            Some(PlaylistCover::chosen(cover_set()))
         );
     }
 
@@ -2624,7 +2624,7 @@ mod tests {
             },
         );
         let cover = playlist_cover(None, Some("t"), &labels).expect("a derived cover");
-        assert_eq!(cover, PlaylistCover::derived(cover_url()));
+        assert_eq!(cover, PlaylistCover::derived(cover_set()));
         assert_eq!(cover.origin, CoverOrigin::Derived);
     }
 

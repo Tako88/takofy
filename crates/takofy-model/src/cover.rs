@@ -8,8 +8,9 @@ use crate::CoverUrl;
 
 /// The widest box, in device pixels, that still takes the smallest image.
 ///
-/// A box no wider than twice the smallest size the wire offers cannot show the
-/// difference, so it takes the cheapest image; past that the box is covered.
+/// Below this width the cheapest size is what a small tile is for, and the cost
+/// is that a box in roughly 100–128 px draws the smallest image up to twice its
+/// size. Above it the image has to cover the box.
 pub const SMALL_MAX_PX: u32 = 128;
 
 /// One size the wire offered for a cover, with its URL.
@@ -98,7 +99,8 @@ impl CoverSet {
     /// The URL to draw in a box `want_px` device pixels wide.
     ///
     /// A small box takes the smallest variant; anything larger takes the
-    /// smallest variant that covers it, or the largest when none does.
+    /// smallest variant that covers it, or the largest sized one when none does.
+    /// A variant of unknown size is picked only when the set has no size at all.
     pub fn pick(&self, want_px: u32) -> Option<&CoverUrl> {
         let smallest = self.0.first()?;
         if want_px <= SMALL_MAX_PX {
@@ -107,6 +109,12 @@ impl CoverSet {
         self.0
             .iter()
             .find(|variant| variant.effective().is_some_and(|size| size >= want_px))
+            .or_else(|| {
+                self.0
+                    .iter()
+                    .rev()
+                    .find(|variant| variant.effective().is_some())
+            })
             .or_else(|| self.0.last())
             .map(|variant| &variant.url)
     }
@@ -157,6 +165,30 @@ mod tests {
     fn a_single_variant_answers_a_large_box_too() {
         let set = CoverSet::from_sizes([(Some((64, 64)), url("small"))]).expect("a cover set");
         assert_eq!(set.pick(512), Some(&url("small")));
+    }
+
+    #[test]
+    fn an_unsized_variant_never_wins_while_a_sized_one_exists() {
+        let set = CoverSet::from_sizes([(Some((64, 64)), url("small")), (None, url("unsized"))])
+            .expect("a cover set");
+        for want in [36, SMALL_MAX_PX, 176, 352, 4000] {
+            assert_eq!(set.pick(want), Some(&url("small")), "a {want}px box");
+        }
+
+        let mixed = CoverSet::from_sizes([
+            (Some((64, 64)), url("small")),
+            (Some((640, 640)), url("large")),
+            (None, url("unsized")),
+        ])
+        .expect("a cover set");
+        assert_eq!(
+            mixed.pick(4000),
+            Some(&url("large")),
+            "the largest sized wins"
+        );
+
+        let only_unsized = CoverSet::from_sizes([(None, url("unsized"))]).expect("a cover set");
+        assert_eq!(only_unsized.pick(4000), Some(&url("unsized")));
     }
 
     #[test]

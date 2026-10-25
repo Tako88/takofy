@@ -95,25 +95,36 @@ impl Art {
         }
     }
 
-    /// Draws the picked cover only when its texture is already held, and reports
-    /// `None` otherwise.
+    /// Draws the picked cover when its texture is already held, falling back to
+    /// the largest held variant otherwise, and reports `None` when nothing is
+    /// held.
     ///
-    /// A held cover is still `look`ed at, so the frame records it as wanted and
-    /// eviction keeps it, but a URL with nothing to draw is never `look`ed at:
-    /// the band uses this while the tracks settle, to keep an already-held
-    /// picture on screen without fetching a cover the context image may replace
-    /// a moment later.
+    /// A held cover is still recorded as wanted, so eviction keeps it, but a URL
+    /// with nothing to draw is never looked at: the band uses this while the
+    /// tracks settle, to keep an already-held picture on screen without fetching
+    /// a cover the context image may replace a moment later.
     pub fn look_held(
         &mut self,
         cover: Option<&CoverSet>,
         want_px: u32,
         now: Instant,
     ) -> Option<Cover> {
-        let url = cover?.pick(want_px)?;
-        if !self.textures.contains_key(url) {
-            return None;
-        }
-        Some(self.look(cover, want_px, now))
+        let set = cover?;
+        let sized = set
+            .variants()
+            .iter()
+            .rev()
+            .filter(|variant| variant.effective().is_some())
+            .map(|variant| &variant.url);
+        let held = std::iter::once(set.pick(want_px)?)
+            .chain(sized)
+            .chain(set.variants().iter().rev().map(|variant| &variant.url))
+            .find(|url| self.textures.contains_key(*url))?;
+        self.cache.look(held, now);
+        self.reap();
+        self.textures
+            .get(held)
+            .map(|texture| Cover::Ready(texture.id()))
     }
 
     /// Stores an arrived cover's pixels, or records a failure.
@@ -378,27 +389,55 @@ mod tests {
     }
 
     #[test]
-    fn look_held_answers_only_what_its_pick_already_holds() {
+    fn look_held_falls_back_to_the_largest_held_variant() {
         let now = base();
         let mut art = Art::new();
         let small = url("small");
+        let middle = url("middle");
         let large = url("large");
         let set = CoverSet::from_sizes([
             (Some((64, 64)), small.clone()),
+            (Some((300, 300)), middle.clone()),
             (Some((640, 640)), large.clone()),
         ])
         .expect("a cover set");
         cover(&mut art, &small, now);
         art.upload(&egui::Context::default());
+        let held = match art.look(Some(&set), 72, now) {
+            Cover::Ready(texture) => texture,
+            other => panic!("the 64 should be held: {other:?}"),
+        };
 
-        assert!(
-            matches!(art.look_held(Some(&set), 72, now), Some(Cover::Ready(_))),
-            "the small pick is held"
+        assert_eq!(
+            art.look_held(Some(&set), 72, now),
+            Some(Cover::Ready(held)),
+            "the picked size is held"
         );
         assert_eq!(
             art.look_held(Some(&set), 352, now),
-            None,
-            "the large pick is not held, and is not fetched by a held look"
+            Some(Cover::Ready(held)),
+            "the larger pick falls back to the held 64"
+        );
+        assert!(
+            art.requests(now).is_empty(),
+            "a held look never fetches what it cannot draw"
+        );
+    }
+
+    #[test]
+    fn look_held_answers_none_when_nothing_is_held() {
+        let now = base();
+        let mut art = Art::new();
+        let set = CoverSet::from_sizes([
+            (Some((64, 64)), url("small")),
+            (Some((300, 300)), url("middle")),
+            (Some((640, 640)), url("large")),
+        ])
+        .expect("a cover set");
+        assert_eq!(art.look_held(Some(&set), 352, now), None);
+        assert!(
+            art.requests(now).is_empty(),
+            "nothing held means nothing fetched"
         );
     }
 

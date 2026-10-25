@@ -5725,7 +5725,7 @@ mod tests {
             .collect();
         let read = PlaylistEntry {
             composed: mosaic.clone(),
-            cover: Some(PlaylistCover::derived(cover.clone())),
+            cover: Some(PlaylistCover::derived(CoverSet::single(cover.clone()))),
             description: Some("Made here".to_owned()),
             ..PlaylistEntry {
                 uri: CREATED.to_owned(),
@@ -5760,7 +5760,7 @@ mod tests {
         };
         assert_eq!(
             entry.cover,
-            Some(PlaylistCover::derived(cover)),
+            Some(PlaylistCover::derived(CoverSet::single(cover))),
             "the row draws the cover the read gave, not an empty slot"
         );
         assert_eq!(

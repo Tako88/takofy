@@ -74,7 +74,6 @@ fn block(
     ui.allocate_rect(reserved, Sense::hover());
     let visible = ui.clip_rect();
     let want = want_px(grid.card_w, ui.pixels_per_point());
-    let row_want = want_px(crate::theme::extent::LIBRARY_ART, ui.pixels_per_point());
 
     let mut act = None;
     for position in 0..band.shown {
@@ -112,7 +111,7 @@ fn block(
                     search.portrait(&artist.uri),
                     artist.record_cover.as_ref(),
                     art,
-                    row_want,
+                    want,
                     now,
                 );
                 let sub = tracks_phrase(artist.tracks);
@@ -221,8 +220,12 @@ mod tests {
     }
 
     fn input(events: Vec<Event>) -> RawInput {
+        input_in(WIDTH, events)
+    }
+
+    fn input_in(width: f32, events: Vec<Event>) -> RawInput {
         RawInput {
-            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(WIDTH, 900.0))),
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(width, 900.0))),
             events,
             ..Default::default()
         }
@@ -540,6 +543,62 @@ mod tests {
         let names = painted(&output);
         assert!(names.contains(&"Artist 0".to_owned()), "{names:?}");
         assert!(names.contains(&"1 track".to_owned()), "{names:?}");
+    }
+
+    #[test]
+    fn an_artist_card_at_two_x_asks_for_the_size_its_tile_needs() {
+        let ctx = context();
+        ctx.set_pixels_per_point(2.0);
+        let mut warm = ctx.run_ui(input_in(350.0, Vec::new()), |_| {});
+        warm.textures_delta.clear();
+        let tokens = Tokens::DARK;
+        let mut library = Library::default();
+        let _ = library.open(Page::Search("q".to_owned()));
+        library.apply(&crate::message::Update::Search {
+            query: "q".to_owned(),
+            tracks: Vec::new(),
+        });
+        let _ = library.search.request_portraits(Some("q"));
+        let portrait = takofy_model::CoverSet::from_sizes([
+            (Some((160, 160)), cover_url(160)),
+            (Some((320, 320)), cover_url(320)),
+            (Some((640, 640)), cover_url(640)),
+        ])
+        .expect("a portrait set");
+        library.apply(&crate::message::Update::Portraits {
+            query: "q".to_owned(),
+            portraits: vec![takofy_model::ArtistPortrait {
+                artist: "spotify:artist:0".to_owned(),
+                portrait: Some(portrait),
+            }],
+        });
+        let index = artists(1);
+        let now = Instant::now();
+        let mut art = Art::default();
+        art.begin_frame();
+        // A narrow window gives a card wide enough that the smallest portrait
+        // would have to be drawn up more than twice its size.
+        // The zoom settles on the pass after it is set.
+        let mut output = ctx.run_ui(input_in(350.0, Vec::new()), |ui| {
+            ui.spacing_mut().item_spacing = Vec2::ZERO;
+            let _ = show(
+                ui,
+                &band(Kind::Artists, 1, 1),
+                &index,
+                &library.search,
+                &mut art,
+                now,
+                &tokens,
+            );
+        });
+        output.textures_delta.clear();
+        assert_eq!(
+            art.requests(now),
+            vec![crate::message::Command::Fetch {
+                url: cover_url(640)
+            }],
+            "the card asks for the portrait its own box needs"
+        );
     }
 
     #[test]
