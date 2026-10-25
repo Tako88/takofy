@@ -273,20 +273,39 @@ pub mod extent {
 /// A row's fixed columns take their width and these share what is left, so their
 /// ratio decides how a track list reads: the title is what a listener scans.
 ///
-/// A playlist is the one list whose credit changes track to track, so it carries
-/// an artist column and a denser set of weights and gutters to pay for it.
+/// A playlist's template is dense: it carries the artist and the album, and pays
+/// for them with a wider title and tighter gutters. The plays template is tight:
+/// its artist takes a narrow share of the title, and the row keeps the wider
+/// gutter instead of the playlist's.
 ///
 /// A nested title's gutter is not a token. The reference composes it as a grid
 /// track and a gap, so the sum is not a value it names; whoever lays the title
 /// out writes `extent::LIBRARY_ART + space::S3` and invents nothing.
 pub mod grow {
-    /// The title column of a library or album-block list, `1fr`.
+    /// The plays and slim rows' title, `1fr`. The playlist reads
+    /// `grow::TITLE_PLAYLIST` instead.
     pub const TITLE: f32 = 1.0;
-    /// The album column of a library list, `0.7fr`.
+    /// The album column's weight on a row with no credit template, `0.7fr`.
+    ///
+    /// No constructor produces this today: a slim row clears the album, a plays
+    /// row reads `grow::CREDIT_PLAYS`, and the playlist reads
+    /// `grow::ALBUM_PLAYLIST`. It is kept for a hand-built
+    /// `Present { album: true, shape: Slim }`. Being `pub`, it is not dead-by-lint,
+    /// so no warning points at the unpinned branch.
     pub const ALBUM: f32 = 0.7;
     /// The playlist's denser template: title `1.35fr`, artist and album `0.9fr`.
     pub const TITLE_PLAYLIST: f32 = 1.35;
+    /// The playlist's artist share, `0.9fr`. The plays row reads
+    /// `grow::CREDIT_PLAYS` instead.
     pub const ARTIST: f32 = 0.9;
+    /// The plays row's one credit column, `0.55fr`: the reference's
+    /// `.tracks--plays` `minmax(0, 0.55fr)`, measured against a `1fr` title.
+    ///
+    /// A plays row credits one thing — an album's table names the artist, an
+    /// artist's table names the album — so this is the share that credit takes
+    /// whichever column carries it.
+    pub const CREDIT_PLAYS: f32 = 0.55;
+    /// The playlist's album share, `0.9fr`.
     pub const ALBUM_PLAYLIST: f32 = 0.9;
 }
 
@@ -955,6 +974,12 @@ mod tests {
     fn the_title_column_grows_more_than_the_album_column() {
         const { assert!(grow::ALBUM > 0.0) };
         const { assert!(grow::ALBUM < grow::TITLE) };
+    }
+
+    #[test]
+    fn the_plays_credit_is_tighter_than_the_playlists() {
+        const { assert!(grow::CREDIT_PLAYS > 0.0) };
+        const { assert!(grow::CREDIT_PLAYS < grow::ARTIST) };
     }
 
     #[test]

@@ -31,7 +31,7 @@ use crate::menu::Door;
 use super::carry::{self, Ghost};
 use super::context_menu;
 use super::heart;
-use super::track_row::{self, Click, Row, TitleCell, state_of};
+use super::track_row::{self, Click, Row, state_of};
 use super::{art, controls, text as recipe};
 
 /// What one block draws.
@@ -280,7 +280,7 @@ fn body(
                 .galley(list.min, copy, tokens.palette.text_muted);
         }
         Labels::Ready(tracks) => {
-            let columns = table_layout::columns(width, table.columns().for_album());
+            let columns = table_layout::columns(width, table.columns().for_slim());
             let visible = ui.clip_rect();
             let mut selection = carry::List::open(
                 ui.ctx(),
@@ -298,9 +298,8 @@ fn body(
                     uri: &entry.uri,
                     number: index + 1,
                     title: &entry.title,
-                    title_cell: TitleCell::NameOverArtist,
-                    // The block's head already names the artist; a slim row is
-                    // the name alone.
+                    // The block's head already names the artist, so a slim row
+                    // has no credit column to draw it in.
                     artist: "",
                     artist_uri: None,
                     album: None,
@@ -309,7 +308,7 @@ fn body(
                     duration: duration.as_deref(),
                     state: state_of(&entry.uri, transport),
                     // The block's head already holds the release's one picture.
-                    cover: Cover::Missing,
+                    cover: None,
                     look: selection.look(index),
                     menu: gate.allows(),
                     liked: block.likes.state(&entry.uri),

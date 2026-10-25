@@ -57,7 +57,7 @@ use super::release_block::{self, Block};
 use super::section;
 use super::skeleton;
 use super::track_list::{head, list_rect};
-use super::track_row::{self, Click, Row, TitleCell, state_of};
+use super::track_row::{self, Click, Row, state_of};
 use crate::verbs;
 
 /// Draws the artist page and returns the command its controls asked for.
@@ -93,7 +93,7 @@ pub fn artist_view(
     let mut retry = false;
     // A card press names an artist; opening it needs the library, which the page
     // has borrowed for the whole draw, so it waits for the scroll area to close.
-    let mut open: Option<String> = None;
+    let mut open: Option<Page> = None;
     // A release's heart asks the library for the release, which the page has
     // borrowed; it is applied once the scroll area closes.
     // The release the heart named, its name, and the value it asked for.
@@ -127,7 +127,17 @@ pub fn artist_view(
             match page.load {
                 Load::Idle => {}
                 Load::Loading => {
-                    skeleton::rows(ui, skeleton::SCREENFUL, table.columns().for_album(), tokens);
+                    // The rows hold the gutter Popular will draw in, so the
+                    // title does not shift when the list lands.
+                    super::inner(ui, |ui| {
+                        skeleton::rows(
+                            ui,
+                            skeleton::SCREENFUL,
+                            table.columns().for_plays_album(),
+                            true,
+                            tokens,
+                        );
+                    });
                 }
                 Load::Failed(failure) => {
                     page.filter.clear_query();
@@ -144,12 +154,17 @@ pub fn artist_view(
                     // artist's: the page keeps its loading state rather than
                     // painting that artist's hero and discography.
                     let Some(artist) = page.current else {
-                        skeleton::rows(
-                            ui,
-                            skeleton::SCREENFUL,
-                            table.columns().for_album(),
-                            tokens,
-                        );
+                        // The gutter is the loaded list's, so nothing shifts
+                        // when this page's own artist arrives.
+                        super::inner(ui, |ui| {
+                            skeleton::rows(
+                                ui,
+                                skeleton::SCREENFUL,
+                                table.columns().for_plays_album(),
+                                true,
+                                tokens,
+                            );
+                        });
                         return;
                     };
 
@@ -228,8 +243,11 @@ pub fn artist_view(
                             artist,
                             transport,
                             queue,
+                            art,
+                            now,
                             tokens,
                             &mut command,
+                            &mut open,
                             writing,
                             page.likes,
                         );
@@ -402,7 +420,7 @@ pub fn artist_view(
                         }
 
                         if let Some(artist) = fans(ui, page.related, art, now, tokens) {
-                            open = Some(artist);
+                            open = Some(Page::Artist(artist));
                         }
                     });
                 }
@@ -412,8 +430,11 @@ pub fn artist_view(
     if retry {
         return library.open(Page::Artist(uri));
     }
-    if let Some(artist) = open {
-        command = library.open(Page::Artist(artist));
+    // A frame reports one command, so a same-frame command wins and the open is dropped.
+    if let Some(page) = open
+        && command.is_none()
+    {
+        command = library.open(page);
     }
     if let Some((uri, name, asked)) = save
         && command.is_none()
@@ -547,11 +568,12 @@ fn fans(
     pressed
 }
 
-/// The Popular section: the artist's top tracks as the album's own table rows.
+/// The Popular section: the artist's top tracks as a plays table.
 ///
-/// No `Plays` column: the wire carries no play counts. A row is the name over
-/// its artist, numbered by its place in the list, and a double click starts the
-/// whole top list from there.
+/// No `Plays` column: the wire carries no play counts. A row is the plays shape,
+/// numbered by its place in the list, carrying its own art and the album it is
+/// on in the credit column — this page already says the artist, so the record is
+/// what the column is worth. A double click starts the whole top list from here.
 #[expect(
     clippy::too_many_arguments,
     reason = "the section needs its table, width, state, the frame's stores and the write gate"
@@ -563,8 +585,11 @@ fn popular(
     artist: &takofy_model::ArtistDetail,
     transport: &mut Transport,
     queue: &mut Queue,
+    art: &mut Art,
+    now: Instant,
     tokens: &Tokens,
     command: &mut Option<Command>,
+    open: &mut Option<Page>,
     writing: bool,
     likes: &Likes,
 ) {
@@ -577,7 +602,7 @@ fn popular(
         return;
     }
 
-    let columns = table_layout::columns(width, table.columns().for_album());
+    let columns = table_layout::columns(width, table.columns().for_plays_album());
     head(ui, columns, tokens);
     let count = artist.top_tracks.len();
     let list = list_rect(ui, count);
@@ -610,16 +635,15 @@ fn popular(
             uri: &entry.uri,
             number: index + 1,
             title: &entry.title,
-            title_cell: TitleCell::NameOverArtist,
-            artist: &entry.artists,
-            // The artist page's own subline is not a link to itself.
+            artist: "",
             artist_uri: None,
-            album: None,
-            album_uri: None,
+            album: entry.album.as_deref(),
+            album_uri: entry.album_uri.as_deref(),
             added: None,
             duration: duration.as_deref(),
             state: state_of(&entry.uri, transport),
-            cover: Cover::Missing,
+            // Built inside the cull, so a row off screen asks for no art.
+            cover: Some(art.look(entry.cover.as_ref(), now)),
             look: selection.look(index),
             menu: gate.allows(),
             liked: likes.state(&entry.uri),
@@ -661,7 +685,8 @@ fn popular(
                     artist.top_tracks.get(row).cloned()
                 });
             }
-            Some(Click::Open(_)) | None => {}
+            Some(Click::Open(page)) => *open = Some(page),
+            None => {}
         }
     }
     // A focused row the cull skipped is asked for again through the seam, which
@@ -1197,9 +1222,9 @@ mod tests {
         .1
     }
 
-    /// The rect the Popular table's `index`-th row occupies, solved the way the
-    /// page solves it.
-    fn popular_row_rect(ctx: &Context, size: Vec2, index: usize, count: usize) -> Rect {
+    /// The cells the Popular table's `index`-th row occupies, solved the way the
+    /// page solves them: the title, the artist and the row itself.
+    fn popular_cells(ctx: &Context, size: Vec2, index: usize, count: usize) -> (Rect, Rect, Rect) {
         let tokens = Tokens::DARK;
         let mut found = None;
         run(ctx, input(size, Vec::new()), |ui| {
@@ -1209,12 +1234,18 @@ mod tests {
                 Sense::hover(),
             );
             actionbar::row_rect(ui);
-            section::head(ui, "Popular", "", &tokens);
-            let columns =
-                table_layout::columns(ui.available_width(), Table::Full.columns().for_album());
-            head(ui, columns, &tokens);
-            let list = list_rect(ui, count);
-            found = Some(table_layout::row_rect(list, index, extent::ROW_H));
+            crate::view::inner(ui, |ui| {
+                section::head(ui, "Popular", "", &tokens);
+                let columns = table_layout::columns(
+                    ui.available_width(),
+                    Table::Full.columns().for_plays_album(),
+                );
+                head(ui, columns, &tokens);
+                let list = list_rect(ui, count);
+                let row = table_layout::row_rect(list, index, extent::ROW_H);
+                let placed = columns.at(row.min);
+                found = Some((placed.title, placed.album, row));
+            });
         });
         found.expect("the popular table lays out")
     }
@@ -1274,11 +1305,11 @@ mod tests {
         let mut queue = Queue::default();
         let mut art = Art::default();
 
-        let rect = popular_row_rect(&ctx, size, 1, 2);
+        let title = popular_cells(&ctx, size, 1, 2).0;
         let command = click(
             &ctx,
             size,
-            rect.center(),
+            title.center(),
             1,
             &mut library,
             &mut transport,
@@ -1299,7 +1330,7 @@ mod tests {
         let command = click(
             &ctx,
             size,
-            rect.center(),
+            title.center(),
             2,
             &mut library,
             &mut transport,
@@ -1419,11 +1450,11 @@ mod tests {
         let mut queue = Queue::default();
         let mut art = Art::default();
 
-        let rect = popular_row_rect(&ctx, size, 1, 2);
+        let title = popular_cells(&ctx, size, 1, 2).0;
         let command = click(
             &ctx,
             size,
-            rect.center(),
+            title.center(),
             2,
             &mut library,
             &mut transport,
@@ -5371,6 +5402,342 @@ mod tests {
             drawn(&output, "Nothing in this list matches “zzz”"),
             "the sentence is drawn after the body clip is restored: {:?}",
             drawn_texts(&output)
+        );
+    }
+
+    /// A track that names the record it is on, which is the cell's credit.
+    fn on_album(uri: &str, title: &str, album: &str) -> TrackEntry {
+        TrackEntry {
+            album: Some(album.to_owned()),
+            album_uri: Some(uri.to_owned()),
+            ..track("spotify:track:a", title, "Vela Moreno", 200_000)
+        }
+    }
+
+    #[test]
+    fn a_popular_row_asks_for_its_own_cover() {
+        let ctx = context();
+        let size = Vec2::new(900.0, 800.0);
+        let top = vec![
+            TrackEntry {
+                cover: Some(cover("a")),
+                ..track("spotify:track:a", "One", "Vela Moreno", 222_000)
+            },
+            TrackEntry {
+                cover: Some(cover("b")),
+                ..track("spotify:track:b", "Two", "Vela Moreno", 198_000)
+            },
+        ];
+        let mut library = library_with(detail(top, Vec::new()));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+        let now = Instant::now();
+
+        art.begin_frame();
+        let (_, output) = frame(
+            &ctx,
+            size,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let requests = art.requests(now);
+
+        assert_eq!(
+            requests.len(),
+            2,
+            "one lookup per on-screen row: {requests:?}"
+        );
+        assert!(
+            requests
+                .iter()
+                .all(|command| matches!(command, Command::Fetch { .. })),
+            "{requests:?}"
+        );
+
+        let (title_cell, _, _) = popular_cells(&ctx, size, 0, 2);
+        let name = text_rect(&output, "One").expect("the row's name");
+        assert_eq!(
+            name.left(),
+            title_cell.left() + extent::LIBRARY_ART + space::S3,
+            "the name starts past the row's own art box and its gutter"
+        );
+    }
+
+    #[test]
+    fn a_popular_row_opens_its_album() {
+        let ctx = context();
+        let size = Vec2::new(900.0, 800.0);
+        let mut library = library_with(detail(
+            vec![on_album("spotify:album:slow-tide", "One", "Slow Tide")],
+            Vec::new(),
+        ));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let (_, artist_cell, _) = popular_cells(&ctx, size, 0, 1);
+        let command = click(
+            &ctx,
+            size,
+            artist_cell.center(),
+            1,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+
+        assert_eq!(
+            library.page(),
+            Some(&Page::Album("spotify:album:slow-tide".to_owned())),
+            "the credit opens the record it names"
+        );
+        assert_eq!(
+            command,
+            Some(Command::LoadAlbum {
+                album: "spotify:album:slow-tide".to_owned()
+            })
+        );
+        assert!(!queue.can_next(), "opening a page must not start the queue");
+    }
+
+    #[test]
+    fn a_popular_row_without_an_album_still_plays_on_a_double_click() {
+        let ctx = context();
+        let size = Vec2::new(900.0, 800.0);
+        // No album on the entry, so the credit cell is empty and takes no press.
+        let mut library = library_with(detail(
+            vec![track("spotify:track:a", "One", "Vela Moreno", 222_000)],
+            Vec::new(),
+        ));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let (_, credit, _) = popular_cells(&ctx, size, 0, 1);
+        let command = click(
+            &ctx,
+            size,
+            credit.center(),
+            2,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+
+        assert_eq!(
+            command,
+            Some(Command::Play {
+                uri: "spotify:track:a".to_owned()
+            }),
+            "an empty credit cell is not a link, so the press reaches the row"
+        );
+        assert_eq!(
+            transport.now_playing.as_ref().map(|now| now.uri.as_str()),
+            Some("spotify:track:a")
+        );
+    }
+
+    #[test]
+    fn an_open_does_not_overwrite_a_same_frame_command() {
+        let ctx = context();
+        // Keep the focused row's focus while the pointer presses elsewhere, so
+        // one frame can answer both the keyboard and the credit's click.
+        ctx.options_mut(|options| {
+            options.input_options.surrender_focus_on = egui::SurrenderFocusOn::Never;
+        });
+        let size = Vec2::new(900.0, 800.0);
+        let top = vec![
+            track("spotify:track:a", "One", "Vela Moreno", 222_000),
+            on_album("spotify:album:slow-tide", "Two", "Slow Tide"),
+        ];
+        let mut library = library_with(detail(top, Vec::new()));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        // Both solves run before the focus is taken: a solve is a frame of its
+        // own, and a frame that does not draw the focused row drops it.
+        let (title, _, _) = popular_cells(&ctx, size, 0, 2);
+        let (_, credit, _) = popular_cells(&ctx, size, 1, 2);
+        let at = credit.center();
+
+        // Focus the first row, so Enter on it asks for a play.
+        let _ = click(
+            &ctx,
+            size,
+            title.center(),
+            1,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        assert!(
+            ctx.memory(|memory| memory.focused()).is_some(),
+            "the row took the keyboard"
+        );
+        // Press on the second row's credit first, so the release that reports
+        // the click lands in the frame that also answers Enter on the first.
+        let _ = frame(
+            &ctx,
+            size,
+            vec![
+                Event::PointerMoved(at),
+                Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let events = vec![
+            Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+            Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: false,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+            Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ];
+        let (command, _) = frame(
+            &ctx,
+            size,
+            events,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+
+        assert_eq!(
+            command,
+            Some(Command::Play {
+                uri: "spotify:track:a".to_owned()
+            }),
+            "the same-frame play is not replaced by the open"
+        );
+        assert_eq!(
+            library.page(),
+            Some(&Page::Artist(ARTIST.to_owned())),
+            "the deferred open did not navigate"
+        );
+    }
+
+    #[test]
+    fn the_head_names_an_album_column_beside_the_hero_eyebrow() {
+        let ctx = context();
+        let mut library = library_with(detail(
+            vec![track("spotify:track:a", "One", "Vela Moreno", 222_000)],
+            Vec::new(),
+        ));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let (_, output) = frame(
+            &ctx,
+            Vec2::new(900.0, 800.0),
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let texts = drawn_texts(&output);
+
+        assert_eq!(
+            texts.iter().filter(|text| **text == "ARTIST").count(),
+            1,
+            "the hero's eyebrow alone: {texts:?}"
+        );
+        assert_eq!(
+            texts.iter().filter(|text| **text == "ALBUM").count(),
+            1,
+            "the popular table's column heading: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn the_loading_skeleton_and_the_loaded_popular_put_the_title_at_the_same_left() {
+        let ctx = context();
+        let size = Vec2::new(900.0, 800.0);
+        let mut library = crate::library::Library::default();
+        library.open(Page::Artist(ARTIST.to_owned()));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let (_, output) = frame(
+            &ctx,
+            size,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let loading = output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Rect(rect)
+                    if rect.fill == Tokens::DARK.palette.skeleton_rule
+                        && (rect.rect.height() - extent::SKELETON_LINE).abs() < 0.01 =>
+                {
+                    Some(rect.rect)
+                }
+                _ => None,
+            })
+            .next()
+            .expect("the loading list holds a title bar open");
+
+        let ctx = context();
+        let mut library = library_with(detail(
+            vec![track("spotify:track:a", "One", "Vela Moreno", 222_000)],
+            Vec::new(),
+        ));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+        let (_, output) = frame(
+            &ctx,
+            size,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let loaded = text_rect(&output, "One").expect("the row's name");
+
+        assert_eq!(
+            loading.left(),
+            loaded.left(),
+            "the title does not shift when Popular lands"
         );
     }
 }
