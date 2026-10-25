@@ -2007,7 +2007,9 @@ async fn transfer_device<H: SessionHost>(
     connected: bool,
 ) -> Step {
     if !connected {
-        notifier.send(Update::Devices(DeviceUpdate::TransferFailed));
+        notifier.send(Update::Devices(DeviceUpdate::TransferFailed(
+            Failure::Transfer,
+        )));
         return Step::Done;
     }
     match stop_or(stop, host.hand_over(to)).await {
@@ -2015,7 +2017,14 @@ async fn transfer_device<H: SessionHost>(
         Some(Ok(())) => Step::Done,
         Some(Err(error)) => {
             log_device_error(&error);
-            notifier.send(Update::Devices(DeviceUpdate::TransferFailed));
+            // A window playing from no list has nothing to hand over, and no
+            // retry will change that until it plays one.
+            let failure = if error.no_context() {
+                Failure::NoContext
+            } else {
+                Failure::Transfer
+            };
+            notifier.send(Update::Devices(DeviceUpdate::TransferFailed(failure)));
             Step::Done
         }
     }
@@ -2897,6 +2906,7 @@ mod tests {
         #[default]
         Ok,
         Fail,
+        NoContext,
         Pending,
     }
 
@@ -4005,6 +4015,9 @@ mod tests {
                 match script {
                     TransferScript::Ok => Ok(()),
                     TransferScript::Fail => Err(SessionError::NotConnected),
+                    TransferScript::NoContext => Err(SessionError::Engine(EngineError::Connect(
+                        ConnectError::NoContext,
+                    ))),
                     TransferScript::Pending => std::future::pending().await,
                 }
             }
@@ -10469,7 +10482,10 @@ mod tests {
             ui_end.updates.recv().expect("transfer failed")
         });
 
-        assert_eq!(update, Update::Devices(DeviceUpdate::TransferFailed));
+        assert_eq!(
+            update,
+            Update::Devices(DeviceUpdate::TransferFailed(Failure::Transfer))
+        );
         assert!(shared.transfers.lock().expect("lock").is_empty());
     }
 
@@ -10510,7 +10526,10 @@ mod tests {
             ui_end.updates.recv().expect("the refused transfer")
         });
 
-        assert_eq!(update, Update::Devices(DeviceUpdate::TransferFailed));
+        assert_eq!(
+            update,
+            Update::Devices(DeviceUpdate::TransferFailed(Failure::Transfer))
+        );
         assert_eq!(
             *shared.transfers.lock().expect("lock"),
             vec![PHONE.to_owned(), elsewhere],
@@ -10539,11 +10558,42 @@ mod tests {
             ui_end.updates.recv().expect("transfer failed")
         });
 
-        assert_eq!(update, Update::Devices(DeviceUpdate::TransferFailed));
+        assert_eq!(
+            update,
+            Update::Devices(DeviceUpdate::TransferFailed(Failure::Transfer))
+        );
         assert_eq!(
             *shared.transfers.lock().expect("lock"),
             vec![PHONE.to_owned()],
             "a refused pick is never retried"
+        );
+    }
+
+    #[test]
+    fn a_pick_with_nothing_to_hand_over_says_what_is_missing() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+        *shared.transfer_script.lock().expect("lock") = TransferScript::NoContext;
+
+        let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            watch_now(&ui_end, &shared).recv().expect("watch started");
+            ui_end
+                .commands
+                .send(Command::Transfer {
+                    to: PHONE.to_owned(),
+                })
+                .expect("transfer");
+            ui_end.updates.recv().expect("transfer failed")
+        });
+
+        assert_eq!(
+            update,
+            Update::Devices(DeviceUpdate::TransferFailed(Failure::NoContext)),
+            "the copy names the real problem: no list is playing"
         );
     }
 

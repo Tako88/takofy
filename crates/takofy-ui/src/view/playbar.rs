@@ -2741,7 +2741,7 @@ mod tests {
             })
             .collect();
         let mut queue = Queue::seeded(5);
-        queue.start(&tracks, 0, &mut Transport::default());
+        queue.start(&tracks, 0, None, &mut Transport::default());
         queue
     }
 

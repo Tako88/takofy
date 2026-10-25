@@ -294,12 +294,17 @@ pub(crate) async fn pick<W: Wire>(
         }
     };
     // The target takes this state rather than resolving the context itself, so
-    // the move names the rows.
+    // the move names the rows and the page they came from. A stage with no page
+    // is refused before the put, so the account is never taken for nothing.
     let body = match transfer_out::body(&report, &own, wire.now_ms()) {
         Ok(body) => body,
-        Err(_) => {
+        Err(transfer_out::MoveError::NoTrack) => {
             log::info!(target: HOLD_LOG_TARGET, "pick refused: no track");
             return Err(ConnectError::NoTrack);
+        }
+        Err(transfer_out::MoveError::NoContext) => {
+            log::info!(target: HOLD_LOG_TARGET, "pick refused: no context");
+            return Err(ConnectError::NoContext);
         }
     };
 
@@ -463,7 +468,7 @@ mod tests {
             }),
             prev: Vec::new(),
             next: Vec::new(),
-            context: None,
+            context: Some(PLAYLIST.to_owned()),
             queue_revision: String::new(),
             options: None,
             position_ms: POSITION_MS,
@@ -1478,6 +1483,34 @@ mod tests {
             ["hand_over:start", "hand_over:done"],
             "only the hand-over is sent"
         );
+    }
+
+    #[tokio::test]
+    async fn a_move_without_a_context_refuses_before_the_put() {
+        let world = World::new(timing());
+        let mut staged = report(Status::Playing);
+        staged.context = None;
+        world.shared.latest.set(Some(staged));
+
+        let result = world.pick("phone").await;
+
+        assert!(
+            matches!(result, Err(ConnectError::NoContext)),
+            "a move with nothing to play must not take the sound: {result:?}"
+        );
+        assert!(
+            !world
+                .wire
+                .log
+                .entries()
+                .iter()
+                .any(|entry| entry.starts_with("put:")),
+            "the refusal comes before the activation put: {:?}",
+            world.wire.log.entries()
+        );
+        assert!(world.wire.puts().is_empty());
+        assert!(world.wire.hand_overs.lock().expect("lock").is_empty());
+        assert!(!world.shared.presence.active());
     }
 
     #[tokio::test]

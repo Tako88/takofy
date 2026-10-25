@@ -187,6 +187,8 @@ pub enum Failure {
     Steer,
     /// The sound could not be moved to another device.
     Transfer,
+    /// The move has no list to carry, so there is nothing to play elsewhere.
+    NoContext,
     /// Anything else; reproduce with `--headless` for the message.
     Other,
 }
@@ -226,8 +228,8 @@ pub enum DeviceUpdate {
     Failed(Failure),
     /// A transport action did not reach its device.
     SteerFailed,
-    /// The sound could not be moved to another device.
-    TransferFailed,
+    /// The sound could not be moved to another device, for this reason.
+    TransferFailed(Failure),
 }
 
 /// A change on the account's device side of the receiver.

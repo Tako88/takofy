@@ -24,6 +24,8 @@ use takofy_model::{Report, Status, TrackEntry};
 pub enum MoveError {
     /// Nothing is loaded, so there is no row to carry.
     NoTrack,
+    /// The rows came from no page, so the target would be told to play nothing.
+    NoContext,
 }
 
 /// The dealer wants a number per request; the account only echoes it back.
@@ -39,7 +41,14 @@ fn next_message_id() -> u64 {
 /// nothing else reads them.
 pub(crate) fn body(report: &Report, own: &str, now_ms: i64) -> Result<String, MoveError> {
     let track = report.track.as_ref().ok_or(MoveError::NoTrack)?;
-    let state = state_of(report, track, now_ms);
+    // A target claims the sound with this state, so a state with no context asks
+    // it to claim a sound it has nothing to play.
+    let context = report
+        .context
+        .as_deref()
+        .filter(|uri| !uri.is_empty())
+        .ok_or(MoveError::NoContext)?;
+    let state = state_of(report, track, context, now_ms);
     let encoded = encode(&state.write_to_bytes().unwrap_or_default());
     Ok(format!(
         "{{\"message_id\":{},\"sent_by_device_id\":{},\"command\":{{\"endpoint\":\"transfer\",\"data\":\"{}\"}}}}",
@@ -49,7 +58,7 @@ pub(crate) fn body(report: &Report, own: &str, now_ms: i64) -> Result<String, Mo
     ))
 }
 
-fn state_of(report: &Report, track: &TrackEntry, now_ms: i64) -> TransferState {
+fn state_of(report: &Report, track: &TrackEntry, context_uri: &str, now_ms: i64) -> TransferState {
     let options = report.options.unwrap_or_default();
     let mut rows: Vec<&TrackEntry> = report.prev.iter().collect();
     let current = rows.len();
@@ -66,7 +75,7 @@ fn state_of(report: &Report, track: &TrackEntry, now_ms: i64) -> TransferState {
         })
         .collect();
     let mut context = Context {
-        uri: Some(report.context.clone().unwrap_or_default()),
+        uri: Some(context_uri.to_owned()),
         ..Default::default()
     };
     context.pages.push(ContextPage {
@@ -304,6 +313,20 @@ mod tests {
         let mut empty = report();
         empty.track = None;
         assert_eq!(body(&empty, "own", 1_000), Err(MoveError::NoTrack));
+    }
+
+    #[test]
+    fn a_report_with_no_context_cannot_move_anything() {
+        let mut empty = report();
+        empty.context = None;
+        assert_eq!(body(&empty, "own", 1_000), Err(MoveError::NoContext));
+    }
+
+    #[test]
+    fn a_report_with_an_empty_context_cannot_move_anything() {
+        let mut empty = report();
+        empty.context = Some(String::new());
+        assert_eq!(body(&empty, "own", 1_000), Err(MoveError::NoContext));
     }
 
     #[test]

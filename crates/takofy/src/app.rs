@@ -711,7 +711,7 @@ mod tests {
         let mut devices = Devices::default();
         let all = vec![track("a"), track("b")];
         assert_eq!(
-            queue.start(&all, 0, &mut transport),
+            queue.start(&all, 0, None, &mut transport),
             Some(Command::Play {
                 uri: "a".to_owned()
             })
@@ -750,7 +750,7 @@ mod tests {
         let mut devices = Devices::default();
         let all = vec![track("a"), track("b")];
         assert_eq!(
-            queue.start(&all, 0, &mut transport),
+            queue.start(&all, 0, None, &mut transport),
             Some(Command::Play {
                 uri: "a".to_owned()
             })
@@ -784,7 +784,7 @@ mod tests {
         let all: Vec<TrackEntry> = uris.iter().map(|uri| track(uri)).collect();
         let mut transport = Transport::default();
         let mut queue = Queue::default();
-        let _ = queue.start(&all, index, &mut transport);
+        let _ = queue.start(&all, index, None, &mut transport);
         transport.state = TransportState::Playing;
         transport.duration_ms = Some(200_000);
         (queue, transport)

@@ -121,7 +121,7 @@ mod tests {
     fn started(count: usize, index: usize) -> (Queue, Transport) {
         let mut queue = Queue::default();
         let mut transport = Transport::default();
-        queue.start(&tracks(count), index, &mut transport);
+        queue.start(&tracks(count), index, None, &mut transport);
         transport.duration_ms = Some(200_000);
         (queue, transport)
     }
@@ -234,6 +234,28 @@ mod tests {
     }
 
     #[test]
+    fn a_play_from_a_page_remembers_the_context_it_came_from() {
+        let mut queue = Queue::default();
+        let mut transport = Transport::default();
+        queue.start(&tracks(3), 1, Some("spotify:playlist:p"), &mut transport);
+
+        assert_eq!(queue.origin(), Some("spotify:playlist:p"));
+        let report = report_of(&queue, &transport, 0).expect("a local entry");
+        assert_eq!(report.context.as_deref(), Some("spotify:playlist:p"));
+    }
+
+    #[test]
+    fn a_play_from_no_page_carries_no_context() {
+        let mut queue = Queue::default();
+        let mut transport = Transport::default();
+        queue.start(&tracks(3), 1, None, &mut transport);
+
+        assert_eq!(queue.origin(), None);
+        let report = report_of(&queue, &transport, 0).expect("a local entry");
+        assert_eq!(report.context, None);
+    }
+
+    #[test]
     fn the_context_is_the_origin_of_an_adopted_queue_and_none_after_a_local_start() {
         let mut queue = Queue::default();
         let mut transport = Transport::default();
@@ -242,7 +264,7 @@ mod tests {
         let report = report_of(&queue, &transport, 0).expect("a landed entry");
         assert_eq!(report.context.as_deref(), Some("spotify:playlist:p"));
 
-        queue.start(&tracks(2), 0, &mut transport);
+        queue.start(&tracks(2), 0, None, &mut transport);
         let report = report_of(&queue, &transport, 0).expect("a local entry");
         assert_eq!(report.context, None, "a local start has no context");
     }

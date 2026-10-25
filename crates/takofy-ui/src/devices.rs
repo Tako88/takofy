@@ -129,11 +129,8 @@ impl Devices {
                 self.flash = Some((failure_message(Failure::Steer).to_owned(), now + FLASH_FOR));
                 true
             }
-            DeviceUpdate::TransferFailed => {
-                self.flash = Some((
-                    failure_message(Failure::Transfer).to_owned(),
-                    now + FLASH_FOR,
-                ));
+            DeviceUpdate::TransferFailed(failure) => {
+                self.flash = Some((failure_message(*failure).to_owned(), now + FLASH_FOR));
                 true
             }
         }
@@ -1426,7 +1423,10 @@ mod tests {
     fn a_failed_transfer_flashes_its_copy() {
         let now = base();
         let mut devices = remote(now);
-        assert!(devices.apply(&Update::Devices(DeviceUpdate::TransferFailed), now));
+        assert!(devices.apply(
+            &Update::Devices(DeviceUpdate::TransferFailed(Failure::Transfer)),
+            now
+        ));
         assert_eq!(devices.caption(now), failure_message(Failure::Transfer));
     }
 

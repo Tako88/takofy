@@ -42,6 +42,14 @@ impl SessionError {
         )
     }
 
+    /// Whether this failure means the move had no page to carry.
+    pub(crate) fn no_context(&self) -> bool {
+        matches!(
+            self,
+            Self::Engine(EngineError::Connect(ConnectError::NoContext))
+        )
+    }
+
     /// A fixed name for the log. The source error is never formatted: it can
     /// embed a response body.
     pub(crate) fn kind(&self) -> &'static str {

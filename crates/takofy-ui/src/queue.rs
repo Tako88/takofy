@@ -121,8 +121,9 @@ pub struct Queue {
     snapshot: Vec<String>,
     /// The generator's state, advanced once per draw.
     rng: u64,
-    /// The context the current rows came from, when a hand-over adopted them.
-    /// A local start owns its rows, so it has no context to name.
+    /// The context the current rows came from: the page a local start was
+    /// played from, or the landing a hand-over adopted. A move carries it, so a
+    /// queue with no context cannot be handed to another device.
     origin: Option<String>,
     /// The newest activation epoch a loss named. A landing that names it or an
     /// older one was overtaken by that loss and is not adopted.
@@ -170,16 +171,24 @@ impl Queue {
         &mut self,
         tracks: &[TrackEntry],
         index: usize,
+        origin: Option<&str>,
         transport: &mut Transport,
     ) -> Option<Command> {
         self.shuffle = true;
-        self.start(tracks, index, transport)
+        self.start(tracks, index, origin, transport)
     }
 
+    /// Replaces the queue with `tracks` and starts on `index`.
+    ///
+    /// The modes survive: with shuffle on, the clicked row plays first and the
+    /// rest are drawn again, and the list's own order is what turning shuffle off
+    /// puts back. `origin` is the page the rows came from, so a move can tell the
+    /// target what to play; a list with no page of its own passes `None`.
     pub fn start(
         &mut self,
         tracks: &[TrackEntry],
         index: usize,
+        origin: Option<&str>,
         transport: &mut Transport,
     ) -> Option<Command> {
         if index >= tracks.len() {
@@ -191,7 +200,7 @@ impl Queue {
         self.queue_revision.clear();
         self.selection.clear();
         self.refocus = None;
-        self.origin = None;
+        self.origin = origin.map(str::to_owned);
         self.index = None;
         let first = self.start_shuffled(index);
         self.goto(first, transport)
@@ -531,7 +540,7 @@ impl Queue {
         self.tracks[start..end].iter()
     }
 
-    /// The context the current rows came from, when a hand-over adopted them.
+    /// The page the current rows came from, or `None` for a list that has none.
     pub fn origin(&self) -> Option<&str> {
         self.origin.as_deref()
     }
@@ -1170,7 +1179,7 @@ mod tests {
         let tracks = tracks(count);
         let mut queue = Queue::default();
         let mut transport = Transport::default();
-        queue.start(&tracks, index, &mut transport);
+        queue.start(&tracks, index, None, &mut transport);
         queue
     }
 
@@ -1257,7 +1266,10 @@ mod tests {
         let tracks = tracks(2);
         let mut queue = Queue::default();
         let mut transport = Transport::default();
-        assert_eq!(queue.start(&tracks, 0, &mut transport), Some(play("t0")));
+        assert_eq!(
+            queue.start(&tracks, 0, None, &mut transport),
+            Some(play("t0"))
+        );
 
         clear_guard(&mut queue, &mut transport);
         assert_eq!(end(&mut queue, &mut transport), Some(play("t1")));
@@ -1268,7 +1280,10 @@ mod tests {
         let tracks = tracks(1);
         let mut queue = Queue::default();
         let mut transport = Transport::default();
-        assert_eq!(queue.start(&tracks, 0, &mut transport), Some(play("t0")));
+        assert_eq!(
+            queue.start(&tracks, 0, None, &mut transport),
+            Some(play("t0"))
+        );
 
         clear_guard(&mut queue, &mut transport);
         assert_eq!(end(&mut queue, &mut transport), None);
@@ -1280,7 +1295,10 @@ mod tests {
         let tracks = tracks(12);
         let mut queue = Queue::default();
         let mut transport = Transport::default();
-        assert_eq!(queue.start(&tracks, 0, &mut transport), Some(play("t0")));
+        assert_eq!(
+            queue.start(&tracks, 0, None, &mut transport),
+            Some(play("t0"))
+        );
 
         for i in 1..=MAX_CONSECUTIVE_SKIPS {
             assert_eq!(
@@ -1301,7 +1319,10 @@ mod tests {
         let tracks = tracks(16);
         let mut queue = Queue::default();
         let mut transport = Transport::default();
-        assert_eq!(queue.start(&tracks, 0, &mut transport), Some(play("t0")));
+        assert_eq!(
+            queue.start(&tracks, 0, None, &mut transport),
+            Some(play("t0"))
+        );
 
         for _ in 0..3 {
             skip(&mut queue, &mut transport);
@@ -1330,7 +1351,10 @@ mod tests {
         let tracks = tracks(3);
         let mut queue = Queue::default();
         let mut transport = Transport::default();
-        assert_eq!(queue.start(&tracks, 0, &mut transport), Some(play("t0")));
+        assert_eq!(
+            queue.start(&tracks, 0, None, &mut transport),
+            Some(play("t0"))
+        );
 
         assert_eq!(
             end(&mut queue, &mut transport),
@@ -1346,7 +1370,10 @@ mod tests {
         let tracks = tracks(3);
         let mut queue = Queue::default();
         let mut transport = Transport::default();
-        assert_eq!(queue.start(&tracks, 0, &mut transport), Some(play("t0")));
+        assert_eq!(
+            queue.start(&tracks, 0, None, &mut transport),
+            Some(play("t0"))
+        );
 
         let failed = transport_update(TransportUpdate::Failed(Failure::Other));
         assert_eq!(queue.apply(&failed, &mut transport), None);
@@ -1362,7 +1389,10 @@ mod tests {
         let tracks = tracks(3);
         let mut queue = Queue::default();
         let mut transport = Transport::default();
-        assert_eq!(queue.start(&tracks, 0, &mut transport), Some(play("t0")));
+        assert_eq!(
+            queue.start(&tracks, 0, None, &mut transport),
+            Some(play("t0"))
+        );
         clear_guard(&mut queue, &mut transport);
         assert_eq!(end(&mut queue, &mut transport), Some(play("t1")));
 
@@ -1374,7 +1404,10 @@ mod tests {
         let tracks = tracks(3);
         let mut queue = Queue::default();
         let mut transport = Transport::default();
-        assert_eq!(queue.start(&tracks, 1, &mut transport), Some(play("t1")));
+        assert_eq!(
+            queue.start(&tracks, 1, None, &mut transport),
+            Some(play("t1"))
+        );
         seekable(&mut queue, &mut transport, 4_001);
 
         assert_eq!(
@@ -1388,7 +1421,10 @@ mod tests {
         let tracks = tracks(3);
         let mut queue = Queue::default();
         let mut transport = Transport::default();
-        assert_eq!(queue.start(&tracks, 0, &mut transport), Some(play("t0")));
+        assert_eq!(
+            queue.start(&tracks, 0, None, &mut transport),
+            Some(play("t0"))
+        );
         seekable(&mut queue, &mut transport, 1_000);
 
         assert_eq!(
@@ -1402,7 +1438,10 @@ mod tests {
         let tracks = tracks(3);
         let mut queue = Queue::default();
         let mut transport = Transport::default();
-        assert_eq!(queue.start(&tracks, 0, &mut transport), Some(play("t0")));
+        assert_eq!(
+            queue.start(&tracks, 0, None, &mut transport),
+            Some(play("t0"))
+        );
         clear_guard(&mut queue, &mut transport);
 
         assert_eq!(queue.previous(1_000, &mut transport), Some(play("t0")));
@@ -1413,7 +1452,10 @@ mod tests {
         let tracks = tracks(3);
         let mut queue = Queue::default();
         let mut transport = Transport::default();
-        assert_eq!(queue.start(&tracks, 0, &mut transport), Some(play("t0")));
+        assert_eq!(
+            queue.start(&tracks, 0, None, &mut transport),
+            Some(play("t0"))
+        );
         seekable(&mut queue, &mut transport, 4_001);
 
         assert_eq!(
@@ -1432,7 +1474,10 @@ mod tests {
         let tracks = tracks(3);
         let mut queue = Queue::default();
         let mut transport = Transport::default();
-        assert_eq!(queue.start(&tracks, 0, &mut transport), Some(play("t0")));
+        assert_eq!(
+            queue.start(&tracks, 0, None, &mut transport),
+            Some(play("t0"))
+        );
 
         feed(
             &mut queue,
@@ -1454,7 +1499,10 @@ mod tests {
         let tracks = tracks(3);
         let mut queue = Queue::default();
         let mut transport = Transport::default();
-        assert_eq!(queue.start(&tracks, 0, &mut transport), Some(play("t0")));
+        assert_eq!(
+            queue.start(&tracks, 0, None, &mut transport),
+            Some(play("t0"))
+        );
 
         clear_guard(&mut queue, &mut transport);
         clear_guard(&mut queue, &mut transport);
@@ -1467,7 +1515,10 @@ mod tests {
         let tracks = tracks(2);
         let mut queue = Queue::default();
         let mut transport = Transport::default();
-        assert_eq!(queue.start(&tracks, 1, &mut transport), Some(play("t1")));
+        assert_eq!(
+            queue.start(&tracks, 1, None, &mut transport),
+            Some(play("t1"))
+        );
 
         assert!(!queue.can_next());
         assert_eq!(queue.next(&mut transport), None);
@@ -1483,7 +1534,10 @@ mod tests {
         let tracks = tracks(16);
         let mut queue = Queue::default();
         let mut transport = Transport::default();
-        assert_eq!(queue.start(&tracks, 0, &mut transport), Some(play("t0")));
+        assert_eq!(
+            queue.start(&tracks, 0, None, &mut transport),
+            Some(play("t0"))
+        );
 
         for _ in 0..=MAX_CONSECUTIVE_SKIPS {
             skip(&mut queue, &mut transport);
@@ -1757,7 +1811,7 @@ mod tests {
         let tracks = tracks(count);
         let mut queue = Queue::seeded(seed);
         let mut transport = Transport::default();
-        queue.start(&tracks, index, &mut transport);
+        queue.start(&tracks, index, None, &mut transport);
         queue.toggle_shuffle();
         queue
     }
@@ -1856,7 +1910,7 @@ mod tests {
                 let list = tracks(count);
                 let mut queue = Queue::seeded(seed);
                 let mut transport = Transport::default();
-                queue.start(&list, 0, &mut transport);
+                queue.start(&list, 0, None, &mut transport);
                 queue.toggle_shuffle();
 
                 let mut played = Vec::new();
@@ -2016,7 +2070,7 @@ mod tests {
         for seed in 0..20 {
             for index in 0..list.len() {
                 let mut queue = Queue::seeded(seed);
-                queue.start(&list, index, &mut transport);
+                queue.start(&list, index, None, &mut transport);
                 let current = queue.current().map(|entry| entry.artists.clone());
 
                 queue.toggle_shuffle();
@@ -2142,7 +2196,7 @@ mod tests {
         );
 
         let mut drawn = Queue::seeded(9);
-        drawn.start_with_shuffle(&list, 0, &mut Transport::default());
+        drawn.start_with_shuffle(&list, 0, None, &mut Transport::default());
         assert_eq!(
             order(&queue),
             order(&drawn),
@@ -2339,7 +2393,7 @@ mod tests {
         assert!(!queue.shuffle());
 
         assert_eq!(
-            queue.start_with_shuffle(&list, 0, &mut transport),
+            queue.start_with_shuffle(&list, 0, None, &mut transport),
             Some(play("t0"))
         );
 
@@ -2361,7 +2415,10 @@ mod tests {
         let mut transport = Transport::default();
         let list = tracks(6);
 
-        assert_eq!(queue.start(&list, 3, &mut transport), Some(play("t3")));
+        assert_eq!(
+            queue.start(&list, 3, None, &mut transport),
+            Some(play("t3"))
+        );
 
         assert_eq!(queue.index, Some(0), "the clicked row is what plays");
         assert_eq!(order(&queue)[0], "t3");
@@ -2381,7 +2438,10 @@ mod tests {
         queue.toggle_shuffle();
 
         let list = tracks(2);
-        assert_eq!(queue.start(&list, 1, &mut transport), Some(play("t1")));
+        assert_eq!(
+            queue.start(&list, 1, None, &mut transport),
+            Some(play("t1"))
+        );
 
         assert!(queue.shuffle());
         assert_eq!(queue.repeat(), Repeat::All);
@@ -2392,10 +2452,13 @@ mod tests {
         let mut queue = Queue::seeded(3);
         let mut transport = Transport::default();
         queue.toggle_shuffle();
-        queue.start(&tracks(4), 0, &mut transport);
+        queue.start(&tracks(4), 0, None, &mut transport);
 
         let second = vec![track("x"), track("y"), track("z")];
-        assert_eq!(queue.start(&second, 1, &mut transport), Some(play("y")));
+        assert_eq!(
+            queue.start(&second, 1, None, &mut transport),
+            Some(play("y"))
+        );
         queue.toggle_shuffle();
 
         assert_eq!(
@@ -2418,8 +2481,8 @@ mod tests {
             queue.snapshot.clone(),
         );
 
-        assert_eq!(queue.start(&tracks(2), 5, &mut transport), None);
-        assert_eq!(queue.start(&[], 0, &mut transport), None);
+        assert_eq!(queue.start(&tracks(2), 5, None, &mut transport), None);
+        assert_eq!(queue.start(&[], 0, None, &mut transport), None);
 
         assert_eq!(
             (
@@ -2464,7 +2527,7 @@ mod tests {
         let list = tracks(count);
         let mut queue = Queue::seeded(seed);
         let mut transport = Transport::default();
-        queue.start(&list, index, &mut transport);
+        queue.start(&list, index, None, &mut transport);
         queue
     }
 
@@ -2483,7 +2546,7 @@ mod tests {
             let tracks = tracks(2);
             let mut queue = Queue::default();
             let mut transport = Transport::default();
-            queue.start(&tracks, 0, &mut transport);
+            queue.start(&tracks, 0, None, &mut transport);
             transport.state = state;
             assert_eq!(queue.toggle(&mut transport), expected, "{state:?}");
         }
@@ -2494,11 +2557,17 @@ mod tests {
         let first = tracks(3);
         let mut queue = Queue::default();
         let mut transport = Transport::default();
-        assert_eq!(queue.start(&first, 0, &mut transport), Some(play("t0")));
+        assert_eq!(
+            queue.start(&first, 0, None, &mut transport),
+            Some(play("t0"))
+        );
         clear_guard(&mut queue, &mut transport);
 
         let second = vec![track("x"), track("y")];
-        assert_eq!(queue.start(&second, 0, &mut transport), Some(play("x")));
+        assert_eq!(
+            queue.start(&second, 0, None, &mut transport),
+            Some(play("x"))
+        );
         assert_eq!(
             end(&mut queue, &mut transport),
             None,
@@ -2513,7 +2582,7 @@ mod tests {
         let all = tracks(3);
         let mut queue = Queue::default();
         let mut transport = Transport::default();
-        assert_eq!(queue.start(&all, 0, &mut transport), Some(play("t0")));
+        assert_eq!(queue.start(&all, 0, None, &mut transport), Some(play("t0")));
         clear_guard(&mut queue, &mut transport);
 
         let playlists = Update::Playlists(vec![PlaylistEntry {
@@ -2536,7 +2605,7 @@ mod tests {
         let mut queue = Queue::default();
         let mut transport = Transport::default();
         assert_eq!(
-            queue.start(&duplicates, 0, &mut transport),
+            queue.start(&duplicates, 0, None, &mut transport),
             Some(play("same"))
         );
         clear_guard(&mut queue, &mut transport);
@@ -2551,8 +2620,8 @@ mod tests {
         let tracks = tracks(2);
         let mut queue = Queue::default();
         let mut transport = Transport::default();
-        assert_eq!(queue.start(&tracks, 2, &mut transport), None);
-        assert_eq!(queue.start(&[], 0, &mut transport), None);
+        assert_eq!(queue.start(&tracks, 2, None, &mut transport), None);
+        assert_eq!(queue.start(&[], 0, None, &mut transport), None);
         assert!(!queue.can_toggle());
     }
 
@@ -2573,7 +2642,7 @@ mod tests {
         let tracks = tracks(2);
         let mut queue = Queue::default();
         let mut transport = Transport::default();
-        queue.start(&tracks, 0, &mut transport);
+        queue.start(&tracks, 0, None, &mut transport);
         assert!(queue.can_next());
         assert!(queue.can_previous());
         assert!(queue.can_toggle());
@@ -2595,7 +2664,7 @@ mod tests {
         let mut transport = Transport::default();
         let mut queue = Queue::default();
 
-        let command = queue.start(&[episode.entry()], 0, &mut transport);
+        let command = queue.start(&[episode.entry()], 0, None, &mut transport);
 
         assert_eq!(
             command,
@@ -2617,7 +2686,7 @@ mod tests {
         let mut queue = Queue::default();
         let mut transport = Transport::default();
 
-        let _ = queue.start(&[entry], 0, &mut transport);
+        let _ = queue.start(&[entry], 0, None, &mut transport);
 
         assert_eq!(
             transport.now_playing.expect("a named track").cover,
@@ -2630,7 +2699,7 @@ mod tests {
         let mut queue = Queue::default();
         let mut transport = Transport::default();
 
-        let _ = queue.start(&[track_by("a", "A Band")], 0, &mut transport);
+        let _ = queue.start(&[track_by("a", "A Band")], 0, None, &mut transport);
 
         assert_eq!(
             transport.now_playing.expect("a named track").artists,
@@ -2650,7 +2719,7 @@ mod tests {
         let tracks = tracks(3);
         let mut queue = Queue::default();
         let mut transport = Transport::default();
-        queue.start(&tracks, 2, &mut transport);
+        queue.start(&tracks, 2, None, &mut transport);
 
         assert_eq!(upcoming(&queue), Vec::new());
         assert!(!queue.can_next(), "nothing upcoming is exactly `!can_next`");
@@ -2661,7 +2730,7 @@ mod tests {
         let tracks = tracks(5);
         let mut queue = Queue::default();
         let mut transport = Transport::default();
-        queue.start(&tracks, 1, &mut transport);
+        queue.start(&tracks, 1, None, &mut transport);
 
         assert_eq!(
             upcoming(&queue),
@@ -2679,7 +2748,7 @@ mod tests {
         let tracks = tracks(4);
         let mut queue = Queue::default();
         let mut transport = Transport::default();
-        queue.start(&tracks, 0, &mut transport);
+        queue.start(&tracks, 0, None, &mut transport);
 
         assert_eq!(queue.upcoming().len(), 3);
         for (step, remaining) in [(1, 2), (2, 1), (3, 0)] {
@@ -2697,7 +2766,7 @@ mod tests {
         let tracks = tracks(6);
         let mut queue = Queue::default();
         let mut transport = Transport::default();
-        queue.start(&tracks, 2, &mut transport);
+        queue.start(&tracks, 2, None, &mut transport);
 
         let mut iter = queue.upcoming();
         assert_eq!(iter.len(), 3);
@@ -2714,7 +2783,7 @@ mod tests {
         let duplicates = vec![track("same"), track("same"), track("same")];
         let mut queue = Queue::default();
         let mut transport = Transport::default();
-        queue.start(&duplicates, 0, &mut transport);
+        queue.start(&duplicates, 0, None, &mut transport);
 
         assert_eq!(
             upcoming(&queue),
@@ -2728,7 +2797,7 @@ mod tests {
         let tracks = tracks(4);
         let mut queue = Queue::default();
         let mut transport = Transport::default();
-        queue.start(&tracks, 0, &mut transport);
+        queue.start(&tracks, 0, None, &mut transport);
 
         assert_eq!(queue.jump(2, &mut transport), Some(play("t2")));
         assert_eq!(
@@ -2756,7 +2825,7 @@ mod tests {
         let tracks = tracks(4);
         let mut queue = Queue::default();
         let mut transport = Transport::default();
-        queue.start(&tracks, 0, &mut transport);
+        queue.start(&tracks, 0, None, &mut transport);
         clear_guard(&mut queue, &mut transport);
 
         assert_eq!(queue.jump(2, &mut transport), Some(play("t2")));
@@ -2782,7 +2851,7 @@ mod tests {
         let tracks = tracks(8);
         let mut queue = Queue::default();
         let mut transport = Transport::default();
-        queue.start(&tracks, 0, &mut transport);
+        queue.start(&tracks, 0, None, &mut transport);
 
         // One failed load has already carried the queue to t1.
         assert_eq!(skip(&mut queue, &mut transport), Some(play("t1")));
@@ -2807,7 +2876,7 @@ mod tests {
         let tracks = tracks(16);
         let mut queue = Queue::default();
         let mut transport = Transport::default();
-        queue.start(&tracks, 0, &mut transport);
+        queue.start(&tracks, 0, None, &mut transport);
 
         for _ in 0..=MAX_CONSECUTIVE_SKIPS {
             skip(&mut queue, &mut transport);
@@ -2830,7 +2899,7 @@ mod tests {
         let tracks = tracks(3);
         let mut queue = Queue::default();
         let mut transport = Transport::default();
-        queue.start(&tracks, 1, &mut transport);
+        queue.start(&tracks, 1, None, &mut transport);
         // A load is in flight: the guard must survive a refused click.
         let before = transport.clone();
 
@@ -2854,7 +2923,7 @@ mod tests {
         let tracks = tracks(3);
         let mut queue = Queue::default();
         let mut transport = Transport::default();
-        queue.start(&tracks, 0, &mut transport);
+        queue.start(&tracks, 0, None, &mut transport);
 
         assert_eq!(queue.jump(9, &mut transport), None);
         assert_eq!(
@@ -2871,7 +2940,7 @@ mod tests {
         let tracks = tracks(3);
         let mut queue = Queue::default();
         let mut transport = Transport::default();
-        queue.start(&tracks, 0, &mut transport);
+        queue.start(&tracks, 0, None, &mut transport);
 
         assert_eq!(queue.jump(2, &mut transport), Some(play("t2")));
         assert!(queue.upcoming().next().is_none());
@@ -2883,7 +2952,7 @@ mod tests {
         let tracks = tracks(3);
         let mut queue = Queue::default();
         let mut transport = Transport::default();
-        queue.start(&tracks, 2, &mut transport);
+        queue.start(&tracks, 2, None, &mut transport);
 
         assert_eq!(queue.jump(0, &mut transport), Some(play("t0")));
         seekable(&mut queue, &mut transport, 1_000);
@@ -2899,7 +2968,7 @@ mod tests {
         let tracks = tracks(5);
         let mut queue = Queue::default();
         let mut transport = Transport::default();
-        queue.start(&tracks, 0, &mut transport);
+        queue.start(&tracks, 0, None, &mut transport);
 
         assert_eq!(queue.jump(3, &mut transport), Some(play("t3")));
         // A position inside the restart threshold is a step back, not a restart.
@@ -2915,7 +2984,7 @@ mod tests {
         let tracks = tracks(3);
         let mut queue = Queue::default();
         let mut transport = Transport::default();
-        queue.start(&tracks, 1, &mut transport);
+        queue.start(&tracks, 1, None, &mut transport);
         clear_guard(&mut queue, &mut transport);
 
         assert_eq!(queue.jump(1, &mut transport), Some(play("t1")));
@@ -2931,7 +3000,7 @@ mod tests {
         let tracks = vec![track_by("a", "A Band"), track_by("b", "B Band")];
         let mut queue = Queue::default();
         let mut transport = Transport::default();
-        queue.start(&tracks, 0, &mut transport);
+        queue.start(&tracks, 0, None, &mut transport);
 
         assert_eq!(queue.jump(1, &mut transport), Some(play("b")));
         assert_eq!(
@@ -3127,7 +3196,7 @@ mod tests {
         ];
         let mut queue = Queue::default();
         let mut transport = Transport::default();
-        queue.start(&entries, 0, &mut transport);
+        queue.start(&entries, 0, None, &mut transport);
 
         assert_eq!(queue.move_rows(&[2], 1), Some(1..2));
         assert_eq!(artists(&queue), uris(&["A", "C", "B"]));
@@ -3463,7 +3532,7 @@ mod tests {
         assert_eq!(queue.queued, 0, "the draw moved the rows the block named");
 
         queue.add_next(vec![track("y")]);
-        queue.start(&tracks(3), 0, &mut transport);
+        queue.start(&tracks(3), 0, None, &mut transport);
         assert_eq!(queue.queued, 0, "a new list has no phone block");
 
         queue.add_next(vec![track("z")]);
@@ -3783,7 +3852,7 @@ mod tests {
         );
         assert_eq!(queue.queue_revision(), "rev-1");
 
-        queue.start(&tracks(2), 0, &mut transport);
+        queue.start(&tracks(2), 0, None, &mut transport);
 
         assert_eq!(
             queue.queue_revision(),
@@ -3989,7 +4058,7 @@ mod tests {
 
         let tracks = tracks(3);
         let mut transport = Transport::default();
-        queue.start(&tracks, 0, &mut transport);
+        queue.start(&tracks, 0, None, &mut transport);
 
         assert!(picked(&queue).is_empty());
         assert_eq!(queue.refocus(), None);
@@ -4129,7 +4198,7 @@ mod tests {
     fn a_queue_holding_the_same_entry_twice_removes_the_one_picked() {
         let tracks = vec![track("t0"), track("t1"), track("t1"), track("t2")];
         let mut queue = Queue::default();
-        queue.start(&tracks, 0, &mut Transport::default());
+        queue.start(&tracks, 0, None, &mut Transport::default());
         queue.press(2, Press::Replace);
 
         let rows = queue.act_on(2);

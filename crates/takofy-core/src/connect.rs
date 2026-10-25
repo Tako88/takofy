@@ -273,6 +273,8 @@ pub enum ConnectError {
     Expired,
     #[error("the landing has no track to play")]
     NoTrack,
+    #[error("there is no page to hand over")]
+    NoContext,
     #[error("nothing is playing here to hand over")]
     NotPlaying,
     #[error("the device cannot play")]
@@ -300,6 +302,7 @@ impl ConnectError {
             Self::HandOverPending => "hand-over pending",
             Self::Expired => "request expired",
             Self::NoTrack => "no track",
+            Self::NoContext => "no context",
             Self::NotPlaying => "nothing playing",
             Self::NotPlayable => "not playable",
         }
@@ -1059,6 +1062,7 @@ mod tests {
             ConnectError::HandOverPending,
             ConnectError::Expired,
             ConnectError::NoTrack,
+            ConnectError::NoContext,
             ConnectError::NotPlaying,
             ConnectError::NotPlayable,
         ]

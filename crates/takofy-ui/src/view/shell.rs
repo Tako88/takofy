@@ -413,8 +413,9 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
                         screen.queue.toggle(screen.transport)
                     } else {
                         // R16: the queue becomes the whole answer, entered at the
-                        // hit, so next and previous walk the results.
-                        screen.queue.start(tracks, index, screen.transport)
+                        // hit, so next and previous walk the results. The answer is
+                        // merged from every kind, so it names no context.
+                        screen.queue.start(tracks, index, None, screen.transport)
                     }
                 }
                 None => None,
@@ -2571,7 +2572,7 @@ mod tests {
     fn two_tracks(transport: &mut Transport) -> Queue {
         let tracks = vec![track(0, None), track(1, None)];
         let mut queue = Queue::default();
-        queue.start(&tracks, 0, transport);
+        queue.start(&tracks, 0, None, transport);
         queue
     }
 
@@ -2660,7 +2661,7 @@ mod tests {
             track(2, Some(cover("row2"))),
         ];
         let mut queue = Queue::default();
-        queue.start(&tracks, 0, &mut transport);
+        queue.start(&tracks, 0, None, &mut transport);
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
 
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
@@ -2801,7 +2802,7 @@ mod tests {
             track(2, Some(cover("row2"))),
         ];
         let mut queue = Queue::default();
-        queue.start(&tracks, 0, &mut transport);
+        queue.start(&tracks, 0, None, &mut transport);
 
         assert_eq!(
             requested(Vec2::new(900.0, 600.0), &mut transport, &mut queue),
@@ -2819,7 +2820,7 @@ mod tests {
             track(2, Some(cover("row2"))),
         ];
         let mut queue = Queue::default();
-        queue.start(&tracks, 0, &mut transport);
+        queue.start(&tracks, 0, None, &mut transport);
 
         let mut asked = requested(Vec2::new(1400.0, 900.0), &mut transport, &mut queue);
         asked.sort_by(|left, right| left.as_str().cmp(right.as_str()));
@@ -2872,7 +2873,7 @@ mod tests {
             track(2, Some(cover("row2"))),
         ];
         let mut queue = Queue::default();
-        queue.start(&tracks, 0, &mut transport);
+        queue.start(&tracks, 0, None, &mut transport);
 
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
@@ -2900,7 +2901,7 @@ mod tests {
             track(2, Some(cover("row2"))),
         ];
         let mut queue = Queue::default();
-        queue.start(&tracks, 0, &mut transport);
+        queue.start(&tracks, 0, None, &mut transport);
 
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
@@ -4608,7 +4609,7 @@ mod tests {
     fn queue_of(count: usize, transport: &mut Transport) -> Queue {
         let tracks: Vec<TrackEntry> = (0..count).map(|index| track(index, None)).collect();
         let mut queue = Queue::default();
-        queue.start(&tracks, 0, transport);
+        queue.start(&tracks, 0, None, transport);
         queue
     }
 
@@ -5716,7 +5717,7 @@ mod tests {
         let mut transport = playing(cover("abc"));
         let mut queue = Queue::seeded(9);
         let tracks: Vec<TrackEntry> = (0..5).map(|index| track(index, None)).collect();
-        queue.start(&tracks, 0, &mut transport);
+        queue.start(&tracks, 0, None, &mut transport);
         queue.press(1, Press::Replace);
         for row in 2..5 {
             queue.press(row, Press::Toggle);
@@ -6612,7 +6613,7 @@ mod tests {
             })
             .collect();
         let mut queue = Queue::default();
-        queue.start(&tracks, 0, transport);
+        queue.start(&tracks, 0, None, transport);
         queue
     }
 
@@ -7354,7 +7355,7 @@ mod tests {
 
         // Something else fills the queue while the block is still held.
         let others: Vec<TrackEntry> = (0..5).map(|index| track(index + 10, None)).collect();
-        let _ = queue.start(&others, 0, &mut transport);
+        let _ = queue.start(&others, 0, None, &mut transport);
         let release = window.release(to);
         let _ = window.frame(&mut transport, &mut queue, vec![release]);
 
@@ -8439,14 +8440,14 @@ mod tests {
         let mut transport = playing(cover("abc"));
         let tracks: Vec<TrackEntry> = (0..6).map(|index| track(index, None)).collect();
         let mut queue = Queue::default();
-        queue.start(&tracks, 0, &mut transport);
+        queue.start(&tracks, 0, None, &mut transport);
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
         let pane = pane_rect_when_shown(&window);
 
         clicked_row(&mut window, &mut queue, &mut transport, pane, "t2");
         // A click always picks its row, so the pick is cleared here to leave only
         // the keyboard on it.
-        let _ = queue.start(&tracks, 0, &mut transport);
+        let _ = queue.start(&tracks, 0, None, &mut transport);
         assert!(!queue.selected(2), "nothing is picked");
 
         assert_eq!(
@@ -10304,7 +10305,7 @@ mod tests {
     fn a_click_on_now_playings_more_opens_a_current_menu() {
         let mut transport = Transport::default();
         let mut queue = Queue::default();
-        queue.start(&[menu_track(0)], 0, &mut transport);
+        queue.start(&[menu_track(0)], 0, None, &mut transport);
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
         let _ = window.frame(&mut transport, &mut queue, Vec::new());
 
@@ -10337,7 +10338,7 @@ mod tests {
     fn now_playings_more_opens_from_the_keyboard_after_a_click() {
         let mut transport = Transport::default();
         let mut queue = Queue::default();
-        queue.start(&[menu_track(0)], 0, &mut transport);
+        queue.start(&[menu_track(0)], 0, None, &mut transport);
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
         let _ = window.frame(&mut transport, &mut queue, Vec::new());
         let at = now_playing_more(&window);
@@ -14280,7 +14281,11 @@ mod tests {
             ..Transport::default()
         };
         let mut queue = Queue::default();
-        assert!(queue.start(&[track(0, None)], 0, &mut transport).is_some());
+        assert!(
+            queue
+                .start(&[track(0, None)], 0, None, &mut transport)
+                .is_some()
+        );
         transport.state = TransportState::Playing;
         let mut window = remote_window();
         let at = devices_button_at(&window).center();
@@ -14345,7 +14350,11 @@ mod tests {
     fn a_pause_press_while_remote_steers_the_holder_and_never_the_queue() {
         let mut transport = Transport::default();
         let mut queue = Queue::default();
-        assert!(queue.start(&[track(0, None)], 0, &mut transport).is_some());
+        assert!(
+            queue
+                .start(&[track(0, None)], 0, None, &mut transport)
+                .is_some()
+        );
         transport.state = TransportState::Idle;
         let mut window = remote_window();
 
@@ -14375,7 +14384,7 @@ mod tests {
         let mut transport = Transport::default();
         let mut queue = Queue::default();
         let rows = vec![track(0, None), track(1, None)];
-        assert!(queue.start(&rows, 1, &mut transport).is_some());
+        assert!(queue.start(&rows, 1, None, &mut transport).is_some());
         transport.state = TransportState::Idle;
         let mut window = remote_window();
 
@@ -14438,7 +14447,11 @@ mod tests {
     fn a_local_play_flips_the_bar_back_to_this_window() {
         let mut transport = Transport::default();
         let mut queue = Queue::default();
-        assert!(queue.start(&[track(0, None)], 0, &mut transport).is_some());
+        assert!(
+            queue
+                .start(&[track(0, None)], 0, None, &mut transport)
+                .is_some()
+        );
         let mut window = remote_window();
 
         transport.state = TransportState::Playing;
@@ -14577,7 +14590,7 @@ mod tests {
         let mut queue = Queue::default();
         // This window's own row has verbs, and the holder's push is another
         // track: the button must not reach the row the pane is not drawing.
-        queue.start(&[menu_track(0)], 0, &mut transport);
+        queue.start(&[menu_track(0)], 0, None, &mut transport);
         transport.state = TransportState::Idle;
         let mut window = remote_window();
 
@@ -14599,7 +14612,7 @@ mod tests {
         held.album_uri = Some(ALBUM.to_owned());
         held.artist_uris = vec!["spotify:artist:b".to_owned()];
         held.artist_names = vec!["A Band".to_owned()];
-        queue.start(&[track(0, None), held], 0, &mut transport);
+        queue.start(&[track(0, None), held], 0, None, &mut transport);
         transport.state = TransportState::Idle;
         let mut window = remote_window();
 
@@ -14625,7 +14638,7 @@ mod tests {
     fn now_playings_more_acts_on_this_windows_row_while_it_plays() {
         let mut transport = Transport::default();
         let mut queue = Queue::default();
-        queue.start(&[menu_track(0)], 0, &mut transport);
+        queue.start(&[menu_track(0)], 0, None, &mut transport);
         // A holder is still there behind the local play, so the source rule is
         // what keeps this frame on the local row.
         let mut window = remote_window();

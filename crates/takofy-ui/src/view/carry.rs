@@ -1000,7 +1000,7 @@ mod tests {
     fn queue_of(count: usize, current: usize) -> Queue {
         let tracks: Vec<TrackEntry> = (0..count).map(|index| entry(&index.to_string())).collect();
         let mut queue = Queue::default();
-        queue.start(&tracks, current, &mut Transport::default());
+        queue.start(&tracks, current, None, &mut Transport::default());
         queue
     }
 
@@ -1573,7 +1573,7 @@ mod tests {
         let mut transport = Transport::default();
         let named = named_entry("spotify:track:a");
         let mut queue = Queue::default();
-        queue.start(std::slice::from_ref(&named), 0, &mut transport);
+        queue.start(std::slice::from_ref(&named), 0, None, &mut transport);
 
         current_menu(
             queue.current(),
@@ -1610,7 +1610,7 @@ mod tests {
 
         let mut transport = Transport::default();
         let mut queue = Queue::default();
-        queue.start(&[entry("0")], 0, &mut transport);
+        queue.start(&[entry("0")], 0, None, &mut transport);
         current_menu(
             queue.current(),
             &ctx,
@@ -1631,7 +1631,7 @@ mod tests {
         let ctx = context();
         let mut transport = Transport::default();
         let mut queue = Queue::default();
-        queue.start(&[named_entry("spotify:track:a")], 0, &mut transport);
+        queue.start(&[named_entry("spotify:track:a")], 0, None, &mut transport);
 
         current_menu(
             queue.current(),

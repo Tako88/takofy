@@ -254,9 +254,14 @@ pub fn tracks_view(
                 && let Load::Ready(tracks) = &library.tracks
             {
                 command = (if acted.shuffled {
-                    queue.start_with_shuffle(&tracks.tracks, 0, transport)
+                    queue.start_with_shuffle(
+                        &tracks.tracks,
+                        0,
+                        Some(tracks.playlist.as_str()),
+                        transport,
+                    )
                 } else {
-                    queue.start(&tracks.tracks, 0, transport)
+                    queue.start(&tracks.tracks, 0, Some(tracks.playlist.as_str()), transport)
                 })
                 .or(command.take());
             }
@@ -411,7 +416,12 @@ pub fn tracks_view(
                             };
                             match track_row::show(ui, rect, columns, &row, tokens) {
                                 Some(Click::Play) => {
-                                    command = queue.start(&tracks.tracks, index, transport);
+                                    command = queue.start(
+                                        &tracks.tracks,
+                                        index,
+                                        Some(tracks.playlist.as_str()),
+                                        transport,
+                                    );
                                 }
                                 Some(Click::Open(page)) => open = Some(page),
                                 Some(Click::Select(press)) => selection.press(index, press),
@@ -6709,6 +6719,29 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
                 "every true row is in the queue (shuffled: {shuffled})"
             );
         }
+    }
+
+    #[test]
+    fn a_play_from_the_page_remembers_the_playlist() {
+        let ctx = context();
+        let mut library = library_named(midnight_tracks(), "Evening");
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let at = play_tile_rect_for(&ctx, "Evening").center();
+
+        let command = click(&ctx, at, &mut library, &mut transport, &mut queue);
+
+        assert_eq!(
+            command,
+            Some(Command::Play {
+                uri: "t0".to_owned()
+            })
+        );
+        assert_eq!(
+            queue.origin(),
+            Some(PLAYLIST),
+            "a move from here has a page to carry"
+        );
     }
 
     #[test]
