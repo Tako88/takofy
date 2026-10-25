@@ -6,6 +6,7 @@
 //! the row index the queue adopts.
 
 use librespot::core::SpotifyUri;
+use librespot::protocol::context::Context;
 use librespot::protocol::transfer_state::TransferState;
 use takofy_model::Landing;
 
@@ -103,6 +104,21 @@ impl TransferPlan {
     }
 }
 
+/// The track a page row carries, found by the uid the phone says it was on.
+///
+/// The pages are the phone's own window, so this is a lookup rather than a read,
+/// and it is the only way to land a transfer whose payload names no current
+/// track.
+fn row_of_uid(uid: Option<&str>, context: Option<&Context>) -> Option<String> {
+    let uid = uid.filter(|uid| !uid.is_empty())?;
+    context?
+        .pages
+        .iter()
+        .flat_map(|page| page.tracks.iter())
+        .find(|track| track.uid.as_deref() == Some(uid))
+        .and_then(|track| uri_of(&track.uri))
+}
+
 /// Reads one hand-over, or says why it cannot be played here.
 pub(crate) fn plan(state: &TransferState) -> Result<TransferPlan, Refusal> {
     let playback = state.playback.as_ref();
@@ -125,9 +141,16 @@ pub(crate) fn plan(state: &TransferState) -> Result<TransferPlan, Refusal> {
     } else {
         playback.and_then(|playback| playback.current_track.as_ref())
     };
-    let current = current_track
-        .and_then(|track| uri_of(&track.uri))
-        .ok_or(Refusal::NoTrack)?;
+    // A real phone sends the row's uid and the pages, and sometimes no current
+    // track at all, so the uid is what names the row it was playing.
+    let current = match current_track.and_then(|track| uri_of(&track.uri)) {
+        Some(uri) => uri,
+        None => row_of_uid(
+            session.and_then(|session| session.current_uid.as_deref()),
+            context,
+        )
+        .ok_or(Refusal::NoTrack)?,
+    };
     if !playable(&current) {
         return Err(Refusal::NotPlayable);
     }
@@ -349,6 +372,104 @@ mod tests {
             uri: Some(uri.to_owned()),
             ..Default::default()
         }
+    }
+
+    /// The measured hand-over: the phone's pages carry the row uids and the
+    /// session names the row it was on, with no current track anywhere.
+    fn uid_state(
+        rows: &[(&str, &str)],
+        current_uid: Option<&str>,
+        queue: &[&str],
+    ) -> TransferState {
+        TransferState {
+            playback: MessageField::some(Playback {
+                is_paused: Some(false),
+                position_as_of_timestamp: Some(29_763),
+                timestamp: Some(0),
+                ..Default::default()
+            }),
+            current_session: MessageField::some(Session {
+                context: MessageField::some(Context {
+                    uri: Some(ALBUM.to_owned()),
+                    pages: vec![ContextPage {
+                        tracks: rows
+                            .iter()
+                            .map(|(uid, uri)| ContextTrack {
+                                uid: Some((*uid).to_owned()),
+                                uri: Some((*uri).to_owned()),
+                                ..Default::default()
+                            })
+                            .collect(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }),
+                current_uid: current_uid.map(str::to_owned),
+                ..Default::default()
+            }),
+            queue: MessageField::some(Queue {
+                tracks: queue.iter().map(|uri| track(uri)).collect(),
+                is_playing_queue: Some(false),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn the_current_uid_names_the_row_when_the_current_track_is_missing() {
+        let plan = plan(&uid_state(
+            &[("uid-1", TRACK_1), ("uid-2", TRACK_2)],
+            Some("uid-2"),
+            &[],
+        ))
+        .expect("the uid names a playable row");
+
+        assert_eq!(plan.current, TRACK_2);
+        assert_eq!(plan.source, ContextSource::Pages);
+        assert_eq!(plan.position_ms, Some(29_763));
+    }
+
+    #[test]
+    fn a_uid_that_matches_no_row_still_refuses() {
+        assert_eq!(
+            plan(&uid_state(&[("uid-1", TRACK_1)], Some("uid-9"), &[])),
+            Err(Refusal::NoTrack)
+        );
+        assert_eq!(
+            plan(&uid_state(&[("uid-1", TRACK_1)], None, &[])),
+            Err(Refusal::NoTrack),
+            "a payload with neither a track nor a uid has no row"
+        );
+    }
+
+    #[test]
+    fn a_named_current_track_still_wins_over_the_uid() {
+        let mut state = state(Spec {
+            current: Some(TRACK_2),
+            ..spec()
+        });
+        if let Some(session) = state.current_session.as_mut() {
+            session.current_uid = Some("uid-3".to_owned());
+        }
+
+        assert_eq!(
+            plan(&state).expect("the track names the row").current,
+            TRACK_2
+        );
+    }
+
+    #[test]
+    fn the_queue_head_still_wins_when_the_queue_is_playing() {
+        let mut state = uid_state(&[("uid-1", TRACK_1)], Some("uid-1"), &[TRACK_3]);
+        if let Some(queue) = state.queue.as_mut() {
+            queue.is_playing_queue = Some(true);
+        }
+
+        assert_eq!(
+            plan(&state).expect("the queue names the row").current,
+            TRACK_3
+        );
     }
 
     fn state(spec: Spec) -> TransferState {

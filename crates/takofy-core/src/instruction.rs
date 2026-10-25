@@ -151,6 +151,11 @@ pub struct TransferSummary {
     pub tracks: usize,
     pub queue: usize,
     pub paused: bool,
+    /// Whether the payload named a current track, and whether it named the row
+    /// by uid. A hand-over can arrive with neither, and which one was missing is
+    /// what says whether the row is findable.
+    pub current_track: bool,
+    pub current_uid: bool,
     /// `now − playback.timestamp`; absent when the payload carried no instant.
     pub skew_ms: Option<i64>,
 }
@@ -165,6 +170,16 @@ impl fmt::Display for TransferSummary {
             self.tracks,
             self.queue,
             self.paused,
+        )?;
+        write!(
+            f,
+            "track {}, uid {}, ",
+            if self.current_track {
+                "named"
+            } else {
+                "absent"
+            },
+            if self.current_uid { "named" } else { "absent" },
         )?;
         match self.skew_ms {
             Some(skew) => write!(f, "skew {skew} ms"),
@@ -231,6 +246,12 @@ pub fn summarise(state: &TransferState, now_ms: i64) -> TransferSummary {
         }),
         queue: state.queue.tracks.len(),
         paused: playback.is_some_and(|playback| playback.is_paused.unwrap_or_default()),
+        current_track: playback.is_some_and(|playback| playback.current_track.is_some()),
+        current_uid: state
+            .current_session
+            .current_uid
+            .as_deref()
+            .is_some_and(|uid| !uid.is_empty()),
         skew_ms: playback
             .and_then(|playback| playback.timestamp)
             .map(|timestamp| now_ms.saturating_sub(timestamp)),
