@@ -35,6 +35,7 @@ mod publish;
 mod registry;
 mod remote;
 mod search;
+mod status_tally;
 #[cfg(test)]
 mod testing;
 mod transfer;

@@ -7,7 +7,7 @@
 
 use std::time::Instant;
 
-use egui::{Id, Pos2, Rect, Sense, Ui, vec2};
+use egui::{Align, Id, Layout, Pos2, Rect, Sense, Ui, UiBuilder, vec2};
 use takofy_model::{Owner, PlaylistEntry};
 
 use crate::cover::{Art, Cover};
@@ -99,7 +99,28 @@ pub fn tracks_view(
     // A link click is applied after the scroll area, because the matches below
     // borrow the tracks it has to move away from.
     let mut open: Option<Page> = None;
-    egui::ScrollArea::vertical().show(ui, |ui| {
+    // The count is a strip below the list's viewport, not a line after the rows:
+    // a long list would scroll it out of sight. The strip takes room only when
+    // there is something to say, so a fully named list reserves nothing.
+    let note = match &library.tracks {
+        Load::Ready(tracks) => crate::format::unnamed_note(&tracks.tracks),
+        Load::Idle | Load::Loading | Load::Failed(_) => None,
+    };
+    let page = ui.available_rect_before_wrap();
+    let strip = note.as_ref().map(|_| {
+        let font = egui::TextStyle::Body.resolve(ui.style());
+        let line = ui.ctx().fonts_mut(|fonts| fonts.row_height(&font));
+        let height = line + space::S1;
+        Rect::from_min_max(
+            Pos2::new(page.left(), (page.bottom() - height).max(page.top())),
+            page.max,
+        )
+    });
+    let mut area = egui::ScrollArea::vertical();
+    if let Some(strip) = strip {
+        area = area.max_height((strip.top() - page.top()).max(0.0));
+    }
+    area.show(ui, |ui| {
         scroll::follow_drag(ui);
         // The band heads the playlist whenever the library can name the
         // selection; with no name there is nothing to say above the rows. It
@@ -524,6 +545,18 @@ pub fn tracks_view(
             }
         });
     });
+
+    if let (Some(note), Some(strip)) = (note.as_deref(), strip) {
+        let line = strip.shrink2(vec2(space::GUTTER, 0.0));
+        ui.scope_builder(
+            UiBuilder::new()
+                .max_rect(line)
+                .layout(Layout::left_to_right(Align::Center)),
+            |ui| {
+                ui.label(recipe::muted(note, tokens));
+            },
+        );
+    }
 
     if retry {
         let playlist = library.selected().map(str::to_owned);
@@ -3030,6 +3063,143 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         );
 
         assert_eq!(command, None, "a culled row must not activate");
+    }
+
+    #[test]
+    fn an_unnamed_row_draws_the_count_inside_the_viewport() {
+        let ctx = context();
+        let count = 60;
+        let mut tracks: Vec<TrackEntry> = (0..count)
+            .map(|index| track(&format!("t{index}"), &format!("t{index}")))
+            .collect();
+        tracks[0].named = false;
+        let mut library = library_with(tracks);
+        let viewport = Rect::from_min_size(Pos2::ZERO, PROBE);
+        let last = row_rect_for(&ctx, count, count - 1);
+        assert!(
+            !viewport.intersects(last),
+            "the last row must sit below the probe's viewport: {last:?}"
+        );
+
+        let output = tracklist_frame_in(&ctx, PROBE, &mut library);
+        let note = "1 of 60 tracks could not be named";
+        let painted = galley_of(&output, note);
+        let rect = Rect::from_min_size(galley_at(&output, note), painted.size());
+        assert!(
+            viewport.contains_rect(rect),
+            "the count is drawn inside the viewport, not after the rows: {rect:?}"
+        );
+
+        // The strip takes its room from the list: no row draws over the count,
+        // and the rows stop at its top edge instead of running under it.
+        let rows = painted_rows(&output);
+        for index in &rows {
+            let (title, _) = clipped_title(&output, &format!("t{index}"))
+                .unwrap_or_else(|| panic!("row {index} was painted without its title"));
+            assert!(
+                !title.intersects(rect),
+                "row {index} draws over the count: {title:?} against {rect:?}"
+            );
+        }
+        let highest = *rows.last().expect("the list is drawn");
+        let last_above = (0..count)
+            .take_while(|index| row_rect_for(&ctx, count, *index).top() < rect.top())
+            .last()
+            .expect("the first row starts above the count");
+        assert_eq!(
+            highest, last_above,
+            "the rows stop where the count starts: {rows:?}"
+        );
+        assert!(
+            row_rect_for(&ctx, count, highest + 1).top() >= rect.top(),
+            "the row starting under the count must not be drawn"
+        );
+    }
+
+    #[test]
+    fn a_note_costs_the_list_one_row_that_a_named_list_keeps() {
+        let ctx = context();
+        let count = 60;
+        let tracks: Vec<TrackEntry> = (0..count)
+            .map(|index| track(&format!("t{index}"), &format!("t{index}")))
+            .collect();
+        let mut numbered_tracks = tracks.clone();
+        numbered_tracks[0].named = false;
+        let mut named = library_with(tracks);
+        let mut numbered = library_with(numbered_tracks);
+
+        let full = tracklist_frame_in(&ctx, PROBE, &mut named);
+        let counted = tracklist_frame_in(&ctx, PROBE, &mut numbered);
+
+        assert!(
+            !drawn_texts(&full)
+                .iter()
+                .any(|text| text.contains("could not be named")),
+            "a fully named list draws no count"
+        );
+
+        // Without a strip the list uses the whole window: it paints every row
+        // that starts above the fold, and nothing below it.
+        let all_rows = painted_rows(&full);
+        let last_fitting = (0..count)
+            .take_while(|index| row_rect_for(&ctx, count, *index).top() < PROBE.y)
+            .last()
+            .expect("the window holds rows");
+        assert_eq!(
+            all_rows,
+            (0..=last_fitting).collect::<Vec<_>>(),
+            "the named list paints every row the window holds"
+        );
+
+        let note = "1 of 60 tracks could not be named";
+        let strip =
+            Rect::from_min_size(galley_at(&counted, note), galley_of(&counted, note).size());
+        let fewer = painted_rows(&counted);
+        assert!(
+            fewer.len() < all_rows.len(),
+            "the count costs the list a row: {} rows with it, {} without",
+            fewer.len(),
+            all_rows.len()
+        );
+        let highest = *fewer.last().expect("the list is drawn");
+        assert_eq!(
+            highest + 1,
+            *all_rows.last().expect("the list is drawn"),
+            "the count costs exactly the one row it covers"
+        );
+        assert!(
+            row_rect_for(&ctx, count, highest).top() < strip.top(),
+            "the last row drawn starts above the count"
+        );
+        assert!(
+            row_rect_for(&ctx, count, highest + 1).top() >= strip.top(),
+            "the row the count covers starts below it"
+        );
+    }
+
+    #[test]
+    fn the_count_survives_a_filter_that_hides_the_unnamed_row() {
+        let ctx = context();
+        let mut tracks = vec![track("hidden", "hidden")];
+        tracks[0].named = false;
+        tracks.extend((1..10).map(|index| track(&format!("t{index}"), "keep")));
+        let mut library = library_with(tracks);
+        library
+            .track_filter
+            .edit("spotify:playlist:a")
+            .push_str("keep");
+
+        let output = tracklist_frame_in(&ctx, PROBE, &mut library);
+
+        assert!(
+            drawn_texts(&output).contains(&"1 of 10 tracks could not be named"),
+            "the count covers the whole loaded list, not the visible hits: {:?}",
+            drawn_texts(&output)
+        );
+        assert!(
+            !painted_rows(&output).contains(&0),
+            "the unnamed row is hidden by the query"
+        );
     }
 
     #[test]

@@ -44,6 +44,7 @@ use crate::playlist_edit;
 use crate::portrait::{bounded, portrait_from, portraits_of};
 use crate::rootlist::{RootlistError, RootlistPage, RootlistSource, RootlistWire, parse_rootlist};
 use crate::show::{ShowError, detail as show_detail, episode_uris};
+use crate::status_tally::StatusTally;
 
 /// The wire the live rootlist is read as; flip to `Json` if the binary parse fails.
 pub(crate) const ROOTLIST_WIRE: RootlistWire = RootlistWire::Binary;
@@ -998,7 +999,7 @@ pub(crate) async fn read_portraits(
         log::debug!("portrait read abandoned after {PORTRAIT_LIMIT:?}");
         return None;
     };
-    let found = found?;
+    let (found, _) = found?;
     let portraits = portraits_of(&uris, &found);
     if portraits.len() < uris.len() {
         log::warn!("{} of {} portraits came back", portraits.len(), uris.len());
@@ -1233,8 +1234,14 @@ fn expand_labels(items: &[PageTrack], labels: &Labels) -> Vec<TrackEntry> {
 /// so one failing does not lose the other.
 async fn fetch_labels(session: &Session, distinct: &[String]) -> Labels {
     let (tracks, episodes) = partition_by_kind(distinct);
-    let tracks = fetch_chunked(session, &tracks, ExtensionKind::TRACK_V4, track_label_from).await;
-    let episodes = fetch_chunked(session, &episodes, ExtensionKind::EPISODE_V4, episode_from).await;
+    let (tracks, mut tally) =
+        fetch_chunked(session, &tracks, ExtensionKind::TRACK_V4, track_label_from).await;
+    let (episodes, episode_tally) =
+        fetch_chunked(session, &episodes, ExtensionKind::EPISODE_V4, episode_from).await;
+    tally.merge(episode_tally);
+    if let Some(summary) = tally.summary() {
+        log::warn!("{summary}");
+    }
     merge_labels(tracks, episode_labels(episodes))
 }
 
@@ -1281,7 +1288,11 @@ fn merge_labels(tracks: Labels, episodes: Labels) -> Labels {
 /// track does, so a show page still draws every episode the wire listed.
 async fn fetch_episodes(session: &Session, uris: Vec<String>) -> Vec<Episode> {
     let distinct = distinct_uris(&uris);
-    let found = fetch_chunked(session, &distinct, ExtensionKind::EPISODE_V4, episode_from).await;
+    let (found, tally) =
+        fetch_chunked(session, &distinct, ExtensionKind::EPISODE_V4, episode_from).await;
+    if let Some(summary) = tally.summary() {
+        log::warn!("{summary}");
+    }
     let unnamed = uris.iter().filter(|uri| !found.contains_key(*uri)).count();
     if unnamed > 0 {
         log::warn!("{} of {} episodes could not be named", unnamed, uris.len());
@@ -1327,17 +1338,20 @@ async fn fetch_chunked<T>(
     distinct: &[String],
     kind: ExtensionKind,
     parse: fn(&[u8], &str) -> Option<T>,
-) -> HashMap<String, T> {
+) -> (HashMap<String, T>, StatusTally) {
     let mut found: HashMap<String, T> = HashMap::new();
+    let mut tally = StatusTally::default();
     let mut queue: Vec<Vec<String>> = distinct
         .chunks(LABEL_CHUNK)
         .map(<[String]>::to_vec)
         .collect();
     queue.reverse();
     while let Some(chunk) = queue.pop() {
-        let Some(answers) = request_parsed(session, &chunk, kind, parse).await else {
+        let Some((answers, chunk_tally)) = request_parsed(session, &chunk, kind, parse).await
+        else {
             continue;
         };
+        tally.merge(chunk_tally);
         let answered = !answers.is_empty();
         let mut missing: Vec<String> = chunk
             .iter()
@@ -1361,7 +1375,7 @@ async fn fetch_chunked<T>(
         queue.push(right);
         queue.push(missing);
     }
-    found
+    (found, tally)
 }
 
 /// One batched extended-metadata request over `uris`.
@@ -1413,17 +1427,12 @@ async fn request_parsed<T>(
     chunk: &[String],
     kind: ExtensionKind,
     parse: fn(&[u8], &str) -> Option<T>,
-) -> Option<HashMap<String, T>> {
+) -> Option<(HashMap<String, T>, StatusTally)> {
     let response = batched_request(session, chunk, kind).await?;
+    let tally = tally_of(&response);
 
     let mut found = HashMap::new();
     for array in &response.extended_metadata {
-        if array.header.provider_error_status != 200 {
-            log::warn!(
-                "metadata provider reported status {}",
-                array.header.provider_error_status
-            );
-        }
         for data in &array.extension_data {
             let Some(any) = data.extension_data.as_ref() else {
                 continue;
@@ -1433,7 +1442,20 @@ async fn request_parsed<T>(
             }
         }
     }
-    Some(found)
+    Some((found, tally))
+}
+
+/// The statuses one batched answer reports: the array's provider code, and each
+/// entity's own code under the URI it echoed.
+fn tally_of(response: &BatchedExtensionResponse) -> StatusTally {
+    let mut tally = StatusTally::default();
+    for array in &response.extended_metadata {
+        tally.record_provider(array.header.provider_error_status);
+        for data in &array.extension_data {
+            tally.record_entity(&data.entity_uri, data.header.status_code);
+        }
+    }
+    tally
 }
 
 /// The label an encoded `TRACK_V4` answer carries, or `None` when it is not a
@@ -1582,12 +1604,18 @@ mod tests {
 
     use librespot::core::{SpotifyId, SpotifyUri};
     use librespot::metadata::Show;
+    use librespot::protocol::entity_extension_data::{
+        EntityExtensionData, EntityExtensionDataHeader,
+    };
+    use librespot::protocol::extended_metadata::{
+        BatchedExtensionResponse, EntityExtensionDataArray, EntityExtensionDataArrayHeader,
+    };
     use librespot::protocol::metadata::image::Size;
     use librespot::protocol::metadata::{
         Album, Artist, Date as DateMessage, Episode as EpisodeMessage, Image, ImageGroup,
         Show as ShowMessage, Track as TrackMessage,
     };
-    use protobuf::Message as _;
+    use protobuf::{Message as _, MessageField};
     use takofy_model::{AddedAt, CoverOrigin, CoverUrl, Episode, PlaylistCover, PublishedAt};
 
     use crate::context::PageTrack;
@@ -1599,8 +1627,8 @@ mod tests {
         duration_ms, episode_from, episode_labels, episode_of, expand_episodes, expand_labels,
         first_track_uri, item_uris, label_from_episode, label_of, merge_labels, needs_labels,
         non_blank, parse_show_uri, partition_by_kind, playlist_cover, playlist_headers,
-        playlist_label, playlist_length, playlist_owner, published_at, show_card, track_label_from,
-        update_id,
+        playlist_label, playlist_length, playlist_owner, published_at, show_card, tally_of,
+        track_label_from, update_id,
     };
 
     const TRACK_ID: &str = "4uLU6hMCjMI75M1A2tKUQC";
@@ -2935,5 +2963,89 @@ mod tests {
         let second = client_update_id();
         assert_ne!(first, second);
         assert!(first.starts_with("takofy-"), "{first}");
+    }
+
+    /// One batched answer: an array with `provider` and the `(uri, code)`
+    /// entities, where `None` leaves the entity's header absent.
+    fn status_response(
+        provider: i32,
+        entities: &[(&str, Option<i32>)],
+    ) -> BatchedExtensionResponse {
+        let mut array = EntityExtensionDataArray {
+            header: MessageField::some(EntityExtensionDataArrayHeader {
+                provider_error_status: provider,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        for (uri, code) in entities {
+            let header = match code {
+                Some(code) => MessageField::some(EntityExtensionDataHeader {
+                    status_code: *code,
+                    ..Default::default()
+                }),
+                None => MessageField::none(),
+            };
+            array.extension_data.push(EntityExtensionData {
+                header,
+                entity_uri: (*uri).to_owned(),
+                ..Default::default()
+            });
+        }
+        BatchedExtensionResponse {
+            extended_metadata: vec![array],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_two_hundred_array_records_nothing() {
+        let response = status_response(200, &[("spotify:track:a", Some(200))]);
+        assert_eq!(tally_of(&response).summary(), None);
+    }
+
+    #[test]
+    fn a_failing_provider_code_is_recorded() {
+        let response = status_response(500, &[("spotify:track:a", Some(200))]);
+        assert_eq!(
+            tally_of(&response).summary().as_deref(),
+            Some("metadata statuses: provider 500 x1")
+        );
+    }
+
+    #[test]
+    fn two_failing_entities_are_two_uris() {
+        let response = status_response(
+            200,
+            &[
+                ("spotify:track:a", Some(404)),
+                ("spotify:track:b", Some(404)),
+            ],
+        );
+        assert_eq!(
+            tally_of(&response).summary().as_deref(),
+            Some("metadata statuses: entities 404 x2")
+        );
+    }
+
+    #[test]
+    fn one_uri_twice_is_one_entity() {
+        let response = status_response(
+            200,
+            &[
+                ("spotify:track:a", Some(404)),
+                ("spotify:track:a", Some(404)),
+            ],
+        );
+        assert_eq!(
+            tally_of(&response).summary().as_deref(),
+            Some("metadata statuses: entities 404 x1")
+        );
+    }
+
+    #[test]
+    fn an_entity_with_no_header_records_nothing() {
+        let response = status_response(200, &[("spotify:track:a", None)]);
+        assert_eq!(tally_of(&response).summary(), None);
     }
 }
