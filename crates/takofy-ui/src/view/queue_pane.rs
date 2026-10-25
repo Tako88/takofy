@@ -154,7 +154,7 @@ pub fn show(
                         let focused = focused_row(ui, queue);
                         for (row_index, (index, entry)) in queue.upcoming().enumerate() {
                             let rect = table::row_rect(list, row_index, ROW_H);
-                            if !on_screen(visible, rect) {
+                            if !table::on_screen(visible, rect) {
                                 continue;
                             }
                             // A queue row draws no `⋯`, so a right-click and the
@@ -238,17 +238,6 @@ fn key_door(ui: &Ui, index: usize, focused: Option<usize>, anchor: Rect) -> Opti
         opener: queue_row::id(ui, index),
         device: Device::Keyboard,
     })
-}
-
-/// Whether any of `rect` is inside `visible`.
-///
-/// `Rect::intersects` counts a shared edge as an overlap, which would lay out the
-/// row just past the fold and fetch its cover for nothing.
-fn on_screen(visible: Rect, rect: Rect) -> bool {
-    rect.left() < visible.right()
-        && visible.left() < rect.right()
-        && rect.top() < visible.bottom()
-        && visible.top() < rect.bottom()
 }
 
 /// What drawing one row reported.

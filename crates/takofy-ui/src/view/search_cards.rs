@@ -16,7 +16,7 @@ use std::time::Instant;
 use egui::{Rect, Sense, Ui, pos2, vec2};
 
 use crate::cover::Art;
-use crate::layout::cards;
+use crate::layout::{cards, table as table_layout};
 use crate::search::Search;
 use crate::search_index::{Band, Index, Kind, PAGE, tracks_phrase};
 use crate::sidebar_kind::SidebarKind;
@@ -78,7 +78,7 @@ fn block(
         let rect = grid.card_rect(position);
         // A card out of sight is not looked up, so a long block does not fetch
         // faces nobody is going to see.
-        if !visible.intersects(rect) {
+        if !table_layout::on_screen(visible, rect) {
             continue;
         }
         let pressed = match band.kind {

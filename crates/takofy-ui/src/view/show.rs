@@ -199,7 +199,7 @@ pub fn show_view(
 
                         for (index, episode) in detail.episodes.iter().enumerate() {
                             let rect = table_layout::row_rect(list, index, episode_layout::ROW_H);
-                            if !visible.intersects(rect) {
+                            if !table_layout::on_screen(visible, rect) {
                                 // A row the cull skipped draws nothing, so it has
                                 // no reveal of its own; one that holds the keyboard
                                 // is asked for once the loop is done.

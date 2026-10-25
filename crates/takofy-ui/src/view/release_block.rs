@@ -290,7 +290,7 @@ fn body(
             let gate = selection.gate(block.writing);
             for (index, entry) in tracks.iter().enumerate() {
                 let rect = table_layout::row_rect(list, index, extent::ROW_H);
-                if !visible.intersects(rect) {
+                if !table_layout::on_screen(visible, rect) {
                     continue;
                 }
                 let duration = entry.duration_ms.map(format_position);

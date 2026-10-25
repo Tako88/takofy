@@ -383,7 +383,7 @@ pub fn tracks_view(
                             let rect = table_layout::row_rect(list, slot, extent::ROW_H);
                             let holds_keyboard =
                                 focused_now == Some(track_row::id(ui, &entry.uri, index + 1));
-                            if !visible.intersects(rect) {
+                            if !table_layout::on_screen(visible, rect) {
                                 // A row the cull skipped draws nothing, so it has
                                 // no reveal of its own; one that holds the keyboard
                                 // is asked for once the loop is done.
@@ -902,7 +902,7 @@ fn grid(ui: &mut Ui, items: &[Item<'_>], layout: MediaLayout, draw: &mut MediaDr
 
     for (index, item) in items.iter().enumerate() {
         let rect = solved.card_rect(index);
-        if !visible.intersects(rect) {
+        if !table_layout::on_screen(visible, rect) {
             continue;
         }
         let media = draw.media_of(item);
@@ -931,7 +931,7 @@ fn list(ui: &mut Ui, items: &[Item<'_>], draw: &mut MediaDraw<'_, '_>) {
             Pos2::new(rows.left(), rows.top() + index as f32 * extent::ROW_H),
             vec2(width, extent::ROW_H),
         );
-        if !visible.intersects(rect) {
+        if !table_layout::on_screen(visible, rect) {
             continue;
         }
         let media = draw.media_of(item);
@@ -3030,6 +3030,103 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         );
 
         assert_eq!(command, None, "a culled row must not activate");
+    }
+
+    #[test]
+    fn a_row_that_only_touches_the_fold_asks_for_no_cover() {
+        // The fold is the viewport's bottom edge, and a row whose top sits on it
+        // shares only an edge with the viewport. It is not on screen, so it must
+        // not be laid out and must not fetch a cover nothing draws.
+        let count = 20;
+        let row = 3;
+        let ctx = context();
+        let tokens = Tokens::DARK;
+        let now = Instant::now();
+        let tracks: Vec<TrackEntry> = (0..count).map(track_with_cover).collect();
+        let mut library = library_with(tracks);
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        // Solved the way the view solves it, then read back from the row's own
+        // hover wash: the wash is painted at the row's rect.
+        let rect = row_rect_for(&ctx, count, row);
+        let mut washed = None;
+        for _ in 0..12 {
+            art.begin_frame();
+            let mut output = ctx.run_ui(input(vec![Event::PointerMoved(rect.center())]), |ui| {
+                let _ = tracks_view(
+                    ui,
+                    Table::Full,
+                    &mut library,
+                    &mut transport,
+                    &mut queue,
+                    &mut art,
+                    now,
+                    NOW_MS,
+                    &tokens,
+                );
+            });
+            output.textures_delta.clear();
+            washed = output
+                .shapes
+                .iter()
+                .find_map(|clipped| match &clipped.shape {
+                    egui::epaint::Shape::Rect(shape) if shape.fill == tokens.palette.row_hover => {
+                        Some(shape.rect)
+                    }
+                    _ => None,
+                })
+                .or(washed);
+        }
+        assert_eq!(
+            washed,
+            Some(rect),
+            "a row washes at the rect it is laid out in"
+        );
+
+        // The window's height is that row's top, so the fold is its top edge.
+        art.begin_frame();
+        let mut output = ctx.run_ui(
+            sized_input(Vec2::new(PROBE.x, rect.top()), Vec::new()),
+            |ui| {
+                let _ = tracks_view(
+                    ui,
+                    Table::Full,
+                    &mut library,
+                    &mut transport,
+                    &mut queue,
+                    &mut art,
+                    now,
+                    NOW_MS,
+                    &tokens,
+                );
+            },
+        );
+        output.textures_delta.clear();
+
+        let painted: std::collections::HashSet<usize> = painted_rows(&output).into_iter().collect();
+        assert_eq!(
+            painted,
+            (0..row).collect(),
+            "only the rows above the fold are laid out"
+        );
+        let requested: std::collections::HashSet<usize> = art
+            .requests(now)
+            .into_iter()
+            .filter_map(|command| match command {
+                Command::Fetch { url } => Some(cover_row(&url)),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !requested.contains(&row),
+            "the row that only touches the fold asked for a cover: {requested:?}"
+        );
+        assert_eq!(
+            requested, painted,
+            "the covers asked for are the rows the window shows"
+        );
     }
 
     #[test]

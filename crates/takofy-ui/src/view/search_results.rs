@@ -255,7 +255,7 @@ fn tracks(
 
     for (index, entry) in listing.answer.iter().take(shown).enumerate() {
         let rect = table_layout::row_rect(list, index, extent::ROW_H);
-        if !visible.intersects(rect) {
+        if !table_layout::on_screen(visible, rect) {
             continue;
         }
         let duration = entry.duration_ms.map(format_position);
