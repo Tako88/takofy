@@ -355,7 +355,11 @@ pub fn show(
     let body = rows::body(ui, rect, id(ui, row.uri, row.number), row.look);
     let response = &body.response;
     response.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::Role::Button, true, label(row.title, row.artist))
+        egui::WidgetInfo::labeled(
+            egui::Role::Button,
+            true,
+            label(row.title, row.artist, row.album),
+        )
     });
 
     // The reference reveals the play glyph and the like on hover *and* on
@@ -486,11 +490,13 @@ pub fn show(
 ///
 /// A slim row carries no credit, so "X by " would name nothing; the title alone
 /// is what the row says.
-fn label(title: &str, artist: &str) -> String {
-    if artist.is_empty() {
-        title.to_owned()
-    } else {
-        format!("{title} by {artist}")
+fn label(title: &str, artist: &str, album: Option<&str>) -> String {
+    if !artist.is_empty() {
+        return format!("{title} by {artist}");
+    }
+    match album.filter(|album| !album.is_empty()) {
+        Some(album) => format!("{title} on {album}"),
+        None => title.to_owned(),
     }
 }
 
@@ -578,7 +584,7 @@ fn bar_scales(time: f32) -> [f32; eq::BARS] {
 ///
 /// A list that draws per-row art nests the cover's box inside the title and
 /// draws the name beside it; a list that does not spends the whole cell on the
-/// name. Nothing here is a link: the artist cell is the row's one credit link.
+/// name. Nothing here is a link: the credit cell is.
 fn title(ui: &Ui, rect: Rect, row: &Row<'_>, tokens: &Tokens) {
     if !drawable(rect) {
         return;
@@ -613,9 +619,9 @@ fn title_cell(ui: &Ui, rect: Rect, row: &Row<'_>, tokens: &Tokens) {
     }
 }
 
-/// The artist column: the track's one credit link.
+/// The artist column: a credit link.
 ///
-/// A playlist and a plays row both carry it. The cell is a link when its first
+/// A playlist and an album's plays table carry it. The cell is a link when its first
 /// artist resolved a page and its name is non-empty: an empty cell painted
 /// nothing, so it gets no hit area either. The hit area is the whole cell, not
 /// just the painted words.
@@ -646,7 +652,8 @@ fn artist(
     })
 }
 
-/// The album column, which an album's own tracklist does not carry.
+/// The album column: the credit on an artist's plays table, and a plain fact
+/// on a playlist's rows.
 ///
 /// The cell is a link under the same rule as [`artist`]'s.
 fn album(
@@ -1500,9 +1507,16 @@ mod tests {
     }
 
     #[test]
-    fn the_accessibility_label_leaves_out_an_empty_artist() {
-        assert_eq!(label("T", ""), "T");
-        assert_eq!(label("T", "A"), "T by A");
+    fn the_accessibility_label_names_whichever_credit_the_row_draws() {
+        assert_eq!(label("T", "A", None), "T by A");
+        assert_eq!(label("T", "A", Some("B")), "T by A", "the artist wins");
+        assert_eq!(label("T", "", Some("B")), "T on B");
+        assert_eq!(
+            label("T", "", Some("")),
+            "T",
+            "an empty credit is no credit"
+        );
+        assert_eq!(label("T", "", None), "T");
     }
 
     #[test]

@@ -285,21 +285,26 @@ pub mod grow {
     /// The plays and slim rows' title, `1fr`. The playlist reads
     /// `grow::TITLE_PLAYLIST` instead.
     pub const TITLE: f32 = 1.0;
-    /// The album column's weight outside the playlist, `0.7fr`.
+    /// The album column's weight on a row with no credit template, `0.7fr`.
     ///
-    /// No constructor produces this today: `for_plays` and `for_slim` both clear
-    /// the album, and the playlist reads `grow::ALBUM_PLAYLIST`. It is kept for a
-    /// hand-built `Present { album: true, shape: !Playlist }`. Being `pub`, it is
-    /// not dead-by-lint, so no warning points at the unpinned branch.
+    /// No constructor produces this today: a slim row clears the album, a plays
+    /// row reads `grow::CREDIT_PLAYS`, and the playlist reads
+    /// `grow::ALBUM_PLAYLIST`. It is kept for a hand-built
+    /// `Present { album: true, shape: Slim }`. Being `pub`, it is not dead-by-lint,
+    /// so no warning points at the unpinned branch.
     pub const ALBUM: f32 = 0.7;
     /// The playlist's denser template: title `1.35fr`, artist and album `0.9fr`.
     pub const TITLE_PLAYLIST: f32 = 1.35;
     /// The playlist's artist share, `0.9fr`. The plays row reads
-    /// `grow::ARTIST_PLAYS` instead.
+    /// `grow::CREDIT_PLAYS` instead.
     pub const ARTIST: f32 = 0.9;
-    /// The plays row's artist share, `0.55fr`: the reference's `.tracks--plays`
-    /// `minmax(0, 0.55fr)`, measured against a `1fr` title.
-    pub const ARTIST_PLAYS: f32 = 0.55;
+    /// The plays row's one credit column, `0.55fr`: the reference's
+    /// `.tracks--plays` `minmax(0, 0.55fr)`, measured against a `1fr` title.
+    ///
+    /// A plays row credits one thing — an album's table names the artist, an
+    /// artist's table names the album — so this is the share that credit takes
+    /// whichever column carries it.
+    pub const CREDIT_PLAYS: f32 = 0.55;
     /// The playlist's album share, `0.9fr`.
     pub const ALBUM_PLAYLIST: f32 = 0.9;
 }
@@ -972,9 +977,9 @@ mod tests {
     }
 
     #[test]
-    fn the_plays_artist_is_tighter_than_the_playlists() {
-        const { assert!(grow::ARTIST_PLAYS > 0.0) };
-        const { assert!(grow::ARTIST_PLAYS < grow::ARTIST) };
+    fn the_plays_credit_is_tighter_than_the_playlists() {
+        const { assert!(grow::CREDIT_PLAYS > 0.0) };
+        const { assert!(grow::CREDIT_PLAYS < grow::ARTIST) };
     }
 
     #[test]

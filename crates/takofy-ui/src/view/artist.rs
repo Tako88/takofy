@@ -133,7 +133,7 @@ pub fn artist_view(
                         skeleton::rows(
                             ui,
                             skeleton::SCREENFUL,
-                            table.columns().for_plays(),
+                            table.columns().for_plays_album(),
                             true,
                             tokens,
                         );
@@ -160,7 +160,7 @@ pub fn artist_view(
                             skeleton::rows(
                                 ui,
                                 skeleton::SCREENFUL,
-                                table.columns().for_plays(),
+                                table.columns().for_plays_album(),
                                 true,
                                 tokens,
                             );
@@ -568,11 +568,12 @@ fn fans(
     pressed
 }
 
-/// The Popular section: the artist's top tracks as the album's own table rows.
+/// The Popular section: the artist's top tracks as a plays table.
 ///
 /// No `Plays` column: the wire carries no play counts. A row is the plays shape,
-/// numbered by its place in the list, carrying its own art and its credit in the
-/// artist column; a double click starts the whole top list from there.
+/// numbered by its place in the list, carrying its own art and the album it is
+/// on in the credit column — this page already says the artist, so the record is
+/// what the column is worth. A double click starts the whole top list from here.
 #[expect(
     clippy::too_many_arguments,
     reason = "the section needs its table, width, state, the frame's stores and the write gate"
@@ -601,7 +602,7 @@ fn popular(
         return;
     }
 
-    let columns = table_layout::columns(width, table.columns().for_plays());
+    let columns = table_layout::columns(width, table.columns().for_plays_album());
     head(ui, columns, tokens);
     let count = artist.top_tracks.len();
     let list = list_rect(ui, count);
@@ -634,20 +635,10 @@ fn popular(
             uri: &entry.uri,
             number: index + 1,
             title: &entry.title,
-            artist: &entry.artists,
-            // The page's own artist stays a plain label, so the credit never
-            // links to itself; a feature credited first opens that artist.
-            //
-            // The whole cell is one label, so when the page's artist is credited
-            // first and a feature second, the feature cannot be reached from
-            // here. The album page links the same credit.
-            artist_uri: entry
-                .artist_uris
-                .first()
-                .map(String::as_str)
-                .filter(|uri| *uri != artist.uri),
-            album: None,
-            album_uri: None,
+            artist: "",
+            artist_uri: None,
+            album: entry.album.as_deref(),
+            album_uri: entry.album_uri.as_deref(),
             added: None,
             duration: duration.as_deref(),
             state: state_of(&entry.uri, transport),
@@ -1245,13 +1236,15 @@ mod tests {
             actionbar::row_rect(ui);
             crate::view::inner(ui, |ui| {
                 section::head(ui, "Popular", "", &tokens);
-                let columns =
-                    table_layout::columns(ui.available_width(), Table::Full.columns().for_plays());
+                let columns = table_layout::columns(
+                    ui.available_width(),
+                    Table::Full.columns().for_plays_album(),
+                );
                 head(ui, columns, &tokens);
                 let list = list_rect(ui, count);
                 let row = table_layout::row_rect(list, index, extent::ROW_H);
                 let placed = columns.at(row.min);
-                found = Some((placed.title, placed.artist, row));
+                found = Some((placed.title, placed.album, row));
             });
         });
         found.expect("the popular table lays out")
@@ -5412,13 +5405,12 @@ mod tests {
         );
     }
 
-    /// A track whose first credit is someone other than the page's artist.
-    fn featured(first: &str, artists: &str) -> TrackEntry {
+    /// A track that names the record it is on, which is the cell's credit.
+    fn on_album(uri: &str, title: &str, album: &str) -> TrackEntry {
         TrackEntry {
-            artists: artists.to_owned(),
-            artist_uris: vec![first.to_owned(), ARTIST.to_owned()],
-            artist_names: Vec::new(),
-            ..track("spotify:track:f", "Featured", artists, 200_000)
+            album: Some(album.to_owned()),
+            album_uri: Some(uri.to_owned()),
+            ..track("spotify:track:a", title, "Vela Moreno", 200_000)
         }
     }
 
@@ -5476,14 +5468,11 @@ mod tests {
     }
 
     #[test]
-    fn a_popular_row_opens_a_featured_first_credit() {
+    fn a_popular_row_opens_its_album() {
         let ctx = context();
         let size = Vec2::new(900.0, 800.0);
         let mut library = library_with(detail(
-            vec![featured(
-                "spotify:artist:nils-aker",
-                "Nils Aker, Vela Moreno",
-            )],
+            vec![on_album("spotify:album:slow-tide", "One", "Slow Tide")],
             Vec::new(),
         ));
         let mut transport = Transport::default();
@@ -5504,61 +5493,36 @@ mod tests {
 
         assert_eq!(
             library.page(),
-            Some(&Page::Artist("spotify:artist:nils-aker".to_owned())),
-            "the credit opens the artist it names first"
+            Some(&Page::Album("spotify:album:slow-tide".to_owned())),
+            "the credit opens the record it names"
         );
         assert_eq!(
             command,
-            Some(Command::LoadArtist {
-                artist: "spotify:artist:nils-aker".to_owned()
+            Some(Command::LoadAlbum {
+                album: "spotify:album:slow-tide".to_owned()
             })
         );
         assert!(!queue.can_next(), "opening a page must not start the queue");
     }
 
     #[test]
-    fn a_popular_row_does_not_link_the_page_artist_to_itself() {
+    fn a_popular_row_without_an_album_still_plays_on_a_double_click() {
         let ctx = context();
         let size = Vec2::new(900.0, 800.0);
-        let own = || {
-            vec![TrackEntry {
-                artist_uris: vec![ARTIST.to_owned()],
-                ..track("spotify:track:a", "One", "Vela Moreno", 222_000)
-            }]
-        };
-        let mut library = library_with(detail(own(), Vec::new()));
+        // No album on the entry, so the credit cell is empty and takes no press.
+        let mut library = library_with(detail(
+            vec![track("spotify:track:a", "One", "Vela Moreno", 222_000)],
+            Vec::new(),
+        ));
         let mut transport = Transport::default();
         let mut queue = Queue::default();
         let mut art = Art::default();
 
-        let (_, artist_cell, _) = popular_cells(&ctx, size, 0, 1);
+        let (_, credit, _) = popular_cells(&ctx, size, 0, 1);
         let command = click(
             &ctx,
             size,
-            artist_cell.center(),
-            1,
-            &mut library,
-            &mut transport,
-            &mut queue,
-            &mut art,
-        );
-
-        assert_eq!(command, None, "the page's own artist opens nothing");
-        assert_eq!(
-            library.page(),
-            Some(&Page::Artist(ARTIST.to_owned())),
-            "and the page never leaves itself"
-        );
-
-        // A fresh page for the double click: the cell is a plain label, so the
-        // press reaches the row and plays.
-        let ctx = context();
-        let mut library = library_with(detail(own(), Vec::new()));
-        let mut transport = Transport::default();
-        let command = click(
-            &ctx,
-            size,
-            artist_cell.center(),
+            credit.center(),
             2,
             &mut library,
             &mut transport,
@@ -5571,7 +5535,7 @@ mod tests {
             Some(Command::Play {
                 uri: "spotify:track:a".to_owned()
             }),
-            "the label is not swallowed, so a double click still plays"
+            "an empty credit cell is not a link, so the press reaches the row"
         );
         assert_eq!(
             transport.now_playing.as_ref().map(|now| now.uri.as_str()),
@@ -5590,7 +5554,7 @@ mod tests {
         let size = Vec2::new(900.0, 800.0);
         let top = vec![
             track("spotify:track:a", "One", "Vela Moreno", 222_000),
-            featured("spotify:artist:nils-aker", "Nils Aker, Vela Moreno"),
+            on_album("spotify:album:slow-tide", "Two", "Slow Tide"),
         ];
         let mut library = library_with(detail(top, Vec::new()));
         let mut transport = Transport::default();
@@ -5600,8 +5564,8 @@ mod tests {
         // Both solves run before the focus is taken: a solve is a frame of its
         // own, and a frame that does not draw the focused row drops it.
         let (title, _, _) = popular_cells(&ctx, size, 0, 2);
-        let (_, artist_cell, _) = popular_cells(&ctx, size, 1, 2);
-        let at = artist_cell.center();
+        let (_, credit, _) = popular_cells(&ctx, size, 1, 2);
+        let at = credit.center();
 
         // Focus the first row, so Enter on it asks for a play.
         let _ = click(
@@ -5684,7 +5648,7 @@ mod tests {
     }
 
     #[test]
-    fn the_head_names_an_artist_column_beside_the_hero_eyebrow() {
+    fn the_head_names_an_album_column_beside_the_hero_eyebrow() {
         let ctx = context();
         let mut library = library_with(detail(
             vec![track("spotify:track:a", "One", "Vela Moreno", 222_000)],
@@ -5707,8 +5671,13 @@ mod tests {
 
         assert_eq!(
             texts.iter().filter(|text| **text == "ARTIST").count(),
-            2,
-            "the hero's eyebrow and the popular table's column heading: {texts:?}"
+            1,
+            "the hero's eyebrow alone: {texts:?}"
+        );
+        assert_eq!(
+            texts.iter().filter(|text| **text == "ALBUM").count(),
+            1,
+            "the popular table's column heading: {texts:?}"
         );
     }
 

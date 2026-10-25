@@ -24,7 +24,9 @@ use crate::theme::{extent, grow, space};
 pub enum Shape {
     /// A playlist's dense row: the artist and the album, `space-3` apart.
     Playlist,
-    /// The plays row: the artist in a tight share of the title, `space-4` apart.
+    /// The plays row: one credit in a tight share of the title, `space-4` apart.
+    /// The credit is the artist on an album's table and the album on an
+    /// artist's.
     Plays,
     /// A row with no credit column at all.
     Slim,
@@ -36,10 +38,11 @@ pub enum Shape {
 /// choice for the rest. The table never decides which columns drop, it lays out
 /// the ones it is told exist.
 ///
-/// The two credit constructors produce only two combinations: `for_plays` keeps
-/// the artist and clears the album and the date, while `for_slim` clears all
-/// three. A hand-built `Present` may set `album` on a non-playlist shape — the
-/// only state that reads `grow::ALBUM` — but the app never builds one.
+/// The credit constructors produce three combinations: `for_plays` keeps the
+/// artist and clears the album and the date, `for_plays_album` keeps the album
+/// in that one cell instead, and `for_slim` clears all three. A hand-built
+/// `Present` may set `album` on a `Slim` shape — the only state that reads
+/// `grow::ALBUM` — but the app never builds one.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Present {
     pub shape: Shape,
@@ -73,6 +76,21 @@ impl Present {
             shape: Shape::Plays,
             artist: true,
             album: false,
+            added: false,
+            ..self
+        }
+    }
+
+    /// The plays row that credits the album instead of the artist.
+    ///
+    /// An artist's own table names that artist on every row, so the column
+    /// repeats what the page already says; the album is the fact that changes
+    /// from row to row.
+    pub fn for_plays_album(self) -> Self {
+        Self {
+            shape: Shape::Plays,
+            artist: false,
+            album: true,
             added: false,
             ..self
         }
@@ -170,8 +188,9 @@ const TRACKS: usize = 8;
 ///
 /// The shape decides the weights: a playlist is dense, with a wide title to pay
 /// for the two credit columns it carries, while a plays row keeps a `1fr` title
-/// and spends a narrow share on its artist. Only the playlist names the album, so
-/// a plays or a slim row never reads the album weight.
+/// and spends a narrow share on the one thing it credits. Only the playlist
+/// carries both credits, and the plays row's credit column reads
+/// `grow::CREDIT_PLAYS` whichever of the two it is.
 fn track_for(index: usize, present: Present) -> Track {
     match index {
         INDEX => Track::fixed(extent::TRACK_INDEX_W),
@@ -190,7 +209,7 @@ fn track_for(index: usize, present: Present) -> Track {
             min: 0.0,
             max: f32::INFINITY,
             grow: if present.shape == Shape::Plays {
-                grow::ARTIST_PLAYS
+                grow::CREDIT_PLAYS
             } else {
                 grow::ARTIST
             },
@@ -199,10 +218,10 @@ fn track_for(index: usize, present: Present) -> Track {
             basis: 0.0,
             min: 0.0,
             max: f32::INFINITY,
-            grow: if present.shape == Shape::Playlist {
-                grow::ALBUM_PLAYLIST
-            } else {
-                grow::ALBUM
+            grow: match present.shape {
+                Shape::Playlist => grow::ALBUM_PLAYLIST,
+                Shape::Plays => grow::CREDIT_PLAYS,
+                Shape::Slim => grow::ALBUM,
             },
         },
         ADDED => Track::fixed(extent::TRACK_ADDED_W),
@@ -408,8 +427,8 @@ mod tests {
     }
 
     /// Every shape, at the full width table.
-    fn shapes() -> [Present; 3] {
-        [all(), plays(), slim()]
+    fn shapes() -> [Present; 4] {
+        [all(), plays(), all().for_plays_album(), slim()]
     }
 
     /// The gutter a shape pays between its columns.
@@ -572,7 +591,22 @@ mod tests {
             let columns = columns(width, plays());
             assert_close(
                 columns.artist.width() / columns.title.width(),
-                grow::ARTIST_PLAYS,
+                grow::CREDIT_PLAYS,
+            );
+        }
+    }
+
+    #[test]
+    fn the_plays_album_takes_the_same_share_in_the_other_cell() {
+        for width in [700.0, 900.0, 1200.0] {
+            let columns = columns(width, all().for_plays_album());
+            assert!(
+                columns.artist.width() == 0.0,
+                "the artist column is dropped, not merely empty: {columns:?}"
+            );
+            assert_close(
+                columns.album.width() / columns.title.width(),
+                grow::CREDIT_PLAYS,
             );
         }
     }
@@ -789,6 +823,8 @@ mod tests {
             },
             all().for_plays(),
             Table::Narrow.columns().for_plays(),
+            all().for_plays_album(),
+            Table::Narrow.columns().for_plays_album(),
         ] {
             for width in [narrowest, 400.0, 700.0, 900.0, 1440.0] {
                 let columns = columns(width, present);
