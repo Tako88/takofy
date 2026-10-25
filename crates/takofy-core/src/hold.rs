@@ -16,6 +16,7 @@ use crate::playstate::ActiveState;
 use crate::presence::Owed;
 use crate::registry::Verdict;
 use crate::transfer::{self, Resolution, TransferPlan};
+use crate::transfer_out;
 use crate::watch::{Gate, Shared, Timing, Wire, bounded, give_back, hand_over_path, put_and_view};
 
 /// The log target of this module, so the binary can let the activation line
@@ -281,19 +282,28 @@ pub(crate) async fn pick<W: Wire>(
         return Err(refused(ConnectError::HandOverPending));
     }
 
+    // Only what is moving can be moved on: a paused or report-less stage has
+    // nothing to carry, and taking the sound for it would silence the account.
+    let (report, age) = match shared.latest.report() {
+        Some((report, age)) if matches!(report.status, Status::Playing | Status::Loading) => {
+            (report, age)
+        }
+        _ => {
+            log::info!(target: HOLD_LOG_TARGET, "pick refused: nothing playing");
+            return Err(ConnectError::NotPlaying);
+        }
+    };
+    // The target takes this state rather than resolving the context itself, so
+    // the move names the rows.
+    let body = match transfer_out::body(&report, &own, wire.now_ms()) {
+        Ok(body) => body,
+        Err(_) => {
+            log::info!(target: HOLD_LOG_TARGET, "pick refused: no track");
+            return Err(ConnectError::NoTrack);
+        }
+    };
+
     if !shared.presence.active() {
-        // Only what is moving can be moved on: a paused or report-less stage
-        // has nothing to hand over, and taking the sound for it would silence
-        // the account.
-        let (report, age) = match shared.latest.report() {
-            Some((report, age)) if matches!(report.status, Status::Playing | Status::Loading) => {
-                (report, age)
-            }
-            _ => {
-                log::info!(target: HOLD_LOG_TARGET, "pick refused: nothing playing");
-                return Err(ConnectError::NotPlaying);
-            }
-        };
         let age_ms = i64::try_from(age.as_millis()).unwrap_or(i64::MAX);
         let Some(state) = ActiveState::new(report, age_ms) else {
             log::info!(target: HOLD_LOG_TARGET, "pick refused: no track");
@@ -332,7 +342,7 @@ pub(crate) async fn pick<W: Wire>(
     // names the target: a view reporting the loss, a release, or a new
     // connection id ends it, and so does a move that comes back a failure.
     shared.presence.pick_issued();
-    match bounded(gate, timing.hand_over, wire.hand_over(&own, to)).await {
+    match bounded(gate, timing.hand_over, wire.hand_over(to, &body)).await {
         Ok(()) => Ok(()),
         Err(error) => {
             // Nothing is in flight any more, and the sound never left.
@@ -1432,9 +1442,13 @@ mod tests {
             "the sound is taken before it is handed away, and the move finished: \
              a hand-over cut at its budget leaves only its own start behind"
         );
-        assert_eq!(
-            *world.wire.hand_overs.lock().expect("lock"),
-            [(DEVICE.to_owned(), "phone".to_owned())]
+        let moved = world.wire.hand_overs.lock().expect("lock").clone();
+        assert_eq!(moved.len(), 1, "{moved:?}");
+        assert_eq!(moved[0].0, "phone", "the target the press named");
+        assert!(
+            moved[0].1.contains("\"endpoint\":\"transfer\""),
+            "the move carries the transfer command: {}",
+            moved[0].1
         );
         assert!(
             world.shared.presence.active(),
@@ -1568,9 +1582,13 @@ mod tests {
             "the sound cannot be handed on twice at once: {result:?}"
         );
         assert_eq!(wire.log.entries(), sent, "a second pick sends nothing");
+        let moved = wire.hand_overs.lock().expect("lock").clone();
         assert_eq!(
-            *wire.hand_overs.lock().expect("lock"),
-            [(DEVICE.to_owned(), "phone".to_owned())],
+            moved
+                .iter()
+                .map(|(to, _)| to.as_str())
+                .collect::<Vec<&str>>(),
+            ["phone"],
             "only the first target was asked for"
         );
 
@@ -1589,11 +1607,13 @@ mod tests {
             .await
             .expect("a settled hold can be handed on");
         assert_eq!(
-            *wire.hand_overs.lock().expect("lock"),
-            [
-                (DEVICE.to_owned(), "phone".to_owned()),
-                (DEVICE.to_owned(), "laptop".to_owned()),
-            ]
+            wire.hand_overs
+                .lock()
+                .expect("lock")
+                .iter()
+                .map(|(to, _)| to.as_str())
+                .collect::<Vec<&str>>(),
+            ["phone", "laptop"]
         );
     }
 
@@ -1623,8 +1643,13 @@ mod tests {
             "no loss is reported for a move that never happened"
         );
         assert_eq!(
-            *wire.hand_overs.lock().expect("lock"),
-            [(DEVICE.to_owned(), "phone".to_owned())]
+            wire.hand_overs
+                .lock()
+                .expect("lock")
+                .iter()
+                .map(|(to, _)| to.as_str())
+                .collect::<Vec<&str>>(),
+            ["phone"]
         );
     }
 

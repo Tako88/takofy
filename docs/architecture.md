@@ -223,6 +223,15 @@ wholesale queue window, and reports what it did. A phone that starts something
 new goes through the same landing path a hand-over into this window uses, so
 starting a context is not a special case.
 
+**A move is a command, not a transfer.** The REST transfer endpoint only lets a
+device claim the sound for itself, and refuses a push from one device to another
+— measured on the account three ways. So a pick in the device card does what the
+phone does to this window: it takes the sound first, because only the active
+device may address another one, and then sends that device the dealer command
+whose data is the whole state to carry. The target claims the sound with those
+rows rather than resolving the context itself, which is why the state carries
+them and not only the context's uri.
+
 **The costs are stated, not hidden.** Volume is disabled rather than obeyed, and
 a phone that changes it here will find the account and this window disagreeing.
 A phone's queue window replaces this window's queue — ten rows behind, eighty

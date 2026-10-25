@@ -129,7 +129,7 @@ pub(crate) struct FakeWire {
     hand_over_fails: AtomicBool,
     /// Whether the hand-over never answers, so only its budget can end it.
     hand_over_hangs: AtomicBool,
-    /// Every hand-over the wire was asked to make, in order.
+    /// Every hand-over the wire was asked to make: the target, then the body.
     pub(crate) hand_overs: Mutex<Vec<(String, String)>>,
 }
 
@@ -228,11 +228,11 @@ impl Wire for FakeWire {
         *self.now.lock().expect("lock")
     }
 
-    async fn hand_over(&self, from: &str, to: &str) -> Result<(), ConnectError> {
+    async fn hand_over(&self, to: &str, body: &str) -> Result<(), ConnectError> {
         self.hand_overs
             .lock()
             .expect("lock")
-            .push((from.to_owned(), to.to_owned()));
+            .push((to.to_owned(), body.to_owned()));
         self.log.push("hand_over:start");
         if self.hand_over_hangs.load(Ordering::SeqCst) {
             std::future::pending::<()>().await;

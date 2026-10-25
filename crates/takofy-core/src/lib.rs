@@ -38,6 +38,7 @@ mod search;
 #[cfg(test)]
 mod testing;
 mod transfer;
+mod transfer_out;
 mod watch;
 mod wire;
 

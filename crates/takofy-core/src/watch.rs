@@ -17,8 +17,7 @@ use http::{HeaderMap, HeaderValue, Method, header};
 use librespot::core::Session;
 use librespot::core::dealer::manager::BoxedStreamResult;
 use librespot::core::dealer::protocol::Message;
-use librespot::core::dealer::protocol::TransferOptions;
-use librespot::core::spclient::{RequestStrategy, SpClient, TransferRequest};
+use librespot::core::spclient::{RequestStrategy, SpClient};
 use librespot::protocol::connect::{Cluster, ClusterUpdate};
 use protobuf::Message as _;
 use tokio::sync::Mutex as TokioMutex;
@@ -189,11 +188,11 @@ pub(crate) trait Wire: Send + Sync + 'static {
     ) -> impl Future<Output = Result<Vec<u8>, ConnectError>> + Send;
     /// Tells the account this device no longer holds the sound.
     fn put_inactive(&self) -> impl Future<Output = Result<(), ConnectError>> + Send;
-    /// Moves the sound to `to`, away from `from`.
+    /// Asks `to` to take the sound, carrying the state in `body`.
     fn hand_over(
         &self,
-        from: &str,
         to: &str,
+        body: &str,
     ) -> impl Future<Output = Result<(), ConnectError>> + Send;
     fn delete(&self) -> impl Future<Output = Result<(), ConnectError>> + Send;
     /// Sends one command body to `target`, in one attempt when `once`.
@@ -292,18 +291,12 @@ impl Wire for SessionWire {
         Ok(())
     }
 
-    async fn hand_over(&self, from: &str, to: &str) -> Result<(), ConnectError> {
-        // The path a hand-over will take is checked before anything is sent,
-        // so no device id can widen it into another endpoint.
-        hand_over_path(from, to)?;
-        // The body is not optional in practice: the endpoint answers a bare
-        // POST with a refusal, so an empty options object is what asks for a
-        // default move rather than nothing at all.
-        let request = TransferRequest {
-            transfer_options: TransferOptions::default(),
-        };
-        self.0.spclient().transfer(from, to, Some(&request)).await?;
-        Ok(())
+    async fn hand_over(&self, to: &str, body: &str) -> Result<(), ConnectError> {
+        // Not the REST transfer endpoint: that one only lets a device claim the
+        // sound for itself, and refuses a push to another device. The move is
+        // the dealer command the phone itself sends here, so the target claims
+        // the sound with the state this body carries.
+        self.command(to, body, false).await
     }
 
     async fn delete(&self) -> Result<(), ConnectError> {
@@ -1244,17 +1237,6 @@ mod tests {
             command_endpoint("own", "phone?query"),
             Err(ConnectError::InvalidTarget)
         ));
-    }
-
-    #[test]
-    fn a_hand_over_asks_for_a_default_move_rather_than_nothing() {
-        // The endpoint refuses a bare POST, so the body it is measured with is
-        // the empty options object and not an absent one.
-        let request = TransferRequest {
-            transfer_options: TransferOptions::default(),
-        };
-        let body = serde_json::to_string(&request).expect("the request serialises");
-        assert_eq!(body, r#"{"transfer_options":{}}"#);
     }
 
     #[test]
