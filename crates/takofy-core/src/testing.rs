@@ -20,6 +20,7 @@ use crate::latest::Latest;
 use crate::presence::Presence;
 use crate::publish;
 use crate::registry::{Registry, Responder, Verdict};
+use crate::transfer_out::ContextRow;
 use crate::watch::{Gate, Shared, Timing, Wire, pump};
 
 pub(crate) const DEVICE: &str = "device-1";
@@ -131,6 +132,10 @@ pub(crate) struct FakeWire {
     hand_over_hangs: AtomicBool,
     /// Every hand-over the wire was asked to make: the target, then the body.
     pub(crate) hand_overs: Mutex<Vec<(String, String)>>,
+    /// The rows a context read answers with, so a move has the account's uids.
+    pub(crate) resolved_rows: Mutex<Vec<ContextRow>>,
+    /// Whether that read fails, so a move can be tested without the rows.
+    context_rows_fail: AtomicBool,
 }
 
 impl FakeWire {
@@ -193,6 +198,16 @@ impl FakeWire {
         self.hand_over_fails.store(true, Ordering::SeqCst);
     }
 
+    /// Lines up a context read: the rows a move will name.
+    pub(crate) fn rows(&self, rows: Vec<ContextRow>) {
+        *self.resolved_rows.lock().expect("lock") = rows;
+    }
+
+    /// Makes the context read fail, so a move has no rows to name.
+    pub(crate) fn refuse_context_rows(&self) {
+        self.context_rows_fail.store(true, Ordering::SeqCst);
+    }
+
     /// Makes the hand-over hang, so only its budget can end it.
     pub(crate) fn hang_hand_over(&self) {
         self.hand_over_hangs.store(true, Ordering::SeqCst);
@@ -226,6 +241,15 @@ impl Wire for FakeWire {
 
     fn now_ms(&self) -> i64 {
         *self.now.lock().expect("lock")
+    }
+
+    async fn context_rows(&self, _uri: &str) -> Result<Vec<ContextRow>, ConnectError> {
+        if self.context_rows_fail.load(Ordering::SeqCst) {
+            return Err(ConnectError::Session(
+                librespot::core::Error::failed_precondition("the context could not be read"),
+            ));
+        }
+        Ok(self.resolved_rows.lock().expect("lock").clone())
     }
 
     async fn hand_over(&self, to: &str, body: &str) -> Result<(), ConnectError> {

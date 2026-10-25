@@ -230,7 +230,10 @@ phone does to this window: it takes the sound first, because only the active
 device may address another one, and then sends that device the dealer command
 whose data is the whole state to carry. The target claims the sound with those
 rows rather than resolving the context itself, which is why the state carries
-them and not only the context's uri. A move from a queue that came from no page
+them and not only the context's uri — and why it names the current row by the
+account's own uid, read from the context at that moment: a uid this client
+invented names no row on the target, so the target would start the context from
+its beginning. A move from a queue that came from no page
 is refused before the sound is taken: the target would claim the sound with
 nothing to play.
 

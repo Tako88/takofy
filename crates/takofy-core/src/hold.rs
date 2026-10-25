@@ -294,9 +294,27 @@ pub(crate) async fn pick<W: Wire>(
         }
     };
     // The target takes this state rather than resolving the context itself, so
-    // the move names the rows and the page they came from. A stage with no page
-    // is refused before the put, so the account is never taken for nothing.
-    let body = match transfer_out::body(&report, &own, wire.now_ms()) {
+    // the move names the rows — and names them by the account's own uids, which
+    // is the only way it can find the row the sound is on. A context that cannot
+    // be read is not a reason to refuse: the near rows still play, at whatever
+    // position the target derives.
+    let resolved = match report.context.as_deref() {
+        Some(uri) if !uri.is_empty() => match wire.context_rows(uri).await {
+            Ok(rows) => rows,
+            Err(error) => {
+                log::info!(
+                    target: HOLD_LOG_TARGET,
+                    "pick moving without the context rows: {}",
+                    error.log_line()
+                );
+                Vec::new()
+            }
+        },
+        _ => Vec::new(),
+    };
+    // A stage with no page is refused before the put, so the account is never
+    // taken for nothing.
+    let body = match transfer_out::body(&report, &own, wire.now_ms(), &resolved) {
         Ok(body) => body,
         Err(transfer_out::MoveError::NoTrack) => {
             log::info!(target: HOLD_LOG_TARGET, "pick refused: no track");
@@ -1458,6 +1476,55 @@ mod tests {
         assert!(
             world.shared.presence.active(),
             "the put that comes with a pick is what makes the hand-over work"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_pick_names_the_current_row_by_the_accounts_own_uid() {
+        let world = World::new(timing());
+        world.shared.latest.set(Some(report(Status::Playing)));
+        // The account's own names for the rows, which is the only naming the
+        // target can match against its context.
+        world.wire.rows(vec![
+            transfer_out::ContextRow {
+                uri: "spotify:track:before".to_owned(),
+                uid: "server-before".to_owned(),
+            },
+            transfer_out::ContextRow {
+                uri: TRACK_1.to_owned(),
+                uid: "server-nine".to_owned(),
+            },
+        ]);
+
+        world.pick("phone").await.expect("the pick lands");
+
+        let body = world.wire.hand_overs.lock().expect("lock")[0].1.clone();
+        let state = transfer_out::parse_body(&body).expect("the body carries a state");
+        assert_eq!(
+            state.current_session.current_uid.as_deref(),
+            Some("server-nine"),
+            "the row the sound is on is named the way the account names it"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_context_that_cannot_be_read_still_moves_the_near_rows() {
+        let world = World::new(timing());
+        world.shared.latest.set(Some(report(Status::Playing)));
+        world.wire.refuse_context_rows();
+
+        world.pick("phone").await.expect("the pick lands anyway");
+
+        let body = world.wire.hand_overs.lock().expect("lock")[0].1.clone();
+        let state = transfer_out::parse_body(&body).expect("the body carries a state");
+        assert!(
+            state.current_session.current_uid.is_some(),
+            "the target is still told which row to start on"
+        );
+        assert_eq!(
+            state.playback.current_track.uri.as_deref(),
+            Some(TRACK_1),
+            "and which track that is"
         );
     }
 

@@ -19,6 +19,23 @@ use librespot::protocol::transfer_state::TransferState;
 use protobuf::{Message as ProtobufMessage, MessageField};
 use takofy_model::{Report, Status, TrackEntry};
 
+/// The most rows a move carries.
+///
+/// A playlist can hold thousands and the body is one POST; the target only needs
+/// the rows around the current one, and it resolves the rest from the context.
+pub(crate) const MOVE_MAX_ROWS: usize = 400;
+
+/// One row of the resolved context: the track, and the account's own name for
+/// that position in it.
+///
+/// The uid matters: the target matches its current row by uid against the
+/// context it holds, so a uid this client invented names no row there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ContextRow {
+    pub uri: String,
+    pub uid: String,
+}
+
 /// Why a state could not be built.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MoveError {
@@ -39,7 +56,12 @@ fn next_message_id() -> u64 {
 /// One row per entry, in queue order, with a uid per row: the target matches its
 /// current row by that uid, so the page and `current_uid` have to agree and
 /// nothing else reads them.
-pub(crate) fn body(report: &Report, own: &str, now_ms: i64) -> Result<String, MoveError> {
+pub(crate) fn body(
+    report: &Report,
+    own: &str,
+    now_ms: i64,
+    resolved: &[ContextRow],
+) -> Result<String, MoveError> {
     let track = report.track.as_ref().ok_or(MoveError::NoTrack)?;
     // A target claims the sound with this state, so a state with no context asks
     // it to claim a sound it has nothing to play.
@@ -48,7 +70,7 @@ pub(crate) fn body(report: &Report, own: &str, now_ms: i64) -> Result<String, Mo
         .as_deref()
         .filter(|uri| !uri.is_empty())
         .ok_or(MoveError::NoContext)?;
-    let state = state_of(report, track, context, now_ms);
+    let state = state_of(report, track, context, now_ms, resolved);
     let encoded = encode(&state.write_to_bytes().unwrap_or_default());
     Ok(format!(
         "{{\"message_id\":{},\"sent_by_device_id\":{},\"command\":{{\"endpoint\":\"transfer\",\"data\":\"{}\"}}}}",
@@ -58,22 +80,50 @@ pub(crate) fn body(report: &Report, own: &str, now_ms: i64) -> Result<String, Mo
     ))
 }
 
-fn state_of(report: &Report, track: &TrackEntry, context_uri: &str, now_ms: i64) -> TransferState {
+fn state_of(
+    report: &Report,
+    track: &TrackEntry,
+    context_uri: &str,
+    now_ms: i64,
+    resolved: &[ContextRow],
+) -> TransferState {
     let options = report.options.unwrap_or_default();
-    let mut rows: Vec<&TrackEntry> = report.prev.iter().collect();
-    let current = rows.len();
-    rows.push(track);
-    rows.extend(report.next.iter());
+    let (rows, current) = match window(resolved, &track.uri) {
+        Some((rows, current)) => (rows, current),
+        // The context does not name the row — an edited queue, a shuffle this
+        // client made. The near rows still give the target something to play,
+        // though it will land at the context's own idea of the position.
+        None => {
+            let mut rows: Vec<ContextRow> = report
+                .prev
+                .iter()
+                .chain(std::iter::once(track))
+                .chain(report.next.iter())
+                .enumerate()
+                .map(|(index, row)| ContextRow {
+                    uri: row.uri.clone(),
+                    uid: uid_of(index),
+                })
+                .collect();
+            rows.truncate(MOVE_MAX_ROWS);
+            let current = report.prev.len().min(rows.len().saturating_sub(1));
+            (rows, current)
+        }
+    };
 
     let tracks: Vec<ContextTrack> = rows
         .iter()
-        .enumerate()
-        .map(|(index, row)| ContextTrack {
+        .map(|row| ContextTrack {
             uri: Some(row.uri.clone()),
-            uid: Some(uid_of(index)),
+            uid: Some(row.uid.clone()),
             ..Default::default()
         })
         .collect();
+    let current_track = tracks.get(current).cloned().unwrap_or(ContextTrack {
+        uri: Some(track.uri.clone()),
+        uid: Some(uid_of(current)),
+        ..Default::default()
+    });
     let mut context = Context {
         uri: Some(context_uri.to_owned()),
         ..Default::default()
@@ -97,16 +147,12 @@ fn state_of(report: &Report, track: &TrackEntry, context_uri: &str, now_ms: i64)
             position_as_of_timestamp: Some(report.position_ms as i32),
             playback_speed: Some(1.0),
             is_paused: Some(!playing),
-            current_track: MessageField::some(ContextTrack {
-                uri: Some(track.uri.clone()),
-                uid: Some(uid_of(current)),
-                ..Default::default()
-            }),
+            current_track: MessageField::some(current_track),
             ..Default::default()
         }),
         current_session: MessageField::some(WireSession {
             context: MessageField::some(context),
-            current_uid: Some(uid_of(current)),
+            current_uid: rows.get(current).map(|row| row.uid.clone()),
             ..Default::default()
         }),
         ..Default::default()
@@ -115,6 +161,21 @@ fn state_of(report: &Report, track: &TrackEntry, context_uri: &str, now_ms: i64)
 
 fn uid_of(index: usize) -> String {
     format!("row{index}")
+}
+
+/// The rows to carry, and where the current one sits among them.
+///
+/// The window keeps the body bounded while still naming the current row; when
+/// the context is short the window is the whole of it.
+fn window(resolved: &[ContextRow], current_uri: &str) -> Option<(Vec<ContextRow>, usize)> {
+    let at = resolved.iter().position(|row| row.uri == current_uri)?;
+    if resolved.len() <= MOVE_MAX_ROWS {
+        return Some((resolved.to_vec(), at));
+    }
+    let half = MOVE_MAX_ROWS / 2;
+    let start = at.saturating_sub(half).min(resolved.len() - MOVE_MAX_ROWS);
+    let rows = resolved[start..start + MOVE_MAX_ROWS].to_vec();
+    Some((rows, at - start))
 }
 
 /// A JSON string literal. The two characters that can appear in a device id are
@@ -156,6 +217,17 @@ fn encode(bytes: &[u8]) -> String {
         });
     }
     out
+}
+
+/// The state a body carries, for tests in other modules: nothing in production
+/// reads a body back.
+#[cfg(test)]
+pub(crate) fn parse_body(body: &str) -> Option<TransferState> {
+    let data = body
+        .split("\"data\":\"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())?;
+    TransferState::parse_from_bytes(&decode(data)).ok()
 }
 
 /// The inverse, for tests: nothing in production decodes this.
@@ -234,7 +306,7 @@ mod tests {
 
     #[test]
     fn the_body_asks_for_a_transfer_and_names_us() {
-        let body = body(&report(), "our-device", 1_000).expect("a report with a row");
+        let body = body(&report(), "our-device", 1_000, &[]).expect("a report with a row");
         assert!(body.starts_with("{\"message_id\":"), "{body}");
         assert!(
             body.contains("\"sent_by_device_id\":\"our-device\""),
@@ -246,7 +318,7 @@ mod tests {
 
     #[test]
     fn the_state_carries_every_row_around_the_current_one() {
-        let state = state(&body(&report(), "own", 1_000).expect("a body"));
+        let state = state(&body(&report(), "own", 1_000, &[]).expect("a body"));
         let context = state.current_session.context.as_ref().expect("a context");
         assert_eq!(context.uri.as_deref(), Some("spotify:playlist:ours"));
         let tracks = &context.pages.first().expect("a page").tracks;
@@ -282,7 +354,7 @@ mod tests {
 
     #[test]
     fn the_state_carries_the_position_the_modes_and_whether_it_plays() {
-        let state = state(&body(&report(), "own", 1_000).expect("a body"));
+        let state = state(&body(&report(), "own", 1_000, &[]).expect("a body"));
         let playback = state.playback.as_ref().expect("a playback");
         assert_eq!(playback.position_as_of_timestamp, Some(4_200));
         assert_eq!(playback.timestamp, Some(1_000));
@@ -298,7 +370,7 @@ mod tests {
     fn a_paused_window_moves_a_paused_state() {
         let mut paused = report();
         paused.status = Status::Paused;
-        let state = state(&body(&paused, "own", 1_000).expect("a body"));
+        let state = state(&body(&paused, "own", 1_000, &[]).expect("a body"));
         assert_eq!(
             state
                 .playback
@@ -308,30 +380,130 @@ mod tests {
         );
     }
 
+    fn resolved(uris: &[(&str, &str)]) -> Vec<ContextRow> {
+        uris.iter()
+            .map(|(uri, uid)| ContextRow {
+                uri: (*uri).to_owned(),
+                uid: (*uid).to_owned(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_page_comes_from_the_resolved_context_and_names_the_row() {
+        let rows = resolved(&[
+            ("spotify:track:a", "server-a"),
+            ("spotify:track:b", "server-b"),
+            ("spotify:track:c", "server-c"),
+        ]);
+        let state = state(&body(&report(), "own", 1_000, &rows).expect("a report with a row"));
+        let tracks = &state
+            .current_session
+            .context
+            .as_ref()
+            .expect("a context")
+            .pages
+            .first()
+            .expect("a page")
+            .tracks;
+        assert_eq!(tracks.len(), 3, "the context's own order, not a window");
+        assert_eq!(
+            state.current_session.current_uid.as_deref(),
+            Some("server-b"),
+            "the row the sound is on, named the way the account names it"
+        );
+        assert_eq!(
+            state.playback.current_track.uri.as_deref(),
+            Some("spotify:track:b")
+        );
+        assert_eq!(
+            state.playback.current_track.uid.as_deref(),
+            Some("server-b")
+        );
+    }
+
+    #[test]
+    fn a_context_that_does_not_name_the_row_moves_the_near_rows() {
+        let rows = resolved(&[
+            ("spotify:track:a", "server-a"),
+            ("spotify:track:d", "server-d"),
+        ]);
+        // The report is on a track this context does not hold.
+        let state = state(&body(&report(), "own", 1_000, &rows).expect("a body"));
+        let tracks = &state
+            .current_session
+            .context
+            .as_ref()
+            .expect("a context")
+            .pages
+            .first()
+            .expect("a page")
+            .tracks;
+        assert_eq!(tracks.len(), 4, "the rows around the current one");
+        assert_eq!(
+            state.playback.current_track.uri.as_deref(),
+            Some("spotify:track:b"),
+            "the current row is still carried"
+        );
+    }
+
+    #[test]
+    fn a_long_context_is_windowed_around_the_row() {
+        let mut uris: Vec<(String, String)> = (0..1_000)
+            .map(|index| (format!("spotify:track:{index}"), format!("server-{index}")))
+            .collect();
+        let rows: Vec<ContextRow> = uris
+            .drain(..)
+            .map(|(uri, uid)| ContextRow { uri, uid })
+            .collect();
+        let mut long = report();
+        long.track = Some(row("spotify:track:900"));
+        let state = state(&body(&long, "own", 1_000, &rows).expect("a body"));
+        let page = state
+            .current_session
+            .context
+            .as_ref()
+            .expect("a context")
+            .pages
+            .first()
+            .expect("a page");
+        assert_eq!(page.tracks.len(), MOVE_MAX_ROWS);
+        assert_eq!(
+            state.current_session.current_uid.as_deref(),
+            Some("server-900")
+        );
+        assert!(
+            page.tracks
+                .iter()
+                .any(|track| track.uid.as_deref() == Some("server-900")),
+            "the current row is inside the window"
+        );
+    }
+
     #[test]
     fn a_report_with_no_row_cannot_move_anything() {
         let mut empty = report();
         empty.track = None;
-        assert_eq!(body(&empty, "own", 1_000), Err(MoveError::NoTrack));
+        assert_eq!(body(&empty, "own", 1_000, &[]), Err(MoveError::NoTrack));
     }
 
     #[test]
     fn a_report_with_no_context_cannot_move_anything() {
         let mut empty = report();
         empty.context = None;
-        assert_eq!(body(&empty, "own", 1_000), Err(MoveError::NoContext));
+        assert_eq!(body(&empty, "own", 1_000, &[]), Err(MoveError::NoContext));
     }
 
     #[test]
     fn a_report_with_an_empty_context_cannot_move_anything() {
         let mut empty = report();
         empty.context = Some(String::new());
-        assert_eq!(body(&empty, "own", 1_000), Err(MoveError::NoContext));
+        assert_eq!(body(&empty, "own", 1_000, &[]), Err(MoveError::NoContext));
     }
 
     #[test]
     fn a_hostile_device_id_stays_inside_its_field() {
-        let body = body(&report(), "ow\"n\\x", 1_000).expect("a body");
+        let body = body(&report(), "ow\"n\\x", 1_000, &[]).expect("a body");
         assert!(
             body.contains("\"sent_by_device_id\":\"ow\\\"n\\\\x\""),
             "{body}"

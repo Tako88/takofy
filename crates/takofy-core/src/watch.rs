@@ -36,6 +36,7 @@ use crate::presence::{Observation, Presence, Stage};
 use crate::publish;
 use crate::receive::{self, Inbound};
 use crate::registry::Registry;
+use crate::transfer_out::ContextRow;
 
 /// The stream the dealer names its connection id on.
 const CONNECTION_URI: &str = "hm://pusher/v1/connections/";
@@ -194,6 +195,12 @@ pub(crate) trait Wire: Send + Sync + 'static {
         to: &str,
         body: &str,
     ) -> impl Future<Output = Result<(), ConnectError>> + Send;
+    /// The account's own rows for a context, so a move names a row by the name
+    /// the target knows rather than one this client invented.
+    fn context_rows(
+        &self,
+        uri: &str,
+    ) -> impl Future<Output = Result<Vec<ContextRow>, ConnectError>> + Send;
     fn delete(&self) -> impl Future<Output = Result<(), ConnectError>> + Send;
     /// Sends one command body to `target`, in one attempt when `once`.
     fn command(
@@ -297,6 +304,29 @@ impl Wire for SessionWire {
         // the dealer command the phone itself sends here, so the target claims
         // the sound with the state this body carries.
         self.command(to, body, false).await
+    }
+
+    async fn context_rows(&self, uri: &str) -> Result<Vec<ContextRow>, ConnectError> {
+        let context = self.0.spclient().get_context(uri).await?;
+        let mut rows = Vec::new();
+        for page in &context.pages {
+            for track in &page.tracks {
+                let Some(track_uri) = track.uri.clone() else {
+                    continue;
+                };
+                let Some(uid) = track.uid.clone() else {
+                    continue;
+                };
+                if track_uri.is_empty() || uid.is_empty() {
+                    continue;
+                }
+                rows.push(ContextRow {
+                    uri: track_uri,
+                    uid,
+                });
+            }
+        }
+        Ok(rows)
     }
 
     async fn delete(&self) -> Result<(), ConnectError> {
