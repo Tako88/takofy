@@ -2951,7 +2951,8 @@ mod tests {
         // The shelf takes the oldest, the middle and the newest covered
         // release, so putting the two blocks at the unpicked middle positions
         // keeps their art out of the band: a fetch of it can only be the
-        // block's own.
+        // block's own. The years run in wire order, so the sort keeps that order
+        // and the picks are indices 0, 2 and 4.
         let mut releases = vec![
             release("spotify:album:zero", "Zero", &["spotify:track:0"]),
             release("spotify:album:r1", "Album One", &["spotify:track:1"]),
@@ -2964,13 +2965,14 @@ mod tests {
             ),
             release("spotify:album:four", "Four", &["spotify:track:4"]),
         ];
-        for (index, tail) in [
-            (0, "zero"),
-            (1, "album"),
-            (2, "two"),
-            (3, "ep"),
-            (4, "four"),
+        for (index, year, tail) in [
+            (0, 2018, "zero"),
+            (1, 2019, "album"),
+            (2, 2020, "two"),
+            (3, 2021, "ep"),
+            (4, 2022, "four"),
         ] {
+            releases[index].year = Some(year);
             releases[index].cover = Some(cover(tail));
         }
         let now = Instant::now();
@@ -3416,13 +3418,30 @@ mod tests {
 
         let chip_height = chips_on_narrow[0].height();
         let expected = (rows - 1) as f32 * (chip_height + space::S1);
+        let band_bottom = |output: &egui::FullOutput| {
+            output
+                .shapes
+                .iter()
+                .find_map(|clipped| match &clipped.shape {
+                    egui::epaint::Shape::Rect(shape)
+                        if shape.fill == Tokens::DARK.palette.hero_wash =>
+                    {
+                        Some(shape.rect.bottom())
+                    }
+                    _ => None,
+                })
+                .expect("the artist band paints its wash")
+        };
         let wide_block = text_rect(&wide_out, "An Album").expect("the first block");
         let narrow_block = text_rect(&narrow_out, "An Album").expect("the first block");
+        // The stacked phone tier makes the band itself taller at the narrower
+        // window, so only the move past the band's own foot belongs to the row.
+        let moved = narrow_block.top()
+            - wide_block.top()
+            - (band_bottom(&narrow_out) - band_bottom(&wide_out));
         assert!(
-            (narrow_block.top() - wide_block.top() - expected).abs() < 0.01,
-            "the blocks move down by the wrapped rows: {} against {} for {rows} rows",
-            narrow_block.top() - wide_block.top(),
-            expected
+            (moved - expected).abs() < 0.01,
+            "the blocks move down by the wrapped rows: {moved} against {expected} for {rows} rows"
         );
     }
 

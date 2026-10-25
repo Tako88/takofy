@@ -48,13 +48,16 @@ pub fn show(ui: &mut Ui, artist: &ArtistHero<'_>, art: &mut Art, now: Instant, t
     let fill = tint.unwrap_or(tokens.palette.hero_wash);
 
     let text_width = frame.text_width(band_w);
-    let title = |width: f32| name(ui, artist.name, frame.title_size, tokens, width);
+    let title =
+        |width: f32, rows: usize| name(ui, artist.name, frame.title_size, tokens, width, rows);
+    // The probe may take one row past the cap, so a name that outgrows it is
+    // seen to do so; only the painted galley gets the cap.
     let balanced = balanced_width(
         text_width,
-        |width| title(width).rows.len(),
+        |width| title(width, hero::ARTIST_TITLE_ROWS + 1).rows.len(),
         hero::ARTIST_TITLE_ROWS,
     );
-    let title = title(balanced);
+    let title = title(balanced, hero::ARTIST_TITLE_ROWS);
     let words = discography_meta(
         artist.releases.len(),
         artist
@@ -115,8 +118,15 @@ pub fn show(ui: &mut Ui, artist: &ArtistHero<'_>, art: &mut Art, now: Instant, t
     mask(&painter, fade, fill);
 }
 
-/// The name at `width`, capped at the band's rows and elided past them.
-fn name(ui: &Ui, name: &str, size: f32, tokens: &Tokens, width: f32) -> Arc<egui::Galley> {
+/// The name at `width`, capped at `rows` and elided past them.
+fn name(
+    ui: &Ui,
+    name: &str,
+    size: f32,
+    tokens: &Tokens,
+    width: f32,
+    rows: usize,
+) -> Arc<egui::Galley> {
     recipe::clamped(
         ui,
         name,
@@ -124,7 +134,7 @@ fn name(ui: &Ui, name: &str, size: f32, tokens: &Tokens, width: f32) -> Arc<egui
         tokens.palette.text,
         recipe::tracking_pts(size, tracking::TIGHT),
         width,
-        hero::ARTIST_TITLE_ROWS,
+        rows,
     )
 }
 
@@ -263,6 +273,18 @@ mod tests {
 
     /// Holds `set`'s pick for `want`, as the fetches would have by the next frame.
     fn hold(ctx: &Context, art: &mut Art, set: &CoverSet, want: u32, now: Instant) {
+        hold_colored(ctx, art, set, want, now, [255, 0, 0, 255]);
+    }
+
+    /// Holds `set`'s pick as a texture of `rgba`, so held covers can be told apart.
+    fn hold_colored(
+        ctx: &Context,
+        art: &mut Art,
+        set: &CoverSet,
+        want: u32,
+        now: Instant,
+        rgba: [u8; 4],
+    ) {
         art.begin_frame();
         let _ = art.look(Some(set), want, now);
         while !art.requests(now).is_empty() {}
@@ -270,7 +292,7 @@ mod tests {
         art.apply(
             &Update::Cover {
                 url,
-                image: CoverImage::new(1, 1, vec![255, 0, 0, 255]).expect("a 1x1 image"),
+                image: CoverImage::new(1, 1, rgba.to_vec()).expect("a 1x1 image"),
             },
             now,
         );
@@ -303,6 +325,31 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    /// The textures painted inside `area`, left to right.
+    fn textures(output: &egui::FullOutput, area: Rect) -> Vec<egui::TextureId> {
+        let mut drawn: Vec<(Rect, egui::TextureId)> = output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Rect(shape)
+                    if shape.brush.is_some() && area.contains(shape.rect.center()) =>
+                {
+                    Some((
+                        shape.rect,
+                        shape
+                            .brush
+                            .as_ref()
+                            .expect("a textured rect")
+                            .fill_texture_id,
+                    ))
+                }
+                _ => None,
+            })
+            .collect();
+        drawn.sort_by(|left, right| left.0.left().total_cmp(&right.0.left()));
+        drawn.into_iter().map(|(_, texture)| texture).collect()
     }
 
     /// The box the band's wash fills: the full-width rect as tall as the band.
@@ -387,6 +434,36 @@ mod tests {
     }
 
     #[test]
+    fn the_phone_tier_stacks_the_plate_above_a_full_width_title() {
+        for window in [Vec2::new(640.0, 800.0), Vec2::new(760.0, 800.0)] {
+            let ctx = context();
+            let now = Instant::now();
+            let artist = hero("Vela Moreno", None, &[]);
+            let mut art = Art::default();
+            let output = draw(&ctx, &artist, &mut art, now, window);
+
+            let band = band_rect(&output, window.x);
+            let drawn = title(&output);
+            assert_close(drawn.galley.job.wrap.max_width, band.width());
+            assert_close(rect_of(drawn).left(), band.left());
+
+            let plate = fills(&output, Tokens::DARK.palette.surface_sunken);
+            assert_eq!(plate.len(), 1, "the missing portrait is the one plate");
+            assert!(
+                (plate[0].bottom() + space::S4 - rect_of(drawn).top()).abs() < 0.5,
+                "the plate sits one gap above the title"
+            );
+            let stacked =
+                space::S5 + plate_side(window.x) + space::S4 + drawn.galley.size().y + space::S5;
+            assert!(
+                (band.height() - stacked).abs() < 0.5,
+                "the band is {} tall, not the stacked {stacked}",
+                band.height()
+            );
+        }
+    }
+
+    #[test]
     fn a_three_row_title_still_sits_inside_the_frames_height() {
         let ctx = context();
         let now = Instant::now();
@@ -438,7 +515,7 @@ mod tests {
         assert_close(plate.width(), plate_side(PAGE.x));
         assert_close(plate.height(), plate_side(PAGE.x));
         assert_close(plate.left(), space::GUTTER);
-        assert_close(plate.bottom(), band.bottom() - space::S5);
+        assert_close(plate.bottom(), band.bottom() - stroke::HAIRLINE - space::S5);
 
         assert!(
             output.shapes.iter().any(|clipped| matches!(
@@ -606,25 +683,39 @@ mod tests {
         let mut art = Art::default();
         let side = plate_side(PAGE.x) * hero::SHELF_SCALE;
         let want = want_px(side, 1.0);
-        for set in [&oldest, &middle, &newest] {
-            hold(&ctx, &mut art, set, want, now);
+        for (set, rgba) in [&oldest, &middle, &newest].into_iter().zip([
+            [255, 0, 0, 255],
+            [0, 255, 0, 255],
+            [0, 0, 255, 255],
+        ]) {
+            hold_colored(&ctx, &mut art, set, want, now, rgba);
         }
+        let expected: Vec<egui::TextureId> = discography::shelf(&releases)
+            .iter()
+            .map(|set| match art.look(Some(*set), want, now) {
+                crate::cover::Cover::Ready(texture) => texture,
+                _ => panic!("the shelf's pick is held"),
+            })
+            .collect();
         let output = draw(&ctx, &artist, &mut art, now, PAGE);
 
         let band = band_rect(&output, PAGE.x);
+        let floor = band.bottom() - stroke::HAIRLINE - space::S5;
         let shelf = Rect::from_min_max(
-            pos2(
-                band.right() - hero::SHELF_MAX,
-                band.bottom() - space::S5 - side,
-            ),
-            pos2(band.right(), band.bottom() - space::S5),
+            pos2(band.right() - hero::SHELF_MAX, floor - side),
+            pos2(band.right(), floor),
         );
         let covers = textured(&output, shelf);
         assert_eq!(covers.len(), 3, "three covers stand in the shelf");
+        assert_eq!(
+            textures(&output, shelf),
+            expected,
+            "the textures run left to right in shelf order"
+        );
         for cover in &covers {
             assert_close(cover.width(), side);
             assert_close(cover.height(), side);
-            assert_close(cover.bottom(), band.bottom() - space::S5);
+            assert_close(cover.bottom(), floor);
         }
         assert_close(covers[2].right(), band.right());
         for pair in covers.windows(2) {
@@ -652,9 +743,10 @@ mod tests {
 
         let band = band_rect(&output, PAGE.x);
         let side = plate_side(PAGE.x) * hero::SHELF_SCALE;
+        let floor = band.bottom() - stroke::HAIRLINE - space::S5;
         let slots: Vec<Rect> = fills(&output, tokens.palette.surface_raised)
             .into_iter()
-            .filter(|rect| (rect.bottom() - (band.bottom() - space::S5)).abs() < 0.01)
+            .filter(|rect| (rect.bottom() - floor).abs() < 0.01)
             .collect();
         assert_eq!(slots.len(), 3, "each loading cover is a raised slot");
         for slot in &slots {
@@ -680,16 +772,37 @@ mod tests {
 
         let band = band_rect(&output, PAGE.x);
         let side = plate_side(PAGE.x) * hero::SHELF_SCALE;
+        let floor = band.bottom() - stroke::HAIRLINE - space::S5;
         let left = band.right() - hero::SHELF_MAX;
-        let top = band.bottom() - space::S5 - side;
-        let mesh = output
+        let top = floor - side;
+        let shelf = Rect::from_min_max(pos2(left, top), pos2(band.right(), floor));
+        let mesh_at = output
             .shapes
             .iter()
-            .find_map(|clipped| match &clipped.shape {
-                egui::epaint::Shape::Mesh(mesh) => Some(mesh),
+            .position(|clipped| matches!(&clipped.shape, egui::epaint::Shape::Mesh(_)))
+            .expect("the shelf is masked");
+        let mesh = match &output.shapes[mesh_at].shape {
+            egui::epaint::Shape::Mesh(mesh) => mesh,
+            _ => unreachable!("the mesh was found above"),
+        };
+        let covers: Vec<usize> = output
+            .shapes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, clipped)| match &clipped.shape {
+                egui::epaint::Shape::Rect(_) if clipped.clip_rect == shelf => Some(index),
                 _ => None,
             })
-            .expect("the shelf is masked");
+            .collect();
+        assert_eq!(covers.len(), 3, "three cover shapes stand under the mask");
+        for index in covers {
+            assert!(
+                index < mesh_at,
+                "the mask is painted after every cover shape"
+            );
+            assert_eq!(output.shapes[index].clip_rect, shelf);
+        }
+        assert_eq!(output.shapes[mesh_at].clip_rect, shelf);
         assert_eq!(mesh.vertices.len(), 4);
         assert_eq!(mesh.vertices[0].color, tokens.palette.hero_wash);
         assert_eq!(mesh.vertices[2].color, tokens.palette.hero_wash);
@@ -701,7 +814,7 @@ mod tests {
             left + hero::SHELF_MAX * hero::SHELF_FADE,
         );
         assert_close(mesh.vertices[0].pos.y, top);
-        assert_close(mesh.vertices[2].pos.y, band.bottom() - space::S5);
+        assert_close(mesh.vertices[2].pos.y, floor);
     }
 
     #[test]
@@ -771,21 +884,39 @@ mod tests {
         let band_w = 680.0;
         let output = draw_in(&ctx, &artist, &mut art, now, PAGE, band_w);
 
-        let column = Rect::from_min_max(
-            pos2(space::GUTTER + plate_side(PAGE.x) + space::S5, 0.0),
-            pos2(band_w - space::GUTTER, PAGE.y),
-        );
-        let clipped = output
-            .shapes
-            .iter()
-            .find(|clipped| matches!(&clipped.shape, egui::epaint::Shape::Text(text) if text.fallback_color == Tokens::DARK.palette.text))
-            .expect("the name is painted");
+        let column_width =
+            band_w - space::GUTTER - (space::GUTTER + plate_side(PAGE.x) + space::S5);
+        let drawn = title(&output);
         assert!(
-            column.right() + 0.5 >= clipped.clip_rect.right(),
-            "the unbroken word is clipped to the column: {:?} outside {column:?}",
-            clipped.clip_rect
+            drawn.galley.rows.len() <= hero::ARTIST_TITLE_ROWS,
+            "the name takes {} rows",
+            drawn.galley.rows.len()
         );
-        assert!(clipped.clip_rect.left() >= column.left() - 0.5);
+        assert!(drawn.galley.elided, "the fourth row is elided");
+        assert!(
+            drawn.galley.size().x <= column_width + 0.5,
+            "the name is {} wide past the column {column_width}",
+            drawn.galley.size().x
+        );
+        // Egui breaks inside the unbroken word when it finds no word boundary;
+        // the row cap then elides the fourth row.
+    }
+
+    #[test]
+    fn a_name_past_the_row_cap_is_laid_at_the_whole_column() {
+        let ctx = context();
+        let now = Instant::now();
+        let name = "word ".repeat(24);
+        let artist = hero(&name, None, &[]);
+        let mut art = Art::default();
+        let band_w = 680.0;
+        let output = draw_in(&ctx, &artist, &mut art, now, PAGE, band_w);
+
+        let drawn = title(&output);
+        assert_eq!(drawn.galley.rows.len(), hero::ARTIST_TITLE_ROWS);
+        assert!(drawn.galley.elided, "the name is cut at the third row");
+        let column = band_w - space::GUTTER - (space::GUTTER + plate_side(PAGE.x) + space::S5);
+        assert_close(drawn.galley.job.wrap.max_width, column);
     }
 
     #[test]

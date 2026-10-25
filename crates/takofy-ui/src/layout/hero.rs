@@ -17,7 +17,7 @@
 use egui::{CornerRadius, Pos2, Rect, Vec2, pos2, vec2};
 
 use super::{RAIL_MAX, TABLE_NARROW_MAX};
-use crate::theme::{hero, space, text};
+use crate::theme::{hero, space, stroke, text};
 
 /// The hero title's size for a viewport `viewport_w` points wide.
 ///
@@ -53,6 +53,11 @@ pub fn artist_title_size(viewport_w: f32) -> f32 {
 /// Whether `window_w` is in the artist band's narrow tier.
 fn narrow(window_w: f32) -> bool {
     !window_w.is_finite() || window_w <= RAIL_MAX
+}
+
+/// Whether `window_w` is in the artist band's stacked phone tier.
+fn phone(window_w: f32) -> bool {
+    !window_w.is_finite() || window_w <= TABLE_NARROW_MAX
 }
 
 /// The artist band's square plate for a viewport `viewport_w` points wide.
@@ -131,13 +136,19 @@ pub struct ArtistFrame {
     /// The tier's height floor; the band grows past it when its words demand it.
     pub min_h: f32,
     pub title_size: f32,
+    /// Whether the phone tier stacks the plate above a full-width column.
+    pub stack: bool,
     pub shelf: Option<ShelfBox>,
 }
 
 impl ArtistFrame {
-    /// The width the name and the byline are laid out in: from the plate's far
-    /// edge to the shelf's, or to the band's far gutter when no shelf stands.
+    /// The width the name and the byline are laid out in: the band's own width
+    /// when stacked, otherwise from the plate's far edge to the shelf's, or to
+    /// the band's far gutter when no shelf stands.
     pub fn text_width(&self, band_w: f32) -> f32 {
+        if self.stack {
+            return band_w.max(0.0);
+        }
         let right = match self.shelf {
             Some(shelf) => band_w - shelf.width - space::S5,
             None => band_w - space::GUTTER,
@@ -147,9 +158,32 @@ impl ArtistFrame {
 
     /// The band's boxes on the same foot line, for a solved column `text_h` tall.
     pub fn rects(&self, origin: Pos2, band_w: f32, text_h: f32) -> ArtistRects {
-        let height = (space::S5 + self.plate.max(text_h) + space::S5).max(self.min_h);
+        let height = if self.stack {
+            (space::S5 + self.plate + space::S4 + text_h + space::S5).max(self.min_h)
+        } else {
+            (space::S5 + self.plate.max(text_h) + space::S5).max(self.min_h)
+        };
         let band = Rect::from_min_size(origin, vec2(band_w, height));
-        let floor = band.bottom() - space::S5;
+        let floor = band.bottom() - stroke::HAIRLINE - space::S5;
+        if self.stack {
+            let text =
+                Rect::from_min_max(pos2(band.left(), floor - text_h), pos2(band.right(), floor));
+            let plate = Rect::from_min_size(
+                pos2(
+                    band.left() + space::GUTTER,
+                    text.top() - space::S4 - self.plate,
+                ),
+                Vec2::splat(self.plate),
+            );
+            return ArtistRects {
+                band,
+                plate,
+                text,
+                shelf: None,
+                fade: None,
+                covers: Vec::new(),
+            };
+        }
         let plate = Rect::from_min_size(
             pos2(band.left() + space::GUTTER, floor - self.plate),
             Vec2::splat(self.plate),
@@ -227,6 +261,7 @@ pub fn artist_frame(window_w: f32, covers: usize) -> ArtistFrame {
             hero::ARTIST_MIN_H
         },
         title_size: artist_title_size(window_w),
+        stack: phone(window_w),
         shelf: shelf_box(window_w, narrow, plate, covers),
     }
 }
@@ -535,11 +570,36 @@ mod tests {
     #[test]
     fn the_plate_and_the_covers_stand_on_the_bands_floor() {
         let rects = framed(1240.0, 680.0, 3, 100.0);
-        let floor = rects.band.bottom() - space::S5;
+        let floor = rects.band.bottom() - stroke::HAIRLINE - space::S5;
         assert_close(rects.plate.bottom(), floor);
         assert_close(rects.shelf.expect("a shelf").bottom(), floor);
         for cover in &rects.covers {
             assert_close(cover.bottom(), floor);
+        }
+    }
+
+    #[test]
+    fn the_phone_tier_stacks_the_plate_over_the_full_width_column() {
+        for window in [640.0f32, 760.0] {
+            let frame = artist_frame(window, 3);
+            assert!(frame.stack, "{window} is the phone tier");
+            assert!(frame.shelf.is_none(), "{window} has no shelf");
+
+            let band_w = 480.0;
+            let text_h = 80.0;
+            let rects = frame.rects(ORIGIN, band_w, text_h);
+            assert_close(rects.text.left(), rects.band.left());
+            assert_close(rects.text.right(), rects.band.right());
+            assert_close(rects.text.width(), band_w);
+            assert_close(rects.plate.bottom() + space::S4, rects.text.top());
+            assert_close(
+                rects.text.bottom(),
+                rects.band.bottom() - stroke::HAIRLINE - space::S5,
+            );
+            assert_close(
+                rects.band.height(),
+                space::S5 + frame.plate + space::S4 + text_h + space::S5,
+            );
         }
     }
 
