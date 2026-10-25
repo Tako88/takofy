@@ -314,7 +314,6 @@ pub mod grow {
 /// A header band: its height, its art, and the clamp its title is drawn at. The
 /// artist band replaces the art tile with a plate and adds a shelf beside it.
 pub mod hero {
-    use super::space;
 
     /// The band's minimum height, 11 rem.
     pub const MIN_H: f32 = 176.0;
@@ -334,17 +333,11 @@ pub mod hero {
     pub const TITLE_MIN: f32 = 32.0;
     /// The title's share of the viewport width, 4.5 vw, as a fraction of it.
     pub const TITLE_VW: f32 = 0.045;
-    /// The artist band's minimum height, 16 rem, and the narrow tier's 13 rem.
-    pub const ARTIST_MIN_H: f32 = 256.0;
-    pub const ARTIST_MIN_H_NARROW: f32 = 208.0;
-    /// The artist plate: `clamp(8.5rem, 15vw, 12.5rem)`, and the narrow tier's
-    /// `clamp(6.5rem, 18vw, 9rem)`.
-    pub const ARTIST_PLATE_MIN: f32 = 136.0;
-    pub const ARTIST_PLATE_VW: f32 = 0.15;
-    pub const ARTIST_PLATE_MAX: f32 = 200.0;
-    pub const ARTIST_PLATE_NARROW_MIN: f32 = 104.0;
-    pub const ARTIST_PLATE_NARROW_VW: f32 = 0.18;
-    pub const ARTIST_PLATE_NARROW_MAX: f32 = 144.0;
+    /// The artist band's sleeve, 16 rem, the narrow tier's 13 rem and the stacked
+    /// tier's 6.5 rem. The sleeve also holds the band open, so it is one number.
+    pub const ARTIST_PLATE: f32 = 256.0;
+    pub const ARTIST_PLATE_NARROW: f32 = 208.0;
+    pub const ARTIST_PLATE_PHONE: f32 = 104.0;
     /// The artist title: `clamp(1.75rem, 4vw, 3.25rem)`, and the phone tier's
     /// `clamp(1.75rem, 10vw, 2.75rem)`.
     pub const ARTIST_TITLE_MIN: f32 = 28.0;
@@ -355,18 +348,6 @@ pub mod hero {
     pub const ARTIST_TITLE_PHONE_MAX: f32 = 44.0;
     /// How many rows the artist's name may take before it elides.
     pub const ARTIST_TITLE_ROWS: usize = 3;
-    /// The shelf: how many covers it holds, their side as a share of the plate,
-    /// the gap between them, and the share of the box the left mask spans.
-    pub const SHELF_COVERS: usize = 3;
-    pub const SHELF_SCALE: f32 = 0.5;
-    pub const SHELF_GAP: f32 = space::PX;
-    pub const SHELF_FADE: f32 = 0.10;
-    /// The shelf's `min(26vw, 16rem)` cap, and the narrow tier's
-    /// `min(30vw, 13rem)`.
-    pub const SHELF_VW: f32 = 0.26;
-    pub const SHELF_MAX: f32 = 256.0;
-    pub const SHELF_NARROW_VW: f32 = 0.30;
-    pub const SHELF_NARROW_MAX: f32 = 208.0;
 }
 
 /// The action row under a band: the row of things that act on the whole context.
@@ -1118,18 +1099,13 @@ mod tests {
             assert!(extent::CARD_MIN_W == 9.0 * REM);
             assert!(extent::RELEASE_ART == 7.0 * REM);
             assert!(extent::RELEASE_PLAY == 2.5 * REM);
-            assert!(hero::ARTIST_MIN_H == 16.0 * REM);
-            assert!(hero::ARTIST_MIN_H_NARROW == 13.0 * REM);
-            assert!(hero::ARTIST_PLATE_MIN == 8.5 * REM);
-            assert!(hero::ARTIST_PLATE_MAX == 12.5 * REM);
-            assert!(hero::ARTIST_PLATE_NARROW_MIN == 6.5 * REM);
-            assert!(hero::ARTIST_PLATE_NARROW_MAX == 9.0 * REM);
+            assert!(hero::ARTIST_PLATE == 16.0 * REM);
+            assert!(hero::ARTIST_PLATE_NARROW == 13.0 * REM);
+            assert!(hero::ARTIST_PLATE_PHONE == 6.5 * REM);
             assert!(hero::ARTIST_TITLE_MIN == 1.75 * REM);
             assert!(hero::ARTIST_TITLE_MAX == 3.25 * REM);
             assert!(hero::ARTIST_TITLE_PHONE_MIN == 1.75 * REM);
             assert!(hero::ARTIST_TITLE_PHONE_MAX == 2.75 * REM);
-            assert!(hero::SHELF_MAX == 16.0 * REM);
-            assert!(hero::SHELF_NARROW_MAX == 13.0 * REM);
             assert!(hero::ARTIST_TITLE_VW < hero::ARTIST_TITLE_PHONE_VW);
             assert!(extent::CARD_PLAY == 2.0 * REM);
             assert!(hero::MIN_H == 11.0 * REM);

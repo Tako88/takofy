@@ -1170,7 +1170,8 @@ mod tests {
         let mut found = None;
         run(ctx, input(size, Vec::new()), |ui| {
             ui.add_space(space::S3);
-            let band = crate::layout::hero::artist_frame(ui.ctx().content_rect().width(), 0).min_h;
+            let band =
+                crate::layout::hero::artist_frame(ui.ctx().content_rect().width()).height(0.0);
             let _ = ui.allocate_exact_size(vec2(ui.available_width(), band), Sense::hover());
             found = Some(actionbar::row_rect(ui));
         });
@@ -1246,7 +1247,8 @@ mod tests {
         let mut found = None;
         run(ctx, input(size, Vec::new()), |ui| {
             ui.add_space(space::S3);
-            let band = crate::layout::hero::artist_frame(ui.ctx().content_rect().width(), 0).min_h;
+            let band =
+                crate::layout::hero::artist_frame(ui.ctx().content_rect().width()).height(0.0);
             let _ = ui.allocate_exact_size(vec2(ui.available_width(), band), Sense::hover());
             actionbar::row_rect(ui);
             crate::view::inner(ui, |ui| {
@@ -2440,12 +2442,10 @@ mod tests {
             probe.x - space::GUTTER
         );
 
-        // The hero's words start beside the plate, and the plate at the gutter.
+        // The hero's words start beside the sleeve, and the sleeve on the edge.
         let title = text_rect(&output, "Vela Moreno").expect("the hero title is painted");
         assert!(
-            (title.left() - (space::GUTTER + crate::layout::hero::plate_side(probe.x) + space::S5))
-                .abs()
-                < 0.01,
+            (title.left() - (crate::layout::hero::plate_side(probe.x) + space::S5)).abs() < 0.01,
             "the hero title sits at {}",
             title.left()
         );

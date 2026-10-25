@@ -1,9 +1,9 @@
-//! The artist page's band: the plate, the name and the shelf of releases.
+//! The artist page's band: the sleeve, the name and the byline.
 //!
-//! The band is a solid wash sampled from the portrait, a square plate at the
-//! gutter, the name beside it over a byline, and the artist's oldest, middle and
-//! newest release covers standing at the far edge. The shelf is masked at its
-//! left edge and is not drawn at the phone tier, where the name needs the width.
+//! The band is a solid wash sampled from the portrait. The portrait is the
+//! band's own left edge — flush to its top and bottom rule, a hairline down its
+//! right — and the name sits centred beside it over a byline. At the phone tier
+//! the sleeve comes back inside the gutters and the type stacks under it.
 //!
 //! The band is all this view draws. Its action row is the shared one, which is
 //! the only way the row can pin while the discography scrolls under it; the page
@@ -12,14 +12,14 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use egui::{Color32, FontId, Mesh, Rect, Sense, Shape, Ui, pos2};
+use egui::emath::GuiRounding;
+use egui::{FontId, Painter, Rect, Sense, Ui, pos2};
 use takofy_model::{CoverSet, Release};
 
-use crate::cover::{Art, want_px};
-use crate::discography;
+use crate::cover::{Art, Cover, want_px};
 use crate::format::discography_meta;
 use crate::layout::hero::{artist_frame, balanced_width};
-use crate::theme::{Tokens, Weight, fonts, hero, radius, space, tracking};
+use crate::theme::{Tokens, Weight, fonts, hero, radius, space, stroke, tracking};
 
 use super::{art, hero as band, text as recipe};
 
@@ -38,14 +38,12 @@ pub struct ArtistHero<'a> {
 /// decides where it sits; the painter decides only how it looks.
 pub fn show(ui: &mut Ui, artist: &ArtistHero<'_>, art: &mut Art, now: Instant, tokens: &Tokens) {
     let band_w = ui.available_width();
-    let shelf = discography::shelf(artist.releases);
-    let frame = artist_frame(ui.ctx().content_rect().width(), shelf.len());
+    let frame = artist_frame(ui.ctx().content_rect().width());
     let pixels_per_point = ui.pixels_per_point();
 
     let want = want_px(frame.plate, pixels_per_point);
     let plate = art.look(artist.portrait, want, now);
     let tint = art.tint_held(artist.portrait, want, &tokens.palette.tint);
-    let fill = tint.unwrap_or(tokens.palette.hero_wash);
 
     let text_width = frame.text_width(band_w);
     let title =
@@ -75,15 +73,7 @@ pub fn show(ui: &mut Ui, artist: &ArtistHero<'_>, art: &mut Art, now: Instant, t
     let rects = frame.rects(ui.cursor().min, band_w, text_h);
     let (rect, _) = ui.allocate_exact_size(rects.band.size(), Sense::hover());
     band::wash(ui, rect, tint, tokens);
-
-    art::tile(
-        ui.painter(),
-        rects.plate,
-        radius::SM,
-        tokens.palette.border_strong,
-        plate,
-        tokens,
-    );
+    sleeve(ui.painter(), rect, rects.plate, frame.stack, plate, tokens);
 
     let words_clip = rects.text.intersect(ui.clip_rect());
     if words_clip.width() > 0.0 && words_clip.height() > 0.0 {
@@ -98,24 +88,6 @@ pub fn show(ui: &mut Ui, artist: &ArtistHero<'_>, art: &mut Art, now: Instant, t
             );
         }
     }
-
-    let Some(shelf_box) = frame.shelf else {
-        return;
-    };
-    let (Some(shelf_rect), Some(fade)) = (rects.shelf, rects.fade) else {
-        return;
-    };
-    let clip = shelf_rect.intersect(ui.clip_rect());
-    if clip.width() <= 0.0 || clip.height() <= 0.0 {
-        return;
-    }
-    let painter = ui.painter().with_clip_rect(clip);
-    let want = want_px(shelf_box.side, pixels_per_point);
-    for (rect, cover) in rects.covers.iter().zip(&shelf) {
-        let drawn = art.look(Some(cover), want, now);
-        art::fill_rounded(&painter, *rect, radius::NONE, drawn, tokens);
-    }
-    mask(&painter, fade, fill);
 }
 
 /// The name at `width`, capped at `rows` and elided past them.
@@ -138,24 +110,51 @@ fn name(
     )
 }
 
-/// The shelf's left mask: the band's own fill fading to nothing.
-fn mask(painter: &egui::Painter, rect: Rect, fill: Color32) {
-    if rect.width() <= 0.0 || rect.height() <= 0.0 {
+/// The sleeve: the portrait standing on the band's left edge, or the small plate
+/// the stacked tier sets inside its padding.
+///
+/// Flush, the sleeve carries a hairline down its right side alone — the other
+/// three sides are the band's own edges, and one there would double the rule. Its
+/// art also runs a hairline past its open edges, under the band's bottom rule,
+/// because a fill rounded to the pixel grid can otherwise leave a sliver of the
+/// wash between the picture and the edge it is flush to.
+fn sleeve(painter: &Painter, band: Rect, rect: Rect, stacked: bool, cover: Cover, tokens: &Tokens) {
+    if stacked {
+        art::tile(
+            painter,
+            rect,
+            radius::SM,
+            tokens.palette.border_strong,
+            cover,
+            tokens,
+        );
         return;
     }
-    let mut mesh = Mesh::default();
-    mesh.colored_vertex(rect.left_top(), fill);
-    mesh.colored_vertex(rect.right_top(), Color32::TRANSPARENT);
-    mesh.colored_vertex(rect.left_bottom(), fill);
-    mesh.colored_vertex(rect.right_bottom(), Color32::TRANSPARENT);
-    mesh.add_triangle(0, 1, 2);
-    mesh.add_triangle(1, 2, 3);
-    painter.add(Shape::mesh(mesh));
+    let paint = painter.with_clip_rect(band);
+    let bleed = Rect::from_min_max(
+        pos2(rect.left(), rect.top() - stroke::HAIRLINE),
+        pos2(rect.right(), rect.bottom() + stroke::HAIRLINE),
+    );
+    art::fill_rounded(&paint, bleed, radius::NONE, cover, tokens);
+    paint.rect_filled(
+        Rect::from_min_max(
+            pos2(rect.left(), band.bottom() - stroke::HAIRLINE),
+            pos2(rect.right(), band.bottom()),
+        ),
+        radius::NONE,
+        tokens.palette.border,
+    );
+    let edge = Rect::from_min_max(
+        pos2(rect.right() - stroke::HAIRLINE, rect.top()),
+        pos2(rect.right(), band.bottom() - stroke::HAIRLINE),
+    )
+    .round_to_pixels(painter.pixels_per_point());
+    paint.rect_filled(edge, radius::NONE, tokens.palette.border_strong);
 }
 
 #[cfg(test)]
 mod tests {
-    use egui::{Context, Pos2, RawInput, Vec2, epaint::TextShape, vec2};
+    use egui::{Color32, Context, Pos2, RawInput, Vec2, epaint::TextShape, vec2};
 
     use super::*;
     use crate::cover::want_px;
@@ -327,31 +326,6 @@ mod tests {
             .collect()
     }
 
-    /// The textures painted inside `area`, left to right.
-    fn textures(output: &egui::FullOutput, area: Rect) -> Vec<egui::TextureId> {
-        let mut drawn: Vec<(Rect, egui::TextureId)> = output
-            .shapes
-            .iter()
-            .filter_map(|clipped| match &clipped.shape {
-                egui::epaint::Shape::Rect(shape)
-                    if shape.brush.is_some() && area.contains(shape.rect.center()) =>
-                {
-                    Some((
-                        shape.rect,
-                        shape
-                            .brush
-                            .as_ref()
-                            .expect("a textured rect")
-                            .fill_texture_id,
-                    ))
-                }
-                _ => None,
-            })
-            .collect();
-        drawn.sort_by(|left, right| left.0.left().total_cmp(&right.0.left()));
-        drawn.into_iter().map(|(_, texture)| texture).collect()
-    }
-
     /// The box the band's wash fills: the full-width rect as tall as the band.
     fn band_rect(output: &egui::FullOutput, width: f32) -> Rect {
         output
@@ -360,7 +334,7 @@ mod tests {
             .find_map(|clipped| match &clipped.shape {
                 egui::epaint::Shape::Rect(shape)
                     if (shape.rect.width() - width).abs() < 0.5
-                        && shape.rect.height() >= hero::ARTIST_MIN_H_NARROW =>
+                        && shape.rect.height() >= hero::ARTIST_PLATE_PHONE =>
                 {
                     Some(shape.rect)
                 }
@@ -418,19 +392,19 @@ mod tests {
     }
 
     #[test]
-    fn the_band_is_as_tall_as_its_frame_at_each_tier() {
+    fn the_band_is_as_tall_as_its_sleeve_at_each_tier() {
         let ctx = context();
         let short = hero("Vela Moreno", None, &[]);
         let narrow = band_height(&ctx, &short, Vec2::new(900.0, 800.0), 900.0);
-        assert_close(narrow, hero::ARTIST_MIN_H_NARROW);
+        assert_close(narrow, hero::ARTIST_PLATE_NARROW + stroke::HAIRLINE);
         let wide = band_height(&ctx, &short, PAGE, PAGE.x);
-        assert_close(wide, hero::ARTIST_MIN_H);
+        assert_close(wide, hero::ARTIST_PLATE + stroke::HAIRLINE);
 
         // Points, not device pixels: a 2x window is the same band.
         let ctx = context();
         ctx.set_pixels_per_point(2.0);
         let retina = band_height(&ctx, &short, PAGE, PAGE.x);
-        assert_close(retina, hero::ARTIST_MIN_H);
+        assert_close(retina, hero::ARTIST_PLATE + stroke::HAIRLINE);
     }
 
     #[test]
@@ -444,17 +418,36 @@ mod tests {
 
             let band = band_rect(&output, window.x);
             let drawn = title(&output);
-            assert_close(drawn.galley.job.wrap.max_width, band.width());
-            assert_close(rect_of(drawn).left(), band.left());
+            assert_close(
+                drawn.galley.job.wrap.max_width,
+                band.width() - 2.0 * space::S4,
+            );
+            assert_close(rect_of(drawn).left(), band.left() + space::S4);
 
             let plate = fills(&output, Tokens::DARK.palette.surface_sunken);
-            assert_eq!(plate.len(), 1, "the missing portrait is the one plate");
+            assert_eq!(plate.len(), 1, "the missing portrait is the one sleeve");
+            assert_close(plate[0].left(), band.left() + space::S4);
+            assert_close(plate[0].top(), band.top() + space::S4);
             assert!(
-                (plate[0].bottom() + space::S4 - rect_of(drawn).top()).abs() < 0.5,
-                "the plate sits one gap above the title"
+                output.shapes.iter().any(|clipped| matches!(
+                    &clipped.shape,
+                    egui::epaint::Shape::Rect(shape)
+                        if shape.rect == plate[0]
+                            && shape.corner_radius == radius::SM
+                            && shape.stroke.color == Tokens::DARK.palette.border_strong
+                )),
+                "stacked, the sleeve is a card with a whole border"
             );
-            let stacked =
-                space::S5 + plate_side(window.x) + space::S4 + drawn.galley.size().y + space::S5;
+            assert!(
+                (plate[0].bottom() + space::S5 - rect_of(drawn).top()).abs() < 0.5,
+                "the sleeve sits one gap above the title"
+            );
+            let stacked = space::S4
+                + plate_side(window.x)
+                + space::S5
+                + drawn.galley.size().y
+                + space::S4
+                + stroke::HAIRLINE;
             assert!(
                 (band.height() - stacked).abs() < 0.5,
                 "the band is {} tall, not the stacked {stacked}",
@@ -477,23 +470,11 @@ mod tests {
         assert_eq!(drawn.galley.rows.len(), hero::ARTIST_TITLE_ROWS);
         let byline = painted(&output, &discography_meta(1, 2)).expect("the byline is painted");
         let text_h = rect_of(drawn).height() + space::S2 + rect_of(byline).height();
-        // The floor governs with the bundled face; the growth branch is the
-        // frame's own, tested where the column height is an argument.
-        let expected = (2.0 * space::S5 + plate_side(PAGE.x).max(text_h)).max(hero::ARTIST_MIN_H);
-        let band = output
-            .shapes
-            .iter()
-            .find_map(|clipped| match &clipped.shape {
-                egui::epaint::Shape::Rect(shape)
-                    if (shape.rect.width() - 680.0).abs() < 0.5
-                        && shape.rect.height() >= hero::ARTIST_MIN_H_NARROW =>
-                {
-                    Some(shape.rect)
-                }
-                _ => None,
-            })
-            .expect("the band paints its own wash");
-        assert_close(band.height(), expected);
+        // The sleeve holds the band open with the bundled face; the growth
+        // branch is the frame's own, tested where the column height is an
+        // argument.
+        let expected = plate_side(PAGE.x).max(text_h) + stroke::HAIRLINE;
+        assert_close(band_rect(&output, 680.0).height(), expected);
     }
 
     #[test]
@@ -510,23 +491,31 @@ mod tests {
 
         let band = band_rect(&output, PAGE.x);
         let some = textured(&output, band);
-        assert_eq!(some.len(), 1, "the plate is the one held picture");
-        let plate = some[0];
-        assert_close(plate.width(), plate_side(PAGE.x));
-        assert_close(plate.height(), plate_side(PAGE.x));
-        assert_close(plate.left(), space::GUTTER);
-        assert_close(plate.bottom(), band.bottom() - stroke::HAIRLINE - space::S5);
-
+        assert_eq!(some.len(), 1, "the sleeve is the one held picture");
+        let sleeve = some[0];
+        assert_close(sleeve.width(), plate_side(PAGE.x));
+        assert_close(sleeve.left(), band.left());
+        assert_close(sleeve.top(), band.top() - stroke::HAIRLINE);
+        // The art runs under the band's bottom rule, so no wash shows between
+        // them however the fill rounds.
+        assert_close(sleeve.bottom(), band.bottom());
         assert!(
-            output.shapes.iter().any(|clipped| matches!(
+            !output.shapes.iter().any(|clipped| matches!(
                 &clipped.shape,
                 egui::epaint::Shape::Rect(shape)
-                    if shape.rect == plate
-                        && (shape.stroke.width - stroke::HAIRLINE).abs() < 0.01
-                        && shape.stroke.color == tokens.palette.border_strong
+                    if shape.rect == sleeve && !shape.stroke.is_empty()
             )),
-            "the plate wears the strong hairline"
+            "flush, three of the sleeve's sides are the band's own and carry no rule"
         );
+
+        // The fourth side is the one hairline, standing inside the sleeve's edge.
+        let rules: Vec<Rect> = fills(&output, tokens.palette.border_strong)
+            .into_iter()
+            .filter(|rect| (rect.width() - stroke::HAIRLINE).abs() < 0.01)
+            .collect();
+        assert_eq!(rules.len(), 1, "the sleeve wears one hairline: {rules:?}");
+        assert_close(rules[0].right(), sleeve.right());
+        assert_close(rules[0].top(), band.top());
         assert_eq!(
             fills(&output, crate::theme::tint_color([116, 27, 27])),
             vec![band],
@@ -572,6 +561,7 @@ mod tests {
     fn the_plate_is_fetched_at_its_own_size() {
         let portrait = CoverSet::from_sizes([
             (Some((160, 160)), url("small")),
+            (Some((300, 300)), url("default")),
             (Some((640, 640)), url("large")),
         ])
         .expect("a portrait set");
@@ -591,7 +581,7 @@ mod tests {
                     .cloned()
                     .expect("a pick"),
             }],
-            "a 144-point plate asks for the 160, not the 640"
+            "a 208-point sleeve asks for the 300, not the 640"
         );
 
         let ctx = context();
@@ -607,7 +597,7 @@ mod tests {
                     .cloned()
                     .expect("a pick"),
             }],
-            "at 2x the same plate needs the 640"
+            "at 2x the same sleeve needs the 640"
         );
     }
 
@@ -633,10 +623,7 @@ mod tests {
         );
         assert_close(rect_of(byline).top(), rect_of(name).bottom() + space::S2);
         assert_close(rect_of(byline).left(), rect_of(name).left());
-        assert_close(
-            rect_of(name).left(),
-            space::GUTTER + plate_side(PAGE.x) + space::S5,
-        );
+        assert_close(rect_of(name).left(), plate_side(PAGE.x) + space::S5);
         assert!(
             byline.galley.rows.len() == 1,
             "the byline is one plain line"
@@ -644,7 +631,7 @@ mod tests {
     }
 
     #[test]
-    fn an_artist_with_no_releases_has_no_byline_and_no_shelf() {
+    fn an_artist_with_no_releases_has_no_byline() {
         let ctx = context();
         let now = Instant::now();
         let artist = hero("Vela Moreno", None, &[]);
@@ -652,169 +639,6 @@ mod tests {
         let output = draw(&ctx, &artist, &mut art, now, PAGE);
 
         assert_eq!(drawn_texts(&output), vec!["Vela Moreno"]);
-        assert!(
-            !output
-                .shapes
-                .iter()
-                .any(|clipped| matches!(&clipped.shape, egui::epaint::Shape::Mesh(_))),
-            "no shelf, no mask"
-        );
-        let band = band_rect(&output, PAGE.x);
-        assert!(
-            textured(&output, band).is_empty()
-                && fills(&output, Tokens::DARK.palette.surface_raised).len() <= 1,
-            "nothing stands at the band's edge"
-        );
-    }
-
-    #[test]
-    fn three_held_covers_stand_oldest_first_with_the_newest_flush_right() {
-        let ctx = context();
-        let now = Instant::now();
-        let oldest = cover("oldest");
-        let middle = cover("middle");
-        let newest = cover("newest");
-        let releases = vec![
-            release("Newest", Some(2023), &[], Some(newest.clone())),
-            release("Oldest", Some(2019), &[], Some(oldest.clone())),
-            release("Middle", Some(2021), &[], Some(middle.clone())),
-        ];
-        let artist = hero("Vela Moreno", None, &releases);
-        let mut art = Art::default();
-        let side = plate_side(PAGE.x) * hero::SHELF_SCALE;
-        let want = want_px(side, 1.0);
-        for (set, rgba) in [&oldest, &middle, &newest].into_iter().zip([
-            [255, 0, 0, 255],
-            [0, 255, 0, 255],
-            [0, 0, 255, 255],
-        ]) {
-            hold_colored(&ctx, &mut art, set, want, now, rgba);
-        }
-        let expected: Vec<egui::TextureId> = discography::shelf(&releases)
-            .iter()
-            .map(|set| match art.look(Some(*set), want, now) {
-                crate::cover::Cover::Ready(texture) => texture,
-                _ => panic!("the shelf's pick is held"),
-            })
-            .collect();
-        let output = draw(&ctx, &artist, &mut art, now, PAGE);
-
-        let band = band_rect(&output, PAGE.x);
-        let floor = band.bottom() - stroke::HAIRLINE - space::S5;
-        let shelf = Rect::from_min_max(
-            pos2(band.right() - hero::SHELF_MAX, floor - side),
-            pos2(band.right(), floor),
-        );
-        let covers = textured(&output, shelf);
-        assert_eq!(covers.len(), 3, "three covers stand in the shelf");
-        assert_eq!(
-            textures(&output, shelf),
-            expected,
-            "the textures run left to right in shelf order"
-        );
-        for cover in &covers {
-            assert_close(cover.width(), side);
-            assert_close(cover.height(), side);
-            assert_close(cover.bottom(), floor);
-        }
-        assert_close(covers[2].right(), band.right());
-        for pair in covers.windows(2) {
-            assert_close(pair[1].left() - pair[0].right(), hero::SHELF_GAP);
-        }
-        assert!(
-            covers[0].left() < covers[1].left() && covers[1].left() < covers[2].left(),
-            "oldest first: {covers:?}"
-        );
-    }
-
-    #[test]
-    fn a_loading_shelf_cover_draws_the_raised_slot_at_its_rect() {
-        let ctx = context();
-        let tokens = Tokens::DARK;
-        let now = Instant::now();
-        let releases = vec![
-            release("One", Some(2019), &[], Some(cover("one"))),
-            release("Two", Some(2020), &[], Some(cover("two"))),
-            release("Three", Some(2021), &[], Some(cover("three"))),
-        ];
-        let artist = hero("Vela Moreno", None, &releases);
-        let mut art = Art::default();
-        let output = draw(&ctx, &artist, &mut art, now, PAGE);
-
-        let band = band_rect(&output, PAGE.x);
-        let side = plate_side(PAGE.x) * hero::SHELF_SCALE;
-        let floor = band.bottom() - stroke::HAIRLINE - space::S5;
-        let slots: Vec<Rect> = fills(&output, tokens.palette.surface_raised)
-            .into_iter()
-            .filter(|rect| (rect.bottom() - floor).abs() < 0.01)
-            .collect();
-        assert_eq!(slots.len(), 3, "each loading cover is a raised slot");
-        for slot in &slots {
-            assert_close(slot.width(), side);
-            assert_close(slot.height(), side);
-        }
-        assert_close(slots[2].right(), band.right());
-    }
-
-    #[test]
-    fn the_mask_fades_the_left_tenth_of_the_shelf_from_the_bands_fill() {
-        let ctx = context();
-        let tokens = Tokens::DARK;
-        let now = Instant::now();
-        let releases = vec![
-            release("One", Some(2019), &[], Some(cover("one"))),
-            release("Two", Some(2020), &[], Some(cover("two"))),
-            release("Three", Some(2021), &[], Some(cover("three"))),
-        ];
-        let artist = hero("Vela Moreno", None, &releases);
-        let mut art = Art::default();
-        let output = draw(&ctx, &artist, &mut art, now, PAGE);
-
-        let band = band_rect(&output, PAGE.x);
-        let side = plate_side(PAGE.x) * hero::SHELF_SCALE;
-        let floor = band.bottom() - stroke::HAIRLINE - space::S5;
-        let left = band.right() - hero::SHELF_MAX;
-        let top = floor - side;
-        let shelf = Rect::from_min_max(pos2(left, top), pos2(band.right(), floor));
-        let mesh_at = output
-            .shapes
-            .iter()
-            .position(|clipped| matches!(&clipped.shape, egui::epaint::Shape::Mesh(_)))
-            .expect("the shelf is masked");
-        let mesh = match &output.shapes[mesh_at].shape {
-            egui::epaint::Shape::Mesh(mesh) => mesh,
-            _ => unreachable!("the mesh was found above"),
-        };
-        let covers: Vec<usize> = output
-            .shapes
-            .iter()
-            .enumerate()
-            .filter_map(|(index, clipped)| match &clipped.shape {
-                egui::epaint::Shape::Rect(_) if clipped.clip_rect == shelf => Some(index),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(covers.len(), 3, "three cover shapes stand under the mask");
-        for index in covers {
-            assert!(
-                index < mesh_at,
-                "the mask is painted after every cover shape"
-            );
-            assert_eq!(output.shapes[index].clip_rect, shelf);
-        }
-        assert_eq!(output.shapes[mesh_at].clip_rect, shelf);
-        assert_eq!(mesh.vertices.len(), 4);
-        assert_eq!(mesh.vertices[0].color, tokens.palette.hero_wash);
-        assert_eq!(mesh.vertices[2].color, tokens.palette.hero_wash);
-        assert_eq!(mesh.vertices[1].color, Color32::TRANSPARENT);
-        assert_eq!(mesh.vertices[3].color, Color32::TRANSPARENT);
-        assert_close(mesh.vertices[0].pos.x, left);
-        assert_close(
-            mesh.vertices[1].pos.x,
-            left + hero::SHELF_MAX * hero::SHELF_FADE,
-        );
-        assert_close(mesh.vertices[0].pos.y, top);
-        assert_close(mesh.vertices[2].pos.y, floor);
     }
 
     #[test]
@@ -863,7 +687,7 @@ mod tests {
             drawn.galley.text()
         );
         let column = Rect::from_min_max(
-            pos2(space::GUTTER + plate_side(PAGE.x) + space::S5, 0.0),
+            pos2(plate_side(PAGE.x) + space::S5, 0.0),
             pos2(band_w - space::GUTTER, PAGE.y),
         );
         assert!(
@@ -884,8 +708,7 @@ mod tests {
         let band_w = 680.0;
         let output = draw_in(&ctx, &artist, &mut art, now, PAGE, band_w);
 
-        let column_width =
-            band_w - space::GUTTER - (space::GUTTER + plate_side(PAGE.x) + space::S5);
+        let column_width = band_w - space::GUTTER - (plate_side(PAGE.x) + space::S5);
         let drawn = title(&output);
         assert!(
             drawn.galley.rows.len() <= hero::ARTIST_TITLE_ROWS,
@@ -915,7 +738,7 @@ mod tests {
         let drawn = title(&output);
         assert_eq!(drawn.galley.rows.len(), hero::ARTIST_TITLE_ROWS);
         assert!(drawn.galley.elided, "the name is cut at the third row");
-        let column = band_w - space::GUTTER - (space::GUTTER + plate_side(PAGE.x) + space::S5);
+        let column = band_w - space::GUTTER - (plate_side(PAGE.x) + space::S5);
         assert_close(drawn.galley.job.wrap.max_width, column);
     }
 
@@ -929,7 +752,7 @@ mod tests {
 
         let drawn = title(&output);
         assert_eq!(drawn.galley.rows.len(), 1);
-        let column = PAGE.x - space::GUTTER - (space::GUTTER + plate_side(PAGE.x) + space::S5);
+        let column = PAGE.x - space::GUTTER - (plate_side(PAGE.x) + space::S5);
         assert_close(drawn.galley.job.wrap.max_width, column);
     }
 }
