@@ -227,7 +227,11 @@ no longer active, sends pause and resume as commands, and hears nothing. So the
 receiver obeys both skips, both repeats, shuffle, options, add-to-queue and a
 wholesale queue window, and reports what it did. A phone that starts something
 new goes through the same landing path a hand-over into this window uses, so
-starting a context is not a special case.
+starting a context is not a special case. The kinds it can adopt are the flat
+ones — a playlist, an album, a show, the liked set, and a curated list such as
+an artist's popular tracks — because each resolves to rows this window can hold
+as a queue. An artist context is a tree and a station never ends, so those are
+refused by name rather than played as one track and called a match.
 
 **A move is a command, not a transfer.** The REST transfer endpoint only lets a
 device claim the sound for itself, and refuses a push from one device to another

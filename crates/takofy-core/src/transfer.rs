@@ -50,8 +50,10 @@ impl Refusal {
     /// its track was the problem.
     pub fn word(&self) -> &'static str {
         match self {
+            // The kind is the useful half: "artist" says why the context cannot
+            // be adopted, where "unsupported context" leaves the reader looking.
+            Self::UnsupportedContext(kind) => kind.word(),
             Self::NoData => "no data",
-            Self::UnsupportedContext(_) => "unsupported context",
             Self::NoTrack => "no track",
             Self::NotPlayable => "not playable",
         }
@@ -875,6 +877,19 @@ mod tests {
         distinct.sort_unstable();
         distinct.dedup();
         assert_eq!(distinct.len(), words.len(), "{words:?}");
+    }
+
+    #[test]
+    fn an_unsupported_refusal_names_the_context_that_could_not_be_adopted() {
+        assert_eq!(
+            Refusal::UnsupportedContext(ContextKind::Artist).word(),
+            "artist",
+            "the kind is what says why"
+        );
+        assert_eq!(
+            Refusal::UnsupportedContext(ContextKind::Station).word(),
+            "station"
+        );
     }
 
     #[test]

@@ -11351,6 +11351,65 @@ mod tests {
     }
 
     #[test]
+    fn a_phone_side_play_of_a_popular_list_lands() {
+        use librespot::core::dealer::protocol::SkipTo;
+
+        // An artist's popular tracks arrive as a `spotify:list:` context, which
+        // resolves to its rows exactly like a playlist's does.
+        const POPULAR: &str = "spotify:list:popular-release-segments-main-roles:artist_x";
+
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+        let rows = vec![SECOND.to_owned(), TRACK.to_owned()];
+        *shared.resolve_script.lock().expect("lock") = ResolveScript::Ok(rows.clone());
+        *shared.accept_script.lock().expect("lock") = AcceptScript::Landed(Box::new(Landing {
+            rows: rows.clone(),
+            index: 1,
+            ..default_landing()
+        }));
+        hold_with(&shared, &[true]);
+
+        run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            watch_now(&ui_end, &shared);
+            inbound(
+                &shared,
+                51,
+                Kind::Play,
+                play_instruction(
+                    POPULAR,
+                    &[],
+                    Some(SkipTo {
+                        track_uri: Some(TRACK.to_owned()),
+                        ..Default::default()
+                    }),
+                ),
+            );
+            until("the play to land", || {
+                calls(&shared)
+                    .iter()
+                    .any(|call| matches!(call, Call::Load { .. }))
+            });
+        });
+
+        let log = calls(&shared);
+        assert!(
+            !log.iter().any(|call| matches!(call, Call::Refuse(_))),
+            "a popular list is not refused: {log:?}"
+        );
+        assert!(
+            log.iter().any(|call| matches!(
+                call,
+                Call::Load { uri, .. } if uri == TRACK
+            )),
+            "the row the phone named is the row that loads: {log:?}"
+        );
+    }
+
+    #[test]
     fn a_window_that_never_played_announces_that_it_can_play() {
         let store = Arc::new(MemoryStore::seeded("stored"));
         let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));

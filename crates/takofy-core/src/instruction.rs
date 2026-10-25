@@ -73,6 +73,9 @@ pub enum ContextKind {
     Station,
     Search,
     Local,
+    /// A curated list, such as an artist's popular tracks. Flat, and it resolves
+    /// to its rows like a playlist does.
+    List,
     Other,
     None,
 }
@@ -100,6 +103,7 @@ impl ContextKind {
             Some("station") => ContextKind::Station,
             Some("search") => ContextKind::Search,
             Some("local") => ContextKind::Local,
+            Some("list") => ContextKind::List,
             Some("user") => user_context(rest),
             _ => ContextKind::Other,
         }
@@ -116,10 +120,11 @@ impl ContextKind {
                 | ContextKind::Album
                 | ContextKind::Show
                 | ContextKind::Collection
+                | ContextKind::List
         )
     }
 
-    fn word(self) -> &'static str {
+    pub(crate) fn word(self) -> &'static str {
         match self {
             ContextKind::Playlist => "playlist",
             ContextKind::Album => "album",
@@ -129,6 +134,7 @@ impl ContextKind {
             ContextKind::Station => "station",
             ContextKind::Search => "search",
             ContextKind::Local => "local",
+            ContextKind::List => "list",
             ContextKind::Other => "other",
             ContextKind::None => "none",
         }
@@ -647,6 +653,13 @@ mod tests {
                 ContextKind::Local,
             ),
             (
+                // An artist's popular tracks: the phone's "Popular" list.
+                Some(
+                    "spotify:list:popular-release-segments-main-roles:artist_0OdUWJ0sBjDrqHygGUXeCF",
+                ),
+                ContextKind::List,
+            ),
+            (
                 Some("spotify:track:4uLU6hMCjMI75M1A2tKUQC"),
                 ContextKind::Other,
             ),
@@ -662,12 +675,13 @@ mod tests {
     }
 
     #[test]
-    fn only_playlist_album_show_and_collection_are_honoured() {
+    fn every_flat_context_is_honoured_and_the_rest_are_not() {
         let cases = [
             (ContextKind::Playlist, true),
             (ContextKind::Album, true),
             (ContextKind::Show, true),
             (ContextKind::Collection, true),
+            (ContextKind::List, true),
             (ContextKind::Artist, false),
             (ContextKind::Station, false),
             (ContextKind::Search, false),
