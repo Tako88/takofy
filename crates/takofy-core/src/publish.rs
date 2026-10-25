@@ -523,7 +523,14 @@ mod tests {
         wire.set_now(now_ms);
         let before = wire.puts().len();
 
+        // The gate is held across the report so the body is built from a report
+        // that is measurably old. The age is read in whole milliseconds, and a
+        // put built in the millisecond the report was taken would carry a
+        // position that never aged — true, but it says nothing about the age.
+        let held = gate.take().await;
         shared.latest.set(Some(report_with("aged", 5_000)));
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        drop(held);
 
         until("the aged put", || wire.puts().len() > before).await;
         let puts = wire.puts();

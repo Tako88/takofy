@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  linux:
+    name: Linux gates
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      # cpal's ALSA backend wants the headers to build against. It is the only
+      # native library the tree links.
+      - name: Install ALSA headers
+        run: sudo apt-get update && sudo apt-get install --yes libasound2-dev
+      - uses: Swatinem/rust-cache@v2
+      # The toolchain is the one rust-toolchain.toml pins, not the runner's.
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Test
+        run: cargo test --workspace --locked
+      # librespot's build script needs the vergen pin in Cargo.lock, and nothing
+      # in CI may quietly move it.
+      - name: The lockfile did not move
+        run: git diff --exit-code -- Cargo.lock
+
+  windows:
+    name: Windows build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --workspace --locked
+      - name: Test
+        run: cargo test --workspace --locked

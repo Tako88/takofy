@@ -8563,7 +8563,10 @@ mod tests {
         let toggle = pane_toggle_repaint_line();
         assert!(
             causes.iter().any(|cause| {
-                cause.file.ends_with("view/shell.rs") && Some(cause.line as usize) == toggle
+                // Turns the separators around: a Windows build reports the path
+                // with backslashes.
+                cause.file.replace('\\', "/").ends_with("view/shell.rs")
+                    && Some(cause.line as usize) == toggle
             }),
             "the toggle did not ask for the frame that shows it: {causes:?}"
         );
