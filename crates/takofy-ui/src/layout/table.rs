@@ -88,15 +88,6 @@ impl Present {
             ..self
         }
     }
-
-    /// A slim row, under the album block's name.
-    ///
-    /// Transitional: it is exactly [`Present::for_slim`] and exists only while
-    /// the lists that ask the album block for their columns keep the columns
-    /// they have today.
-    pub fn for_album(self) -> Self {
-        self.for_slim()
-    }
 }
 
 /// Whether a context URI names a playlist: `spotify:playlist:<id>`, or the named

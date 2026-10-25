@@ -88,13 +88,17 @@ pub fn album_view(
             match &library.album {
                 Load::Idle => {}
                 Load::Loading => {
-                    skeleton::rows(
-                        ui,
-                        skeleton::SCREENFUL,
-                        table.columns().for_plays(),
-                        false,
-                        tokens,
-                    );
+                    // The rows hold the table's own gutter, so the title does not
+                    // shift when the list lands.
+                    super::inner(ui, |ui| {
+                        skeleton::rows(
+                            ui,
+                            skeleton::SCREENFUL,
+                            table.columns().for_plays(),
+                            false,
+                            tokens,
+                        );
+                    });
                 }
                 Load::Failed(failure) => {
                     ui.label(recipe::muted(
@@ -110,13 +114,17 @@ pub fn album_view(
                     // the page keeps its loading state rather than painting that
                     // album's band and rows.
                     let Some(album) = library.current_album() else {
-                        skeleton::rows(
-                            ui,
-                            skeleton::SCREENFUL,
-                            table.columns().for_plays(),
-                            false,
-                            tokens,
-                        );
+                        // The gutter is the loaded table's, so nothing shifts
+                        // when this page's own album arrives.
+                        super::inner(ui, |ui| {
+                            skeleton::rows(
+                                ui,
+                                skeleton::SCREENFUL,
+                                table.columns().for_plays(),
+                                false,
+                                tokens,
+                            );
+                        });
                         return;
                     };
                     // The one cover lookup on this page: the rows carry none, so the
@@ -1975,6 +1983,65 @@ mod tests {
                 egui::epaint::Shape::Rect(rect) if rect.fill == Tokens::DARK.palette.skeleton_rule
             )),
             "the page holds its rows open instead of naming another album"
+        );
+    }
+
+    #[test]
+    fn the_loading_skeleton_and_the_loaded_table_put_the_title_at_the_same_left() {
+        let ctx = context();
+        let mut library = Library::default();
+        library.open(Page::Album(ALBUM.to_owned()));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let (_, output) = frame(
+            &ctx,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let loading = output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Rect(rect)
+                    if rect.fill == Tokens::DARK.palette.skeleton_rule
+                        && (rect.rect.height() - extent::SKELETON_LINE).abs() < 0.01 =>
+                {
+                    Some(rect.rect)
+                }
+                _ => None,
+            })
+            .next()
+            .expect("the loading list holds a title bar open");
+
+        let ctx = context();
+        let mut library = library_with(detail(vec![track(
+            "spotify:track:a",
+            "One",
+            "Band",
+            222_000,
+        )]));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+        let (_, output) = frame(
+            &ctx,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let loaded = text_rect(&output, "One").expect("the row's name");
+
+        assert_eq!(
+            loading.left(),
+            loaded.left(),
+            "the title does not shift when the album lands"
         );
     }
 }
