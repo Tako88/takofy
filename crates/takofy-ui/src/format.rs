@@ -129,17 +129,14 @@ pub fn runtime_label(total_ms: u32) -> Option<String> {
     Some(format!("{} min {} sec", seconds / 60, seconds % 60))
 }
 
-/// The album band's byline parts: the artists, the year, the count and the total.
+/// The album band's plain facts: the year, the count and the total.
 ///
 /// The parts are separate so the painter can place the dot separator between
-/// them and leave no trailing dot when a part is absent. A blank artist line is
-/// dropped rather than drawn as an empty part, and an unknown total is left out.
-pub fn album_meta(artists: &str, year: Option<u16>, tracks: (usize, u32)) -> Vec<String> {
+/// them and leave no trailing dot when a part is absent. The artist is not one
+/// of them: it is the band's credit, which may be a link. An unknown total is
+/// left out.
+pub fn album_meta(year: Option<u16>, tracks: (usize, u32)) -> Vec<String> {
     let mut parts = Vec::new();
-    let artists = artists.trim();
-    if !artists.is_empty() {
-        parts.push(artists.to_owned());
-    }
     if let Some(year) = year {
         parts.push(year.to_string());
     }
@@ -994,11 +991,10 @@ mod tests {
     }
 
     #[test]
-    fn album_meta_reads_artist_year_count_and_runtime() {
+    fn album_meta_reads_year_count_and_runtime() {
         assert_eq!(
-            album_meta("Band", Some(1997), (12, 2_338_000)),
+            album_meta(Some(1997), (12, 2_338_000)),
             vec![
-                "Band".to_owned(),
                 "1997".to_owned(),
                 "12 tracks".to_owned(),
                 "38 min 58 sec".to_owned(),
@@ -1007,15 +1003,11 @@ mod tests {
     }
 
     #[test]
-    fn album_meta_drops_a_blank_artist_and_an_absent_year() {
+    fn album_meta_drops_an_absent_year() {
         assert_eq!(
-            album_meta("  ", None, (1, 0)),
-            vec!["1 track".to_owned()],
-            "a blank artist and a zero runtime are both absent"
-        );
-        assert_eq!(
-            album_meta("Band", None, (2, 0)),
-            vec!["Band".to_owned(), "2 tracks".to_owned()]
+            album_meta(None, (2, 0)),
+            vec!["2 tracks".to_owned()],
+            "an absent year and a zero runtime are both left out"
         );
     }
 

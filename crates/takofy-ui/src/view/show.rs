@@ -115,6 +115,7 @@ pub fn show_view(
                         eyebrow: "Show",
                         title: &detail.show.name,
                         meta,
+                        credit: None,
                         description: &description,
                         cover,
                     };
@@ -551,6 +552,7 @@ mod tests {
                     eyebrow: "Show",
                     title: "Lateral",
                     meta: show_meta("Lateral", "Tom Scott Media", 2),
+                    credit: None,
                     description: "A show about the long way round.",
                     cover: Cover::Missing,
                 };

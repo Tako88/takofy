@@ -167,6 +167,7 @@ pub fn tracks_view(
                 eyebrow: "Playlist",
                 title: &entry.name,
                 meta,
+                credit: None,
                 description: &description,
                 cover,
             };
@@ -2011,6 +2012,7 @@ mod tests {
                     eyebrow: "Playlist",
                     title,
                     meta: Vec::new(),
+                    credit: None,
                     description: "",
                     cover: Cover::Missing,
                 };
@@ -2058,6 +2060,7 @@ mod tests {
                     eyebrow: "Playlist",
                     title,
                     meta: Vec::new(),
+                    credit: None,
                     description: "",
                     cover: Cover::Missing,
                 };
@@ -5633,6 +5636,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
                     eyebrow,
                     title: "Signal Decay",
                     meta: Vec::new(),
+                    credit: None,
                     description: "",
                     cover,
                 };
@@ -5744,6 +5748,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
                         "62 songs".to_owned(),
                         "3 hr 51 min".to_owned(),
                     ],
+                    credit: None,
                     description: LONG_DESCRIPTION,
                     cover: Cover::Missing,
                 };
@@ -6518,6 +6523,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
                     eyebrow: "Playlist",
                     title,
                     meta: Vec::new(),
+                    credit: None,
                     description: "",
                     cover: Cover::Missing,
                 };

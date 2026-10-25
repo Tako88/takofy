@@ -158,7 +158,6 @@ impl Placed {
 /// What one link drew and reported.
 pub(super) struct Shown {
     /// The box the painted words occupy.
-    #[allow(dead_code, reason = "a caller places a plain fact beside the words")]
     pub rect: Rect,
     /// Whether the pointer is on the words.
     pub hovered: bool,

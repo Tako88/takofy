@@ -6,6 +6,12 @@
 //! [`super::actionbar`], drawn under the band by the page and pinned to the top of
 //! the page's scroll viewport.
 //!
+//! The byline under the title is a credit and its facts. The credit is the one
+//! name the band can open — an album's artist — and it is a link when the source
+//! knows that page; the facts follow it on the same line and are dropped when the
+//! name has taken the column. A credit with no page, or a band with no credit at
+//! all, paints the whole byline as plain words.
+//!
 //! The playlist's description sits under its title in the reference's own byline
 //! style — mono, muted, tracked apart — and its owner rides the meta line as
 //! `Made by <owner>` rather than the reference's inline link, because there is no
@@ -24,11 +30,29 @@ use crate::cover::Cover;
 use crate::layout::hero::title_size;
 use crate::mosaic::QUADRANTS;
 use crate::naming::Renaming;
+use crate::route::Page;
 use crate::theme::{
     MonoWeight, Tokens, Weight, fonts, hero, radius, space, stroke, text, tracking,
 };
 
+use super::link::{self, Target};
 use super::{art, context_menu, name_field, text as recipe};
+
+/// The byline's credit: the one name that may open a page.
+///
+/// A blank name is no credit at all, whatever page it would have opened.
+pub struct Credit<'a> {
+    name: &'a str,
+    target: Option<Target<'a>>,
+}
+
+impl<'a> Credit<'a> {
+    /// The credit named `name`, or `None` when that name is blank.
+    pub fn new(name: &'a str, target: Option<Target<'a>>) -> Option<Self> {
+        let name = name.trim();
+        (!name.is_empty()).then_some(Self { name, target })
+    }
+}
 
 /// What a band says about the context it heads.
 pub struct Band<'a> {
@@ -37,6 +61,8 @@ pub struct Band<'a> {
     pub title: &'a str,
     /// The counts and the lengths under the title, already worded.
     pub meta: Vec<String>,
+    /// The credit the facts follow, drawn first on the byline.
+    pub credit: Option<Credit<'a>>,
     /// The playlist's description, already collapsed to a line; empty is absent.
     pub description: &'a str,
     /// The context's cover, as the art pipeline resolves it.
@@ -64,6 +90,8 @@ pub struct Reply {
     pub rename_clicked: bool,
     /// The title's id, so a finished rename hands the keyboard back to it.
     pub title_id: Option<Id>,
+    /// The page the byline's credit asked for.
+    pub open: Option<Page>,
 }
 
 /// Draws the band and how its title may be used this frame.
@@ -89,6 +117,7 @@ pub fn show_picture(
     Reply {
         rename_clicked: title.activated,
         title_id: title.id,
+        open: title.open,
     }
 }
 
@@ -109,6 +138,7 @@ fn wash(ui: &Ui, rect: Rect, tokens: &Tokens) {
 struct TitleDrawn {
     id: Option<Id>,
     activated: bool,
+    open: Option<Page>,
 }
 
 /// The art and the words, both standing on the band's floor.
@@ -150,22 +180,16 @@ fn inner(
         return TitleDrawn {
             id: None,
             activated: false,
+            open: None,
         };
     }
 
     let mut bottom = floor;
-    if !band.meta.is_empty() {
-        let byline = recipe::line(
-            ui,
-            &band.meta.join(" · "),
-            recipe::hero_description(),
-            tokens.palette.text_muted,
-            recipe::tracking_pts(text::XS, tracking::SLIGHT),
-            width,
-        );
-        bottom -= byline.size().y;
-        ui.painter()
-            .galley(Pos2::new(left, bottom), byline, tokens.palette.text_muted);
+    let mut open = None;
+    if band.credit.is_some() || !band.meta.is_empty() {
+        let (next, asked) = byline(ui, band, tokens, left, width, bottom);
+        bottom = next;
+        open = asked;
         bottom -= space::S2;
     }
 
@@ -210,6 +234,7 @@ fn inner(
     let mut drawn = TitleDrawn {
         id: None,
         activated: false,
+        open,
     };
     match title_tool {
         Title::Plain => {
@@ -232,6 +257,8 @@ fn inner(
         Title::Editing(renaming) => {
             let id = ui.scope_id().with("band-title");
             drawn.id = Some(id);
+            // The field has the pointer; the byline under it is not clickable.
+            drawn.open = None;
             let writing = renaming.writing();
             let wants_focus = renaming.wants_focus();
             let out = {
@@ -286,50 +313,469 @@ fn inner(
     drawn
 }
 
+/// The byline under the title: the credit, then the plain facts after it.
+///
+/// With a page to open, the name is a link and the facts take what it left on
+/// the same line, as long as that is room for one whole fact; a name that
+/// leaves less drops them. Without a page the two are one joined line, so an
+/// unknown URI reads exactly as a plain name.
+/// Returns the byline's top edge and the page the credit asked for.
+fn byline(
+    ui: &Ui,
+    band: &Band<'_>,
+    tokens: &Tokens,
+    left: f32,
+    width: f32,
+    bottom: f32,
+) -> (f32, Option<Page>) {
+    let ink = tokens.palette.text_muted;
+    let font = recipe::hero_description();
+    let tracking = recipe::tracking_pts(text::XS, tracking::SLIGHT);
+    let facts = band.meta.join(" · ");
+    let name = band.credit.as_ref().map(|credit| credit.name);
+    let target = band.credit.as_ref().and_then(|credit| credit.target);
+
+    let Some((name, target)) = name.zip(target) else {
+        let words = match name {
+            Some(name) if facts.is_empty() => name.to_owned(),
+            Some(name) => format!("{name} · {facts}"),
+            None => facts,
+        };
+        let line = recipe::line(ui, &words, font, ink, tracking, width);
+        let top = bottom - line.size().y;
+        ui.painter().galley(Pos2::new(left, top), line, ink);
+        return (top, None);
+    };
+
+    let galley = link::lay(ui, name, &link::Face { font, tracking }, width);
+    // A name that elides has taken the column; the facts would be a dot and an
+    // ellipsis after it.
+    let elided = galley.elided;
+    let top = bottom - galley.size().y;
+    let shown = link::Placed {
+        pos: Pos2::new(left, top),
+        galley,
+    }
+    .link(
+        ui,
+        ui.scope_id().with("band-credit"),
+        ui.clip_rect(),
+        Some(target),
+        ink,
+        tokens,
+    );
+    // The facts take what the name left, and a name that filled the column
+    // leaves them out rather than eliding them down to a dot.
+    let room = if elided {
+        0.0
+    } else {
+        (left + width - shown.rect.right()).max(0.0)
+    };
+    // The facts need room for the separator and one whole fact. Less than that
+    // and the line reads as a stray dot or a lone ellipsis after the name.
+    let least = band.meta.first().map_or(0.0, |first| {
+        recipe::line(
+            ui,
+            &format!(" · {first}"),
+            recipe::hero_description(),
+            ink,
+            tracking,
+            f32::INFINITY,
+        )
+        .size()
+        .x
+    });
+    if !facts.is_empty() && room >= least {
+        let line = recipe::line(
+            ui,
+            &format!(" · {facts}"),
+            recipe::hero_description(),
+            ink,
+            tracking,
+            room,
+        );
+        ui.painter()
+            .galley(Pos2::new(shown.rect.right(), top), line, ink);
+    }
+    (top, shown.page)
+}
+
 #[cfg(test)]
 mod tests {
-    use egui::{Rect, Vec2};
+    use egui::{Context, Event, Pos2, Rect, Vec2, epaint::TextShape};
 
     use super::*;
+    use crate::route::Page;
+    use crate::view::test_support::click_events;
 
-    /// A drawn band, so the frame's own answers are read rather than the helper
-    /// that decides them.
-    fn band_output() -> (Reply, egui::FullOutput) {
+    /// The artist the band's credit names, and the page a click asks for.
+    const ARTIST: &str = "spotify:artist:nils";
+    const PROBE: Vec2 = Vec2::new(1200.0, 400.0);
+
+    fn context() -> Context {
         let tokens = Tokens::DARK;
-        let ctx = egui::Context::default();
+        let ctx = Context::default();
         ctx.set_fonts(crate::theme::fonts::definitions());
         ctx.set_global_style(crate::theme::style(&tokens));
-        let band = Band {
+        ctx
+    }
+
+    fn input(events: Vec<Event>) -> egui::RawInput {
+        egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, PROBE)),
+            events,
+            ..Default::default()
+        }
+    }
+
+    /// A band with the album's shape and `credit` over `meta`.
+    fn band<'a>(credit: Option<Credit<'a>>, meta: Vec<String>) -> Band<'a> {
+        Band {
             eyebrow: "Album",
             title: "Signal Decay",
-            meta: Vec::new(),
+            meta,
             description: "",
             cover: crate::cover::Cover::Missing,
-        };
-        let mut reply = Reply {
-            rename_clicked: false,
-            title_id: None,
-        };
-        let mut output = ctx.run_ui(
-            egui::RawInput {
-                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1200.0, 400.0))),
-                ..Default::default()
-            },
-            |ui| {
-                reply = show_with(ui, &band, &tokens, Title::Plain);
-            },
-        );
+            credit,
+        }
+    }
+
+    /// A band whose credit names `ARTIST`.
+    fn linked<'a>(name: &'a str) -> Band<'a> {
+        band(
+            Credit::new(name, Some(Target::Credit(ARTIST))),
+            vec!["1997".to_owned(), "12 tracks".to_owned()],
+        )
+    }
+
+    fn draw(ctx: &Context, band: &Band<'_>, events: Vec<Event>) -> (Reply, egui::FullOutput) {
+        let tokens = Tokens::DARK;
+        let mut reply = None;
+        let mut output = ctx.run_ui(input(events), |ui| {
+            reply = Some(show_with(ui, band, &tokens, Title::Plain));
+        });
         output.textures_delta.clear();
-        (reply, output)
+        (reply.expect("the band is drawn"), output)
+    }
+
+    /// One click on `at`, returning the release pass's reply.
+    fn click(ctx: &Context, band: &Band<'_>, at: Pos2) -> Reply {
+        let mut last = None;
+        for event in click_events(at) {
+            last = Some(draw(ctx, band, vec![event]).0);
+        }
+        last.expect("the click runs")
+    }
+
+    /// The painted line with `label`, as the frame drew it.
+    fn painted<'a>(output: &'a egui::FullOutput, label: &str) -> Option<&'a TextShape> {
+        output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Text(text) if text.galley.text() == label => Some(text),
+                _ => None,
+            })
+    }
+
+    /// The box the painted line occupies.
+    fn rect_of(text: &TextShape) -> Rect {
+        Rect::from_min_size(text.pos, text.galley.size())
+    }
+
+    /// Every text the frame painted.
+    fn drawn_texts(output: &egui::FullOutput) -> Vec<&str> {
+        output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Text(text) => Some(text.galley.text()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Every label a pass gave a link node.
+    fn link_labels(output: &egui::FullOutput) -> Vec<String> {
+        output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .map(|update| {
+                update
+                    .nodes
+                    .iter()
+                    .filter_map(|(_, node)| {
+                        (node.role() == egui::accesskit::Role::Link)
+                            .then(|| node.label().map(str::to_owned))
+                            .flatten()
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The rect the band paints its wash into.
+    fn band_rect(output: &egui::FullOutput) -> Rect {
+        let tokens = Tokens::DARK;
+        output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Rect(rect) if rect.fill == tokens.palette.hero_wash => {
+                    Some(rect.rect)
+                }
+                _ => None,
+            })
+            .expect("the band paints its own wash")
+    }
+
+    /// The column the band's words are laid out in, solved the way the band
+    /// solves it from the wash it paints.
+    fn column(output: &egui::FullOutput) -> Rect {
+        let band = band_rect(output);
+        let left = band.left() + space::GUTTER + hero::ART + space::S5;
+        Rect::from_min_max(
+            Pos2::new(left, band.top()),
+            Pos2::new(band.right() - space::GUTTER, band.bottom()),
+        )
     }
 
     #[test]
     fn a_band_with_a_plain_title_reports_nothing() {
-        let (reply, _) = band_output();
+        let ctx = context();
+        let (reply, _) = draw(&ctx, &band(None, Vec::new()), Vec::new());
         assert!(
             !reply.rename_clicked,
             "an untouched frame asked for nothing"
         );
         assert_eq!(reply.title_id, None, "a painted title carries no id");
+        assert_eq!(reply.open, None, "a plain band opens nothing");
+    }
+
+    #[test]
+    fn a_blank_credit_is_none() {
+        assert!(
+            Credit::new("  ", Some(Target::Credit(ARTIST))).is_none(),
+            "a blank name is no credit, whatever page it would open"
+        );
+        assert_eq!(
+            Credit::new("  Nils Aker ", None).map(|credit| credit.name),
+            Some("Nils Aker"),
+            "a credit is its trimmed name"
+        );
+    }
+
+    #[test]
+    fn the_credit_is_a_link_followed_by_plain_facts() {
+        let tokens = Tokens::DARK;
+        let ctx = context();
+        let band = linked("Nils Aker");
+        let (reply, output) = draw(&ctx, &band, Vec::new());
+        assert_eq!(reply.open, None, "a drawn frame asked for no page");
+
+        let credit = painted(&output, "Nils Aker").expect("the credit is painted");
+        let facts = painted(&output, " · 1997 · 12 tracks").expect("the facts are painted");
+        let credit = rect_of(credit);
+        let facts = rect_of(facts);
+        assert!(
+            (facts.left() - credit.right()).abs() < 0.5,
+            "the facts start at {} past the credit ending at {}",
+            facts.left(),
+            credit.right()
+        );
+        assert!(
+            (facts.center().y - credit.center().y).abs() < 0.5,
+            "the facts sit on the credit's line, not under it"
+        );
+        assert_eq!(
+            painted(&output, " · 1997 · 12 tracks").map(|text| text.fallback_color),
+            Some(tokens.palette.text_muted),
+            "the facts are plain byline ink"
+        );
+
+        let reply = click(&ctx, &band, credit.center());
+        assert_eq!(
+            reply.open,
+            Some(Page::Artist(ARTIST.to_owned())),
+            "the credit is a link to the artist it names"
+        );
+        let reply = click(&ctx, &band, facts.center());
+        assert_eq!(reply.open, None, "the facts are plain, not a link");
+    }
+
+    #[test]
+    fn a_credit_without_a_target_is_painted_as_one_line() {
+        let tokens = Tokens::DARK;
+        let ctx = context();
+        let band = band(
+            Credit::new("Nils Aker", None),
+            vec!["1997".to_owned(), "12 tracks".to_owned()],
+        );
+        let (reply, output) = draw(&ctx, &band, Vec::new());
+        assert_eq!(reply.open, None);
+        assert!(
+            drawn_texts(&output).contains(&"Nils Aker · 1997 · 12 tracks"),
+            "an unknown page reads as one plain line: {:?}",
+            drawn_texts(&output)
+        );
+        assert_eq!(
+            drawn_texts(&output).len(),
+            3,
+            "one byline, one title and one eyebrow: {:?}",
+            drawn_texts(&output)
+        );
+        let line = rect_of(painted(&output, "Nils Aker · 1997 · 12 tracks").expect("the byline"));
+        assert_eq!(
+            painted(&output, "Nils Aker · 1997 · 12 tracks").map(|text| text.fallback_color),
+            Some(tokens.palette.text_muted),
+            "the plain byline is byline ink"
+        );
+        assert_eq!(
+            click(&ctx, &band, line.center()).open,
+            None,
+            "plain words open nothing"
+        );
+    }
+
+    #[test]
+    fn a_long_credit_elides_and_hides_the_facts() {
+        let ctx = context();
+        let name = "Nils Aker And The Long Ensemble ".repeat(10);
+        let band = linked(name.trim());
+        let (_, output) = draw(&ctx, &band, Vec::new());
+        let credit = painted(&output, name.trim()).expect("the credit is painted");
+        assert!(credit.galley.elided, "a credit past the column must elide");
+        let credit = rect_of(credit);
+        assert!(
+            credit.right() <= column(&output).right() + 0.5,
+            "the elided credit ends at {} past the column {}",
+            credit.right(),
+            column(&output).right()
+        );
+        assert!(
+            !drawn_texts(&output)
+                .iter()
+                .any(|text| text.starts_with(" · ")),
+            "the facts were painted after a credit that filled the column: {:?}",
+            drawn_texts(&output)
+        );
+    }
+
+    #[test]
+    fn the_facts_never_overflow_the_column() {
+        let ctx = context();
+        let facts = vec!["38 min 58 sec".to_owned(); 20];
+        let band = band(
+            Credit::new("Nils Aker", Some(Target::Credit(ARTIST))),
+            facts.clone(),
+        );
+        let (_, output) = draw(&ctx, &band, Vec::new());
+        let label = format!(" · {}", facts.join(" · "));
+        let words = painted(&output, &label).expect("the facts are painted");
+        assert!(words.galley.elided, "long facts must elide, not overflow");
+        let words = rect_of(words);
+        let column = column(&output);
+        assert!(
+            words.right() <= column.right() + 0.5,
+            "the facts end at {} past the column {}",
+            words.right(),
+            column.right()
+        );
+        assert!(
+            words.left() > column.left(),
+            "the facts start at the column's own edge"
+        );
+    }
+
+    #[test]
+    fn the_credit_is_painted_in_the_muted_ink() {
+        let tokens = Tokens::DARK;
+        let ctx = context();
+        let band = linked("Nils Aker");
+        let (_, output) = draw(&ctx, &band, Vec::new());
+        let credit = painted(&output, "Nils Aker").expect("the credit is painted");
+        assert_eq!(
+            credit.fallback_color, tokens.palette.text_muted,
+            "a resting credit is byline ink"
+        );
+        assert_ne!(
+            credit.fallback_color, tokens.palette.text,
+            "and only the hover lifts it to full ink"
+        );
+    }
+
+    #[test]
+    fn a_linked_band_is_as_tall_as_a_plain_one() {
+        let ctx = context();
+        let facts = vec!["1997".to_owned(), "12 tracks".to_owned()];
+        let shape = |band: &Band<'_>| {
+            let (_, output) = draw(&ctx, band, Vec::new());
+            let title = painted(&output, band.title).expect("the title is painted");
+            (title.pos, band_rect(&output))
+        };
+        let linked = shape(&linked("Nils Aker"));
+        let plain = shape(&band(Credit::new("Nils Aker", None), facts));
+        assert_eq!(
+            linked.0, plain.0,
+            "a link must not push the title up or down"
+        );
+        assert_eq!(
+            linked.1, plain.1,
+            "a link must not change the band's height"
+        );
+    }
+
+    #[test]
+    fn the_facts_are_dropped_when_the_room_left_is_a_sliver() {
+        let ctx = context();
+        let mut sliver = None;
+        // Each letter narrows what the facts would get. The last credit that
+        // still fits therefore leaves less than one letter of room.
+        for pad in 0..200 {
+            let name = format!("Nils Aker{}", "n".repeat(pad));
+            let band = linked(&name);
+            let (_, output) = draw(&ctx, &band, Vec::new());
+            let credit = painted(&output, &name).expect("the credit is painted");
+            if credit.galley.elided {
+                break;
+            }
+            let room = column(&output).right() - rect_of(credit).right();
+            assert!(room >= 0.0, "the credit ends past the column");
+            if room > 0.0 && sliver.as_ref().is_none_or(|(best, _)| room < *best) {
+                sliver = Some((room, output));
+            }
+        }
+        let (room, output) = sliver.expect("a credit fits the column without filling it");
+        let texts = drawn_texts(&output);
+        assert!(
+            room < 10.0,
+            "the sliver must be narrower than a fact, not {room} points"
+        );
+        assert!(
+            !texts.iter().any(|text| text.starts_with(" · ")),
+            "a credit leaving {room} points painted the facts anyway: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn a_credit_on_its_own_page_is_still_a_link() {
+        // The same band heads the artist page this credit names. Nothing here
+        // knows which page it is on, so the words stay a link and the open is
+        // reported for the page to no-op on.
+        let ctx = context();
+        ctx.enable_accesskit();
+        let band = linked("Nils Aker");
+        let (_, output) = draw(&ctx, &band, Vec::new());
+        assert_eq!(
+            link_labels(&output),
+            vec!["Open artist Nils Aker".to_owned()],
+            "a credit on its own page still registers a link"
+        );
+        let credit = rect_of(painted(&output, "Nils Aker").expect("the credit"));
+        assert_eq!(
+            click(&ctx, &band, credit.center()).open,
+            Some(Page::Artist(ARTIST.to_owned()))
+        );
     }
 }
