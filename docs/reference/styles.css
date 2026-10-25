@@ -1288,6 +1288,9 @@ svg {
 }
 
 .hero__art {
+  /* The band paints from an absolutely positioned layer above in-flow content,
+     so everything that sits on it has to be positioned too. */
+  position: relative;
   width: 11rem;
   height: 11rem;
   flex: none;
@@ -1297,6 +1300,7 @@ svg {
 }
 
 .hero__meta {
+  position: relative;
   display: grid;
   gap: var(--space-2);
   min-width: 0;
@@ -1346,60 +1350,34 @@ svg {
 }
 
 /* An artist portrait only ever arrives as a 640² square, so this band stops
-   stretching it: the square is shown whole as a plate, the band takes its tint
-   from that same file, and the artist's own releases run along the bottom edge,
-   cropped by the band — squares used as squares, filling the width that a photo
-   cannot. */
+   stretching it: the square is the band's own left edge — flush to the top and
+   the bottom rule, hairline down its right — and the tint sampled from that same
+   file carries the width a photo cannot. */
 .hero--artist {
-  --hero-plate: clamp(8.5rem, 15vw, 12.5rem);
+  --hero-plate: 16rem;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: end;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
   gap: var(--space-5);
-  min-height: 16rem;
-  padding-bottom: var(--space-5);
-  overflow: hidden;
+  min-height: var(--hero-plate);
+  /* No inset on the sleeve's side: it is part of the band's edge, not a card
+     floating inside it. */
+  padding: 0 var(--space-gutter) 0 0;
 }
 
 .hero--artist .hero__art {
   width: var(--hero-plate);
   height: var(--hero-plate);
+  border: 0;
+  border-right: 1px solid var(--color-border-strong);
+  border-radius: 0;
 }
 
-/* The plate sets the band's height, so the name is sized to break over two or
-   three lines inside it rather than to run past the shelf. */
+/* The sleeve sets the band's height, so the name is sized to break over two or
+   three lines inside it rather than to run past the far gutter. */
 .hero--artist .hero__title {
   font-size: clamp(1.75rem, 4vw, 3.25rem);
   text-wrap: balance;
-}
-
-/* The shelf stands on the same foot line as the plate and runs out past the
-   band's right gutter; the mask lets the strip leave the frame instead of
-   ending on a hard cut. One sleeve is half the plate, so the shelf scales with
-   the band rather than holding a size that only suits the widest layout. */
-.hero__shelf {
-  position: relative;
-  display: flex;
-  justify-content: flex-end;
-  gap: 1px;
-  height: calc(var(--hero-plate) * 0.5);
-  max-width: min(26vw, 16rem);
-  margin-right: calc(var(--space-gutter) * -1);
-  overflow: hidden;
-  -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 10%);
-  mask-image: linear-gradient(90deg, transparent 0, #000 10%);
-}
-
-.hero__shelf li {
-  flex: none;
-  height: 100%;
-  aspect-ratio: 1;
-}
-
-.hero__shelf img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
 }
 
 .hero__eyebrow .badge-verified {
@@ -4046,15 +4024,9 @@ svg {
     height: 8rem;
   }
 
-  /* The band keeps its columns here — the shelf is what fills a band this wide
-     — but the plate steps down, and the shelf scales with it. */
+  /* The band keeps its two columns here, and the sleeve steps down with it. */
   .hero--artist {
-    --hero-plate: clamp(6.5rem, 18vw, 9rem);
-    min-height: 13rem;
-  }
-
-  .hero__shelf {
-    max-width: min(30vw, 13rem);
+    --hero-plate: 13rem;
   }
 
   .about {
@@ -4199,17 +4171,22 @@ svg {
     font-size: clamp(1.5rem, 8vw, 2.25rem);
   }
 
-  /* Stacked, and the shelf stands down: on a phone the type needs the width. */
+  /* Stacked: the sleeve comes off the band's edges and back inside the gutter,
+     with the type below it. */
   .hero--artist {
+    --hero-plate: 6.5rem;
     grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+    padding: var(--space-4);
+  }
+
+  .hero--artist .hero__art {
+    border: 1px solid var(--color-border-strong);
+    border-radius: var(--radius-sm);
   }
 
   .hero--artist .hero__title {
     font-size: clamp(1.75rem, 10vw, 2.75rem);
-  }
-
-  .hero__shelf {
-    display: none;
   }
 
   .view__inner,
