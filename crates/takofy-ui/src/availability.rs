@@ -176,8 +176,8 @@ pub fn availability(control: Control) -> Availability {
         Control::Shuffle => Availability::Ready, // #35
         Control::Repeat => Availability::Ready,  // #35
         Control::Miniplayer => Availability::Waiting,
-        Control::Queue => Availability::Ready, // #35
-        Control::Devices => Availability::Waiting,
+        Control::Queue => Availability::Ready,      // #35
+        Control::Devices => Availability::Ready,    // #38
         Control::Mute => Availability::Ready,       // #35
         Control::Volume => Availability::Ready,     // #35
         Control::Fullscreen => Availability::Ready, // #35
@@ -248,6 +248,7 @@ mod tests {
                     | Control::Shuffle
                     | Control::Repeat
                     | Control::Queue
+                    | Control::Devices
                     | Control::Mute
                     | Control::Volume
                     | Control::Fullscreen

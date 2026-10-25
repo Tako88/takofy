@@ -11,6 +11,7 @@
 use std::time::Instant;
 
 use egui::{FontId, Pos2, Rect, Ui, Vec2};
+use takofy_model::TrackEntry;
 
 use crate::availability::Control;
 use crate::cover::{Art, Cover};
@@ -61,6 +62,9 @@ pub struct Frame<'a> {
     pub art: &'a mut Art,
     pub now: Instant,
     pub cover: Cover,
+    /// The entry the pane draws, handed in by the shell: the one the head's
+    /// more button acts on, or nothing when the drawn track is no entry here.
+    pub current: Option<&'a TrackEntry>,
     pub tokens: &'a Tokens,
 }
 
@@ -80,7 +84,7 @@ pub fn show(
     let tabs_h = tabs_height(ui, tokens);
     let stack = panel::stack_for(band, meta_h, tabs_h);
 
-    let menu = head(ui, stack, queue, likes, tokens);
+    let menu = head(ui, stack, frame.current, likes, tokens);
     // Idle is the transport, never the cover: a track with no cover of its own
     // still has a box to frame.
     if transport.now_playing.is_none() {
@@ -125,12 +129,20 @@ pub fn show(
     }
 }
 
-/// The head: the panel's caption and the current entry's more button.
+/// The head: the panel's caption and the drawn entry's more button.
 ///
-/// The button is live only when there is a current entry with something to do:
-/// a queue with no current row, a local file and an entry with nothing to open
-/// all leave it waiting.
-fn head(ui: &mut Ui, stack: Stack, queue: &Queue, likes: &Likes, tokens: &Tokens) -> Option<Door> {
+/// `current` is the entry the pane draws, handed in by the shell: this window's
+/// current row, or the holder's track while the queue holds it. The button is
+/// live only when that entry has something to do — a holder whose track is no
+/// entry here leaves it waiting — and the menu it opens acts on that entry, so
+/// it can never reach a track the pane is not drawing.
+fn head(
+    ui: &mut Ui,
+    stack: Stack,
+    current: Option<&TrackEntry>,
+    likes: &Likes,
+    tokens: &Tokens,
+) -> Option<Door> {
     let caption = recipe::caption(ui, "Now playing", tokens);
     ui.painter().galley(
         Pos2::new(
@@ -148,7 +160,7 @@ fn head(ui: &mut Ui, stack: Stack, queue: &Queue, likes: &Likes, tokens: &Tokens
         ),
         Vec2::splat(extent::BUTTON),
     );
-    let live = queue.current().is_some_and(|entry| {
+    let live = current.is_some_and(|entry| {
         !verbs::track_items(
             std::slice::from_ref(entry),
             None,
@@ -414,6 +426,9 @@ mod tests {
         now: Instant,
         lyrics: crate::lyrics::LyricsPanel,
         likes: crate::likes::Likes,
+        /// The entry the pane is handed, when a test wants it to differ from
+        /// the queue's current one.
+        drawn: Option<TrackEntry>,
     }
 
     impl Panel {
@@ -425,12 +440,14 @@ mod tests {
                 now: Instant::now(),
                 lyrics: crate::lyrics::LyricsPanel::default(),
                 likes: crate::likes::Likes::default(),
+                drawn: None,
             }
         }
 
         fn with_queue(mut self, count: usize, current: usize) -> Self {
             let tracks: Vec<TrackEntry> = (0..count).map(track).collect();
-            self.queue.start(&tracks, current, &mut self.transport);
+            self.queue
+                .start(&tracks, current, None, &mut self.transport);
             self
         }
 
@@ -458,9 +475,11 @@ mod tests {
                 art,
                 lyrics,
                 likes,
+                drawn,
                 ..
             } = self;
             let position_ms = transport.position_ms;
+            let current = drawn.as_ref().or_else(|| queue.current());
             run(ctx, input(events), |ui| {
                 reply = show(
                     ui,
@@ -473,6 +492,7 @@ mod tests {
                         art,
                         now,
                         cover,
+                        current,
                         tokens: &tokens,
                     },
                 );
@@ -496,6 +516,7 @@ mod tests {
                         art: &mut self.art,
                         now: self.now,
                         cover,
+                        current: self.queue.current(),
                         tokens: &tokens,
                     },
                 );
@@ -523,6 +544,7 @@ mod tests {
                         art: &mut self.art,
                         now: self.now,
                         cover,
+                        current: self.queue.current(),
                         tokens: &tokens,
                     },
                 );
@@ -565,6 +587,7 @@ mod tests {
                     art: &mut panel.art,
                     now,
                     cover,
+                    current: panel.queue.current(),
                     tokens: &tokens,
                 },
             );
@@ -635,6 +658,7 @@ mod tests {
                     art: &mut art,
                     now,
                     cover,
+                    current: queue.current(),
                     tokens: &tokens,
                 },
             );
@@ -1055,6 +1079,7 @@ mod tests {
                         art: &mut panel.art,
                         now: panel.now,
                         cover,
+                        current: panel.queue.current(),
                         tokens: &tokens,
                     },
                 );
@@ -1106,7 +1131,7 @@ mod tests {
         let ctx = context();
         let mut panel = Panel::new(playing("A Title", "A Band"));
         let named = named_track();
-        panel.queue.start(&[named], 0, &mut panel.transport);
+        panel.queue.start(&[named], 0, None, &mut panel.transport);
 
         let reply = click_more(&mut panel, &ctx);
 
@@ -1122,7 +1147,7 @@ mod tests {
     fn the_more_button_waits_without_a_current_entry_that_has_verbs() {
         for queue in [Queue::default(), {
             let mut queue = Queue::default();
-            queue.start(&[track(0)], 0, &mut Transport::default());
+            queue.start(&[track(0)], 0, None, &mut Transport::default());
             queue
         }] {
             let ctx = context();
@@ -1134,5 +1159,22 @@ mod tests {
                 "a waiting more button opened a menu"
             );
         }
+    }
+
+    #[test]
+    fn the_more_button_acts_on_the_entry_the_pane_was_handed() {
+        let ctx = context();
+        // The queue holds a row with nothing to open, and the pane is handed a
+        // different entry: the button follows the entry it draws.
+        let mut panel = Panel::new(playing("A Title", "A Band"));
+        panel
+            .queue
+            .start(&[track(0)], 0, None, &mut Transport::default());
+        panel.drawn = Some(named_track());
+
+        let door = click_more(&mut panel, &ctx)
+            .menu
+            .expect("the handed entry's menu did not open");
+        assert_eq!(door.device, crate::menu::Device::Pointer);
     }
 }

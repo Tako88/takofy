@@ -997,6 +997,8 @@ impl Library {
             }
             Update::NeedsAuthorization
             | Update::SignInFailed(_)
+            | Update::Devices(_)
+            | Update::Remote(_)
             | Update::Transport(_)
             | Update::Cover { .. }
             | Update::CoverFailed { .. } => {}
@@ -2490,7 +2492,7 @@ mod tests {
 
     use crate::library_filter::RootKind;
     use crate::lyrics::Tab;
-    use crate::message::TransportUpdate;
+    use crate::message::{DeviceUpdate, TransportUpdate};
     use crate::player::NowPlaying;
     use crate::sidebar_kind::SidebarKind;
 
@@ -6565,6 +6567,20 @@ mod tests {
         library.apply(&Update::Transport(TransportUpdate::Ended));
         assert_eq!(library.playlists, Load::Idle);
         assert_eq!(library.tracks, Load::Idle);
+    }
+
+    #[test]
+    fn device_updates_are_ignored() {
+        let mut library = Library::default();
+        library.apply(&Update::Devices(DeviceUpdate::Playing(None)));
+        library.apply(&Update::Devices(DeviceUpdate::Roster {
+            devices: Vec::new(),
+            holder: Some("phone".to_owned()),
+            held_here: false,
+        }));
+        assert_eq!(library.playlists, Load::Idle);
+        assert_eq!(library.tracks, Load::Idle);
+        assert_eq!(library.followed, Load::Idle);
     }
 
     #[test]

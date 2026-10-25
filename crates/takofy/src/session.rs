@@ -5,15 +5,19 @@
 //! thin: a call-through or one `Option` check.
 
 use std::future::Future;
+use std::time::Instant;
 
 use librespot::core::SessionConfig;
+use takofy_core::connect::{ClusterEvent, ClusterView, ConnectError, Steer};
 use takofy_core::credentials::AccessToken;
 use takofy_core::engine::{Engine, EngineError, RootlistRead};
 use takofy_core::playback::{Playback, PlaybackError, PlaybackEvent, Volume};
+use takofy_core::receive::Inbound;
+use takofy_core::{Resolution, TransferPlan};
 use takofy_model::{
-    AlbumDetail, ArtistDetail, ArtistPortrait, CoverUrl, FollowedArtist, FollowedShow, Move,
-    PlaylistAccess, PlaylistEntry, Removal, Revision, SavedAlbum, ShowDetail, TrackEntry,
-    TrackLyrics,
+    AlbumDetail, ArtistDetail, ArtistPortrait, CoverUrl, FollowedArtist, FollowedShow, Landing,
+    Move, PlaylistAccess, PlaylistEntry, Removal, Report, RequestId, Revision, SavedAlbum,
+    ShowDetail, TrackEntry, TrackLyrics,
 };
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::oneshot::Receiver;
@@ -30,6 +34,22 @@ pub(crate) enum SessionError {
 }
 
 impl SessionError {
+    /// Whether this failure means the device watch can never start again.
+    pub(crate) fn devices_terminal(&self) -> bool {
+        matches!(
+            self,
+            Self::Engine(EngineError::Connect(ConnectError::DealerSpent))
+        )
+    }
+
+    /// Whether this failure means the move had no page to carry.
+    pub(crate) fn no_context(&self) -> bool {
+        matches!(
+            self,
+            Self::Engine(EngineError::Connect(ConnectError::NoContext))
+        )
+    }
+
     /// A fixed name for the log. The source error is never formatted: it can
     /// embed a response body.
     pub(crate) fn kind(&self) -> &'static str {
@@ -44,6 +64,7 @@ impl SessionError {
             Self::Engine(EngineError::Lyrics(_)) => "lyrics",
             Self::Engine(EngineError::Playlist(_)) => "playlist",
             Self::Engine(EngineError::Followed(_)) => "followed",
+            Self::Engine(EngineError::Connect(_)) => "connect",
             Self::Playback(error) => match error {
                 PlaybackError::NoAudioBackend => "no audio backend",
                 PlaybackError::NoAudioDevice => "no audio device",
@@ -247,7 +268,86 @@ pub(crate) trait SessionHost: Send + 'static {
         follow: bool,
     ) -> impl Future<Output = Result<(), SessionError>> + Send;
 
+    /// Starts watching the account's devices, ignoring a watch already running.
+    fn watch_devices(&mut self) -> impl Future<Output = Result<(), SessionError>> + Send;
+
+    /// The event stream of a watch started since the last call, so the one
+    /// drain thread is handed it exactly once.
+    fn take_devices(&mut self) -> Option<UnboundedReceiver<ClusterEvent>>;
+
+    /// The request stream of a watch started since the last call, so the one
+    /// command loop is handed it exactly once.
+    fn take_inbound(&mut self) -> Option<UnboundedReceiver<Inbound>>;
+
+    /// Says whether this device can play. A call with no session is a no-op, so
+    /// a play before sign-in reports nothing here.
+    fn set_playable(&self, playable: bool);
+
+    /// Publishes what the window is playing. A call with no session is a no-op,
+    /// like the stage above it.
+    fn report(&self, report: Option<Report>);
+
+    /// Answers one incoming request `Failure`. A call with no session is a
+    /// no-op, like the stage above it.
+    fn refuse(&self, id: RequestId);
+
+    /// Asks the cluster for its roster again, answering what it says.
+    fn refresh_devices(&self) -> impl Future<Output = Result<ClusterView, SessionError>> + Send;
+
+    /// Sends one transport action to the device that holds the sound.
+    fn steer(
+        &self,
+        device: &str,
+        steer: Steer,
+    ) -> impl Future<Output = Result<(), SessionError>> + Send;
+
+    /// Moves the account's sound to one device.
+    fn hand_over(&self, device: &str) -> impl Future<Output = Result<(), SessionError>> + Send;
+
+    /// Takes this client off the account's device list. Best effort: the exit
+    /// draws nothing, so a failure is logged and dropped.
+    fn withdraw_devices(&self) -> impl Future<Output = Result<(), SessionError>> + Send;
+
     fn play(&mut self, uri: &str) -> Result<(), SessionError>;
+
+    /// Starts the player if it is not running, keeping its event stream for the
+    /// drain.
+    fn prepare_player(&mut self) -> Result<(), SessionError>;
+
+    /// Every track URI a context holds, in the walker's order.
+    fn resolve_context(
+        &self,
+        uri: &str,
+    ) -> impl Future<Output = Result<Vec<String>, SessionError>> + Send;
+
+    /// Takes the account's sound for one hand-over, answering the phone.
+    fn accept(
+        &self,
+        id: RequestId,
+        plan: &TransferPlan,
+        resolution: Resolution,
+    ) -> impl Future<Output = Result<Landing, SessionError>> + Send;
+
+    /// Loads one track at `position_ms`, playing only when asked to.
+    fn load(&mut self, uri: &str, position_ms: u32, play: bool) -> Result<(), SessionError>;
+
+    /// Gives the account's sound back, announcing what the device is now.
+    fn release_sound(&self) -> impl Future<Output = Result<(), SessionError>> + Send;
+
+    /// Whether this device holds the account's sound.
+    fn holding(&self) -> bool;
+
+    /// Answers one incoming request with this window's verdict: taken, or
+    /// refused.
+    ///
+    /// `true` says the request was received and carried out as far as this
+    /// window could take it, which for a queue edit means the rows were adopted,
+    /// not that the phone's own action finished. A pending request's ack rides
+    /// the next state put either way.
+    fn answer_order(&self, id: RequestId, ok: bool) -> bool;
+
+    /// When a pending request's budget answers it.
+    fn expires(&self, id: RequestId) -> Option<Instant>;
 
     /// Jumps within the loaded track. A call with no player is a no-op.
     fn seek(&self, position_ms: u32);
@@ -287,6 +387,10 @@ pub(crate) struct LiveSession {
     engine: Option<Engine>,
     playback: Option<Playback>,
     events: Option<UnboundedReceiver<PlaybackEvent>>,
+    /// The watch's stream, kept until the drain thread takes it.
+    devices: Option<UnboundedReceiver<ClusterEvent>>,
+    /// The watch's request stream, kept until the command loop takes it.
+    inbound: Option<UnboundedReceiver<Inbound>>,
     /// The level the player will read, kept here so a change before the player
     /// exists is still the level it starts with.
     volume: Volume,
@@ -299,8 +403,24 @@ impl LiveSession {
             engine: None,
             playback: None,
             events: None,
+            devices: None,
+            inbound: None,
             volume: Volume::default(),
         }
+    }
+
+    /// Starts the player on first use, keeping its event stream so the one drain
+    /// thread can be handed it once.
+    fn ensure_player(&mut self) -> Result<&Playback, SessionError> {
+        if self.playback.is_none() {
+            let engine = self.engine.as_ref().ok_or(SessionError::NotConnected)?;
+            let (playback, events) = engine
+                .playback(self.volume.clone())
+                .map_err(SessionError::Playback)?;
+            self.playback = Some(playback);
+            self.events = Some(events);
+        }
+        self.playback.as_ref().ok_or(SessionError::NotConnected)
     }
 }
 
@@ -591,18 +711,146 @@ impl SessionHost for LiveSession {
         }
     }
 
-    fn play(&mut self, uri: &str) -> Result<(), SessionError> {
-        if self.playback.is_none() {
-            let engine = self.engine.as_ref().ok_or(SessionError::NotConnected)?;
-            let (playback, events) = engine
-                .playback(self.volume.clone())
-                .map_err(SessionError::Playback)?;
-            self.playback = Some(playback);
-            self.events = Some(events);
+    async fn watch_devices(&mut self) -> Result<(), SessionError> {
+        // A second request hands back the streams the first one already holds.
+        // Once the drains have taken them, the engine's refusal stands.
+        if self.devices.is_some() {
+            return Ok(());
         }
-        match self.playback.as_ref() {
-            Some(playback) => playback.play(uri).map_err(SessionError::Playback),
+        let Some(engine) = &mut self.engine else {
+            return Err(SessionError::NotConnected);
+        };
+        let watching = engine.watch_devices().await.map_err(SessionError::Engine)?;
+        self.devices = Some(watching.events);
+        self.inbound = Some(watching.inbound);
+        Ok(())
+    }
+
+    fn take_devices(&mut self) -> Option<UnboundedReceiver<ClusterEvent>> {
+        self.devices.take()
+    }
+
+    fn take_inbound(&mut self) -> Option<UnboundedReceiver<Inbound>> {
+        self.inbound.take()
+    }
+
+    fn set_playable(&self, playable: bool) {
+        if let Some(engine) = &self.engine {
+            engine.set_playable(playable);
+        }
+    }
+
+    fn report(&self, report: Option<Report>) {
+        if let Some(engine) = &self.engine {
+            engine.report(report);
+        }
+    }
+
+    fn refuse(&self, id: RequestId) {
+        if let Some(engine) = &self.engine {
+            engine.refuse(id);
+        }
+    }
+
+    async fn refresh_devices(&self) -> Result<ClusterView, SessionError> {
+        match &self.engine {
+            Some(engine) => engine.refresh_devices().await.map_err(SessionError::Engine),
             None => Err(SessionError::NotConnected),
+        }
+    }
+
+    async fn steer(&self, device: &str, steer: Steer) -> Result<(), SessionError> {
+        match &self.engine {
+            Some(engine) => engine
+                .steer_device(device, &steer)
+                .await
+                .map_err(SessionError::Engine),
+            None => Err(SessionError::NotConnected),
+        }
+    }
+
+    async fn withdraw_devices(&self) -> Result<(), SessionError> {
+        let Some(engine) = &self.engine else {
+            return Err(SessionError::NotConnected);
+        };
+        if let Err(error) = engine.withdraw_devices().await {
+            // The window is closing; there is nothing left to draw this into.
+            log::warn!("device withdraw: {}", SessionError::Engine(error).kind());
+        }
+        Ok(())
+    }
+
+    async fn hand_over(&self, device: &str) -> Result<(), SessionError> {
+        match &self.engine {
+            Some(engine) => engine.hand_over(device).await.map_err(SessionError::Engine),
+            None => Err(SessionError::NotConnected),
+        }
+    }
+
+    fn play(&mut self, uri: &str) -> Result<(), SessionError> {
+        self.load(uri, 0, true)
+    }
+
+    fn prepare_player(&mut self) -> Result<(), SessionError> {
+        self.ensure_player().map(|_| ())
+    }
+
+    async fn resolve_context(&self, uri: &str) -> Result<Vec<String>, SessionError> {
+        match &self.engine {
+            Some(engine) => engine
+                .resolve_context(uri)
+                .await
+                .map_err(SessionError::Engine),
+            None => Err(SessionError::NotConnected),
+        }
+    }
+
+    async fn accept(
+        &self,
+        id: RequestId,
+        plan: &TransferPlan,
+        resolution: Resolution,
+    ) -> Result<Landing, SessionError> {
+        match &self.engine {
+            Some(engine) => engine
+                .accept_transfer(id, plan, resolution)
+                .await
+                .map_err(SessionError::Engine),
+            None => Err(SessionError::NotConnected),
+        }
+    }
+
+    fn load(&mut self, uri: &str, position_ms: u32, play: bool) -> Result<(), SessionError> {
+        self.ensure_player()?
+            .load(uri, position_ms, play)
+            .map_err(SessionError::Playback)
+    }
+
+    async fn release_sound(&self) -> Result<(), SessionError> {
+        match &self.engine {
+            Some(engine) => engine.release_sound().await.map_err(SessionError::Engine),
+            None => Err(SessionError::NotConnected),
+        }
+    }
+
+    fn holding(&self) -> bool {
+        match &self.engine {
+            Some(engine) => engine.holding(),
+            None => false,
+        }
+    }
+
+    fn answer_order(&self, id: RequestId, ok: bool) -> bool {
+        match &self.engine {
+            Some(engine) => engine.answer_order(id, ok),
+            None => false,
+        }
+    }
+
+    fn expires(&self, id: RequestId) -> Option<Instant> {
+        match &self.engine {
+            Some(engine) => engine.expires(id),
+            None => None,
         }
     }
 
@@ -652,7 +900,10 @@ impl SessionHost for LiveSession {
 mod tests {
     use librespot::core::SessionConfig;
     use librespot::playback::mixer::VolumeGetter;
+    use takofy_core::connect::Steer;
     use takofy_core::playback::Volume;
+    use takofy_core::{Resolution, TransferPlan};
+    use takofy_model::RequestId;
     use tokio::sync::oneshot;
 
     use super::{LiveSession, SessionError, SessionHost, stop_or};
@@ -695,6 +946,121 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn the_device_calls_before_sign_in_report_the_missing_engine() {
+        let mut live = LiveSession::new(SessionConfig::default());
+
+        assert!(matches!(
+            SessionHost::watch_devices(&mut live).await,
+            Err(SessionError::NotConnected)
+        ));
+        assert!(matches!(
+            SessionHost::refresh_devices(&live).await,
+            Err(SessionError::NotConnected)
+        ));
+        assert!(matches!(
+            SessionHost::steer(&live, "phone", Steer::Pause).await,
+            Err(SessionError::NotConnected)
+        ));
+        assert!(matches!(
+            SessionHost::hand_over(&live, "phone").await,
+            Err(SessionError::NotConnected)
+        ));
+        assert!(matches!(
+            SessionHost::withdraw_devices(&live).await,
+            Err(SessionError::NotConnected)
+        ));
+        assert!(SessionHost::take_devices(&mut live).is_none());
+    }
+
+    #[tokio::test]
+    async fn a_watch_asked_for_twice_hands_back_the_stream_it_has() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut live = LiveSession::new(SessionConfig::default());
+        live.devices = Some(rx);
+
+        // The stream is the guard: a second request cannot start a second
+        // watch, and a window that asks again gets what already exists.
+        assert!(SessionHost::watch_devices(&mut live).await.is_ok());
+        assert!(SessionHost::take_devices(&mut live).is_some());
+        assert!(SessionHost::take_devices(&mut live).is_none());
+    }
+
+    #[tokio::test]
+    async fn a_second_watch_after_success_returns_ok_without_a_second_start() {
+        let (_devices_tx, devices) = tokio::sync::mpsc::unbounded_channel();
+        let (_inbound_tx, inbound) = tokio::sync::mpsc::unbounded_channel();
+        let mut live = LiveSession::new(SessionConfig::default());
+        live.devices = Some(devices);
+        live.inbound = Some(inbound);
+
+        // The stored streams are the guard: a second request answers `Ok`
+        // without reaching the engine, whose dealer start is already spent.
+        assert!(SessionHost::watch_devices(&mut live).await.is_ok());
+        assert!(SessionHost::take_devices(&mut live).is_some());
+        assert!(SessionHost::take_inbound(&mut live).is_some());
+        assert!(
+            SessionHost::take_inbound(&mut live).is_none(),
+            "the request stream is handed out once"
+        );
+    }
+
+    #[tokio::test]
+    async fn take_inbound_hands_the_stream_out_once() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut live = LiveSession::new(SessionConfig::default());
+        live.inbound = Some(rx);
+
+        assert!(SessionHost::take_inbound(&mut live).is_some());
+        assert!(SessionHost::take_inbound(&mut live).is_none());
+    }
+
+    #[test]
+    fn set_playable_and_refuse_before_sign_in_do_nothing_and_do_not_panic() {
+        let live = LiveSession::new(SessionConfig::default());
+
+        // Both are safe before there is an engine: the playability report and
+        // the refusal have nowhere to go, and neither panics.
+        SessionHost::set_playable(&live, true);
+        SessionHost::set_playable(&live, false);
+        SessionHost::refuse(&live, RequestId(1));
+    }
+
+    #[test]
+    fn a_report_before_sign_in_is_ignored() {
+        use takofy_model::{Report, Status, TrackEntry};
+
+        let live = LiveSession::new(SessionConfig::default());
+        let report = Report {
+            status: Status::Playing,
+            track: Some(TrackEntry {
+                uri: "spotify:track:x".to_owned(),
+                title: "x".to_owned(),
+                artists: String::new(),
+                album: None,
+                album_uri: None,
+                artist_uris: Vec::new(),
+                artist_names: Vec::new(),
+                added_at: None,
+                duration_ms: None,
+                named: true,
+                cover: None,
+            }),
+            prev: Vec::new(),
+            next: Vec::new(),
+            context: None,
+            queue_revision: String::new(),
+            options: None,
+            position_ms: 0,
+            duration_ms: None,
+        };
+
+        // There is no engine to report to yet, so the call has nowhere to go and
+        // must not panic.
+        SessionHost::report(&live, Some(report));
+        SessionHost::report(&live, None);
+    }
+
     #[test]
     fn play_before_sign_in_fails_and_keeps_the_level() {
         let mut live = LiveSession::new(SessionConfig::default());
@@ -710,6 +1076,82 @@ mod tests {
             live.volume.attenuation_factor(),
             Volume::at(35).attenuation_factor(),
             "a failed play leaves the level alone"
+        );
+    }
+
+    /// A plan can only be built from the wire's own shape, so a test outside
+    /// core decodes one the way the request loop does.
+    fn plan() -> TransferPlan {
+        use librespot::core::dealer::protocol::{
+            Command, LoggingParams, Request, TransferCommand, TransferOptions,
+        };
+        use librespot::protocol::context_track::ContextTrack;
+        use librespot::protocol::playback::Playback as WirePlayback;
+        use librespot::protocol::transfer_state::TransferState;
+        use takofy_core::instruction::{Instruction, instruction_of};
+
+        let track = ContextTrack {
+            uri: Some("spotify:track:4uLU6hMCjMI75M1A2tKUQC".to_owned()),
+            ..Default::default()
+        };
+        let playback = WirePlayback {
+            current_track: Some(track).into(),
+            ..Default::default()
+        };
+        let data = TransferState {
+            playback: Some(playback).into(),
+            ..Default::default()
+        };
+        let request = Request {
+            message_id: 1,
+            sent_by_device_id: "phone".to_owned(),
+            command: Command::Transfer(TransferCommand {
+                data: Some(data),
+                options: TransferOptions::default(),
+                from_device_identifier: String::new(),
+                logging_params: LoggingParams {
+                    interaction_ids: None,
+                    device_identifier: None,
+                    command_initiated_time: None,
+                    page_instance_ids: None,
+                    command_id: None,
+                },
+            }),
+        };
+        match instruction_of(&request) {
+            Instruction::Transfer(plan) => plan,
+            other => panic!("a transfer naming a track must decode to a plan: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn each_new_host_call_before_sign_in_returns_not_connected() {
+        let mut live = LiveSession::new(SessionConfig::default());
+        let plan = plan();
+
+        assert!(matches!(
+            SessionHost::prepare_player(&mut live),
+            Err(SessionError::NotConnected)
+        ));
+        assert!(matches!(
+            SessionHost::resolve_context(&live, "spotify:playlist:abc").await,
+            Err(SessionError::NotConnected)
+        ));
+        assert!(matches!(
+            SessionHost::load(&mut live, "spotify:track:x", 5_000, false),
+            Err(SessionError::NotConnected)
+        ));
+        assert!(matches!(
+            SessionHost::accept(&live, RequestId(1), &plan, Resolution::Resolved(Vec::new())).await,
+            Err(SessionError::NotConnected)
+        ));
+        assert!(matches!(
+            SessionHost::release_sound(&live).await,
+            Err(SessionError::NotConnected)
+        ));
+        assert!(
+            !SessionHost::holding(&live),
+            "a window with no session holds nothing"
         );
     }
 }

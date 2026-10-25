@@ -5,6 +5,14 @@
 //! depending on the crate that talks to Spotify, so "a view cannot reach the
 //! network" stays enforced by the compiler.
 
+pub mod device;
+pub mod remote;
+
+pub use device::{Device, DeviceKind, RemotePlayback, RemoteState};
+pub use remote::{
+    Landing, MAX_NEXT_TRACKS, MAX_PREV_TRACKS, Options, Order, Report, RequestId, Status,
+};
+
 /// An absolute URL for a cover image, restricted to the hosts Takofy fetches.
 ///
 /// Only the two checked constructors build one, so a URL that reaches the

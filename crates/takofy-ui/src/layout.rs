@@ -10,6 +10,7 @@ use crate::theme::{extent, space};
 pub mod actionbar;
 pub mod cards;
 pub mod chips;
+pub mod device_list;
 pub mod episode;
 pub mod filter_row;
 pub mod hero;

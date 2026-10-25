@@ -4,21 +4,30 @@ use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use eframe::egui;
+use takofy_model::{Order, RequestId};
 use takofy_ui::cover::Art;
+use takofy_ui::device_list::DeviceList;
+use takofy_ui::devices::{Devices, Source};
 use takofy_ui::drawer::Drawer;
 use takofy_ui::layout::PanePref;
-use takofy_ui::library::Library;
+use takofy_ui::library::{Library, Load};
 use takofy_ui::menu::Menu;
-use takofy_ui::message::{Command, Update};
+use takofy_ui::message::{Command, RemoteUpdate, Update};
 use takofy_ui::player::{REDRAW, Transport, TransportState};
 use takofy_ui::prefs::Prefs;
 use takofy_ui::queue::Queue;
+use takofy_ui::remote::react;
+use takofy_ui::report::Reporter;
 use takofy_ui::signin::SignIn;
 use takofy_ui::theme::{Tokens, fonts, scroll, style};
 use takofy_ui::{layout, view};
 
 use crate::bridge::UiEnd;
 use crate::preferences::{Loaded, PrefsSync};
+
+/// The shortest delay a wake may ask for. A zero-delay repaint would spin the
+/// frame loop, so a clock that is already due waits this long instead.
+const WAKE_FLOOR: Duration = Duration::from_millis(1);
 
 /// Window options. `run_and_return` must stay true: shutdown runs after the
 /// window closes, and eframe must return instead of exiting the process.
@@ -41,6 +50,13 @@ pub(crate) struct TakofyApp {
     library: Library,
     transport: Transport,
     queue: Queue,
+    /// The newest state sent to the account, so a frame that changed nothing
+    /// sends nothing.
+    reporter: Reporter,
+    /// The account's devices, the holder's transport and the watch for them.
+    devices: Devices,
+    /// Whether the device card is open, and above which button.
+    list: DeviceList,
     drawer: Drawer,
     /// What the user asked of the Now Playing column. Nothing persists it, so it
     /// starts at the width rule every launch.
@@ -88,6 +104,17 @@ impl TakofyApp {
         }
     }
 
+    /// Publishes what this window is playing when the frame changed it.
+    fn send_report(&mut self) {
+        let position_ms = self.transport.position_ms;
+        if let Some(report) = self
+            .reporter
+            .next(&self.queue, &self.transport, position_ms)
+        {
+            let _ = self.ui_end.commands.send(Command::Report(report));
+        }
+    }
+
     /// Installs the theme and takes ownership of the window's end.
     pub(crate) fn new(
         cc: &eframe::CreationContext<'_>,
@@ -109,6 +136,9 @@ impl TakofyApp {
             library: Library::default(),
             transport,
             queue,
+            reporter: Reporter::default(),
+            devices: Devices::default(),
+            list: DeviceList::default(),
             drawer: Drawer::default(),
             pane: PanePref::default(),
             menu: Menu::default(),
@@ -145,15 +175,18 @@ impl eframe::App for TakofyApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let now = Instant::now();
         let before = self.transport.anchor();
+        let mut clock = Playclock::at(now).counting_from(self.since);
         let commands = drain(
             &self.ui_end.updates,
             &mut self.state,
             &mut self.library,
             &mut self.transport,
             &mut self.queue,
+            &mut self.devices,
             &mut self.art,
-            now,
+            &mut clock,
         );
+        self.since = clock.since;
         for command in commands {
             let _ = self.ui_end.commands.send(command);
         }
@@ -200,15 +233,53 @@ impl eframe::App for TakofyApp {
         // The search reads are want-driven like the lists above: the menu while
         // the field is open, the page while it is on screen.
         self.request_search();
+        // The device watch is want-driven too: the playlists landing is what
+        // says the account can be asked, and the button stays off until an
+        // answer arrives. A card that opened asked for one refresh, and a track
+        // the holder plays is named once per URI.
+        if let Some(command) = self
+            .devices
+            .watch_request(matches!(self.library.playlists, Load::Ready(_)))
+        {
+            let _ = self.ui_end.commands.send(command);
+        }
+        if let Some(command) = self.devices.refresh_request() {
+            let _ = self.ui_end.commands.send(command);
+        }
+        if let Some(command) = self.devices.label_request() {
+            let _ = self.ui_end.commands.send(command);
+        }
+        // A pick a frame could not send waits here, so a press that landed
+        // beside the frame's one command is delayed rather than dropped.
+        if let Some(command) = self.devices.pick_request() {
+            let _ = self.ui_end.commands.send(command);
+        }
+        // A hand-over adopts rows the phone named only by URI, so the queue asks
+        // for their names once the landing is in.
+        if let Some(command) = self.queue.label_wants() {
+            let _ = self.ui_end.commands.send(command);
+        }
+        self.devices.expire(now);
         // After the drain and before the draw, so a cover that just arrived is
         // ready in this same frame's `ui()`.
         self.art.upload(ctx);
         if self.transport.anchor() != before {
             self.since = Some(now);
         }
-        if self.transport.state == TransportState::Playing {
+        if self.transport.state == TransportState::Playing
+            || (self.devices.source(&self.transport) == Source::Remote
+                && self.devices.display().state == TransportState::Playing)
+        {
             ctx.request_repaint_after(REDRAW);
         }
+        // A watch waiting for its answer and a notice that is still on screen
+        // are the module's own clocks: an idle window wakes for neither early.
+        if let Some(delay) = self.devices.next_wake(now) {
+            ctx.request_repaint_after(delay.max(WAKE_FLOOR));
+        }
+        // Last, so an order or a landing drained this frame is published in the
+        // same frame it moved the queue.
+        self.send_report();
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
@@ -236,6 +307,8 @@ impl eframe::App for TakofyApp {
                 library: &mut self.library,
                 transport: &mut self.transport,
                 queue: &mut self.queue,
+                devices: &mut self.devices,
+                list: &mut self.list,
                 drawer: &mut self.drawer,
                 pane: &mut self.pane,
                 menu: &mut self.menu,
@@ -261,8 +334,7 @@ impl eframe::App for TakofyApp {
             .prefs
             .observe(now, &Prefs::of(&self.transport.volume, &self.queue))
         {
-            ui.ctx()
-                .request_repaint_after(wake.max(Duration::from_millis(1)));
+            ui.ctx().request_repaint_after(wake.max(WAKE_FLOOR));
         }
         // After the draw, because only the draw arms the read: a navigation
         // that leaves the page idle asks for the frame that sends it.
@@ -282,6 +354,8 @@ impl eframe::App for TakofyApp {
         if self.transport.anchor() != before {
             self.since = Some(now);
         }
+        // Last, so a click during the draw is published before the next frame.
+        self.send_report();
     }
 }
 
@@ -308,26 +382,101 @@ pub(crate) fn window_clear_color(tokens: &Tokens) -> [f32; 4] {
 ///
 /// A disconnected sender is not an error: it means the worker is gone and the
 /// window can no longer hear anything.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one store per thing an update can change, in the order it arrived"
+)]
 pub(crate) fn drain(
     rx: &Receiver<Update>,
     state: &mut SignIn,
     library: &mut Library,
     transport: &mut Transport,
     queue: &mut Queue,
+    devices: &mut Devices,
     art: &mut Art,
-    now: Instant,
+    clock: &mut Playclock,
 ) -> Vec<Command> {
     let mut commands = Vec::new();
     while let Ok(update) = rx.try_recv() {
         state.apply(update.clone());
         library.apply(&update);
+        let before = transport.anchor();
         transport.apply(&update);
-        art.apply(&update, now);
+        devices.apply(&update, clock.now);
+        art.apply(&update, clock.now);
+        // A position that moved is an instant the bar counts from, and an order
+        // later in this same drain has to read the position it left.
+        if transport.anchor() != before {
+            clock.since = Some(clock.now);
+        }
+        // The phone's transport is applied here rather than in the queue's own
+        // reducer, because an order needs the clock that reducer cannot see.
+        if let Update::Remote(RemoteUpdate::Order { id, order, expires }) = &update {
+            commands.extend(order_commands(
+                order, *id, *expires, transport, queue, clock,
+            ));
+            continue;
+        }
         if let Some(command) = queue.apply(&update, transport) {
             commands.push(command);
         }
     }
     commands
+}
+
+/// Carries out one phone order, and always answers it last.
+///
+/// An order the UI keeps past its expiry is dropped unapplied: the entry's own
+/// budget has told the phone `Failure` by then, and a change nobody hears about
+/// is worse than none.
+fn order_commands(
+    order: &Order,
+    id: RequestId,
+    expires: Instant,
+    transport: &mut Transport,
+    queue: &mut Queue,
+    clock: &Playclock,
+) -> Vec<Command> {
+    if clock.now >= expires {
+        return vec![Command::Answer { id, ok: false }];
+    }
+    let reaction = react(order, queue, transport, clock.position(transport));
+    let mut commands = reaction.commands;
+    commands.push(Command::Answer {
+        id,
+        ok: reaction.ok,
+    });
+    commands
+}
+
+/// The instant the drain ran, and when the transport's anchor last moved.
+///
+/// The position a phone order acts on is extrapolated from these two, so an
+/// order that arrives with a position event in the same drain reads the fresh
+/// one rather than the previous frame's.
+pub(crate) struct Playclock {
+    now: Instant,
+    since: Option<Instant>,
+}
+
+impl Playclock {
+    /// A clock that counts from nothing yet played.
+    pub(crate) fn at(now: Instant) -> Self {
+        Self { now, since: None }
+    }
+
+    /// The same clock, counting from when the transport's anchor last moved.
+    fn counting_from(self, since: Option<Instant>) -> Self {
+        Self { since, ..self }
+    }
+
+    /// The position the transport shows, counted from its anchor.
+    fn position(&self, transport: &Transport) -> u32 {
+        let elapsed = self.since.map_or(Duration::ZERO, |since| {
+            self.now.saturating_duration_since(since)
+        });
+        transport.shown_position(elapsed)
+    }
 }
 
 /// Asks egui for the frame the cover store's next retry or deadline needs.
@@ -337,7 +486,7 @@ pub(crate) fn drain(
 /// least a millisecond avoids a zero-delay repaint storm.
 fn schedule_wake(ctx: &egui::Context, art: &Art, now: Instant) {
     if let Some(delay) = art.next_wake(now) {
-        ctx.request_repaint_after(delay.max(Duration::from_millis(1)));
+        ctx.request_repaint_after(delay.max(WAKE_FLOOR));
     }
 }
 
@@ -347,9 +496,12 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use eframe::App;
-    use takofy_model::{CoverImage, CoverUrl, TrackEntry};
+    use takofy_model::{
+        CoverImage, CoverUrl, Device, DeviceKind, Landing, Order, RemotePlayback, RemoteState,
+        RequestId, Status, TrackEntry,
+    };
     use takofy_ui::library::Load;
-    use takofy_ui::message::{Command, Failure, TransportUpdate};
+    use takofy_ui::message::{Command, DeviceUpdate, Failure, RemoteUpdate, TransportUpdate};
     use takofy_ui::prefs::QUIET;
     use takofy_ui::repeat::Repeat;
     use takofy_ui::route::Page;
@@ -407,6 +559,7 @@ mod tests {
         let mut library = Library::default();
         let mut transport = Transport::default();
         let mut queue = Queue::default();
+        let mut devices = Devices::default();
         tx.send(Update::NeedsAuthorization).expect("send");
         tx.send(Update::SignInFailed(Failure::PortBusy))
             .expect("send");
@@ -417,8 +570,9 @@ mod tests {
             &mut library,
             &mut transport,
             &mut queue,
+            &mut devices,
             &mut Art::default(),
-            Instant::now(),
+            &mut Playclock::at(Instant::now()),
         );
 
         assert!(commands.is_empty());
@@ -432,6 +586,7 @@ mod tests {
         let mut library = Library::default();
         let mut transport = Transport::default();
         let mut queue = Queue::default();
+        let mut devices = Devices::default();
         tx.send(Update::SignedIn).expect("send");
         tx.send(Update::Playlists(Vec::new())).expect("send");
 
@@ -441,8 +596,9 @@ mod tests {
             &mut library,
             &mut transport,
             &mut queue,
+            &mut devices,
             &mut Art::default(),
-            Instant::now(),
+            &mut Playclock::at(Instant::now()),
         );
 
         assert!(commands.is_empty());
@@ -456,6 +612,7 @@ mod tests {
         let mut library = Library::default();
         let mut transport = Transport::default();
         let mut queue = Queue::default();
+        let mut devices = Devices::default();
         tx.send(Update::Transport(TransportUpdate::Position {
             position_ms: 9,
             paused: false,
@@ -468,8 +625,9 @@ mod tests {
             &mut library,
             &mut transport,
             &mut queue,
+            &mut devices,
             &mut Art::default(),
-            Instant::now(),
+            &mut Playclock::at(Instant::now()),
         );
 
         assert!(commands.is_empty());
@@ -484,6 +642,7 @@ mod tests {
         let mut library = Library::default();
         let mut transport = Transport::default();
         let mut queue = Queue::default();
+        let mut devices = Devices::default();
 
         assert!(
             drain(
@@ -492,8 +651,9 @@ mod tests {
                 &mut library,
                 &mut transport,
                 &mut queue,
+                &mut devices,
                 &mut Art::default(),
-                Instant::now()
+                &mut Playclock::at(Instant::now())
             )
             .is_empty(),
             "an empty channel yields no commands"
@@ -508,6 +668,7 @@ mod tests {
         let mut library = Library::default();
         let mut transport = Transport::default();
         let mut queue = Queue::default();
+        let mut devices = Devices::default();
         tx.send(Update::SignedIn).expect("send");
         drop(tx);
 
@@ -518,8 +679,9 @@ mod tests {
                 &mut library,
                 &mut transport,
                 &mut queue,
+                &mut devices,
                 &mut Art::default(),
-                Instant::now()
+                &mut Playclock::at(Instant::now())
             )
             .is_empty()
         );
@@ -531,8 +693,9 @@ mod tests {
                 &mut library,
                 &mut transport,
                 &mut queue,
+                &mut devices,
                 &mut Art::default(),
-                Instant::now()
+                &mut Playclock::at(Instant::now())
             )
             .is_empty()
         );
@@ -545,9 +708,10 @@ mod tests {
         let mut library = Library::default();
         let mut transport = Transport::default();
         let mut queue = Queue::default();
+        let mut devices = Devices::default();
         let all = vec![track("a"), track("b")];
         assert_eq!(
-            queue.start(&all, 0, &mut transport),
+            queue.start(&all, 0, None, &mut transport),
             Some(Command::Play {
                 uri: "a".to_owned()
             })
@@ -563,8 +727,9 @@ mod tests {
             &mut library,
             &mut transport,
             &mut queue,
+            &mut devices,
             &mut Art::default(),
-            Instant::now(),
+            &mut Playclock::at(Instant::now()),
         );
 
         assert_eq!(
@@ -582,9 +747,10 @@ mod tests {
         let mut library = Library::default();
         let mut transport = Transport::default();
         let mut queue = Queue::default();
+        let mut devices = Devices::default();
         let all = vec![track("a"), track("b")];
         assert_eq!(
-            queue.start(&all, 0, &mut transport),
+            queue.start(&all, 0, None, &mut transport),
             Some(Command::Play {
                 uri: "a".to_owned()
             })
@@ -600,8 +766,9 @@ mod tests {
             &mut library,
             &mut transport,
             &mut queue,
+            &mut devices,
             &mut Art::default(),
-            Instant::now(),
+            &mut Playclock::at(Instant::now()),
         );
 
         assert_eq!(
@@ -609,6 +776,223 @@ mod tests {
             vec![Command::Play {
                 uri: "b".to_owned()
             }]
+        );
+    }
+
+    /// A queue playing row `index` of `uris`, with a length to jump in.
+    fn playing(uris: &[&str], index: usize) -> (Queue, Transport) {
+        let all: Vec<TrackEntry> = uris.iter().map(|uri| track(uri)).collect();
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let _ = queue.start(&all, index, None, &mut transport);
+        transport.state = TransportState::Playing;
+        transport.duration_ms = Some(200_000);
+        (queue, transport)
+    }
+
+    /// An order the phone sent, expiring when the entry's budget would answer it.
+    fn order_at(order: Order, expires: Instant) -> Update {
+        Update::Remote(RemoteUpdate::Order {
+            id: RequestId(9),
+            order,
+            expires,
+        })
+    }
+
+    /// The time an order still has when the window receives it, longer than any
+    /// test takes to reach `drain`.
+    const ORDER_LEFT: Duration = Duration::from_secs(5);
+
+    fn order(order: Order) -> Update {
+        order_at(order, Instant::now() + ORDER_LEFT)
+    }
+
+    /// `now` moved back by `elapsed`, clamped so a young clock cannot underflow.
+    fn ago(now: Instant, elapsed: Duration) -> Instant {
+        now.checked_sub(elapsed).unwrap_or(now)
+    }
+
+    /// A clock whose anchor moved `elapsed` ago.
+    fn counted(now: Instant, elapsed: Duration) -> Playclock {
+        Playclock {
+            now,
+            since: Some(ago(now, elapsed)),
+        }
+    }
+
+    #[test]
+    fn drain_orders_the_effect_before_its_answer() {
+        let (tx, rx) = channel();
+        let mut state = SignIn::SignedIn;
+        let mut library = Library::default();
+        let mut devices = Devices::default();
+        let (mut queue, mut transport) = playing(&["a", "b"], 0);
+        tx.send(order(Order::Pause)).expect("send");
+
+        let commands = drain(
+            &rx,
+            &mut state,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut devices,
+            &mut Art::default(),
+            &mut Playclock::at(Instant::now()),
+        );
+
+        assert_eq!(
+            commands,
+            vec![
+                Command::Pause,
+                Command::Answer {
+                    id: RequestId(9),
+                    ok: true
+                }
+            ],
+            "the phone hears about the effect only after it is asked for"
+        );
+    }
+
+    #[test]
+    fn drain_answers_false_when_react_fails() {
+        let (tx, rx) = channel();
+        let mut state = SignIn::SignedIn;
+        let mut library = Library::default();
+        let mut devices = Devices::default();
+        let mut queue = Queue::default();
+        let mut transport = Transport::default();
+        tx.send(order(Order::Pause)).expect("send");
+
+        let commands = drain(
+            &rx,
+            &mut state,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut devices,
+            &mut Art::default(),
+            &mut Playclock::at(Instant::now()),
+        );
+
+        assert_eq!(
+            commands,
+            vec![Command::Answer {
+                id: RequestId(9),
+                ok: false
+            }],
+            "nothing loaded is nothing to pause, and the phone is told so"
+        );
+        assert_eq!(transport.state, TransportState::Idle, "nothing moved");
+    }
+
+    #[test]
+    fn an_expired_order_is_answered_false_without_any_effect() {
+        let (tx, rx) = channel();
+        let mut state = SignIn::SignedIn;
+        let mut library = Library::default();
+        let mut devices = Devices::default();
+        let (mut queue, mut transport) = playing(&["a", "b"], 0);
+        let now = Instant::now();
+        let expired = ago(now, Duration::from_secs(1));
+        tx.send(order_at(Order::Pause, expired)).expect("send");
+
+        let commands = drain(
+            &rx,
+            &mut state,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut devices,
+            &mut Art::default(),
+            &mut Playclock::at(now),
+        );
+
+        assert_eq!(
+            commands,
+            vec![Command::Answer {
+                id: RequestId(9),
+                ok: false
+            }],
+            "an order the budget already failed is not carried out"
+        );
+        assert_eq!(transport.state, TransportState::Playing);
+        assert_eq!(queue.current().map(|entry| entry.uri.as_str()), Some("a"));
+    }
+
+    #[test]
+    fn drain_hands_react_the_extrapolated_position() {
+        for (elapsed, expected) in [
+            (
+                Duration::ZERO,
+                Command::Play {
+                    uri: "a".to_owned(),
+                },
+            ),
+            (Duration::from_secs(2), Command::Seek { position_ms: 0 }),
+        ] {
+            let (tx, rx) = channel();
+            let mut state = SignIn::SignedIn;
+            let mut library = Library::default();
+            let mut devices = Devices::default();
+            let (mut queue, mut transport) = playing(&["a", "b"], 1);
+            transport.position_ms = 3_000;
+            tx.send(order(Order::Prev)).expect("send");
+
+            let now = Instant::now();
+            let commands = drain(
+                &rx,
+                &mut state,
+                &mut library,
+                &mut transport,
+                &mut queue,
+                &mut devices,
+                &mut Art::default(),
+                &mut counted(now, elapsed),
+            );
+
+            assert_eq!(
+                commands.first(),
+                Some(&expected),
+                "after {elapsed:?} of play, the position is what decides"
+            );
+        }
+    }
+
+    #[test]
+    fn a_position_event_earlier_in_the_drain_restamps_the_play_clock() {
+        let (tx, rx) = channel();
+        let mut state = SignIn::SignedIn;
+        let mut library = Library::default();
+        let mut devices = Devices::default();
+        let (mut queue, mut transport) = playing(&["a", "b"], 1);
+        // Three seconds in, with an anchor two seconds old: the drain's own
+        // start would read five and restart, where the event's instant steps
+        // back.
+        tx.send(Update::Transport(TransportUpdate::Position {
+            position_ms: 3_000,
+            paused: false,
+        }))
+        .expect("send");
+        tx.send(order(Order::Prev)).expect("send");
+
+        let now = Instant::now();
+        let commands = drain(
+            &rx,
+            &mut state,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut devices,
+            &mut Art::default(),
+            &mut counted(now, Duration::from_secs(2)),
+        );
+
+        assert_eq!(
+            commands.first(),
+            Some(&Command::Play {
+                uri: "a".to_owned()
+            }),
+            "the position that moved restamps the clock the order reads"
         );
     }
 
@@ -767,6 +1151,7 @@ mod tests {
         let mut library = Library::default();
         let mut transport = Transport::default();
         let mut queue = Queue::default();
+        let mut devices = Devices::default();
         let mut art = Art::default();
         let now = Instant::now();
         let url = CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover url");
@@ -783,8 +1168,9 @@ mod tests {
             &mut library,
             &mut transport,
             &mut queue,
+            &mut devices,
             &mut art,
-            now,
+            &mut Playclock::at(now),
         );
 
         assert!(commands.is_empty());
@@ -798,6 +1184,7 @@ mod tests {
         let mut library = Library::default();
         let mut transport = Transport::default();
         let mut queue = Queue::default();
+        let mut devices = Devices::default();
         let mut art = Art::default();
         let now = Instant::now();
         let url = CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover url");
@@ -815,8 +1202,9 @@ mod tests {
             &mut library,
             &mut transport,
             &mut queue,
+            &mut devices,
             &mut art,
-            now,
+            &mut Playclock::at(now),
         );
         let ctx = egui::Context::default();
         art.upload(&ctx);
@@ -905,6 +1293,9 @@ mod tests {
             library: Library::default(),
             transport,
             queue,
+            reporter: Reporter::default(),
+            devices: Devices::default(),
+            list: DeviceList::default(),
             drawer: Drawer::default(),
             pane: PanePref::default(),
             menu: Menu::default(),
@@ -915,6 +1306,32 @@ mod tests {
             prefs,
         };
         (app, received)
+    }
+
+    /// A window whose updates the test can feed, so `logic` drains them.
+    fn live_window() -> (
+        TakofyApp,
+        tokio::sync::mpsc::UnboundedReceiver<Command>,
+        std::sync::mpsc::Sender<Update>,
+    ) {
+        let (mut app, received) = test_window();
+        let (sender, updates) = channel();
+        app.ui_end.updates = updates;
+        (app, received, sender)
+    }
+
+    fn landing(rows: &[&str], index: usize) -> Landing {
+        Landing {
+            rows: rows.iter().map(|uri| (*uri).to_owned()).collect(),
+            index,
+            position_ms: 0,
+            playing: true,
+            context: Some("spotify:playlist:p".to_owned()),
+            shuffle: Some(false),
+            repeat_context: Some(false),
+            repeat_track: Some(false),
+            epoch: 1,
+        }
     }
 
     /// Types `text` into the field, as one frame of the real path would.
@@ -935,6 +1352,7 @@ mod tests {
         let mut library = Library::default();
         let mut transport = Transport::default();
         let mut queue = Queue::default();
+        let mut devices = Devices::default();
         type_search(&mut library, "never gonna");
         assert_eq!(
             library.search.request(None),
@@ -954,8 +1372,9 @@ mod tests {
             &mut library,
             &mut transport,
             &mut queue,
+            &mut devices,
             &mut Art::default(),
-            Instant::now(),
+            &mut Playclock::at(Instant::now()),
         );
 
         assert!(commands.is_empty());
@@ -1113,6 +1532,135 @@ mod tests {
         assert!(
             received.try_recv().is_err(),
             "one read on the wire at a time"
+        );
+    }
+
+    #[test]
+    fn logic_sends_a_report_after_a_landing_drains() {
+        let (mut app, mut received, updates) = live_window();
+        updates
+            .send(Update::Remote(RemoteUpdate::Landed(landing(
+                &["spotify:track:a", "spotify:track:b"],
+                0,
+            ))))
+            .expect("landing");
+
+        logic_frame(&mut app);
+        let commands = take_commands(&mut received);
+        assert!(
+            commands.iter().any(|command| matches!(
+                command,
+                Command::Report(Some(report))
+                    if report.status == Status::Loading
+                        && report
+                            .track
+                            .as_ref()
+                            .map(|track| track.uri.as_str())
+                            == Some("spotify:track:a")
+            )),
+            "a landing is published as it drains: {commands:?}"
+        );
+    }
+
+    #[test]
+    fn logic_sends_a_report_again_on_the_first_position_event() {
+        let (mut app, mut received, updates) = live_window();
+        updates
+            .send(Update::Remote(RemoteUpdate::Landed(landing(
+                &["spotify:track:a", "spotify:track:b"],
+                0,
+            ))))
+            .expect("landing");
+        logic_frame(&mut app);
+        let _ = take_commands(&mut received);
+
+        updates
+            .send(Update::Transport(TransportUpdate::Position {
+                position_ms: 1_000,
+                paused: false,
+            }))
+            .expect("position");
+        logic_frame(&mut app);
+        let commands = take_commands(&mut received);
+        assert!(
+            commands.iter().any(|command| matches!(
+                command,
+                Command::Report(Some(report)) if report.status == Status::Playing
+            )),
+            "the first position turns the loading report into playing: {commands:?}"
+        );
+    }
+
+    #[test]
+    fn ui_sends_a_report_when_a_click_changes_the_track() {
+        let (mut app, mut received, updates) = live_window();
+        updates
+            .send(Update::Remote(RemoteUpdate::Landed(landing(
+                &["spotify:track:a", "spotify:track:b"],
+                0,
+            ))))
+            .expect("landing");
+        logic_frame(&mut app);
+        let _ = take_commands(&mut received);
+
+        // The effect a click on the second row has, applied before the draw.
+        let _ = app.queue.jump(1, &mut app.transport);
+        let ctx = window_context();
+        let _ = ui_frame(&mut app, &ctx);
+
+        let commands = take_commands(&mut received);
+        assert!(
+            commands.iter().any(|command| matches!(
+                command,
+                Command::Report(Some(report))
+                    if report
+                        .track
+                        .as_ref()
+                        .map(|track| track.uri.as_str())
+                        == Some("spotify:track:b")
+            )),
+            "the draw's track change is published: {commands:?}"
+        );
+    }
+
+    #[test]
+    fn an_answered_orders_effect_is_published_in_the_same_frame() {
+        let (mut app, mut received, updates) = live_window();
+        updates
+            .send(Update::Remote(RemoteUpdate::Landed(landing(
+                &["spotify:track:a", "spotify:track:b"],
+                0,
+            ))))
+            .expect("landing");
+        logic_frame(&mut app);
+        let _ = take_commands(&mut received);
+
+        let id = RequestId(9);
+        updates
+            .send(Update::Remote(RemoteUpdate::Order {
+                id,
+                order: Order::Next(None),
+                expires: Instant::now() + Duration::from_secs(5),
+            }))
+            .expect("order");
+        logic_frame(&mut app);
+
+        let commands = take_commands(&mut received);
+        assert!(
+            commands.contains(&Command::Answer { id, ok: true }),
+            "the order is answered: {commands:?}"
+        );
+        assert!(
+            commands.iter().any(|command| matches!(
+                command,
+                Command::Report(Some(report))
+                    if report
+                        .track
+                        .as_ref()
+                        .map(|track| track.uri.as_str())
+                        == Some("spotify:track:b")
+            )),
+            "the order's move is published in the frame it was applied: {commands:?}"
         );
     }
 
@@ -1411,6 +1959,260 @@ mod tests {
             Command::Search {
                 query: "never gonna".to_owned()
             }
+        );
+    }
+
+    /// Every command the frames since the last call sent.
+    fn take_commands(received: &mut tokio::sync::mpsc::UnboundedReceiver<Command>) -> Vec<Command> {
+        let mut commands = Vec::new();
+        while let Ok(command) = received.try_recv() {
+            commands.push(command);
+        }
+        commands
+    }
+
+    fn watched(watches: &[Command]) -> usize {
+        watches
+            .iter()
+            .filter(|command| matches!(command, Command::WatchDevices))
+            .count()
+    }
+
+    #[test]
+    fn logic_sends_watch_devices_once_after_the_playlists_land() {
+        let (mut app, mut received) = test_window();
+        logic_frame(&mut app);
+        assert_eq!(
+            watched(&take_commands(&mut received)),
+            0,
+            "a watch was asked for before the account could be named"
+        );
+
+        app.library.playlists = Load::Ready(Vec::new());
+        logic_frame(&mut app);
+        assert_eq!(
+            watched(&take_commands(&mut received)),
+            1,
+            "the playlists landing is what arms the watch"
+        );
+
+        logic_frame(&mut app);
+        assert_eq!(
+            watched(&take_commands(&mut received)),
+            0,
+            "a second frame asked the one-shot dealer to start again"
+        );
+    }
+
+    #[test]
+    fn a_roster_drains_into_the_devices() {
+        let (tx, rx) = channel();
+        let mut state = SignIn::SignedIn;
+        let mut library = Library::default();
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut devices = Devices::default();
+        let now = Instant::now();
+        tx.send(Update::Devices(DeviceUpdate::Roster {
+            devices: vec![Device {
+                id: "a".to_owned(),
+                name: "Phone".to_owned(),
+                kind: DeviceKind::Phone,
+            }],
+            holder: Some("a".to_owned()),
+            held_here: false,
+        }))
+        .expect("send");
+
+        let commands = drain(
+            &rx,
+            &mut state,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut devices,
+            &mut Art::default(),
+            &mut Playclock::at(now),
+        );
+
+        assert!(commands.is_empty());
+        assert_eq!(devices.caption(now), "Phone");
+        assert_eq!(
+            devices.rows(&Transport::default(), false).len(),
+            1,
+            "the roster did not reach the card"
+        );
+    }
+
+    /// A window already watching an account whose phone plays in this window's
+    /// own place: the remote transport is the one on screen.
+    fn remote_window(now: Instant) -> (TakofyApp, tokio::sync::mpsc::UnboundedReceiver<Command>) {
+        let (mut app, received) = test_window();
+        app.state = SignIn::SignedIn;
+        app.library.playlists = Load::Ready(Vec::new());
+        assert_eq!(app.devices.watch_request(true), Some(Command::WatchDevices));
+        app.devices.apply(
+            &Update::Devices(DeviceUpdate::Roster {
+                devices: vec![Device {
+                    id: "a".to_owned(),
+                    name: "Phone".to_owned(),
+                    kind: DeviceKind::Phone,
+                }],
+                holder: Some("a".to_owned()),
+                held_here: false,
+            }),
+            now,
+        );
+        app.devices.apply(
+            &Update::Devices(DeviceUpdate::Playing(Some(RemotePlayback {
+                track: track("spotify:track:a"),
+                state: RemoteState::Playing,
+                position_ms: 1_000,
+                duration_ms: Some(60_000),
+                steerable: true,
+            }))),
+            now,
+        );
+        (app, received)
+    }
+
+    /// The delay one `logic` pass asked for. The pass is the one a delayed
+    /// repaint is timed from, so the ask is read from that same output.
+    fn logic_delay(app: &mut TakofyApp) -> Duration {
+        let ctx = window_context();
+        // egui's own first passes ask for a frame; the app's ask is what is left.
+        for _ in 0..2 {
+            let mut warm = ctx.run_ui(egui::RawInput::default(), |_ui| {});
+            warm.textures_delta.clear();
+        }
+        let mut frame = eframe::Frame::_new_kittest();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            app.logic(ui.ctx(), &mut frame);
+        });
+        output.textures_delta.clear();
+        root_delay(&output)
+    }
+
+    #[test]
+    fn an_idle_window_is_woken_at_the_watch_patience_and_then_rests() {
+        let (mut app, _received) = idle_window();
+
+        let delay = logic_delay(&mut app);
+        assert!(
+            delay > REDRAW,
+            "an idle window was redrawn at the transport cadence: {delay:?}"
+        );
+        assert!(
+            delay <= takofy_ui::devices::WATCH_PATIENCE,
+            "the watch's own patience is a wake this window must get: {delay:?}"
+        );
+
+        // A watch that has answered has no clock left, so the next pass asks
+        // for nothing without a remote holding the sound.
+        app.devices.apply(
+            &Update::Devices(DeviceUpdate::Failed(Failure::Devices)),
+            Instant::now(),
+        );
+        assert_eq!(
+            logic_delay(&mut app),
+            Duration::MAX,
+            "a settled idle window still woke for the watch"
+        );
+    }
+
+    #[test]
+    fn a_flash_wakes_the_window_and_its_end_lets_it_rest() {
+        let (mut app, _received) = idle_window();
+        let now = Instant::now();
+        // The watch has already settled, so the notice alone is asking.
+        app.devices.apply(
+            &Update::Devices(DeviceUpdate::Failed(Failure::Devices)),
+            now,
+        );
+        app.devices
+            .apply(&Update::Devices(DeviceUpdate::SteerFailed), now);
+
+        let delay = logic_delay(&mut app);
+        assert!(
+            delay <= takofy_ui::devices::FLASH_FOR,
+            "the notice's own deadline is not the wake: {delay:?}"
+        );
+
+        assert!(
+            app.devices.expire(now + takofy_ui::devices::FLASH_FOR),
+            "the notice did not expire"
+        );
+        assert_eq!(
+            logic_delay(&mut app),
+            Duration::MAX,
+            "the expired notice still woke the window"
+        );
+    }
+
+    #[test]
+    fn logic_sends_the_refresh_a_card_open_asked_for() {
+        let now = Instant::now();
+        let (mut app, mut received) = remote_window(now);
+        app.devices.list_opened();
+
+        logic_frame(&mut app);
+        let sent = take_commands(&mut received);
+        assert_eq!(
+            sent.iter()
+                .filter(|command| matches!(command, Command::RefreshDevices))
+                .count(),
+            1,
+            "the open's refresh was not the logic pass's to send: {sent:?}"
+        );
+
+        logic_frame(&mut app);
+        let sent = take_commands(&mut received);
+        assert_eq!(
+            sent.iter()
+                .filter(|command| matches!(command, Command::RefreshDevices))
+                .count(),
+            0,
+            "the open's refresh was sent twice: {sent:?}"
+        );
+    }
+
+    #[test]
+    fn logic_sends_the_pick_a_taken_frame_left_behind() {
+        let now = Instant::now();
+        let (mut app, mut received) = remote_window(now);
+        // A press whose own frame already held a command keeps its pick.
+        assert_eq!(app.devices.pick("a", false), None);
+
+        logic_frame(&mut app);
+        let sent = take_commands(&mut received);
+        assert_eq!(
+            sent.iter()
+                .filter(|command| matches!(command, Command::Transfer { .. }))
+                .count(),
+            1,
+            "the delayed pick was not the logic pass's to send: {sent:?}"
+        );
+
+        logic_frame(&mut app);
+        let sent = take_commands(&mut received);
+        assert!(
+            !sent
+                .iter()
+                .any(|command| matches!(command, Command::Transfer { .. })),
+            "the delayed pick was sent twice: {sent:?}"
+        );
+    }
+
+    #[test]
+    fn while_the_remote_plays_the_window_keeps_the_redraw_cadence() {
+        let now = Instant::now();
+        let (mut app, _received) = remote_window(now);
+
+        let delay = logic_delay(&mut app);
+
+        assert!(
+            delay <= REDRAW,
+            "the remote position would stand still: {delay:?}"
         );
     }
 }

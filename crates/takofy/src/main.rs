@@ -7,6 +7,7 @@ mod app;
 mod bridge;
 mod cover;
 mod decode;
+mod devices;
 mod headless;
 mod keychain;
 mod preferences;
@@ -19,9 +20,14 @@ use std::sync::Arc;
 use librespot::core::SessionConfig;
 use log::LevelFilter;
 use takofy_core::credentials::StoreError;
+use takofy_core::hold::HOLD_LOG_TARGET;
 use takofy_core::login::{AuthError, LoginMethod, SourceErrorKind, authenticate};
 use takofy_core::oauth::{OAUTH_LOG_TARGET, RedirectMode, SpotifyOAuth};
+use takofy_core::receive::RECEIVE_LOG_TARGET;
+
+use crate::bridge::LANDING_LOG_TARGET;
 use takofy_ui::message::Failure;
+use takofy_ui::remote::REMOTE_LOG_TARGET;
 use takofy_ui::signin::failure_message;
 
 use crate::keychain::KeychainStore;
@@ -187,6 +193,21 @@ fn logger_builder() -> env_logger::Builder {
     builder.filter_level(LevelFilter::Warn);
     // librespot-oauth logs tokens and auth codes at trace level.
     builder.filter_module(OAUTH_LOG_TARGET, LevelFilter::Off);
+    // The one line that says a device asked this window to play something. It is
+    // counts and kinds, never a URI, and it is the only evidence that a request
+    // arrived at all.
+    builder.filter_module(RECEIVE_LOG_TARGET, LevelFilter::Info);
+    // The one line that says what the account answered to a hold: which baseline
+    // the loss rule took, and whether the reply named this device. Both words,
+    // never a URI.
+    builder.filter_module(HOLD_LOG_TARGET, LevelFilter::Info);
+    // The hand-over's decisions: which arm refused and whether the put was even
+    // reached. Without it a failed hand-over leaves no trace but a retry.
+    builder.filter_module(LANDING_LOG_TARGET, LevelFilter::Info);
+    // Which queue order the window refused and why. A phone's window that is
+    // refused leaves the queue disagreeing with the phone, and the kind is the
+    // only thing that says whose rows were wrong.
+    builder.filter_module(REMOTE_LOG_TARGET, LevelFilter::Info);
     builder
 }
 
@@ -212,7 +233,12 @@ mod tests {
     use std::vec::IntoIter;
 
     use log::{Level, Metadata, Record};
+    use takofy_core::hold::HOLD_LOG_TARGET;
     use takofy_core::oauth::{OAUTH_LOG_TARGET, RedirectMode};
+    use takofy_core::receive::RECEIVE_LOG_TARGET;
+    use takofy_ui::remote::REMOTE_LOG_TARGET;
+
+    use crate::bridge::LANDING_LOG_TARGET;
 
     use super::{Flags, Mode, USAGE, logger_builder, mode_for, parse_flags};
 
@@ -234,6 +260,39 @@ mod tests {
         let logger = logger_builder().build();
         assert!(!logger.matches(&record(OAUTH_LOG_TARGET, Level::Error)));
         assert!(!logger.matches(&record(OAUTH_LOG_TARGET, Level::Trace)));
+    }
+
+    #[test]
+    fn the_receiver_summary_is_the_one_info_line_that_shows() {
+        let logger = logger_builder().build();
+        assert!(logger.matches(&record(RECEIVE_LOG_TARGET, Level::Info)));
+        assert!(logger.matches(&record(RECEIVE_LOG_TARGET, Level::Warn)));
+        // Everything else keeps the Warn floor, so the summary cannot become a
+        // door for librespot's own chatter.
+        assert!(!logger.matches(&record("takofy_core::watch", Level::Info)));
+        assert!(!logger.matches(&record("librespot_core", Level::Debug)));
+    }
+
+    #[test]
+    fn the_hand_over_path_shows_and_its_neighbours_do_not() {
+        let logger = logger_builder().build();
+        assert!(logger.matches(&record(LANDING_LOG_TARGET, Level::Info)));
+        assert!(!logger.matches(&record("takofy::app", Level::Info)));
+    }
+
+    #[test]
+    fn the_activation_line_shows_and_its_neighbours_do_not() {
+        let logger = logger_builder().build();
+        assert!(logger.matches(&record(HOLD_LOG_TARGET, Level::Info)));
+        assert!(!logger.matches(&record("takofy_core::publish", Level::Info)));
+        assert!(!logger.matches(&record("librespot_playback", Level::Info)));
+    }
+
+    #[test]
+    fn the_order_refusal_line_shows_and_its_neighbours_do_not() {
+        let logger = logger_builder().build();
+        assert!(logger.matches(&record(REMOTE_LOG_TARGET, Level::Info)));
+        assert!(!logger.matches(&record("takofy_ui::report", Level::Info)));
     }
 
     #[test]

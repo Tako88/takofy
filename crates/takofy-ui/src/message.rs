@@ -3,14 +3,20 @@
 //! These types carry state, never credentials: `takofy-ui` has no path to a
 //! token or an auth error, so the compiler keeps secrets out of a view.
 
+use std::time::Instant;
+
 use takofy_model::{
-    AlbumDetail, ArtistDetail, ArtistPortrait, CoverImage, CoverUrl, FollowedArtist, FollowedShow,
-    Move, PlaylistAccess, PlaylistEntry, Removal, Revision, SavedAlbum, ShowDetail, TrackEntry,
-    TrackLyrics,
+    AlbumDetail, ArtistDetail, ArtistPortrait, CoverImage, CoverUrl, Device, FollowedArtist,
+    FollowedShow, Landing, Move, Order, PlaylistAccess, PlaylistEntry, RemotePlayback, Removal,
+    Report, RequestId, Revision, SavedAlbum, ShowDetail, TrackEntry, TrackLyrics,
 };
 
 /// A request from the window to the worker.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "a report is the frame's state, and one command carries it"
+)]
 pub enum Command {
     /// Begin the interactive sign-in flow.
     Authorize,
@@ -119,10 +125,29 @@ pub enum Command {
     Seek { position_ms: u32 },
     /// Set the player's level. 0 is silence, 100 is unity gain.
     Volume { percent: u16 },
+    /// Start watching the account's devices.
+    WatchDevices,
+    /// Ask the account for its devices again.
+    ///
+    /// The announce's reply is the only way to learn about a device that
+    /// appeared after launch.
+    RefreshDevices,
+    /// Send one transport action to the device that holds the sound.
+    Steer { device: String, steer: Steer },
+    /// Move the account's sound to `to`.
+    Transfer { to: String },
+    /// Label the track another device is playing.
+    LabelRemote { track: String },
+    /// Label these track URIs, in the order the caller listed them.
+    LabelRows { uris: Vec<String> },
     /// Fetch the playlists again.
     ReloadLibrary,
     /// Fetch one cover image from the worker.
     Fetch { url: CoverUrl },
+    /// Answer one request the phone sent: whether this window carried it out.
+    Answer { id: RequestId, ok: bool },
+    /// Publish what this window is playing, or that it has nothing to publish.
+    Report(Option<Report>),
 }
 
 /// Why an operation failed, with no field that could carry a secret.
@@ -154,8 +179,78 @@ pub enum Failure {
     Lyrics,
     /// A search's results could not be loaded.
     Search,
+    /// The account's devices could not be reached.
+    Devices,
+    /// The devices cannot be reached without a restart.
+    DevicesOff,
+    /// A transport action did not reach the device holding the sound.
+    Steer,
+    /// The sound could not be moved to another device.
+    Transfer,
+    /// The move has no list to carry, so there is nothing to play elsewhere.
+    NoContext,
     /// Anything else; reproduce with `--headless` for the message.
     Other,
+}
+
+/// One transport action sent to the device that holds the sound.
+///
+/// A copy of what `takofy-core` speaks, because the window does not link it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Steer {
+    /// Stop the other device. A repeat is harmless: it names a state, not a step.
+    Pause,
+    /// Start the other device.
+    Resume,
+    /// Skip one track forward, which may be sent only once.
+    SkipNext,
+    /// Skip one track back, which may be sent only once.
+    SkipPrev,
+    /// Jump to a position in the track the other device is playing.
+    SeekTo(u32),
+}
+
+/// A change to the account's devices.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeviceUpdate {
+    /// The whole roster, the device holding the sound when one does, and
+    /// whether that device is this window.
+    Roster {
+        devices: Vec<Device>,
+        holder: Option<String>,
+        held_here: bool,
+    },
+    /// What the holder is playing, or `None` when nothing is.
+    Playing(Option<RemotePlayback>),
+    /// The track the holder is playing, named.
+    Labelled(TrackEntry),
+    /// The devices could not be reached.
+    Failed(Failure),
+    /// A transport action did not reach its device.
+    SteerFailed,
+    /// The sound could not be moved to another device, for this reason.
+    TransferFailed(Failure),
+}
+
+/// A change on the account's device side of the receiver.
+///
+/// A landing names the activation it belongs to, so a loss that crossed it in
+/// flight can be told apart from one it followed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RemoteUpdate {
+    /// A hand-over landed: these rows, and this one is current.
+    Landed(Landing),
+    /// Another device took the sound, at this activation epoch.
+    Lost { epoch: u64 },
+    /// The rows a label named.
+    Labelled(Vec<TrackEntry>),
+    /// A transport action the phone sent, and when its answer is no longer
+    /// worth asking for.
+    Order {
+        id: RequestId,
+        order: Order,
+        expires: Instant,
+    },
 }
 
 /// A playback change the worker reports to the window.
@@ -366,4 +461,8 @@ pub enum Update {
     PortraitsFailed { query: String },
     /// A playback change.
     Transport(TransportUpdate),
+    /// A change to the account's devices.
+    Devices(DeviceUpdate),
+    /// A change the receiver made to what this window is playing.
+    Remote(RemoteUpdate),
 }

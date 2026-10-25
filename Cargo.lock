@@ -5453,6 +5453,7 @@ dependencies = [
  "log",
  "protobuf",
  "protobuf-json-mapping",
+ "serde_json",
  "takofy-model",
  "thiserror 2.0.21",
  "tokio",
@@ -5467,6 +5468,7 @@ name = "takofy-ui"
 version = "0.1.0"
 dependencies = [
  "egui",
+ "log",
  "takofy-model",
 ]
 

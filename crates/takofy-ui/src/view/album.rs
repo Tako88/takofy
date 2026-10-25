@@ -169,7 +169,8 @@ pub fn album_view(
                         );
                     }
                     if acted.played && !album.tracks.is_empty() {
-                        command = queue.start(&album.tracks, 0, transport);
+                        command =
+                            queue.start(&album.tracks, 0, Some(album.uri.as_str()), transport);
                     }
                     if let Some(asked) = acted.saved {
                         // The library is borrowed for the album for the whole
@@ -245,7 +246,12 @@ pub fn album_view(
                             // a resolvable artist, opens that artist's page.
                             match track_row::show(ui, rect, columns, &row, tokens) {
                                 Some(Click::Play) => {
-                                    command = queue.start(&album.tracks, index, transport);
+                                    command = queue.start(
+                                        &album.tracks,
+                                        index,
+                                        Some(album.uri.as_str()),
+                                        transport,
+                                    );
                                 }
                                 Some(Click::Open(page)) => open = Some(page),
                                 Some(Click::Select(press)) => selection.press(index, press),

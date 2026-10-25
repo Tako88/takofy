@@ -59,6 +59,40 @@ rows, since both are indices into it. None of this changes the shutdown order �
 the command task still owns the engine and the player, and teardown still joins
 it before the runtime drops.
 
+The device list is read the same way, and it is the same entry that lets this
+client be handed the sound. It announces itself as a device that can play only
+once something is playing here, because an active device with no player takes
+the account's sound and plays it nowhere. The roster arrives whole, and the
+holder's playback arrives as its own update so a position move does not rewrite
+the rows. A remote transport sits beside the local one and steering goes through
+one gated request path, so a skip cannot overlap an announce or a withdraw.
+
+Taking the sound over is a request, not a message. The account's command channel
+arrives as a dealer request whose reply must come after this device has put
+itself active, not before: answering first leaves the phone waiting through its
+retries. So a hand-over is resolved into a queue, put, and only then answered —
+and every path that cannot honour it gives the sound back rather than answering
+success. The device that holds the sound pauses when the account says someone
+else does, never on its own judgement, and leaving the window gives the sound
+back before the device is removed.
+
+Three costs are explicit. The phone's copy of what plays here is kept by a
+debounced put after each state change, so its position moves between updates by
+its own arithmetic. The window does not obey a volume it cannot offer, and says
+so in what it announces. And a queue the phone hands over is that phone's own
+window of upcoming rows, not a whole context.
+
+Which transport a frame draws is a rule rather than a guess: the holder is drawn
+only while this window's own transport is silent, and the first local play flips
+every region back to it. One snapshot feeds the whole column — the bar's caption
+and title, the panel, the cover lookup and the heart all read that source's
+track — and Space asks the same source's toggle, so a remote press never reaches
+the queue and a local one never steers the phone. The devices card is a latch on
+that snapshot: it opens above the button and closes on Escape, on a press
+outside it, or on a second press of the same button, and the frame that opened it
+is not a press outside it, so the click that opens the card cannot also close
+it.
+
 Cover art runs through the same split. The binary fetches and decodes; the
 window only holds textures. A frame's protocol is `begin_frame` → `look` →
 `requests` → `next_wake`: the app starts the frame, the draw `look`s each cover
@@ -94,7 +128,9 @@ written. That request is made in a single attempt — `TryTimes(1)` for the one
 POST, the default strategy restored after it — because a `MOV` is not
 idempotent: a retry after a 5xx or a lost reply can move the row twice on a
 server that has already applied it, so the one request that might have landed is
-not repeated. While a write is in flight no
+not repeated. A remote skip follows the same rule for the same reason — it is
+relative, so a retry can skip twice — while pause, resume and seek name the
+state they want and repeat safely. While a write is in flight no
 read's order is adopted; a probe recorded the server answering a write with the
 new revision and the old order, so adopting on revision equality would undo the
 drag, and the worker answers in the order its commands were sent, which is what
@@ -154,6 +190,74 @@ no revision, so no pending write can invalidate it. What the gate cannot fix is
 a reply that was lost after the server applied the write: the held revision is
 then old, the next write fails, and the library has to be reloaded. That is
 preferred to retrying a write that is not idempotent.
+
+## Being a device
+
+The window is a Spotify Connect device rather than a remote control for one: it
+announces itself to the account's dealer, and once the account hands it the
+sound, the player here is what the user hears on every device. Four things
+follow from that.
+
+**The device is announced able to play before anything has played here.** The
+player is readied when the watch starts, so the phone can pick this window the
+moment it is open; a machine with no audio device is the exception, and says so
+by announcing a controller the phone greys out. Readying the player is the whole
+of it — nothing is loaded, and nothing plays until a track arrives.
+
+**Every write is bounded, and one gate serialises them.** Announcement,
+activation, release, the state puts that keep the phone's display honest and the
+hand-over that moves the sound elsewhere all take the same gate and each carries
+its own budget. The client underneath retries with backoff, so an unbounded call
+would hold the gate the pump needs to read pushes and the publisher needs to
+write them. A put that misses its budget is a failed put: given back where the
+server may have applied it, and reported rather than retried. The hand-over is
+the one write whose failure is not given back, because if it fails nothing else
+has claimed the sound and this window is still playing it.
+
+**The answer goes after the effect.** A command from the phone is answered only
+once the window has acted on it, and the answer is the last thing the frame
+emits, so a phone never hears that something was done before the queue moved.
+The backstop runs the other way: a command the window never answers is failed on
+a budget, so a closed window or a lost frame cannot leave a phone waiting. An
+answer becomes the account's ack and rides the next state put.
+
+**Holding the sound means answering for it.** A device that holds the sound and
+refuses its transport breaks the account: the phone stops playing because it is
+no longer active, sends pause and resume as commands, and hears nothing. So the
+receiver obeys both skips, both repeats, shuffle, options, add-to-queue and a
+wholesale queue window, and reports what it did. A phone that starts something
+new goes through the same landing path a hand-over into this window uses, so
+starting a context is not a special case. The kinds it can adopt are the flat
+ones — a playlist, an album, a show, the liked set, and a curated list such as
+an artist's popular tracks — because each resolves to rows this window can hold
+as a queue. An artist context is a tree and a station never ends, so those are
+refused by name rather than played as one track and called a match.
+
+**A move is a command, not a transfer.** The REST transfer endpoint only lets a
+device claim the sound for itself, and refuses a push from one device to another
+— measured on the account three ways. So a pick in the device card does what the
+phone does to this window: it takes the sound first, because only the active
+device may address another one, and then sends that device the dealer command
+whose data is the whole state to carry. The target claims the sound with those
+rows rather than resolving the context itself, which is why the state carries
+them and not only the context's uri — and why it names the current row by the
+account's own uid, read from the context at that moment: a uid this client
+invented names no row on the target, so the target would start the context from
+its beginning. A move from a queue that came from no page
+is refused before the sound is taken: the target would claim the sound with
+nothing to play.
+
+**The costs are stated, not hidden.** Volume is disabled rather than obeyed, and
+a phone that changes it here will find the account and this window disagreeing.
+A phone's queue window replaces this window's queue — ten rows behind, eighty
+ahead — so a phone-side drag is not merged with a local one. After a pick,
+activation stays live until the loss push arrives, so a local change in that
+window can put this device active over a transfer still completing; that push is
+the only signal a transfer settled, and waiting for it would silence the device
+if it never came. And a device that is not the sound's owner cannot hand it on:
+the server acks the request and never completes it, which is why a pick puts
+this window active first and hands over second, and why a second pick before the
+first settles is refused.
 
 ## Narrowing a list, and strips that stay
 
@@ -215,6 +319,10 @@ re-entry keeps both what was revealed and where the reader was.
   paths can be exercised without a network or an audio device. A real `Playback`
   needs a live session and an audio device, so the exit path would otherwise be
   untestable.
+- The device watch is a runtime task that reads the dealer's streams and never
+  outlives the withdraw, and a plain drain thread that turns its events into
+  updates. On every exit path the command task withdraws the announced device
+  before it shuts the player down.
 - The window's end of the bridge, `UiEnd`, is moved into the app and dropped
   with it when the window closes.
 - `Worker` is owned outside the app, by the teardown that joins it. eframe drops

@@ -171,6 +171,20 @@ pub fn drive(
     Err(PlaybackError::PlayerClosed)
 }
 
+/// The track or episode a URI names, ready for the player.
+///
+/// Only these two kinds carry an audio stream: a local file names the user's own
+/// disk, and everything else is a container, so `is_playable` alone would let a
+/// local file through to a load that cannot succeed.
+pub fn playable_track(uri: &str) -> Result<SpotifyUri, PlaybackError> {
+    let parsed =
+        SpotifyUri::from_uri(uri).map_err(|_| PlaybackError::NotPlayable(uri.to_owned()))?;
+    match parsed {
+        SpotifyUri::Track { .. } | SpotifyUri::Episode { .. } => Ok(parsed),
+        _ => Err(PlaybackError::NotPlayable(uri.to_owned())),
+    }
+}
+
 /// A running player. The sole owner of the player thread.
 pub struct Playback {
     player: Arc<Player>,
@@ -209,15 +223,17 @@ impl Playback {
         Ok((Self { player }, rx))
     }
 
+    /// Loads one track, starting at `position_ms` and playing only when asked
+    /// to.
+    pub fn load(&self, uri: &str, position_ms: u32, play: bool) -> Result<(), PlaybackError> {
+        let parsed = playable_track(uri)?;
+        self.player.load(parsed, play, position_ms);
+        Ok(())
+    }
+
     /// Loads and plays one track, starting at 0 ms.
     pub fn play(&self, uri: &str) -> Result<(), PlaybackError> {
-        let parsed =
-            SpotifyUri::from_uri(uri).map_err(|_| PlaybackError::NotPlayable(uri.to_owned()))?;
-        if !parsed.is_playable() {
-            return Err(PlaybackError::NotPlayable(uri.to_owned()));
-        }
-        self.player.load(parsed, true, 0);
-        Ok(())
+        self.load(uri, 0, true)
     }
 
     /// Jumps within the loaded track. Only a loaded track can be jumped in;
@@ -296,7 +312,7 @@ mod tests {
 
     use super::{
         Outcome, PlaybackError, PlaybackEvent, Volume, attenuation, drive, duration_of, into_sole,
-        map_event,
+        map_event, playable_track,
     };
 
     /// The player reads the getter it was built with, so the cell behind it is
@@ -353,6 +369,34 @@ mod tests {
 
     fn track() -> SpotifyUri {
         SpotifyUri::from_uri("spotify:track:4uLU6hMCjMI75M1A2tKUQC").expect("valid track uri")
+    }
+
+    #[test]
+    fn playable_track_table() {
+        let track = "spotify:track:4uLU6hMCjMI75M1A2tKUQC";
+        let episode = "spotify:episode:6rqhFgbbKwnb9MLmUQDhG6";
+        assert!(matches!(
+            playable_track(track),
+            Ok(SpotifyUri::Track { .. })
+        ));
+        assert!(matches!(
+            playable_track(episode),
+            Ok(SpotifyUri::Episode { .. })
+        ));
+
+        for refused in [
+            // A local file is the user's own disk, not a stream.
+            "spotify:local:Artist:Album:Title:222",
+            "spotify:artist:4uLU6hMCjMI75M1A2tKUQC",
+            "spotify:album:4uLU6hMCjMI75M1A2tKUQC",
+            "not a uri at all",
+            "spotify:track:short",
+        ] {
+            assert!(
+                matches!(playable_track(refused), Err(PlaybackError::NotPlayable(_))),
+                "{refused} is not a playable track"
+            );
+        }
     }
 
     #[test]

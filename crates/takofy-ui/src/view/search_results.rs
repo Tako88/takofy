@@ -278,10 +278,13 @@ fn tracks(
             liked: stores.library.likes.state(&entry.uri),
         };
         // R16: a row plays the whole answer, entered here, so next and previous
-        // walk the results.
+        // walk the results. A merged answer is no single page, so it names no
+        // context for a move to carry.
         match track_row::show(ui, rect, columns, &row, tokens) {
             Some(Click::Play) => {
-                asked.command = stores.queue.start(listing.answer, index, stores.transport);
+                asked.command = stores
+                    .queue
+                    .start(listing.answer, index, None, stores.transport);
             }
             Some(Click::Open(page)) => asked.open = Some(page),
             Some(Click::Select(press)) => selection.press(index, press),
@@ -484,9 +487,19 @@ mod tests {
         library: &mut Library,
         events: Vec<Event>,
     ) -> (Option<Command>, FullOutput) {
+        let mut queue = Queue::default();
+        frame_with_queue(ctx, library, &mut queue, events)
+    }
+
+    /// One frame of the page, with a queue the caller keeps across frames.
+    fn frame_with_queue(
+        ctx: &Context,
+        library: &mut Library,
+        queue: &mut Queue,
+        events: Vec<Event>,
+    ) -> (Option<Command>, FullOutput) {
         let tokens = Tokens::DARK;
         let mut transport = Transport::default();
-        let mut queue = Queue::default();
         let mut art = Art::default();
         art.begin_frame();
         let input = RawInput {
@@ -501,7 +514,7 @@ mod tests {
                 Table::Full,
                 library,
                 &mut transport,
-                &mut queue,
+                queue,
                 &mut art,
                 Instant::now(),
                 &tokens,
@@ -840,6 +853,28 @@ mod tests {
                 uri: "spotify:track:8".to_owned()
             }),
             "the row plays its own place in the whole answer"
+        );
+    }
+
+    #[test]
+    fn a_search_results_play_carries_no_context() {
+        let ctx = context();
+        let mut library = answered("q", 2);
+        let mut queue = Queue::default();
+        let (_, output) = frame_with_queue(&ctx, &mut library, &mut queue, Vec::new());
+        let row = text_rect(&output, "t1").expect("the row's title");
+
+        for _ in 0..2 {
+            for event in click_events(row.center()) {
+                let _ = frame_with_queue(&ctx, &mut library, &mut queue, vec![event]);
+            }
+        }
+
+        assert!(queue.current().is_some(), "the double click started a row");
+        assert_eq!(
+            queue.origin(),
+            None,
+            "a merged answer is no page, so it names no context"
         );
     }
 
