@@ -280,8 +280,10 @@ pub enum ConnectError {
 }
 
 impl ConnectError {
-    /// The one word a log may carry. A hand-over that fails silently is the
-    /// hardest failure to read, and the wire's own error text is not ours to log.
+    /// The one line a log may carry. A hand-over that fails silently is the
+    /// hardest failure to read, and the wire's own error text is not ours to
+    /// log — but its kind is a category, and it says which arm of the wire
+    /// refused without quoting anything.
     pub fn word(&self) -> &'static str {
         match self {
             Self::Session(_) => "session",
@@ -300,6 +302,15 @@ impl ConnectError {
             Self::NoTrack => "no track",
             Self::NotPlaying => "nothing playing",
             Self::NotPlayable => "not playable",
+        }
+    }
+
+    /// A log line narrow enough to keep: the word, and for a wire failure the
+    /// kind that refused it.
+    pub fn log_line(&self) -> String {
+        match self {
+            Self::Session(error) => format!("{} ({})", self.word(), error.kind),
+            _ => self.word().to_owned(),
         }
     }
 }
@@ -1059,6 +1070,24 @@ mod tests {
         for word in words {
             assert!(!word.is_empty());
         }
+    }
+
+    #[test]
+    fn a_wire_failure_logs_the_kind_that_refused_it() {
+        let refused = ConnectError::Session(librespot::core::Error::new(
+            librespot::core::error::ErrorKind::InvalidArgument,
+            std::io::Error::other("a refusal"),
+        ));
+        let line = refused.log_line();
+        assert!(line.starts_with(refused.word()), "{line}");
+        assert!(line.contains("invalid argument"), "{line}");
+        assert!(
+            !line.contains("a refusal"),
+            "the wire's text leaked: {line}"
+        );
+
+        // Every other error logs its word alone, with nothing appended.
+        assert_eq!(ConnectError::NotPlaying.log_line(), "nothing playing");
     }
 
     #[test]

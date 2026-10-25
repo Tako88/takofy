@@ -337,7 +337,7 @@ pub(crate) async fn pick<W: Wire>(
         Err(error) => {
             // Nothing is in flight any more, and the sound never left.
             shared.presence.pick_settled();
-            log::info!(target: HOLD_LOG_TARGET, "pick hand-over failed: {}", error.word());
+            log::info!(target: HOLD_LOG_TARGET, "pick hand-over failed: {}", error.log_line());
             Err(match error {
                 ConnectError::PutTimedOut => ConnectError::HandOverTimedOut,
                 other => other,
