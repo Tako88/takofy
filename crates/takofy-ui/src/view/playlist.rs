@@ -310,7 +310,7 @@ pub fn tracks_view(
                     let count = skeleton::row_count(
                         library.selected_entry().and_then(|entry| entry.tracks),
                     );
-                    skeleton::rows(ui, count, table.columns().for_playlist(true), tokens);
+                    skeleton::rows(ui, count, table.columns().for_playlist(true), true, tokens);
                 }
                 Load::Failed(failure) => {
                     library.track_filter.clear();
@@ -422,7 +422,6 @@ pub fn tracks_view(
                                 uri: &entry.uri,
                                 number: index + 1,
                                 title: &entry.title,
-                                title_cell: track_row::TitleCell::ArtThenName,
                                 artist: &entry.artists,
                                 artist_uri: entry.artist_uris.first().map(String::as_str),
                                 album: entry.album.as_deref(),
@@ -430,7 +429,7 @@ pub fn tracks_view(
                                 added: added.as_deref(),
                                 duration: duration.as_deref(),
                                 state: state_of(&entry.uri, transport),
-                                cover: art.look(entry.cover.as_ref(), now),
+                                cover: Some(art.look(entry.cover.as_ref(), now)),
                                 look: selection.look(index),
                                 menu: gate.allows(),
                                 liked: library.likes.state(&entry.uri),
@@ -2779,7 +2778,6 @@ mod tests {
             uri: "a",
             number: 1,
             title: "t0",
-            title_cell: track_row::TitleCell::ArtThenName,
             artist: "",
             artist_uri: None,
             album: None,
@@ -2787,7 +2785,7 @@ mod tests {
             added: None,
             duration: None,
             state: State::Resting,
-            cover: Cover::Missing,
+            cover: Some(Cover::Missing),
             look: Look::default(),
             menu: false,
             liked: None,
@@ -2829,7 +2827,6 @@ mod tests {
             uri: "a",
             number: 1,
             title: "t0",
-            title_cell: track_row::TitleCell::ArtThenName,
             artist: "Band",
             artist_uri: None,
             album: Some("Record"),
@@ -2837,7 +2834,7 @@ mod tests {
             added: None,
             duration: Some("3:42"),
             state: State::Resting,
-            cover: Cover::Missing,
+            cover: Some(Cover::Missing),
             look: Look::default(),
             menu: false,
             liked: None,
@@ -3470,7 +3467,6 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             uri: "a",
             number: 1,
             title: "t0",
-            title_cell: track_row::TitleCell::ArtThenName,
             artist,
             artist_uri: None,
             album: Some("Record"),
@@ -3478,7 +3474,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             added: None,
             duration: Some("3:42"),
             state: State::Resting,
-            cover: Cover::Missing,
+            cover: Some(Cover::Missing),
             look: Look::default(),
             menu: false,
             liked: None,

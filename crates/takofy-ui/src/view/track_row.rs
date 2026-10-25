@@ -95,18 +95,6 @@ pub fn state_of(uri: &str, transport: &Transport) -> State {
     }
 }
 
-/// How a row draws its title cell.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum TitleCell {
-    /// The cover's box, then the name on one line: a playlist's row.
-    ArtThenName,
-    /// The name over the artist's name, with no art: an album's row.
-    ///
-    /// The artist line is not a link in this slice: it is the row's subline, not
-    /// the artist column the playlist carries.
-    NameOverArtist,
-}
-
 /// What one row draws, as text and flags.
 ///
 /// The view assembles it from the track, the library and the transport. The row
@@ -117,11 +105,9 @@ pub struct Row<'a> {
     /// The number in the index column: the position in the list, from one.
     pub number: usize,
     pub title: &'a str,
-    /// How the title cell is drawn at this table's breakpoint.
-    pub title_cell: TitleCell,
     pub artist: &'a str,
-    /// The first artist's page, when labelling resolved one. The cell links only
-    /// when this is set and `artist` is non-empty.
+    /// The first artist's page, when labelling resolved one. The artist cell
+    /// links only when this is set and `artist` is non-empty.
     pub artist_uri: Option<&'a str>,
     pub album: Option<&'a str>,
     /// The album's page, when labelling resolved one. The cell links only when
@@ -130,8 +116,9 @@ pub struct Row<'a> {
     pub added: Option<&'a str>,
     pub duration: Option<&'a str>,
     pub state: State,
-    /// The track's cover, as the art pipeline resolves it.
-    pub cover: Cover,
+    /// The track's art, as the art pipeline resolves it: `None` when this list
+    /// draws no per-row art box, `Some` when it does.
+    pub cover: Option<Cover>,
     /// Where the row stands in its list: picked, carried, or neither.
     pub look: Look,
     /// Whether this row's menu may open. The page decides, because the gate is
@@ -146,7 +133,6 @@ impl Row<'_> {
     pub fn lifted(&self, columns: Columns) -> Lifted {
         Lifted {
             columns,
-            cell: self.title_cell,
             number: self.number,
             title: self.title.to_owned(),
             artist: self.artist.to_owned(),
@@ -162,14 +148,13 @@ impl Row<'_> {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Lifted {
     columns: Columns,
-    cell: TitleCell,
     number: usize,
     title: String,
     artist: String,
     album: Option<String>,
     added: Option<String>,
     duration: Option<String>,
-    cover: Cover,
+    cover: Option<Cover>,
 }
 
 impl Lifted {
@@ -199,45 +184,22 @@ impl Lifted {
             );
         }
 
-        match self.cell {
-            TitleCell::ArtThenName => {
-                let parts = title_parts(columns.title, true);
-                if drawable(parts.art) {
-                    art::tile(
-                        ui.painter(),
-                        parts.art,
-                        radius::XS,
-                        tokens.palette.border,
-                        self.cover,
-                        tokens,
-                    );
-                }
-                if drawable(parts.text) {
-                    let top = vertically_centred(ui, parts.text, &recipe::track_name());
-                    self.paint_title(ui, parts.text, top, ghosting, title_ink, tokens);
-                }
-            }
-            TitleCell::NameOverArtist => {
-                let artist_font = recipe::track_secondary();
-                let artist_h = if self.artist.is_empty() {
-                    0.0
-                } else {
-                    line_height(ui, &artist_font)
-                };
-                let name_h = line_height(ui, &recipe::track_name());
-                let (name_top, artist_top) = stacked_tops(columns.title, name_h, artist_h);
-                self.paint_title(ui, columns.title, name_top, ghosting, title_ink, tokens);
-                if !self.artist.is_empty() && drawable(columns.title) {
-                    left_at(
-                        ui,
-                        columns.title,
-                        artist_top,
-                        &self.artist,
-                        artist_font,
-                        secondary_ink,
-                    );
-                }
-            }
+        let parts = title_parts(columns.title, self.cover.is_some());
+        if let Some(cover) = self.cover
+            && drawable(parts.art)
+        {
+            art::tile(
+                ui.painter(),
+                parts.art,
+                radius::XS,
+                tokens.palette.border,
+                cover,
+                tokens,
+            );
+        }
+        if drawable(parts.text) {
+            let top = vertically_centred(ui, parts.text, &recipe::track_name());
+            self.paint_title(ui, parts.text, top, ghosting, title_ink, tokens);
         }
 
         if !self.artist.is_empty() && drawable(columns.artist) {
@@ -393,11 +355,7 @@ pub fn show(
     let body = rows::body(ui, rect, id(ui, row.uri, row.number), row.look);
     let response = &body.response;
     response.widget_info(|| {
-        egui::WidgetInfo::labeled(
-            egui::Role::Button,
-            true,
-            format!("{} by {}", row.title, row.artist),
-        )
+        egui::WidgetInfo::labeled(egui::Role::Button, true, label(row.title, row.artist))
     });
 
     // The reference reveals the play glyph and the like on hover *and* on
@@ -446,7 +404,7 @@ pub fn show(
     }
 
     index(ui, number_box(columns.index), row, revealed, tokens);
-    let title_link = title(ui, columns.title, row, key, tokens);
+    title(ui, columns.title, row, tokens);
     let artist_link = artist(ui, columns.artist, row, key, tokens);
     let album_link = album(ui, columns.album, row, key, tokens);
     added(ui, columns.added, row.added, tokens, row.look.selected);
@@ -471,7 +429,7 @@ pub fn show(
     // click on either cell is a navigation, and takes precedence over playback.
     let mut link_hovered = false;
     let mut open = None;
-    for link in [title_link, artist_link, album_link].into_iter().flatten() {
+    for link in [artist_link, album_link].into_iter().flatten() {
         link_hovered |= link.hovered;
         open = open.or(link.page);
     }
@@ -524,25 +482,15 @@ pub fn show(
     body.press.map(Click::Select)
 }
 
-/// The tops of a stacked title's two lines, centred together in `rect`.
+/// The row's accessibility label: the title, and the artist when it has one.
 ///
-/// Pure, so the stacking is pinned without a window: the pair is treated as one
-/// block and centred as a whole, which is what makes a short name over a long
-/// artist read as a single cell rather than as two loose lines. A zero or
-/// non-finite height takes no room, so the result is always finite.
-pub fn stacked_tops(rect: Rect, name_h: f32, artist_h: f32) -> (f32, f32) {
-    let name_h = room(name_h);
-    let artist_h = room(artist_h);
-    let top = rect.center().y - (name_h + artist_h) / 2.0;
-    (top, top + name_h)
-}
-
-/// A height that takes room: anything zero, negative or non-finite takes none.
-fn room(height: f32) -> f32 {
-    if height.is_finite() && height > 0.0 {
-        height
+/// A slim row carries no credit, so "X by " would name nothing; the title alone
+/// is what the row says.
+fn label(title: &str, artist: &str) -> String {
+    if artist.is_empty() {
+        title.to_owned()
     } else {
-        0.0
+        format!("{title} by {artist}")
     }
 }
 
@@ -628,42 +576,31 @@ fn bar_scales(time: f32) -> [f32; eq::BARS] {
 
 /// The title column.
 ///
-/// A playlist's row nests the cover's box inside the title and draws the name
-/// beside it. An album's row has no per-row art — the band already holds the
-/// record's one picture — so the whole cell is the two lines of text.
-///
-/// Only the stacked form's artist line can be a link, and it reports its
-/// interaction so a click on it opens the artist rather than playing the row.
-fn title(
-    ui: &mut Ui,
-    rect: Rect,
-    row: &Row<'_>,
-    key: (&str, usize),
-    tokens: &Tokens,
-) -> Option<Link> {
+/// A list that draws per-row art nests the cover's box inside the title and
+/// draws the name beside it; a list that does not spends the whole cell on the
+/// name. Nothing here is a link: the artist cell is the row's one credit link.
+fn title(ui: &Ui, rect: Rect, row: &Row<'_>, tokens: &Tokens) {
     if !drawable(rect) {
-        return None;
+        return;
     }
-    match row.title_cell {
-        TitleCell::ArtThenName => {
-            art_then_name(ui, rect, row, tokens);
-            None
-        }
-        TitleCell::NameOverArtist => name_over_artist(ui, rect, row, key, tokens),
-    }
+    title_cell(ui, rect, row, tokens);
 }
 
-/// The playlist's title cell: the cover's box, then the name.
-fn art_then_name(ui: &Ui, rect: Rect, row: &Row<'_>, tokens: &Tokens) {
-    let parts = title_parts(rect, true);
-    art::tile(
-        ui.painter(),
-        parts.art,
-        radius::XS,
-        tokens.palette.border,
-        row.cover,
-        tokens,
-    );
+/// The name, with the art box ahead of it only when the row carries art.
+fn title_cell(ui: &Ui, rect: Rect, row: &Row<'_>, tokens: &Tokens) {
+    let parts = title_parts(rect, row.cover.is_some());
+    if let Some(cover) = row.cover
+        && drawable(parts.art)
+    {
+        art::tile(
+            ui.painter(),
+            parts.art,
+            radius::XS,
+            tokens.palette.border,
+            cover,
+            tokens,
+        );
+    }
 
     if drawable(parts.text) {
         left(
@@ -676,107 +613,12 @@ fn art_then_name(ui: &Ui, rect: Rect, row: &Row<'_>, tokens: &Tokens) {
     }
 }
 
-/// The album's title cell: the name over its artist, centred together.
+/// The artist column: the track's one credit link.
 ///
-/// The artist line is a link when the row resolved an artist URI, and only the
-/// painted words take the click: the row's own double click still plays from the
-/// name line, which is where the cell's centre sits.
-fn name_over_artist(
-    ui: &mut Ui,
-    rect: Rect,
-    row: &Row<'_>,
-    key: (&str, usize),
-    tokens: &Tokens,
-) -> Option<Link> {
-    let name_font = recipe::track_name();
-    let artist_font = recipe::track_secondary();
-    let name_h = line_height(ui, &name_font);
-    let artist_h = if row.artist.is_empty() {
-        0.0
-    } else {
-        line_height(ui, &artist_font)
-    };
-    let (name_top, artist_top) = stacked_tops(rect, name_h, artist_h);
-
-    left_at(
-        ui,
-        rect,
-        name_top,
-        row.title,
-        name_font,
-        tokens.palette.text,
-    );
-    if row.artist.is_empty() {
-        return None;
-    }
-    let Some(uri) = row.artist_uri else {
-        left_at(
-            ui,
-            rect,
-            artist_top,
-            row.artist,
-            artist_font,
-            tokens.palette.text_muted,
-        );
-        return None;
-    };
-
-    // The link is the painted line, not the whole cell: a click below the name
-    // must stay the row's, and the row's centre is only a hair above this band.
-    let measured = recipe::line(
-        ui,
-        row.artist,
-        artist_font.clone(),
-        tokens.palette.text_muted,
-        0.0,
-        rect.width(),
-    );
-    let hit = Rect::from_min_size(
-        Pos2::new(rect.left(), artist_top),
-        vec2(measured.size().x, measured.size().y),
-    );
-    let response = ui.interact(
-        hit,
-        ui.scope_id().with(("track-artist-subline", key)),
-        Sense::CLICK,
-    );
-    response.widget_info(|| {
-        egui::WidgetInfo::labeled(
-            egui::Role::Link,
-            true,
-            format!("Open artist {}", row.artist),
-        )
-    });
-    if response.hovered() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-    }
-    let reveal = ui.ctx().animate_bool_with_time_and_easing(
-        ui.scope_id().with(("track-artist-subline", "hover", key)),
-        response.hovered(),
-        motion::FAST,
-        ease::out,
-    );
-    left_at(
-        ui,
-        rect,
-        artist_top,
-        row.artist,
-        artist_font,
-        tokens
-            .palette
-            .text_muted
-            .lerp_to_gamma(tokens.palette.text, reveal),
-    );
-    Some(Link {
-        hovered: response.hovered(),
-        page: response.clicked().then(|| Page::credit(uri)),
-    })
-}
-
-/// The artist column, which only a playlist carries.
-///
-/// The cell is a link when its first artist resolved a page and its name is
-/// non-empty: an empty cell painted nothing, so it gets no hit area either.
+/// A playlist and a plays row both carry it. The cell is a link when its first
+/// artist resolved a page and its name is non-empty: an empty cell painted
+/// nothing, so it gets no hit area either. The hit area is the whole cell, not
+/// just the painted words.
 fn artist(
     ui: &mut Ui,
     rect: Rect,
@@ -1194,13 +1036,17 @@ mod tests {
         crate::layout::table::columns(900.0, crate::layout::Table::Full.columns())
     }
 
+    /// The columns a plays row uses: the artist kept, the album and date gone.
+    fn plays_columns() -> Columns {
+        crate::layout::table::columns(900.0, crate::layout::Table::Full.columns().for_plays())
+    }
+
     /// A playlist row with both link cells live and every column filled.
     fn row_of(number: usize) -> Row<'static> {
         Row {
             uri: "spotify:track:a",
             number,
             title: "Harbour Wall",
-            title_cell: TitleCell::ArtThenName,
             artist: "Slow Tide",
             artist_uri: Some("spotify:artist:b"),
             album: Some("Record"),
@@ -1208,7 +1054,7 @@ mod tests {
             added: Some("2 Jan 2024"),
             duration: Some("3:42"),
             state: State::Resting,
-            cover: Cover::Missing,
+            cover: Some(Cover::Missing),
             look: Look::default(),
             menu: false,
             liked: None,
@@ -1468,75 +1314,6 @@ mod tests {
         );
     }
 
-    /// The two stacked lines' heights at the app's own fonts, read the way a
-    /// frame reads them: after one pass, because egui has no metrics before it.
-    fn font_heights() -> (f32, f32) {
-        let tokens = Tokens::DARK;
-        let ctx = egui::Context::default();
-        ctx.set_fonts(crate::theme::fonts::definitions());
-        ctx.set_global_style(crate::theme::style(&tokens));
-        let mut heights = None;
-        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
-            heights = Some(ui.ctx().fonts_mut(|fonts| {
-                (
-                    fonts.row_height(&recipe::track_name()),
-                    fonts.row_height(&recipe::track_secondary()),
-                )
-            }));
-        });
-        output.textures_delta.clear();
-        heights.expect("a frame ran")
-    }
-
-    #[test]
-    fn stacked_tops_centres_the_two_lines_as_one_block() {
-        let rect = Rect::from_min_size(Pos2::new(10.0, 20.0), vec2(200.0, 44.0));
-        let (name_top, artist_top) = stacked_tops(rect, 16.0, 12.0);
-
-        // The block is 28 tall, so it starts 8 above and ends 8 below the centre.
-        assert!((name_top - (rect.center().y - 14.0)).abs() < 1e-4);
-        assert!((artist_top - (name_top + 16.0)).abs() < 1e-4);
-    }
-
-    #[test]
-    fn stacked_tops_keeps_both_lines_inside_the_rect() {
-        let rect = Rect::from_min_size(Pos2::new(10.0, 20.0), vec2(200.0, 44.0));
-        for (name_h, artist_h) in [(16.0, 12.0), (20.0, 0.0), (0.0, 12.0), (44.0, 0.0)] {
-            let (name_top, artist_top) = stacked_tops(rect, name_h, artist_h);
-            assert!(name_top >= rect.top() - 1e-4, "{name_h}/{artist_h}");
-            assert!(
-                artist_top + artist_h <= rect.bottom() + 1e-4,
-                "{name_h}/{artist_h}: the block spills below the rect"
-            );
-        }
-    }
-
-    #[test]
-    fn stacked_tops_is_finite_for_a_zero_height() {
-        let empty = Rect::from_min_size(Pos2::ZERO, vec2(0.0, 0.0));
-        for (name_h, artist_h) in [(0.0, 0.0), (f32::NAN, 0.0), (0.0, f32::INFINITY)] {
-            let (name_top, artist_top) = stacked_tops(empty, name_h, artist_h);
-            assert!(name_top.is_finite(), "{name_h}/{artist_h}: {name_top}");
-            assert!(artist_top.is_finite(), "{name_h}/{artist_h}: {artist_top}");
-        }
-    }
-
-    /// The measured fit, not an assumed one: the two lines must fit the row's
-    /// inner box at today's tokens. If a token grows, this fails before a page
-    /// can clip its own subtitle.
-    #[test]
-    fn the_stacked_title_fits_the_rows_inner_box() {
-        let (name_h, artist_h) = font_heights();
-        let inner_h = crate::theme::extent::ROW_H - 2.0 * crate::theme::space::S1;
-
-        assert!(
-            name_h + artist_h <= inner_h,
-            "the two title lines take {} (name {name_h}, artist {artist_h}) but the \
-             row's inner box is {inner_h}",
-            name_h + artist_h
-        );
-    }
-
     #[test]
     fn an_absent_column_is_never_drawn_into() {
         // An absent column arrives as a zero-width rect rather than as a missing
@@ -1552,23 +1329,22 @@ mod tests {
         )));
     }
 
-    /// A wide album-block row: the name over its artist subline, no art box.
+    /// A plays row: the track's credit in its own column, no art box.
     fn episode_row() -> Row<'static> {
         Row {
             uri: "spotify:episode:a",
             number: 1,
             title: "The Episode",
-            title_cell: TitleCell::NameOverArtist,
             artist: "Lateral with Tom Scott",
-            // The episode names its show as its credit, so this subline opens
-            // the show rather than an artist.
+            // The episode names its show as its credit, so this cell opens the
+            // show rather than an artist.
             artist_uri: Some("spotify:show:s"),
             album: None,
             album_uri: None,
             added: None,
             duration: None,
             state: State::Resting,
-            cover: Cover::Missing,
+            cover: None,
             look: Look::default(),
             menu: false,
             liked: None,
@@ -1596,11 +1372,27 @@ mod tests {
             })
     }
 
-    /// The click one sequence of passes reports for a pointer at `pos`.
-    fn click(ctx: &egui::Context, pos: Pos2) -> Option<Click> {
-        run(ctx, &episode_row(), &click_events(pos), Modifiers::NONE)
-            .pop()
-            .flatten()
+    /// The click one sequence of passes reports for a pointer at `pos`, on a
+    /// plays-shaped row solved the way the album page solves it.
+    fn click_plays(ctx: &egui::Context, pos: Pos2) -> Option<Click> {
+        let tokens = Tokens::DARK;
+        let rect = body_rect();
+        let columns = plays_columns();
+        let mut output = ctx.run_ui(input_with(Vec::new()), |ui| {
+            let _ = show(ui, rect, columns, &episode_row(), &tokens);
+        });
+        output.textures_delta.clear();
+
+        let mut answers = Vec::new();
+        for event in click_events(pos) {
+            let mut answer = None;
+            let mut output = ctx.run_ui(input_with(vec![event]), |ui| {
+                answer = show(ui, rect, columns, &episode_row(), &tokens);
+            });
+            output.textures_delta.clear();
+            answers.push(answer);
+        }
+        answers.pop().flatten()
     }
 
     /// Finding 4: `Loading` is a track on its way and an ended one has nothing
@@ -1637,30 +1429,80 @@ mod tests {
     #[test]
     fn a_credit_click_on_an_episode_row_opens_the_show() {
         let ctx = context();
-        // The artist subline is the bottom line of the two stacked lines, so the
-        // click lands on the painted artist words rather than the name above, or
-        // on the index column to the left of the title. The words' own rect is
-        // where the link's hit area sits.
+        // The credit sits in its own artist column, so the click lands on its
+        // painted words rather than on the name or the index column.
         let mut first = ctx.run_ui(input(), |ui| {
             let _ = show(
                 ui,
-                crate::layout::table::row_rect(
-                    Rect::from_min_size(Pos2::ZERO, vec2(900.0, crate::theme::extent::ROW_H)),
-                    0,
-                    crate::theme::extent::ROW_H,
-                ),
-                crate::layout::table::columns(900.0, crate::layout::Table::Full.columns()),
+                body_rect(),
+                plays_columns(),
                 &episode_row(),
                 &Tokens::DARK,
             );
         });
         first.textures_delta.clear();
-        let artist = text_rect(&first, "Lateral with Tom Scott").expect("the artist subline");
+        let artist = text_rect(&first, "Lateral with Tom Scott").expect("the artist cell");
         assert_eq!(
-            click(&ctx, artist.center()),
+            click_plays(&ctx, artist.center()),
             Some(Click::Open(Page::credit("spotify:show:s"))),
             "a click on the episode's credit opens the show page"
         );
+    }
+
+    /// One frame of a plays-shaped row, with what it painted.
+    fn paint_plays(ctx: &egui::Context, row: &Row<'_>) -> egui::FullOutput {
+        let tokens = Tokens::DARK;
+        let mut output = ctx.run_ui(input(), |ui| {
+            let _ = show(ui, body_rect(), plays_columns(), row, &tokens);
+        });
+        output.textures_delta.clear();
+        output
+    }
+
+    /// The left of the episode's painted name, read back from a frame.
+    fn name_left(output: &egui::FullOutput) -> f32 {
+        text_rect(output, "The Episode").expect("the name").left()
+    }
+
+    #[test]
+    fn a_row_with_no_art_box_starts_its_name_at_the_title_column() {
+        let ctx = context();
+        let output = paint_plays(&ctx, &episode_row());
+        assert_eq!(name_left(&output), plays_columns().title.left());
+    }
+
+    #[test]
+    fn a_loading_art_box_pushes_the_name_past_the_box_and_its_gutter() {
+        let ctx = context();
+        let row = Row {
+            cover: Some(Cover::Loading),
+            ..episode_row()
+        };
+        let output = paint_plays(&ctx, &row);
+        let expected = plays_columns().title.left()
+            + crate::theme::extent::LIBRARY_ART
+            + crate::theme::space::S3;
+        assert_eq!(name_left(&output), expected);
+    }
+
+    #[test]
+    fn a_missing_cover_still_takes_its_box() {
+        let ctx = context();
+        let row = Row {
+            cover: Some(Cover::Missing),
+            ..episode_row()
+        };
+        let output = paint_plays(&ctx, &row);
+        let expected = plays_columns().title.left()
+            + crate::theme::extent::LIBRARY_ART
+            + crate::theme::space::S3;
+        assert_eq!(name_left(&output), expected);
+    }
+
+    #[test]
+    fn the_accessibility_label_leaves_out_an_empty_artist() {
+        assert_eq!(label("T", ""), "T");
+        assert_eq!(label("T", "A"), "T by A");
     }
 
     #[test]
@@ -2791,12 +2633,7 @@ mod tests {
     fn a_lifted_snapshot_paints_nothing_into_a_column_its_table_omits() {
         let ctx = context();
         let tokens = Tokens::DARK;
-        let present = crate::layout::table::Present {
-            shape: crate::layout::table::Shape::Slim,
-            artist: false,
-            album: false,
-            ..crate::layout::Table::Full.columns()
-        };
+        let present = crate::layout::Table::Full.columns().for_slim();
         let columns = crate::layout::table::columns(900.0, present);
         assert_eq!(columns.artist.width(), 0.0);
         assert_eq!(columns.album.width(), 0.0);

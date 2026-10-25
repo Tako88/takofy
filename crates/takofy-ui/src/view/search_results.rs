@@ -263,7 +263,6 @@ fn tracks(
             uri: &entry.uri,
             number: index + 1,
             title: &entry.title,
-            title_cell: track_row::TitleCell::ArtThenName,
             artist: &entry.artists,
             artist_uri: entry.artist_uris.first().map(String::as_str),
             album: entry.album.as_deref(),
@@ -272,7 +271,7 @@ fn tracks(
             added: None,
             duration: duration.as_deref(),
             state: state_of(&entry.uri, stores.transport),
-            cover: stores.art.look(entry.cover.as_ref(), stores.now),
+            cover: Some(stores.art.look(entry.cover.as_ref(), stores.now)),
             look: selection.look(index),
             menu: gate.allows(),
             liked: stores.library.likes.state(&entry.uri),
@@ -349,7 +348,7 @@ fn loading(ui: &mut Ui, stores: &Stores<'_>) {
                 // The column-head band is reserved with the rows, so the page
                 // does not move when the answer lands.
                 head(ui, columns, tokens);
-                skeleton::rows(ui, PAGE.tracks, present, tokens);
+                skeleton::rows(ui, PAGE.tracks, present, true, tokens);
             }
             Kind::Albums | Kind::Artists => search_cards::loading(ui, kind, tokens),
         }

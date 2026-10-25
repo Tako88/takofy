@@ -2,8 +2,8 @@
 //!
 //! The band says which record this is, and the table lists its tracks in the
 //! album's own order, numbered by their place in that one continuous list. No
-//! per-row art is drawn: the band holds the record's one picture, so the title
-//! cell is the name over its artist rather than cover-then-name.
+//! per-row art is drawn: the band holds the record's one picture, so a row is the
+//! name in the title column with its credit in the artist column.
 //!
 //! The page draws only what the library already has. `Load::Idle` has nothing to
 //! say because the route asks for the album when it opens, so it draws nothing at
@@ -14,7 +14,7 @@ use std::time::Instant;
 
 use egui::{Id, Sense, Ui};
 
-use crate::cover::{Art, Cover};
+use crate::cover::Art;
 use crate::format::{album_meta, format_position, total_duration_ms};
 use crate::layout::actionbar::Kind;
 use crate::layout::{Table, table as table_layout};
@@ -39,7 +39,7 @@ use super::hero;
 use super::pin;
 use super::skeleton;
 use super::track_list::{head, list_rect};
-use super::track_row::{self, Click, Row, TitleCell, state_of};
+use super::track_row::{self, Click, Row, state_of};
 
 /// Draws the album page and returns the command its controls asked for.
 #[expect(
@@ -88,7 +88,13 @@ pub fn album_view(
             match &library.album {
                 Load::Idle => {}
                 Load::Loading => {
-                    skeleton::rows(ui, skeleton::SCREENFUL, table.columns().for_album(), tokens);
+                    skeleton::rows(
+                        ui,
+                        skeleton::SCREENFUL,
+                        table.columns().for_plays(),
+                        false,
+                        tokens,
+                    );
                 }
                 Load::Failed(failure) => {
                     ui.label(recipe::muted(
@@ -107,7 +113,8 @@ pub fn album_view(
                         skeleton::rows(
                             ui,
                             skeleton::SCREENFUL,
-                            table.columns().for_album(),
+                            table.columns().for_plays(),
+                            false,
                             tokens,
                         );
                         return;
@@ -187,7 +194,7 @@ pub fn album_view(
 
                         // The album's own columns, solved once and handed to the head and
                         // every row, so the two cannot disagree about where a column is.
-                        let columns = table_layout::columns(width, table.columns().for_album());
+                        let columns = table_layout::columns(width, table.columns().for_plays());
                         head(ui, columns, tokens);
                         let count = album.tracks.len();
                         // The whole list is reserved at once, so the scrollbar is right,
@@ -225,10 +232,9 @@ pub fn album_view(
                                 // which is what makes a multi-disc album read 1..N.
                                 number: index + 1,
                                 title: &entry.title,
-                                title_cell: TitleCell::NameOverArtist,
                                 artist: &entry.artists,
-                                // The subline opens the artist it names, which on a
-                                // compilation or a feature is not the album's.
+                                // The artist cell opens the artist it names, which
+                                // on a compilation or a feature is not the album's.
                                 artist_uri: entry.artist_uris.first().map(String::as_str),
                                 // No album cell and no added date in an album's own table.
                                 album: None,
@@ -236,14 +242,15 @@ pub fn album_view(
                                 added: None,
                                 duration: duration.as_deref(),
                                 state: state_of(&entry.uri, transport),
-                                // The band already holds the record's one picture.
-                                cover: Cover::Missing,
+                                // The band already holds the record's one picture,
+                                // so the rows carry no art box of their own.
+                                cover: None,
                                 look: selection.look(index),
                                 menu: gate.allows(),
                                 liked: library.likes.state(&entry.uri),
                             };
-                            // A row plays; its artist subline, when the album named
-                            // a resolvable artist, opens that artist's page.
+                            // A row plays; its artist cell, when the album named a
+                            // resolvable artist, opens that artist's page.
                             match track_row::show(ui, rect, columns, &row, tokens) {
                                 Some(Click::Play) => {
                                     command = queue.start(
@@ -491,10 +498,39 @@ mod tests {
             actionbar::row_rect(ui);
             crate::view::inner(ui, |ui| {
                 let columns =
-                    table_layout::columns(ui.available_width(), Table::Full.columns().for_album());
+                    table_layout::columns(ui.available_width(), Table::Full.columns().for_plays());
                 track_list::head(ui, columns, &tokens);
                 let list = track_list::list_rect(ui, count);
                 found = Some(table_layout::row_rect(list, index, extent::ROW_H));
+            });
+        });
+        found.expect("the head and the list lay out")
+    }
+
+    /// The title and artist cells and the row itself for the `index`-th row,
+    /// solved the way the page solves them from the band down.
+    fn cells_for(ctx: &Context, index: usize, count: usize) -> (Rect, Rect, Rect) {
+        let tokens = Tokens::DARK;
+        let mut found = None;
+        run(ctx, input(Vec::new()), |ui| {
+            ui.add_space(space::S3);
+            let band = hero::Band {
+                eyebrow: "Album",
+                title: "Signal Decay",
+                meta: Vec::new(),
+                description: "",
+                cover: Cover::Missing,
+            };
+            let _ = hero::show_with(ui, &band, &tokens, hero::Title::Plain);
+            actionbar::row_rect(ui);
+            crate::view::inner(ui, |ui| {
+                let columns =
+                    table_layout::columns(ui.available_width(), Table::Full.columns().for_plays());
+                track_list::head(ui, columns, &tokens);
+                let list = track_list::list_rect(ui, count);
+                let row = table_layout::row_rect(list, index, extent::ROW_H);
+                let placed = columns.at(row.min);
+                found = Some((placed.title, placed.artist, row));
             });
         });
         found.expect("the head and the list lay out")
@@ -518,7 +554,7 @@ mod tests {
             actionbar::row_rect(ui);
             crate::view::inner(ui, |ui| {
                 let columns =
-                    table_layout::columns(ui.available_width(), Table::Full.columns().for_album());
+                    table_layout::columns(ui.available_width(), Table::Full.columns().for_plays());
                 track_list::head(ui, columns, &tokens);
                 let list = track_list::list_rect(ui, count);
                 let row = table_layout::row_rect(list, index, extent::ROW_H);
@@ -1321,7 +1357,7 @@ mod tests {
     }
 
     #[test]
-    fn the_head_paints_the_number_and_the_title_but_no_artist_album_or_added() {
+    fn the_head_paints_the_number_title_and_artist_but_no_album_or_added() {
         let ctx = context();
         let mut library = library_with(detail(vec![track(
             "spotify:track:a",
@@ -1345,12 +1381,11 @@ mod tests {
 
         assert!(texts.contains(&"#"), "the index heading: {texts:?}");
         assert!(texts.contains(&"TITLE"), "the title heading: {texts:?}");
-        for absent in ["ARTIST", "ADDED"] {
-            assert!(
-                !texts.contains(&absent),
-                "an album table draws no {absent} heading: {texts:?}"
-            );
-        }
+        assert!(texts.contains(&"ARTIST"), "the artist heading: {texts:?}");
+        assert!(
+            !texts.contains(&"ADDED"),
+            "an album table draws no ADDED heading: {texts:?}"
+        );
         // The band's eyebrow is the one `ALBUM` on this page; a column heading
         // would be a second.
         assert_eq!(
@@ -1361,7 +1396,7 @@ mod tests {
     }
 
     #[test]
-    fn a_row_paints_its_title_and_its_artist_subline() {
+    fn a_row_paints_its_artist_in_its_own_column() {
         let ctx = context();
         let mut library = library_with(detail(vec![track(
             "spotify:track:a",
@@ -1384,29 +1419,33 @@ mod tests {
         let texts = drawn_texts(&output);
 
         assert!(texts.contains(&"One"), "the row's name: {texts:?}");
-        assert!(
-            texts.contains(&"Nils Aker"),
-            "the row's artist subline: {texts:?}"
-        );
+        assert!(texts.contains(&"Nils Aker"), "the row's artist: {texts:?}");
 
-        // The subline sits under the name, not beside it.
+        // The credit has a column of its own, beside the name rather than under
+        // it, and the two lines are level with each other.
+        let (title_cell, artist_cell, _) = cells_for(&ctx, 0, 1);
         let name = text_rect(&output, "One").expect("the name");
         let artist = text_rect(&output, "Nils Aker").expect("the artist");
-        assert!(
-            artist.top() >= name.top(),
-            "the artist is stacked under the name"
+        assert_eq!(
+            name.left(),
+            title_cell.left(),
+            "the name starts the title column"
         );
         assert_eq!(
             artist.left(),
-            name.left(),
-            "both lines start at the same left"
+            artist_cell.left(),
+            "the artist starts its own column"
+        );
+        assert!(
+            (artist.center().y - name.center().y).abs() < 0.5,
+            "the artist sits level with the name, not under it"
         );
     }
 
     #[test]
     fn a_row_opens_its_own_track_artist_not_the_albums() {
         // A compilation or a feature: the row names a guest, and the album names
-        // the record's artist. The subline draw and the link are the same name.
+        // the record's artist. The credit draw and the link are the same cell.
         let ctx = context();
         let row_track = TrackEntry {
             artists: "Guest".to_owned(),
@@ -1431,10 +1470,10 @@ mod tests {
             drawn_texts(&output).contains(&"Guest"),
             "the row draws the track's own artist"
         );
-        let subline = text_rect(&output, "Guest").expect("the track artist subline");
+        let credit = text_rect(&output, "Guest").expect("the track's artist cell");
         let command = click(
             &ctx,
-            subline.center(),
+            credit.center(),
             1,
             &mut library,
             &mut transport,
@@ -1445,7 +1484,7 @@ mod tests {
         assert_eq!(
             library.page(),
             Some(&Page::Artist("spotify:artist:guest".to_owned())),
-            "the row's subline opens the artist it names, not the album's"
+            "the row's credit opens the artist it names, not the album's"
         );
         assert_eq!(
             command,
@@ -1454,6 +1493,111 @@ mod tests {
             })
         );
         assert!(!queue.can_next(), "opening a page must not start the queue");
+    }
+
+    /// A row whose own credit names a guest, so the artist cell is live.
+    fn featured() -> TrackEntry {
+        TrackEntry {
+            artists: "Guest".to_owned(),
+            artist_uris: vec!["spotify:artist:guest".to_owned()],
+            artist_names: vec!["Guest".to_owned()],
+            ..track("spotify:track:a", "One", "Guest", 222_000)
+        }
+    }
+
+    #[test]
+    fn a_click_in_the_artist_cells_dead_zone_opens_the_artist_and_does_not_play() {
+        // The hit area is the whole artist cell, padding included. The cell is a
+        // tight share of a wide pane, so most of it is past the painted words; a
+        // click there is still the link, and never the row's play.
+        let ctx = context();
+        let mut library = library_with(detail(vec![featured()]));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let (_, artist_cell, row) = cells_for(&ctx, 0, 1);
+        let dead = Pos2::new(artist_cell.right() - 2.0, row.center().y);
+
+        // The premise the test rests on: the probe is in the cell but past the
+        // painted words. Without this the test would pass just as well if the
+        // credit grew to fill the cell and there were no dead zone at all.
+        let (_, output) = frame(
+            &ctx,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let credit = text_rect(&output, "Guest").expect("the row's painted artist");
+        assert!(
+            dead.x > credit.right(),
+            "the probe at x={} must be past the painted credit, which ends at x={}",
+            dead.x,
+            credit.right()
+        );
+
+        let command = click(
+            &ctx,
+            dead,
+            1,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+
+        assert_eq!(
+            library.page(),
+            Some(&Page::Artist("spotify:artist:guest".to_owned())),
+            "a click on the cell's far edge still opens the artist"
+        );
+        assert_eq!(
+            command,
+            Some(Command::LoadArtist {
+                artist: "spotify:artist:guest".to_owned()
+            })
+        );
+        assert!(
+            !queue.can_next(),
+            "a click in the artist cell must not play the row"
+        );
+    }
+
+    #[test]
+    fn a_double_click_on_the_title_still_plays() {
+        // The artist cell is a link, but the title cell is still the row's own:
+        // a double click there plays, as it always did.
+        let ctx = context();
+        let mut library = library_with(detail(vec![featured()]));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let (title_cell, _, _) = cells_for(&ctx, 0, 1);
+        let command = click(
+            &ctx,
+            title_cell.center(),
+            2,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+
+        assert_eq!(
+            command,
+            Some(Command::Play {
+                uri: "spotify:track:a".to_owned()
+            }),
+            "a double click on the title plays the row"
+        );
+        assert_eq!(
+            library.page(),
+            Some(&Page::Album(ALBUM.to_owned())),
+            "playing a row stays on the album"
+        );
     }
 
     #[test]
@@ -1752,7 +1896,7 @@ mod tests {
         // pane's width less the two gutters.
         let columns = table_layout::columns(
             PROBE.x - 2.0 * space::GUTTER,
-            Table::Full.columns().for_album(),
+            Table::Full.columns().for_plays(),
         );
         assert!(
             (heading.left() - (space::GUTTER + columns.title.left())).abs() < 0.01,

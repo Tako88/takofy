@@ -57,7 +57,7 @@ use super::release_block::{self, Block};
 use super::section;
 use super::skeleton;
 use super::track_list::{head, list_rect};
-use super::track_row::{self, Click, Row, TitleCell, state_of};
+use super::track_row::{self, Click, Row, state_of};
 use crate::verbs;
 
 /// Draws the artist page and returns the command its controls asked for.
@@ -127,7 +127,13 @@ pub fn artist_view(
             match page.load {
                 Load::Idle => {}
                 Load::Loading => {
-                    skeleton::rows(ui, skeleton::SCREENFUL, table.columns().for_album(), tokens);
+                    skeleton::rows(
+                        ui,
+                        skeleton::SCREENFUL,
+                        table.columns().for_album(),
+                        true,
+                        tokens,
+                    );
                 }
                 Load::Failed(failure) => {
                     page.filter.clear_query();
@@ -148,6 +154,7 @@ pub fn artist_view(
                             ui,
                             skeleton::SCREENFUL,
                             table.columns().for_album(),
+                            true,
                             tokens,
                         );
                         return;
@@ -610,7 +617,6 @@ fn popular(
             uri: &entry.uri,
             number: index + 1,
             title: &entry.title,
-            title_cell: TitleCell::NameOverArtist,
             artist: &entry.artists,
             // The artist page's own subline is not a link to itself.
             artist_uri: None,
@@ -619,7 +625,7 @@ fn popular(
             added: None,
             duration: duration.as_deref(),
             state: state_of(&entry.uri, transport),
-            cover: Cover::Missing,
+            cover: None,
             look: selection.look(index),
             menu: gate.allows(),
             liked: likes.state(&entry.uri),

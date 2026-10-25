@@ -190,7 +190,11 @@ pub fn tiles(ui: &Ui, solved: &cards::Grid, count: usize, tokens: &Tokens) {
 }
 
 /// One tracklist row, cut to the same columns the resolved row will use.
-fn row_at(ui: &Ui, rect: Rect, index: usize, present: Present, tokens: &Tokens) {
+///
+/// `art` says whether the resolved row nests an art box in its title, so the
+/// placeholder's name starts where the real name will and the page does not
+/// shift when the list lands.
+fn row_at(ui: &Ui, rect: Rect, index: usize, present: Present, art: bool, tokens: &Tokens) {
     wake(ui);
     let columns = table::columns(rect.width(), present).at(rect.min);
     let number = table::number_box(columns.index);
@@ -203,24 +207,16 @@ fn row_at(ui: &Ui, rect: Rect, index: usize, present: Present, tokens: &Tokens) 
         tokens,
     );
 
-    let text = table::title_parts(columns.title, true).text;
-    let stack = extent::SKELETON_LINE + space::S1 + extent::SKELETON_LINE_SM;
-    let top = text.center().y - stack / 2.0;
+    // One centred line on every shape: no row stacks a credit under its name
+    // any more, so a second bar would stand for a line nothing draws.
+    let text = table::title_parts(columns.title, art).text;
     let title = Rect::from_min_size(
-        pos2(text.left(), top),
+        pos2(text.left(), text.center().y - extent::SKELETON_LINE / 2.0),
         vec2(text.width() * row_title(index), extent::SKELETON_LINE),
     );
     ui.painter()
         .rect_filled(title, radius::XS, tokens.palette.skeleton_rule);
     light(ui, title, sheen(time(ui), stagger(index)), tokens);
-    bar(
-        ui,
-        text.left(),
-        text.width() * 0.28,
-        top + extent::SKELETON_LINE + space::S1 + extent::SKELETON_LINE_SM / 2.0,
-        extent::SKELETON_LINE_SM,
-        tokens,
-    );
 
     for (column, width) in [
         (columns.album, 0.68),
@@ -242,8 +238,10 @@ fn row_at(ui: &Ui, rect: Rect, index: usize, present: Present, tokens: &Tokens) 
 /// The rows a loading tracklist holds open.
 ///
 /// One allocation for the whole list, so the page below it stays where it is
-/// and the scrollbar is the length of what is coming rather than of a bar.
-pub fn rows(ui: &mut Ui, count: usize, present: Present, tokens: &Tokens) {
+/// and the scrollbar is the length of what is coming rather than of a bar. `art`
+/// is the table's own: a list that will draw per-row covers reserves their box
+/// in its title, and one that will not spends the whole title on the name.
+pub fn rows(ui: &mut Ui, count: usize, present: Present, art: bool, tokens: &Tokens) {
     if count == 0 {
         return;
     }
@@ -256,7 +254,7 @@ pub fn rows(ui: &mut Ui, count: usize, present: Present, tokens: &Tokens) {
             Pos2::new(list.left(), list.top() + index as f32 * extent::ROW_H),
             vec2(width, extent::ROW_H),
         );
-        row_at(ui, rect, index, present, tokens);
+        row_at(ui, rect, index, present, art, tokens);
     }
 }
 
@@ -438,12 +436,14 @@ mod tests {
         let ctx = context();
         let mut height = 0.0;
         let output = frame(&ctx, |ui| {
-            rows(ui, 3, Table::Full.columns(), &tokens);
+            rows(ui, 3, Table::Full.columns(), true, &tokens);
             height = ui.min_rect().height();
         });
         assert_eq!(height, 3.0 * extent::ROW_H);
-        // Index, title, the title's second line, artist, album, added, duration.
-        assert_eq!(bars(&output, &tokens).len(), 3 * 7);
+        // Index, title, artist, album, added and duration. The like and the
+        // actions carry no placeholder, and the title is one line on every
+        // shape now that no row stacks a credit under its name.
+        assert_eq!(bars(&output, &tokens).len(), 3 * 6);
     }
 
     #[test]
@@ -451,12 +451,75 @@ mod tests {
         let tokens = Tokens::DARK;
         let ctx = context();
         let output = frame(&ctx, |ui| {
-            rows(ui, 2, Table::Narrow.columns(), &tokens);
+            rows(ui, 2, Table::Narrow.columns(), true, &tokens);
         });
-        // Index, title, the title's second line, the artist and the duration:
-        // the album, the date and the like are not on this table at all, and a
-        // dropped column takes its bar with it.
-        assert_eq!(bars(&output, &tokens).len(), 2 * 5);
+        // Index, title, the artist and the duration: the album, the date and
+        // the like are not on this table at all, and a dropped column takes its
+        // bar with it.
+        assert_eq!(bars(&output, &tokens).len(), 2 * 4);
+    }
+
+    #[test]
+    fn a_loading_plays_list_holds_four_bars_a_row() {
+        let tokens = Tokens::DARK;
+        let ctx = context();
+        // A plays row keeps the artist and drops the album and the date. Its
+        // like and actions columns are real columns, but the skeleton draws no
+        // placeholder into them, so the bars are the index, the title, the
+        // artist and the duration.
+        let present = Table::Full.columns().for_plays();
+        let output = frame(&ctx, |ui| {
+            rows(ui, 2, present, false, &tokens);
+        });
+        assert_eq!(bars(&output, &tokens).len(), 2 * 4);
+    }
+
+    #[test]
+    fn a_loading_rows_bars_all_sit_on_the_rows_centre_line() {
+        let tokens = Tokens::DARK;
+        let ctx = context();
+        let output = frame(&ctx, |ui| {
+            rows(ui, 2, Table::Full.columns(), true, &tokens);
+        });
+        // Six bars a row on the full playlist table, and no bar below the title
+        // line: the second, stacked line is gone.
+        for (index, bar) in bars(&output, &tokens).iter().enumerate() {
+            let row = index / 6;
+            let centre = (row as f32 + 0.5) * extent::ROW_H;
+            assert!(
+                (bar.center().y - centre).abs() < 0.01,
+                "bar {index} of row {row} sits at {} not {centre}",
+                bar.center().y
+            );
+        }
+    }
+
+    #[test]
+    fn the_title_bar_starts_after_the_art_box_only_when_the_table_draws_one() {
+        let tokens = Tokens::DARK;
+        let ctx = context();
+        let present = Table::Full.columns().for_plays();
+        let title_left = |art: bool| {
+            let output = frame(&ctx, |ui| {
+                rows(ui, 1, present, art, &tokens);
+            });
+            let bars = bars(&output, &tokens);
+            // The index bar is first and the title bar second.
+            bars[1].left()
+        };
+
+        let columns = table::columns(900.0, present);
+        let title = columns.title.left();
+        assert_eq!(
+            title_left(false),
+            title,
+            "with no art box the name holds the whole title"
+        );
+        assert_eq!(
+            title_left(true),
+            title + extent::LIBRARY_ART + space::S3,
+            "an art box pushes the name past its box and gutter"
+        );
     }
 
     #[test]
