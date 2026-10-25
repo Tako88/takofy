@@ -585,6 +585,8 @@ mod tests {
             artist: "A Band",
             duration: None,
             cover: Cover::Missing,
+            title_target: None,
+            artist_target: None,
             look: Look::default(),
             refocus: false,
         }

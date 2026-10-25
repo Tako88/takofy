@@ -25,11 +25,13 @@ use crate::theme::{Tokens, extent, radius, space, text, tracking};
 
 use crate::lyrics::{LyricsPanel, Tab};
 use crate::menu::{Anchor, Device, Door, Listing};
+use crate::route::Page;
 use crate::verbs;
 
 use super::art;
 use super::context_menu;
 use super::controls;
+use super::link::{self, Face, Target};
 use super::lyrics_pane;
 use super::queue_pane;
 use super::text as recipe;
@@ -49,6 +51,8 @@ const TABS: [(&str, Control); 2] = [
 pub struct Reply {
     /// What the queue pane asked for.
     pub queue: queue_pane::Reply,
+    /// The page a click on the title or the artist asked for.
+    pub open: Option<Page>,
     /// The tab a press asked for.
     pub tab: Option<Tab>,
     /// Whether the lyrics pane's Retry was pressed.
@@ -99,7 +103,7 @@ pub fn show(
             tokens,
         );
     }
-    meta(ui, stack.meta, transport, tokens);
+    let open = meta(ui, stack.meta, transport, tokens);
     let tab = tabs(ui, stack.tabs, tokens, lyrics.showing());
 
     let showing = tab.unwrap_or(lyrics.showing());
@@ -107,6 +111,7 @@ pub fn show(
         Tab::Queue => {
             return Reply {
                 queue: queue_pane::show(ui, stack.pane, queue, frame.art, frame.now, tokens),
+                open,
                 tab,
                 retry: false,
                 menu,
@@ -123,6 +128,7 @@ pub fn show(
     };
     Reply {
         queue: queue_pane::Reply::default(),
+        open,
         tab,
         retry,
         menu,
@@ -202,10 +208,11 @@ fn head(
 /// playing.
 ///
 /// The idle line sits where a title would, at the top of the reserved rect: the
-/// same block with nothing in it.
-fn meta(ui: &Ui, rect: Rect, transport: &Transport, tokens: &Tokens) {
+/// same block with nothing in it. The title opens the album and the artist their
+/// page, when the track names one; the block's heights do not change with them.
+fn meta(ui: &Ui, rect: Rect, transport: &Transport, tokens: &Tokens) -> Option<Page> {
     if rect.width() <= 0.0 {
-        return;
+        return None;
     }
     let Some(now) = &transport.now_playing else {
         let line = recipe::line(
@@ -221,37 +228,55 @@ fn meta(ui: &Ui, rect: Rect, transport: &Transport, tokens: &Tokens) {
             line,
             tokens.palette.text_muted,
         );
-        return;
+        return None;
     };
 
-    let title = recipe::line(
+    let title = link::Placed {
+        pos: Pos2::new(rect.left(), rect.top()),
+        galley: link::lay(
+            ui,
+            &now.title,
+            &Face {
+                font: recipe::panel_title(),
+                tracking: recipe::tracking_pts(text::MD, tracking::TIGHT),
+            },
+            rect.width(),
+        ),
+    };
+    let height = title.rect().height();
+    let title = title.link(
         ui,
-        &now.title,
-        recipe::panel_title(),
+        ui.scope_id().with("now-playing-title"),
+        rect,
+        now.album_uri.as_deref().map(Target::Album),
         tokens.palette.text,
-        recipe::tracking_pts(text::MD, tracking::TIGHT),
-        rect.width(),
+        tokens,
     );
-    let mut top = rect.top();
-    let height = title.size().y;
-    ui.painter()
-        .galley(Pos2::new(rect.left(), top), title, tokens.palette.text);
-    top += height;
+    let mut top = rect.top() + height;
+    let mut open = title.page;
 
     if !now.artists.is_empty() {
-        let artist = recipe::line(
+        let artist = link::Placed {
+            pos: Pos2::new(rect.left(), top),
+            galley: link::lay(
+                ui,
+                &now.artists,
+                &Face {
+                    font: recipe::track_secondary(),
+                    tracking: 0.0,
+                },
+                rect.width(),
+            ),
+        };
+        let shown = artist.link(
             ui,
-            &now.artists,
-            recipe::track_secondary(),
+            ui.scope_id().with("now-playing-artist"),
+            rect,
+            now.artist_uri.as_deref().map(Target::Credit),
             tokens.palette.text_muted,
-            0.0,
-            rect.width(),
+            tokens,
         );
-        ui.painter().galley(
-            Pos2::new(rect.left(), top),
-            artist,
-            tokens.palette.text_muted,
-        );
+        open = open.or(shown.page);
     }
     // The artist line is reserved whether or not it holds an artist.
     top += line_height(ui, &recipe::track_secondary());
@@ -272,6 +297,7 @@ fn meta(ui: &Ui, rect: Rect, transport: &Transport, tokens: &Tokens) {
             tokens.palette.text_subtle,
         );
     }
+    open
 }
 
 /// The tab pair, reporting the tab a press asked for.
@@ -327,6 +353,7 @@ mod tests {
     use crate::cover::Art;
     use crate::message::{TransportUpdate, Update};
     use crate::player::NowPlaying;
+    use crate::route::Page;
     use crate::selection::Press;
     use crate::theme::{fonts, style};
     use crate::view::test_support::tab;
@@ -416,6 +443,20 @@ mod tests {
     fn playing(title: &str, artists: &str) -> Transport {
         let mut transport = Transport::default();
         transport.play(NowPlaying::named("spotify:track:x", title, artists));
+        transport
+    }
+
+    const ALBUM: &str = "spotify:album:a";
+    const ARTIST: &str = "spotify:artist:b";
+
+    /// A transport whose track names the album and the credit it links to.
+    fn linked(title: &str, artists: &str) -> Transport {
+        let mut transport = Transport::default();
+        transport.play(NowPlaying {
+            album_uri: Some(ALBUM.to_owned()),
+            artist_uri: Some(ARTIST.to_owned()),
+            ..NowPlaying::named("spotify:track:x", title, artists)
+        });
         transport
     }
 
@@ -614,6 +655,104 @@ mod tests {
             }
         }
         reply
+    }
+
+    /// Clicks `at` over the passes egui's hit test needs, returning the page the
+    /// release asked for.
+    fn click_open(panel: &mut Panel, ctx: &Context, at: Pos2) -> Option<Page> {
+        let _ = panel.reply(ctx, Vec::new());
+        let mut found = None;
+        for event in crate::view::test_support::click_events(at) {
+            if let Some(page) = panel.reply(ctx, vec![event]).open {
+                found = Some(page);
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn the_title_is_a_link_to_the_album() {
+        let ctx = context();
+        let mut panel = Panel::new(linked("A Title", "A Band"));
+        panel.lyrics.select(Tab::Lyrics);
+        let frame = panel.output(&ctx);
+        let at = painted_at(&frame, "A Title").expect("the title is painted");
+        assert_eq!(
+            click_open(&mut panel, &ctx, at + Vec2::new(4.0, 4.0)),
+            Some(Page::Album(ALBUM.to_owned())),
+            "a click on the title must open the album"
+        );
+    }
+
+    #[test]
+    fn the_artist_is_a_link_to_the_artist() {
+        let ctx = context();
+        let mut panel = Panel::new(linked("A Title", "A Band"));
+        panel.lyrics.select(Tab::Lyrics);
+        let frame = panel.output(&ctx);
+        let at = painted_at(&frame, "A Band").expect("the artist is painted");
+        assert_eq!(
+            click_open(&mut panel, &ctx, at + Vec2::new(4.0, 4.0)),
+            Some(Page::Artist(ARTIST.to_owned())),
+            "a click on the artist must open the artist"
+        );
+    }
+
+    #[test]
+    fn no_uris_means_no_links() {
+        let ctx = context();
+        ctx.enable_accesskit();
+        let mut panel = Panel::new(playing("A Title", "A Band"));
+        panel.lyrics.select(Tab::Lyrics);
+        let frame = panel.output(&ctx);
+        let labels: Vec<String> = frame
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .map(|update| {
+                update
+                    .nodes
+                    .iter()
+                    .filter_map(|(_, node)| {
+                        (node.role() == egui::accesskit::Role::Link)
+                            .then(|| node.label().map(str::to_owned))
+                            .flatten()
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert!(
+            labels.is_empty(),
+            "a track with no uris drew link nodes: {labels:?}"
+        );
+        let at = painted_at(&frame, "A Title").expect("the title is painted");
+        assert_eq!(
+            click_open(&mut panel, &ctx, at + Vec2::new(4.0, 4.0)),
+            None,
+            "a title with no album opened a page"
+        );
+    }
+
+    #[test]
+    fn the_queue_tab_early_return_still_carries_open() {
+        let ctx = context();
+        let mut panel = Panel::new(linked("A Title", "A Band"));
+        let frame = panel.output(&ctx);
+        assert_eq!(
+            panel.lyrics.showing(),
+            Tab::Queue,
+            "the early return is the queue tab's"
+        );
+        assert!(
+            drawn_texts(&frame).contains(&queue_pane::EMPTY),
+            "the queue pane must be the one drawn"
+        );
+        let at = painted_at(&frame, "A Title").expect("the title is painted");
+        assert_eq!(
+            click_open(&mut panel, &ctx, at + Vec2::new(4.0, 4.0)),
+            Some(Page::Album(ALBUM.to_owned())),
+            "the queue tab's reply dropped the open"
+        );
     }
 
     #[test]

@@ -240,7 +240,11 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
 
     // The pane reports what the pointer and the keyboard asked of the queue; it
     // never moves the queue itself, because its row loop is still reading it.
-    let mut queue_reply = reply.queue;
+    let mut queue_reply = std::mem::take(&mut reply.queue);
+    // Every page a link click named is collected here and applied once, below
+    // and after the queue's own jump; a region that draws later adds its own open
+    // before that block.
+    let open = take_open(&mut reply.open, &mut queue_reply.open);
     apply_queue_reply(ui, screen, &mut queue_reply);
 
     // Resolved once, before the playbar draws: the queue button fills from the
@@ -352,6 +356,16 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
         command = queue_reply
             .play
             .and_then(|index| screen.queue.jump(index, screen.transport));
+    }
+    // A link click asks for a page and never for a play, so it is applied here,
+    // after the jump that a play would have taken the frame for, and only while
+    // the frame has no command of its own and nothing is carried. A dropped open
+    // changes nothing: the words are still there to click again.
+    if command.is_none()
+        && !carry::carrying(ui.ctx())
+        && let Some(page) = open
+    {
+        command = screen.library.open(page);
     }
     // The lyrics fetch is the open tab's, and it is asked for only once the
     // frame's own command is settled: a load marked `Loading` for a command that
@@ -882,6 +896,15 @@ fn apply_follow(screen: &mut Screen<'_>, artist: &str, followed: bool) -> Option
         artist: artist.to_owned(),
         followed,
     })
+}
+
+/// The page this frame's link clicks named, taken from the fields the two
+/// regions report one in: the panel's own first, then the queue's.
+///
+/// A frame opens at most one page, so every open is spent here whether or not it
+/// is the one taken; the shell applies the answer once.
+fn take_open(panel: &mut Option<Page>, queue: &mut Option<Page>) -> Option<Page> {
+    panel.take().or(queue.take())
 }
 
 /// Applies what the queue pane reported: the picked row, the lifted block, and
@@ -1884,6 +1907,8 @@ mod tests {
     const ARTIST: &str = "spotify:artist:a";
     const ALBUM: &str = "spotify:album:b";
     const ALBUM_B: &str = "spotify:album:c";
+    const QUEUE_ALBUM: &str = "spotify:album:q";
+    const QUEUE_ARTIST: &str = "spotify:artist:q";
 
     /// Puts one named, ready playlist on screen.
     fn ready_playlist(window: &mut Window) {
@@ -5283,6 +5308,51 @@ mod tests {
         egui::pos2(line.x, line.y + if after { 20.0 } else { -4.0 })
     }
 
+    /// A queue whose every row names one album and one credit, each row's words
+    /// its own so a test can aim at one.
+    fn linked_queue(count: usize, transport: &mut Transport) -> Queue {
+        let tracks: Vec<TrackEntry> = (0..count)
+            .map(|index| TrackEntry {
+                artists: format!("Band {index}"),
+                album_uri: Some(QUEUE_ALBUM.to_owned()),
+                artist_uris: vec![QUEUE_ARTIST.to_owned()],
+                ..track(index, None)
+            })
+            .collect();
+        let mut queue = Queue::default();
+        queue.start(&tracks, 0, None, transport);
+        queue
+    }
+
+    /// The point a click on the words of `label`, painted in `area`, lands on.
+    fn on_the_words(output: &egui::FullOutput, area: Rect, label: &str) -> egui::Pos2 {
+        row_line(output, area, label) + Vec2::new(0.0, 4.0)
+    }
+
+    /// Clicks `at` over the passes egui's hit test needs, returning the command
+    /// the shell reported.
+    fn click_words(
+        window: &mut Window,
+        transport: &mut Transport,
+        queue: &mut Queue,
+        at: egui::Pos2,
+    ) -> Option<Command> {
+        let _ = window.frame(transport, queue, Vec::new());
+        let _ = window.frame(transport, queue, vec![egui::Event::PointerMoved(at)]);
+        let _ = window.frame(
+            transport,
+            queue,
+            vec![crate::view::test_support::button(at, true)],
+        );
+        window
+            .frame(
+                transport,
+                queue,
+                vec![crate::view::test_support::button(at, false)],
+            )
+            .0
+    }
+
     /// Clicks the queue row painted as `title` inside `area`.
     fn clicked_row(
         window: &mut Window,
@@ -5294,6 +5364,225 @@ mod tests {
         let (_, frame) = window.frame(transport, queue, Vec::new());
         let at = row_line(&frame, area, title);
         let _ = window.click(transport, queue, at);
+    }
+
+    #[test]
+    fn a_queue_link_opens_the_page() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = linked_queue(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let at = on_the_words(&frame, pane_rect_when_shown(&window), "t2");
+
+        assert_eq!(
+            click_words(&mut window, &mut transport, &mut queue, at),
+            Some(Command::LoadAlbum {
+                album: QUEUE_ALBUM.to_owned()
+            }),
+            "a click on a queue row's name opens its album"
+        );
+        assert_eq!(
+            window.library.page(),
+            Some(&Page::Album(QUEUE_ALBUM.to_owned())),
+            "and the page is the album it named"
+        );
+    }
+
+    #[test]
+    fn a_now_playing_link_opens_the_page() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        transport.now_playing = Some(NowPlaying {
+            album_uri: Some(ALBUM.to_owned()),
+            ..NowPlaying::named("spotify:track:x", "A Title", "A Band")
+        });
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let at = on_the_words(&frame, pane_rect_when_shown(&window), "A Title");
+
+        assert_eq!(
+            click_words(&mut window, &mut transport, &mut queue, at),
+            Some(Command::LoadAlbum {
+                album: ALBUM.to_owned()
+            }),
+            "a click on the panel's title opens its album"
+        );
+        assert_eq!(
+            window.library.page(),
+            Some(&Page::Album(ALBUM.to_owned())),
+            "and the page is the album it named"
+        );
+    }
+
+    #[test]
+    fn a_now_playing_artist_link_opens_the_page() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        transport.now_playing = Some(NowPlaying {
+            artist_uri: Some(ARTIST.to_owned()),
+            ..NowPlaying::named("spotify:track:x", "A Title", "A Band")
+        });
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let at = on_the_words(&frame, pane_rect_when_shown(&window), "A Band");
+
+        assert_eq!(
+            click_words(&mut window, &mut transport, &mut queue, at),
+            Some(Command::LoadArtist {
+                artist: ARTIST.to_owned()
+            }),
+            "a click on the panel's artist opens their page"
+        );
+        assert_eq!(
+            window.library.page(),
+            Some(&Page::Artist(ARTIST.to_owned())),
+            "and the page is the artist it named"
+        );
+    }
+
+    #[test]
+    fn a_queue_artist_link_opens_the_page() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = linked_queue(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let at = on_the_words(&frame, pane_rect_when_shown(&window), "Band 2");
+
+        assert_eq!(
+            click_words(&mut window, &mut transport, &mut queue, at),
+            Some(Command::LoadArtist {
+                artist: QUEUE_ARTIST.to_owned()
+            }),
+            "a click on a queue row's artist opens their page"
+        );
+        assert_eq!(
+            window.library.page(),
+            Some(&Page::Artist(QUEUE_ARTIST.to_owned())),
+            "and the page is the artist it named"
+        );
+    }
+
+    #[test]
+    fn a_link_click_is_dropped_when_the_frame_already_has_a_command() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = linked_queue(4, &mut transport);
+
+        // The control: the same click in a frame whose only command is its own
+        // opens the queue's album, so the frame below has an open to drop.
+        let mut control = Window::new(Vec2::new(1400.0, 900.0));
+        control.library.open(Page::Album(ALBUM.to_owned()));
+        control.library.open(Page::Album(ALBUM_B.to_owned()));
+        let (_, frame) = control.frame(&mut transport, &mut queue, Vec::new());
+        let at = on_the_words(&frame, pane_rect_when_shown(&control), "t2");
+
+        assert_eq!(
+            click_words(&mut control, &mut transport, &mut queue, at),
+            Some(Command::LoadAlbum {
+                album: QUEUE_ALBUM.to_owned()
+            }),
+            "the same click with no nav opens the queue's album"
+        );
+        assert_eq!(
+            control.library.page(),
+            Some(&Page::Album(QUEUE_ALBUM.to_owned())),
+            "and the control's page is the album it named"
+        );
+
+        // Two albums behind each other, so Back has one to land on and must ask
+        // for it: the nav's command is the frame's.
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        window.library.open(Page::Album(ALBUM.to_owned()));
+        window.library.open(Page::Album(ALBUM_B.to_owned()));
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let at = on_the_words(&frame, pane_rect_when_shown(&window), "t2");
+
+        let _ = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![egui::Event::PointerMoved(at)],
+        );
+        let _ = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![crate::view::test_support::button(at, true)],
+        );
+        let command = window
+            .frame(
+                &mut transport,
+                &mut queue,
+                vec![
+                    key(egui::Key::BrowserBack, true),
+                    crate::view::test_support::button(at, false),
+                ],
+            )
+            .0;
+
+        assert_eq!(
+            command,
+            Some(Command::LoadAlbum {
+                album: ALBUM.to_owned()
+            }),
+            "the nav's command is the frame's one"
+        );
+        assert_eq!(
+            window.library.page(),
+            Some(&Page::Album(ALBUM.to_owned())),
+            "the nav landed on the album behind and the link's page was dropped"
+        );
+    }
+
+    #[test]
+    fn a_link_click_is_dropped_while_a_block_is_carried() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = linked_queue(4, &mut transport);
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let pane = pane_rect_when_shown(&window);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let from = row_line(&frame, pane, "t2");
+        let title = on_the_words(&frame, pane, "t0");
+        let _ = window.hold_drag(&mut transport, &mut queue, from, below(from, 0.75));
+        assert!(carry::carrying(&window.ctx), "a block is in flight");
+        // The gesture that holds the block is a drag, and a drag cannot also
+        // click, so the frame the click arrives in is told a block is away.
+        let _ = window.frame(&mut transport, &mut queue, vec![window.release(from)]);
+        egui::DragAndDrop::set_payload(&window.ctx, ());
+
+        assert_eq!(
+            click_words(&mut window, &mut transport, &mut queue, title),
+            None,
+            "a carried block opened a page"
+        );
+        assert_ne!(
+            window.library.page(),
+            Some(&Page::Album(QUEUE_ALBUM.to_owned())),
+            "the carried frame moved the library"
+        );
+    }
+
+    #[test]
+    fn a_queue_open_and_a_now_playing_open_in_one_frame_apply_once() {
+        // One pointer clicks one link a frame, so the frame that names two pages
+        // is written by hand: the panel's page is the one taken, and the queue's
+        // is spent with it, so the library can only move once.
+        let mut panel = now_playing::Reply {
+            open: Some(Page::Album(ALBUM.to_owned())),
+            ..now_playing::Reply::default()
+        };
+        let mut queue = queue_pane::Reply {
+            open: Some(Page::Album(QUEUE_ALBUM.to_owned())),
+            ..queue_pane::Reply::default()
+        };
+
+        assert_eq!(
+            take_open(&mut panel.open, &mut queue.open),
+            Some(Page::Album(ALBUM.to_owned())),
+            "the panel's page is the frame's one page"
+        );
+        assert_eq!(
+            (panel.open, queue.open),
+            (None, None),
+            "both opens are spent with the frame's one"
+        );
     }
 
     #[test]
@@ -5730,6 +6019,8 @@ mod tests {
                     artist: "A Band",
                     duration: None,
                     cover: Cover::Missing,
+                    title_target: None,
+                    artist_target: None,
                     look: crate::view::rows::Look::default(),
                     refocus: false,
                 }

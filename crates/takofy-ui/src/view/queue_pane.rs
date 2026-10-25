@@ -26,6 +26,7 @@ use crate::layout::queue::ROW_H;
 use crate::layout::table;
 use crate::menu::{Anchor, Device, Door};
 use crate::queue::Queue;
+use crate::route::Page;
 use crate::scroll;
 use crate::selection::Press;
 use crate::theme::{Tokens, space};
@@ -69,6 +70,8 @@ pub struct Reply {
     pub lift: Option<Lift>,
     /// The row that holds the keyboard.
     pub focused: Option<usize>,
+    /// The page a click on a row's album or artist name asked for.
+    pub open: Option<Page>,
     /// The door that opened the row's menu: the row, and where it anchors.
     pub menu: Option<(usize, Door)>,
     /// The row a Delete press acted on.
@@ -176,6 +179,7 @@ pub fn show(
                             match report {
                                 Some(Report::Play) => reply.play = Some(index),
                                 Some(Report::Press(press)) => reply.press = Some((index, press)),
+                                Some(Report::Open(page)) => reply.open = Some(page),
                                 Some(Report::Lift(ghost)) => {
                                     reply.lift = Some(Lift {
                                         index,
@@ -246,6 +250,8 @@ enum Report {
     Play,
     /// The row was picked.
     Press(Press),
+    /// A click on the row's album or artist name named a page.
+    Open(Page),
     /// A drag began on the row, with the snapshot it carries.
     Lift(queue_row::Lifted),
 }
@@ -273,16 +279,19 @@ fn row(
         artist: &entry.artists,
         duration: duration.as_deref(),
         cover: art.look(entry.cover.as_ref(), now),
+        title_target: entry.album_uri.as_deref(),
+        artist_target: entry.artist_uris.first().map(String::as_str),
         look,
         refocus: queue.refocus() == Some(index),
     };
     match queue_row::show(ui, rect, &row, tokens) {
         Some(Click::Play) => Some(Report::Play),
         Some(Click::Select(press)) => Some(Report::Press(press)),
+        Some(Click::Open(page)) => Some(Report::Open(page)),
         Some(Click::Lift) => Some(Report::Lift(row.lifted())),
         // A queue row never asks for a menu: its `⋯` is not drawn, and it has no
         // heart.
-        Some(Click::Menu(_)) | Some(Click::Open(_)) | Some(Click::Like(_)) | None => None,
+        Some(Click::Menu(_)) | Some(Click::Like(_)) | None => None,
     }
 }
 
@@ -315,6 +324,7 @@ mod tests {
     use crate::landing::resolve;
     use crate::message::Command;
     use crate::player::Transport;
+    use crate::route::Page;
     use crate::theme::{fonts, opacity, style};
     use crate::view::carry::Ghost;
 
@@ -431,6 +441,15 @@ mod tests {
         }
     }
 
+    /// A track that names the album and credit its row links to.
+    fn linked_track(index: usize) -> TrackEntry {
+        TrackEntry {
+            album_uri: Some("spotify:album:a".to_owned()),
+            artist_uris: vec!["spotify:artist:b".to_owned()],
+            ..track(index)
+        }
+    }
+
     fn track_with_cover(index: usize) -> TrackEntry {
         TrackEntry {
             cover: Some(
@@ -494,7 +513,11 @@ mod tests {
             let reply = &mut reply;
             run(ctx, input(vec![event]), |ui| {
                 let next = show(ui, pane, queue, &mut art, now, &tokens);
-                if next.play.is_some() || next.press.is_some() || next.lift.is_some() {
+                if next.play.is_some()
+                    || next.press.is_some()
+                    || next.open.is_some()
+                    || next.lift.is_some()
+                {
                     *reply = next;
                 }
             });
@@ -626,6 +649,56 @@ mod tests {
             click(&ctx, PANE, &queue, at + Vec2::new(4.0, 4.0)).press,
             Some((1, Press::Replace)),
             "the first of two identical entries is the one that answers"
+        );
+    }
+
+    #[test]
+    fn a_link_click_is_reported_as_open_not_play() {
+        let ctx = context();
+        let mut art = Art::default();
+        let now = Instant::now();
+        let tracks: Vec<TrackEntry> = (0..4).map(linked_track).collect();
+        let mut queue = Queue::default();
+        queue.start(&tracks, 0, None, &mut Transport::default());
+
+        let (_, output) = pass(&ctx, PANE, &queue, &mut art, now, Vec::new());
+        let at = painted_at(&output, "t2").expect("row t2 is painted");
+        let reply = click(&ctx, PANE, &queue, at + Vec2::new(4.0, 4.0));
+
+        assert_eq!(
+            reply.open,
+            Some(Page::Album("spotify:album:a".to_owned())),
+            "a click on the name must ask for the album"
+        );
+        assert_eq!(
+            (reply.play, reply.press),
+            (None, None),
+            "a link click is neither a play nor a press"
+        );
+    }
+
+    #[test]
+    fn an_artist_link_is_reported_as_open_not_play() {
+        let ctx = context();
+        let mut art = Art::default();
+        let now = Instant::now();
+        let tracks: Vec<TrackEntry> = (0..4).map(linked_track).collect();
+        let mut queue = Queue::default();
+        queue.start(&tracks, 0, None, &mut Transport::default());
+
+        let (_, output) = pass(&ctx, PANE, &queue, &mut art, now, Vec::new());
+        let at = painted_at(&output, "a2").expect("the artist of row t2 is painted");
+        let reply = click(&ctx, PANE, &queue, at + Vec2::new(4.0, 4.0));
+
+        assert_eq!(
+            reply.open,
+            Some(Page::Artist("spotify:artist:b".to_owned())),
+            "a click on the artist must ask for the artist"
+        );
+        assert_eq!(
+            (reply.play, reply.press),
+            (None, None),
+            "a link click is neither a play nor a press"
         );
     }
 
