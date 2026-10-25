@@ -78,6 +78,13 @@ pub(crate) const PUT_BUDGET: Duration = Duration::from_secs(3);
 /// The bound on the inactive put that gives the sound back.
 pub(crate) const RELEASE_BUDGET: Duration = Duration::from_secs(1);
 
+/// The bound on the hand-over that moves the sound away.
+///
+/// Sized so a pick — the wait for the gate, the active put and the move itself —
+/// fits inside one answer budget: the command loop awaits inline, so everything
+/// queued behind a pick waits no longer than a request does.
+pub(crate) const HAND_OVER_BUDGET: Duration = Duration::from_secs(5);
+
 /// The window a loss rule falls back to when an activation reply carries no
 /// usable time of its own.
 pub(crate) const ACTIVATION_GRACE: Duration = Duration::from_secs(2);
@@ -93,6 +100,8 @@ pub(crate) struct Timing {
     pub gate_wait: Duration,
     pub answer: Duration,
     pub put: Duration,
+    /// The bound on a hand-over, which holds the gate like any other write.
+    pub hand_over: Duration,
     pub debounce: Duration,
     // A transfer's context walk is bounded by this; nothing on the watch path
     // walks a context, so only the hand-over reads it.
@@ -110,6 +119,7 @@ impl Default for Timing {
             answer: ANSWER_BUDGET,
             resolve: RESOLVE_BUDGET,
             put: PUT_BUDGET,
+            hand_over: HAND_OVER_BUDGET,
             release: RELEASE_BUDGET,
             grace: ACTIVATION_GRACE,
             debounce: STATE_DELAY,
@@ -179,10 +189,6 @@ pub(crate) trait Wire: Send + Sync + 'static {
     /// Tells the account this device no longer holds the sound.
     fn put_inactive(&self) -> impl Future<Output = Result<(), ConnectError>> + Send;
     /// Moves the sound to `to`, away from `from`.
-    //
-    // Only the device card asks, and that is the last milestone, so nothing
-    // calls this yet.
-    #[allow(dead_code)]
     fn hand_over(
         &self,
         from: &str,
@@ -222,6 +228,20 @@ fn command_endpoint(own_id: &str, target: &str) -> Result<String, ConnectError> 
         segment(own_id)?,
         segment(target)?
     ))
+}
+
+/// Refuses the ids of a hand-over that could add or change a path segment, so
+/// no device id can widen the endpoint the client builds from them.
+///
+/// A move to this device's own id is refused too: the server reads it as
+/// something other than "the sound is already here".
+pub(crate) fn hand_over_path(from: &str, to: &str) -> Result<(), ConnectError> {
+    segment(from)?;
+    segment(to)?;
+    if from == to {
+        return Err(ConnectError::InvalidTarget);
+    }
+    Ok(())
 }
 
 /// The production wire: the only code that names the device endpoints.
@@ -274,8 +294,8 @@ impl Wire for SessionWire {
     async fn hand_over(&self, from: &str, to: &str) -> Result<(), ConnectError> {
         // The path a hand-over will take is checked before anything is sent,
         // so no device id can widen it into another endpoint.
-        segment(from)?;
-        segment(to)?;
+        hand_over_path(from, to)?;
+        self.0.spclient().transfer(from, to, None).await?;
         Ok(())
     }
 
@@ -744,6 +764,7 @@ mod tests {
             answer: Duration::from_millis(50),
             resolve: Duration::from_millis(20),
             put: Duration::from_millis(50),
+            hand_over: Duration::from_millis(50),
             release: Duration::from_millis(20),
             grace: Duration::from_millis(50),
             debounce: Duration::from_millis(20),
@@ -1216,6 +1237,48 @@ mod tests {
             command_endpoint("own", "phone?query"),
             Err(ConnectError::InvalidTarget)
         ));
+    }
+
+    #[test]
+    fn a_target_cannot_change_the_path() {
+        hand_over_path("own", "phone").expect("a plain id is one segment");
+        assert!(
+            matches!(
+                hand_over_path("own", "own"),
+                Err(ConnectError::InvalidTarget)
+            ),
+            "a move to this device's own id is not a hand-over"
+        );
+        for target in [
+            "",
+            ".",
+            "..",
+            "phone/../other",
+            "phone/other",
+            "phone?query",
+            "phone#fragment",
+            "phone%2Fother",
+            "ph one",
+            "phone\\other",
+            "phone\u{0}",
+        ] {
+            assert!(
+                matches!(
+                    hand_over_path("own", target),
+                    Err(ConnectError::InvalidTarget)
+                ),
+                "{target:?} must not widen the path"
+            );
+        }
+        for source in ["", "own/other", "own?query"] {
+            assert!(
+                matches!(
+                    hand_over_path(source, "phone"),
+                    Err(ConnectError::InvalidTarget)
+                ),
+                "{source:?} must not widen the path"
+            );
+        }
     }
 
     #[tokio::test]

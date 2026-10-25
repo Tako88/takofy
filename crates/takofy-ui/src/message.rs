@@ -134,6 +134,8 @@ pub enum Command {
     RefreshDevices,
     /// Send one transport action to the device that holds the sound.
     Steer { device: String, steer: Steer },
+    /// Move the account's sound to `to`.
+    Transfer { to: String },
     /// Label the track another device is playing.
     LabelRemote { track: String },
     /// Label these track URIs, in the order the caller listed them.
@@ -183,6 +185,8 @@ pub enum Failure {
     DevicesOff,
     /// A transport action did not reach the device holding the sound.
     Steer,
+    /// The sound could not be moved to another device.
+    Transfer,
     /// Anything else; reproduce with `--headless` for the message.
     Other,
 }
@@ -222,6 +226,8 @@ pub enum DeviceUpdate {
     Failed(Failure),
     /// A transport action did not reach its device.
     SteerFailed,
+    /// The sound could not be moved to another device.
+    TransferFailed,
 }
 
 /// A change on the account's device side of the receiver.

@@ -1,8 +1,9 @@
 //! The device list: the account's other devices, drawn in the app's menu card.
 //!
-//! The rows are information and nothing else. There is no highlight, no pointer
-//! cursor and no keyboard tier, and a click on a row is the card's: it neither
-//! closes the card nor asks for anything. What the card lists is
+//! A row is information until this window has something to hand over: then it
+//! takes a press and points the cursor, so the sound can be moved to that
+//! device. Nothing else visible changes — no highlight, no mark — and the hint
+//! keeps saying the same thing. What the card lists is
 //! [`crate::devices::Devices`]'; whether it is open is
 //! [`crate::device_list::DeviceList`]'s.
 //!
@@ -20,6 +21,7 @@ use crate::icon::{self, Icon};
 use crate::layout::device_list as geometry;
 use crate::layout::menu;
 use crate::menu::Reason;
+use crate::player::Transport;
 use crate::theme::icon::Size;
 use crate::theme::{Tokens, extent, space};
 use crate::view::context_menu::{key_font, measure};
@@ -33,29 +35,45 @@ const LIST_LABEL: &str = "Devices";
 pub struct Frame<'a> {
     pub list: &'a mut DeviceList,
     pub devices: &'a Devices,
+    /// This window's own transport, which decides whether a press on a row can
+    /// move the sound.
+    pub local: &'a Transport,
     /// The clock the notes and the caption are read at.
     pub now: Instant,
     pub tokens: &'a Tokens,
 }
 
+/// What the card asked for this frame.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Outcome {
+    /// The button the keyboard goes back to when the card closed on Escape.
+    pub refocus: Option<Id>,
+    /// The device a press picked, when the card offered the press.
+    pub pick: Option<String>,
+}
+
 /// Draws the open card, reporting the button the keyboard goes back to when it
-/// closed on Escape.
-pub fn show(ui: &mut Ui, frame: Frame<'_>) -> Option<Id> {
+/// closed on Escape, and the device a press picked.
+pub fn show(ui: &mut Ui, frame: Frame<'_>) -> Outcome {
     let Frame {
         list,
         devices,
+        local,
         now,
         tokens,
     } = frame;
+    let mut outcome = Outcome::default();
     if !list.is_open() {
-        return None;
+        return outcome;
     }
-    let anchor = list.anchor()?;
+    let Some(anchor) = list.anchor() else {
+        return outcome;
+    };
 
     // The list never scrolls: the holder and the first names win, and the rest
     // are found in Spotify until this card can do more than read.
     let rows: Vec<Row> = devices
-        .rows()
+        .rows(local)
         .into_iter()
         .take(extent::SUBMENU_ROWS)
         .collect();
@@ -105,40 +123,68 @@ pub fn show(ui: &mut Ui, frame: Frame<'_>) -> Option<Id> {
             let card = Card {
                 rect,
                 id: surface_id,
-                // Nothing in the card is operable, so it holds no keyboard and
-                // is not a focus stop.
+                // A press picks a device; the card's own click is what closes it
+                // on a press anywhere else, so it holds no keyboard and is not
+                // a focus stop.
                 sense: Sense::CLICK,
                 tokens,
             };
-            let (surface, ()) = menu_box::card(ui, card, |ui| {
+            let (surface, picked) = menu_box::card(ui, card, |ui| {
                 draw_rows(ui, &rows, &notes, rect, area_id, tokens)
             });
             surface.widget_info(|| WidgetInfo::labeled(Role::List, true, LIST_LABEL));
+            picked
         });
 
     list.mark_drawn(now);
+    outcome.pick = area.inner;
+    if outcome.pick.is_some() {
+        list.close(Reason::Pick);
+        return outcome;
+    }
     if fresh {
-        return None;
+        return outcome;
     }
     let escape = ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape));
     if escape {
-        return list.close(Reason::Escape);
+        outcome.refocus = list.close(Reason::Escape);
+        return outcome;
     }
     if area.response.clicked_elsewhere() {
         list.close(Reason::Outside);
     }
-    None
+    outcome
 }
 
-/// Draws the device rows, then the muted lines under them.
-fn draw_rows(ui: &mut Ui, rows: &[Row], notes: &[String], rect: Rect, id: Id, tokens: &Tokens) {
+/// Draws the device rows, then the muted lines under them, reporting the device
+/// a press picked.
+fn draw_rows(
+    ui: &mut Ui,
+    rows: &[Row],
+    notes: &[String],
+    rect: Rect,
+    id: Id,
+    tokens: &Tokens,
+) -> Option<String> {
+    let mut picked = None;
     for (index, row) in rows.iter().enumerate() {
         let row_rect = menu::row_rect(rect, index);
-        // Hover only: a row that sensed a click would take the card's own click
-        // and the row would read as something that could be pressed.
-        let hit = ui.interact(row_rect, id.with(("device", index)), Sense::hover());
+        // A row that can move the sound takes the press; one that cannot stays
+        // hover, so it still reads as information.
+        let sense = if row.pickable {
+            Sense::click()
+        } else {
+            Sense::hover()
+        };
+        let hit = ui.interact(row_rect, id.with(("device", index)), sense);
         let spoken = spoken(row);
         hit.widget_info(|| WidgetInfo::labeled(Role::ListItem, true, spoken.clone()));
+        if row.pickable && hit.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        if hit.clicked() {
+            picked = Some(row.device.id.clone());
+        }
 
         let kind = kind_label(row.device.kind);
         let parts = geometry::row_parts(row_rect, measure(ui, kind, key_font(), tokens));
@@ -167,6 +213,7 @@ fn draw_rows(ui: &mut Ui, rows: &[Row], notes: &[String], rect: Rect, id: Id, to
         let parts = menu::command_parts(row_rect, None, false);
         paint_line(ui, note, parts.label, tokens.palette.text_muted);
     }
+    picked
 }
 
 /// What a row says to a screen reader: its name, its kind, and whether the sound
@@ -287,22 +334,23 @@ mod tests {
         list: &mut DeviceList,
         devices: &Devices,
         events: Vec<Event>,
-    ) -> (Option<Id>, egui::FullOutput) {
+    ) -> (Outcome, egui::FullOutput) {
         let tokens = Tokens::DARK;
-        let mut closed = None;
+        let mut outcome = Outcome::default();
         let mut output = ctx.run_ui(input(events), |ui| {
-            closed = show(
+            outcome = show(
                 ui,
                 Frame {
                     list,
                     devices,
+                    local: &idle(),
                     now: Instant::now(),
                     tokens: &tokens,
                 },
             );
         });
         output.textures_delta.clear();
-        (closed, output)
+        (outcome, output)
     }
 
     /// The second frame the card is drawn in: the first one only sizes the area,
@@ -312,11 +360,49 @@ mod tests {
         pass(ctx, list, devices, Vec::new()).1
     }
 
+    /// The settled frame drawn with the pointer resting on `at`.
+    fn hover_at(
+        ctx: &Context,
+        list: &mut DeviceList,
+        devices: &Devices,
+        at: Pos2,
+    ) -> egui::FullOutput {
+        let _ = pass(ctx, list, devices, Vec::new());
+        pass(ctx, list, devices, vec![Event::PointerMoved(at)]).1
+    }
+
     fn opened() -> (DeviceList, Id) {
         let mut list = DeviceList::default();
         let opener = Id::unique("devices");
         assert!(list.press(anchor(), opener), "the list opened");
         (list, opener)
+    }
+
+    /// A window with nothing playing: no row can act.
+    fn idle() -> Transport {
+        Transport::default()
+    }
+
+    /// The roster with nobody holding the sound, or with this window holding it:
+    /// the rows and notes are the same either way, and only the press differs.
+    fn roster(held_here: bool) -> Devices {
+        let mut devices = Devices::default();
+        assert_eq!(
+            devices.watch_request(true),
+            Some(crate::message::Command::WatchDevices)
+        );
+        devices.apply(
+            &Update::Devices(DeviceUpdate::Roster {
+                devices: vec![
+                    device("a", "Phone", DeviceKind::Phone),
+                    device("b", "Laptop", DeviceKind::Computer),
+                ],
+                holder: None,
+                held_here,
+            }),
+            Instant::now(),
+        );
+        devices
     }
 
     /// Where a painted word sits, by its own galley.
@@ -334,27 +420,108 @@ mod tests {
     }
 
     /// One click over the passes egui's hit test needs.
-    fn click(ctx: &Context, list: &mut DeviceList, devices: &Devices, at: Pos2) -> Vec<Option<Id>> {
+    fn click(ctx: &Context, list: &mut DeviceList, devices: &Devices, at: Pos2) -> Vec<Outcome> {
         let _ = pass(ctx, list, devices, Vec::new());
-        let mut closed = vec![pass(ctx, list, devices, vec![Event::PointerMoved(at)]).0];
+        let mut reported = vec![pass(ctx, list, devices, vec![Event::PointerMoved(at)]).0];
         for event in crate::view::test_support::click_events(at) {
-            closed.push(pass(ctx, list, devices, vec![event]).0);
+            reported.push(pass(ctx, list, devices, vec![event]).0);
         }
-        closed
+        reported
     }
 
     #[test]
     fn a_click_on_a_row_leaves_the_card_open_and_asks_for_nothing() {
         let ctx = context();
-        let devices = watched();
+        // Nobody holds the sound and this window plays nothing, so the rows are
+        // still information.
+        let devices = roster(false);
         let (mut list, _) = opened();
         let output = settled(&ctx, &mut list, &devices);
         let at = painted_text(&output, "Laptop").center();
 
-        let closed = click(&ctx, &mut list, &devices, at);
+        let reported = click(&ctx, &mut list, &devices, at);
 
-        assert!(closed.iter().all(Option::is_none), "{closed:?}");
+        assert!(
+            reported.iter().all(|outcome| outcome.pick.is_none()),
+            "{reported:?}"
+        );
+        assert!(
+            reported.iter().all(|outcome| outcome.refocus.is_none()),
+            "{reported:?}"
+        );
         assert!(list.is_open(), "a click on a row closed the card");
+    }
+
+    #[test]
+    fn a_click_on_an_unpickable_row_does_nothing_and_keeps_the_card_open() {
+        let ctx = context();
+        let devices = roster(false);
+        let (mut list, _) = opened();
+        let output = settled(&ctx, &mut list, &devices);
+        let at = painted_text(&output, "Laptop").center();
+        assert!(
+            devices.rows(&idle()).iter().all(|row| !row.pickable),
+            "an inert card offered a press"
+        );
+
+        let reported = click(&ctx, &mut list, &devices, at);
+
+        assert!(
+            reported.iter().all(|outcome| outcome.pick.is_none()),
+            "{reported:?}"
+        );
+        assert!(list.is_open(), "a click on an inert row closed the card");
+    }
+
+    #[test]
+    fn a_click_on_a_pickable_row_picks_that_device_and_closes_the_card() {
+        let ctx = context();
+        let devices = roster(true);
+        let (mut list, _) = opened();
+        let output = settled(&ctx, &mut list, &devices);
+        let at = painted_text(&output, "Laptop").center();
+
+        let reported = click(&ctx, &mut list, &devices, at);
+
+        let picked: Vec<&str> = reported
+            .iter()
+            .filter_map(|outcome| outcome.pick.as_deref())
+            .collect();
+        assert_eq!(picked, vec!["b"], "{reported:?}");
+        assert!(
+            reported.iter().all(|outcome| outcome.refocus.is_none()),
+            "a pick handed the keyboard somewhere: {reported:?}"
+        );
+        assert!(!list.is_open(), "a pick left the card up");
+    }
+
+    #[test]
+    fn pickable_rows_change_the_cursor_and_nothing_else() {
+        let ctx = context();
+        let (mut list, _) = opened();
+        let output = settled(&ctx, &mut list, &roster(false));
+        let at = painted_text(&output, "Laptop").center();
+
+        let (mut inert, _) = opened();
+        let rest = hover_at(&ctx, &mut inert, &roster(false), at);
+        assert_ne!(
+            rest.platform_output.cursor_icon,
+            egui::CursorIcon::PointingHand,
+            "an inert row pointed the hand"
+        );
+
+        let (mut live, _) = opened();
+        let over = hover_at(&ctx, &mut live, &roster(true), at);
+        assert_eq!(
+            over.platform_output.cursor_icon,
+            egui::CursorIcon::PointingHand,
+            "a pickable row did not point the hand"
+        );
+
+        assert_eq!(
+            rest.shapes, over.shapes,
+            "a pickable row painted something an inert one did not"
+        );
     }
 
     #[test]
@@ -373,7 +540,10 @@ mod tests {
 
         let closed = click(&ctx, &mut list, &devices, at);
 
-        assert!(closed.iter().all(Option::is_none), "{closed:?}");
+        assert!(
+            closed.iter().all(|outcome| outcome.pick.is_none()),
+            "{closed:?}"
+        );
         assert!(list.is_open(), "a click on a muted line closed the card");
     }
 
@@ -395,7 +565,7 @@ mod tests {
         let _ = pass(&ctx, &mut list, &devices, vec![key(false)]);
 
         assert_eq!(
-            closed,
+            closed.refocus,
             Some(opener),
             "Escape did not hand the keyboard back"
         );
@@ -409,7 +579,10 @@ mod tests {
         let (mut list, _) = opened();
         let closed = click(&ctx, &mut list, &devices, pos2(10.0, 10.0));
 
-        assert!(closed.iter().all(Option::is_none), "{closed:?}");
+        assert!(
+            closed.iter().all(|outcome| outcome.pick.is_none()),
+            "{closed:?}"
+        );
         assert!(!list.is_open(), "a press outside left the card up");
     }
 
@@ -419,7 +592,7 @@ mod tests {
         let devices = watched();
         let mut list = DeviceList::default();
         let (closed, output) = pass(&ctx, &mut list, &devices, Vec::new());
-        assert_eq!(closed, None);
+        assert_eq!(closed, Outcome::default());
         assert!(output.shapes.is_empty(), "a closed card painted something");
     }
 

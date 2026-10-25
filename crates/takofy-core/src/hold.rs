@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use librespot::protocol::connect::Cluster;
 use protobuf::Message as _;
-use takofy_model::{Landing, RequestId};
+use takofy_model::{Landing, RequestId, Status};
 
 use crate::connect::{Announcement, ClusterEvent, ClusterView, ConnectError, view_of};
 use crate::loss::Baseline;
@@ -16,7 +16,7 @@ use crate::playstate::ActiveState;
 use crate::presence::Owed;
 use crate::registry::Verdict;
 use crate::transfer::{self, Resolution, TransferPlan};
-use crate::watch::{Gate, Shared, Timing, Wire, bounded, give_back, put_and_view};
+use crate::watch::{Gate, Shared, Timing, Wire, bounded, give_back, hand_over_path, put_and_view};
 
 /// The log target of this module, so the binary can let the activation line
 /// through the app's `Warn` floor without raising it for everything.
@@ -156,6 +156,12 @@ fn said(error: &ConnectError) {
     log::info!(target: HOLD_LOG_TARGET, "accept refused: {}", error.word());
 }
 
+/// The same line for a pick, which has no phone request to answer.
+fn refused(error: ConnectError) -> ConnectError {
+    log::info!(target: HOLD_LOG_TARGET, "pick refused: {}", error.word());
+    error
+}
+
 /// Gives back what a put may have taken and answers the phone `Failure`.
 ///
 /// A hand-over the phone was told failed ends the hold this window already had:
@@ -225,13 +231,128 @@ pub(crate) async fn release<W: Wire>(
     put_and_view(wire, gate, shared, timing).await
 }
 
+/// Moves the sound to another device, taking it first when it is not ours.
+///
+/// A hand-over that does not come from the sound's owner is acked and never
+/// completes, so a device that is not holding the sound takes it before it
+/// gives it away. The put is bounded and the hold is recorded only once the
+/// server took it; a report-less or paused stage is refused with nothing sent,
+/// because there is nothing to move.
+///
+/// The move itself is bounded too: it holds the gate, which every other write
+/// and the exit path wait on, and the client under it retries a degraded wire
+/// for far longer than a request may take.
+///
+/// A hand-over that fails leaves the hold and the local transport as they were:
+/// the account never named the target, so this device still owns the sound. The
+/// window pauses when the cluster names the target, which is the same loss rule
+/// a push uses.
+///
+/// A hand-over already on the wire is refused. Its activation stays live until
+/// the cluster names the target, so this device reads as the owner meanwhile;
+/// handing over again from there is acked and never completes.
+pub(crate) async fn pick<W: Wire>(
+    wire: &W,
+    gate: &Gate,
+    shared: &Shared,
+    to: &str,
+    timing: Timing,
+) -> Result<(), ConnectError> {
+    let own = wire.device_id();
+    // A target that would add a path segment, or is this device itself, is
+    // refused before the account is touched at all.
+    hand_over_path(&own, to)?;
+    let _guard = tokio::time::timeout(timing.gate_wait, gate.take())
+        .await
+        .map_err(|_| ConnectError::Busy)?;
+    if gate.withdrawn() {
+        return Err(ConnectError::Withdrawn);
+    }
+    // The same two refusals `accept` makes, for the same reasons: a device the
+    // dealer never named cannot answer the account's cluster, and a device that
+    // cannot play must not take the sound even to pass it on.
+    if wire.connection_id().is_empty() {
+        return Err(refused(ConnectError::NoConnectionId));
+    }
+    if !shared.presence.playable() {
+        return Err(refused(ConnectError::NotPlayable));
+    }
+    if shared.presence.picking() {
+        return Err(refused(ConnectError::HandOverPending));
+    }
+
+    if !shared.presence.active() {
+        // Only what is moving can be moved on: a paused or report-less stage
+        // has nothing to hand over, and taking the sound for it would silence
+        // the account.
+        let (report, age) = match shared.latest.report() {
+            Some((report, age)) if matches!(report.status, Status::Playing | Status::Loading) => {
+                (report, age)
+            }
+            _ => {
+                log::info!(target: HOLD_LOG_TARGET, "pick refused: nothing playing");
+                return Err(ConnectError::NotPlaying);
+            }
+        };
+        let age_ms = i64::try_from(age.as_millis()).unwrap_or(i64::MAX);
+        let Some(state) = ActiveState::new(report, age_ms) else {
+            log::info!(target: HOLD_LOG_TARGET, "pick refused: no track");
+            return Err(ConnectError::NoTrack);
+        };
+        let announcement = Announcement::active(
+            &own,
+            &wire.client_id(),
+            &wire.session_id(),
+            &state,
+            shared.registry.last_ack(),
+            u64::try_from(wire.now_ms()).unwrap_or(0),
+        );
+        // The answer to this put can be dropped with this future, so the
+        // account may take the sound with no activation recorded here.
+        shared.presence.put_issued();
+        log::info!(target: HOLD_LOG_TARGET, "pick putting active");
+        let reply = match bounded(gate, timing.put, wire.put(&announcement)).await {
+            Ok(reply) => reply,
+            Err(error) => {
+                // The server may have applied a put whose answer never came.
+                shared.presence.gave_back(give_back(wire, timing).await);
+                log::info!(target: HOLD_LOG_TARGET, "pick put failed: {}", error.word());
+                return Err(error);
+            }
+        };
+        let view = Cluster::parse_from_bytes(&reply)
+            .map(|cluster| view_of(&cluster, &own))
+            .ok();
+        let (baseline, _, _) = baseline_of(view.as_ref(), timing);
+        shared.presence.activate(baseline);
+    }
+
+    log::info!(target: HOLD_LOG_TARGET, "pick handing over");
+    // The hold outlives the move, so a second pick is refused until the cluster
+    // names the target: a view reporting the loss, a release, or a new
+    // connection id ends it, and so does a move that comes back a failure.
+    shared.presence.pick_issued();
+    match bounded(gate, timing.hand_over, wire.hand_over(&own, to)).await {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            // Nothing is in flight any more, and the sound never left.
+            shared.presence.pick_settled();
+            log::info!(target: HOLD_LOG_TARGET, "pick hand-over failed: {}", error.word());
+            Err(match error {
+                ConnectError::PutTimedOut => ConnectError::HandOverTimedOut,
+                other => other,
+            })
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
     use librespot::protocol::connect::PutStateRequest;
-    use takofy_model::RequestId;
+    use takofy_model::{Report, RequestId, Status, TrackEntry};
 
     use super::*;
     use crate::connect::{ClusterEvent, ClusterView};
@@ -265,6 +386,7 @@ mod tests {
             answer: Duration::from_millis(50),
             resolve: Duration::from_millis(20),
             put: Duration::from_millis(50),
+            hand_over: Duration::from_millis(50),
             release: Duration::from_millis(20),
             grace: Duration::from_millis(50),
             debounce: Duration::from_millis(20),
@@ -310,6 +432,33 @@ mod tests {
 
     fn rows() -> Vec<String> {
         vec![TRACK_1.to_owned(), TRACK_2.to_owned(), TRACK_3.to_owned()]
+    }
+
+    /// What this window is playing, as the window itself would publish it.
+    fn report(status: Status) -> Report {
+        Report {
+            status,
+            track: Some(TrackEntry {
+                uri: TRACK_1.to_owned(),
+                title: "one".to_owned(),
+                artists: String::new(),
+                album: None,
+                album_uri: None,
+                artist_uris: Vec::new(),
+                artist_names: Vec::new(),
+                added_at: None,
+                duration_ms: None,
+                named: true,
+                cover: None,
+            }),
+            prev: Vec::new(),
+            next: Vec::new(),
+            context: None,
+            queue_revision: String::new(),
+            options: None,
+            position_ms: POSITION_MS,
+            duration_ms: Some(200_000),
+        }
     }
 
     fn ack() -> Ack {
@@ -379,6 +528,14 @@ mod tests {
                 timing,
             )
             .await
+        }
+
+        async fn pick(&self, to: &str) -> Result<(), ConnectError> {
+            self.pick_with(to, timing()).await
+        }
+
+        async fn pick_with(&self, to: &str, timing: Timing) -> Result<(), ConnectError> {
+            pick(&*self.wire, &self.gate, &self.shared, to, timing).await
         }
     }
 
@@ -1253,6 +1410,345 @@ mod tests {
             landing.position_ms,
             position_at(later),
             "the position is the clock's at the put, not at the receive"
+        );
+    }
+
+    #[tokio::test]
+    async fn pick_puts_active_then_hands_over_in_that_order() {
+        let world = World::new(timing());
+        world.shared.latest.set(Some(report(Status::Playing)));
+
+        let result = world.pick("phone").await;
+
+        assert!(result.is_ok(), "the pick lands: {result:?}");
+        assert_eq!(
+            world.wire.log.entries(),
+            [
+                "put:active:start",
+                "put:active:done",
+                "hand_over:start",
+                "hand_over:done",
+            ],
+            "the sound is taken before it is handed away, and the move finished: \
+             a hand-over cut at its budget leaves only its own start behind"
+        );
+        assert_eq!(
+            *world.wire.hand_overs.lock().expect("lock"),
+            [(DEVICE.to_owned(), "phone".to_owned())]
+        );
+        assert!(
+            world.shared.presence.active(),
+            "the put that comes with a pick is what makes the hand-over work"
+        );
+    }
+
+    #[tokio::test]
+    async fn pick_when_already_active_skips_the_put() {
+        let world = World::new(timing());
+        world.shared.latest.set(Some(report(Status::Playing)));
+        let id = RequestId(1);
+        world.pending(id);
+        world.accept(id, timing()).await.expect("the accept lands");
+        let puts = world.wire.puts().len();
+        let entries = world.wire.log.entries();
+
+        world.pick("phone").await.expect("the pick lands");
+
+        assert_eq!(
+            world.wire.puts().len(),
+            puts,
+            "a device that holds the sound has nothing to put"
+        );
+        assert_eq!(
+            &world.wire.log.entries()[entries.len()..],
+            ["hand_over:start", "hand_over:done"],
+            "only the hand-over is sent"
+        );
+    }
+
+    #[tokio::test]
+    async fn pick_without_a_playing_report_refuses_and_sends_nothing() {
+        for latest in [None, Some(report(Status::Paused))] {
+            let world = World::new(timing());
+            world.shared.latest.set(latest.clone());
+
+            let result = world.pick("phone").await;
+
+            assert!(
+                matches!(result, Err(ConnectError::NotPlaying)),
+                "a stage with nothing moving cannot be moved: {result:?}"
+            );
+            assert_eq!(world.wire.log.entries(), Vec::<String>::new());
+            assert!(world.wire.puts().is_empty());
+            assert!(world.wire.hand_overs.lock().expect("lock").is_empty());
+            assert!(!world.shared.presence.active());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failed_active_put_sends_no_hand_over() {
+        let world = World::new(timing());
+        world.shared.latest.set(Some(report(Status::Playing)));
+        world.wire.reply(Reply::Refused);
+
+        let result = world.pick("phone").await;
+
+        assert!(matches!(result, Err(ConnectError::PutTimedOut)));
+        assert_eq!(
+            world.wire.log.entries(),
+            [
+                "put:active:start",
+                "put:active:done",
+                "put:inactive:start",
+                "put:inactive:done",
+            ],
+            "a put that failed is given back instead of being handed on"
+        );
+        assert!(world.wire.hand_overs.lock().expect("lock").is_empty());
+        assert!(
+            !world.shared.presence.active(),
+            "a hold nobody confirmed is not ours"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_hung_hand_over_is_cut_at_its_budget() {
+        let world = World::new(timing());
+        world.shared.latest.set(Some(report(Status::Playing)));
+        world.wire.hang_hand_over();
+        let budget = Duration::from_millis(30);
+        let short = Timing {
+            hand_over: budget,
+            ..timing()
+        };
+
+        let started = Instant::now();
+        let result = world.pick_with("phone", short).await;
+
+        assert!(
+            matches!(result, Err(ConnectError::HandOverTimedOut)),
+            "a move that never answers is cut: {result:?}"
+        );
+        assert!(
+            started.elapsed() >= budget,
+            "only the budget may end the move"
+        );
+        assert_eq!(
+            world.wire.log.entries().last().map(String::as_str),
+            Some("hand_over:start"),
+            "the move was cut before it answered"
+        );
+        assert!(
+            world.shared.presence.active(),
+            "a cut hand-over is not a give-back: the account still names this device"
+        );
+        assert!(!world.shared.presence.picking());
+        // Every other write and the exit path wait on the gate, so it has to
+        // come back with the call.
+        let _free = tokio::time::timeout(Duration::from_millis(50), world.gate.take())
+            .await
+            .expect("the gate is free once the move is cut");
+    }
+
+    #[tokio::test]
+    async fn a_second_pick_before_the_first_settles_is_refused() {
+        let (wire, gate, mut pump) = a_held_pump(timing()).await;
+        pump.shared.latest.set(Some(report(Status::Playing)));
+        wire.answer_with(cluster_of(DEVICE, REPLY_MS));
+
+        pick(&*wire, &gate, &pump.shared, "phone", timing())
+            .await
+            .expect("the pick lands");
+        let sent = wire.log.entries();
+
+        let result = pick(&*wire, &gate, &pump.shared, "laptop", timing()).await;
+
+        assert!(
+            matches!(result, Err(ConnectError::HandOverPending)),
+            "the sound cannot be handed on twice at once: {result:?}"
+        );
+        assert_eq!(wire.log.entries(), sent, "a second pick sends nothing");
+        assert_eq!(
+            *wire.hand_overs.lock().expect("lock"),
+            [(DEVICE.to_owned(), "phone".to_owned())],
+            "only the first target was asked for"
+        );
+
+        // The view naming the target is what ends the hold, so it is what lets
+        // the next pick through.
+        pump.pushes
+            .send(Ok(pushed(cluster_of("phone", REPLY_MS + 1))))
+            .expect("push");
+        assert_eq!(
+            recv(&mut pump.events).await,
+            ClusterEvent::Lost { epoch: 1 }
+        );
+        assert!(!pump.shared.presence.picking());
+
+        pick(&*wire, &gate, &pump.shared, "laptop", timing())
+            .await
+            .expect("a settled hold can be handed on");
+        assert_eq!(
+            *wire.hand_overs.lock().expect("lock"),
+            [
+                (DEVICE.to_owned(), "phone".to_owned()),
+                (DEVICE.to_owned(), "laptop".to_owned()),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_hand_over_leaves_us_active() {
+        let (wire, gate, mut pump) = a_held_pump(timing()).await;
+        pump.shared.latest.set(Some(report(Status::Playing)));
+        wire.refuse_hand_over();
+        let sent = wire.log.entries().len();
+
+        let result = pick(&*wire, &gate, &pump.shared, "phone", timing()).await;
+
+        assert!(result.is_err(), "the failure is returned: {result:?}");
+        assert_eq!(
+            &wire.log.entries()[sent..],
+            ["put:active:start", "put:active:done", "hand_over:start"],
+            "a hand-over that failed gives nothing back: the sound never left"
+        );
+        assert!(
+            pump.shared.presence.active(),
+            "the account still names this device, so the hold stays"
+        );
+        assert!(!pump.shared.presence.picking());
+        assert_eq!(
+            quiet(&mut pump.events, Duration::from_millis(50)).await,
+            [],
+            "no loss is reported for a move that never happened"
+        );
+        assert_eq!(
+            *wire.hand_overs.lock().expect("lock"),
+            [(DEVICE.to_owned(), "phone".to_owned())]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_pick_without_a_connection_id_is_refused() {
+        let world = World::new(timing());
+        world.shared.latest.set(Some(report(Status::Playing)));
+        world.wire.set_connection_id("");
+
+        let result = world.pick("phone").await;
+
+        assert!(
+            matches!(result, Err(ConnectError::NoConnectionId)),
+            "a device the dealer never named cannot hold the sound: {result:?}"
+        );
+        assert_eq!(
+            world.wire.log.entries(),
+            Vec::<String>::new(),
+            "a device with no id sends nothing"
+        );
+        assert!(!world.shared.presence.active());
+    }
+
+    #[tokio::test]
+    async fn a_pick_while_unplayable_is_refused() {
+        let world = World::new(timing());
+        world.shared.latest.set(Some(report(Status::Playing)));
+        world.shared.presence.set_playable(false);
+
+        let result = world.pick("phone").await;
+
+        assert!(
+            matches!(result, Err(ConnectError::NotPlayable)),
+            "a device that cannot play must not take the sound even to pass it on: {result:?}"
+        );
+        assert_eq!(world.wire.log.entries(), Vec::<String>::new());
+        assert!(world.wire.hand_overs.lock().expect("lock").is_empty());
+        assert!(!world.shared.presence.active());
+    }
+
+    #[tokio::test]
+    async fn a_pick_of_this_window_is_refused() {
+        let world = World::new(timing());
+        world.shared.latest.set(Some(report(Status::Playing)));
+
+        let result = world.pick(DEVICE).await;
+
+        assert!(matches!(result, Err(ConnectError::InvalidTarget)));
+        assert_eq!(
+            world.wire.log.entries(),
+            Vec::<String>::new(),
+            "a move to this device itself is not a hand-over"
+        );
+        assert!(world.wire.hand_overs.lock().expect("lock").is_empty());
+    }
+
+    #[tokio::test]
+    async fn pick_after_withdraw_refuses() {
+        let world = World::new(timing());
+        world.shared.latest.set(Some(report(Status::Playing)));
+        withdraw(&*world.wire, &world.gate, &world.shared.presence, timing())
+            .await
+            .expect("the withdraw completes");
+        let sent = world.wire.log.entries();
+
+        let result = world.pick("phone").await;
+
+        assert!(matches!(result, Err(ConnectError::Withdrawn)));
+        assert_eq!(
+            world.wire.log.entries(),
+            sent,
+            "a withdrawn device sends nothing"
+        );
+        assert!(world.wire.hand_overs.lock().expect("lock").is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_target_cannot_change_the_path() {
+        let world = World::new(timing());
+        world.shared.latest.set(Some(report(Status::Playing)));
+
+        let result = world.pick("phone/../../join").await;
+
+        assert!(matches!(result, Err(ConnectError::InvalidTarget)));
+        assert_eq!(
+            world.wire.log.entries(),
+            Vec::<String>::new(),
+            "a crafted id is refused before the account is touched"
+        );
+        assert!(world.wire.hand_overs.lock().expect("lock").is_empty());
+        assert!(!world.shared.presence.active());
+    }
+
+    #[tokio::test]
+    async fn the_pick_completes_through_the_loss_rule() {
+        let (wire, gate, mut pump) = a_held_pump(timing()).await;
+        pump.shared.latest.set(Some(report(Status::Playing)));
+
+        pick(&*wire, &gate, &pump.shared, "phone", timing())
+            .await
+            .expect("the pick lands");
+
+        assert_eq!(
+            quiet(&mut pump.events, Duration::from_millis(50)).await,
+            [],
+            "the pick itself pauses nothing: only the cluster may"
+        );
+
+        pump.pushes
+            .send(Ok(pushed(cluster_of("phone", 0))))
+            .expect("push");
+
+        assert_eq!(
+            recv(&mut pump.events).await,
+            ClusterEvent::Lost { epoch: 1 },
+            "the target taking the sound ends the hold through the same rule"
+        );
+        let view = view_of_event(recv(&mut pump.events).await);
+        assert_eq!(view.holder.as_deref(), Some("phone"));
+        assert!(!pump.shared.presence.active());
+        assert_eq!(
+            quiet(&mut pump.events, Duration::from_millis(50)).await,
+            [],
+            "there is no second path that pauses the local transport"
         );
     }
 }

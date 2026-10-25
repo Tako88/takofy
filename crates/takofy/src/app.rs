@@ -249,6 +249,11 @@ impl eframe::App for TakofyApp {
         if let Some(command) = self.devices.label_request() {
             let _ = self.ui_end.commands.send(command);
         }
+        // A pick a frame could not send waits here, so a press that landed
+        // beside the frame's one command is delayed rather than dropped.
+        if let Some(command) = self.devices.pick_request() {
+            let _ = self.ui_end.commands.send(command);
+        }
         // A hand-over adopts rows the phone named only by URI, so the queue asks
         // for their names once the landing is in.
         if let Some(command) = self.queue.label_wants() {
@@ -2032,7 +2037,11 @@ mod tests {
 
         assert!(commands.is_empty());
         assert_eq!(devices.caption(now), "Phone");
-        assert_eq!(devices.rows().len(), 1, "the roster did not reach the card");
+        assert_eq!(
+            devices.rows(&Transport::default()).len(),
+            1,
+            "the roster did not reach the card"
+        );
     }
 
     /// A window already watching an account whose phone plays in this window's
@@ -2164,6 +2173,33 @@ mod tests {
                 .count(),
             0,
             "the open's refresh was sent twice: {sent:?}"
+        );
+    }
+
+    #[test]
+    fn logic_sends_the_pick_a_taken_frame_left_behind() {
+        let now = Instant::now();
+        let (mut app, mut received) = remote_window(now);
+        // A press whose own frame already held a command keeps its pick.
+        assert_eq!(app.devices.pick("a", false), None);
+
+        logic_frame(&mut app);
+        let sent = take_commands(&mut received);
+        assert_eq!(
+            sent.iter()
+                .filter(|command| matches!(command, Command::Transfer { .. }))
+                .count(),
+            1,
+            "the delayed pick was not the logic pass's to send: {sent:?}"
+        );
+
+        logic_frame(&mut app);
+        let sent = take_commands(&mut received);
+        assert!(
+            !sent
+                .iter()
+                .any(|command| matches!(command, Command::Transfer { .. })),
+            "the delayed pick was sent twice: {sent:?}"
         );
     }
 

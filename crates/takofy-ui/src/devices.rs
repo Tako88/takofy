@@ -60,6 +60,8 @@ pub struct Row {
     pub device: Device,
     /// Whether this is the device holding the sound.
     pub holder: bool,
+    /// Whether a press on this row can move the sound to it.
+    pub pickable: bool,
 }
 
 /// How the watch for the account's devices stands.
@@ -99,6 +101,9 @@ pub struct Devices {
     asked: HashSet<String>,
     /// A refresh the user's own press asked for, taken once.
     wants_refresh: bool,
+    /// The device a press picked, when that press landed in a frame whose one
+    /// command was already taken.
+    wants_pick: Option<String>,
     /// The unnamed holder a refresh was already asked for.
     named_ask: Option<String>,
     /// When the remote transport's position was anchored.
@@ -122,6 +127,13 @@ impl Devices {
             DeviceUpdate::Failed(failure) => self.take_failure(*failure),
             DeviceUpdate::SteerFailed => {
                 self.flash = Some((failure_message(Failure::Steer).to_owned(), now + FLASH_FOR));
+                true
+            }
+            DeviceUpdate::TransferFailed => {
+                self.flash = Some((
+                    failure_message(Failure::Transfer).to_owned(),
+                    now + FLASH_FOR,
+                ));
                 true
             }
         }
@@ -259,8 +271,55 @@ impl Devices {
             .map_or_else(|| UNNAMED_HOLDER.to_owned(), str::to_owned)
     }
 
-    /// The device rows: the holder first, then by name.
-    pub fn rows(&self) -> Vec<Row> {
+    /// Whether the sound can be moved from here: this window must have
+    /// something to hand over.
+    ///
+    /// Holding it is enough. Playing here while the account reports a player is
+    /// enough too, because a hand-over that does not come from the sound's owner
+    /// never lands: the pick makes this window active first, then hands over.
+    /// Otherwise a paused or reportless window has nothing to carry, so its rows
+    /// stay inert.
+    pub fn can_pick(&self, local: &Transport, held_here: bool) -> bool {
+        held_here
+            || (self.source(local) == Source::Local
+                && matches!(
+                    local.state,
+                    TransportState::Playing | TransportState::Loading
+                )
+                && self.playback.is_some())
+    }
+
+    /// A press on a row: the transfer that moves the sound there.
+    ///
+    /// Only a device the roster still names is a target. A press in a frame
+    /// whose one command is already taken keeps its pick, so it is sent by a
+    /// later frame rather than dropped.
+    pub fn pick(&mut self, device: &str, free: bool) -> Option<Command> {
+        let known = self
+            .roster
+            .as_ref()
+            .is_some_and(|roster| roster.iter().any(|known| known.id == device));
+        if !known {
+            return None;
+        }
+        if !free {
+            self.wants_pick = Some(device.to_owned());
+            return None;
+        }
+        Some(Command::Transfer {
+            to: device.to_owned(),
+        })
+    }
+
+    /// The pick a frame could not send, taken once.
+    pub fn pick_request(&mut self) -> Option<Command> {
+        let to = self.wants_pick.take()?;
+        Some(Command::Transfer { to })
+    }
+
+    /// The device rows: the holder first, then by name. Every row carries the
+    /// one answer this window's own transport gives.
+    pub fn rows(&self, local: &Transport) -> Vec<Row> {
         let Some(roster) = &self.roster else {
             return Vec::new();
         };
@@ -272,11 +331,16 @@ impl Devices {
             let first = devices.remove(index);
             devices.insert(0, first);
         }
+        let pickable = self.can_pick(local, self.held_here);
         devices
             .into_iter()
             .map(|device| {
                 let holder = self.holder.as_deref() == Some(device.id.as_str());
-                Row { device, holder }
+                Row {
+                    device,
+                    holder,
+                    pickable,
+                }
             })
             .collect()
     }
@@ -720,7 +784,7 @@ mod tests {
         );
 
         assert!(devices.apply(&roster(vec![laptop()], Some("b")), now));
-        let rows = devices.rows();
+        let rows = devices.rows(&Transport::default());
         let names: Vec<&str> = rows.iter().map(|row| row.device.name.as_str()).collect();
         assert_eq!(names, vec!["Laptop"]);
     }
@@ -733,7 +797,7 @@ mod tests {
         assert!(devices.apply(&roster(Vec::new(), None), now));
         assert_eq!(devices.watch, Watch::Live);
         assert_eq!(devices.button(), Button::Ready);
-        assert!(devices.rows().is_empty());
+        assert!(devices.rows(&Transport::default()).is_empty());
         assert_eq!(
             devices.notes(now),
             vec![NO_DEVICES.to_owned(), SWITCH_HINT.to_owned()]
@@ -1354,6 +1418,14 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_transfer_flashes_its_copy() {
+        let now = base();
+        let mut devices = remote(now);
+        assert!(devices.apply(&Update::Devices(DeviceUpdate::TransferFailed), now));
+        assert_eq!(devices.caption(now), failure_message(Failure::Transfer));
+    }
+
+    #[test]
     fn holding_here_makes_the_source_local_even_when_the_local_transport_is_paused() {
         let now = base();
         let local = Transport {
@@ -1446,11 +1518,118 @@ mod tests {
             ),
             now,
         );
-        let rows = devices.rows();
+        let rows = devices.rows(&Transport::default());
         let names: Vec<&str> = rows.iter().map(|row| row.device.name.as_str()).collect();
         assert_eq!(names, vec!["Zed", "Alpha", "Beta"]);
         let holders: Vec<bool> = rows.iter().map(|row| row.holder).collect();
         assert_eq!(holders, vec![true, false, false]);
+    }
+
+    #[test]
+    fn a_row_is_pickable_while_this_window_holds_the_sound() {
+        let now = base();
+        let mut devices = Devices::default();
+        devices.watch_request(true);
+        devices.apply(&roster_of(vec![phone(), laptop()], None, true), now);
+
+        let local = Transport::default();
+        assert!(devices.can_pick(&local, true));
+        let pickable: Vec<bool> = devices
+            .rows(&local)
+            .iter()
+            .map(|row| row.pickable)
+            .collect();
+        assert_eq!(pickable, vec![true, true]);
+    }
+
+    #[test]
+    fn a_row_is_pickable_while_this_window_plays_locally_with_a_report() {
+        let now = base();
+        // The phone holds the sound, but this window plays on its own and the
+        // account already reports a player: there is something to carry over.
+        let devices = remote(now);
+        let local = Transport {
+            state: TransportState::Playing,
+            ..Transport::default()
+        };
+
+        assert!(devices.can_pick(&local, false));
+        let pickable: Vec<bool> = devices
+            .rows(&local)
+            .iter()
+            .map(|row| row.pickable)
+            .collect();
+        assert_eq!(pickable, vec![true, true]);
+    }
+
+    #[test]
+    fn a_remote_source_makes_no_row_pickable() {
+        let now = base();
+        let devices = remote(now);
+
+        for state in [
+            TransportState::Idle,
+            TransportState::Paused,
+            TransportState::Stopped,
+        ] {
+            let local = Transport {
+                state,
+                ..Transport::default()
+            };
+            assert!(!devices.can_pick(&local, false), "{state:?}");
+            assert!(
+                devices.rows(&local).iter().all(|row| !row.pickable),
+                "{state:?}"
+            );
+        }
+
+        // Playing here is not enough on its own: nothing can be handed over
+        // until the account reports a player.
+        let betwixt = watching(now);
+        let local = Transport {
+            state: TransportState::Playing,
+            ..Transport::default()
+        };
+        assert!(!betwixt.can_pick(&local, false));
+    }
+
+    #[test]
+    fn pick_returns_the_transfer_command_for_a_known_device() {
+        let now = base();
+        let mut devices = remote(now);
+
+        assert_eq!(
+            devices.pick("b", true),
+            Some(Command::Transfer { to: "b".to_owned() })
+        );
+        assert_eq!(devices.pick_request(), None, "a sent pick was kept too");
+    }
+
+    #[test]
+    fn pick_of_an_unknown_device_returns_nothing() {
+        let now = base();
+        let mut devices = remote(now);
+
+        assert_eq!(devices.pick("z", true), None);
+        assert_eq!(devices.pick("z", false), None);
+        assert_eq!(
+            devices.pick_request(),
+            None,
+            "an unknown device was kept for a later frame"
+        );
+    }
+
+    #[test]
+    fn a_pick_in_a_taken_frame_is_delayed_not_dropped() {
+        let now = base();
+        let mut devices = remote(now);
+
+        assert_eq!(devices.pick("b", false), None, "a taken frame sent anyway");
+        assert_eq!(
+            devices.pick_request(),
+            Some(Command::Transfer { to: "b".to_owned() })
+        );
+        assert_eq!(devices.pick_request(), None, "one pick was sent twice");
     }
 
     #[test]

@@ -265,10 +265,16 @@ pub enum ConnectError {
     WithdrawTimedOut,
     #[error("the state put did not answer in time")]
     PutTimedOut,
+    #[error("the hand-over did not finish in time")]
+    HandOverTimedOut,
+    #[error("a hand-over is already in flight")]
+    HandOverPending,
     #[error("the request expired before it could be answered")]
     Expired,
     #[error("the landing has no track to play")]
     NoTrack,
+    #[error("nothing is playing here to hand over")]
+    NotPlaying,
     #[error("the device cannot play")]
     NotPlayable,
 }
@@ -288,8 +294,11 @@ impl ConnectError {
             Self::DealerSpent => "dealer spent",
             Self::WithdrawTimedOut => "withdraw timed out",
             Self::PutTimedOut => "put timed out",
+            Self::HandOverTimedOut => "hand-over timed out",
+            Self::HandOverPending => "hand-over pending",
             Self::Expired => "request expired",
             Self::NoTrack => "no track",
+            Self::NotPlaying => "nothing playing",
             Self::NotPlayable => "not playable",
         }
     }
@@ -1035,8 +1044,11 @@ mod tests {
             ConnectError::DealerSpent,
             ConnectError::WithdrawTimedOut,
             ConnectError::PutTimedOut,
+            ConnectError::HandOverTimedOut,
+            ConnectError::HandOverPending,
             ConnectError::Expired,
             ConnectError::NoTrack,
+            ConnectError::NotPlaying,
             ConnectError::NotPlayable,
         ]
         .map(|error| error.word());

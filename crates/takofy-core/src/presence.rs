@@ -71,6 +71,10 @@ struct Slot {
     /// An active put that no answer or give-back has settled yet: a quit can
     /// drop the future mid-put, and the account may still have applied it.
     maybe_held: bool,
+    /// A hand-over this device has sent and not yet seen settle. Cleared by
+    /// whatever ends the hold it was sent from — the loss a view reports, a
+    /// release, a new connection id — and by a move that comes back a failure.
+    picking: bool,
 }
 
 #[derive(Default)]
@@ -128,6 +132,25 @@ impl Presence {
         }
     }
 
+    /// Records that the account taking the sound still has to arrive.
+    ///
+    /// The activation outlives the hand-over, so without this the device would
+    /// read as the sound's owner until the cluster names the target, and a
+    /// second pick would hand over from a device the server no longer counts.
+    pub(crate) fn pick_issued(&self) {
+        self.slot().picking = true;
+    }
+
+    /// Whether a hand-over is still waiting for the view that ends the hold.
+    pub(crate) fn picking(&self) -> bool {
+        self.slot().picking
+    }
+
+    /// Records that the hand-over ended with the sound still here.
+    pub(crate) fn pick_settled(&self) {
+        self.slot().picking = false;
+    }
+
     /// Starts an activation and returns the epoch that names it.
     ///
     /// Only a put the server took calls this: the hold is reported after the
@@ -135,6 +158,9 @@ impl Presence {
     pub(crate) fn activate(&self, baseline: Baseline) -> u64 {
         let mut slot = self.slot();
         slot.maybe_held = false;
+        // An activation is the account naming this device again, so whatever
+        // move was in flight has been answered.
+        slot.picking = false;
         slot.epoch = slot.epoch.wrapping_add(1);
         slot.active = Some(Active {
             epoch: slot.epoch,
@@ -149,6 +175,8 @@ impl Presence {
     /// whether the account names this device.
     pub(crate) fn release(&self) -> Owed {
         let mut slot = self.slot();
+        // Nothing can be handed on from a hold that is over.
+        slot.picking = false;
         match slot.active.take() {
             // The activation carries the debt now, so the marker is redundant.
             Some(active) => {
@@ -189,6 +217,7 @@ impl Presence {
             Judgement::Stale => Observation::Stale,
             Judgement::Lost => {
                 slot.active = None;
+                slot.picking = false;
                 Observation::Lost {
                     epoch: active.epoch,
                 }
@@ -204,6 +233,7 @@ impl Presence {
         let mut slot = self.slot();
         if slot.active.is_some() && !(self.playable() && has_report) {
             slot.active = None;
+            slot.picking = false;
         }
         if slot.active.is_some() {
             Stage::Active
@@ -438,6 +468,54 @@ mod tests {
 
         assert_eq!(presence.release(), Owed::Held { epoch: 1 });
         assert!(!presence.active());
+    }
+
+    #[test]
+    fn a_pick_in_flight_ends_with_the_hold_it_left() {
+        let presence = Presence::default();
+        presence.activate(Baseline::After(BASELINE_MS));
+        presence.pick_issued();
+        assert!(presence.picking());
+
+        assert_eq!(presence.release(), Owed::Held { epoch: 1 });
+        assert!(
+            !presence.picking(),
+            "a hold that ended is not still leaving"
+        );
+    }
+
+    #[test]
+    fn a_pick_in_flight_ends_with_the_view_naming_another_device() {
+        let presence = Presence::default();
+        presence.activate(Baseline::After(BASELINE_MS));
+        presence.pick_issued();
+
+        assert_eq!(
+            presence.observe(&elsewhere(BASELINE_MS + 1), Instant::now()),
+            Observation::Lost { epoch: 1 }
+        );
+        assert!(!presence.picking(), "the target taking the sound ends it");
+    }
+
+    #[test]
+    fn a_new_connection_id_ends_a_pick_in_flight() {
+        let presence = Presence::default();
+        presence.activate(Baseline::After(BASELINE_MS));
+        presence.pick_issued();
+
+        assert_eq!(presence.release_for_new_connection(), Some(1));
+        assert!(!presence.picking());
+    }
+
+    #[test]
+    fn a_failed_pick_leaves_the_hold_it_did_not_move() {
+        let presence = Presence::default();
+        presence.activate(Baseline::After(BASELINE_MS));
+        presence.pick_issued();
+        presence.pick_settled();
+
+        assert!(!presence.picking());
+        assert!(presence.active(), "the sound never left this device");
     }
 
     #[test]

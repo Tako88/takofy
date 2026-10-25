@@ -200,6 +200,14 @@ impl Engine {
         Ok(watch::steer(&wire, &self.gate, target, steer, watch::Timing::default()).await?)
     }
 
+    /// Moves the account's sound to another device, taking it first when this
+    /// device does not hold it.
+    pub async fn hand_over(&self, to: &str) -> Result<(), EngineError> {
+        let wire = watch::SessionWire::new(&self.session);
+        let shared = self.bundle();
+        Ok(hold::pick(&wire, &self.gate, &shared, to, watch::Timing::default()).await?)
+    }
+
     /// Takes this client off the account's device list.
     pub async fn withdraw_devices(&self) -> Result<(), EngineError> {
         let wire = watch::SessionWire::new(&self.session);

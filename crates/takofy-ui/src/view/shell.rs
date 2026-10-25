@@ -567,16 +567,24 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
     // The card hangs over every region and under the drawer overlay, so a
     // drawer opened on top of it stays on top. Escape closes it before the
     // drawer reads the same key.
-    if let Some(opener) = device_list::show(
+    let card = device_list::show(
         ui,
         device_list::Frame {
             list: screen.list,
             devices: screen.devices,
+            local: screen.transport,
             now: screen.now,
             tokens,
         },
-    ) {
+    );
+    if let Some(opener) = card.refocus {
         ui.memory_mut(|memory| memory.request_focus(opener));
+    }
+    // A picked row asks for the sound to move. A frame that already holds a
+    // command keeps the pick for `logic` rather than dropping it.
+    if let Some(device) = card.pick {
+        let free = command.is_none();
+        command = command.or(screen.devices.pick(&device, free));
     }
 
     // The drawer is stepped after the regions, so a playlist picked from the rail
@@ -14132,6 +14140,28 @@ mod tests {
         window
     }
 
+    /// A window that holds the sound itself, so the card's rows can move it.
+    fn holding_window() -> Window {
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let now = window.now;
+        assert_eq!(
+            window.devices.watch_request(true),
+            Some(Command::WatchDevices)
+        );
+        window.devices.apply(
+            &Update::Devices(DeviceUpdate::Roster {
+                devices: vec![
+                    device("a", "Phone", DeviceKind::Phone),
+                    device("b", "Laptop", DeviceKind::Computer),
+                ],
+                holder: None,
+                held_here: true,
+            }),
+            now,
+        );
+        window
+    }
+
     /// The playbar's own rect and the form it was drawn in.
     fn playbar_parts(window: &Window) -> (Rect, Playbar) {
         let content = Rect::from_min_size(egui::Pos2::ZERO, window.size);
@@ -14282,6 +14312,32 @@ mod tests {
             Some(Command::RefreshDevices),
             "a taken slot dropped the refresh instead of leaving it for `logic`"
         );
+    }
+
+    #[test]
+    fn a_pick_on_the_card_asks_for_the_sound_to_move() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = holding_window();
+
+        let _ = window.click(
+            &mut transport,
+            &mut queue,
+            devices_button_at(&window).center(),
+        );
+        assert!(window.list.is_open(), "the press did not open the card");
+
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let at = painted_at(&frame, "Laptop").expect("the card names the other device");
+
+        let command = window.click(&mut transport, &mut queue, at);
+
+        assert_eq!(
+            command,
+            Some(Command::Transfer { to: "b".to_owned() }),
+            "the pick did not reach the bridge"
+        );
+        assert!(!window.list.is_open(), "a pick left the card up");
     }
 
     #[test]

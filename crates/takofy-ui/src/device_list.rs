@@ -1,9 +1,9 @@
 //! Whether the device list is open, above which button, and who gets the
 //! keyboard when it closes.
 //!
-//! The rows are information, not controls: there is no lit row, no keyboard
-//! tier and no choice, so this state is the open flag and its anchor alone. What
-//! it lists is [`crate::devices::Devices`]'.
+//! A row that can move the sound is the card's one control, so a pick closes it
+//! with no focus of ours to hand back. What it lists is
+//! [`crate::devices::Devices`]'.
 
 use egui::Id;
 

@@ -125,8 +125,11 @@ pub(crate) struct FakeWire {
     inactive_hangs: AtomicBool,
     inactive_fails: AtomicBool,
     now: Mutex<i64>,
+    /// Whether the hand-over is refused.
+    hand_over_fails: AtomicBool,
+    /// Whether the hand-over never answers, so only its budget can end it.
+    hand_over_hangs: AtomicBool,
     /// Every hand-over the wire was asked to make, in order.
-    #[allow(dead_code)] // Nothing hands the sound over yet.
     pub(crate) hand_overs: Mutex<Vec<(String, String)>>,
 }
 
@@ -185,6 +188,16 @@ impl FakeWire {
         self.inactive_fails.store(true, Ordering::SeqCst);
     }
 
+    /// Makes the hand-over fail.
+    pub(crate) fn refuse_hand_over(&self) {
+        self.hand_over_fails.store(true, Ordering::SeqCst);
+    }
+
+    /// Makes the hand-over hang, so only its budget can end it.
+    pub(crate) fn hang_hand_over(&self) {
+        self.hand_over_hangs.store(true, Ordering::SeqCst);
+    }
+
     pub(crate) fn commands(&self) -> Vec<(String, String, bool)> {
         self.commands.lock().expect("lock").clone()
     }
@@ -220,6 +233,16 @@ impl Wire for FakeWire {
             .lock()
             .expect("lock")
             .push((from.to_owned(), to.to_owned()));
+        self.log.push("hand_over:start");
+        if self.hand_over_hangs.load(Ordering::SeqCst) {
+            std::future::pending::<()>().await;
+        }
+        if self.hand_over_fails.load(Ordering::SeqCst) {
+            return Err(ConnectError::Session(
+                librespot::core::Error::failed_precondition("the hand-over was refused"),
+            ));
+        }
+        self.log.push("hand_over:done");
         Ok(())
     }
 

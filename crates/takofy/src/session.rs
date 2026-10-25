@@ -293,6 +293,9 @@ pub(crate) trait SessionHost: Send + 'static {
         steer: Steer,
     ) -> impl Future<Output = Result<(), SessionError>> + Send;
 
+    /// Moves the account's sound to one device.
+    fn hand_over(&self, device: &str) -> impl Future<Output = Result<(), SessionError>> + Send;
+
     /// Takes this client off the account's device list. Best effort: the exit
     /// draws nothing, so a failure is logged and dropped.
     fn withdraw_devices(&self) -> impl Future<Output = Result<(), SessionError>> + Send;
@@ -769,6 +772,13 @@ impl SessionHost for LiveSession {
         Ok(())
     }
 
+    async fn hand_over(&self, device: &str) -> Result<(), SessionError> {
+        match &self.engine {
+            Some(engine) => engine.hand_over(device).await.map_err(SessionError::Engine),
+            None => Err(SessionError::NotConnected),
+        }
+    }
+
     fn play(&mut self, uri: &str) -> Result<(), SessionError> {
         self.load(uri, 0, true)
     }
@@ -942,6 +952,10 @@ mod tests {
         ));
         assert!(matches!(
             SessionHost::steer(&live, "phone", Steer::Pause).await,
+            Err(SessionError::NotConnected)
+        ));
+        assert!(matches!(
+            SessionHost::hand_over(&live, "phone").await,
             Err(SessionError::NotConnected)
         ));
         assert!(matches!(
