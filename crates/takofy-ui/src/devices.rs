@@ -473,7 +473,7 @@ impl Devices {
             .as_ref()
             .is_some_and(|now_playing| now_playing.uri == uri);
         if playback.track.named || !already_drawn {
-            self.remote.now_playing = self.labelled.get(uri).map(now_playing_of);
+            self.remote.now_playing = self.labelled.get(uri).map(NowPlaying::from);
         }
         self.remote.position_ms = playback.position_ms;
         self.remote.state = state_of(playback.state);
@@ -499,7 +499,7 @@ impl Devices {
             return false;
         }
         self.labelled.insert(entry.uri.clone(), entry.clone());
-        self.remote.now_playing = Some(now_playing_of(entry));
+        self.remote.now_playing = Some(NowPlaying::from(entry));
         true
     }
 
@@ -590,16 +590,6 @@ fn state_of(state: RemoteState) -> TransportState {
         RemoteState::Playing => TransportState::Playing,
         RemoteState::Paused => TransportState::Paused,
         RemoteState::Loading => TransportState::Loading,
-    }
-}
-
-/// What the bar and the pane draw for a labelled entry.
-fn now_playing_of(entry: &TrackEntry) -> NowPlaying {
-    NowPlaying {
-        uri: entry.uri.clone(),
-        title: entry.title.clone(),
-        artists: entry.artists.clone(),
-        cover: entry.cover.clone(),
     }
 }
 
@@ -1008,9 +998,29 @@ mod tests {
                 uri: "spotify:track:a".to_owned(),
                 title: "Song".to_owned(),
                 artists: "Vela".to_owned(),
+                album_uri: None,
+                artist_uri: None,
                 cover: CoverUrl::from_wire("https://i.scdn.co/image/abc"),
             })
         );
+    }
+
+    #[test]
+    fn a_label_names_the_album_and_first_artist_uris() {
+        let now = base();
+        let mut devices = remote(now);
+        let mut entry = named_entry("spotify:track:a", "Song");
+        entry.album_uri = Some("spotify:album:one".to_owned());
+        entry.artist_uris = vec![
+            "spotify:artist:first".to_owned(),
+            "spotify:artist:second".to_owned(),
+        ];
+
+        assert!(devices.apply(&labelled(entry), now));
+
+        let now = devices.remote.now_playing.expect("the label named it");
+        assert_eq!(now.album_uri.as_deref(), Some("spotify:album:one"));
+        assert_eq!(now.artist_uri.as_deref(), Some("spotify:artist:first"));
     }
 
     #[test]

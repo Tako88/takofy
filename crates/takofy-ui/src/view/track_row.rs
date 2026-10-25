@@ -986,6 +986,7 @@ mod tests {
 
     use super::*;
     use crate::cover::Cover;
+    use crate::player::NowPlaying;
     use crate::route::Page;
     use crate::theme::Tokens;
     use crate::view::test_support::{button, click_events, rings_in, secondary_click_events, tab};
@@ -1443,7 +1444,7 @@ mod tests {
         ];
         for (state, expected) in cases {
             let mut transport = Transport::default();
-            transport.play(uri, "A", "B", None);
+            transport.play(NowPlaying::named(uri, "A", "B"));
             transport.state = state;
             assert_eq!(state_of(uri, &transport), expected, "{state:?}");
             assert_eq!(

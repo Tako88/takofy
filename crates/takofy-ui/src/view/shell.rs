@@ -1423,6 +1423,7 @@ mod tests {
                 title: "A Title".to_owned(),
                 artists: "A Band".to_owned(),
                 cover: Some(cover),
+                ..Default::default()
             }),
             ..Transport::default()
         }
@@ -14693,7 +14694,7 @@ mod tests {
             uri: "t0".to_owned(),
             title: "Local Track".to_owned(),
             artists: String::new(),
-            cover: None,
+            ..Default::default()
         });
         let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
         let (bar, _) = playbar_parts(&window);

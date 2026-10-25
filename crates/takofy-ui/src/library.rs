@@ -3094,7 +3094,7 @@ mod tests {
             uri: "spotify:track:a".to_owned(),
             title: "A track".to_owned(),
             artists: String::new(),
-            cover: None,
+            ..Default::default()
         };
         assert_eq!(
             library.lyrics.request(Some(&now)),
@@ -3114,7 +3114,7 @@ mod tests {
             uri: "spotify:track:b".to_owned(),
             title: "Another track".to_owned(),
             artists: String::new(),
-            cover: None,
+            ..Default::default()
         };
         library.lyrics.sync(Some(&next));
         assert_eq!(

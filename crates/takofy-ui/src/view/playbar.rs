@@ -1485,7 +1485,7 @@ mod tests {
             uri: "spotify:track:signal-decay".to_owned(),
             title: "Signal Decay".to_owned(),
             artists: "Nils Aker".to_owned(),
-            cover: None,
+            ..Default::default()
         });
 
         let mut output = ctx.run_ui(
@@ -2495,7 +2495,7 @@ mod tests {
             uri: "spotify:track:x".to_owned(),
             title: "Signal Decay".to_owned(),
             artists: "Nils Aker".to_owned(),
-            cover: None,
+            ..Default::default()
         });
         transport
     }

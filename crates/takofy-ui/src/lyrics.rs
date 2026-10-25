@@ -119,7 +119,7 @@ mod tests {
             uri: uri.to_owned(),
             title: uri.to_owned(),
             artists: String::new(),
-            cover: None,
+            ..NowPlaying::default()
         }
     }
 

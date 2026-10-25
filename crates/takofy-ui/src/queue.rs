@@ -36,7 +36,7 @@ use std::ops::Range;
 use takofy_model::{Landing, TrackEntry};
 
 use crate::message::{Command, RemoteUpdate, TransportUpdate, Update};
-use crate::player::{RESTART_AFTER_MS, Transport, TransportState};
+use crate::player::{NowPlaying, RESTART_AFTER_MS, Transport, TransportState};
 use crate::reorder;
 use crate::repeat::{self, Cause, Hop, Repeat};
 use crate::selection::{Press, Selection};
@@ -1017,19 +1017,14 @@ impl Queue {
 
     /// Moves the index and asks the transport to play that entry.
     fn goto(&mut self, index: usize, transport: &mut Transport) -> Option<Command> {
-        let (uri, title, artists, cover) = {
+        let now = {
             let entry = self.tracks.get(index)?;
-            (
-                entry.uri.clone(),
-                entry.title.clone(),
-                entry.artists.clone(),
-                entry.cover.clone(),
-            )
+            NowPlaying::from(entry)
         };
         self.land_on(index);
         self.index = Some(index);
         self.awaiting_start = true;
-        Some(transport.play(&uri, &title, &artists, cover))
+        Some(transport.play(now))
     }
 
     /// Keeps the queued block to what is still ahead of the row the queue moves
@@ -2706,6 +2701,24 @@ mod tests {
             transport.now_playing.expect("a named track").artists,
             "A Band"
         );
+    }
+
+    #[test]
+    fn goto_passes_the_entrys_album_and_first_artist_uris() {
+        let mut entry = track_by("a", "A Band, Another Band");
+        entry.album_uri = Some("spotify:album:one".to_owned());
+        entry.artist_uris = vec![
+            "spotify:artist:first".to_owned(),
+            "spotify:artist:second".to_owned(),
+        ];
+        let mut queue = Queue::default();
+        let mut transport = Transport::default();
+
+        let _ = queue.start(&[entry], 0, None, &mut transport);
+
+        let now = transport.now_playing.expect("a named track");
+        assert_eq!(now.album_uri.as_deref(), Some("spotify:album:one"));
+        assert_eq!(now.artist_uri.as_deref(), Some("spotify:artist:first"));
     }
 
     #[test]

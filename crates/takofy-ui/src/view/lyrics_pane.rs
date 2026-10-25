@@ -208,7 +208,7 @@ mod tests {
             uri: track.to_owned(),
             title: "A track".to_owned(),
             artists: String::new(),
-            cover: None,
+            ..crate::player::NowPlaying::default()
         }
     }
 

@@ -326,6 +326,7 @@ mod tests {
     use super::*;
     use crate::cover::Art;
     use crate::message::{TransportUpdate, Update};
+    use crate::player::NowPlaying;
     use crate::selection::Press;
     use crate::theme::{fonts, style};
     use crate::view::test_support::tab;
@@ -414,7 +415,7 @@ mod tests {
     /// A transport on a named track, ready to draw.
     fn playing(title: &str, artists: &str) -> Transport {
         let mut transport = Transport::default();
-        transport.play("spotify:track:x", title, artists, None);
+        transport.play(NowPlaying::named("spotify:track:x", title, artists));
         transport
     }
 
@@ -621,7 +622,10 @@ mod tests {
         let ctx = context();
         let url = CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover url");
         let mut transport = Transport::default();
-        transport.play("spotify:track:x", "A Title", "A Band", Some(url.clone()));
+        transport.play(NowPlaying {
+            cover: Some(url.clone()),
+            ..NowPlaying::named("spotify:track:x", "A Title", "A Band")
+        });
         let before = transport.now_playing.clone();
 
         let mut art = Art::default();
@@ -814,7 +818,10 @@ mod tests {
         let tokens = Tokens::DARK;
         let url = CoverUrl::from_wire("https://i.scdn.co/image/tile").expect("a cover url");
         let mut transport = Transport::default();
-        transport.play("spotify:track:x", "T", "A", Some(url.clone()));
+        transport.play(NowPlaying {
+            cover: Some(url.clone()),
+            ..NowPlaying::named("spotify:track:x", "T", "A")
+        });
         let mut panel = Panel::new(transport);
         // One frame to want the cover and send the fetch, then the answer
         // arrives, is uploaded, and the next frame draws it.

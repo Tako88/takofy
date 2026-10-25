@@ -595,7 +595,7 @@ mod tests {
     use super::*;
     use crate::cover::Art;
     use crate::message::{Failure, Update};
-    use crate::player::{Transport, TransportState};
+    use crate::player::{NowPlaying, Transport, TransportState};
     use crate::search::{KeyInput, Search};
     use crate::search_index::{Kind, Row};
     use crate::theme::{extent, fonts, style};
@@ -1036,7 +1036,7 @@ mod tests {
             Act::None
         );
         let mut transport = Transport::default();
-        transport.play("t0", "t0", "Artist0", None);
+        transport.play(NowPlaying::named("t0", "t0", "Artist0"));
         transport.state = TransportState::Playing;
         let (output, menu) = frame(&ctx, &mut search, &transport);
         assert_eq!(
