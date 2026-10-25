@@ -42,7 +42,8 @@ pub enum TransportState {
 }
 
 impl TransportState {
-    /// Operator-facing text for the bar.
+    /// Operator-facing text for a state, drawn as the Now Playing pane's state
+    /// line. The playbar names no state of its own.
     pub fn label(&self) -> &'static str {
         match self {
             Self::Idle => "",
@@ -58,17 +59,48 @@ impl TransportState {
 
 /// What the bar names. Kept here rather than looked up when the bar draws,
 /// because the list the track came from may no longer be on screen.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct NowPlaying {
     pub uri: String,
     pub title: String,
     /// The track's artists, as one line. Held for the same reason as the title:
     /// the list the track came from may no longer be on screen.
     pub artists: String,
+    /// The track's album, when the metadata carried one.
+    pub album_uri: Option<String>,
+    /// The URI of the credit the line names: an artist, or the show when the entry
+    /// is an episode. A joined credit is one link, and it goes to this credit.
+    pub artist_uri: Option<String>,
     /// The track's album cover, as it was known when the track started. The
     /// panel and the playbar look it up each frame, so a cover that arrives
     /// later still reaches them.
     pub cover: Option<CoverUrl>,
+}
+
+impl From<&TrackEntry> for NowPlaying {
+    fn from(entry: &TrackEntry) -> Self {
+        Self {
+            uri: entry.uri.clone(),
+            title: entry.title.clone(),
+            artists: entry.artists.clone(),
+            album_uri: entry.album_uri.clone(),
+            artist_uri: entry.artist_uris.first().cloned(),
+            cover: entry.cover.clone(),
+        }
+    }
+}
+
+/// A track named by hand, for tests that only care about its words.
+#[cfg(test)]
+impl NowPlaying {
+    pub fn named(uri: &str, title: &str, artists: &str) -> Self {
+        Self {
+            uri: uri.to_owned(),
+            title: title.to_owned(),
+            artists: artists.to_owned(),
+            ..Self::default()
+        }
+    }
 }
 
 /// The transport's anchor and the track it is about.
@@ -159,26 +191,14 @@ impl Transport {
     }
 
     /// Names the track and returns the command that plays it.
-    pub fn play(
-        &mut self,
-        uri: &str,
-        title: &str,
-        artists: &str,
-        cover: Option<CoverUrl>,
-    ) -> Command {
-        self.now_playing = Some(NowPlaying {
-            uri: uri.to_owned(),
-            title: title.to_owned(),
-            artists: artists.to_owned(),
-            cover,
-        });
+    pub fn play(&mut self, now: NowPlaying) -> Command {
+        let uri = now.uri.clone();
+        self.now_playing = Some(now);
         self.position_ms = 0;
         self.duration_ms = None;
         self.scrub = None;
         self.state = TransportState::Loading;
-        Command::Play {
-            uri: uri.to_owned(),
-        }
+        Command::Play { uri }
     }
 
     /// Settles on a track the engine loaded for a hand-over.
@@ -188,12 +208,7 @@ impl Transport {
     /// `Loading`, because it has been accepted and has not started; the length
     /// is unknown until the player reports it.
     pub fn landed(&mut self, entry: &TrackEntry, position_ms: u32, playing: bool) {
-        self.now_playing = Some(NowPlaying {
-            uri: entry.uri.clone(),
-            title: entry.title.clone(),
-            artists: entry.artists.clone(),
-            cover: entry.cover.clone(),
-        });
+        self.now_playing = Some(NowPlaying::from(entry));
         self.position_ms = position_ms;
         self.duration_ms = None;
         self.scrub = None;
@@ -480,7 +495,7 @@ mod tests {
         ];
         for (state, held) in cases {
             let mut transport = Transport::default();
-            transport.play("spotify:track:a", "A", "B", None);
+            transport.play(NowPlaying::named("spotify:track:a", "A", "B"));
             transport.state = state;
             assert_eq!(
                 transport.hold("spotify:track:a"),
@@ -610,36 +625,95 @@ mod tests {
     fn playing_another_track_drops_a_drag() {
         let mut transport = seekable_transport();
         transport.scrub_to(0.5);
-        transport.play("spotify:track:y", "Another", "Someone", None);
+        transport.play(NowPlaying::named("spotify:track:y", "Another", "Someone"));
         assert_eq!(transport.shown_position(Duration::ZERO), 0);
+    }
+
+    fn entry(uri: &str) -> TrackEntry {
+        TrackEntry {
+            uri: uri.to_owned(),
+            title: "A Title".to_owned(),
+            artists: "A Band".to_owned(),
+            album: None,
+            album_uri: None,
+            artist_uris: Vec::new(),
+            artist_names: Vec::new(),
+            added_at: None,
+            duration_ms: None,
+            named: true,
+            cover: None,
+        }
     }
 
     #[test]
     fn play_names_the_track_and_asks_for_it() {
         let mut transport = Transport::default();
         assert_eq!(
-            transport.play("spotify:track:x", "A Title", "A Band", None),
+            transport.play(NowPlaying::named("spotify:track:x", "A Title", "A Band")),
             Command::Play {
                 uri: "spotify:track:x".to_owned()
             }
         );
         assert_eq!(
             transport.now_playing,
-            Some(NowPlaying {
-                uri: "spotify:track:x".to_owned(),
-                title: "A Title".to_owned(),
-                artists: "A Band".to_owned(),
-                cover: None,
-            })
+            Some(NowPlaying::named("spotify:track:x", "A Title", "A Band"))
         );
         assert_eq!(transport.state, TransportState::Loading);
     }
 
     #[test]
+    fn play_names_the_album_and_first_artist_uris() {
+        let mut transport = Transport::default();
+        let mut entry = entry("spotify:track:x");
+        entry.album_uri = Some("spotify:album:a".to_owned());
+        entry.artist_uris = vec![
+            "spotify:artist:first".to_owned(),
+            "spotify:artist:second".to_owned(),
+        ];
+        transport.play(NowPlaying::from(&entry));
+
+        let now = transport.now_playing.expect("a named track");
+        assert_eq!(now.album_uri.as_deref(), Some("spotify:album:a"));
+        assert_eq!(
+            now.artist_uri.as_deref(),
+            Some("spotify:artist:first"),
+            "a joined credit is one link, and it is the first artist's"
+        );
+    }
+
+    #[test]
+    fn play_without_uris_names_none() {
+        let mut transport = Transport::default();
+        transport.play(NowPlaying::named("spotify:track:x", "A Title", "A Band"));
+
+        let now = transport.now_playing.expect("a named track");
+        assert_eq!(now.album_uri, None);
+        assert_eq!(now.artist_uri, None);
+    }
+
+    #[test]
+    fn landed_carries_the_uris() {
+        let mut transport = Transport::default();
+        let mut entry = entry("spotify:track:x");
+        entry.album_uri = Some("spotify:album:a".to_owned());
+        entry.artist_uris = vec!["spotify:artist:first".to_owned()];
+
+        transport.landed(&entry, 1_000, false);
+
+        let now = transport.now_playing.expect("the landed track is named");
+        assert_eq!(now.album_uri.as_deref(), Some("spotify:album:a"));
+        assert_eq!(now.artist_uri.as_deref(), Some("spotify:artist:first"));
+    }
+
+    #[test]
     fn play_replaces_the_artist_with_the_new_tracks() {
         let mut transport = Transport::default();
-        transport.play("spotify:track:x", "A Title", "A Band", None);
-        transport.play("spotify:track:y", "Another", "Another Band", None);
+        transport.play(NowPlaying::named("spotify:track:x", "A Title", "A Band"));
+        transport.play(NowPlaying::named(
+            "spotify:track:y",
+            "Another",
+            "Another Band",
+        ));
 
         let now = transport
             .now_playing
@@ -650,7 +724,7 @@ mod tests {
 
         // An entry the metadata gave no artist for is one with an empty line, not
         // the previous track's artist left standing.
-        transport.play("spotify:track:z", "Third", "", None);
+        transport.play(NowPlaying::named("spotify:track:z", "Third", ""));
         let now = transport
             .now_playing
             .as_ref()
@@ -669,7 +743,7 @@ mod tests {
         );
         assert_eq!(transport.duration_ms, Some(222_000));
 
-        transport.play("spotify:track:x", "A Title", "A Band", None);
+        transport.play(NowPlaying::named("spotify:track:x", "A Title", "A Band"));
         assert_eq!(transport.duration_ms, None);
     }
 

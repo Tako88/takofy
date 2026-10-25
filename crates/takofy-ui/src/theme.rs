@@ -265,6 +265,8 @@ pub mod extent {
     /// not a step on the spacing scale — the reference writes it as a bare value
     /// and uses it for every button.
     pub const BUTTON_PAD_Y: f32 = 5.6;
+    /// The gap from the bottom of a link's line box to its underline.
+    pub const LINK_UNDERLINE_INSET: f32 = 2.0;
 }
 
 /// How the free space in a row of columns is shared, in the reference's
@@ -508,7 +510,7 @@ pub mod opacity {
 }
 
 pub mod stroke {
-    /// The one width a divider is allowed to be.
+    /// The one width a divider or a link's underline is allowed to be.
     pub const HAIRLINE: f32 = 1.0;
     /// The one width a marker is allowed to be: the flag at the leading edge of
     /// the selected row, the current breadcrumb and the sounding row.

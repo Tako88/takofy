@@ -53,6 +53,8 @@ pub(crate) fn positions(album: &Album) -> Vec<PageTrack> {
 ///
 /// The name falls back to the URI exactly as a playlist's does, and a blank
 /// artist is skipped rather than drawn as an empty name in the middle of a list.
+/// When the first named artist has no usable artist id there is no link, and the
+/// joined credit is drawn plain.
 pub(crate) fn detail(uri: &str, album: &Album, tracks: Vec<TrackEntry>) -> AlbumDetail {
     let name = if album.name.is_empty() {
         uri.to_owned()
@@ -66,10 +68,17 @@ pub(crate) fn detail(uri: &str, album: &Album, tracks: Vec<TrackEntry>) -> Album
         .filter(|name| !name.is_empty())
         .collect::<Vec<_>>()
         .join(", ");
+    let artist_uri = album
+        .artists
+        .iter()
+        .find(|artist| !artist.name.trim().is_empty())
+        .filter(|artist| matches!(artist.id, SpotifyUri::Artist { .. }))
+        .and_then(|artist| artist.id.to_uri().ok());
     AlbumDetail {
         uri: uri.to_owned(),
         name,
         artists,
+        artist_uri,
         year: year_of(album),
         cover: pick_images_cover(&album.cover_group),
         tracks,
@@ -189,6 +198,15 @@ mod tests {
 
     fn uris(album: &Album) -> Vec<String> {
         positions(album).into_iter().map(|item| item.uri).collect()
+    }
+
+    /// The artist URI the wire's gid byte resolves to.
+    fn artist_uri(byte: u8) -> String {
+        SpotifyUri::Artist {
+            id: SpotifyId::from_raw(&gid(byte)).expect("a 16-byte id"),
+        }
+        .to_uri()
+        .expect("a uri")
     }
 
     fn track(uri: &str) -> TrackEntry {
@@ -359,6 +377,43 @@ mod tests {
         let album =
             Album::try_from(&wire_album("Record", &[], &[], 1997)).expect("a valid album message");
         assert_eq!(detail("spotify:album:x", &album, Vec::new()).artists, "");
+    }
+
+    #[test]
+    fn detail_carries_the_first_artists_uri() {
+        let album = Album::try_from(&wire_album(
+            "Record",
+            &[("Band", 2), ("Guest", 3)],
+            &[],
+            1997,
+        ))
+        .expect("a valid album message");
+        let detail = detail("spotify:album:x", &album, Vec::new());
+        assert_eq!(detail.artists, "Band, Guest");
+        assert_eq!(detail.artist_uri, Some(artist_uri(2)));
+    }
+
+    #[test]
+    fn detail_links_the_first_named_artist_when_the_first_is_blank() {
+        let album = Album::try_from(&wire_album("Record", &[("  ", 9), ("Band", 2)], &[], 1997))
+            .expect("a valid album message");
+        let detail = detail("spotify:album:x", &album, Vec::new());
+        assert_eq!(detail.artists, "Band");
+        assert_eq!(
+            detail.artist_uri,
+            Some(artist_uri(2)),
+            "the link must be the artist the joined credit names"
+        );
+    }
+
+    #[test]
+    fn detail_has_no_artist_uri_for_no_artists() {
+        let album =
+            Album::try_from(&wire_album("Record", &[], &[], 1997)).expect("a valid album message");
+        assert_eq!(
+            detail("spotify:album:x", &album, Vec::new()).artist_uri,
+            None
+        );
     }
 
     #[test]

@@ -129,17 +129,14 @@ pub fn runtime_label(total_ms: u32) -> Option<String> {
     Some(format!("{} min {} sec", seconds / 60, seconds % 60))
 }
 
-/// The album band's byline parts: the artists, the year, the count and the total.
+/// The album band's plain facts: the year, the count and the total.
 ///
 /// The parts are separate so the painter can place the dot separator between
-/// them and leave no trailing dot when a part is absent. A blank artist line is
-/// dropped rather than drawn as an empty part, and an unknown total is left out.
-pub fn album_meta(artists: &str, year: Option<u16>, tracks: (usize, u32)) -> Vec<String> {
+/// them and leave no trailing dot when a part is absent. The artist is not one
+/// of them: it is the band's credit, which may be a link. An unknown total is
+/// left out.
+pub fn album_meta(year: Option<u16>, tracks: (usize, u32)) -> Vec<String> {
     let mut parts = Vec::new();
-    let artists = artists.trim();
-    if !artists.is_empty() {
-        parts.push(artists.to_owned());
-    }
     if let Some(year) = year {
         parts.push(year.to_string());
     }
@@ -260,23 +257,43 @@ pub fn show_meta(name: &str, publisher: &str, episodes: usize) -> Vec<String> {
     parts
 }
 
-/// The show page's episode row meta: the show, then when it was published.
+/// The show page's episode byline, in the two parts the row draws.
 ///
-/// `Show · 3 days ago`. The show part is dropped when blank and the age part
-/// when unknown or in the future, so a row with neither draws nothing and the
-/// painter draws no trailing dot.
-pub fn episode_meta(show: &str, published: Option<PublishedAt>, now_ms: u64) -> Vec<String> {
-    let mut parts = Vec::new();
+/// The show's name is a link and the date is not, so they are kept apart rather
+/// than joined here. The show is dropped when blank and the age when unknown or
+/// in the future, so a row with neither draws nothing and never a trailing dot.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct EpisodeMeta {
+    /// The show's name, trimmed, when it has one.
+    pub show: Option<String>,
+    /// How long ago the episode was published, when known and not in the future.
+    pub age: Option<String>,
+}
+
+impl EpisodeMeta {
+    /// The byline as one line, `Show · 3 days ago`.
+    ///
+    /// A blank or whitespace-only part is dropped, so the separator only ever
+    /// stands between two words. The ghost and the spoken label print the row
+    /// whole; the row itself splits the line so only the show's name is a link.
+    pub fn joined(&self) -> String {
+        [self.show.as_deref(), self.age.as_deref()]
+            .into_iter()
+            .flatten()
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join(" · ")
+    }
+}
+
+/// The show page's episode row byline: the show, then when it was published.
+pub fn episode_meta(show: &str, published: Option<PublishedAt>, now_ms: u64) -> EpisodeMeta {
     let show = show.trim();
-    if !show.is_empty() {
-        parts.push(show.to_owned());
+    EpisodeMeta {
+        show: (!show.is_empty()).then(|| show.to_owned()),
+        age: published.and_then(|published| age_label(published.as_millis(), now_ms)),
     }
-    if let Some(published) = published
-        && let Some(age) = age_label(published.as_millis(), now_ms)
-    {
-        parts.push(age);
-    }
-    parts
 }
 
 /// The root's head note: how many cards the chosen chip shows.
@@ -994,11 +1011,10 @@ mod tests {
     }
 
     #[test]
-    fn album_meta_reads_artist_year_count_and_runtime() {
+    fn album_meta_reads_year_count_and_runtime() {
         assert_eq!(
-            album_meta("Band", Some(1997), (12, 2_338_000)),
+            album_meta(Some(1997), (12, 2_338_000)),
             vec![
-                "Band".to_owned(),
                 "1997".to_owned(),
                 "12 tracks".to_owned(),
                 "38 min 58 sec".to_owned(),
@@ -1007,15 +1023,11 @@ mod tests {
     }
 
     #[test]
-    fn album_meta_drops_a_blank_artist_and_an_absent_year() {
+    fn album_meta_drops_an_absent_year() {
         assert_eq!(
-            album_meta("  ", None, (1, 0)),
-            vec!["1 track".to_owned()],
-            "a blank artist and a zero runtime are both absent"
-        );
-        assert_eq!(
-            album_meta("Band", None, (2, 0)),
-            vec!["Band".to_owned(), "2 tracks".to_owned()]
+            album_meta(None, (2, 0)),
+            vec!["2 tracks".to_owned()],
+            "an absent year and a zero runtime are both left out"
         );
     }
 
@@ -1188,29 +1200,59 @@ mod tests {
     }
 
     #[test]
-    fn an_episode_meta_ages_into_last_year() {
+    fn an_episode_byline_ages_into_last_year() {
+        let meta = episode_meta("Lateral", published(NOW_MS - 510 * DAY), NOW_MS);
+        assert_eq!(meta.show.as_deref(), Some("Lateral"));
         assert_eq!(
-            episode_meta("Lateral", published(NOW_MS - 510 * DAY), NOW_MS),
-            vec!["Lateral".to_owned(), "last year".to_owned()],
+            meta.age.as_deref(),
+            Some("last year"),
             "the show row reads the same tail as the added column"
+        );
+        assert_eq!(meta.joined(), "Lateral · last year");
+    }
+
+    #[test]
+    fn an_episode_byline_omits_missing_parts() {
+        let meta = episode_meta("Lateral", published(NOW_MS - 3 * DAY), NOW_MS);
+        assert_eq!(meta.joined(), "Lateral · 3 days ago");
+
+        let none = episode_meta("", None, NOW_MS);
+        assert_eq!(none, EpisodeMeta::default(), "neither part draws");
+        assert_eq!(none.joined(), "");
+
+        let future = episode_meta("Lateral", published(NOW_MS + DAY), NOW_MS);
+        assert_eq!(future.age, None, "a future age is omitted");
+        assert_eq!(
+            future.joined(),
+            "Lateral",
+            "a dropped age leaves no trailing dot"
         );
     }
 
     #[test]
-    fn episode_meta_omits_missing_parts() {
-        assert_eq!(
-            episode_meta("Lateral", published(NOW_MS - 3 * DAY), NOW_MS),
-            vec!["Lateral".to_owned(), "3 days ago".to_owned()]
-        );
-        assert!(
-            episode_meta("", None, NOW_MS).is_empty(),
-            "neither part draws"
-        );
-        assert_eq!(
-            episode_meta("Lateral", published(NOW_MS + DAY), NOW_MS),
-            vec!["Lateral".to_owned()],
-            "a future age is omitted"
-        );
+    fn a_blank_show_is_none() {
+        for blank in ["", "   ", "\t"] {
+            let meta = episode_meta(blank, published(NOW_MS - 3 * DAY), NOW_MS);
+            assert_eq!(meta.show, None, "{blank:?} names no show");
+            assert_eq!(meta.joined(), "3 days ago");
+        }
+    }
+
+    #[test]
+    fn a_joined_byline_drops_blank_parts() {
+        // The join takes its two words as given, so a blank one must not leave
+        // the separator behind.
+        let blank_show = EpisodeMeta {
+            show: Some("   ".to_owned()),
+            age: Some("last year".to_owned()),
+        };
+        assert_eq!(blank_show.joined(), "last year");
+
+        let blank_age = EpisodeMeta {
+            show: Some("Lateral".to_owned()),
+            age: Some(String::new()),
+        };
+        assert_eq!(blank_age.joined(), "Lateral");
     }
 
     #[test]

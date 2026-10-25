@@ -32,7 +32,7 @@ impl Page {
     /// credit a row carries. It is not asked for an album URI: a row's credit is
     /// an artist or a show, never an album.
     pub fn credit(uri: &str) -> Page {
-        if uri.starts_with("spotify:show:") {
+        if credit_is_show(uri) {
             Page::Show(uri.to_owned())
         } else {
             Page::Artist(uri.to_owned())
@@ -64,6 +64,13 @@ impl Page {
             Page::Search(_) => "Search",
         }
     }
+}
+
+/// Whether a credit URI names a show rather than an artist.
+///
+/// The rule [`Page::credit`] opens a page by.
+pub fn credit_is_show(uri: &str) -> bool {
+    uri.starts_with("spotify:show:")
 }
 
 /// The oldest entry dropped when the history grows past this length.

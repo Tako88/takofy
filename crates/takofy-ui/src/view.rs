@@ -22,6 +22,7 @@ mod ghost;
 mod heart;
 mod hero;
 pub(crate) mod keys;
+mod link;
 mod list_more;
 pub mod lyrics_pane;
 pub mod media;

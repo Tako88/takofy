@@ -31,7 +31,7 @@
 //! pick.
 
 use egui::emath::GuiRounding;
-use egui::{Color32, FontId, Pos2, Rect, Sense, Ui, vec2};
+use egui::{Color32, FontId, Pos2, Rect, Ui, vec2};
 
 use crate::availability::Control;
 use crate::cover::Cover;
@@ -42,8 +42,9 @@ use crate::player::{Transport, TransportState};
 use crate::route::Page;
 use crate::selection::Press;
 use crate::theme::icon::Size;
-use crate::theme::{Tokens, ease, eq, motion, radius, space, stroke, text, tracking};
+use crate::theme::{Tokens, eq, radius, space, stroke, text, tracking};
 
+use super::link::{self, Face, Target};
 use super::rows::{self, Ghosting, Look};
 use super::{art, context_menu, controls, text as recipe};
 
@@ -317,7 +318,7 @@ pub enum Click {
 /// What a link cell's interaction reports to the row.
 ///
 /// A cell that is not linkable paints its label without an interaction, so it
-/// reports nothing rather than an empty hit area.
+/// reports neither hover nor a page.
 struct Link {
     /// Whether the pointer is resting on the cell.
     hovered: bool,
@@ -621,127 +622,71 @@ fn title_cell(ui: &Ui, rect: Rect, row: &Row<'_>, tokens: &Tokens) {
 
 /// The artist column: a credit link.
 ///
-/// A playlist and an album's plays table carry it. The cell is a link when its first
-/// artist resolved a page and its name is non-empty: an empty cell painted
-/// nothing, so it gets no hit area either. The hit area is the painted, elided
-/// words; the rest of the cell belongs to the row.
-fn artist(
-    ui: &mut Ui,
-    rect: Rect,
-    row: &Row<'_>,
-    key: (&str, usize),
-    tokens: &Tokens,
-) -> Option<Link> {
-    if !drawable(rect) || row.artist.is_empty() {
-        return None;
-    }
-    let Some(uri) = row.artist_uri else {
-        left(
-            ui,
-            rect,
-            row.artist,
-            recipe::track_secondary(),
-            tokens.palette.text_muted,
-        );
-        return None;
-    };
-    let response = link_cell(ui, rect, "track-artist", row.artist, "artist", key, tokens)?;
-    Some(Link {
-        hovered: response.hovered(),
-        page: response.clicked().then(|| Page::credit(uri)),
-    })
+/// A playlist and an album's plays table carry it.
+fn artist(ui: &Ui, rect: Rect, row: &Row<'_>, key: (&str, usize), tokens: &Tokens) -> Option<Link> {
+    credit_link(
+        ui,
+        rect,
+        row.artist,
+        "track-artist",
+        row.artist_uri.map(Target::Credit),
+        key,
+        tokens,
+    )
 }
 
 /// The album column: the credit on an artist's plays table, and a plain fact
 /// on a playlist's rows.
+fn album(ui: &Ui, rect: Rect, row: &Row<'_>, key: (&str, usize), tokens: &Tokens) -> Option<Link> {
+    credit_link(
+        ui,
+        rect,
+        row.album?,
+        "track-album",
+        row.album_uri.map(Target::Album),
+        key,
+        tokens,
+    )
+}
+
+/// One credit cell, drawn under `name`: a link when the label is non-empty and
+/// `target` names a page, plain text otherwise.
 ///
-/// The cell is a link under the same rule as [`artist`]'s: the painted words and
-/// nothing else.
-fn album(
-    ui: &mut Ui,
+/// The cell is a link only when it paints words, so an empty cell gets no hit
+/// area either. The hit area is the painted, elided words; the rest of the cell
+/// belongs to the row.
+fn credit_link(
+    ui: &Ui,
     rect: Rect,
-    row: &Row<'_>,
+    label: &str,
+    name: &'static str,
+    target: Option<Target<'_>>,
     key: (&str, usize),
     tokens: &Tokens,
 ) -> Option<Link> {
-    let label = row.album?;
     if !drawable(rect) || label.is_empty() {
         return None;
     }
-    let Some(uri) = row.album_uri else {
-        left(
-            ui,
-            rect,
-            label,
-            recipe::track_secondary(),
-            tokens.palette.text_muted,
-        );
-        return None;
+    let face = Face {
+        font: recipe::track_secondary(),
+        tracking: 0.0,
     };
-    let response = link_cell(ui, rect, "track-album", label, "album", key, tokens)?;
-    Some(Link {
-        hovered: response.hovered(),
-        page: response.clicked().then(|| Page::Album(uri.to_owned())),
-    })
-}
-
-/// Paints a link cell's label and returns its interaction.
-///
-/// The hit area is the painted, elided text, not the cell: a click on the rest of
-/// the cell reaches the row. One galley is laid out and painted, so the words
-/// that take the click and the words the eye sees cannot disagree. The
-/// interaction is created before the label is painted so the painter can read its
-/// hover, and after the row's own so the cell takes the hit on a tie. The sense
-/// is `Sense::CLICK` rather than `Sense::click()`: a link must not add a focus
-/// stop to a sixty-row list.
-fn link_cell(
-    ui: &mut Ui,
-    rect: Rect,
-    id: &'static str,
-    label: &str,
-    kind: &str,
-    key: (&str, usize),
-    tokens: &Tokens,
-) -> Option<egui::Response> {
-    // The layout ink is a placeholder because this galley is painted with the
-    // hover ink below; layout does not depend on colour, so the measured run is
-    // the painted run.
-    let font = recipe::track_secondary();
-    let placed = place_left(
+    let placed = link::Placed {
+        pos: Pos2::new(rect.left(), vertically_centred(ui, rect, &face.font)),
+        galley: link::lay(ui, label, &face, rect.width()),
+    };
+    let shown = placed.link(
         ui,
+        ui.scope_id().with((name, key)),
         rect,
-        vertically_centred(ui, rect, &font),
-        label,
-        font,
-        Color32::PLACEHOLDER,
+        target,
+        tokens.palette.text_muted,
+        tokens,
     );
-    let hit = placed.rect().intersect(rect);
-    if hit.width() <= 0.0 || hit.height() <= 0.0 {
-        placed.paint(ui, tokens.palette.text_muted);
-        return None;
-    }
-    let response = ui.interact(hit, ui.scope_id().with((id, key)), Sense::CLICK);
-    response.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::Role::Link, true, format!("Open {kind} {label}"))
-    });
-    let hovered = response.hovered();
-    if hovered {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-    }
-    let reveal = ui.ctx().animate_bool_with_time_and_easing(
-        ui.scope_id().with((id, "hover", key)),
-        hovered,
-        motion::FAST,
-        ease::out,
-    );
-    placed.paint(
-        ui,
-        tokens
-            .palette
-            .text_muted
-            .lerp_to_gamma(tokens.palette.text, reveal),
-    );
-    Some(response)
+    Some(Link {
+        hovered: shown.hovered,
+        page: shown.page,
+    })
 }
 
 /// The date the track was added, which only a playlist carries.
@@ -989,39 +934,21 @@ fn left(ui: &Ui, rect: Rect, label: &str, font: FontId, color: Color32) {
     );
 }
 
-/// A line laid out at its place on screen, ready to be painted.
-struct Placed {
-    pos: Pos2,
-    galley: std::sync::Arc<egui::Galley>,
-}
-
-impl Placed {
-    /// The box the line occupies on screen.
-    fn rect(&self) -> Rect {
-        Rect::from_min_size(self.pos, self.galley.size())
-    }
-
-    /// Paints the line in `color`, which must be a real ink.
-    ///
-    /// Never [`Color32::PLACEHOLDER`]: the tessellator asserts that it never
-    /// receives one. The placeholder is only the argument to the layout call
-    /// that measures a line, and the ink is chosen before painting.
-    fn paint(self, ui: &Ui, color: Color32) {
-        ui.painter().galley(self.pos, self.galley, color);
-    }
-}
-
 /// Lays a line out against the left edge of `rect` with its top at `top`.
-fn place_left(ui: &Ui, rect: Rect, top: f32, label: &str, font: FontId, color: Color32) -> Placed {
-    Placed {
+fn place_left(ui: &Ui, rect: Rect, top: f32, label: &str, font: FontId) -> link::Placed {
+    let face = Face {
+        font,
+        tracking: 0.0,
+    };
+    link::Placed {
         pos: Pos2::new(rect.left(), top),
-        galley: recipe::line(ui, label, font, color, 0.0, rect.width()),
+        galley: link::lay(ui, label, &face, rect.width()),
     }
 }
 
 /// Paints a line against the left edge of `rect` with its top at `top`.
 fn left_at(ui: &Ui, rect: Rect, top: f32, label: &str, font: FontId, color: Color32) {
-    place_left(ui, rect, top, label, font, color).paint(ui, color);
+    place_left(ui, rect, top, label, font).paint(ui, color);
 }
 
 /// Paints a line centred in `rect`.
@@ -1059,6 +986,7 @@ mod tests {
 
     use super::*;
     use crate::cover::Cover;
+    use crate::player::NowPlaying;
     use crate::route::Page;
     use crate::theme::Tokens;
     use crate::view::test_support::{button, click_events, rings_in, secondary_click_events, tab};
@@ -1516,7 +1444,7 @@ mod tests {
         ];
         for (state, expected) in cases {
             let mut transport = Transport::default();
-            transport.play(uri, "A", "B", None);
+            transport.play(NowPlaying::named(uri, "A", "B"));
             transport.state = state;
             assert_eq!(state_of(uri, &transport), expected, "{state:?}");
             assert_eq!(
@@ -1547,6 +1475,56 @@ mod tests {
             click_plays(&ctx, artist.center()),
             Some(Click::Open(Page::credit("spotify:show:s"))),
             "a click on the episode's credit opens the show page"
+        );
+    }
+
+    #[test]
+    fn an_episode_rows_credit_node_says_open_show() {
+        let ctx = context();
+        ctx.enable_accesskit();
+        let row = episode_row();
+        let rect = body_rect();
+        let columns = plays_columns();
+        let tokens = Tokens::DARK;
+        let mut first = ctx.run_ui(input(), |ui| {
+            let _ = show(ui, rect, columns, &row, &tokens);
+        });
+        first.textures_delta.clear();
+        let at = text_rect(&first, "Lateral with Tom Scott")
+            .expect("the credit cell")
+            .center();
+
+        let mut answers = Vec::new();
+        let mut labels = Vec::new();
+        for event in click_events(at) {
+            let mut answer = None;
+            let mut output = ctx.run_ui(input_with(vec![event]), |ui| {
+                answer = show(ui, rect, columns, &row, &tokens);
+            });
+            output.textures_delta.clear();
+            answers.push(answer);
+            if let Some(update) = output.platform_output.accesskit_update.as_ref() {
+                for (_, node) in &update.nodes {
+                    if node.role() == egui::accesskit::Role::Link
+                        && let Some(label) = node.label()
+                    {
+                        labels.push(label.to_owned());
+                    }
+                }
+            }
+        }
+
+        // The credit's label names its page kind; the literal "artist" was wrong for a show.
+        assert!(
+            labels
+                .iter()
+                .any(|label| label == "Open show Lateral with Tom Scott"),
+            "the credit node is labelled {labels:?}"
+        );
+        assert_eq!(
+            answers.iter().flatten().last(),
+            Some(&Click::Open(Page::Show("spotify:show:s".to_owned()))),
+            "the credit opens the show page: {answers:?}"
         );
     }
 

@@ -36,6 +36,7 @@ use super::carry::{self, Ghost};
 use super::context_menu;
 use super::heart;
 use super::hero;
+use super::link::Target;
 use super::pin;
 use super::skeleton;
 use super::track_list::{head, list_rect};
@@ -131,20 +132,25 @@ pub fn album_view(
                     // band's picture is the only fetch a frame can ask for.
                     let cover = art.look(album.cover.as_ref(), now);
                     let meta = album_meta(
-                        &album.artists,
                         album.year,
                         (album.tracks.len(), total_duration_ms(&album.tracks)),
+                    );
+                    let credit = hero::Credit::new(
+                        &album.artists,
+                        album.artist_uri.as_deref().map(Target::Credit),
                     );
                     let band = hero::Band {
                         eyebrow: "Album",
                         title: &album.name,
                         meta,
+                        credit,
                         // An album's label and copyright are out of this slice, so
                         // there is no second byline to draw.
                         description: "",
                         cover,
                     };
-                    let _ = hero::show_with(ui, &band, tokens, hero::Title::Plain);
+                    let reply = hero::show_with(ui, &band, tokens, hero::Title::Plain);
+                    open = open.take().or(reply.open);
                     let saved = library.is_saved(&uri);
                     let acted = actionbar::show(
                         ui,
@@ -431,6 +437,7 @@ mod tests {
             uri: ALBUM.to_owned(),
             name: "Signal Decay".to_owned(),
             artists: "Nils Aker".to_owned(),
+            artist_uri: None,
             year: Some(1997),
             cover: None,
             tracks,
@@ -499,6 +506,7 @@ mod tests {
                 eyebrow: "Album",
                 title: "Signal Decay",
                 meta: Vec::new(),
+                credit: None,
                 description: "",
                 cover: Cover::Missing,
             };
@@ -526,6 +534,7 @@ mod tests {
                 eyebrow: "Album",
                 title: "Signal Decay",
                 meta: Vec::new(),
+                credit: None,
                 description: "",
                 cover: Cover::Missing,
             };
@@ -555,6 +564,7 @@ mod tests {
                 eyebrow: "Album",
                 title: "Signal Decay",
                 meta: Vec::new(),
+                credit: None,
                 description: "",
                 cover: Cover::Missing,
             };
@@ -583,6 +593,7 @@ mod tests {
                     eyebrow: "Album",
                     title: "Signal Decay",
                     meta: Vec::new(),
+                    credit: None,
                     description: "",
                     cover: Cover::Missing,
                 };
@@ -616,6 +627,7 @@ mod tests {
                     eyebrow: "Album",
                     title: "Signal Decay",
                     meta: Vec::new(),
+                    credit: None,
                     description: "",
                     cover: Cover::Missing,
                 };
@@ -1511,6 +1523,130 @@ mod tests {
             artist_names: vec!["Guest".to_owned()],
             ..track("spotify:track:a", "One", "Guest", 222_000)
         }
+    }
+
+    /// The album's own artist, and the page a click on the band's credit asks
+    /// for.
+    const HERO_ARTIST: &str = "spotify:artist:nils";
+
+    /// An album whose band credit knows its page.
+    fn linked_detail() -> AlbumDetail {
+        AlbumDetail {
+            artist_uri: Some(HERO_ARTIST.to_owned()),
+            ..detail(vec![featured()])
+        }
+    }
+
+    /// Every label a frame gave a link node.
+    fn link_labels(output: &egui::FullOutput) -> Vec<String> {
+        output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .map(|update| {
+                update
+                    .nodes
+                    .iter()
+                    .filter_map(|(_, node)| {
+                        (node.role() == egui::accesskit::Role::Link)
+                            .then(|| node.label().map(str::to_owned))
+                            .flatten()
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn the_hero_artist_opens_the_artist_page() {
+        let ctx = context();
+        let mut library = library_with(linked_detail());
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let (_, output) = frame(
+            &ctx,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let credit = text_rect(&output, "Nils Aker").expect("the band's credit");
+        let command = click(
+            &ctx,
+            credit.center(),
+            1,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+
+        assert_eq!(
+            library.page(),
+            Some(&Page::Artist(HERO_ARTIST.to_owned())),
+            "the band's artist opens the artist it names"
+        );
+        assert_eq!(
+            command,
+            Some(Command::LoadArtist {
+                artist: HERO_ARTIST.to_owned()
+            })
+        );
+        assert!(!queue.can_next(), "opening a page must not start the queue");
+    }
+
+    #[test]
+    fn an_album_with_no_artist_uri_has_no_link() {
+        let ctx = context();
+        ctx.enable_accesskit();
+        // A row whose own credit knows no page, so the band's is the only
+        // candidate for a link node.
+        let mut library = library_with(detail(vec![track(
+            "spotify:track:a",
+            "One",
+            "Guest",
+            222_000,
+        )]));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let (_, output) = frame(
+            &ctx,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let byline = drawn_texts(&output)
+            .into_iter()
+            .find(|text| text.starts_with("Nils Aker"))
+            .expect("the band's credit");
+        let credit = text_rect(&output, byline).expect("the byline is painted");
+        assert!(
+            link_labels(&output).is_empty(),
+            "a credit with no uri registered {:?}",
+            link_labels(&output)
+        );
+        let command = click(
+            &ctx,
+            credit.center(),
+            1,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        assert_eq!(command, None, "plain words asked for nothing");
+        assert_eq!(
+            library.page(),
+            Some(&Page::Album(ALBUM.to_owned())),
+            "the page stays where it was"
+        );
     }
 
     #[test]

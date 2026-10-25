@@ -2799,6 +2799,7 @@ mod tests {
             uri: uri.to_owned(),
             name: "Record".to_owned(),
             artists: "Band".to_owned(),
+            artist_uri: None,
             year: Some(1997),
             cover: None,
             tracks: vec![track("t")],
@@ -3093,7 +3094,7 @@ mod tests {
             uri: "spotify:track:a".to_owned(),
             title: "A track".to_owned(),
             artists: String::new(),
-            cover: None,
+            ..Default::default()
         };
         assert_eq!(
             library.lyrics.request(Some(&now)),
@@ -3113,7 +3114,7 @@ mod tests {
             uri: "spotify:track:b".to_owned(),
             title: "Another track".to_owned(),
             artists: String::new(),
-            cover: None,
+            ..Default::default()
         };
         library.lyrics.sync(Some(&next));
         assert_eq!(

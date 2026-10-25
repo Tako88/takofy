@@ -1,6 +1,6 @@
 //! The playbar: what is playing, the transport, and the extras.
 //!
-//! Everything it shows comes from the transport — the title, the state, the
+//! Everything it shows comes from the transport — the title, the artist, the
 //! elapsed time, the glyph — and its controls report clicks rather than change
 //! state. The seek track fills from the interpolation and turns a click or an
 //! arrow into a command; a track with no known duration draws the track alone
@@ -17,6 +17,7 @@ use crate::layout::{self, PaneButton, Playbar};
 use crate::message::{Command, Steer};
 use crate::player::{SEEK_STEP_MS, Transport, TransportState};
 use crate::queue::Queue;
+use crate::route::Page;
 use crate::shuffle;
 use crate::theme::icon::Size;
 use crate::theme::{MonoWeight, Tokens, Weight, extent, fonts, radius, space, text, tracking};
@@ -27,6 +28,7 @@ use super::carry;
 use super::context_menu;
 use super::controls;
 use super::heart;
+use super::link::{self, Face, Target};
 use super::shell::{row_centre, row_centred};
 use super::skeleton;
 use super::text as recipe;
@@ -297,9 +299,9 @@ impl Default for Bar {
 
 /// The other device the bar draws while it holds the sound.
 ///
-/// The line replaces the state word: the holder's name, or what just happened to
-/// it. `steerable` decides whether the transport can act, because the local
-/// queue says nothing about what another device can do.
+/// The line replaces the track's artist: the holder's name, or what just
+/// happened to it. `steerable` decides whether the transport can act, because
+/// the local queue says nothing about what another device can do.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Remote<'a> {
     pub line: &'a str,
@@ -323,6 +325,8 @@ pub struct Reply {
     pub pane: bool,
     /// Whether the fullscreen button was pressed: the window is the shell's to ask.
     pub fullscreen: bool,
+    /// The page a link click named.
+    pub open: Option<Page>,
 }
 
 /// One column's press: a command to apply, a steer to send, and the control
@@ -339,7 +343,7 @@ struct Pressed {
 ///
 /// With `remote` the transport is the holder's display transport and the bar is
 /// read-only towards the local queue: volume, mute, shuffle, repeat and the
-/// queue button are inert, the caption line replaces the state word, and the
+/// queue button are inert, the caption line replaces the track's artist, and the
 /// transport reports a [`Reply::steer`] instead of a command. The shell owns the
 /// display transport and copies the local level into it every frame, because
 /// volume is inert while remote and the holder's own level means nothing here.
@@ -362,16 +366,16 @@ pub fn show(
     let cols = layout::playbar_for(rect, form);
     let [now, centre, extras] = cols.columns(rect);
 
-    let like = row_centred(ui, "playbar-now", now, |ui| {
+    let now_reply = row_centred(ui, "playbar-now", now, |ui| {
         now_column(ui, transport, cover, tokens, bar.like, remote)
     });
-    if let Some(liked) = like
-        && let Some(now) = transport.now_playing.as_ref()
+    if let Some(liked) = now_reply.like
+        && let Some(now_playing) = transport.now_playing.as_ref()
     {
         heart::post(
             ui.ctx(),
             heart::Ask {
-                tracks: vec![now.uri.clone()],
+                tracks: vec![now_playing.uri.clone()],
                 liked,
             },
         );
@@ -405,6 +409,7 @@ pub fn show(
         devices,
         pane: control == Some(Control::Queue),
         fullscreen: control == Some(Control::Fullscreen),
+        open: now_reply.open,
     }
 }
 
@@ -460,7 +465,19 @@ fn run_width(controls: &[Run]) -> f32 {
     width
 }
 
-/// The art tile, the title, the state, and the buttons beside them.
+/// What the now column asked for: the heart's new state and the page a link
+/// named.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+struct Now {
+    like: Option<bool>,
+    open: Option<Page>,
+}
+
+/// The art tile, the title, the artist, and the heart beside them.
+///
+/// The second line is the track's artist, or — while another device holds the
+/// sound — the holder's own line, which names no page of ours. Neither exists on
+/// an idle bar or a track with no artist, so one line is drawn.
 fn now_column(
     ui: &mut Ui,
     transport: &Transport,
@@ -468,7 +485,7 @@ fn now_column(
     tokens: &Tokens,
     liked: Option<bool>,
     remote: Option<Remote<'_>>,
-) -> Option<bool> {
+) -> Now {
     let art_rect = Rect::from_min_size(
         Pos2::new(
             ui.cursor().min.x,
@@ -487,40 +504,46 @@ fn now_column(
 
     let controls = run_width(&NOW);
     let title_font = egui::FontId::new(text::SM, fonts::sans(Weight::Medium));
-    let state_font = FontId::new(text::XXS, fonts::mono(MonoWeight::Regular));
+    let second_font = FontId::new(text::XXS, fonts::mono(MonoWeight::Regular));
 
+    let playing = transport.now_playing.as_ref();
     // A holder's push names its track only by URI, so an unnamed remote track
     // has no title to draw: the caption beside it names the device instead.
-    let title = match (transport.now_playing.as_ref(), remote) {
+    let title = match (playing, remote) {
         (Some(now), _) => now.title.as_str(),
         (None, Some(_)) => "",
         (None, None) => "Nothing playing",
     };
+    let second: Option<(&str, Option<Target<'_>>)> = match remote {
+        Some(remote) => (!remote.line.is_empty()).then_some((remote.line, None)),
+        None => playing.and_then(|now| {
+            (!now.artists.is_empty()).then(|| {
+                (
+                    now.artists.as_str(),
+                    now.artist_uri.as_deref().map(Target::Credit),
+                )
+            })
+        }),
+    };
     // The row needs the width each line would take unclamped, so the controls
     // sit where the words end when they fit and on the column's edge when they
-    // do not. Another device's line is the holder, not a state of this one.
-    let label = match remote {
-        Some(remote) => remote.line,
-        None => transport.state.label(),
-    };
+    // do not. The wider of the two lines decides.
     let natural = {
         let title_w = recipe::spaced(ui, title, title_font.clone(), tokens.palette.text, 0.0)
             .size()
             .x;
-        let state_w = if label.is_empty() {
-            0.0
-        } else {
+        let second_w = second.map_or(0.0, |(label, _)| {
             recipe::spaced(
                 ui,
                 label,
-                state_font.clone(),
+                second_font.clone(),
                 tokens.palette.text_subtle,
                 0.0,
             )
             .size()
             .x
-        };
-        title_w.max(state_w)
+        });
+        title_w.max(second_w)
     };
     let row = layout::playbar::now_row(
         ui.max_rect().left(),
@@ -529,32 +552,53 @@ fn now_column(
         controls,
         natural,
     );
-    let title_line = recipe::line(ui, title, title_font, tokens.palette.text, 0.0, row.text_w);
-    // The title and the state word are one block, centred on the art like the
-    // reference's flex column: stacking them from fixed offsets puts the pair
-    // off-centre whenever either line's height is not the one assumed.
-    let state_line = (!label.is_empty()).then(|| {
-        recipe::line(
-            ui,
-            label,
-            state_font,
-            tokens.palette.text_subtle,
-            0.0,
-            row.text_w,
-        )
-    });
-    let block = title_line.size().y + state_line.as_ref().map_or(0.0, |line| line.size().y);
+    let title_face = Face {
+        font: title_font,
+        tracking: 0.0,
+    };
+    let second_face = Face {
+        font: second_font,
+        tracking: 0.0,
+    };
+    let title_line = link::lay(ui, title, &title_face, row.text_w);
+    let second_line =
+        second.map(|(label, target)| (link::lay(ui, label, &second_face, row.text_w), target));
+    // The two lines are one block, centred on the art like the reference's flex
+    // column: stacking them from fixed offsets puts the pair off-centre whenever
+    // either line's height is not the one assumed.
+    let block = title_line.size().y + second_line.as_ref().map_or(0.0, |(line, _)| line.size().y);
     let mut y = art_rect.center().y - block / 2.0;
-    let title_height = title_line.size().y;
-    ui.painter()
-        .galley(Pos2::new(row.text_left, y), title_line, tokens.palette.text);
-    y += title_height;
-    if let Some(state_line) = state_line {
-        ui.painter().galley(
-            Pos2::new(row.text_left, y),
-            state_line,
+    let clip = ui.max_rect();
+    let title = link::Placed {
+        pos: Pos2::new(row.text_left, y),
+        galley: title_line,
+    }
+    .link(
+        ui,
+        ui.scope_id().with("playbar-title"),
+        clip,
+        playing
+            .and_then(|now| now.album_uri.as_deref())
+            .map(Target::Album),
+        tokens.palette.text,
+        tokens,
+    );
+    y += title.rect.height();
+    let mut open = title.page;
+    if let Some((line, target)) = second_line {
+        let shown = link::Placed {
+            pos: Pos2::new(row.text_left, y),
+            galley: line,
+        }
+        .link(
+            ui,
+            ui.scope_id().with("playbar-artist"),
+            clip,
+            target,
             tokens.palette.text_subtle,
+            tokens,
         );
+        open = open.or(shown.page);
     }
 
     let mut x = row.controls_x;
@@ -576,7 +620,10 @@ fn now_column(
     // only a fresh press is the user's, as on a row.
     let pointer = ui.input(|input| input.pointer.button_clicked(egui::PointerButton::Primary));
     let held = like.is_some() && !pointer && context_menu::held_repeat(ui);
-    like.filter(|_| !held).map(|_| liked != Some(true))
+    Now {
+        like: like.filter(|_| !held).map(|_| liked != Some(true)),
+        open,
+    }
 }
 
 /// The transport row and the progress row beneath it. The command is applied
@@ -1473,7 +1520,7 @@ mod tests {
         }
     }
 
-    /// The title and the state word are one block, centred on the art: stacking
+    /// The title and the artist are one block, centred on the art: stacking
     /// them from fixed offsets left the pair sitting low.
     #[test]
     fn the_now_text_is_centred_on_the_art() {
@@ -1485,7 +1532,8 @@ mod tests {
             uri: "spotify:track:signal-decay".to_owned(),
             title: "Signal Decay".to_owned(),
             artists: "Nils Aker".to_owned(),
-            cover: None,
+            artist_uri: Some("spotify:artist:nils-aker".to_owned()),
+            ..Default::default()
         });
 
         let mut output = ctx.run_ui(
@@ -1523,12 +1571,12 @@ mod tests {
                 })
         };
         let title = painted("Signal Decay").expect("the bar paints the title");
-        let state = painted(transport.state.label()).expect("the bar paints the state");
-        let block = title.union(state);
+        let artist = painted("Nils Aker").expect("the bar paints the artist");
+        let block = title.union(artist);
         let centre = bar.center().y;
         assert!(
             (block.center().y - centre).abs() < 0.01,
-            "the title and state block centres at {} rather than {centre}",
+            "the title and artist block centres at {} rather than {centre}",
             block.center().y
         );
     }
@@ -1923,6 +1971,138 @@ mod tests {
             .unwrap_or_else(|| panic!("{text} is not painted"))
     }
 
+    /// The width `text` takes as one unclamped line in `font`.
+    fn natural_width(ctx: &egui::Context, text: &str, font: FontId) -> f32 {
+        let mut width = 0.0;
+        run(ctx, input(Vec::new()), |ui| {
+            width = recipe::spaced(ui, text, font.clone(), Tokens::DARK.palette.text, 0.0)
+                .size()
+                .x;
+        });
+        width
+    }
+
+    /// The ink and box of the painted words.
+    fn painted_ink(output: &egui::FullOutput, text: &str) -> (egui::Color32, Rect) {
+        output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::Shape::Text(shape) if shape.galley.text() == text => Some((
+                    shape.fallback_color,
+                    Rect::from_min_size(shape.pos, shape.galley.size()),
+                )),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{text} is not painted"))
+    }
+
+    /// Every label a pass gave a link node.
+    fn link_labels(output: &egui::FullOutput) -> Vec<String> {
+        output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .map(|update| {
+                update
+                    .nodes
+                    .iter()
+                    .filter_map(|(_, node)| {
+                        (node.role() == egui::accesskit::Role::Link)
+                            .then(|| node.label().map(str::to_owned))
+                            .flatten()
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// One frame of a bar drawing `transport` and, when `remote` says so, the
+    /// holder's line.
+    fn bar_of(
+        ctx: &egui::Context,
+        tokens: &Tokens,
+        transport: &mut Transport,
+        remote: Option<Remote<'_>>,
+    ) -> egui::FullOutput {
+        let (_, output) = remote_frame(
+            ctx,
+            tokens,
+            transport,
+            &mut Queue::default(),
+            Playbar::Full,
+            Bar::default(),
+            remote,
+            Vec::new(),
+        );
+        output
+    }
+
+    /// Clicks `at` over the passes egui's hit test needs, reporting every reply.
+    fn link_click(
+        ctx: &egui::Context,
+        tokens: &Tokens,
+        transport: &mut Transport,
+        remote: Option<Remote<'_>>,
+        at: Pos2,
+    ) -> Vec<Reply> {
+        let mut queue = Queue::default();
+        let form = Playbar::Full;
+        let _ = remote_frame(
+            ctx,
+            tokens,
+            transport,
+            &mut queue,
+            form,
+            Bar::default(),
+            remote,
+            Vec::new(),
+        );
+        let mut replies = vec![
+            remote_frame(
+                ctx,
+                tokens,
+                transport,
+                &mut queue,
+                form,
+                Bar::default(),
+                remote,
+                vec![Event::PointerMoved(at)],
+            )
+            .0,
+        ];
+        for event in click_events(at) {
+            replies.push(
+                remote_frame(
+                    ctx,
+                    tokens,
+                    transport,
+                    &mut queue,
+                    form,
+                    Bar::default(),
+                    remote,
+                    vec![event],
+                )
+                .0,
+            );
+        }
+        replies
+    }
+
+    /// The album and credit a linked fixture names.
+    const LINK_ALBUM: &str = "spotify:album:signal-decay";
+    const LINK_ARTIST: &str = "spotify:artist:nils-aker";
+
+    /// A named track whose album and credit both have pages.
+    fn linked_playing() -> Transport {
+        let mut transport = named_playing();
+        if let Some(now) = transport.now_playing.as_mut() {
+            now.album_uri = Some(LINK_ALBUM.to_owned());
+            now.artist_uri = Some(LINK_ARTIST.to_owned());
+        }
+        transport
+    }
+
     /// The seek track a frame painted inside `column`.
     fn painted_track(output: &egui::FullOutput, column: Rect) -> Rect {
         output
@@ -2201,6 +2381,9 @@ mod tests {
         let tokens = Tokens::DARK;
         let ctx = context(&tokens);
         let mut transport = named_playing();
+        if let Some(now) = transport.now_playing.as_mut() {
+            now.artists = "Wu".to_owned();
+        }
         let (output, cols) = bar_frame(
             &ctx,
             &tokens,
@@ -2212,6 +2395,14 @@ mod tests {
         let heart = hovered_heart(&ctx, &tokens, &mut transport, Playbar::Full, cols[0]);
 
         let title = painted_text(&output, "Signal Decay");
+        let artist = painted_text(&output, "Wu");
+        // The title is the wider line, so it is the one that sets the width.
+        assert!(
+            artist.right() <= title.right(),
+            "the artist ends at {} past the title at {}",
+            artist.right(),
+            title.right()
+        );
         let mut ellipsis = 0.0;
         run(&ctx, input(Vec::new()), |ui| {
             ellipsis = recipe::spaced(
@@ -2267,18 +2458,471 @@ mod tests {
     }
 
     #[test]
-    fn the_buttons_do_not_drift_when_the_state_word_changes_under_an_elided_title() {
+    fn the_buttons_do_not_drift_when_the_artist_changes_under_an_elided_title() {
         let tokens = Tokens::DARK;
         let ctx = context(&tokens);
         let mut transport = wide_titled();
         let column = layout::playbar_for(heart_bar(), Playbar::Full).columns(heart_bar())[0];
-        let playing = hovered_heart(&ctx, &tokens, &mut transport, Playbar::Full, column);
-        transport.state = TransportState::Loading;
-        let loading = hovered_heart(&ctx, &tokens, &mut transport, Playbar::Full, column);
+        let narrow = hovered_heart(&ctx, &tokens, &mut transport, Playbar::Full, column);
+        if let Some(now) = transport.now_playing.as_mut() {
+            now.artists =
+                "A Credit Long Enough To Run Far Past The Column It Is Drawn In".to_owned();
+        }
+        let wide = hovered_heart(&ctx, &tokens, &mut transport, Playbar::Full, column);
         assert_eq!(
-            playing, loading,
-            "the controls moved when only the state word changed"
+            narrow, wide,
+            "the controls moved when only the artist changed"
         );
+    }
+
+    /// A transport state is no line of the now column any more, so nothing there
+    /// may move when one state becomes another.
+    #[test]
+    fn changing_the_state_moves_nothing_in_the_now_column() {
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        let mut transport = named_playing();
+        let column = layout::playbar_for(heart_bar(), Playbar::Full).columns(heart_bar())[0];
+        let (playing, _) = bar_frame(
+            &ctx,
+            &tokens,
+            &mut transport,
+            Playbar::Full,
+            Some(false),
+            Vec::new(),
+        );
+        let heart = hovered_heart(&ctx, &tokens, &mut transport, Playbar::Full, column);
+        let words = painted_text(&playing, "Signal Decay");
+        let credit = painted_text(&playing, "Nils Aker");
+        for state in [
+            TransportState::Loading,
+            TransportState::Paused,
+            TransportState::Unavailable,
+            TransportState::Stopped,
+            TransportState::Failed(crate::message::Failure::Load),
+        ] {
+            transport.state = state;
+            let (output, _) = bar_frame(
+                &ctx,
+                &tokens,
+                &mut transport,
+                Playbar::Full,
+                Some(false),
+                Vec::new(),
+            );
+            assert_eq!(
+                painted_text(&output, "Signal Decay"),
+                words,
+                "{state:?}: the state moved the title"
+            );
+            assert_eq!(
+                painted_text(&output, "Nils Aker"),
+                credit,
+                "{state:?}: the state moved the artist"
+            );
+            assert_eq!(
+                hovered_heart(&ctx, &tokens, &mut transport, Playbar::Full, column),
+                heart,
+                "{state:?}: the state moved the controls"
+            );
+        }
+    }
+
+    /// A short title with an artist wider than it: the wider line sets the
+    /// column's width, so the heart follows the artist.
+    #[test]
+    fn a_wide_artist_pushes_the_controls_right() {
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        let credit = "Nils Aker And Vela Moreno";
+        let mut transport = named_playing();
+        if let Some(now) = transport.now_playing.as_mut() {
+            now.artists = credit.to_owned();
+        }
+        let (output, cols) = bar_frame(
+            &ctx,
+            &tokens,
+            &mut transport,
+            Playbar::Full,
+            Some(false),
+            Vec::new(),
+        );
+        let heart = hovered_heart(&ctx, &tokens, &mut transport, Playbar::Full, cols[0]);
+        let title = painted_text(&output, "Signal Decay");
+        let artist = painted_text(&output, credit);
+        let artist_w = natural_width(
+            &ctx,
+            credit,
+            FontId::new(text::XXS, fonts::mono(MonoWeight::Regular)),
+        );
+        assert!(
+            artist_w > title.width(),
+            "the artist must be the wider line: {artist_w} against {}",
+            title.width()
+        );
+        assert!(
+            (artist.width() - artist_w).abs() < 0.01,
+            "the artist elided to {} of {artist_w}, so it cannot set the width",
+            artist.width()
+        );
+        let natural = heart.left() - title.left() - space::S3;
+        assert!(
+            (natural - artist_w).abs() < 0.01,
+            "the controls sit at a natural width of {natural}, not the artist's {artist_w}"
+        );
+        let gap = heart.left() - artist.right();
+        assert!(
+            (gap - space::S3).abs() < 0.01,
+            "the heart is {gap} from the artist, not the {} gap",
+            space::S3
+        );
+        assert!(
+            heart.left() > title.right() + space::S3,
+            "the controls at {} did not move past the title ending at {}",
+            heart.left(),
+            title.right()
+        );
+    }
+
+    /// The text face sets the width's shape, not the second line's font: a title
+    /// wider than its artist is what the controls follow.
+    #[test]
+    fn a_wide_title_still_sets_the_controls() {
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        let heading = "A Signal That Decays";
+        let mut transport = named_playing();
+        if let Some(now) = transport.now_playing.as_mut() {
+            now.title = heading.to_owned();
+            now.artists = "Wu".to_owned();
+        }
+        let (output, cols) = bar_frame(
+            &ctx,
+            &tokens,
+            &mut transport,
+            Playbar::Full,
+            Some(false),
+            Vec::new(),
+        );
+        let heart = hovered_heart(&ctx, &tokens, &mut transport, Playbar::Full, cols[0]);
+        let title = painted_text(&output, heading);
+        let artist = painted_text(&output, "Wu");
+        let title_w = natural_width(
+            &ctx,
+            heading,
+            FontId::new(text::SM, fonts::sans(Weight::Medium)),
+        );
+        let artist_w = natural_width(
+            &ctx,
+            "Wu",
+            FontId::new(text::XXS, fonts::mono(MonoWeight::Regular)),
+        );
+        assert!(
+            title_w > artist_w,
+            "the title must be the wider line: {title_w} against {artist_w}"
+        );
+        let natural = heart.left() - title.left() - space::S3;
+        assert!(
+            (natural - title_w).abs() < 0.01,
+            "the controls sit at a natural width of {natural}, not the title's {title_w}"
+        );
+        assert!(
+            artist.right() < title.right(),
+            "the artist ends at {} past the title at {}",
+            artist.right(),
+            title.right()
+        );
+    }
+
+    #[test]
+    fn an_idle_bar_centres_its_one_line_on_the_art() {
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        let mut transport = Transport::default();
+        assert_eq!(transport.state, TransportState::Idle);
+        let (output, _) = bar_frame(
+            &ctx,
+            &tokens,
+            &mut transport,
+            Playbar::Full,
+            Some(false),
+            Vec::new(),
+        );
+        let line = painted_text(&output, "Nothing playing");
+        let centre = heart_bar().center().y;
+        assert!(
+            (line.center().y - centre).abs() < 0.01,
+            "the idle line centres at {} rather than {centre}",
+            line.center().y
+        );
+    }
+
+    #[test]
+    fn a_track_with_no_artist_centres_the_title_alone() {
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        let mut transport = playing(0);
+        transport.now_playing = Some(crate::player::NowPlaying {
+            uri: "spotify:track:signal-decay".to_owned(),
+            title: "Signal Decay".to_owned(),
+            ..Default::default()
+        });
+        let (output, _) = bar_frame(
+            &ctx,
+            &tokens,
+            &mut transport,
+            Playbar::Full,
+            Some(false),
+            Vec::new(),
+        );
+        let title = painted_text(&output, "Signal Decay");
+        let centre = heart_bar().center().y;
+        assert!(
+            (title.center().y - centre).abs() < 0.01,
+            "the lone title centres at {} rather than {centre}",
+            title.center().y
+        );
+    }
+
+    #[test]
+    fn no_state_word_is_painted() {
+        let tokens = Tokens::DARK;
+        let states = [
+            TransportState::Idle,
+            TransportState::Loading,
+            TransportState::Playing,
+            TransportState::Paused,
+            TransportState::Unavailable,
+            TransportState::Stopped,
+            TransportState::Failed(crate::message::Failure::Load),
+            TransportState::Failed(crate::message::Failure::Other),
+        ];
+        for state in states {
+            let ctx = context(&tokens);
+            let mut transport = named_playing();
+            transport.state = state;
+            let (output, _) = bar_frame(
+                &ctx,
+                &tokens,
+                &mut transport,
+                Playbar::Full,
+                Some(false),
+                Vec::new(),
+            );
+            let texts = text_inside(&output, heart_bar());
+            for word in ["Loading", "Playing", "Paused", "Unavailable", "Stopped"] {
+                assert!(
+                    !texts.contains(&word.to_owned()),
+                    "{state:?}: the bar painted the state word {word:?}"
+                );
+            }
+            for failure in [
+                crate::message::Failure::Load,
+                crate::message::Failure::Other,
+            ] {
+                let message = crate::signin::failure_message(failure);
+                assert!(
+                    !texts.contains(&message.to_owned()),
+                    "{state:?}: the bar painted the failure {message:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_title_links_to_the_album() {
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        let mut transport = linked_playing();
+        let output = bar_of(&ctx, &tokens, &mut transport, None);
+        let at = painted_text(&output, "Signal Decay").center();
+        let replies = link_click(&ctx, &tokens, &mut transport, None, at);
+        assert!(
+            replies
+                .iter()
+                .any(|reply| reply.open == Some(Page::Album(LINK_ALBUM.to_owned()))),
+            "a click on the title opened nothing: {replies:?}"
+        );
+    }
+
+    #[test]
+    fn the_artist_links_to_the_artist() {
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        let mut transport = linked_playing();
+        let output = bar_of(&ctx, &tokens, &mut transport, None);
+        let at = painted_text(&output, "Nils Aker").center();
+        let replies = link_click(&ctx, &tokens, &mut transport, None, at);
+        assert!(
+            replies
+                .iter()
+                .any(|reply| reply.open == Some(Page::credit(LINK_ARTIST))),
+            "a click on the artist opened nothing: {replies:?}"
+        );
+    }
+
+    #[test]
+    fn a_remote_title_still_links() {
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        let mut transport = linked_playing();
+        let holder = remote("Living room", true);
+        let output = bar_of(&ctx, &tokens, &mut transport, holder);
+        let at = painted_text(&output, "Signal Decay").center();
+        let replies = link_click(&ctx, &tokens, &mut transport, holder, at);
+        assert!(
+            replies
+                .iter()
+                .any(|reply| reply.open == Some(Page::Album(LINK_ALBUM.to_owned()))),
+            "a click on the holder's title opened nothing: {replies:?}"
+        );
+    }
+
+    #[test]
+    fn no_uri_means_plain() {
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        ctx.enable_accesskit();
+        let mut transport = named_playing();
+        let output = bar_of(&ctx, &tokens, &mut transport, None);
+        assert!(
+            link_labels(&output).is_empty(),
+            "a track with no uris made a link node: {:?}",
+            link_labels(&output)
+        );
+        for words in ["Signal Decay", "Nils Aker"] {
+            let at = painted_text(&output, words).center();
+            let replies = link_click(&ctx, &tokens, &mut transport, None, at);
+            assert!(
+                replies.iter().all(|reply| reply.open.is_none()),
+                "a click on {words:?} opened a page: {replies:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_the_painted_words_are_clickable() {
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        let mut transport = linked_playing();
+        let output = bar_of(&ctx, &tokens, &mut transport, None);
+        let title = painted_text(&output, "Signal Decay");
+        let artist = painted_text(&output, "Nils Aker");
+        assert!(
+            artist.right() <= title.right(),
+            "the title must be the wider line, so the probe clears both"
+        );
+        // egui hands the nearest clickable widget a press within a few points of
+        // its box, so the probe clears the artist's words by more than that: the
+        // hit is the painted line, not the column it sits in.
+        let past = Pos2::new(artist.right() + 6.0, artist.center().y);
+        assert!(
+            past.x < title.right() + space::S3,
+            "the probe {past:?} must stay inside the text column"
+        );
+        let replies = link_click(&ctx, &tokens, &mut transport, None, past);
+        assert!(
+            replies.iter().all(|reply| reply.open.is_none()),
+            "a click beside the words opened a page: {replies:?}"
+        );
+    }
+
+    #[test]
+    fn hover_on_the_artist_brightens_and_underlines() {
+        let tokens = Tokens::DARK;
+        let ctx = context(&tokens);
+        let mut transport = linked_playing();
+        let output = bar_of(&ctx, &tokens, &mut transport, None);
+        let at = painted_text(&output, "Nils Aker").center();
+        let mut events = vec![Event::PointerMoved(at)];
+        let mut settled = None;
+        for _ in 0..60 {
+            let (_, output) = remote_frame(
+                &ctx,
+                &tokens,
+                &mut transport,
+                &mut Queue::default(),
+                Playbar::Full,
+                Bar::default(),
+                None,
+                events,
+            );
+            settled = Some(output);
+            events = Vec::new();
+        }
+        let output = settled.expect("the hover settles");
+        let (ink, words) = painted_ink(&output, "Nils Aker");
+        assert_eq!(
+            ink, tokens.palette.text,
+            "the hovered artist did not brighten"
+        );
+        let rules: Vec<Rect> = output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(shape)
+                    if (shape.rect.height() - crate::theme::stroke::HAIRLINE).abs() < 0.01 =>
+                {
+                    Some(shape.rect)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(rules.len(), 1, "the hovered artist painted {rules:?}");
+        let rule = rules[0];
+        assert!(
+            (rule.width() - words.width()).abs() < 0.01,
+            "the underline spans {} under {} wide words",
+            rule.width(),
+            words.width()
+        );
+        assert!(
+            rule.center().y > words.center().y,
+            "the underline sits above the artist's centre"
+        );
+    }
+
+    /// The bar's height is its region's, and the second line keeps the font the
+    /// state word had: no state or artist makes the words taller than the art.
+    #[test]
+    fn the_playbar_is_not_taller_than_before() {
+        let tokens = Tokens::DARK;
+        let cases = [
+            ("idle", false, Transport::default()),
+            ("playing", false, linked_playing()),
+            ("remote", true, linked_playing()),
+        ];
+        for (case, holds, mut transport) in cases {
+            let ctx = context(&tokens);
+            let holder = holds.then_some(Remote {
+                line: "Living room",
+                steerable: true,
+            });
+            let output = bar_of(&ctx, &tokens, &mut transport, holder);
+            let now = layout::playbar_for(heart_bar(), Playbar::Full).columns(heart_bar())[0];
+            let block = output
+                .shapes
+                .iter()
+                .filter_map(|clipped| match &clipped.shape {
+                    egui::Shape::Text(shape) if now.contains(shape.pos) => {
+                        Some(Rect::from_min_size(shape.pos, shape.galley.size()))
+                    }
+                    _ => None,
+                })
+                .reduce(|a, b| a.union(b))
+                .expect("the bar paints its words");
+            assert!(
+                block.height() <= extent::PLAYBAR_ART,
+                "{case}: the words take {} of the {} art",
+                block.height(),
+                extent::PLAYBAR_ART
+            );
+            assert!(
+                block.top() >= heart_bar().top() && block.bottom() <= heart_bar().bottom(),
+                "{case}: the words {block:?} leave the bar {:?}",
+                heart_bar()
+            );
+        }
     }
 
     #[test]
@@ -2495,7 +3139,7 @@ mod tests {
             uri: "spotify:track:x".to_owned(),
             title: "Signal Decay".to_owned(),
             artists: "Nils Aker".to_owned(),
-            cover: None,
+            ..Default::default()
         });
         transport
     }
@@ -4482,11 +5126,12 @@ mod tests {
     }
 
     #[test]
-    fn a_remote_bar_draws_the_caption_in_place_of_the_state() {
+    fn a_remote_bar_draws_the_caption_in_place_of_the_artist() {
         let tokens = Tokens::DARK;
         let ctx = context(&tokens);
+        ctx.enable_accesskit();
         let mut queue = Queue::default();
-        let mut transport = playing(0);
+        let mut transport = linked_playing();
         let (_, output) = remote_frame(
             &ctx,
             &tokens,
@@ -4497,13 +5142,19 @@ mod tests {
             remote("Living room", true),
             Vec::new(),
         );
+        let texts = text_inside(&output, heart_bar());
         assert!(
-            text_inside(&output, heart_bar()).contains(&"Living room".to_owned()),
+            texts.contains(&"Living room".to_owned()),
             "the caption is not drawn"
         );
         assert!(
-            !text_inside(&output, heart_bar()).contains(&"Playing".to_owned()),
-            "the local state word is drawn beside the caption"
+            !texts.contains(&"Nils Aker".to_owned()),
+            "the track's artist is drawn beside the caption"
+        );
+        assert_eq!(
+            link_labels(&output),
+            vec!["Open album Signal Decay".to_owned()],
+            "the caption took a link of its own, or the title lost one"
         );
     }
 

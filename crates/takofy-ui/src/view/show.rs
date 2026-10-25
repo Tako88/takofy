@@ -68,6 +68,9 @@ pub fn show_view(
 
     let mut command = None;
     let mut retry = false;
+    // A click on an episode's byline asks for the show's page, which the page it
+    // is already on refuses; the ask waits for the borrow of the library to end.
+    let mut opened: Option<Page> = None;
     // The band's heart asks for the library, which the show is borrowed from.
     // The value the heart asked for, and the name the write needs.
     let mut save: Option<(String, bool)> = None;
@@ -115,6 +118,7 @@ pub fn show_view(
                         eyebrow: "Show",
                         title: &detail.show.name,
                         meta,
+                        credit: None,
                         description: &description,
                         cover,
                     };
@@ -209,8 +213,7 @@ pub fn show_view(
                                 continue;
                             }
                             let duration = episode.duration_ms.and_then(total_label);
-                            let meta = episode_meta(&detail.show.name, episode.published, now_ms)
-                                .join(" · ");
+                            let meta = episode_meta(&detail.show.name, episode.published, now_ms);
                             let description =
                                 episode.description.as_deref().and_then(plain_description);
                             let row = episode_row::Row {
@@ -218,7 +221,9 @@ pub fn show_view(
                                 index,
                                 title: &episode.title,
                                 description: description.as_deref(),
-                                meta: &meta,
+                                show: meta.show.as_deref().unwrap_or_default(),
+                                show_uri: Some(detail.show.uri.as_str()),
+                                age: meta.age.as_deref().unwrap_or_default(),
                                 duration: duration.as_deref(),
                                 state: state_of(&episode.uri, transport),
                                 look: selection.look(index),
@@ -240,8 +245,8 @@ pub fn show_view(
                                         detail.episodes.get(row).map(Episode::entry)
                                     });
                                 }
-                                Some(Click::Menu(_)) | Some(Click::Open(_))
-                                | Some(Click::Like(_)) | None => {}
+                                Some(Click::Open(page)) => opened = Some(page),
+                                Some(Click::Menu(_)) | Some(Click::Like(_)) | None => {}
                             }
                         }
                         // A focused row the cull skipped is asked for again through
@@ -261,6 +266,11 @@ pub fn show_view(
 
     if retry {
         return library.open(Page::Show(uri));
+    }
+    if command.is_none()
+        && let Some(page) = opened
+    {
+        return library.open(page);
     }
     if let Some((name, asked)) = save {
         let item = LibraryItem {
@@ -551,6 +561,7 @@ mod tests {
                     eyebrow: "Show",
                     title: "Lateral",
                     meta: show_meta("Lateral", "Tom Scott Media", 2),
+                    credit: None,
                     description: "A show about the long way round.",
                     cover: Cover::Missing,
                 };
@@ -1274,5 +1285,81 @@ mod tests {
             "the rows carry no art, so the band's cover is the one lookup: {requests:?}"
         );
         assert!(matches!(requests[0], Command::Fetch { .. }), "{requests:?}");
+    }
+
+    /// The box an episode row's byline paints the show's name in.
+    fn byline(output: &egui::FullOutput) -> Rect {
+        text_rect(output, "LATERAL").expect("the byline paints the show's name")
+    }
+
+    #[test]
+    fn an_episode_byline_click_opens_the_show_page() {
+        let ctx = context();
+        let mut library = library_with(detail(vec![episode(1), episode(2)]));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let first = frame(
+            &ctx,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        )
+        .1;
+        let command = click(
+            &ctx,
+            byline(&first).center(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+
+        assert_eq!(
+            command, None,
+            "the show is already open, so its own link answers nothing"
+        );
+        assert_eq!(
+            library.page(),
+            Some(&Page::Show(SHOW.to_owned())),
+            "the byline is the show's link, not a press on the row"
+        );
+        assert!(
+            ctx.memory(|memory| memory.focused()).is_none(),
+            "a link takes no focus, so the row was never pressed"
+        );
+        library.back();
+        assert_eq!(
+            library.page(),
+            None,
+            "the click grew no history between the root and the show"
+        );
+    }
+
+    #[test]
+    fn a_show_open_on_its_own_page_changes_no_history() {
+        let mut library = library_with(detail(vec![episode(1)]));
+        assert_eq!(library.page(), Some(&Page::Show(SHOW.to_owned())));
+
+        assert_eq!(
+            library.open(Page::Show(SHOW.to_owned())),
+            None,
+            "a settled page asks for nothing"
+        );
+
+        assert_eq!(
+            library.page(),
+            Some(&Page::Show(SHOW.to_owned())),
+            "the page is still the show"
+        );
+        library.back();
+        assert_eq!(
+            library.page(),
+            None,
+            "one step back reaches the root, so the open pushed nothing"
+        );
     }
 }

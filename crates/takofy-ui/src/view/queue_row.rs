@@ -12,13 +12,20 @@
 //! Its body is a click target and a drag source both. Enter and a double click
 //! play the entry; a single click picks the row, and a drag lifts it, so scanning
 //! the list with the pointer never starts playback.
+//!
+//! The name and the artist are links: a click on the words opens the page they
+//! name and never plays, while a click beside them is the row's own. A carried
+//! row and a ghost keep the words as plain text, because neither is a place to
+//! navigate from.
 
 use egui::{FontId, Id, Pos2, Rect, Ui, WidgetInfo};
 
 use crate::cover::Cover;
 use crate::layout::queue::row_parts;
+use crate::route::Page;
 use crate::theme::{Tokens, radius, space, text, tracking};
 
+use super::link::{self, Face, Target};
 use super::rows::{self, Ghosting, Look};
 use super::text as recipe;
 use super::track_row::Click;
@@ -32,10 +39,23 @@ pub struct Row<'a> {
     pub artist: &'a str,
     pub duration: Option<&'a str>,
     pub cover: Cover,
+    /// The album URI the name links to, when one is known.
+    pub title_target: Option<&'a str>,
+    /// The first artist's URI the artist links to, when one is known.
+    pub artist_target: Option<&'a str>,
     /// Where the row stands in the queue's selection, and in a carry.
     pub look: Look,
     /// Whether this row is the one a just-finished edit landed on.
     pub refocus: bool,
+}
+
+/// What a row's two links reported.
+#[derive(Debug, Default)]
+struct Links {
+    /// Whether the pointer is on either line's words.
+    hovered: bool,
+    /// The page a click on either line opened.
+    page: Option<Page>,
 }
 
 /// The id a row's body is interacted with, so a caller can ask whether it holds
@@ -74,7 +94,7 @@ pub fn show(ui: &mut Ui, rect: Rect, row: &Row<'_>, tokens: &Tokens) -> Option<C
     if !row.look.carrying {
         controls::focus_ring(ui, response, rect, radius::SM, tokens);
     }
-    paint(ui, rect, row, None, tokens);
+    let links = paint(ui, rect, row, None, tokens);
     ui.set_opacity(before);
 
     // The row's own keyboard activation is answered before the pointer's, so a
@@ -83,11 +103,21 @@ pub fn show(ui: &mut Ui, rect: Rect, row: &Row<'_>, tokens: &Tokens) -> Option<C
     if keyboard {
         return Some(Click::Play);
     }
-    if response.double_clicked() {
+    if let Some(page) = links.page {
+        return Some(Click::Open(page));
+    }
+    // When a link wins the hit test the row's `double_clicked()` is already
+    // false, because egui tells only the hit widget; the guard keeps a second
+    // click on the words a navigation rather than a play whatever the hit test
+    // does.
+    if response.double_clicked() && !links.hovered {
         return Some(Click::Play);
     }
     if body.lift {
         return Some(Click::Lift);
+    }
+    if links.hovered {
+        return None;
     }
     body.press.map(Click::Select)
 }
@@ -132,6 +162,8 @@ impl Lifted {
             artist: &self.artist,
             duration: self.duration.as_deref(),
             cover: self.cover,
+            title_target: None,
+            artist_target: None,
             look: Look::default(),
             refocus: false,
         };
@@ -144,8 +176,16 @@ impl Lifted {
 /// `ghosting` is set when this is a carried block rather than a row in its list:
 /// it brings the block's own count and running time, and the flat ink a refused
 /// target asks for.
-fn paint(ui: &Ui, rect: Rect, row: &Row<'_>, ghosting: Option<Ghosting<'_>>, tokens: &Tokens) {
+fn paint(
+    ui: &Ui,
+    rect: Rect,
+    row: &Row<'_>,
+    ghosting: Option<Ghosting<'_>>,
+    tokens: &Tokens,
+) -> Links {
     let flat = ghosting.is_some_and(|ghost| ghost.flat);
+    // A ghost and a row that a carry is holding are drawn, not navigated from.
+    let live = ghosting.is_none() && !row.look.carrying;
     let count = ghosting.and_then(|ghost| (ghost.count > 1).then_some(ghost.count));
     // A block's total stands in for its rows' lengths, and an unknown one stands
     // in for nothing rather than for the row under the pointer.
@@ -176,9 +216,11 @@ fn paint(ui: &Ui, rect: Rect, row: &Row<'_>, ghosting: Option<Ghosting<'_>>, tok
         tokens,
     );
 
-    if parts.text.width() > 0.0 {
-        stacked(ui, parts.text, row, count, flat, tokens);
-    }
+    let links = if parts.text.width() > 0.0 {
+        stacked(ui, parts.text, row, count, flat, live, tokens)
+    } else {
+        Links::default()
+    };
     if let Some(line) = duration {
         ui.painter().galley(
             Pos2::new(
@@ -189,11 +231,23 @@ fn paint(ui: &Ui, rect: Rect, row: &Row<'_>, ghosting: Option<Ghosting<'_>>, tok
             tokens.palette.text_subtle,
         );
     }
+    links
 }
 
 /// The name over the artist, centred together as one block, with the count a
 /// carried block stands for beside the name.
-fn stacked(ui: &Ui, rect: Rect, row: &Row<'_>, count: Option<usize>, flat: bool, tokens: &Tokens) {
+///
+/// `live` is whether the two lines are links; a ghost and a carried row paint
+/// them as plain text.
+fn stacked(
+    ui: &Ui,
+    rect: Rect,
+    row: &Row<'_>,
+    count: Option<usize>,
+    flat: bool,
+    live: bool,
+    tokens: &Tokens,
+) -> Links {
     let name = recipe::queue_name();
     let name_h = line_height(ui, &name);
     let artist = recipe::queue_artist();
@@ -227,21 +281,63 @@ fn stacked(ui: &Ui, rect: Rect, row: &Row<'_>, count: Option<usize>, flat: bool,
         galley
     });
 
-    let line = recipe::line(ui, row.title, name, title_ink, 0.0, width);
-    ui.painter()
-        .galley(Pos2::new(rect.left(), top), line.clone(), title_ink);
+    let placed = link::Placed {
+        pos: Pos2::new(rect.left(), top),
+        galley: link::lay(
+            ui,
+            row.title,
+            &Face {
+                font: name,
+                tracking: 0.0,
+            },
+            width,
+        ),
+    };
+    let title_right = placed.rect().right();
+    let shown = placed.link(
+        ui,
+        ui.scope_id().with(("queue-title", row.index)),
+        rect,
+        row.title_target.filter(|_| live).map(Target::Album),
+        title_ink,
+        tokens,
+    );
+    let mut links = Links {
+        hovered: shown.hovered,
+        page: shown.page,
+    };
     if let Some(suffix) = suffix {
         ui.painter().galley(
-            Pos2::new(rect.left() + line.size().x + space::S2, top),
+            Pos2::new(title_right + space::S2, top),
             suffix,
             secondary_ink,
         );
     }
     if artist_h > 0.0 {
-        let line = recipe::line(ui, row.artist, artist, secondary_ink, 0.0, rect.width());
-        ui.painter()
-            .galley(Pos2::new(rect.left(), top + name_h), line, secondary_ink);
+        let shown = link::Placed {
+            pos: Pos2::new(rect.left(), top + name_h),
+            galley: link::lay(
+                ui,
+                row.artist,
+                &Face {
+                    font: artist,
+                    tracking: 0.0,
+                },
+                rect.width(),
+            ),
+        }
+        .link(
+            ui,
+            ui.scope_id().with(("queue-artist", row.index)),
+            rect,
+            row.artist_target.filter(|_| live).map(Target::Credit),
+            secondary_ink,
+            tokens,
+        );
+        links.hovered |= shown.hovered;
+        links.page = links.page.or(shown.page);
     }
+    links
 }
 
 /// The height of one line of `font`.
@@ -294,6 +390,75 @@ mod tests {
             .collect()
     }
 
+    const ALBUM_URI: &str = "spotify:album:a";
+    const ARTIST_URI: &str = "spotify:artist:b";
+
+    /// A row whose name and artist each name a page.
+    fn linked<'a>(index: usize, title: &'a str, artist: &'a str) -> Row<'a> {
+        Row {
+            title_target: Some(ALBUM_URI),
+            artist_target: Some(ARTIST_URI),
+            ..row(index, title, artist)
+        }
+    }
+
+    /// Draws one row for a single pass, returning what it answered and the frame.
+    fn draw(ctx: &Context, row: &Row<'_>, events: Vec<Event>) -> (Option<Click>, egui::FullOutput) {
+        let tokens = Tokens::DARK;
+        let mut answer = None;
+        let mut output = ctx.run_ui(input(events), |ui| {
+            answer = show(ui, PROBE, row, &tokens);
+        });
+        output.textures_delta.clear();
+        (answer, output)
+    }
+
+    /// The box the words of `label` were painted in.
+    fn words(output: &egui::FullOutput, label: &str) -> Rect {
+        output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                Shape::Text(text) if text.galley.text() == label => {
+                    Some(Rect::from_min_size(text.pos, text.galley.size()))
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{label} is painted"))
+    }
+
+    /// Every label a pass gave a link node.
+    fn link_labels(output: &egui::FullOutput) -> Vec<String> {
+        output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .map(|update| {
+                update
+                    .nodes
+                    .iter()
+                    .filter_map(|(_, node)| {
+                        (node.role() == egui::accesskit::Role::Link)
+                            .then(|| node.label().map(str::to_owned))
+                            .flatten()
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Feeds `events` one pass each after a warm-up, returning what the row
+    /// answered in every pass.
+    fn feed(ctx: &Context, row: &Row<'_>, events: Vec<Event>) -> Vec<Option<Click>> {
+        let _ = draw(ctx, row, Vec::new());
+        let mut answers = Vec::new();
+        for event in events {
+            let (answer, _) = draw(ctx, row, vec![event]);
+            answers.push(answer);
+        }
+        answers
+    }
+
     fn row<'a>(index: usize, title: &'a str, artist: &'a str) -> Row<'a> {
         Row {
             index,
@@ -301,6 +466,8 @@ mod tests {
             artist,
             duration: None,
             cover: Cover::Missing,
+            title_target: None,
+            artist_target: None,
             look: Look::default(),
             refocus: false,
         }
@@ -744,6 +911,209 @@ mod tests {
         assert!(
             !drawn_texts(&output).contains(&"A Title"),
             "a zero-width row must not lay a galley out"
+        );
+    }
+
+    #[test]
+    fn a_click_on_the_title_opens_the_album_and_does_not_select() {
+        let ctx = context();
+        let row = linked(0, "A Title", "A Band");
+        let (_, frame) = draw(&ctx, &row, Vec::new());
+        let at = words(&frame, "A Title").center();
+        let answers = feed(
+            &ctx,
+            &row,
+            crate::view::test_support::click_events(at).to_vec(),
+        );
+        assert_eq!(
+            answers.iter().flatten().last(),
+            Some(&Click::Open(Page::Album(ALBUM_URI.to_owned()))),
+            "a click on the name must open the album: {answers:?}"
+        );
+        assert!(
+            !answers
+                .iter()
+                .flatten()
+                .any(|click| matches!(click, Click::Select(_) | Click::Play)),
+            "the name is a link, not the row: {answers:?}"
+        );
+    }
+
+    #[test]
+    fn a_click_on_the_artist_opens_the_artist() {
+        let ctx = context();
+        let row = linked(0, "A Title", "A Band");
+        let (_, frame) = draw(&ctx, &row, Vec::new());
+        let at = words(&frame, "A Band").center();
+        let answers = feed(
+            &ctx,
+            &row,
+            crate::view::test_support::click_events(at).to_vec(),
+        );
+        assert_eq!(
+            answers.iter().flatten().last(),
+            Some(&Click::Open(Page::Artist(ARTIST_URI.to_owned()))),
+            "a click on the artist must open the artist: {answers:?}"
+        );
+        assert!(
+            !answers
+                .iter()
+                .flatten()
+                .any(|click| matches!(click, Click::Select(_) | Click::Play)),
+            "the artist is a link, not the row: {answers:?}"
+        );
+    }
+
+    #[test]
+    fn a_double_click_on_a_link_does_not_play() {
+        let ctx = context();
+        let row = linked(0, "A Title", "A Band");
+        let (_, frame) = draw(&ctx, &row, Vec::new());
+        let at = words(&frame, "A Title").center();
+        let mut events = Vec::new();
+        for _ in 0..2 {
+            events.extend(crate::view::test_support::click_events(at));
+        }
+        let answers = feed(&ctx, &row, events);
+        assert!(
+            answers
+                .iter()
+                .flatten()
+                .any(|click| matches!(click, Click::Open(_))),
+            "the words never opened their page: {answers:?}"
+        );
+        assert!(
+            !answers.iter().flatten().any(|click| *click == Click::Play),
+            "a double click on the words played the entry: {answers:?}"
+        );
+    }
+
+    #[test]
+    fn a_click_beside_the_words_still_selects_and_a_double_click_there_plays() {
+        let ctx = context();
+        let row = linked(0, "A Title", "A Band");
+        let (_, frame) = draw(&ctx, &row, Vec::new());
+        let title = words(&frame, "A Title");
+        let beside = Pos2::new(title.right() + 20.0, title.center().y);
+        assert!(
+            beside.x < PROBE.right(),
+            "the probe must stay inside the row: {beside:?}"
+        );
+
+        let single = feed(
+            &ctx,
+            &row,
+            crate::view::test_support::click_events(beside).to_vec(),
+        );
+        assert_eq!(
+            single.iter().flatten().last(),
+            Some(&Click::Select(Press::Replace)),
+            "a click beside the words must pick the row: {single:?}"
+        );
+
+        let mut events = Vec::new();
+        for _ in 0..2 {
+            events.extend(crate::view::test_support::click_events(beside));
+        }
+        let double = feed(&ctx, &row, events);
+        assert!(
+            double.iter().flatten().any(|click| *click == Click::Play),
+            "a double click beside the words must play: {double:?}"
+        );
+    }
+
+    #[test]
+    fn a_drag_started_on_a_link_still_lifts_the_row() {
+        let ctx = context();
+        let row = linked(0, "A Title", "A Band");
+        let (_, frame) = draw(&ctx, &row, Vec::new());
+        let at = words(&frame, "A Title").center();
+        let answers = feed(&ctx, &row, drag_events(at, 20.0));
+        assert!(
+            answers.iter().flatten().any(|click| *click == Click::Lift),
+            "a drag begun on the words must lift the row: {answers:?}"
+        );
+    }
+
+    #[test]
+    fn a_carried_row_has_no_links() {
+        let ctx = context();
+        ctx.enable_accesskit();
+        let row = Row {
+            look: Look {
+                carrying: true,
+                ..Look::default()
+            },
+            ..linked(0, "A Title", "A Band")
+        };
+        let (_, frame) = draw(&ctx, &row, Vec::new());
+        assert!(
+            link_labels(&frame).is_empty(),
+            "a carried row drew a link node: {:?}",
+            link_labels(&frame)
+        );
+        let at = words(&frame, "A Title").center();
+        let answers = feed(
+            &ctx,
+            &row,
+            crate::view::test_support::click_events(at).to_vec(),
+        );
+        assert!(
+            !answers
+                .iter()
+                .flatten()
+                .any(|click| matches!(click, Click::Open(_))),
+            "a carried row opened a page: {answers:?}"
+        );
+    }
+
+    #[test]
+    fn a_row_without_uris_is_plain() {
+        let ctx = context();
+        ctx.enable_accesskit();
+        let row = row(0, "A Title", "A Band");
+        let (_, frame) = draw(&ctx, &row, Vec::new());
+        assert!(
+            link_labels(&frame).is_empty(),
+            "a name with no page drew a link node: {:?}",
+            link_labels(&frame)
+        );
+        let at = words(&frame, "A Title").center();
+        let answers = feed(
+            &ctx,
+            &row,
+            crate::view::test_support::click_events(at).to_vec(),
+        );
+        assert_eq!(
+            answers.iter().flatten().last(),
+            Some(&Click::Select(Press::Replace)),
+            "plain words are the row's own click: {answers:?}"
+        );
+    }
+
+    #[test]
+    fn a_ghost_paints_no_link() {
+        let ctx = context();
+        ctx.enable_accesskit();
+        let tokens = Tokens::DARK;
+        let lifted = linked(0, "A Title", "A Band").lifted();
+        let mut output = ctx.run_ui(input(vec![Event::PointerMoved(PROBE.center())]), |ui| {
+            lifted.paint(
+                ui,
+                PROBE,
+                Ghosting {
+                    count: 1,
+                    total: None,
+                    flat: false,
+                },
+                &tokens,
+            );
+        });
+        output.textures_delta.clear();
+        assert!(
+            link_labels(&output).is_empty(),
+            "a ghost drew a link node: {:?}",
+            link_labels(&output)
         );
     }
 }

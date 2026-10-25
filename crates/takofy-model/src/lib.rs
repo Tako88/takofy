@@ -451,6 +451,12 @@ pub struct AlbumDetail {
     pub name: String,
     /// The album's artists joined with `, `; empty when the wire named none.
     pub artists: String,
+    /// The URI of the first artist named in [`Self::artists`].
+    ///
+    /// A joined credit gets one link, and it goes to that first name. `None`
+    /// when no artist is named or the first named one has no resolvable
+    /// artist id, so a link never points at a name drawn somewhere else.
+    pub artist_uri: Option<String>,
     /// The release year, or `None` for a wire year of zero or none at all.
     ///
     /// A `time::Date` cannot hold a year past 9999, so a wider integer is not a

@@ -356,6 +356,9 @@ pub fn artist_view(
                                 };
                                 let clicked =
                                     release_block::show(ui, table, &block, transport, tokens);
+                                // The heading names its album; the page applies the
+                                // open once the frame is done.
+                                open = open.take().or(clicked.open.clone());
                                 let ready = match labels {
                                     Labels::Ready(tracks) => Some(tracks),
                                     Labels::Idle | Labels::Loading | Labels::Failed(_) => None,
@@ -1435,6 +1438,57 @@ mod tests {
             !release_picked(&ctx, "spotify:album:r2", 0),
             "and the second's"
         );
+    }
+
+    #[test]
+    fn a_release_heading_click_opens_the_album_page() {
+        let ctx = context();
+        let size = Vec2::new(900.0, 800.0);
+        let mut library = library_with(detail(
+            Vec::new(),
+            vec![release(
+                "spotify:album:r1",
+                "Album One",
+                &["spotify:track:1"],
+            )],
+        ));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let (_, output) = frame(
+            &ctx,
+            size,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let name = text_rect(&output, "Album One").expect("the release's name is painted");
+        let command = click(
+            &ctx,
+            size,
+            name.center(),
+            1,
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+
+        assert_eq!(
+            library.page(),
+            Some(&Page::Album("spotify:album:r1".to_owned())),
+            "the release's heading does not open its album"
+        );
+        assert_eq!(
+            command,
+            Some(Command::LoadAlbum {
+                album: "spotify:album:r1".to_owned()
+            })
+        );
+        assert!(!queue.can_next(), "opening a page must not start the queue");
     }
 
     #[test]
