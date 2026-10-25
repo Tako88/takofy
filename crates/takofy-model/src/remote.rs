@@ -55,7 +55,17 @@ pub struct Report {
     pub next: Vec<TrackEntry>,
     /// The context the rows came from, absent when they came from nowhere.
     pub context: Option<String>,
-    pub options: Options,
+    /// The newest queue revision the phone published, empty when it published
+    /// none.
+    ///
+    /// It is echoed back so the phone can match its window to ours; it is never
+    /// a token, because a revision that arrives late is still the truth about
+    /// the queue that sent it.
+    pub queue_revision: String,
+    /// The context options, absent when the source did not name every mode: a
+    /// put that carries no options asserts none of them, so the phone keeps its
+    /// own.
+    pub options: Option<Options>,
     pub position_ms: u32,
     pub duration_ms: Option<u32>,
 }
@@ -76,6 +86,28 @@ pub enum Order {
     /// Step back, or restart the loaded track when it is already past the
     /// restart threshold.
     Prev,
+    /// Turn shuffle on or off.
+    SetShuffle(bool),
+    /// The context options, each carried only when the phone named it.
+    SetOptions {
+        shuffling: Option<bool>,
+        repeating_context: Option<bool>,
+        repeating_track: Option<bool>,
+    },
+    /// Put this track next in the queue, when the phone named one.
+    AddToQueue(Option<String>),
+    /// The phone's own window around its current row, and the revision it came
+    /// from.
+    ///
+    /// Rows are uris only: the phone's uids and metadata name nothing here, and
+    /// separators and empty rows are for the queue to clean.
+    SetQueue {
+        /// The rows behind the current one, nearest last.
+        prev: Vec<String>,
+        /// The rows ahead of the current one, nearest first.
+        next: Vec<String>,
+        revision: String,
+    },
 }
 
 /// Where a hand-over landed: the rows to adopt, and where in them to sit.
@@ -90,9 +122,11 @@ pub struct Landing {
     /// Whether the phone asked for this to play; the transport starts when true.
     pub playing: bool,
     pub context: Option<String>,
-    pub shuffle: bool,
-    pub repeat_context: bool,
-    pub repeat_track: bool,
+    /// The modes the landing names, absent where it names none so the queue
+    /// keeps the mode it has.
+    pub shuffle: Option<bool>,
+    pub repeat_context: Option<bool>,
+    pub repeat_track: Option<bool>,
     pub epoch: u64,
 }
 
@@ -130,10 +164,19 @@ impl Landing {
                 .map(track)
                 .collect(),
             context: self.context.clone(),
-            options: Options {
-                shuffle: self.shuffle,
-                repeat_context: self.repeat_context,
-                repeat_track: self.repeat_track,
+            // A landing is this window's own first word about the rows it takes,
+            // so it has no revision to echo back yet.
+            queue_revision: String::new(),
+            // The wire states every mode at once, so a landing that named only
+            // some of them asserts none; the queue's own report follows with
+            // the modes it kept.
+            options: match (self.shuffle, self.repeat_context, self.repeat_track) {
+                (Some(shuffle), Some(repeat_context), Some(repeat_track)) => Some(Options {
+                    shuffle,
+                    repeat_context,
+                    repeat_track,
+                }),
+                _ => None,
             },
             position_ms: self.position_ms,
             duration_ms: None,

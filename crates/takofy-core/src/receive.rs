@@ -14,7 +14,9 @@ use librespot::core::dealer::protocol::Command;
 use takofy_model::RequestId;
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::instruction::{Instruction, Kind, instruction_of, kind_of, summarise};
+use crate::instruction::{
+    Instruction, Kind, instruction_of, kind_of, summarise, summarise_play, summarise_queue,
+};
 use crate::registry::{Ack, Registry, Responder, Verdict};
 
 /// The log target of this module, so the binary can let its one summary line
@@ -85,6 +87,11 @@ fn describe(command: &Command) -> String {
             Some(state) => format!("transfer, {}", summarise(state, now_ms())),
             None => "transfer, no data".to_owned(),
         },
+        // A phone-side play and a queue window carry payloads whose counts are
+        // what a live session is checked against, so they get the same
+        // counts-only treatment as a hand-over.
+        Command::Play(play) => format!("play, {}", summarise_play(play)),
+        Command::SetQueue(queue) => format!("set_queue, {}", summarise_queue(queue)),
         other => kind_of(other).word().to_owned(),
     }
 }
@@ -117,12 +124,13 @@ mod tests {
     use std::time::Duration;
 
     use librespot::core::dealer::protocol::{
-        AddToQueueCommand, LoggingParams, PauseCommand, Request, TransferCommand, TransferOptions,
+        AddToQueueCommand, LoggingParams, PauseCommand, PlayCommand, PlayOptions, Request,
+        SetQueueCommand, SkipTo, TransferCommand, TransferOptions,
     };
     use librespot::protocol::context::Context;
     use librespot::protocol::context_page::ContextPage;
     use librespot::protocol::context_track::ContextTrack;
-    use librespot::protocol::player::ProvidedTrack;
+    use librespot::protocol::player::{PlayOrigin, ProvidedTrack};
     use librespot::protocol::session::Session;
     use librespot::protocol::transfer_state::TransferState;
     use protobuf::MessageField;
@@ -351,6 +359,66 @@ mod tests {
         });
         let shown = line(&add, &Instruction::Other(Kind::AddToQueue));
         assert_eq!(shown, "connect request: add_to_queue");
+        assert!(!shown.contains("spotify:"), "{shown}");
+
+        let queue = Command::SetQueue(SetQueueCommand {
+            next_tracks: vec![ProvidedTrack {
+                uri: "spotify:track:4uLU6hMCjMI75M1A2tKUQC".to_owned(),
+                ..Default::default()
+            }],
+            prev_tracks: Vec::new(),
+            queue_revision: "rev-7".to_owned(),
+            logging_params: logging(),
+        });
+        let shown = line(
+            &queue,
+            &Instruction::Order(Order::SetQueue {
+                prev: Vec::new(),
+                next: vec!["a uri".to_owned()],
+                revision: "rev-7".to_owned(),
+            }),
+        );
+        assert!(shown.contains("set_queue"), "{shown}");
+        assert!(shown.contains("prev 0 rows"), "{shown}");
+        assert!(shown.contains("next 1 rows"), "{shown}");
+        assert!(!shown.contains("spotify:"), "{shown}");
+        assert!(!shown.contains("rev-7"), "{shown}");
+
+        let play = Command::Play(Box::new(PlayCommand {
+            context: Context {
+                uri: Some("spotify:playlist:37i9dQZF1DXcBWIGoYBM5M".to_owned()),
+                pages: vec![ContextPage {
+                    tracks: vec![ContextTrack {
+                        uri: Some("spotify:track:4uLU6hMCjMI75M1A2tKUQC".to_owned()),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            play_origin: PlayOrigin::default(),
+            options: PlayOptions {
+                skip_to: Some(SkipTo {
+                    track_uid: Some("a uid".to_owned()),
+                    ..Default::default()
+                }),
+                player_options_override: None,
+                license: None,
+                seek_to: None,
+                always_play_something: None,
+                audio_stream: None,
+                initially_paused: None,
+                prefetch_level: None,
+                system_initiated: None,
+            },
+            logging_params: logging(),
+        }));
+        let shown = line(&play, &Instruction::Other(Kind::Play));
+        assert!(shown.contains("play, context playlist"), "{shown}");
+        assert!(
+            shown.contains("skip uri absent, index absent, uid named"),
+            "{shown}"
+        );
         assert!(!shown.contains("spotify:"), "{shown}");
 
         let bare = Command::Transfer(TransferCommand {

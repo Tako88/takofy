@@ -24,6 +24,11 @@
 //! mode switch may re-seat `index` but never changes which entry is current.
 //! The rows an edit may move all sit after the current entry, so the playing
 //! entry keeps its place and a load in flight keeps its guard.
+//!
+//! The phone edits the queue too, and it names a window around the row it is on
+//! rather than a whole list: that window replaces the rows on both sides of the
+//! playing entry, and a window that cannot be anchored or parsed changes
+//! nothing.
 
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
@@ -48,6 +53,40 @@ pub const MAX_CONSECUTIVE_SKIPS: u32 = 5;
 /// would grow without bound on every frame; the rest wait for the next pass, so
 /// a row stays a URI a little longer instead of the request growing.
 pub const LABEL_BATCH: usize = 256;
+
+/// The most rows a phone's queue window may replace ours with.
+///
+/// The phone draws a handful either side of its current row; a window past this
+/// is a payload that cannot be one, and taking it would drop every row the user
+/// is looking at.
+pub const MAX_WINDOW_ROWS: usize = 2_000;
+
+/// The row the phone's own queue keeps between blocks; it names no track.
+const DELIMITER_URI: &str = "spotify:delimiter";
+
+/// Why a phone's queue window could not replace ours.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowRefusal {
+    /// The queue holds no current row, so the window has nothing to sit around.
+    NoCurrent,
+    /// A row that is neither a separator nor a Spotify uri.
+    BadRow,
+    /// A window larger than [`MAX_WINDOW_ROWS`].
+    TooLarge,
+}
+
+impl WindowRefusal {
+    /// The word a log carries. Which refusal it was is the only thing that says
+    /// whether the phone's window or our own queue was the problem, and it names
+    /// a kind, never a row.
+    pub fn word(&self) -> &'static str {
+        match self {
+            Self::NoCurrent => "no current row",
+            Self::BadRow => "bad row",
+            Self::TooLarge => "too large",
+        }
+    }
+}
 
 /// The direction a block of rows steps in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -91,6 +130,22 @@ pub struct Queue {
     /// Row URIs a label was asked for, so a row that never comes back named
     /// does not become a request per frame.
     label_asked: HashSet<String>,
+    /// How many rows at the head of the upcoming region the phone queued to play
+    /// next, counted from `first_upcoming`.
+    ///
+    /// It is a count from the current row, so the rows that stay the phone's
+    /// block are the ones still ahead of it: a move forward into the block leaves
+    /// its tail, a move past it or back out of it leaves nothing, and an edit
+    /// clamps it to the rows that remain.
+    queued: usize,
+    /// The newest queue revision the phone published.
+    ///
+    /// It is echoed back so the phone can match its window to ours; it is never
+    /// a token, because a revision that arrives late is still the truth about the
+    /// queue that sent it. A start, a landing, a draw and every edit forget it,
+    /// because each of those makes these rows no longer the window the revision
+    /// names.
+    queue_revision: String,
 }
 
 impl Queue {
@@ -132,6 +187,8 @@ impl Queue {
         }
         self.tracks = tracks.to_vec();
         self.skips = 0;
+        self.queued = 0;
+        self.queue_revision.clear();
         self.selection.clear();
         self.refocus = None;
         self.origin = None;
@@ -311,15 +368,19 @@ impl Queue {
             .chain(report.next)
             .collect();
         self.skips = 0;
+        self.queued = 0;
+        self.queue_revision.clear();
         self.selection.clear();
         self.refocus = None;
         self.label_asked.clear();
-        self.repeat = match (landing.repeat_track, landing.repeat_context) {
-            (true, _) => Repeat::One,
-            (false, true) => Repeat::All,
-            (false, false) => Repeat::Off,
-        };
-        self.shuffle = landing.shuffle;
+        // A mode the landing names is taken; one it names not at all is the mode
+        // the queue already has, not a mode read back as off.
+        let (context, track) = self.repeat.flags();
+        self.repeat = Repeat::from_flags(
+            landing.repeat_context.unwrap_or(context),
+            landing.repeat_track.unwrap_or(track),
+        );
+        self.shuffle = landing.shuffle.unwrap_or(self.shuffle);
         self.origin = landing.context.clone();
         self.index = Some(landing.index);
         if self.shuffle {
@@ -336,6 +397,51 @@ impl Queue {
         self.awaiting_start = true;
         transport.landed(&landed, landing.position_ms, landing.playing);
         true
+    }
+
+    /// Replaces the rows with the window the phone published around the current
+    /// one, and keeps the revision it came from.
+    ///
+    /// The window is anchored on the current row, so there has to be one. A
+    /// separator names no track and a row the phone left empty is the current
+    /// row; every other row has to be a Spotify uri, and a window past
+    /// [`MAX_WINDOW_ROWS`] is not one. A refusal changes nothing.
+    pub fn replace_window(
+        &mut self,
+        prev: &[String],
+        next: &[String],
+        revision: String,
+    ) -> Result<(), WindowRefusal> {
+        let Some(current) = self.current().cloned() else {
+            return Err(WindowRefusal::NoCurrent);
+        };
+        let before = window_rows(prev, &current)?;
+        let after = window_rows(next, &current)?;
+        if before.len().saturating_add(after.len()) > MAX_WINDOW_ROWS {
+            return Err(WindowRefusal::TooLarge);
+        }
+
+        let index = before.len();
+        let mut rows = before;
+        rows.push(current);
+        rows.extend(after);
+
+        self.tracks = rows;
+        self.index = Some(index);
+        self.queue_revision = revision;
+        // The phone draws its own block ahead of the first separator, and the
+        // rows after the separator are the context that resumes after it.
+        self.queued = next
+            .iter()
+            .position(|uri| uri == DELIMITER_URI)
+            .unwrap_or(0);
+        self.skips = 0;
+        self.selection.clear();
+        self.refocus = None;
+        self.label_asked.clear();
+        // The drawn order belonged to the rows the window just replaced.
+        self.snapshot.clear();
+        Ok(())
     }
 
     /// The rows after the current one that are still only a URI, asked for once.
@@ -489,9 +595,14 @@ impl Queue {
         let mut rows = rows.to_vec();
         rows.sort_unstable();
         rows.dedup();
+        let block = self.first_upcoming()..self.queued_end();
+        let removed = rows.iter().filter(|row| block.contains(row)).count();
         for row in rows.iter().rev() {
             self.tracks.remove(*row);
         }
+        self.queued = self.queued.saturating_sub(removed);
+        self.clamp_queued();
+        self.forget_revision();
         self.selection.without(&rows);
         let first = rows[0];
         self.refocus = (first < self.tracks.len()).then_some(first);
@@ -519,6 +630,8 @@ impl Queue {
             self.tracks.remove(*row);
         }
         self.tracks.splice(found.landed..found.landed, moved);
+        self.clamp_queued();
+        self.forget_revision();
 
         let range = found.landed..found.landed + found.rows.len();
         self.selection.set(range.clone());
@@ -535,6 +648,8 @@ impl Queue {
         let count = entries.len();
 
         self.tracks.splice(boundary..boundary, entries);
+        self.clamp_queued();
+        self.forget_revision();
         self.selection.open_gap(boundary, count);
 
         Some(boundary..boundary + count)
@@ -545,6 +660,35 @@ impl Queue {
     /// first row and is left armed.
     pub fn append(&mut self, entries: Vec<TrackEntry>) -> Option<Range<usize>> {
         self.insert_at(self.tracks.len(), entries)
+    }
+
+    /// Adds `entries` to the queue the phone sent, after the rows it queued
+    /// before, and says where they landed.
+    ///
+    /// The block plays before the context resumes, so it sits right after the
+    /// current row; each add goes behind the earlier ones so a run of them keeps
+    /// the order the phone sent them in. With nothing playing there is no row to
+    /// queue behind, so the add joins the end.
+    pub fn add_next(&mut self, entries: Vec<TrackEntry>) -> Option<Range<usize>> {
+        if self.index.is_none() {
+            return self.append(entries);
+        }
+        let at = self.first_upcoming().saturating_add(self.queued);
+        let landed = self.insert_at(at, entries)?;
+        self.queued = self.queued.saturating_add(landed.len());
+        Some(landed)
+    }
+
+    /// Adds one track the phone queued, by uri, where [`Self::add_next`] puts
+    /// it.
+    ///
+    /// A uri the queue cannot hold is refused here rather than becoming a row
+    /// that fails where it is played.
+    pub fn add_next_uri(&mut self, uri: &str) -> Option<Range<usize>> {
+        if !spotify_uri(uri) {
+            return None;
+        }
+        self.add_next(vec![unnamed(uri)])
     }
 
     /// Bubbles `rows` one row towards `step`, and reports each `(from, to)`.
@@ -598,6 +742,8 @@ impl Queue {
         if moved.is_empty() {
             return None;
         }
+        self.clamp_queued();
+        self.forget_revision();
         moved.sort_unstable();
         let landed: HashMap<usize, usize> = moved.iter().copied().collect();
         // A row held at the edge keeps its pick; only the moved ones change row.
@@ -659,14 +805,25 @@ impl Queue {
         self.repeat
     }
 
+    /// Sets the repeat mode the phone named, which names a state and not a step.
+    pub fn set_repeat(&mut self, mode: Repeat) {
+        self.repeat = mode;
+    }
+
     /// Steps to the repeat mode after this one.
     pub fn cycle_repeat(&mut self) {
-        self.repeat = self.repeat.next();
+        self.set_repeat(self.repeat.next());
     }
 
     /// Whether shuffle is on.
     pub fn shuffle(&self) -> bool {
         self.shuffle
+    }
+
+    /// The newest queue revision the phone published, empty when it published
+    /// none.
+    pub fn queue_revision(&self) -> &str {
+        &self.queue_revision
     }
 
     /// Applies the saved modes, seeding shuffle only while nothing is loaded.
@@ -698,6 +855,8 @@ impl Queue {
         } else {
             self.shuffle_on();
         }
+        self.queued = 0;
+        self.forget_revision();
         self.selection.clear();
         self.refocus = None;
     }
@@ -792,6 +951,11 @@ impl Queue {
         let seed = shuffle::splitmix(&mut self.rng);
         let order = shuffle::order(self.tracks.len() - first, seed);
         self.reorder_tail(first, &order);
+        // A draw moves every row after `first`, so the block the phone queued
+        // ahead of the current row is no longer where it was, and the new order
+        // is not the window the phone published.
+        self.queued = 0;
+        self.forget_revision();
     }
 
     /// Draws the rows after `row` for a first play that no `start` draws for.
@@ -853,10 +1017,108 @@ impl Queue {
                 entry.cover.clone(),
             )
         };
+        self.land_on(index);
         self.index = Some(index);
         self.awaiting_start = true;
         Some(transport.play(&uri, &title, &artists, cover))
     }
+
+    /// Keeps the queued block to what is still ahead of the row the queue moves
+    /// onto.
+    ///
+    /// A move into the block leaves its tail; a move past it, or back out of it,
+    /// leaves nothing; a restart of the same row leaves it alone.
+    fn land_on(&mut self, index: usize) {
+        let Some(from) = self.index else {
+            self.queued = 0;
+            return;
+        };
+        self.queued = match index.cmp(&from) {
+            std::cmp::Ordering::Greater => self.queued_end().saturating_sub(index + 1),
+            // A restart loads the same row again, so the block has not moved.
+            std::cmp::Ordering::Equal => return,
+            std::cmp::Ordering::Less => 0,
+        };
+    }
+
+    /// One past the queued block's last row.
+    fn queued_end(&self) -> usize {
+        self.first_upcoming().saturating_add(self.queued)
+    }
+
+    /// Keeps the block to the rows still ahead of the current one, after an edit
+    /// has removed or moved rows around it.
+    fn clamp_queued(&mut self) {
+        let ahead = self.tracks.len().saturating_sub(self.first_upcoming());
+        self.queued = self.queued.min(ahead);
+    }
+
+    /// Forgets the revision the phone published, because an edit has made these
+    /// rows something other than the window it named.
+    fn forget_revision(&mut self) {
+        self.queue_revision.clear();
+    }
+}
+
+/// The rows of one half of a phone's window, cleaned and made into entries.
+///
+/// A separator is dropped rather than refused: it is the phone's own punctuation
+/// between blocks. A row that names a uri the worker can be handed is kept as it
+/// is; a local file is one, and a row that cannot be played fails where it is
+/// played.
+fn window_rows(rows: &[String], current: &TrackEntry) -> Result<Vec<TrackEntry>, WindowRefusal> {
+    let mut entries = Vec::with_capacity(rows.len());
+    for uri in rows {
+        if uri == DELIMITER_URI {
+            continue;
+        }
+        // The phone sends an empty row for the track it is dragging, so the row
+        // it stands for is the one that is playing.
+        if uri.is_empty() {
+            entries.push(current.clone());
+        } else if spotify_uri(uri) {
+            entries.push(unnamed(uri));
+        } else {
+            return Err(WindowRefusal::BadRow);
+        }
+    }
+    Ok(entries)
+}
+
+/// A row that is only a uri, waiting for its names.
+fn unnamed(uri: &str) -> TrackEntry {
+    TrackEntry {
+        uri: uri.to_owned(),
+        title: uri.to_owned(),
+        artists: String::new(),
+        album: None,
+        album_uri: None,
+        artist_uris: Vec::new(),
+        artist_names: Vec::new(),
+        added_at: None,
+        duration_ms: None,
+        named: false,
+        cover: None,
+    }
+}
+
+/// The kinds a queue row can carry: the phone sends rows it can play.
+const ROW_KINDS: [&str; 3] = ["track", "episode", "local"];
+
+/// Whether `uri` is a row this queue holds: a Spotify uri of a kind that names a
+/// playable thing, with something naming it.
+///
+/// The window is built in `takofy-ui`, which cannot reach librespot's parser, and
+/// a row only has to be one the worker can be handed; what is refused is a row
+/// that names no track at all, which would fail only once someone played it.
+fn spotify_uri(uri: &str) -> bool {
+    let Some(rest) = uri.strip_prefix("spotify:") else {
+        return false;
+    };
+    let Some((kind, id)) = rest.split_once(':') else {
+        return false;
+    };
+    ROW_KINDS.contains(&kind) && !id.is_empty()
 }
 
 #[cfg(test)]
@@ -3066,6 +3328,531 @@ mod tests {
         assert_eq!(order(&queue), before);
     }
 
+    /// One row the phone sends: a uri and nothing else.
+    fn word(name: &str) -> String {
+        format!("spotify:track:{name}")
+    }
+
+    /// A window's rows, each named the way the phone names one.
+    fn window(rows: &[&str]) -> Vec<String> {
+        rows.iter().map(|row| word(row)).collect()
+    }
+
+    #[test]
+    fn add_next_lands_after_the_current_row_and_after_earlier_adds() {
+        let mut queue = started(3, 0);
+
+        assert_eq!(queue.add_next(vec![track("x")]), Some(1..2));
+        assert_eq!(queue.add_next(vec![track("y")]), Some(2..3));
+
+        assert_eq!(order(&queue), uris(&["t0", "x", "y", "t1", "t2"]));
+        assert_eq!(queue.queued, 2);
+        assert_eq!(
+            upcoming(&queue),
+            vec![
+                (1, "x".to_owned()),
+                (2, "y".to_owned()),
+                (3, "t1".to_owned()),
+                (4, "t2".to_owned()),
+            ],
+            "the context resumes after the block"
+        );
+    }
+
+    #[test]
+    fn queued_shrinks_when_the_queue_advances_past_it() {
+        let mut queue = started(3, 0);
+        let mut transport = Transport::default();
+        queue.add_next(vec![track("x")]);
+        queue.add_next(vec![track("y")]);
+
+        assert_eq!(queue.next(&mut transport), Some(play("x")));
+        assert_eq!(queue.queued, 1, "x was the row the phone queued first");
+        assert_eq!(queue.next(&mut transport), Some(play("y")));
+        assert_eq!(queue.queued, 0);
+        assert_eq!(queue.next(&mut transport), Some(play("t1")));
+        assert_eq!(queue.queued, 0, "a hop past the block cannot go negative");
+    }
+
+    #[test]
+    fn a_skip_past_the_queued_block_clears_it() {
+        let mut queue = started(4, 0);
+        let mut transport = Transport::default();
+        queue.add_next(vec![track("x")]);
+        assert_eq!(queue.queued, 1);
+
+        assert_eq!(queue.jump(2, &mut transport), Some(play("t1")));
+        assert_eq!(queue.queued, 0, "the block is behind the row that plays");
+
+        queue.add_next(vec![track("w")]);
+        assert_eq!(
+            order(&queue),
+            uris(&["t0", "x", "t1", "w", "t2", "t3"]),
+            "an add after a skip past the block sits right after the current row"
+        );
+    }
+
+    #[test]
+    fn a_skip_inside_the_block_shrinks_it() {
+        let mut queue = started(3, 0);
+        let mut transport = Transport::default();
+        queue.add_next(vec![track("x")]);
+        queue.add_next(vec![track("y")]);
+        assert_eq!(queue.queued, 2);
+
+        assert_eq!(queue.jump(1, &mut transport), Some(play("x")));
+        assert_eq!(queue.queued, 1, "the row that played left the block");
+
+        queue.add_next(vec![track("w")]);
+        assert_eq!(
+            order(&queue),
+            uris(&["t0", "x", "y", "w", "t1", "t2"]),
+            "the rest of the block still plays before the context"
+        );
+    }
+
+    #[test]
+    fn a_move_back_out_of_the_block_clears_it() {
+        let mut queue = started(4, 1);
+        let mut transport = Transport::default();
+        queue.add_next(vec![track("x")]);
+        assert_eq!(queue.queued, 1);
+
+        // Back to a history row: the block is no longer counted from here.
+        assert_eq!(queue.previous(0, &mut transport), Some(play("t0")));
+        assert_eq!(queue.queued, 0);
+
+        queue.add_next(vec![track("w")]);
+        assert_eq!(
+            order(&queue),
+            uris(&["t0", "w", "t1", "x", "t2", "t3"]),
+            "an add goes right after the row that plays, not into the old block"
+        );
+    }
+
+    #[test]
+    fn removing_rows_clamps_the_queued_block() {
+        let mut queue = started(3, 0);
+        queue.add_next(vec![track("x")]);
+        queue.add_next(vec![track("y")]);
+        assert_eq!(queue.queued, 2);
+
+        let gone = queue.entries_at(&[2]);
+        assert_eq!(
+            queue.remove_rows(&[2], &gone),
+            Some(1),
+            "the second block row"
+        );
+        assert_eq!(queue.queued, 1, "the block counts the rows that remain");
+
+        queue.add_next(vec![track("w")]);
+        assert_eq!(
+            order(&queue),
+            uris(&["t0", "x", "w", "t1", "t2"]),
+            "an add goes after the rows that are still queued"
+        );
+    }
+
+    #[test]
+    fn start_adopt_and_a_shuffle_toggle_reset_the_queued_block() {
+        let mut queue = started(3, 0);
+        let mut transport = Transport::default();
+        queue.add_next(vec![track("x")]);
+
+        queue.toggle_shuffle();
+        assert_eq!(queue.queued, 0, "the draw moved the rows the block named");
+
+        queue.add_next(vec![track("y")]);
+        queue.start(&tracks(3), 0, &mut transport);
+        assert_eq!(queue.queued, 0, "a new list has no phone block");
+
+        queue.add_next(vec![track("z")]);
+        assert!(queue.adopt(&landing(&["a", "b"], 0), &mut transport));
+        assert_eq!(queue.queued, 0, "a landing replaces the rows");
+    }
+
+    #[test]
+    fn replace_window_keeps_the_current_row_and_puts_the_index_after_prev() {
+        let mut queue = started(2, 1);
+
+        assert_eq!(
+            queue.replace_window(&window(&["a", "b"]), &window(&["c"]), "rev-1".to_owned()),
+            Ok(())
+        );
+
+        assert_eq!(
+            order(&queue),
+            vec![word("a"), word("b"), "t1".to_owned(), word("c"),],
+            "the window sits around the row that is playing"
+        );
+        assert_eq!(queue.index, Some(2));
+        assert_eq!(queue.current().map(|entry| entry.uri.as_str()), Some("t1"));
+    }
+
+    #[test]
+    fn replace_window_replaces_everything_else() {
+        let mut queue = started(6, 2);
+
+        assert_eq!(
+            queue.replace_window(&window(&["a"]), &window(&["b"]), "rev-1".to_owned()),
+            Ok(())
+        );
+
+        assert_eq!(order(&queue), vec![word("a"), "t2".to_owned(), word("b")]);
+        assert_eq!(
+            queue.index,
+            Some(1),
+            "the index sits after the rows before it"
+        );
+        assert_eq!(
+            queue.current().map(|entry| entry.uri.as_str()),
+            Some("t2"),
+            "the row that is playing stays current"
+        );
+        assert_eq!(
+            queue
+                .history(usize::MAX)
+                .map(|entry| entry.uri.as_str())
+                .collect::<Vec<_>>(),
+            vec!["spotify:track:a"],
+            "the rows before the current one are the phone's alone"
+        );
+        assert_eq!(
+            queue
+                .upcoming()
+                .map(|(_, entry)| entry.uri.as_str())
+                .collect::<Vec<_>>(),
+            vec!["spotify:track:b"],
+            "and the rows after it are the phone's alone too"
+        );
+        assert_eq!(
+            queue.tracks.len(),
+            3,
+            "the five rows the window did not name are gone"
+        );
+    }
+
+    #[test]
+    fn replace_window_drops_delimiter_rows_from_both_lists() {
+        let mut queue = started(1, 0);
+        let mut prev = window(&["a", "b"]);
+        prev.insert(1, DELIMITER_URI.to_owned());
+        let mut next = window(&["c"]);
+        next.insert(0, DELIMITER_URI.to_owned());
+
+        assert_eq!(
+            queue.replace_window(&prev, &next, "rev-1".to_owned()),
+            Ok(())
+        );
+
+        assert_eq!(
+            order(&queue),
+            vec![word("a"), word("b"), "t0".to_owned(), word("c")]
+        );
+        assert_eq!(queue.index, Some(2), "a separator is not a row");
+    }
+
+    #[test]
+    fn an_empty_uri_row_becomes_a_copy_of_the_current_row() {
+        let mut queue = started(2, 1);
+
+        assert_eq!(
+            queue.replace_window(&[String::new()], &[String::new()], "rev-1".to_owned()),
+            Ok(())
+        );
+
+        assert_eq!(order(&queue), uris(&["t1", "t1", "t1"]));
+        assert_eq!(queue.index, Some(1));
+    }
+
+    #[test]
+    fn an_empty_window_leaves_only_the_current_row() {
+        let mut queue = started(3, 1);
+
+        assert_eq!(queue.replace_window(&[], &[], "rev-1".to_owned()), Ok(()));
+
+        assert_eq!(order(&queue), uris(&["t1"]));
+        assert_eq!(queue.index, Some(0));
+        assert!(!queue.can_next(), "nothing follows the current row");
+    }
+
+    #[test]
+    fn an_unparsable_row_refuses_and_changes_nothing() {
+        let mut queue = started(3, 1);
+        let before = order(&queue);
+        let good = word("a");
+        let bad = [
+            "https://example.test/row".to_owned(),
+            "t2".to_owned(),
+            "spotify:track:".to_owned(),
+            "spotify::x".to_owned(),
+            "spotify:".to_owned(),
+            "spotify:foo:bar".to_owned(),
+        ];
+
+        for uri in bad {
+            // A bad row in either list refuses the whole window, so a caller
+            // that applies one list before validating the other cannot keep
+            // the half it already wrote.
+            for (prev, next) in [
+                (vec![uri.clone()], vec![good.clone()]),
+                (vec![good.clone()], vec![uri.clone()]),
+            ] {
+                assert_eq!(
+                    queue.replace_window(&prev, &next, "rev-1".to_owned()),
+                    Err(WindowRefusal::BadRow),
+                    "{uri}"
+                );
+                assert_eq!(order(&queue), before, "{uri}");
+                assert_eq!(queue.index, Some(1), "{uri}");
+                assert!(queue.queue_revision.is_empty(), "{uri} stored a revision");
+            }
+        }
+    }
+
+    #[test]
+    fn an_oversized_window_refuses_and_changes_nothing() {
+        let mut queue = started(2, 0);
+        let before = order(&queue);
+        // One row past the bound, split so neither list alone is too large.
+        let half = MAX_WINDOW_ROWS / 2;
+        let rows = |count: usize, prefix: &str| -> Vec<String> {
+            (0..count)
+                .map(|row| word(&format!("{prefix}{row}")))
+                .collect()
+        };
+        let prev = rows(half, "p");
+        let next = rows(half + 1, "n");
+
+        assert_eq!(
+            queue.replace_window(&prev, &next, "rev-1".to_owned()),
+            Err(WindowRefusal::TooLarge)
+        );
+        assert_eq!(order(&queue), before);
+        assert_eq!(queue.index, Some(0));
+        assert!(queue.queue_revision.is_empty());
+
+        assert_eq!(
+            queue.replace_window(&prev, &next[..half], "rev-1".to_owned()),
+            Ok(()),
+            "the bound itself is a window"
+        );
+    }
+
+    #[test]
+    fn replace_window_with_no_current_entry_is_refused() {
+        let mut queue = armed(3);
+        let before = order(&queue);
+
+        assert_eq!(
+            queue.replace_window(&window(&["a"]), &window(&["b"]), "rev-1".to_owned()),
+            Err(WindowRefusal::NoCurrent)
+        );
+
+        assert_eq!(order(&queue), before);
+        assert!(queue.armed(), "the rows still wait for a first play");
+    }
+
+    #[test]
+    fn replace_window_stores_the_newest_revision() {
+        let mut queue = started(2, 0);
+
+        assert_eq!(
+            queue.replace_window(&[], &window(&["a"]), "rev-1".to_owned()),
+            Ok(())
+        );
+        assert_eq!(queue.queue_revision, "rev-1");
+        assert_eq!(
+            queue.replace_window(&[], &window(&["b"]), "rev-2".to_owned()),
+            Ok(())
+        );
+        assert_eq!(queue.queue_revision, "rev-2", "the newest one is kept");
+
+        assert_eq!(
+            queue.replace_window(&["nonsense".to_owned()], &[], "rev-3".to_owned()),
+            Err(WindowRefusal::BadRow)
+        );
+        assert_eq!(queue.queue_revision, "rev-2", "a refusal stored nothing");
+    }
+
+    #[test]
+    fn replace_window_clears_selection_and_shuffle_snapshot() {
+        let mut queue = started(5, 1);
+        queue.toggle_shuffle();
+        queue.press(2, Press::Replace);
+        queue.press(3, Press::Toggle);
+        queue.refocus_at(2);
+        assert_eq!(picked(&queue), vec![2, 3]);
+
+        assert_eq!(
+            queue.replace_window(&window(&["a"]), &window(&["b", "c"]), "rev-1".to_owned()),
+            Ok(())
+        );
+
+        assert!(
+            picked(&queue).is_empty(),
+            "a pick cannot survive other rows"
+        );
+        assert_eq!(queue.refocus(), None);
+        assert!(
+            queue.snapshot.is_empty(),
+            "the drawn order belonged to the rows that went"
+        );
+    }
+
+    #[test]
+    fn replace_window_forgets_the_skip_run_the_queued_block_and_the_label_asks() {
+        let mut queue = started(3, 0);
+        assert!(queue.add_next_uri(&word("x")).is_some());
+        queue.skips = MAX_CONSECUTIVE_SKIPS;
+        assert!(
+            queue.label_wants().is_some(),
+            "the first ask covers the rows as they were"
+        );
+
+        assert_eq!(
+            queue.replace_window(&[], &window(&["x"]), "rev-1".to_owned()),
+            Ok(())
+        );
+
+        assert_eq!(queue.queued, 0, "a window with no separator names no block");
+        assert_eq!(queue.skips, 0, "a window is not a run of failed loads");
+        assert_eq!(
+            queue.label_wants(),
+            Some(Command::LabelRows {
+                uris: window(&["x"])
+            }),
+            "a row the window replaced is asked about again"
+        );
+    }
+
+    #[test]
+    fn a_pushed_window_seeds_the_queued_block_from_its_delimiter() {
+        let mut queue = started(2, 0);
+        let mut next = window(&["x", "y"]);
+        next.push(DELIMITER_URI.to_owned());
+        next.push(word("z"));
+
+        assert_eq!(queue.replace_window(&[], &next, "rev-1".to_owned()), Ok(()));
+        assert_eq!(
+            queue.queued, 2,
+            "the rows before the separator are the phone's own block"
+        );
+
+        queue.add_next(vec![track("w")]);
+        assert_eq!(
+            order(&queue),
+            vec![
+                "t0".to_owned(),
+                word("x"),
+                word("y"),
+                "w".to_owned(),
+                word("z"),
+            ],
+            "the block plays before the context resumes"
+        );
+    }
+
+    #[test]
+    fn a_pushed_window_without_a_delimiter_queues_nothing() {
+        let mut queue = started(2, 0);
+        queue.add_next(vec![track("x")]);
+        assert_eq!(queue.queued, 1);
+
+        assert_eq!(
+            queue.replace_window(&[], &window(&["y", "z"]), "rev-1".to_owned()),
+            Ok(())
+        );
+        assert_eq!(queue.queued, 0, "a window with no separator names no block");
+
+        queue.add_next(vec![track("w")]);
+        assert_eq!(
+            order(&queue),
+            vec!["t0".to_owned(), "w".to_owned(), word("y"), word("z")],
+            "an add goes right after the current row"
+        );
+    }
+
+    #[test]
+    fn a_local_start_forgets_the_pushed_revision() {
+        let mut queue = started(2, 0);
+        let mut transport = Transport::default();
+        assert_eq!(
+            queue.replace_window(&[], &window(&["a"]), "rev-1".to_owned()),
+            Ok(())
+        );
+        assert_eq!(queue.queue_revision(), "rev-1");
+
+        queue.start(&tracks(2), 0, &mut transport);
+
+        assert_eq!(
+            queue.queue_revision(),
+            "",
+            "a list this window started is not the phone's window"
+        );
+    }
+
+    #[test]
+    fn adopting_a_new_landing_forgets_the_pushed_revision() {
+        let mut queue = started(2, 0);
+        let mut transport = Transport::default();
+        assert_eq!(
+            queue.replace_window(&[], &window(&["a"]), "rev-1".to_owned()),
+            Ok(())
+        );
+
+        assert!(queue.adopt(&landing(&["a", "b"], 0), &mut transport));
+
+        assert_eq!(
+            queue.queue_revision(),
+            "",
+            "a landing names the rows again, without the phone's revision"
+        );
+    }
+
+    #[test]
+    fn a_local_edit_forgets_the_pushed_revision() {
+        let mut queue = started(4, 1);
+        let pushed = window(&["a", "b", "c"]);
+
+        assert_eq!(
+            queue.replace_window(&[], &pushed, "rev-1".to_owned()),
+            Ok(())
+        );
+        assert!(queue.add_next_uri(&word("x")).is_some());
+        assert_eq!(
+            queue.queue_revision(),
+            "",
+            "an add is not the window the phone sent"
+        );
+
+        assert_eq!(
+            queue.replace_window(&[], &pushed, "rev-1".to_owned()),
+            Ok(())
+        );
+        let gone = queue.entries_at(&[2]);
+        assert_eq!(queue.remove_rows(&[2], &gone), Some(1));
+        assert_eq!(
+            queue.queue_revision(),
+            "",
+            "a removal is not that window either"
+        );
+
+        assert_eq!(
+            queue.replace_window(&[], &pushed, "rev-1".to_owned()),
+            Ok(())
+        );
+        assert!(queue.move_rows(&[1], 4).is_some());
+        assert_eq!(queue.queue_revision(), "", "a move is an edit too");
+
+        assert_eq!(
+            queue.replace_window(&[], &pushed, "rev-1".to_owned()),
+            Ok(())
+        );
+        assert!(queue.step_rows(&[3], Step::Up).is_some());
+        assert_eq!(queue.queue_revision(), "", "a step is an edit too");
+    }
+
     #[test]
     fn step_moves_one_row_up_and_down() {
         let mut queue = started(5, 0);
@@ -3525,9 +4312,11 @@ mod tests {
             position_ms: 7_000,
             playing: true,
             context: Some("spotify:playlist:p".to_owned()),
-            shuffle: false,
-            repeat_context: false,
-            repeat_track: false,
+            // A landing that names no mode, so the queue keeps the modes it is
+            // in unless a test overrides one.
+            shuffle: None,
+            repeat_context: None,
+            repeat_track: None,
             epoch: 1,
         }
     }
@@ -3602,15 +4391,15 @@ mod tests {
     }
 
     #[test]
-    fn adopt_carries_shuffle_and_repeat() {
+    fn adopt_carries_the_modes_the_landing_names() {
         let mut queue = Queue::default();
         let mut transport = Transport::default();
 
         assert!(queue.adopt(
             &Landing {
-                shuffle: true,
-                repeat_context: true,
-                repeat_track: true,
+                shuffle: Some(true),
+                repeat_context: Some(true),
+                repeat_track: Some(true),
                 ..landing(&["a", "b", "c"], 0)
             },
             &mut transport
@@ -3622,18 +4411,36 @@ mod tests {
             "repeat one outranks repeat all"
         );
 
+        // The landing names the context loop alone, so the track loop it says
+        // nothing about stays the one the queue is in.
         assert!(queue.adopt(
             &Landing {
-                repeat_context: true,
+                shuffle: Some(false),
+                repeat_context: Some(true),
                 ..landing(&["a", "b"], 0)
             },
             &mut transport
         ));
-        assert_eq!(queue.repeat(), Repeat::All);
-        assert!(!queue.shuffle(), "a landing that does not ask shuffles not");
+        assert_eq!(queue.repeat(), Repeat::One);
+        assert!(!queue.shuffle(), "a landing that asks for off turns it off");
+    }
 
-        assert!(queue.adopt(&landing(&["a", "b"], 0), &mut transport));
-        assert_eq!(queue.repeat(), Repeat::Off);
+    #[test]
+    fn a_play_with_no_override_keeps_the_current_modes() {
+        let mut queue = started(3, 0);
+        let mut transport = Transport::default();
+        queue.set_repeat(Repeat::All);
+        queue.toggle_shuffle();
+
+        // A play that names no options is a landing whose flags are all absent.
+        assert!(queue.adopt(&landing(&["a", "b", "c"], 0), &mut transport));
+
+        assert!(queue.shuffle(), "a play that names no shuffle keeps it on");
+        assert_eq!(
+            queue.repeat(),
+            Repeat::All,
+            "a play that names no repeat keeps the mode it is in"
+        );
     }
 
     #[test]
@@ -3661,7 +4468,7 @@ mod tests {
 
         assert!(queue.adopt(
             &Landing {
-                shuffle: true,
+                shuffle: Some(true),
                 ..landing(&rows, 2)
             },
             &mut transport

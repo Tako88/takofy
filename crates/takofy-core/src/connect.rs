@@ -501,7 +501,7 @@ mod tests {
         ContextPlayerOptions, PlayOrigin, PlayerState, ProvidedTrack, Restrictions, Suppressions,
     };
     use protobuf::{EnumOrUnknown, Message as _, MessageField};
-    use takofy_model::{DeviceKind, Options, RemoteState, Report, Status, TrackEntry};
+    use takofy_model::{DeviceKind, RemoteState, Report, Status, TrackEntry};
 
     use super::*;
 
@@ -816,7 +816,8 @@ mod tests {
             prev: vec![entry("spotify:track:before")],
             next: vec![entry("spotify:track:after")],
             context: Some("spotify:album:context".to_owned()),
-            options: Options::default(),
+            queue_revision: String::new(),
+            options: None,
             position_ms: 10_000,
             duration_ms: Some(200_000),
         }

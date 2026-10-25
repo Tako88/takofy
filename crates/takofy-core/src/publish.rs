@@ -214,7 +214,7 @@ async fn announce<W: Wire>(
 mod tests {
     use std::time::{Duration, Instant};
 
-    use takofy_model::{Options, Report, RequestId, Status, TrackEntry};
+    use takofy_model::{Report, RequestId, Status, TrackEntry};
     use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
     use tokio::task::JoinHandle;
 
@@ -269,7 +269,8 @@ mod tests {
             prev: Vec::new(),
             next: Vec::new(),
             context: None,
-            options: Options::default(),
+            queue_revision: String::new(),
+            options: None,
             position_ms,
             duration_ms: Some(200_000),
         }
