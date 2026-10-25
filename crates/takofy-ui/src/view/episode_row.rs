@@ -11,11 +11,15 @@
 //! Its body is a click target and a drag source both. The toggle and a double
 //! click play the episode; a single click picks the row, and a drag lifts it, so
 //! scanning the list with the pointer never starts playback.
+//!
+//! The byline under the description names the show, and that name is a link to
+//! the show; the date beside it is plain.
 
 use egui::emath::GuiRounding;
 use egui::{FontId, Id, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2, WidgetInfo};
 
 use crate::cover::Cover;
+use crate::format::EpisodeMeta;
 use crate::icon::{self, Icon};
 use crate::layout::episode::row_parts;
 use crate::theme::icon::Size;
@@ -24,6 +28,7 @@ use crate::theme::{
 };
 
 use super::controls;
+use super::link::{self, Face, Target};
 use super::pin;
 use super::queue_row;
 use super::rows::{self, Look};
@@ -38,8 +43,12 @@ pub struct Row<'a> {
     pub title: &'a str,
     /// The episode's description, already collapsed to one line; absent draws none.
     pub description: Option<&'a str>,
-    /// The byline under the description: the show, then when it was published.
-    pub meta: &'a str,
+    /// The show's name, as the byline links it.
+    pub show: &'a str,
+    /// The show's URI, when known; without one the byline is one plain line.
+    pub show_uri: Option<&'a str>,
+    /// How long ago the episode was published, when known; the date stays plain.
+    pub age: &'a str,
     pub duration: Option<&'a str>,
     pub state: State,
     /// Where the row stands in its list's selection, and in a carry.
@@ -49,6 +58,15 @@ pub struct Row<'a> {
 }
 
 impl Row<'_> {
+    /// The byline as one line, which the ghost and the spoken label print.
+    fn joined(&self) -> String {
+        EpisodeMeta {
+            show: Some(self.show.to_owned()),
+            age: Some(self.age.to_owned()),
+        }
+        .joined()
+    }
+
     /// The row as it is drawn in flight: owned, and free of interaction.
     ///
     /// An episode has no cover anywhere in its row, so its ghost carries the
@@ -56,7 +74,7 @@ impl Row<'_> {
     pub fn lifted(&self) -> queue_row::Lifted {
         queue_row::Lifted::new(
             self.title.to_owned(),
-            self.meta.to_owned(),
+            self.joined(),
             self.duration.map(str::to_owned),
             Cover::Missing,
         )
@@ -90,7 +108,7 @@ pub fn show(ui: &mut Ui, rect: Rect, row: &Row<'_>, tokens: &Tokens) -> Option<C
     );
     let before = rows::dim(ui, row.look);
     rows::wash(ui, rect, hover, row.look, tokens);
-    let (played, toggle) = paint(ui, rect, row, key, tokens);
+    let (played, toggle, byline) = paint(ui, rect, row, key, tokens);
     // A ring on a carried row is noise: the pointer already holds it. After the
     // hairline, so the row's own separator cannot cover the ring's bottom edge.
     if !row.look.carrying {
@@ -104,19 +122,26 @@ pub fn show(ui: &mut Ui, rect: Rect, row: &Row<'_>, tokens: &Tokens) -> Option<C
     if keyboard || played {
         return Some(Click::Play);
     }
+    // A click on the byline's words opens the show and is never the row's own.
+    let hovered = byline.as_ref().is_some_and(|shown| shown.hovered);
+    if let Some(page) = byline.and_then(|shown| shown.page) {
+        return Some(Click::Open(page));
+    }
     // A double click is a second way to play the row, but not over the toggle:
     // the toggle has already answered its own click, and counting the same
-    // press twice would restart the episode it just started.
+    // press twice would restart the episode it just started. `hovered` is a
+    // belt-and-braces guard, not the mechanism: egui gives the click to the hit
+    // widget, so a link leaves the row no double click to answer.
     let over_toggle = response
         .interact_pointer_pos()
         .is_some_and(|at| toggle.contains(at));
-    if response.double_clicked() && !over_toggle {
+    if response.double_clicked() && !over_toggle && !hovered {
         return Some(Click::Play);
     }
     if body.lift {
         return Some(Click::Lift);
     }
-    if over_toggle {
+    if over_toggle || hovered {
         return None;
     }
     body.press.map(Click::Select)
@@ -129,14 +154,15 @@ pub(super) fn id(ui: &Ui, key: (&str, usize)) -> Id {
 }
 
 /// Draws the row's hairline, its length, its toggle and its text, and reports
-/// whether the toggle was clicked with the rect it answered in.
+/// whether the toggle was clicked with the rect it answered in, and what the
+/// byline's link drew.
 fn paint(
     ui: &mut Ui,
     rect: Rect,
     row: &Row<'_>,
     key: (&str, usize),
     tokens: &Tokens,
-) -> (bool, Rect) {
+) -> (bool, Rect, Option<link::Shown>) {
     // The reference closes every row with a hairline rather than drawing a box.
     ui.painter().rect_filled(
         Rect::from_min_size(
@@ -162,9 +188,11 @@ fn paint(
     let played = toggle(ui, parts.toggle, row, key, tokens);
 
     let text_width = parts.body.width().min(measure(ui));
-    if text_width > 0.0 {
-        text_block(ui, parts.body, row, text_width, tokens);
-    }
+    let byline = if text_width > 0.0 {
+        text_block(ui, parts.body, row, key, text_width, tokens)
+    } else {
+        None
+    };
     if let Some(line) = duration {
         ui.painter().galley(
             Pos2::new(parts.duration.right() - line.size().x, parts.duration.top()),
@@ -172,7 +200,7 @@ fn paint(
             tokens.palette.text_subtle,
         );
     }
-    (played, parts.toggle)
+    (played, parts.toggle, byline)
 }
 
 /// The bordered square that starts one episode.
@@ -239,7 +267,16 @@ fn toggle(ui: &mut Ui, rect: Rect, row: &Row<'_>, key: (&str, usize), tokens: &T
 }
 
 /// The title, the clamped description and the byline, stacked from the top.
-fn text_block(ui: &Ui, rect: Rect, row: &Row<'_>, width: f32, tokens: &Tokens) {
+///
+/// Returns what the byline's link drew, or `None` when it was painted plain.
+fn text_block(
+    ui: &Ui,
+    rect: Rect,
+    row: &Row<'_>,
+    key: (&str, usize),
+    width: f32,
+    tokens: &Tokens,
+) -> Option<link::Shown> {
     let mut top = rect.top();
     let title = recipe::line(
         ui,
@@ -275,13 +312,25 @@ fn text_block(ui: &Ui, rect: Rect, row: &Row<'_>, width: f32, tokens: &Tokens) {
         top += galley.size().y;
     }
 
-    if !row.meta.is_empty() {
-        let line = recipe::spaced(
+    let show = row.show.trim();
+    let age = row.age.trim();
+    // The show is linked even though this row only ever sits on that show's own
+    // page: opening it changes nothing, because the history refuses an equal page.
+    let uri = row
+        .show_uri
+        .filter(|_| !show.is_empty() && !row.look.carrying);
+    let Some(uri) = uri else {
+        let joined = row.joined();
+        if joined.is_empty() {
+            return None;
+        }
+        let line = recipe::line(
             ui,
-            &row.meta.to_uppercase(),
+            &joined.to_uppercase(),
             FontId::new(text::XXS, fonts::mono(MonoWeight::Medium)),
             tokens.palette.text_subtle,
             recipe::tracking_pts(text::XXS, tracking::WIDE),
+            width,
         );
         top += space::S2;
         ui.painter().galley(
@@ -289,7 +338,50 @@ fn text_block(ui: &Ui, rect: Rect, row: &Row<'_>, width: f32, tokens: &Tokens) {
             line,
             tokens.palette.text_subtle,
         );
+        return None;
+    };
+
+    let font = FontId::new(text::XXS, fonts::mono(MonoWeight::Medium));
+    let spacing = recipe::tracking_pts(text::XXS, tracking::WIDE);
+    let face = Face {
+        font,
+        tracking: spacing,
+    };
+    let galley = link::lay(ui, &show.to_uppercase(), &face, width);
+    top += space::S2;
+    let shown = link::Placed {
+        pos: Pos2::new(rect.left(), top),
+        galley,
     }
+    .link(
+        ui,
+        ui.scope_id().with(("episode-show", key)),
+        rect,
+        Some(Target::Credit(uri)),
+        tokens.palette.text_subtle,
+        tokens,
+    );
+    // The date is plain and takes its room from what the name left: a date that
+    // does not fit is dropped rather than left as a stump after an ellipsis.
+    if !age.is_empty() {
+        let date = recipe::spaced(
+            ui,
+            &format!(" · {age}").to_uppercase(),
+            FontId::new(text::XXS, fonts::mono(MonoWeight::Medium)),
+            tokens.palette.text_subtle,
+            spacing,
+        );
+        // The space before `·` is the leading step epaint adds to a non-first
+        // glyph; a fresh galley's first glyph gets none, so it is added here.
+        if shown.rect.right() + spacing + date.size().x <= rect.right() {
+            ui.painter().galley(
+                Pos2::new(shown.rect.right() + spacing, top),
+                date,
+                tokens.palette.text_subtle,
+            );
+        }
+    }
+    Some(shown)
 }
 
 /// The measure a description is allowed, `EPISODE_TEXT_CH` characters wide.
@@ -301,10 +393,11 @@ fn measure(ui: &Ui) -> f32 {
 
 /// What a screen reader says for the whole row.
 fn spoken(row: &Row<'_>) -> String {
-    if row.meta.is_empty() {
+    let joined = row.joined();
+    if joined.is_empty() {
         row.title.to_owned()
     } else {
-        format!("{}, {}", row.title, row.meta)
+        format!("{}, {joined}", row.title)
     }
 }
 
@@ -359,12 +452,101 @@ mod tests {
             index: 0,
             title,
             description: None,
-            meta: "",
+            show: "",
+            show_uri: None,
+            age: "",
             duration: None,
             state: State::Resting,
             look: Look::default(),
             refocus: false,
         }
+    }
+
+    const SHOW_URI: &str = "spotify:show:a";
+
+    /// A row whose byline names a show that has a page.
+    fn linked<'a>(show: &'a str, age: &'a str) -> Row<'a> {
+        Row {
+            show,
+            show_uri: Some(SHOW_URI),
+            age,
+            ..row("A Title")
+        }
+    }
+
+    /// The box the words of `label` were painted in.
+    fn words(output: &egui::FullOutput, label: &str) -> Rect {
+        output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                Shape::Text(text) if text.galley.text() == label => {
+                    Some(Rect::from_min_size(text.pos, text.galley.size()))
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{label} is painted"))
+    }
+
+    /// The ink a pass painted `label` in.
+    fn ink(output: &egui::FullOutput, label: &str) -> egui::Color32 {
+        output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                Shape::Text(text) if text.galley.text() == label => Some(text.fallback_color),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{label} is painted"))
+    }
+
+    /// Every label a pass gave a link node.
+    fn link_labels(output: &egui::FullOutput) -> Vec<String> {
+        output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .map(|update| {
+                update
+                    .nodes
+                    .iter()
+                    .filter_map(|(_, node)| {
+                        (node.role() == egui::accesskit::Role::Link)
+                            .then(|| node.label().map(str::to_owned))
+                            .flatten()
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Draws one row for a single pass.
+    fn output_of(ctx: &Context, row: &Row<'_>, events: Vec<Event>) -> egui::FullOutput {
+        let tokens = Tokens::DARK;
+        let mut output = ctx.run_ui(input(events), |ui| {
+            let _ = show(ui, PROBE, row, &tokens);
+        });
+        output.textures_delta.clear();
+        output
+    }
+
+    /// Feeds `events` one pass each after a warm-up, returning what the row
+    /// answered in every pass.
+    fn feed(ctx: &Context, row: &Row<'_>, events: Vec<Event>) -> Vec<Option<Click>> {
+        let tokens = Tokens::DARK;
+        let _ = ctx.run_ui(input(Vec::new()), |ui| {
+            let _ = show(ui, PROBE, row, &tokens);
+        });
+        let mut answers = Vec::new();
+        for event in events {
+            let mut answer = None;
+            let mut output = ctx.run_ui(input(vec![event]), |ui| {
+                answer = show(ui, PROBE, row, &tokens);
+            });
+            output.textures_delta.clear();
+            answers.push(answer);
+        }
+        answers
     }
 
     fn key(key: egui::Key) -> Event {
@@ -700,7 +882,8 @@ mod tests {
     fn the_ghost_is_a_queue_row_with_no_cover() {
         let row = Row {
             description: Some("A long way home."),
-            meta: "Field Notes",
+            show: "Field Notes",
+            age: "3 days ago",
             duration: Some("46 min"),
             ..row("A Title")
         };
@@ -709,7 +892,7 @@ mod tests {
             ghost,
             queue_row::Lifted::new(
                 "A Title".to_owned(),
-                "Field Notes".to_owned(),
+                "Field Notes · 3 days ago".to_owned(),
                 Some("46 min".to_owned()),
                 Cover::Missing
             )
@@ -722,7 +905,8 @@ mod tests {
         let tokens = Tokens::DARK;
         let row = Row {
             description: Some("A long way home."),
-            meta: "Field Notes · 3 days ago",
+            show: "Field Notes",
+            age: "3 days ago",
             duration: Some("46 min"),
             ..row("A Title")
         };
@@ -738,12 +922,359 @@ mod tests {
             );
         }
         assert!(
-            texts.iter().any(|text| text.contains("FIELD NOTES")),
+            texts.contains(&"FIELD NOTES · 3 DAYS AGO"),
             "the meta line is upper-cased: {texts:?}"
         );
         assert!(
             texts.iter().any(|text| text.contains("46 MIN")),
             "the duration is upper-cased: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn the_show_name_is_a_link_to_its_show() {
+        let ctx = context();
+        ctx.enable_accesskit();
+        let output = output_of(&ctx, &linked("Field Notes", "3 days ago"), Vec::new());
+        assert_eq!(
+            link_labels(&output),
+            vec!["Open show FIELD NOTES".to_owned()],
+            "the show's name is the row's one link"
+        );
+    }
+
+    #[test]
+    fn the_date_is_plain() {
+        let ctx = context();
+        let tokens = Tokens::DARK;
+        let row = linked("Field Notes", "3 days ago");
+        let output = output_of(&ctx, &row, Vec::new());
+        let date = words(&output, " · 3 DAYS AGO");
+        assert_eq!(
+            ink(&output, " · 3 DAYS AGO"),
+            tokens.palette.text_subtle,
+            "the date keeps the byline's rest ink"
+        );
+        let answers = feed(
+            &ctx,
+            &row,
+            crate::view::test_support::click_events(date.center()).to_vec(),
+        );
+        assert!(
+            !answers
+                .iter()
+                .flatten()
+                .any(|click| matches!(click, Click::Open(_))),
+            "the date opened a page: {answers:?}"
+        );
+        assert_eq!(
+            answers.iter().flatten().last(),
+            Some(&Click::Select(Press::Replace)),
+            "the date is the row's own click: {answers:?}"
+        );
+    }
+
+    #[test]
+    fn a_click_on_the_show_returns_open_and_does_not_select() {
+        let ctx = context();
+        let row = linked("Field Notes", "3 days ago");
+        let at = words(&output_of(&ctx, &row, Vec::new()), "FIELD NOTES").center();
+        let answers = feed(
+            &ctx,
+            &row,
+            crate::view::test_support::click_events(at).to_vec(),
+        );
+        assert_eq!(
+            answers.iter().flatten().last(),
+            Some(&Click::Open(crate::route::Page::Show(SHOW_URI.to_owned()))),
+            "a click on the name must open the show: {answers:?}"
+        );
+        assert!(
+            !answers
+                .iter()
+                .flatten()
+                .any(|click| matches!(click, Click::Select(_) | Click::Play)),
+            "the name is a link, not the row: {answers:?}"
+        );
+    }
+
+    #[test]
+    fn a_double_click_on_the_show_does_not_play() {
+        let ctx = context();
+        let row = linked("Field Notes", "3 days ago");
+        let at = words(&output_of(&ctx, &row, Vec::new()), "FIELD NOTES").center();
+        let mut events = Vec::new();
+        for _ in 0..2 {
+            events.extend(crate::view::test_support::click_events(at));
+        }
+        let answers = feed(&ctx, &row, events);
+        assert!(
+            answers
+                .iter()
+                .flatten()
+                .any(|click| matches!(click, Click::Open(_))),
+            "the words never opened their page: {answers:?}"
+        );
+        assert!(
+            !answers.iter().flatten().any(|click| *click == Click::Play),
+            "a double click on the words played the episode: {answers:?}"
+        );
+    }
+
+    #[test]
+    fn a_click_beside_the_words_still_selects_and_a_double_click_there_plays() {
+        let ctx = context();
+        let row = linked("Field Notes", "");
+        let show = words(&output_of(&ctx, &row, Vec::new()), "FIELD NOTES");
+        let beside = Pos2::new(show.right() + 20.0, show.center().y);
+        assert!(
+            beside.x < PROBE.right(),
+            "the probe must stay inside the row: {beside:?}"
+        );
+
+        let single = feed(
+            &ctx,
+            &row,
+            crate::view::test_support::click_events(beside).to_vec(),
+        );
+        assert_eq!(
+            single.iter().flatten().last(),
+            Some(&Click::Select(Press::Replace)),
+            "a click beside the words must pick the row: {single:?}"
+        );
+
+        let mut events = Vec::new();
+        for _ in 0..2 {
+            events.extend(crate::view::test_support::click_events(beside));
+        }
+        let double = feed(&ctx, &row, events);
+        assert!(
+            double.iter().flatten().any(|click| *click == Click::Play),
+            "a double click beside the words must play: {double:?}"
+        );
+    }
+
+    #[test]
+    fn no_show_uri_paints_the_byline_as_one_plain_line() {
+        let ctx = context();
+        ctx.enable_accesskit();
+        let row = Row {
+            show: "Field Notes",
+            show_uri: None,
+            age: "3 days ago",
+            ..row("A Title")
+        };
+        let output = output_of(&ctx, &row, Vec::new());
+        assert!(
+            link_labels(&output).is_empty(),
+            "a show with no page drew a link node: {:?}",
+            link_labels(&output)
+        );
+        let texts = drawn_texts(&output);
+        assert!(
+            texts.contains(&"FIELD NOTES · 3 DAYS AGO"),
+            "the byline is one line: {texts:?}"
+        );
+        assert!(
+            !texts.contains(&"FIELD NOTES"),
+            "the show is not a line of its own: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn a_carried_episode_row_has_no_link() {
+        let ctx = context();
+        ctx.enable_accesskit();
+        let row = Row {
+            look: Look {
+                carrying: true,
+                ..Look::default()
+            },
+            ..linked("Field Notes", "3 days ago")
+        };
+        let output = output_of(&ctx, &row, Vec::new());
+        assert!(
+            link_labels(&output).is_empty(),
+            "a carried row drew a link node: {:?}",
+            link_labels(&output)
+        );
+        let texts = drawn_texts(&output);
+        assert!(
+            texts.contains(&"FIELD NOTES · 3 DAYS AGO"),
+            "a carried row keeps the joined byline: {texts:?}"
+        );
+        let at = words(&output, "FIELD NOTES · 3 DAYS AGO").center();
+        let answers = feed(
+            &ctx,
+            &row,
+            crate::view::test_support::click_events(at).to_vec(),
+        );
+        assert!(
+            !answers
+                .iter()
+                .flatten()
+                .any(|click| matches!(click, Click::Open(_))),
+            "a carried row opened a page: {answers:?}"
+        );
+    }
+
+    #[test]
+    fn the_date_hangs_one_tracking_step_off_the_show() {
+        let ctx = context();
+        let output = output_of(&ctx, &linked("Field Notes", "3 days ago"), Vec::new());
+        let show = words(&output, "FIELD NOTES");
+        let date = words(&output, " · 3 DAYS AGO");
+        let spacing = recipe::tracking_pts(text::XXS, tracking::WIDE);
+        assert!(
+            (date.left() - show.right() - spacing).abs() < 0.01,
+            "the date starts {} from the show, not {spacing}",
+            date.left() - show.right()
+        );
+        assert!(
+            (date.top() - show.top()).abs() < 0.01,
+            "the date sits on another line: {} against {}",
+            date.top(),
+            show.top()
+        );
+    }
+
+    #[test]
+    fn a_blank_or_dated_half_paints_no_stray_separator() {
+        // A blank show drops out of the link path, so the date stands alone; an
+        // unknown age paints no dot at all.
+        for blank in ["", "   "] {
+            let ctx = context();
+            let output = output_of(&ctx, &linked(blank, "3 days ago"), Vec::new());
+            let texts = drawn_texts(&output);
+            assert!(
+                texts.contains(&"3 DAYS AGO"),
+                "the date stands alone: {texts:?}"
+            );
+            assert!(
+                !texts.iter().any(|text| text.contains('·')),
+                "a blank show left a stray separator: {texts:?}"
+            );
+        }
+
+        let ctx = context();
+        let output = output_of(&ctx, &linked("Field Notes", ""), Vec::new());
+        let texts = drawn_texts(&output);
+        assert!(
+            texts.contains(&"FIELD NOTES"),
+            "the show is painted: {texts:?}"
+        );
+        assert!(
+            !texts.iter().any(|text| text.contains('·')),
+            "an unknown age left a trailing separator: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn a_drag_from_the_show_still_lifts_the_row() {
+        // The link senses a click only; the body owns the drag under it.
+        for (travel, lifts) in [(3.0, false), (7.0, true)] {
+            let ctx = context();
+            let row = linked("Field Notes", "3 days ago");
+            let start = words(&output_of(&ctx, &row, Vec::new()), "FIELD NOTES").center();
+            let end = start + Vec2::new(travel, 0.0);
+            let mut lifted = false;
+            for event in [
+                Event::PointerMoved(start),
+                crate::view::test_support::button(start, true),
+                Event::PointerMoved(end),
+                crate::view::test_support::button(end, false),
+            ] {
+                let lifted = &mut lifted;
+                run(&ctx, input(vec![event]), |ui| {
+                    if show(ui, PROBE, &row, &Tokens::DARK) == Some(Click::Lift) {
+                        *lifted = true;
+                    }
+                });
+            }
+            assert_eq!(lifted, lifts, "a {travel}-point move from the show's words");
+        }
+    }
+
+    #[test]
+    fn the_show_elides_and_hides_the_date_when_it_fills_the_width() {
+        let ctx = context();
+        let tokens = Tokens::DARK;
+        let narrow = Rect {
+            min: Pos2::new(10.0, 10.0),
+            max: Pos2::new(200.0, 130.0),
+        };
+        let row = linked("Extraordinarilylongshownameofgreatlength", "3 days ago");
+        let mut output = ctx.run_ui(input(Vec::new()), |ui| {
+            let _ = show(ui, narrow, &row, &tokens);
+        });
+        output.textures_delta.clear();
+
+        let body = row_parts(narrow, 0.0).body;
+        let show = words(&output, "EXTRAORDINARILYLONGSHOWNAMEOFGREATLENGTH");
+        assert!(
+            show.width() <= body.width() + 0.01,
+            "the show {show:?} runs past the body {body:?}"
+        );
+        assert!(
+            show.width() >= body.width() - 10.0,
+            "the show {show:?} elides to fill the body {body:?}"
+        );
+        let painted = output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                Shape::Text(text)
+                    if text.galley.text() == "EXTRAORDINARILYLONGSHOWNAMEOFGREATLENGTH" =>
+                {
+                    Some(
+                        text.galley
+                            .rows
+                            .iter()
+                            .flat_map(|row| row.glyphs.iter().map(|glyph| glyph.chr))
+                            .collect::<String>(),
+                    )
+                }
+                _ => None,
+            });
+        assert!(
+            painted.as_deref().is_some_and(|text| text.contains('…')),
+            "the show elides: {painted:?}"
+        );
+        let texts = drawn_texts(&output);
+        assert!(
+            !texts.iter().any(|text| text.contains("3 DAYS AGO")),
+            "the date is dropped rather than left a stump: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn a_carried_byline_elides_at_the_same_width_as_a_linked_one() {
+        let ctx = context();
+        let tokens = Tokens::DARK;
+        let narrow = Rect {
+            min: Pos2::new(10.0, 10.0),
+            max: Pos2::new(200.0, 130.0),
+        };
+        let carried = Row {
+            look: Look {
+                carrying: true,
+                ..Look::default()
+            },
+            ..linked("Extraordinarilylongshownameofgreatlength", "3 days ago")
+        };
+        let mut output = ctx.run_ui(input(Vec::new()), |ui| {
+            let _ = show(ui, narrow, &carried, &tokens);
+        });
+        output.textures_delta.clear();
+
+        let body = row_parts(narrow, 0.0).body;
+        let joined = words(
+            &output,
+            "EXTRAORDINARILYLONGSHOWNAMEOFGREATLENGTH · 3 DAYS AGO",
+        );
+        assert!(
+            joined.width() <= body.width() + 0.01,
+            "the carried byline {joined:?} runs past the body {body:?}"
         );
     }
 }
