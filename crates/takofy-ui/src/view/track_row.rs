@@ -14,9 +14,9 @@
 //! is unknown and while a block is carried, so a list of sixty rows is a hundred
 //! and twenty stops in the common case and a hundred and eighty only once every
 //! heart is live. The album and artist cells are links that take a single click
-//! anywhere on the cell, but their interaction is deliberately not focusable, so
-//! they add no stop of their own: the cost is that a keyboard can reach neither
-//! link yet, while Enter and Space on the row still play.
+//! on the words they paint, but their interaction is deliberately not focusable,
+//! so they add no stop of their own: the cost is that a keyboard can reach
+//! neither link yet, while Enter and Space on the row still play.
 //!
 //! The row's menu has three doors — the `⋯`, a right-click anywhere on the row,
 //! and the context-menu key or Shift+F10 while the row or its `⋯` holds the
@@ -623,8 +623,8 @@ fn title_cell(ui: &Ui, rect: Rect, row: &Row<'_>, tokens: &Tokens) {
 ///
 /// A playlist and an album's plays table carry it. The cell is a link when its first
 /// artist resolved a page and its name is non-empty: an empty cell painted
-/// nothing, so it gets no hit area either. The hit area is the whole cell, not
-/// just the painted words.
+/// nothing, so it gets no hit area either. The hit area is the painted, elided
+/// words; the rest of the cell belongs to the row.
 fn artist(
     ui: &mut Ui,
     rect: Rect,
@@ -645,7 +645,7 @@ fn artist(
         );
         return None;
     };
-    let response = link_cell(ui, rect, "track-artist", row.artist, "artist", key, tokens);
+    let response = link_cell(ui, rect, "track-artist", row.artist, "artist", key, tokens)?;
     Some(Link {
         hovered: response.hovered(),
         page: response.clicked().then(|| Page::credit(uri)),
@@ -655,7 +655,8 @@ fn artist(
 /// The album column: the credit on an artist's plays table, and a plain fact
 /// on a playlist's rows.
 ///
-/// The cell is a link under the same rule as [`artist`]'s.
+/// The cell is a link under the same rule as [`artist`]'s: the painted words and
+/// nothing else.
 fn album(
     ui: &mut Ui,
     rect: Rect,
@@ -677,7 +678,7 @@ fn album(
         );
         return None;
     };
-    let response = link_cell(ui, rect, "track-album", label, "album", key, tokens);
+    let response = link_cell(ui, rect, "track-album", label, "album", key, tokens)?;
     Some(Link {
         hovered: response.hovered(),
         page: response.clicked().then(|| Page::Album(uri.to_owned())),
@@ -686,11 +687,13 @@ fn album(
 
 /// Paints a link cell's label and returns its interaction.
 ///
-/// The hit area is the whole cell, padding included, not only the painted text.
-/// The interaction is created before the label is painted so the painter can
-/// read its hover, and after the row's own so the cell takes the hit on a tie.
-/// The sense is `Sense::CLICK` rather than `Sense::click()`: a link must not add
-/// a focus stop to a sixty-row list.
+/// The hit area is the painted, elided text, not the cell: a click on the rest of
+/// the cell reaches the row. One galley is laid out and painted, so the words
+/// that take the click and the words the eye sees cannot disagree. The
+/// interaction is created before the label is painted so the painter can read its
+/// hover, and after the row's own so the cell takes the hit on a tie. The sense
+/// is `Sense::CLICK` rather than `Sense::click()`: a link must not add a focus
+/// stop to a sixty-row list.
 fn link_cell(
     ui: &mut Ui,
     rect: Rect,
@@ -699,8 +702,25 @@ fn link_cell(
     kind: &str,
     key: (&str, usize),
     tokens: &Tokens,
-) -> egui::Response {
-    let response = ui.interact(rect, ui.scope_id().with((id, key)), Sense::CLICK);
+) -> Option<egui::Response> {
+    // The layout ink is a placeholder because this galley is painted with the
+    // hover ink below; layout does not depend on colour, so the measured run is
+    // the painted run.
+    let font = recipe::track_secondary();
+    let placed = place_left(
+        ui,
+        rect,
+        vertically_centred(ui, rect, &font),
+        label,
+        font,
+        Color32::PLACEHOLDER,
+    );
+    let hit = placed.rect().intersect(rect);
+    if hit.width() <= 0.0 || hit.height() <= 0.0 {
+        placed.paint(ui, tokens.palette.text_muted);
+        return None;
+    }
+    let response = ui.interact(hit, ui.scope_id().with((id, key)), Sense::CLICK);
     response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::Role::Link, true, format!("Open {kind} {label}"))
     });
@@ -714,17 +734,14 @@ fn link_cell(
         motion::FAST,
         ease::out,
     );
-    left(
+    placed.paint(
         ui,
-        rect,
-        label,
-        recipe::track_secondary(),
         tokens
             .palette
             .text_muted
             .lerp_to_gamma(tokens.palette.text, reveal),
     );
-    response
+    Some(response)
 }
 
 /// The date the track was added, which only a playlist carries.
@@ -972,11 +989,39 @@ fn left(ui: &Ui, rect: Rect, label: &str, font: FontId, color: Color32) {
     );
 }
 
+/// A line laid out at its place on screen, ready to be painted.
+struct Placed {
+    pos: Pos2,
+    galley: std::sync::Arc<egui::Galley>,
+}
+
+impl Placed {
+    /// The box the line occupies on screen.
+    fn rect(&self) -> Rect {
+        Rect::from_min_size(self.pos, self.galley.size())
+    }
+
+    /// Paints the line in `color`, which must be a real ink.
+    ///
+    /// Never [`Color32::PLACEHOLDER`]: the tessellator asserts that it never
+    /// receives one. The placeholder is only the argument to the layout call
+    /// that measures a line, and the ink is chosen before painting.
+    fn paint(self, ui: &Ui, color: Color32) {
+        ui.painter().galley(self.pos, self.galley, color);
+    }
+}
+
+/// Lays a line out against the left edge of `rect` with its top at `top`.
+fn place_left(ui: &Ui, rect: Rect, top: f32, label: &str, font: FontId, color: Color32) -> Placed {
+    Placed {
+        pos: Pos2::new(rect.left(), top),
+        galley: recipe::line(ui, label, font, color, 0.0, rect.width()),
+    }
+}
+
 /// Paints a line against the left edge of `rect` with its top at `top`.
 fn left_at(ui: &Ui, rect: Rect, top: f32, label: &str, font: FontId, color: Color32) {
-    let galley = recipe::line(ui, label, font, color, 0.0, rect.width());
-    ui.painter()
-        .galley(Pos2::new(rect.left(), top), galley, color);
+    place_left(ui, rect, top, label, font, color).paint(ui, color);
 }
 
 /// Paints a line centred in `rect`.
@@ -1081,9 +1126,19 @@ mod tests {
         events: &[Event],
         modifiers: Modifiers,
     ) -> Vec<Option<Click>> {
+        run_in(ctx, body_rect(), columns(), row, events, modifiers)
+    }
+
+    /// The same pass sequence, against a row solved into `rect` with `columns`.
+    fn run_in(
+        ctx: &egui::Context,
+        rect: Rect,
+        columns: Columns,
+        row: &Row<'_>,
+        events: &[Event],
+        modifiers: Modifiers,
+    ) -> Vec<Option<Click>> {
         let tokens = Tokens::DARK;
-        let rect = body_rect();
-        let columns = columns();
         // Warm up, so hit testing has a previous pass to read. The held
         // modifiers arrive as an event and stay held for the passes after it.
         let mut output = ctx.run_ui(input_with(vec![Event::ModifiersChanged(modifiers)]), |ui| {
@@ -1379,6 +1434,45 @@ mod tests {
             })
     }
 
+    /// The ink a painted line was given, read back from a frame.
+    fn ink_of(output: &egui::FullOutput, label: &str) -> Color32 {
+        output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Text(text) if text.galley.text() == label => {
+                    Some(text.fallback_color)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{label:?} was not painted"))
+    }
+
+    /// The box the painted words of `label` occupy in a frame of `row`.
+    fn words(ctx: &egui::Context, row: &Row<'_>, label: &str) -> Rect {
+        let output = paint_row(ctx, row, Vec::new(), Modifiers::NONE);
+        text_rect(&output, label).unwrap_or_else(|| panic!("{label:?} was not painted"))
+    }
+
+    /// A point between the words and their cell's right edge.
+    fn space_after(cell: Rect, words: Rect) -> Pos2 {
+        Pos2::new(
+            words.right() + (cell.right() - words.right()) / 2.0,
+            cell.center().y,
+        )
+    }
+
+    /// A fresh context, the standard row and the box `label` is painted into.
+    ///
+    /// Each edge probe gets its own context: two clicks within egui's
+    /// double-click distance of each other are one double click.
+    fn fresh_words(label: &str) -> (egui::Context, Row<'static>, Rect) {
+        let ctx = context();
+        let row = row_of(1);
+        let words = words(&ctx, &row, label);
+        (ctx, row, words)
+    }
+
     /// The click one sequence of passes reports for a pointer at `pos`, on a
     /// plays-shaped row solved the way the album page solves it.
     fn click_plays(ctx: &egui::Context, pos: Pos2) -> Option<Click> {
@@ -1593,13 +1687,13 @@ mod tests {
     fn a_link_click_opens_and_does_not_select() {
         let ctx = context();
         let row = row_of(1);
-        let artist = columns().at(body_rect().min).artist.center();
+        let artist = words(&ctx, &row, "Slow Tide").center();
         let answers = run(&ctx, &row, &click_events(artist), Modifiers::NONE);
 
         assert_eq!(
             answers.iter().flatten().last(),
             Some(&Click::Open(Page::credit("spotify:artist:b"))),
-            "a click on the artist cell opens it"
+            "a click on the artist cell's words opens it"
         );
         assert!(
             !answers
@@ -1607,6 +1701,329 @@ mod tests {
                 .flatten()
                 .any(|click| matches!(click, Click::Select(_))),
             "a link click selected the row: {answers:?}"
+        );
+    }
+
+    #[test]
+    fn a_click_on_the_words_of_each_credit_opens_it() {
+        let cells = columns().at(body_rect().min);
+        let cases = [
+            ("Slow Tide", cells.artist, Page::credit("spotify:artist:b")),
+            (
+                "Record",
+                cells.album,
+                Page::Album("spotify:album:c".to_owned()),
+            ),
+        ];
+        for (label, cell, page) in cases {
+            let (ctx, row, words) = fresh_words(label);
+            let at = words.center();
+            assert!(
+                words.right() < cell.right() && cell.contains(at),
+                "{label:?} ends at {} inside its cell, which ends at {}",
+                words.right(),
+                cell.right()
+            );
+            let answers = run(&ctx, &row, &click_events(at), Modifiers::NONE);
+            assert_eq!(
+                answers.iter().flatten().last(),
+                Some(&Click::Open(page)),
+                "a click on {label:?} opens its page: {answers:?}"
+            );
+            assert!(
+                !answers
+                    .iter()
+                    .flatten()
+                    .any(|click| matches!(click, Click::Select(_))),
+                "a click on {label:?} selected the row: {answers:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_click_past_the_words_selects_the_row() {
+        let cells = columns().at(body_rect().min);
+        for (label, cell) in [("Slow Tide", cells.artist), ("Record", cells.album)] {
+            let (ctx, row, words) = fresh_words(label);
+            let at = space_after(cell, words);
+            assert!(
+                words.right() < at.x && at.x < cell.right(),
+                "the probe at x={} sits between {label:?}, which ends at {}, and the cell's edge at {}",
+                at.x,
+                words.right(),
+                cell.right()
+            );
+            let answers = run(&ctx, &row, &click_events(at), Modifiers::NONE);
+            assert_eq!(
+                answers.iter().flatten().last(),
+                Some(&Click::Select(Press::Replace)),
+                "a click past {label:?} selects the row: {answers:?}"
+            );
+            assert!(
+                !answers
+                    .iter()
+                    .flatten()
+                    .any(|click| matches!(click, Click::Open(_))),
+                "a click past {label:?} opened its page: {answers:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_double_click_past_the_words_plays() {
+        let cell = columns().at(body_rect().min).album;
+        let (ctx, row, words) = fresh_words("Record");
+        let at = space_after(cell, words);
+        assert!(
+            words.right() < at.x && at.x < cell.right(),
+            "the probe at x={} must sit past the words at {}",
+            at.x,
+            words.right()
+        );
+        let mut events = click_events(at).to_vec();
+        events.extend(click_events(at));
+        let answers = run(&ctx, &row, &events, Modifiers::NONE);
+
+        assert!(
+            answers.iter().flatten().any(|click| *click == Click::Play),
+            "a double click past the words does not play: {answers:?}"
+        );
+        assert!(
+            !answers
+                .iter()
+                .flatten()
+                .any(|click| matches!(click, Click::Open(_))),
+            "a double click past the words opened the album: {answers:?}"
+        );
+    }
+
+    #[test]
+    fn the_hit_rect_ends_where_the_painted_words_end() {
+        let cells = columns().at(body_rect().min);
+        let cases = [
+            ("Slow Tide", cells.artist, Page::credit("spotify:artist:b")),
+            (
+                "Record",
+                cells.album,
+                Page::Album("spotify:album:c".to_owned()),
+            ),
+        ];
+        for (label, cell, page) in cases {
+            let (ctx, row, words) = fresh_words(label);
+            let inside = Pos2::new(words.right() - 1.0, cell.center().y);
+            let answers = run(&ctx, &row, &click_events(inside), Modifiers::NONE);
+            assert_eq!(
+                answers.iter().flatten().last(),
+                Some(&Click::Open(page)),
+                "a click one point inside {label:?} opens its page: {answers:?}"
+            );
+
+            let (ctx, row, words) = fresh_words(label);
+            let outside = Pos2::new(words.right() + 2.0, cell.center().y);
+            assert!(
+                outside.x < cell.right(),
+                "the probe at x={} must still be inside the cell, which ends at {}",
+                outside.x,
+                cell.right()
+            );
+            let answers = run(&ctx, &row, &click_events(outside), Modifiers::NONE);
+            assert_eq!(
+                answers.iter().flatten().last(),
+                Some(&Click::Select(Press::Replace)),
+                "a click two points past {label:?} selects the row: {answers:?}"
+            );
+        }
+    }
+
+    /// A row whose credit elides in a reduced-width table, with the box its
+    /// visible run occupies.
+    fn elided_credit() -> (egui::Context, Rect, Columns, Row<'static>, Rect) {
+        let width = 700.0;
+        let rect = Rect::from_min_size(Pos2::ZERO, vec2(width, crate::theme::extent::ROW_H));
+        let columns = crate::layout::table::columns(width, crate::layout::Table::Reduced.columns());
+        let artist = "The Extremely Long-Named Orchestra of the Northern Coast and Its Friends";
+        let row = Row {
+            artist,
+            ..row_of(1)
+        };
+        let ctx = context();
+        let mut output = ctx.run_ui(input_with(Vec::new()), |ui| {
+            let _ = show(ui, rect, columns, &row, &Tokens::DARK);
+        });
+        output.textures_delta.clear();
+        let galley = output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Text(text) if text.galley.text() == artist => {
+                    Some(text.galley.clone())
+                }
+                _ => None,
+            })
+            .expect("the artist column paints its label");
+        assert!(galley.elided, "the credit elides");
+        assert_eq!(galley.rows.len(), 1, "the credit stays on one line");
+        let words = text_rect(&output, artist).expect("the credit's painted box");
+        (ctx, rect, columns, row, words)
+    }
+
+    #[test]
+    fn an_elided_credit_is_a_link_only_over_its_visible_run() {
+        let (ctx, rect, columns, row, words) = elided_credit();
+        let cell = columns.at(rect.min).artist;
+        assert!(
+            words.right() <= cell.right() + 0.01,
+            "the visible run ends at {} inside a cell ending at {}",
+            words.right(),
+            cell.right()
+        );
+        let answers = run_in(
+            &ctx,
+            rect,
+            columns,
+            &row,
+            &click_events(words.center()),
+            Modifiers::NONE,
+        );
+        assert_eq!(
+            answers.iter().flatten().last(),
+            Some(&Click::Open(Page::credit("spotify:artist:b"))),
+            "a click on the visible run opens the artist: {answers:?}"
+        );
+
+        let (ctx, rect, columns, row, words) = elided_credit();
+        let past = Pos2::new(words.right() + 2.0, words.center().y);
+        let answers = run_in(
+            &ctx,
+            rect,
+            columns,
+            &row,
+            &click_events(past),
+            Modifiers::NONE,
+        );
+        assert_eq!(
+            answers.iter().flatten().last(),
+            Some(&Click::Select(Press::Replace)),
+            "a click past the visible run selects the row: {answers:?}"
+        );
+        assert!(
+            !answers
+                .iter()
+                .flatten()
+                .any(|click| matches!(click, Click::Open(_))),
+            "a click past the visible run opened the artist: {answers:?}"
+        );
+    }
+
+    #[test]
+    fn a_credit_brightens_and_points_only_over_its_words() {
+        let tokens = Tokens::DARK;
+        let cell = columns().at(body_rect().min).album;
+        let ctx = context();
+        let row = row_of(1);
+        let words = words(&ctx, &row, "Record");
+
+        let settle = |at: Pos2| {
+            for _ in 0..12 {
+                let _ = paint_row(&ctx, &row, vec![Event::PointerMoved(at)], Modifiers::NONE);
+            }
+            paint_row(&ctx, &row, vec![Event::PointerMoved(at)], Modifiers::NONE)
+        };
+
+        let over = settle(words.center());
+        assert_eq!(
+            over.platform_output.cursor_icon,
+            egui::CursorIcon::PointingHand,
+            "the words point the hand"
+        );
+        assert_eq!(
+            ink_of(&over, "Record"),
+            tokens.palette.text,
+            "the words brighten"
+        );
+
+        let at = space_after(cell, words);
+        assert!(
+            words.right() < at.x && at.x < cell.right(),
+            "the probe at x={} must sit past the words at {}",
+            at.x,
+            words.right()
+        );
+        let away = settle(at);
+        assert_ne!(
+            away.platform_output.cursor_icon,
+            egui::CursorIcon::PointingHand,
+            "the empty part of the cell does not point the hand"
+        );
+        assert_eq!(
+            ink_of(&away, "Record"),
+            tokens.palette.text_muted,
+            "the label goes muted again off the words"
+        );
+    }
+
+    #[test]
+    fn a_drag_past_the_words_lifts_the_row() {
+        let cell = columns().at(body_rect().min).album;
+        let (ctx, row, words) = fresh_words("Record");
+        let at = space_after(cell, words);
+        assert!(
+            words.right() < at.x && at.x < cell.right(),
+            "the probe at x={} must sit past the words at {}",
+            at.x,
+            words.right()
+        );
+        let answers = run(&ctx, &row, &twitch(at, 7.0), Modifiers::NONE);
+        assert!(
+            answers.iter().flatten().any(|click| *click == Click::Lift),
+            "a drag past the words does not lift the row: {answers:?}"
+        );
+    }
+
+    #[test]
+    fn the_link_node_covers_only_the_words() {
+        let ctx = context();
+        ctx.enable_accesskit();
+        let row = row_of(1);
+        let key = (row.uri, row.number);
+        let mut response = None;
+        let mut output = ctx.run_ui(input_with(Vec::new()), |ui| {
+            let _ = show(ui, body_rect(), columns(), &row, &Tokens::DARK);
+            let link = ui.scope_id().with(("track-artist", key));
+            response = ui.ctx().read_response(link).map(|response| response.rect);
+        });
+        output.textures_delta.clear();
+
+        let words = text_rect(&output, "Slow Tide").expect("the credit is painted");
+        let update = output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .expect("accesskit is on");
+        let (_, node) = update
+            .nodes
+            .iter()
+            .find(|(_, node)| {
+                node.role() == egui::accesskit::Role::Link
+                    && node.label() == Some("Open artist Slow Tide")
+            })
+            .expect("the artist cell registers a link node");
+        let bounds = node.bounds().expect("the link node covers the words");
+        let node_rect = Rect::from_min_max(
+            Pos2::new(bounds.x0 as f32, bounds.y0 as f32),
+            Pos2::new(bounds.x1 as f32, bounds.y1 as f32),
+        );
+        assert!(
+            (node_rect.min - words.min).length() < 1.0
+                && (node_rect.max - words.max).length() < 1.0,
+            "the link node is {node_rect:?} where the words are {words:?}"
+        );
+
+        // The node's bounds are the response's rect, which is the narrowed hit.
+        let rect = response.expect("the link was interacted this frame");
+        assert!(
+            (rect.min - words.min).length() < 1.0 && (rect.max - words.max).length() < 1.0,
+            "the link's response is {rect:?} where the words are {words:?}"
         );
     }
 
@@ -2046,12 +2463,18 @@ mod tests {
 
     #[test]
     fn a_right_click_on_the_body_a_link_cell_and_the_index_opens_at_the_pointer() {
-        let columns = columns().at(body_rect().min);
+        let cells = columns().at(body_rect().min);
+        let anchor = context();
+        let anchor_row = menu_row();
+        let artist = words(&anchor, &anchor_row, "Slow Tide");
+        let album = words(&anchor, &anchor_row, "Record");
         let points = [
             body_point(),
-            columns.artist.center(),
-            columns.album.center(),
-            number_box(columns.index).center(),
+            artist.center(),
+            space_after(cells.artist, artist),
+            album.center(),
+            space_after(cells.album, album),
+            number_box(cells.index).center(),
         ];
         for point in points {
             let ctx = context();
