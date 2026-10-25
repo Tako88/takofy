@@ -595,7 +595,7 @@ fn state_of(state: RemoteState) -> TransportState {
 
 #[cfg(test)]
 mod tests {
-    use takofy_model::CoverUrl;
+    use takofy_model::{CoverSet, CoverUrl};
 
     use super::*;
 
@@ -640,7 +640,9 @@ mod tests {
             title: title.to_owned(),
             artists: "Vela".to_owned(),
             named: true,
-            cover: CoverUrl::from_wire("https://i.scdn.co/image/abc"),
+            cover: Some(CoverSet::single(
+                CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover url"),
+            )),
             ..entry(uri)
         }
     }
@@ -1000,7 +1002,9 @@ mod tests {
                 artists: "Vela".to_owned(),
                 album_uri: None,
                 artist_uri: None,
-                cover: CoverUrl::from_wire("https://i.scdn.co/image/abc"),
+                cover: Some(CoverSet::single(
+                    CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover url"),
+                )),
             })
         );
     }

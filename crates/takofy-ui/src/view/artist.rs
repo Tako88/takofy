@@ -1,5 +1,5 @@
-//! The artist page's body: the photograph hero, the shared action bar, Popular,
-//! and the Discography. The hero is only the band and the name; the page draws
+//! The artist page's body: the plate hero, the shared action bar, Popular, and
+//! the Discography. The hero is the band, its name and its shelf; the page draws
 //! the row and owns the presses it reports.
 //!
 //! The page draws only what the library already has. `Load::Idle` has nothing to
@@ -26,7 +26,7 @@ use std::time::Instant;
 use egui::{Id, Rect, Sense, Ui, Vec2, vec2};
 use takofy_model::{FollowedArtist, Release};
 
-use crate::cover::{Art, Cover};
+use crate::cover::{Art, Cover, want_px};
 use crate::format::{discography_meta, format_position};
 use crate::layout::actionbar::Kind;
 use crate::layout::sticky;
@@ -168,11 +168,14 @@ pub fn artist_view(
                         return;
                     };
 
+                    // The hero holds the plate at its own size and draws the
+                    // wash from the same pixels.
                     let hero = ArtistHero {
                         name: &artist.name,
-                        portrait: art.look(artist.portrait.as_ref(), now),
+                        portrait: artist.portrait.as_ref(),
+                        releases: &artist.releases,
                     };
-                    artist_hero::show(ui, &hero, tokens);
+                    artist_hero::show(ui, &hero, art, now, tokens);
 
                     // The action row is the shared one, so it pins while the
                     // discography scrolls under it. The artist's difference is a
@@ -342,7 +345,11 @@ pub fn artist_view(
                                     continue;
                                 }
                                 let labels = page.releases.look(&release.uri);
-                                let cover = art.look(release.cover.as_ref(), now);
+                                let cover = art.look(
+                                    release.cover.as_ref(),
+                                    want_px(extent::RELEASE_ART, ui.pixels_per_point()),
+                                    now,
+                                );
                                 let block = Block {
                                     release,
                                     labels,
@@ -546,6 +553,7 @@ fn fans(
     ui.allocate_rect(list, egui::Sense::hover());
     let visible = ui.clip_rect();
 
+    let want = want_px(solved.card_w, ui.pixels_per_point());
     let mut pressed = None;
     for (index, card) in cards.iter().enumerate() {
         let rect = solved.card_rect(index);
@@ -561,7 +569,7 @@ fn fans(
             round: true,
             shelf: SidebarKind::Artists,
             playable: false,
-            cover: art.look(card.portrait.as_ref(), now),
+            cover: art.look(card.portrait.as_ref(), want, now),
             picture: hero::Picture::Cover,
         };
         if media::tile(ui, rect, &media, tokens) == Some(media::Press::Open) {
@@ -646,7 +654,11 @@ fn popular(
             duration: duration.as_deref(),
             state: state_of(&entry.uri, transport),
             // Built inside the cull, so a row off screen asks for no art.
-            cover: Some(art.look(entry.cover.as_ref(), now)),
+            cover: Some(art.look(
+                entry.cover.as_ref(),
+                want_px(extent::LIBRARY_ART, ui.pixels_per_point()),
+                now,
+            )),
             look: selection.look(index),
             menu: gate.allows(),
             liked: likes.state(&entry.uri),
@@ -715,7 +727,7 @@ fn block_rect(ui: &Ui, release: &Release) -> Rect {
 mod tests {
     use egui::{Context, Event, Pos2, RawInput, Rect, Vec2, pos2, vec2};
     use takofy_model::{
-        ArtistDetail, CoverUrl, Release, Release as _Release, ReleaseKind, TrackEntry,
+        ArtistDetail, CoverSet, CoverUrl, Release, Release as _Release, ReleaseKind, TrackEntry,
     };
 
     use super::*;
@@ -884,8 +896,12 @@ mod tests {
         drawn_texts(output).contains(&name)
     }
 
-    fn cover(tail: &str) -> CoverUrl {
+    fn cover_url(tail: &str) -> CoverUrl {
         CoverUrl::from_wire(&format!("https://i.scdn.co/image/{tail}")).expect("a cover url")
+    }
+
+    fn cover(tail: &str) -> CoverSet {
+        CoverSet::single(cover_url(tail))
     }
 
     const PAGE: Vec2 = Vec2::new(900.0, 1500.0);
@@ -1154,10 +1170,8 @@ mod tests {
         let mut found = None;
         run(ctx, input(size, Vec::new()), |ui| {
             ui.add_space(space::S3);
-            let _ = ui.allocate_exact_size(
-                vec2(ui.available_width(), hero::ARTIST_MIN_H),
-                Sense::hover(),
-            );
+            let band = crate::layout::hero::artist_frame(ui.ctx().content_rect().width(), 0).min_h;
+            let _ = ui.allocate_exact_size(vec2(ui.available_width(), band), Sense::hover());
             found = Some(actionbar::row_rect(ui));
         });
         found.expect("the band and its action row lay out")
@@ -1232,10 +1246,8 @@ mod tests {
         let mut found = None;
         run(ctx, input(size, Vec::new()), |ui| {
             ui.add_space(space::S3);
-            let _ = ui.allocate_exact_size(
-                vec2(ui.available_width(), hero::ARTIST_MIN_H),
-                Sense::hover(),
-            );
+            let band = crate::layout::hero::artist_frame(ui.ctx().content_rect().width(), 0).min_h;
+            let _ = ui.allocate_exact_size(vec2(ui.available_width(), band), Sense::hover());
             actionbar::row_rect(ui);
             crate::view::inner(ui, |ui| {
                 section::head(ui, "Popular", "", &tokens);
@@ -1276,7 +1288,10 @@ mod tests {
             texts.contains(&"Vela Moreno"),
             "the hero's title: {texts:?}"
         );
-        assert!(texts.contains(&"ARTIST"), "the hero's eyebrow: {texts:?}");
+        assert!(
+            !texts.contains(&"ARTIST"),
+            "the plate band carries no eyebrow: {texts:?}"
+        );
     }
 
     /// Whether `artist`'s popular list holds `index` as part of its selection.
@@ -2425,11 +2440,12 @@ mod tests {
             probe.x - space::GUTTER
         );
 
-        // The hero above them is still full-bleed: its title starts at the
-        // gutter because the band pads itself, and its photograph spans the pane.
+        // The hero's words start beside the plate, and the plate at the gutter.
         let title = text_rect(&output, "Vela Moreno").expect("the hero title is painted");
         assert!(
-            (title.left() - space::GUTTER).abs() < 0.01,
+            (title.left() - (space::GUTTER + crate::layout::hero::plate_side(probe.x) + space::S5))
+                .abs()
+                < 0.01,
             "the hero title sits at {}",
             title.left()
         );
@@ -2932,9 +2948,33 @@ mod tests {
     fn a_hidden_block_has_no_wants() {
         let ctx = context();
         let size = tall();
-        let mut releases = mixed();
-        releases[0].cover = Some(cover("album"));
-        releases[1].cover = Some(cover("ep"));
+        // The shelf takes the oldest, the middle and the newest covered
+        // release, so putting the two blocks at the unpicked middle positions
+        // keeps their art out of the band: a fetch of it can only be the
+        // block's own. The years run in wire order, so the sort keeps that order
+        // and the picks are indices 0, 2 and 4.
+        let mut releases = vec![
+            release("spotify:album:zero", "Zero", &["spotify:track:0"]),
+            release("spotify:album:r1", "Album One", &["spotify:track:1"]),
+            release("spotify:album:two", "Two", &["spotify:track:2"]),
+            release_of_kind(
+                "spotify:ep:r2",
+                "An EP",
+                ReleaseKind::Ep,
+                &["spotify:track:3"],
+            ),
+            release("spotify:album:four", "Four", &["spotify:track:4"]),
+        ];
+        for (index, year, tail) in [
+            (0, 2018, "zero"),
+            (1, 2019, "album"),
+            (2, 2020, "two"),
+            (3, 2021, "ep"),
+            (4, 2022, "four"),
+        ] {
+            releases[index].year = Some(year);
+            releases[index].cover = Some(cover(tail));
+        }
         let now = Instant::now();
 
         // The control: unfiltered, both blocks are on screen and ask.
@@ -2963,9 +3003,9 @@ mod tests {
             "the control frame asks for the album's labels: {wanted_labels:?}"
         );
         assert!(
-            wanted_covers
-                .iter()
-                .any(|command| matches!(command, Command::Fetch { url } if *url == cover("album"))),
+            wanted_covers.iter().any(
+                |command| matches!(command, Command::Fetch { url } if *url == cover_url("album"))
+            ),
             "the control frame asks for the album's cover: {wanted_covers:?}"
         );
 
@@ -2993,15 +3033,15 @@ mod tests {
             "a hidden block asks for no labels: {wanted_labels:?}"
         );
         assert!(
-            !wanted_covers
-                .iter()
-                .any(|command| matches!(command, Command::Fetch { url } if *url == cover("album"))),
+            !wanted_covers.iter().any(
+                |command| matches!(command, Command::Fetch { url } if *url == cover_url("album"))
+            ),
             "a hidden block fetches no cover: {wanted_covers:?}"
         );
         assert!(
-            wanted_covers
-                .iter()
-                .any(|command| matches!(command, Command::Fetch { url } if *url == cover("ep"))),
+            wanted_covers.iter().any(
+                |command| matches!(command, Command::Fetch { url } if *url == cover_url("ep"))
+            ),
             "the block the filter keeps still fetches its cover: {wanted_covers:?}"
         );
     }
@@ -3378,13 +3418,30 @@ mod tests {
 
         let chip_height = chips_on_narrow[0].height();
         let expected = (rows - 1) as f32 * (chip_height + space::S1);
+        let band_bottom = |output: &egui::FullOutput| {
+            output
+                .shapes
+                .iter()
+                .find_map(|clipped| match &clipped.shape {
+                    egui::epaint::Shape::Rect(shape)
+                        if shape.fill == Tokens::DARK.palette.hero_wash =>
+                    {
+                        Some(shape.rect.bottom())
+                    }
+                    _ => None,
+                })
+                .expect("the artist band paints its wash")
+        };
         let wide_block = text_rect(&wide_out, "An Album").expect("the first block");
         let narrow_block = text_rect(&narrow_out, "An Album").expect("the first block");
+        // The stacked phone tier makes the band itself taller at the narrower
+        // window, so only the move past the band's own foot belongs to the row.
+        let moved = narrow_block.top()
+            - wide_block.top()
+            - (band_bottom(&narrow_out) - band_bottom(&wide_out));
         assert!(
-            (narrow_block.top() - wide_block.top() - expected).abs() < 0.01,
-            "the blocks move down by the wrapped rows: {} against {} for {rows} rows",
-            narrow_block.top() - wide_block.top(),
-            expected
+            (moved - expected).abs() < 0.01,
+            "the blocks move down by the wrapped rows: {moved} against {expected} for {rows} rows"
         );
     }
 
@@ -5805,7 +5862,7 @@ mod tests {
     }
 
     #[test]
-    fn the_head_names_an_album_column_beside_the_hero_eyebrow() {
+    fn the_head_names_the_album_column() {
         let ctx = context();
         let mut library = library_with(detail(
             vec![track("spotify:track:a", "One", "Vela Moreno", 222_000)],
@@ -5828,8 +5885,8 @@ mod tests {
 
         assert_eq!(
             texts.iter().filter(|text| **text == "ARTIST").count(),
-            1,
-            "the hero's eyebrow alone: {texts:?}"
+            0,
+            "the hero's eyebrow is gone: {texts:?}"
         );
         assert_eq!(
             texts.iter().filter(|text| **text == "ALBUM").count(),

@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::ops::Range;
 
 use takofy_model::{
-    AlbumDetail, ArtistDetail, CoverOrigin, CoverUrl, FollowedArtist, FollowedShow, PlaylistAccess,
+    AlbumDetail, ArtistDetail, CoverOrigin, CoverSet, FollowedArtist, FollowedShow, PlaylistAccess,
     PlaylistCover, PlaylistEntry, Revision, SavedAlbum, ShowDetail, TrackEntry,
 };
 
@@ -81,7 +81,7 @@ pub enum BandCover<'a> {
     /// context image a moment later.
     Pending,
     /// The cover the playlist entry names, if any.
-    Entry(Option<&'a CoverUrl>),
+    Entry(Option<&'a CoverSet>),
 }
 
 /// The band's single-cover source: the playlist entry alone, once its tracks
@@ -93,7 +93,7 @@ pub enum BandCover<'a> {
 /// tiles the list's own album covers only when the entry names no chosen picture.
 pub fn band_cover(entry: &PlaylistEntry, settled: bool) -> BandCover<'_> {
     if settled {
-        BandCover::Entry(entry.cover_url())
+        BandCover::Entry(entry.cover_set())
     } else {
         BandCover::Pending
     }
@@ -222,7 +222,7 @@ pub struct Library {
     history: History,
     /// Context images, keyed by the playlist that owns them, so an upgrade that
     /// arrives before the playlists list is ready is not lost.
-    context_covers: HashMap<String, CoverUrl>,
+    context_covers: HashMap<String, CoverSet>,
     /// Which derived covers a row edit has invalidated, and the asks in flight.
     ///
     /// A cover read says nothing about why the cover it carries is what it is,
@@ -2646,9 +2646,9 @@ impl Library {
 #[cfg(test)]
 mod tests {
     use takofy_model::{
-        AddedAt, AlbumDetail, ArtistDetail, ArtistPortrait, CoverUrl, Episode, FollowedShow, Move,
-        PlaylistAccess, PlaylistCover, PlaylistEntry, ReleaseKind, Removal, Revision, Show,
-        ShowDetail, TrackEntry, TrackLyrics,
+        AddedAt, AlbumDetail, ArtistDetail, ArtistPortrait, CoverSet, CoverUrl, Episode,
+        FollowedShow, Move, PlaylistAccess, PlaylistCover, PlaylistEntry, ReleaseKind, Removal,
+        Revision, Show, ShowDetail, TrackEntry, TrackLyrics,
     };
 
     use super::*;
@@ -2891,12 +2891,16 @@ mod tests {
         CoverUrl::from_wire(&format!("https://i.scdn.co/image/{tail}")).expect("a cover url")
     }
 
+    fn cover_set(tail: &str) -> CoverSet {
+        CoverSet::single(cover_url(tail))
+    }
+
     fn playlist_with_cover(uri: &str, name: &str, cover: CoverUrl) -> PlaylistEntry {
-        covered(uri, name, PlaylistCover::derived(cover))
+        covered(uri, name, PlaylistCover::derived(CoverSet::single(cover)))
     }
 
     fn playlist_with_chosen_cover(uri: &str, name: &str, cover: CoverUrl) -> PlaylistEntry {
-        covered(uri, name, PlaylistCover::chosen(cover))
+        covered(uri, name, PlaylistCover::chosen(CoverSet::single(cover)))
     }
 
     fn covered(uri: &str, name: &str, cover: PlaylistCover) -> PlaylistEntry {
@@ -3773,7 +3777,9 @@ mod tests {
             query: "never gonna".to_owned(),
             portraits: vec![ArtistPortrait {
                 artist: "spotify:artist:a".to_owned(),
-                portrait: CoverUrl::from_wire("https://i.scdn.co/image/abc"),
+                portrait: Some(CoverSet::single(
+                    CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover url"),
+                )),
             }],
         });
         library.apply(&Update::PortraitsFailed {
@@ -6789,7 +6795,7 @@ mod tests {
         library.apply(&Update::Tracks {
             playlist: "a".to_owned(),
             tracks: vec![track("t")],
-            cover: Some(context.clone()),
+            cover: Some(CoverSet::single(context.clone())),
             access: None,
         });
 
@@ -6836,7 +6842,7 @@ mod tests {
         library.apply(&Update::Tracks {
             playlist: "a".to_owned(),
             tracks: vec![track("t")],
-            cover: Some(a_context.clone()),
+            cover: Some(CoverSet::single(a_context.clone())),
             access: None,
         });
 
@@ -6858,7 +6864,7 @@ mod tests {
         library.apply(&Update::Tracks {
             playlist: "a".to_owned(),
             tracks: Vec::new(),
-            cover: Some(context.clone()),
+            cover: Some(CoverSet::single(context.clone())),
             access: None,
         });
         library.apply(&Update::Playlists(vec![playlist("a", "A")]));
@@ -6877,7 +6883,7 @@ mod tests {
         library.apply(&Update::Tracks {
             playlist: "a".to_owned(),
             tracks: Vec::new(),
-            cover: Some(context.clone()),
+            cover: Some(CoverSet::single(context.clone())),
             access: None,
         });
         library.apply(&Update::Playlists(vec![playlist("a", "A")]));
@@ -6896,7 +6902,7 @@ mod tests {
         library.apply(&Update::Tracks {
             playlist: "a".to_owned(),
             tracks: Vec::new(),
-            cover: Some(context),
+            cover: Some(CoverSet::single(context)),
             access: None,
         });
         library.apply(&Update::Playlists(vec![playlist("b", "B")]));
@@ -6906,7 +6912,7 @@ mod tests {
     }
 
     /// The composed covers the sidebar row for `uri` holds.
-    fn entry_composed(library: &Library, uri: &str) -> Vec<CoverUrl> {
+    fn entry_composed(library: &Library, uri: &str) -> Vec<CoverSet> {
         sidebar_entry(library, uri)
             .map(|entry| entry.composed.clone())
             .unwrap_or_default()
@@ -6920,8 +6926,8 @@ mod tests {
         tails: &[&str],
     ) -> PlaylistEntry {
         PlaylistEntry {
-            composed: tails.iter().map(|tail| cover_url(tail)).collect(),
-            ..covered(uri, name, PlaylistCover::derived(cover))
+            composed: tails.iter().map(|tail| cover_set(tail)).collect(),
+            ..covered(uri, name, PlaylistCover::derived(CoverSet::single(cover)))
         }
     }
 
@@ -6942,13 +6948,13 @@ mod tests {
         library.apply(&Update::Tracks {
             playlist: "a".to_owned(),
             tracks: vec![track("t")],
-            cover: Some(context.clone()),
+            cover: Some(CoverSet::single(context.clone())),
             access: None,
         });
 
         assert_eq!(
             entry_cover(&library, "a"),
-            Some(PlaylistCover::derived(context)),
+            Some(PlaylistCover::derived(CoverSet::single(context))),
             "the reply replaces the derived cover"
         );
         assert_eq!(
@@ -6994,7 +7000,7 @@ mod tests {
         library.apply(&Update::Tracks {
             playlist: "a".to_owned(),
             tracks: vec![track("t")],
-            cover: Some(context.clone()),
+            cover: Some(CoverSet::single(context.clone())),
             access: None,
         });
 
@@ -7007,7 +7013,7 @@ mod tests {
 
         assert_eq!(
             entry_cover(&library, "a"),
-            Some(PlaylistCover::derived(context)),
+            Some(PlaylistCover::derived(CoverSet::single(context))),
             "the cached context image fills the row"
         );
         assert_eq!(
@@ -7022,7 +7028,7 @@ mod tests {
         let first = cover_url("first");
         let mut library = covered_page(&first, &["spotify:track:t0", "spotify:track:t1"]);
         if let Load::Ready(playlists) = &mut library.playlists {
-            playlists[0].composed = vec![cover_url("m0"), cover_url("m1")];
+            playlists[0].composed = vec![cover_set("m0"), cover_set("m1")];
         }
         assert!(
             library
@@ -7050,7 +7056,7 @@ mod tests {
         library.apply(&Update::Tracks {
             playlist: "a".to_owned(),
             tracks: vec![track("t")],
-            cover: Some(context.clone()),
+            cover: Some(CoverSet::single(context.clone())),
             access: None,
         });
 
@@ -7074,7 +7080,7 @@ mod tests {
         library.apply(&Update::Tracks {
             playlist: "a".to_owned(),
             tracks: vec![track("t")],
-            cover: Some(context),
+            cover: Some(CoverSet::single(context)),
             access: None,
         });
 
@@ -7097,7 +7103,7 @@ mod tests {
         library.apply(&Update::Tracks {
             playlist: "a".to_owned(),
             tracks: vec![track("t")],
-            cover: Some(context.clone()),
+            cover: Some(CoverSet::single(context.clone())),
             access: None,
         });
 
@@ -7123,7 +7129,7 @@ mod tests {
         library.apply(&Update::Tracks {
             playlist: "a".to_owned(),
             tracks: vec![track("t")],
-            cover: Some(context),
+            cover: Some(CoverSet::single(context)),
             access: None,
         });
         assert!(
@@ -7189,7 +7195,7 @@ mod tests {
         library.apply(&Update::Tracks {
             playlist: "a".to_owned(),
             tracks: vec![track("t")],
-            cover: Some(context),
+            cover: Some(CoverSet::single(context)),
             access: None,
         });
         library.apply(&Update::Playlists(vec![playlist_with_chosen_cover(
@@ -7241,7 +7247,7 @@ mod tests {
         library.apply(&Update::Tracks {
             playlist: "a".to_owned(),
             tracks: Vec::new(),
-            cover: Some(context),
+            cover: Some(CoverSet::single(context)),
             access: None,
         });
         assert!(
@@ -7357,12 +7363,12 @@ mod tests {
         library.apply(&Update::Tracks {
             playlist: "a".to_owned(),
             tracks: vec![track("t")],
-            cover: Some(context.clone()),
+            cover: Some(CoverSet::single(context.clone())),
             access: None,
         });
         assert_eq!(
             library.context_covers.get("a"),
-            Some(&context),
+            Some(&CoverSet::single(context.clone())),
             "an awaited reply fills the cache even with no list to write to"
         );
 
@@ -7424,7 +7430,7 @@ mod tests {
 
         assert_eq!(
             entry_cover(&library, "a"),
-            Some(PlaylistCover::derived(first)),
+            Some(PlaylistCover::derived(CoverSet::single(first))),
             "the first track is still the one the cover came from"
         );
         assert_eq!(
@@ -7478,7 +7484,7 @@ mod tests {
 
         assert_eq!(
             entry_cover(&library, "a"),
-            Some(PlaylistCover::derived(first)),
+            Some(PlaylistCover::derived(CoverSet::single(first))),
             "rows two and three swapped, so the first track the cover came from is unchanged"
         );
         assert_eq!(
@@ -7566,7 +7572,7 @@ mod tests {
 
         assert_eq!(
             entry_cover(&library, "a"),
-            Some(PlaylistCover::derived(first)),
+            Some(PlaylistCover::derived(CoverSet::single(first))),
             "an append names the end of the list, so it cannot change its first track"
         );
         assert_eq!(
@@ -7602,7 +7608,7 @@ mod tests {
         });
         assert_eq!(
             entry_cover(&library, "a"),
-            Some(PlaylistCover::chosen(chosen.clone())),
+            Some(PlaylistCover::chosen(CoverSet::single(chosen.clone()))),
             "a chosen picture is the user's own, so a removal cannot drop it"
         );
 
@@ -7613,7 +7619,7 @@ mod tests {
         });
         assert_eq!(
             entry_cover(&library, "a"),
-            Some(PlaylistCover::chosen(chosen.clone())),
+            Some(PlaylistCover::chosen(CoverSet::single(chosen.clone()))),
             "a chosen picture is the user's own, so a move cannot drop it"
         );
 
@@ -7625,7 +7631,7 @@ mod tests {
         });
         assert_eq!(
             entry_cover(&library, "a"),
-            Some(PlaylistCover::chosen(chosen)),
+            Some(PlaylistCover::chosen(CoverSet::single(chosen))),
             "a chosen picture is the user's own, so an add cannot drop it"
         );
         assert_eq!(
@@ -7648,7 +7654,7 @@ mod tests {
 
         assert_eq!(
             entry_cover(&library, "a"),
-            Some(PlaylistCover::derived(first)),
+            Some(PlaylistCover::derived(CoverSet::single(first))),
             "a reply with no write pending cannot say a row changed"
         );
         assert_eq!(
@@ -7681,7 +7687,7 @@ mod tests {
 
         assert_eq!(
             entry_cover(&library, "a"),
-            Some(PlaylistCover::derived(first)),
+            Some(PlaylistCover::derived(CoverSet::single(first))),
             "a reply for another playlist cannot drop the pending write's cover"
         );
         assert!(
@@ -7708,7 +7714,7 @@ mod tests {
 
         assert_eq!(
             entry_cover(&library, "a"),
-            Some(PlaylistCover::derived(first)),
+            Some(PlaylistCover::derived(CoverSet::single(first))),
             "a move reply with no write pending cannot say a row changed"
         );
         assert_eq!(
@@ -7812,7 +7818,7 @@ mod tests {
         library.apply(&Update::Tracks {
             playlist: "a".to_owned(),
             tracks: moved(&["spotify:track:t0", "spotify:track:t1"]),
-            cover: Some(first.clone()),
+            cover: Some(CoverSet::single(first.clone())),
             access: access(0x01, true),
         });
         assert_eq!(
@@ -7828,7 +7834,7 @@ mod tests {
         library.apply(&Update::Tracks {
             playlist: "a".to_owned(),
             tracks: moved(&["spotify:track:t0", "spotify:track:t1", "spotify:track:x"]),
-            cover: Some(first),
+            cover: Some(CoverSet::single(first)),
             access: access(0x08, true),
         });
 
@@ -7988,12 +7994,12 @@ mod tests {
         library.apply(&Update::Tracks {
             playlist: "a".to_owned(),
             tracks: moved(&["spotify:track:t0", "spotify:track:t1", "spotify:track:t2"]),
-            cover: Some(stale.clone()),
+            cover: Some(CoverSet::single(stale.clone())),
             access: access(0x01, true),
         });
         assert_eq!(
             entry_cover(&library, "a"),
-            Some(PlaylistCover::derived(stale)),
+            Some(PlaylistCover::derived(CoverSet::single(stale))),
             "arrange: the pre-edit reply is stored before the re-ask is issued"
         );
 
@@ -8058,7 +8064,7 @@ mod tests {
         library.apply(&Update::Tracks {
             playlist: "a".to_owned(),
             tracks: moved(&["spotify:track:t1", "spotify:track:t2"]),
-            cover: Some(stale),
+            cover: Some(CoverSet::single(stale)),
             access: access(0x02, true),
         });
         library.apply(&Update::Tracks {
@@ -8145,7 +8151,11 @@ mod tests {
         assert!(library.create_playlist().is_some());
         library.apply(&Update::PlaylistCreated {
             entry: with_access(
-                covered(new, "Mix", PlaylistCover::derived(cover.clone())),
+                covered(
+                    new,
+                    "Mix",
+                    PlaylistCover::derived(CoverSet::single(cover.clone())),
+                ),
                 0x08,
                 true,
                 Some(0),
@@ -8154,7 +8164,7 @@ mod tests {
         });
         assert_eq!(
             entry_cover(&library, new),
-            Some(PlaylistCover::derived(cover.clone())),
+            Some(PlaylistCover::derived(CoverSet::single(cover.clone()))),
             "arrange: the created row carries the cover its reply named"
         );
 
@@ -8167,7 +8177,7 @@ mod tests {
 
         assert_eq!(
             entry_cover(&library, new),
-            Some(PlaylistCover::derived(cover)),
+            Some(PlaylistCover::derived(CoverSet::single(cover))),
             "an append cannot change which track a cover came from"
         );
         assert_eq!(
@@ -8739,7 +8749,10 @@ mod tests {
         let cover = cover_url("context");
         let entry = playlist_with_cover("a", "A", cover.clone());
         assert_eq!(band_cover(&entry, false), BandCover::Pending);
-        assert_eq!(band_cover(&entry, true), BandCover::Entry(Some(&cover)));
+        assert_eq!(
+            band_cover(&entry, true),
+            BandCover::Entry(Some(&CoverSet::single(cover)))
+        );
     }
 
     #[test]
@@ -8763,7 +8776,10 @@ mod tests {
         });
         let settled = !matches!(library.tracks, Load::Loading | Load::Idle);
         let entry = library.selected_entry().expect("the selected entry");
-        assert_eq!(band_cover(entry, settled), BandCover::Entry(Some(&cover)));
+        assert_eq!(
+            band_cover(entry, settled),
+            BandCover::Entry(Some(&CoverSet::single(cover)))
+        );
     }
 
     #[test]
@@ -8811,14 +8827,14 @@ mod tests {
         library.apply(&Update::Tracks {
             playlist: "a".to_owned(),
             tracks: moved(&["spotify:track:x"]),
-            cover: Some(fresh.clone()),
+            cover: Some(CoverSet::single(fresh.clone())),
             access: access(0x08, true),
         });
 
         let entry = library.selected_entry().expect("the selected entry");
         assert_eq!(
             band_cover(entry, settled(&library)),
-            BandCover::Entry(Some(&fresh)),
+            BandCover::Entry(Some(&CoverSet::single(fresh.clone()))),
             "once the read lands the band draws the cover it brought"
         );
     }
@@ -10779,12 +10795,12 @@ mod tests {
         );
         assert_eq!(
             band_cover(entry, settled(&library)),
-            BandCover::Entry(Some(&first)),
+            BandCover::Entry(Some(&CoverSet::single(first.clone()))),
             "a rename names the playlist, so it cannot change the picture beside the name"
         );
         assert_eq!(
             entry_cover(&library, "a"),
-            Some(PlaylistCover::derived(first)),
+            Some(PlaylistCover::derived(CoverSet::single(first))),
             "the sidebar row and the library card keep the cover they showed"
         );
         assert_eq!(

@@ -33,7 +33,7 @@ use crate::show::ShowError;
 use crate::transfer::{Resolution, TransferPlan};
 use crate::watch::{self, Gate};
 use takofy_model::{
-    AlbumDetail, ArtistDetail, ArtistPortrait, CoverUrl, FollowedArtist, FollowedShow, Landing,
+    AlbumDetail, ArtistDetail, ArtistPortrait, CoverSet, FollowedArtist, FollowedShow, Landing,
     Move, PlaylistAccess, PlaylistEntry, Removal, Report, RequestId, Revision, SavedAlbum,
     ShowDetail, TrackEntry, TrackLyrics,
 };
@@ -591,7 +591,7 @@ pub struct RootlistRead {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PlaylistPage {
     pub tracks: Vec<TrackEntry>,
-    pub cover: Option<CoverUrl>,
+    pub cover: Option<CoverSet>,
     pub access: Option<PlaylistAccess>,
 }
 
@@ -638,7 +638,7 @@ impl TrackPages<'_> {
     }
 
     /// The context's own image, once the first page has been resolved.
-    pub fn cover(&self) -> Option<CoverUrl> {
+    pub fn cover(&self) -> Option<CoverSet> {
         self.walker.cover()
     }
 }
@@ -648,7 +648,7 @@ impl TrackPages<'_> {
 /// The single-row derivation matches the listing's, so the band and the sidebar
 /// row never disagree. A first track with no cover gives none rather than
 /// falling through to the next row.
-fn page_cover(context: Option<CoverUrl>, rows: &[TrackEntry]) -> Option<CoverUrl> {
+fn page_cover(context: Option<CoverSet>, rows: &[TrackEntry]) -> Option<CoverSet> {
     context.or_else(|| {
         rows.iter()
             .find(|row| row.is_track())
@@ -665,7 +665,7 @@ mod tests {
     use super::{Engine, page_cover, resolve_within, search_page};
     use crate::context::{ContextError, Page, PageSource, PageTrack, Resolved};
     use crate::remote::titled_label;
-    use takofy_model::{CoverUrl, TrackEntry};
+    use takofy_model::{CoverSet, CoverUrl, TrackEntry};
 
     /// A source that records every URI it is asked to resolve and answers one
     /// page with one track.
@@ -760,8 +760,10 @@ mod tests {
         );
     }
 
-    fn cover(tail: &str) -> CoverUrl {
-        CoverUrl::from_wire(&format!("https://i.scdn.co/image/{tail}")).expect("a cover url")
+    fn cover(tail: &str) -> CoverSet {
+        CoverSet::single(
+            CoverUrl::from_wire(&format!("https://i.scdn.co/image/{tail}")).expect("a cover url"),
+        )
     }
 
     fn row(uri: &str) -> TrackEntry {

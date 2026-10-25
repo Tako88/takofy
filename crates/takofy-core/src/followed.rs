@@ -16,7 +16,7 @@ use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 
 use librespot::core::SpotifyUri;
-use takofy_model::{CoverUrl, FollowedShow};
+use takofy_model::{CoverSet, FollowedShow};
 
 use crate::collection::Item;
 
@@ -144,7 +144,7 @@ pub(crate) fn newest_first(items: Vec<Item>, keep: fn(&SpotifyUri) -> bool) -> V
 pub struct ShowCard {
     pub name: String,
     pub publisher: Option<String>,
-    pub cover: Option<CoverUrl>,
+    pub cover: Option<CoverSet>,
     /// How many episodes the show lists.
     pub episodes: usize,
 }
@@ -179,7 +179,7 @@ mod tests {
     use std::collections::HashMap;
 
     use librespot::core::{SpotifyId, SpotifyUri};
-    use takofy_model::CoverUrl;
+    use takofy_model::{CoverSet, CoverUrl};
 
     use super::{FollowedError, MAX_PAGES, Pager, ShowCard, entries, newest_first, show_order};
     use crate::collection::Item;
@@ -421,7 +421,7 @@ mod tests {
                 episodes: 0,
             },
         );
-        let cover = CoverUrl::from_file_id(&[1; 20]).expect("a file id");
+        let cover = CoverSet::single(CoverUrl::from_file_id(&[1; 20]).expect("a file id"));
         cards.insert(
             show(3),
             ShowCard {

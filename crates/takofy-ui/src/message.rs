@@ -6,9 +6,10 @@
 use std::time::Instant;
 
 use takofy_model::{
-    AlbumDetail, ArtistDetail, ArtistPortrait, CoverImage, CoverUrl, Device, FollowedArtist,
-    FollowedShow, Landing, Move, Order, PlaylistAccess, PlaylistEntry, RemotePlayback, Removal,
-    Report, RequestId, Revision, SavedAlbum, ShowDetail, TrackEntry, TrackLyrics,
+    AlbumDetail, ArtistDetail, ArtistPortrait, CoverImage, CoverSet, CoverUrl, Device,
+    FollowedArtist, FollowedShow, Landing, Move, Order, PlaylistAccess, PlaylistEntry,
+    RemotePlayback, Removal, Report, RequestId, Revision, SavedAlbum, ShowDetail, TrackEntry,
+    TrackLyrics,
 };
 
 /// A request from the window to the worker.
@@ -359,7 +360,7 @@ pub enum Update {
     Tracks {
         playlist: String,
         tracks: Vec<TrackEntry>,
-        cover: Option<CoverUrl>,
+        cover: Option<CoverSet>,
         /// What the page may change, when the list's own state could be read.
         access: Option<PlaylistAccess>,
     },

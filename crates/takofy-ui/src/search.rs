@@ -1709,8 +1709,12 @@ mod tests {
             portraits: vec![takofy_model::ArtistPortrait {
                 artist: artist.to_owned(),
                 portrait: cover.map(|tail| {
-                    takofy_model::CoverUrl::from_wire(&format!("https://i.scdn.co/image/{tail}"))
-                        .expect("a cover url")
+                    takofy_model::CoverSet::single(
+                        takofy_model::CoverUrl::from_wire(&format!(
+                            "https://i.scdn.co/image/{tail}"
+                        ))
+                        .expect("a cover url"),
+                    )
                 }),
             }],
         }
@@ -1886,10 +1890,10 @@ mod tests {
         state.apply(&rich_reply("abcd", 8));
         assert_eq!(
             state.portrait("spotify:artist:r0"),
-            crate::portraits::Portrait::Known(
-                &takofy_model::CoverUrl::from_wire("https://i.scdn.co/image/0")
+            crate::portraits::Portrait::Known(&takofy_model::CoverSet::single(
+                takofy_model::CoverUrl::from_wire("https://i.scdn.co/image/0")
                     .expect("a cover url")
-            )
+            ))
         );
         assert_eq!(
             state.request_portraits(None),
@@ -1949,26 +1953,26 @@ mod tests {
             portraits: vec![
                 takofy_model::ArtistPortrait {
                     artist: "spotify:artist:r0".to_owned(),
-                    portrait: Some(
+                    portrait: Some(takofy_model::CoverSet::single(
                         takofy_model::CoverUrl::from_wire("https://i.scdn.co/image/0")
                             .expect("a cover url"),
-                    ),
+                    )),
                 },
                 takofy_model::ArtistPortrait {
                     artist: "spotify:artist:r1".to_owned(),
-                    portrait: Some(
+                    portrait: Some(takofy_model::CoverSet::single(
                         takofy_model::CoverUrl::from_wire("https://i.scdn.co/image/1")
                             .expect("a cover url"),
-                    ),
+                    )),
                 },
             ],
         });
         assert_eq!(
             state.portrait("spotify:artist:r0"),
-            Portrait::Known(
-                &takofy_model::CoverUrl::from_wire("https://i.scdn.co/image/0")
+            Portrait::Known(&takofy_model::CoverSet::single(
+                takofy_model::CoverUrl::from_wire("https://i.scdn.co/image/0")
                     .expect("a cover url")
-            ),
+            )),
             "the menu's faces are the faces the page draws"
         );
         let expected: Vec<String> = uris(2..8);

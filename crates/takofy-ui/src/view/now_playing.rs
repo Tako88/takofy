@@ -14,7 +14,7 @@ use egui::{FontId, Pos2, Rect, Ui, Vec2};
 use takofy_model::TrackEntry;
 
 use crate::availability::Control;
-use crate::cover::{Art, Cover};
+use crate::cover::{Art, want_px};
 use crate::icon::Icon;
 use crate::layout::panel::{self, Stack};
 use crate::likes::Likes;
@@ -65,7 +65,6 @@ pub struct Reply {
 pub struct Frame<'a> {
     pub art: &'a mut Art,
     pub now: Instant,
-    pub cover: Cover,
     /// The entry the pane draws, handed in by the shell: the one the head's
     /// more button acts on, or nothing when the drawn track is no entry here.
     pub current: Option<&'a TrackEntry>,
@@ -87,6 +86,17 @@ pub fn show(
     let meta_h = meta_height(ui);
     let tabs_h = tabs_height(ui, tokens);
     let stack = panel::stack_for(band, meta_h, tabs_h);
+    // The panel asks for the size its own art box takes. While the playbar is
+    // also on screen one track is fetched twice, which the cache's byte budget
+    // pays for.
+    let cover = frame.art.look(
+        transport
+            .now_playing
+            .as_ref()
+            .and_then(|now| now.cover.as_ref()),
+        want_px(stack.art.width(), ui.pixels_per_point()),
+        frame.now,
+    );
 
     let menu = head(ui, stack, frame.current, likes, tokens);
     // Idle is the transport, never the cover: a track with no cover of its own
@@ -99,7 +109,7 @@ pub fn show(
             stack.art,
             radius::SM,
             tokens.palette.border_strong,
-            frame.cover,
+            cover,
             tokens,
         );
     }
@@ -347,10 +357,10 @@ fn line_height(ui: &Ui, font: &FontId) -> f32 {
 #[cfg(test)]
 mod tests {
     use egui::{Context, Event, Shape, Ui, Vec2};
-    use takofy_model::{CoverImage, CoverUrl, TrackEntry};
+    use takofy_model::{CoverImage, CoverSet, CoverUrl, TrackEntry};
 
     use super::*;
-    use crate::cover::Art;
+    use crate::cover::{Art, Cover, want_px};
     use crate::message::{TransportUpdate, Update};
     use crate::player::NowPlaying;
     use crate::route::Page;
@@ -501,13 +511,6 @@ mod tests {
         /// Draws one frame and returns the whole reply it reported.
         fn reply(&mut self, ctx: &Context, events: Vec<Event>) -> Reply {
             let tokens = Tokens::DARK;
-            let cover = self.art.look(
-                self.transport
-                    .now_playing
-                    .as_ref()
-                    .and_then(|now| now.cover.as_ref()),
-                self.now,
-            );
             self.art.begin_frame();
             let now = self.now;
             let mut reply = Reply::default();
@@ -533,7 +536,6 @@ mod tests {
                     &mut Frame {
                         art,
                         now,
-                        cover,
                         current,
                         tokens: &tokens,
                     },
@@ -545,7 +547,6 @@ mod tests {
         /// Draws one frame and returns the text it painted.
         fn texts(&mut self, ctx: &Context) -> Vec<String> {
             let tokens = Tokens::DARK;
-            let cover = self.art.look(None, self.now);
             let mut output = ctx.run_ui(input(Vec::new()), |ui| {
                 let _ = show(
                     ui,
@@ -557,7 +558,6 @@ mod tests {
                     &mut Frame {
                         art: &mut self.art,
                         now: self.now,
-                        cover,
                         current: self.queue.current(),
                         tokens: &tokens,
                     },
@@ -573,7 +573,6 @@ mod tests {
         /// The frame output, so a test can find where something was painted.
         fn output(&mut self, ctx: &Context) -> egui::FullOutput {
             let tokens = Tokens::DARK;
-            let cover = self.art.look(None, self.now);
             let mut output = ctx.run_ui(input(Vec::new()), |ui| {
                 let _ = show(
                     ui,
@@ -585,7 +584,6 @@ mod tests {
                     &mut Frame {
                         art: &mut self.art,
                         now: self.now,
-                        cover,
                         current: self.queue.current(),
                         tokens: &tokens,
                     },
@@ -600,14 +598,6 @@ mod tests {
     /// frame it painted.
     fn solve(panel: &mut Panel, ctx: &Context, size: Vec2) -> (Stack, Cover, egui::FullOutput) {
         let tokens = Tokens::DARK;
-        let cover = panel.art.look(
-            panel
-                .transport
-                .now_playing
-                .as_ref()
-                .and_then(|now| now.cover.as_ref()),
-            panel.now,
-        );
         panel.art.begin_frame();
         let now = panel.now;
         let mut stack = None;
@@ -628,18 +618,23 @@ mod tests {
                 &mut Frame {
                     art: &mut panel.art,
                     now,
-                    cover,
                     current: panel.queue.current(),
                     tokens: &tokens,
                 },
             );
         });
         output.textures_delta.clear();
-        (
-            stack.expect("the panel solved its stack while drawing"),
-            cover,
-            output,
-        )
+        let stack = stack.expect("the panel solved its stack while drawing");
+        let cover = panel.art.look(
+            panel
+                .transport
+                .now_playing
+                .as_ref()
+                .and_then(|now| now.cover.as_ref()),
+            want_px(stack.art.width(), ctx.pixels_per_point()),
+            panel.now,
+        );
+        (stack, cover, output)
     }
 
     /// A click at `at` over the three passes egui's hit test needs, returning the
@@ -762,7 +757,7 @@ mod tests {
         let url = CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover url");
         let mut transport = Transport::default();
         transport.play(NowPlaying {
-            cover: Some(url.clone()),
+            cover: Some(CoverSet::single(url.clone())),
             ..NowPlaying::named("spotify:track:x", "A Title", "A Band")
         });
         let before = transport.now_playing.clone();
@@ -770,7 +765,10 @@ mod tests {
         let mut art = Art::default();
         let now = Instant::now();
         art.begin_frame();
-        assert_eq!(art.look(Some(&url), now), Cover::Loading);
+        assert_eq!(
+            art.look(Some(&CoverSet::single(url.clone())), 256, now),
+            Cover::Loading
+        );
         let _ = art.requests(now);
         art.apply(
             &Update::Cover {
@@ -779,9 +777,9 @@ mod tests {
             },
             now,
         );
-        art.upload(&ctx);
+        art.upload(&ctx, crate::theme::TintParams::DARK.alpha_floor);
         art.begin_frame();
-        let cover = art.look(Some(&url), now);
+        let cover = art.look(Some(&CoverSet::single(url.clone())), 256, now);
         assert!(matches!(cover, Cover::Ready(_)));
 
         // The panel reads the cover each frame and stores no pixels, so the
@@ -800,7 +798,6 @@ mod tests {
                 &mut Frame {
                     art: &mut art,
                     now,
-                    cover,
                     current: queue.current(),
                     tokens: &tokens,
                 },
@@ -958,21 +955,28 @@ mod tests {
         let url = CoverUrl::from_wire("https://i.scdn.co/image/tile").expect("a cover url");
         let mut transport = Transport::default();
         transport.play(NowPlaying {
-            cover: Some(url.clone()),
+            cover: Some(CoverSet::single(url.clone())),
             ..NowPlaying::named("spotify:track:x", "T", "A")
         });
         let mut panel = Panel::new(transport);
         // One frame to want the cover and send the fetch, then the answer
         // arrives, is uploaded, and the next frame draws it.
         panel.art.begin_frame();
-        assert_eq!(panel.art.look(Some(&url), panel.now), Cover::Loading);
+        assert_eq!(
+            panel
+                .art
+                .look(Some(&CoverSet::single(url.clone())), 256, panel.now),
+            Cover::Loading
+        );
         assert!(
             !panel.art.requests(panel.now).is_empty(),
             "the cover is fetched"
         );
         let image = CoverImage::new(1, 1, vec![0; 4]).expect("a 1x1 image");
         panel.art.apply(&Update::Cover { url, image }, panel.now);
-        panel.art.upload(&ctx);
+        panel
+            .art
+            .upload(&ctx, crate::theme::TintParams::DARK.alpha_floor);
         panel.art.begin_frame();
 
         let (stack, cover, output) = solve(&mut panel, &ctx, PROBE);
@@ -1230,7 +1234,6 @@ mod tests {
 
         let mut reached_the_panel = false;
         for _ in 0..8 {
-            let cover = panel.art.look(None, panel.now);
             let mut output = ctx.run_ui(input(vec![tab.clone()]), |ui| {
                 let _ = show(
                     ui,
@@ -1242,7 +1245,6 @@ mod tests {
                     &mut Frame {
                         art: &mut panel.art,
                         now: panel.now,
-                        cover,
                         current: panel.queue.current(),
                         tokens: &tokens,
                     },

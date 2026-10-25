@@ -8,7 +8,7 @@ use std::collections::{HashSet, VecDeque};
 use librespot::core::SpotifyUri;
 use librespot::protocol::context_page::ContextPage;
 use protobuf_json_mapping::ParseOptions;
-use takofy_model::{AddedAt, CoverUrl};
+use takofy_model::{AddedAt, CoverSet};
 
 /// One position in a page: the URI the row draws and, for a playlist, when the
 /// track joined it.
@@ -56,7 +56,7 @@ pub(crate) struct Resolved {
     /// The inline pages, in order.
     pub pages: Vec<Page>,
     /// The context's own image, when the response carried a usable URL.
-    pub cover: Option<CoverUrl>,
+    pub cover: Option<CoverSet>,
 }
 
 /// Reads pages of a context. Implemented over librespot in `remote`.
@@ -151,7 +151,7 @@ pub(crate) struct Walker<S> {
     pending: VecDeque<String>,
     seen: HashSet<String>,
     count: usize,
-    cover: Option<CoverUrl>,
+    cover: Option<CoverSet>,
 }
 
 impl<S: PageSource> Walker<S> {
@@ -169,7 +169,7 @@ impl<S: PageSource> Walker<S> {
     }
 
     /// The context's own image, once it has been resolved.
-    pub(crate) fn cover(&self) -> Option<CoverUrl> {
+    pub(crate) fn cover(&self) -> Option<CoverSet> {
         self.cover.clone()
     }
 
@@ -214,13 +214,13 @@ mod tests {
         ContextError, MAX_PAGES, Page, PageSource, PageTrack, Resolved, Walker, page_from_proto,
         parse_page_json, resolve_uris,
     };
-    use takofy_model::{AddedAt, CoverUrl};
+    use takofy_model::{AddedAt, CoverSet, CoverUrl};
 
     const TRACK_A: &str = "spotify:track:4uLU6hMCjMI75M1A2tKUQC";
     const TRACK_B: &str = "spotify:track:6rqhFgbbKwnb9MLmUQDhG6";
 
-    fn cover() -> CoverUrl {
-        CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover url")
+    fn cover() -> CoverSet {
+        CoverSet::single(CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover url"))
     }
 
     fn date(wire: &str) -> AddedAt {
@@ -242,7 +242,7 @@ mod tests {
 
     struct Fake {
         resolve: Vec<Page>,
-        cover: Option<CoverUrl>,
+        cover: Option<CoverSet>,
         nexts: Mutex<HashMap<String, Page>>,
         fail_resolve: bool,
         fail_next: bool,
@@ -259,7 +259,7 @@ mod tests {
             }
         }
 
-        fn with_cover(mut self, cover: CoverUrl) -> Self {
+        fn with_cover(mut self, cover: CoverSet) -> Self {
             self.cover = Some(cover);
             self
         }

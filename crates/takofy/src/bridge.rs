@@ -2355,10 +2355,10 @@ mod tests {
     use takofy_core::login::{SourceError, SourceErrorKind, TokenSet, TokenSource};
     use takofy_core::{Resolution, TransferPlan};
     use takofy_model::{
-        AlbumDetail, ArtistDetail, ArtistPortrait, CoverImage, CoverUrl, Device, DeviceKind,
-        Episode, FollowedArtist, FollowedShow, Landing, LyricLine, Move, PlaylistAccess,
-        PlaylistCover, PlaylistEntry, RemotePlayback, RemoteState, Removal, Report, RequestId,
-        SavedAlbum, Show, ShowDetail, Status, TrackEntry, TrackLyrics,
+        AlbumDetail, ArtistDetail, ArtistPortrait, CoverImage, CoverSet, CoverUrl, Device,
+        DeviceKind, Episode, FollowedArtist, FollowedShow, Landing, LyricLine, Move,
+        PlaylistAccess, PlaylistCover, PlaylistEntry, RemotePlayback, RemoteState, Removal, Report,
+        RequestId, SavedAlbum, Show, ShowDetail, Status, TrackEntry, TrackLyrics,
     };
     use takofy_ui::signin::failure_message;
     use tokio::runtime::Runtime;
@@ -5714,15 +5714,18 @@ mod tests {
         let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
         let shared = Arc::clone(&host.shared);
         let cover = CoverUrl::from_wire("https://i.scdn.co/image/abcdef").expect("a cover");
-        let mosaic: Vec<CoverUrl> = ["ab", "cd"]
+        let mosaic: Vec<CoverSet> = ["ab", "cd"]
             .iter()
             .map(|tail| {
-                CoverUrl::from_wire(&format!("https://i.scdn.co/image/{tail}")).expect("a cover")
+                CoverSet::single(
+                    CoverUrl::from_wire(&format!("https://i.scdn.co/image/{tail}"))
+                        .expect("a cover"),
+                )
             })
             .collect();
         let read = PlaylistEntry {
             composed: mosaic.clone(),
-            cover: Some(PlaylistCover::derived(cover.clone())),
+            cover: Some(PlaylistCover::derived(CoverSet::single(cover.clone()))),
             description: Some("Made here".to_owned()),
             ..PlaylistEntry {
                 uri: CREATED.to_owned(),
@@ -5757,7 +5760,7 @@ mod tests {
         };
         assert_eq!(
             entry.cover,
-            Some(PlaylistCover::derived(cover)),
+            Some(PlaylistCover::derived(CoverSet::single(cover))),
             "the row draws the cover the read gave, not an empty slot"
         );
         assert_eq!(
@@ -6804,7 +6807,8 @@ mod tests {
             slot: WakeSlot::default(),
         };
         let playlist = "spotify:playlist:a".to_owned();
-        let cover = CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover");
+        let cover =
+            CoverSet::single(CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover"));
         announce(
             &notifier,
             Ok(TrackPage {
@@ -7828,7 +7832,10 @@ mod tests {
     fn portrait(artist: &str) -> ArtistPortrait {
         ArtistPortrait {
             artist: artist.to_owned(),
-            portrait: CoverUrl::from_wire(&format!("https://i.scdn.co/image/{}", "ab".repeat(20))),
+            portrait: Some(CoverSet::single(
+                CoverUrl::from_wire(&format!("https://i.scdn.co/image/{}", "ab".repeat(20)))
+                    .expect("a cover"),
+            )),
         }
     }
 
@@ -8861,7 +8868,8 @@ mod tests {
 
     #[test]
     fn a_track_page_cover_reaches_the_update() {
-        let cover = CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover");
+        let cover =
+            CoverSet::single(CoverUrl::from_wire("https://i.scdn.co/image/abc").expect("a cover"));
         let update = run_track_page(TrackPage {
             tracks: vec![track("t")],
             cover: Some(cover.clone()),

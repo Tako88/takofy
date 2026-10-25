@@ -10,7 +10,7 @@ use librespot::core::SpotifyUri;
 use librespot::metadata::Show;
 use takofy_model::{Episode, ShowDetail};
 
-use crate::cover::pick_images_cover;
+use crate::cover::covers_in_images;
 
 /// Why a show read failed.
 #[derive(Debug, thiserror::Error)]
@@ -51,7 +51,7 @@ pub(crate) fn detail(uri: &str, show: &Show, episodes: Vec<Episode>) -> ShowDeta
             name,
             publisher: show.publisher.trim().to_owned(),
             description: show.description.clone(),
-            cover: pick_images_cover(&show.covers),
+            cover: covers_in_images(&show.covers),
         },
         episodes,
     }

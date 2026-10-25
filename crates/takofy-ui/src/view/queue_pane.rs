@@ -18,7 +18,7 @@ use std::time::Instant;
 use egui::{Align, Layout, Rect, ScrollArea, Sense, Ui, UiBuilder, Vec2, pos2, vec2};
 use takofy_model::TrackEntry;
 
-use crate::cover::Art;
+use crate::cover::{Art, want_px};
 use crate::format::format_position;
 use crate::landing::Zone;
 use crate::layout::panel::CAPTION_H;
@@ -278,7 +278,11 @@ fn row(
         title: &entry.title,
         artist: &entry.artists,
         duration: duration.as_deref(),
-        cover: art.look(entry.cover.as_ref(), now),
+        cover: art.look(
+            entry.cover.as_ref(),
+            want_px(crate::theme::extent::QUEUE_ART, ui.pixels_per_point()),
+            now,
+        ),
         title_target: entry.album_uri.as_deref(),
         artist_target: entry.artist_uris.first().map(String::as_str),
         look,
@@ -317,7 +321,7 @@ mod tests {
     use std::collections::HashSet;
 
     use egui::{Context, DragAndDrop, Event, Modifiers, Pos2, RawInput, Shape, Ui, Vec2};
-    use takofy_model::{CoverUrl, TrackEntry};
+    use takofy_model::{CoverSet, CoverUrl, TrackEntry};
 
     use super::*;
     use crate::cover::Cover;
@@ -450,12 +454,29 @@ mod tests {
         }
     }
 
+    /// A cover offering 64, 300 and 640 squares, with their URLs.
+    fn sized(tail: &str) -> (CoverSet, CoverUrl, CoverUrl, CoverUrl) {
+        let small = CoverUrl::from_wire(&format!("https://i.scdn.co/image/{tail}-64"))
+            .expect("a cover url");
+        let middle = CoverUrl::from_wire(&format!("https://i.scdn.co/image/{tail}-300"))
+            .expect("a cover url");
+        let large = CoverUrl::from_wire(&format!("https://i.scdn.co/image/{tail}-640"))
+            .expect("a cover url");
+        let set = CoverSet::from_sizes([
+            (Some((64, 64)), small.clone()),
+            (Some((300, 300)), middle.clone()),
+            (Some((640, 640)), large.clone()),
+        ])
+        .expect("a cover set");
+        (set, small, middle, large)
+    }
+
     fn track_with_cover(index: usize) -> TrackEntry {
         TrackEntry {
-            cover: Some(
+            cover: Some(CoverSet::single(
                 CoverUrl::from_wire(&format!("https://i.scdn.co/image/c{index}"))
                     .expect("a cover url"),
-            ),
+            )),
             ..track(index)
         }
     }
@@ -1309,6 +1330,43 @@ mod tests {
     }
 
     #[test]
+    fn a_queue_row_at_one_x_asks_for_the_small_size() {
+        let ctx = context();
+        ctx.set_pixels_per_point(1.0);
+        let mut art = Art::default();
+        let now = Instant::now();
+        let mut queue = Queue::default();
+        let (set, small, _, large) = sized("q");
+        let tracks = vec![
+            track(0),
+            TrackEntry {
+                cover: Some(set),
+                ..track(1)
+            },
+        ];
+        queue.start(&tracks, 0, None, &mut Transport::default());
+
+        let _ = pass(&ctx, PANE, &queue, &mut art, now, Vec::new());
+        let requested: Vec<CoverUrl> = art
+            .requests(now)
+            .into_iter()
+            .filter_map(|command| match command {
+                Command::Fetch { url } => Some(url),
+                _ => None,
+            })
+            .collect();
+
+        assert!(
+            requested.contains(&small),
+            "a 40pt row takes the 64: {requested:?}"
+        );
+        assert!(
+            !requested.contains(&large),
+            "a queue row must not fetch the 640: {requested:?}"
+        );
+    }
+
+    #[test]
     fn a_row_hands_the_art_store_its_own_cover() {
         // A row with a cover it does not hold yet is `Loading`, not `Missing`,
         // and the answer is what puts the picture in the box.
@@ -1330,7 +1388,7 @@ mod tests {
             .collect();
         assert_eq!(requested.len(), 1, "only the row with a cover asks for one");
         assert_eq!(cover_row(&requested[0]), 1);
-        assert_eq!(art.look(tracks[1].cover.as_ref(), now), Cover::Loading);
+        assert_eq!(art.look(tracks[1].cover.as_ref(), 64, now), Cover::Loading);
     }
     /// Runs `events` one pass each and keeps the reply that reported a door or a
     /// key.

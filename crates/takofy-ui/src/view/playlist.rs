@@ -7,10 +7,10 @@
 
 use std::time::Instant;
 
-use egui::{Align, Id, Layout, Pos2, Rect, Sense, Ui, UiBuilder, vec2};
-use takofy_model::{CoverUrl, Owner, PlaylistEntry};
+use egui::{Align, Color32, Id, Layout, Pos2, Rect, Sense, Ui, UiBuilder, vec2};
+use takofy_model::{CoverSet, Owner, PlaylistEntry};
 
-use crate::cover::{Art, Cover};
+use crate::cover::{Art, Cover, want_px};
 use crate::format::{
     added_label, byline, format_position, library_kind, library_note, media_size, media_type,
     plain_description, root_empty_label, root_filter_label, root_loading_label, total_duration_ms,
@@ -28,7 +28,7 @@ use crate::queue::Queue;
 use crate::route::Page;
 use crate::scroll;
 use crate::sidebar_kind::SidebarKind;
-use crate::theme::{Tokens, extent, space};
+use crate::theme::{TintParams, Tokens, extent, space};
 
 use super::actionbar;
 use super::carry::{self, Ghost};
@@ -129,8 +129,15 @@ pub fn tracks_view(
             .as_ref()
             .is_some_and(|entry| library.can_rename(&entry.uri));
         if let Some(entry) = &entry {
-            let (cover, picture) =
-                band_picture(entry, &library.tracks, &mut library.mosaic_kept, art, now);
+            let (cover, picture, tint) = band_picture(
+                entry,
+                &library.tracks,
+                &mut library.mosaic_kept,
+                art,
+                ui.pixels_per_point(),
+                &tokens.palette.tint,
+                now,
+            );
             let tracks = match &library.tracks {
                 Load::Ready(tracks) if !tracks.tracks.is_empty() => {
                     Some((tracks.tracks.len(), total_duration_ms(&tracks.tracks)))
@@ -168,6 +175,7 @@ pub fn tracks_view(
                 credit: None,
                 description: &description,
                 cover,
+                tint,
             };
             let reply = hero::show_picture(ui, &band, picture, tokens, title);
             library.renaming = renaming;
@@ -428,7 +436,14 @@ pub fn tracks_view(
                                 added: added.as_deref(),
                                 duration: duration.as_deref(),
                                 state: state_of(&entry.uri, transport),
-                                cover: Some(art.look(entry.cover.as_ref(), now)),
+                                cover: Some(art.look(
+                                    entry.cover.as_ref(),
+                                    want_px(
+                                        crate::theme::extent::LIBRARY_ART,
+                                        ui.pixels_per_point(),
+                                    ),
+                                    now,
+                                )),
                                 look: selection.look(index),
                                 menu: gate.allows(),
                                 liked: library.likes.state(&entry.uri),
@@ -573,17 +588,26 @@ pub fn tracks_view(
 /// rather than flashing the placeholder: a reload that re-selected the same
 /// playlist shows the picture it already had, and only an entry with nothing
 /// held draws `Loading`.
-fn band_cover_for(entry: &PlaylistEntry, settled: bool, art: &mut Art, now: Instant) -> Cover {
-    match band_cover(entry, settled) {
+fn band_cover_for(
+    entry: &PlaylistEntry,
+    settled: bool,
+    art: &mut Art,
+    want: u32,
+    params: &TintParams,
+    now: Instant,
+) -> (Cover, Option<Color32>) {
+    let tint = art.tint_held(entry.cover_set(), want, params);
+    let cover = match band_cover(entry, settled) {
         BandCover::Pending => entry
-            .cover_url()
-            .and_then(|url| art.look_held(url, now))
+            .cover_set()
+            .and_then(|cover| art.look_held(Some(cover), want, now))
             .unwrap_or(Cover::Loading),
-        BandCover::Entry(url) => art.look(url, now),
-    }
+        BandCover::Entry(cover) => art.look(cover, want, now),
+    };
+    (cover, tint)
 }
 
-/// The cover and the picture the band draws this frame.
+/// The cover, the picture and the tint the band draws this frame.
 ///
 /// A ready list for this page asks for the first four distinct album covers and
 /// remembers them; a list that asks for what the memo already holds leaves it
@@ -594,15 +618,19 @@ fn band_cover_for(entry: &PlaylistEntry, settled: bool, art: &mut Art, now: Inst
 /// The quadrants are looked at first, and the single cover only once they cannot
 /// tile the box: a band drawing the mosaic does not also fetch and pin the
 /// picture it replaced. The cover is therefore unread while the mosaic draws,
-/// and the first quadrant stands in for it.
+/// and the first quadrant stands in for its tint.
 fn band_picture(
     entry: &PlaylistEntry,
     tracks: &Load<TracksFor>,
     kept: &mut Option<Kept>,
     art: &mut Art,
+    pixels_per_point: f32,
+    params: &TintParams,
     now: Instant,
-) -> (Cover, hero::Picture) {
+) -> (Cover, hero::Picture, Option<Color32>) {
     let settled = !matches!(tracks, Load::Loading);
+    let want = want_px(crate::theme::hero::ART, pixels_per_point);
+    let half = want.div_ceil(2);
     let ready = match tracks {
         Load::Ready(ready) if ready.playlist == entry.uri => Some(ready),
         Load::Idle | Load::Loading | Load::Failed(_) | Load::Ready(_) => None,
@@ -622,17 +650,25 @@ fn band_picture(
         .unwrap_or_default();
     let drawn: Vec<Cover> = wanted
         .iter()
-        .map(|url| match ready {
-            Some(_) => art.look(Some(url), now),
-            None => art.look_held(url, now).unwrap_or(Cover::Loading),
+        .map(|cover| match ready {
+            Some(_) => art.look(Some(cover), half, now),
+            None => art
+                .look_held(Some(cover), half, now)
+                .unwrap_or(Cover::Loading),
         })
         .collect();
     match mosaic::arrange(&drawn) {
-        Some(quadrants) => (quadrants[0], hero::Picture::Mosaic(quadrants)),
-        None => (
-            band_cover_for(entry, settled, art, now),
-            hero::Picture::Cover,
+        Some(quadrants) => (
+            quadrants[0],
+            hero::Picture::Mosaic(quadrants),
+            wanted
+                .first()
+                .and_then(|cover| art.tint_held(Some(cover), half, params)),
         ),
+        None => {
+            let (cover, tint) = band_cover_for(entry, settled, art, want, params, now);
+            (cover, hero::Picture::Cover, tint)
+        }
     }
 }
 
@@ -953,7 +989,7 @@ fn grid(ui: &mut Ui, items: &[Item<'_>], layout: MediaLayout, draw: &mut MediaDr
         if !table_layout::on_screen(visible, rect) {
             continue;
         }
-        let media = draw.media_of(item, layout);
+        let media = draw.media_of(item, layout, want_px(solved.card_w, ui.pixels_per_point()));
         match media::tile(ui, rect, &media.as_media(), draw.tokens) {
             Some(media::Press::Open) => draw.activate(item, &media.uri),
             Some(media::Press::Play) => draw.want_play(&media),
@@ -984,7 +1020,11 @@ fn list(ui: &mut Ui, items: &[Item<'_>], draw: &mut MediaDraw<'_, '_>) {
         if !table_layout::on_screen(visible, rect) {
             continue;
         }
-        let media = draw.media_of(item, MediaLayout::List);
+        let media = draw.media_of(
+            item,
+            MediaLayout::List,
+            want_px(extent::LIBRARY_ART, ui.pixels_per_point()),
+        );
         let words = media.as_media();
         match media::row(ui, rect, &words, draw.tokens) {
             Some(media::Press::Open) => draw.activate(item, &media.uri),
@@ -1059,7 +1099,7 @@ impl MediaDraw<'_, '_> {
     ///
     /// Only the grid composes: a four-up at a row's art column is mush, so a
     /// list never looks its quadrants up.
-    fn media_of(&mut self, item: &Item<'_>, layout: MediaLayout) -> MediaWords {
+    fn media_of(&mut self, item: &Item<'_>, layout: MediaLayout, want: u32) -> MediaWords {
         let (uri, name, kind, sub, size, round, cover, shelf) = match item {
             Item::Playlist(entry) => (
                 &entry.uri,
@@ -1068,7 +1108,7 @@ impl MediaDraw<'_, '_> {
                 library_kind("Playlist", entry.owner.as_ref().and_then(Owner::name)),
                 media_size(RootKind::Playlists, entry.tracks),
                 false,
-                entry.cover_url(),
+                entry.cover_set(),
                 SidebarKind::Playlists,
             ),
             Item::Show(show) => (
@@ -1121,17 +1161,17 @@ impl MediaDraw<'_, '_> {
             round,
             shelf,
             playable: Library::playable(shelf),
-            cover: self.art.look(cover, self.now),
-            picture: self.composed_picture(composed),
+            cover: self.art.look(cover, want, self.now),
+            picture: self.composed_picture(composed, want.div_ceil(2)),
         }
     }
 
     /// What a tile draws in its art box: the four covers it tiles, once every
     /// one is held, else the single picture the words already carry.
-    fn composed_picture(&mut self, composed: &[CoverUrl]) -> hero::Picture {
+    fn composed_picture(&mut self, composed: &[CoverSet], want: u32) -> hero::Picture {
         let drawn: Vec<Cover> = composed
             .iter()
-            .map(|url| self.art.look(Some(url), self.now))
+            .map(|cover| self.art.look(Some(cover), want, self.now))
             .collect();
         match mosaic::arrange(&drawn) {
             Some(covers) => hero::Picture::Mosaic(covers),
@@ -1652,13 +1692,31 @@ mod tests {
         CoverUrl::from_wire(&format!("https://i.scdn.co/image/{tail}")).expect("a cover url")
     }
 
+    fn cover_set(tail: &str) -> CoverSet {
+        CoverSet::single(cover_url(tail))
+    }
+
+    /// A cover offering 64, 300 and 640 squares, with their URLs.
+    fn sized(tail: &str) -> (CoverSet, CoverUrl, CoverUrl, CoverUrl) {
+        let small = cover_url(&format!("{tail}-64"));
+        let middle = cover_url(&format!("{tail}-300"));
+        let large = cover_url(&format!("{tail}-640"));
+        let set = CoverSet::from_sizes([
+            (Some((64, 64)), small.clone()),
+            (Some((300, 300)), middle.clone()),
+            (Some((640, 640)), large.clone()),
+        ])
+        .expect("a cover set");
+        (set, small, middle, large)
+    }
+
     fn playlist_with_cover(uri: &str, name: &str, cover: CoverUrl) -> PlaylistEntry {
         PlaylistEntry {
             composed: Vec::new(),
             uri: uri.to_owned(),
             name: name.to_owned(),
             named: true,
-            cover: Some(PlaylistCover::derived(cover)),
+            cover: Some(PlaylistCover::derived(CoverSet::single(cover))),
             description: None,
             owner: None,
             tracks: None,
@@ -1678,7 +1736,7 @@ mod tests {
             added_at: None,
             duration_ms: None,
             named: true,
-            cover: Some(cover_url(&format!("c{index}"))),
+            cover: Some(cover_set(&format!("c{index}"))),
         }
     }
 
@@ -1692,7 +1750,7 @@ mod tests {
             .iter()
             .enumerate()
             .map(|(index, tail)| TrackEntry {
-                cover: Some(cover_url(tail)),
+                cover: Some(cover_set(tail)),
                 ..track(&format!("t{index}"), &format!("t{index}"))
             })
             .collect();
@@ -1704,7 +1762,7 @@ mod tests {
         let mut library = mosaic_library(covers);
         library.apply(&Update::Playlists(vec![PlaylistEntry {
             composed: Vec::new(),
-            cover: Some(PlaylistCover::derived(cover_url("m0"))),
+            cover: Some(PlaylistCover::derived(CoverSet::single(cover_url("m0")))),
             ..listed("Evening", Some(DESCRIPTION), None)
         }]));
         library
@@ -1715,7 +1773,7 @@ mod tests {
     fn mosaic_full() -> Library {
         let mut tracks = timed_tracks(62, 223_548);
         for (index, track) in tracks.iter_mut().enumerate().take(mosaic::QUADRANTS) {
-            track.cover = Some(cover_url(&format!("m{index}")));
+            track.cover = Some(cover_set(&format!("m{index}")));
         }
         library_detailed(tracks, "Evening", Some(DESCRIPTION), Some("alice"))
     }
@@ -1728,7 +1786,7 @@ mod tests {
     fn hold(ctx: &Context, art: &mut Art, urls: &[CoverUrl], now: Instant) {
         for url in urls {
             art.begin_frame();
-            let _ = art.look(Some(url), now);
+            let _ = art.look(Some(&CoverSet::single(url.clone())), 64, now);
             while !art.requests(now).is_empty() {}
             art.apply(
                 &Update::Cover {
@@ -1737,8 +1795,23 @@ mod tests {
                 },
                 now,
             );
-            art.upload(ctx);
+            art.upload(ctx, crate::theme::TintParams::DARK.alpha_floor);
         }
+    }
+
+    /// Holds `url` with a one-pixel cover of `rgba`, so its tint is known.
+    fn hold_pixel(ctx: &Context, art: &mut Art, url: &CoverUrl, rgba: [u8; 4], now: Instant) {
+        art.begin_frame();
+        let _ = art.look(Some(&CoverSet::single(url.clone())), 64, now);
+        while !art.requests(now).is_empty() {}
+        art.apply(
+            &Update::Cover {
+                url: url.clone(),
+                image: CoverImage::new(1, 1, rgba.to_vec()).expect("a 1x1 image"),
+            },
+            now,
+        );
+        art.upload(ctx, crate::theme::TintParams::DARK.alpha_floor);
     }
 
     /// Drives `url` to a failure it will not retry, as three failed answers do.
@@ -1754,7 +1827,7 @@ mod tests {
         ] {
             at += delay;
             art.begin_frame();
-            let _ = art.look(Some(url), at);
+            let _ = art.look(Some(&CoverSet::single(url.clone())), 64, at);
             while !art.requests(at).is_empty() {}
             art.apply(&Update::CoverFailed { url: url.clone() }, at);
         }
@@ -1843,7 +1916,11 @@ mod tests {
 
     /// A held cover's drawing, so a quadrant can be named without a texture id.
     fn drawn_cover(art: &mut Art, tail: &str, now: Instant) -> Cover {
-        art.look(Some(&cover_url(tail)), now)
+        art.look(
+            Some(&cover_set(tail)),
+            crate::cover::want_px(crate::theme::hero::ART / 2.0, 1.0),
+            now,
+        )
     }
 
     fn fetch_urls(commands: Vec<Command>) -> Vec<CoverUrl> {
@@ -2019,6 +2096,7 @@ mod tests {
                     credit: None,
                     description: "",
                     cover: Cover::Missing,
+                    tint: None,
                 };
                 let _ = hero::show_with(ui, &band, &tokens, hero::Title::Plain);
                 actionbar::row_rect(ui);
@@ -2066,6 +2144,7 @@ mod tests {
                     credit: None,
                     description: "",
                     cover: Cover::Missing,
+                    tint: None,
                 };
                 let _ = hero::show_with(ui, &band, &tokens, hero::Title::Plain);
                 let row = actionbar::row_rect(ui);
@@ -4765,7 +4844,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         library.apply(&Update::Tracks {
             playlist: "a".to_owned(),
             tracks: Vec::new(),
-            cover: Some(context_cover.clone()),
+            cover: Some(CoverSet::single(context_cover.clone())),
             access: None,
         });
 
@@ -4832,7 +4911,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         library.apply(&Update::Tracks {
             playlist: "a".to_owned(),
             tracks: vec![track("t", "t")],
-            cover: Some(context_cover.clone()),
+            cover: Some(CoverSet::single(context_cover.clone())),
             access: None,
         });
         art.begin_frame();
@@ -4862,28 +4941,42 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
 
         // An earlier visit to the playlist fetched and held its cover.
         art.begin_frame();
-        assert_eq!(art.look(Some(&cover), now), Cover::Loading);
+        assert_eq!(
+            art.look(Some(&CoverSet::single(cover.clone())), 176, now),
+            Cover::Loading
+        );
         assert_eq!(fetch_urls(art.requests(now)), vec![cover.clone()]);
         art.apply(
             &Update::Cover {
                 url: cover.clone(),
-                image: image(),
+                image: CoverImage::new(1, 1, vec![255, 0, 0, 255]).expect("a 1x1 image"),
             },
             now,
         );
-        art.upload(&ctx);
-        assert!(matches!(art.look(Some(&cover), now), Cover::Ready(_)));
+        art.upload(&ctx, crate::theme::TintParams::DARK.alpha_floor);
+        assert!(matches!(
+            art.look(Some(&CoverSet::single(cover.clone())), 176, now),
+            Cover::Ready(_)
+        ));
 
         // Re-selecting the playlist puts the tracks back into `Loading`. The
         // band still draws the picture it already holds rather than flashing the
-        // placeholder, and does not fetch it again.
+        // placeholder, and does not fetch it again. Its tint is kept with it, so
+        // the band does not flash grey either.
         art.begin_frame();
-        assert!(
-            matches!(
-                band_cover_for(&entry, false, &mut art, now),
-                Cover::Ready(_)
-            ),
-            "the band keeps the cover it already holds"
+        let (held, tint) = band_cover_for(
+            &entry,
+            false,
+            &mut art,
+            176,
+            &crate::theme::TintParams::DARK,
+            now,
+        );
+        assert!(matches!(held, Cover::Ready(_)), "the band keeps its cover");
+        assert_eq!(
+            tint,
+            Some(crate::theme::tint_color([116, 27, 27])),
+            "a pending reload keeps its tint instead of flashing grey"
         );
         assert!(
             fetch_urls(art.requests(now)).is_empty(),
@@ -4893,7 +4986,16 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         // A playlist whose cover is not held still waits without fetching it.
         let other = playlist_with_cover("b", "Other", cover_url("unheld"));
         art.begin_frame();
-        assert_eq!(band_cover_for(&other, false, &mut art, now), Cover::Loading);
+        let (held, tint) = band_cover_for(
+            &other,
+            false,
+            &mut art,
+            176,
+            &crate::theme::TintParams::DARK,
+            now,
+        );
+        assert_eq!(held, Cover::Loading);
+        assert_eq!(tint, None, "nothing held means no colour yet");
         assert!(fetch_urls(art.requests(now)).is_empty());
     }
 
@@ -5077,7 +5179,8 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         let mut ours = playlist("spotify:playlist:a", "A");
         ours.owner = Some(Owner::You);
         assert_eq!(
-            draw.media_of(&Item::Playlist(&ours), MediaLayout::Grid).sub,
+            draw.media_of(&Item::Playlist(&ours), MediaLayout::Grid, 176)
+                .sub,
             "Playlist"
         );
 
@@ -5086,10 +5189,76 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             OwnerName::from_wire("Vela Moreno").expect("a name"),
         ));
         assert_eq!(
-            draw.media_of(&Item::Playlist(&named), MediaLayout::Grid)
+            draw.media_of(&Item::Playlist(&named), MediaLayout::Grid, 176)
                 .sub,
             "Playlist \u{b7} Vela Moreno"
         );
+    }
+
+    #[test]
+    fn a_track_row_asks_for_the_small_size_at_two_x() {
+        let ctx = context();
+        ctx.set_pixels_per_point(2.0);
+        let now = Instant::now();
+        let mut art = Art::default();
+        let (set, small, _, large) = sized("track");
+        let tracks = vec![TrackEntry {
+            cover: Some(set),
+            ..track("t0", "t0")
+        }];
+        let mut library = library_with(tracks);
+
+        art.begin_frame();
+        let _ = band_frame_with(&ctx, &mut library, &mut art, now);
+        let fetched = fetch_urls(art.requests(now));
+
+        assert!(
+            fetched.contains(&small),
+            "a 72px row takes the 64: {fetched:?}"
+        );
+        assert!(
+            !fetched.contains(&large),
+            "a row must not fetch the 640: {fetched:?}"
+        );
+    }
+
+    #[test]
+    fn a_mosaic_quadrant_asks_for_half_the_box_at_two_x() {
+        let ctx = context();
+        ctx.set_pixels_per_point(2.0);
+        let now = Instant::now();
+        let mut art = Art::default();
+        let mut middle = Vec::new();
+        let mut large = Vec::new();
+        let tracks: Vec<TrackEntry> = (0..crate::mosaic::QUADRANTS)
+            .map(|index| {
+                let (set, _, mid, big) = sized(&format!("m{index}"));
+                middle.push(mid);
+                large.push(big);
+                TrackEntry {
+                    cover: Some(set),
+                    ..track(&format!("t{index}"), &format!("t{index}"))
+                }
+            })
+            .collect();
+        let mut library = library_detailed(tracks, "Evening", None, None);
+
+        art.begin_frame();
+        let _ = band_frame_with(&ctx, &mut library, &mut art, now);
+        let fetched = fetch_urls(art.requests(now));
+
+        for mid in middle {
+            assert!(
+                fetched.contains(&mid),
+                "an 88pt quadrant takes the 300: {fetched:?}"
+            );
+        }
+        for big in large {
+            assert!(
+                !fetched.contains(&big),
+                "a quadrant must not take the whole box's 640: {fetched:?}"
+            );
+        }
     }
 
     #[test]
@@ -5152,11 +5321,13 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             .cloned()
             .expect("the page names its playlist");
 
-        let (_, picture) = band_picture(
+        let (_, picture, _) = band_picture(
             &entry,
             &library.tracks,
             &mut library.mosaic_kept,
             &mut art,
+            1.0,
+            &crate::theme::TintParams::DARK,
             now,
         );
         assert_eq!(
@@ -5219,11 +5390,13 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             .cloned()
             .expect("the page names its playlist");
 
-        let (_, picture) = band_picture(
+        let (_, picture, _) = band_picture(
             &entry,
             &library.tracks,
             &mut library.mosaic_kept,
             &mut art,
+            1.0,
+            &crate::theme::TintParams::DARK,
             at,
         );
         assert_eq!(
@@ -5239,6 +5412,66 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             vec![area],
             "the band stays on its single picture"
         );
+    }
+
+    #[test]
+    fn a_mosaic_band_tints_from_its_first_quadrant() {
+        let ctx = context();
+        let now = Instant::now();
+        let mut art = Art::default();
+        let mut library = mosaic_library(&["m0", "m1", "m2", "m3"]);
+        let entry = library
+            .selected_entry()
+            .cloned()
+            .expect("the page names its playlist");
+        hold_pixel(&ctx, &mut art, &cover_url("m0"), [255, 0, 0, 255], now);
+        hold_pixel(&ctx, &mut art, &cover_url("m1"), [0, 255, 0, 255], now);
+        hold_pixel(&ctx, &mut art, &cover_url("m2"), [0, 0, 255, 255], now);
+        hold_pixel(&ctx, &mut art, &cover_url("m3"), [255, 255, 255, 255], now);
+
+        let (_, picture, tint) = band_picture(
+            &entry,
+            &library.tracks,
+            &mut library.mosaic_kept,
+            &mut art,
+            1.0,
+            &crate::theme::TintParams::DARK,
+            now,
+        );
+        assert!(
+            matches!(picture, hero::Picture::Mosaic(_)),
+            "four held covers quarter the band"
+        );
+        assert_eq!(
+            tint,
+            Some(crate::theme::tint_color([116, 27, 27])),
+            "the first quadrant's red, not the mean of the four"
+        );
+    }
+
+    #[test]
+    fn a_chosen_single_picture_tints_the_band() {
+        let ctx = context();
+        let now = Instant::now();
+        let mut art = Art::default();
+        let mut entry = playlist_with_cover("a", "Evening", cover_url("chosen"));
+        entry.cover = Some(PlaylistCover::chosen(CoverSet::single(cover_url("chosen"))));
+        hold_pixel(&ctx, &mut art, &cover_url("chosen"), [255, 0, 0, 255], now);
+        let tracks: Load<TracksFor> = Load::Idle;
+        let mut kept = None;
+
+        let (cover, picture, tint) = band_picture(
+            &entry,
+            &tracks,
+            &mut kept,
+            &mut art,
+            1.0,
+            &crate::theme::TintParams::DARK,
+            now,
+        );
+        assert!(matches!(cover, Cover::Ready(_)));
+        assert_eq!(picture, hero::Picture::Cover, "a chosen picture is alone");
+        assert_eq!(tint, Some(crate::theme::tint_color([116, 27, 27])));
     }
 
     #[test]
@@ -5295,11 +5528,13 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             .selected_entry()
             .cloned()
             .expect("the page names its playlist");
-        let (_, picture) = band_picture(
+        let (_, picture, _) = band_picture(
             &entry,
             &library.tracks,
             &mut library.mosaic_kept,
             &mut art,
+            1.0,
+            &crate::theme::TintParams::DARK,
             now,
         );
         assert_eq!(
@@ -5363,6 +5598,8 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             &library.tracks,
             &mut library.mosaic_kept,
             &mut art,
+            1.0,
+            &crate::theme::TintParams::DARK,
             now,
         )
         .1
@@ -5387,6 +5624,8 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             &library.tracks,
             &mut library.mosaic_kept,
             &mut art,
+            1.0,
+            &crate::theme::TintParams::DARK,
             now,
         )
         .1
@@ -5404,7 +5643,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             .map(|index| track(&format!("t{index}"), &format!("t{index}")))
             .collect();
         for (index, track) in tracks.iter_mut().enumerate() {
-            track.cover = Some(cover_url(&format!("m{}", index + crate::mosaic::QUADRANTS)));
+            track.cover = Some(cover_set(&format!("m{}", index + crate::mosaic::QUADRANTS)));
         }
         library.apply(&Update::Tracks {
             playlist: "spotify:playlist:a".to_owned(),
@@ -5417,6 +5656,8 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             &library.tracks,
             &mut library.mosaic_kept,
             &mut art,
+            1.0,
+            &crate::theme::TintParams::DARK,
             now,
         )
         .1
@@ -5444,7 +5685,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         let mut library = mosaic_library(&["m0", "m1", "m2", "m3"]);
         library.apply(&Update::Playlists(vec![PlaylistEntry {
             composed: Vec::new(),
-            cover: Some(PlaylistCover::chosen(cover_url("own"))),
+            cover: Some(PlaylistCover::chosen(CoverSet::single(cover_url("own")))),
             ..listed("Evening", Some(DESCRIPTION), None)
         }]));
         let urls: Vec<CoverUrl> = (0..4)
@@ -5482,7 +5723,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             open: &mut open,
             play: &mut play,
         };
-        draw.media_of(&Item::Playlist(entry), MediaLayout::Grid)
+        draw.media_of(&Item::Playlist(entry), MediaLayout::Grid, 176)
     }
 
     /// The single cover the card draws, and its art box.
@@ -5513,9 +5754,9 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         let now = Instant::now();
         let mut art = Art::default();
         let entry = PlaylistEntry {
-            cover: Some(PlaylistCover::derived(cover_url("m0"))),
+            cover: Some(PlaylistCover::derived(CoverSet::single(cover_url("m0")))),
             composed: (0..4)
-                .map(|index| cover_url(&format!("m{index}")))
+                .map(|index| cover_set(&format!("m{index}")))
                 .collect(),
             ..listed("Evening", None, None)
         };
@@ -5548,9 +5789,9 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         let mut art = Art::default();
         let library = Library::default();
         let entry = PlaylistEntry {
-            cover: Some(PlaylistCover::derived(cover_url("m0"))),
+            cover: Some(PlaylistCover::derived(CoverSet::single(cover_url("m0")))),
             composed: (0..4)
-                .map(|index| cover_url(&format!("m{index}")))
+                .map(|index| cover_set(&format!("m{index}")))
                 .collect(),
             ..listed("Evening", None, None)
         };
@@ -5568,7 +5809,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             open: &mut open,
             play: &mut play,
         };
-        let _ = draw.media_of(&Item::Playlist(&entry), MediaLayout::List);
+        let _ = draw.media_of(&Item::Playlist(&entry), MediaLayout::List, 36);
 
         assert_eq!(
             fetch_urls(draw.art.requests(now)),
@@ -5583,14 +5824,14 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         let now = Instant::now();
         let mut art = Art::default();
         // A head of twelve rows, all from one album, is one cover: no mosaic.
-        let head: Vec<CoverUrl> = (0..12).map(|_| cover_url("one")).collect();
+        let head: Vec<CoverSet> = (0..12).map(|_| cover_set("one")).collect();
         let composed = takofy_model::composed_from(None, head.iter().map(Some));
         assert!(
             composed.is_empty(),
             "one album repeated has nothing to tile"
         );
         let entry = PlaylistEntry {
-            cover: Some(PlaylistCover::derived(cover_url("one"))),
+            cover: Some(PlaylistCover::derived(CoverSet::single(cover_url("one")))),
             composed,
             ..listed("Evening", None, None)
         };
@@ -5608,14 +5849,14 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         let mut art = Art::default();
         let tracks = (0..4)
             .map(|index| TrackEntry {
-                cover: Some(cover_url("one")),
+                cover: Some(cover_set("one")),
                 ..track(&format!("t{index}"), &format!("t{index}"))
             })
             .collect();
         let mut library = library_detailed(tracks, "Evening", None, None);
         library.apply(&Update::Playlists(vec![PlaylistEntry {
             composed: Vec::new(),
-            cover: Some(PlaylistCover::derived(cover_url("one"))),
+            cover: Some(PlaylistCover::derived(CoverSet::single(cover_url("one")))),
             ..listed("Evening", None, None)
         }]));
         hold(&ctx, &mut art, &[cover_url("one")], now);
@@ -5636,7 +5877,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         let now = Instant::now();
         let mut art = Art::default();
         hold(&ctx, &mut art, &[cover_url("one")], now);
-        let cover = art.look(Some(&cover_url("one")), now);
+        let cover = art.look(Some(&cover_set("one")), 176, now);
         assert!(matches!(cover, Cover::Ready(_)));
 
         for eyebrow in ["Album", "Show"] {
@@ -5648,6 +5889,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
                     credit: None,
                     description: "",
                     cover,
+                    tint: None,
                 };
                 let _ = hero::show_with(ui, &band, &tokens, hero::Title::Plain);
             });
@@ -5760,6 +6002,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
                     credit: None,
                     description: LONG_DESCRIPTION,
                     cover: Cover::Missing,
+                    tint: None,
                 };
                 let _ = hero::show_with(ui, &band, &tokens, hero::Title::Plain);
             },
@@ -6549,6 +6792,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
                     credit: None,
                     description: "",
                     cover: Cover::Missing,
+                    tint: None,
                 };
                 let _ = hero::show_with(ui, &band, &tokens, hero::Title::Plain);
                 let row = actionbar::row_rect(ui);
@@ -8731,7 +8975,7 @@ mod root_tests {
             (Item::Album(&album), SidebarKind::Albums),
         ];
         for (item, shelf) in cases {
-            assert_eq!(draw.media_of(&item, MediaLayout::Grid).shelf, shelf);
+            assert_eq!(draw.media_of(&item, MediaLayout::Grid, 176).shelf, shelf);
         }
     }
 
@@ -9371,10 +9615,10 @@ mod root_tests {
                 name: format!("Show {index}"),
                 named: true,
                 publisher: None,
-                cover: Some(
+                cover: Some(CoverSet::single(
                     CoverUrl::from_wire(&format!("https://i.scdn.co/image/{index:0<40}"))
                         .expect("a cover url"),
-                ),
+                )),
                 episodes: None,
             })
             .collect();

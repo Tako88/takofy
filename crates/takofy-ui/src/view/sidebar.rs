@@ -7,11 +7,11 @@ use std::time::Instant;
 
 use egui::{Layout, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Ui, UiBuilder, Vec2};
 use takofy_model::{
-    CoverUrl, FollowedArtist, FollowedShow, PLAYLIST_NAME_MAX, PlaylistEntry, SavedAlbum,
+    CoverSet, FollowedArtist, FollowedShow, PLAYLIST_NAME_MAX, PlaylistEntry, SavedAlbum,
 };
 
 use crate::availability::Control;
-use crate::cover::{Art, Cover};
+use crate::cover::{Art, Cover, want_px};
 use crate::format::{
     library_count, library_kind, playlist_detail, rail_nothing, sidebar_kind_label, sidebar_notice,
 };
@@ -748,6 +748,7 @@ fn list_rows<T: ListItem + Clone>(
                         area = area.vertical_scroll_offset(0.0);
                     }
                     area.show_rows(ui, ROW_H, entries.len(), |ui, range| {
+                        let want = want_px(extent::LIBRARY_ART, ui.pixels_per_point());
                         let start = range.start;
                         for index in range {
                             let Some(item) = entries.get(index) else {
@@ -762,7 +763,7 @@ fn list_rows<T: ListItem + Clone>(
                             let edit =
                                 draw.drag && draw.renaming.is_open_on(item.uri(), Surface::Row);
                             edit_drawn |= edit;
-                            let cover = draw.art.look(item.cover(), draw.now);
+                            let cover = draw.art.look(item.cover(), want, draw.now);
                             // The playlist this drawn slot stands for.
                             let true_row = positions[index];
                             let row = LibraryRow {
@@ -803,7 +804,7 @@ fn list_rows<T: ListItem + Clone>(
                                     item.name().to_owned(),
                                     kind.clone(),
                                     None,
-                                    draw.art.look(item.cover(), draw.now),
+                                    draw.art.look(item.cover(), want, draw.now),
                                 );
                                 lifted_carry = Some(Carry {
                                     source: Source::Playlist,
@@ -885,7 +886,7 @@ trait ListItem {
     /// What the row says under the name: the kind and who made it, or the kind
     /// alone when the wire named nobody.
     fn kind(&self) -> String;
-    fn cover(&self) -> Option<&CoverUrl>;
+    fn cover(&self) -> Option<&CoverSet>;
     /// The row as a menu opened on it describes it.
     fn menu_item(&self, kind: SidebarKind) -> LibraryItem {
         LibraryItem {
@@ -917,8 +918,8 @@ impl ListItem for PlaylistEntry {
         library_kind("Playlist", playlist_detail(self).as_deref())
     }
 
-    fn cover(&self) -> Option<&CoverUrl> {
-        self.cover_url()
+    fn cover(&self) -> Option<&CoverSet> {
+        self.cover_set()
     }
 }
 
@@ -935,7 +936,7 @@ impl ListItem for FollowedShow {
         library_kind("Podcast", self.publisher.as_deref())
     }
 
-    fn cover(&self) -> Option<&CoverUrl> {
+    fn cover(&self) -> Option<&CoverSet> {
         self.cover.as_ref()
     }
 }
@@ -955,7 +956,7 @@ impl ListItem for FollowedArtist {
         "Artist".to_owned()
     }
 
-    fn cover(&self) -> Option<&CoverUrl> {
+    fn cover(&self) -> Option<&CoverSet> {
         self.portrait.as_ref()
     }
 }
@@ -976,7 +977,7 @@ impl ListItem for SavedAlbum {
         )
     }
 
-    fn cover(&self) -> Option<&CoverUrl> {
+    fn cover(&self) -> Option<&CoverSet> {
         self.cover.as_ref()
     }
 }
@@ -1482,7 +1483,7 @@ fn state(ui: &mut Ui, rect: Rect, text: RichText) {
 mod tests {
     use super::*;
     use egui::{Color32, Event, Pos2, Vec2};
-    use takofy_model::{FollowedShow, Owner, OwnerName, PlaylistEntry};
+    use takofy_model::{CoverSet, CoverUrl, FollowedShow, Owner, OwnerName, PlaylistEntry};
 
     use crate::menu::{Anchor, Device, LibraryItem, Listing};
     use crate::message::{Failure, Update};
@@ -2681,15 +2682,61 @@ mod tests {
         );
     }
 
+    /// A cover offering 64, 300 and 640 squares, with their URLs.
+    fn sized(tail: &str) -> (CoverSet, CoverUrl, CoverUrl, CoverUrl) {
+        let small = CoverUrl::from_wire(&format!("https://i.scdn.co/image/{tail}-64"))
+            .expect("a cover url");
+        let middle = CoverUrl::from_wire(&format!("https://i.scdn.co/image/{tail}-300"))
+            .expect("a cover url");
+        let large = CoverUrl::from_wire(&format!("https://i.scdn.co/image/{tail}-640"))
+            .expect("a cover url");
+        let set = CoverSet::from_sizes([
+            (Some((64, 64)), small.clone()),
+            (Some((300, 300)), middle.clone()),
+            (Some((640, 640)), large.clone()),
+        ])
+        .expect("a cover set");
+        (set, small, middle, large)
+    }
+
+    #[test]
+    fn a_show_row_asks_for_the_small_size_at_two_x() {
+        let ctx = context();
+        ctx.set_pixels_per_point(2.0);
+        let mut show = followed_show("spotify:show:s", "A show");
+        let (set, small, _, large) = sized("show");
+        show.cover = Some(set);
+        let mut library = library_with(Vec::new(), vec![show]);
+        assert!(library.sidebar_kind.choose(SidebarKind::Podcasts));
+        let mut art = Art::default();
+        let now = Instant::now();
+
+        let _ = run(&ctx, Vec::new(), &mut library, &mut art);
+        let requested = art.requests(now);
+
+        assert!(
+            requested
+                .iter()
+                .any(|command| matches!(command, Command::Fetch { url } if *url == small)),
+            "a 72px row takes the 64: {requested:?}"
+        );
+        assert!(
+            !requested
+                .iter()
+                .any(|command| matches!(command, Command::Fetch { url } if *url == large)),
+            "a row must not fetch the 640: {requested:?}"
+        );
+    }
+
     #[test]
     fn a_show_row_asks_for_its_cover() {
-        use takofy_model::CoverUrl;
+        use takofy_model::{CoverSet, CoverUrl};
 
         let ctx = context();
         let mut show = followed_show("spotify:show:s", "A show");
         let url = "https://i.scdn.co/image/0123456789abcdef0123456789abcdef01234567";
         let cover = CoverUrl::from_wire(url).expect("the CDN url is admitted");
-        show.cover = Some(cover.clone());
+        show.cover = Some(CoverSet::single(cover.clone()));
         let mut library = library_with(Vec::new(), vec![show]);
         assert!(library.sidebar_kind.choose(SidebarKind::Podcasts));
         let mut art = Art::default();

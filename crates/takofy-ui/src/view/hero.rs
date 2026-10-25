@@ -20,10 +20,9 @@
 //!
 //! A playlist's band draws the four-cover mosaic when the list has four distinct
 //! album covers and every one of them is held; until then it draws the playlist's
-//! own picture. The artist form of the band, with a photograph behind it, is
-//! still missing.
+//! own picture.
 
-use egui::{FontId, Id, Margin, Pos2, Rect, Sense, Ui, Vec2, WidgetInfo, vec2};
+use egui::{Color32, FontId, Id, Margin, Pos2, Rect, Sense, Ui, Vec2, WidgetInfo, vec2};
 use takofy_model::PLAYLIST_NAME_MAX;
 
 use crate::cover::Cover;
@@ -67,6 +66,8 @@ pub struct Band<'a> {
     pub description: &'a str,
     /// The context's cover, as the art pipeline resolves it.
     pub cover: Cover,
+    /// The colour derived from the same art, when its pixels are held.
+    pub tint: Option<Color32>,
 }
 
 /// What the band draws in its art box.
@@ -112,7 +113,7 @@ pub fn show_picture(
     // the band, so the art plus that padding is what the band comes to.
     let height = (hero::ART + 2.0 * space::S5).max(hero::MIN_H);
     let (rect, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
-    wash(ui, rect, tokens);
+    wash(ui, rect, band.tint, tokens);
     let title = inner(ui, rect, band, picture, tokens, title);
     Reply {
         rename_clicked: title.activated,
@@ -122,9 +123,9 @@ pub fn show_picture(
 }
 
 /// The tint and the hairline that close the band off from the tracks.
-fn wash(ui: &Ui, rect: Rect, tokens: &Tokens) {
+pub(super) fn wash(ui: &Ui, rect: Rect, tint: Option<Color32>, tokens: &Tokens) {
     ui.painter()
-        .rect_filled(rect, 0.0, tokens.palette.hero_wash);
+        .rect_filled(rect, 0.0, tint.unwrap_or(tokens.palette.hero_wash));
     ui.painter().rect_filled(
         Rect::from_min_size(
             Pos2::new(rect.left(), rect.bottom() - stroke::HAIRLINE),
@@ -133,6 +134,23 @@ fn wash(ui: &Ui, rect: Rect, tokens: &Tokens) {
         0.0,
         tokens.palette.border,
     );
+}
+
+/// The byline's plain line: one muted, tracked mono row at `width`.
+pub(super) fn byline_line(
+    ui: &Ui,
+    words: &str,
+    width: f32,
+    tokens: &Tokens,
+) -> std::sync::Arc<egui::Galley> {
+    recipe::line(
+        ui,
+        words,
+        recipe::hero_description(),
+        tokens.palette.text_muted,
+        recipe::tracking_pts(text::XS, tracking::SLIGHT),
+        width,
+    )
 }
 
 struct TitleDrawn {
@@ -341,7 +359,7 @@ fn byline(
             Some(name) => format!("{name} · {facts}"),
             None => facts,
         };
-        let line = recipe::line(ui, &words, font, ink, tracking, width);
+        let line = byline_line(ui, &words, width, tokens);
         let top = bottom - line.size().y;
         ui.painter().galley(Pos2::new(left, top), line, ink);
         return (top, None);
@@ -386,14 +404,7 @@ fn byline(
         .x
     });
     if !facts.is_empty() && room >= least {
-        let line = recipe::line(
-            ui,
-            &format!(" · {facts}"),
-            recipe::hero_description(),
-            ink,
-            tracking,
-            room,
-        );
+        let line = byline_line(ui, &format!(" · {facts}"), room, tokens);
         ui.painter()
             .galley(Pos2::new(shown.rect.right(), top), line, ink);
     }
@@ -436,6 +447,7 @@ mod tests {
             meta,
             description: "",
             cover: crate::cover::Cover::Missing,
+            tint: None,
             credit,
         }
     }
@@ -551,6 +563,81 @@ mod tests {
         );
         assert_eq!(reply.title_id, None, "a painted title carries no id");
         assert_eq!(reply.open, None, "a plain band opens nothing");
+    }
+
+    /// The rects the frame filled with `color`, in paint order.
+    fn fills(output: &egui::FullOutput, color: egui::Color32) -> Vec<Rect> {
+        output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Rect(shape) if shape.fill == color => Some(shape.rect),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn band_marker_ink() -> egui::Color32 {
+        Tokens::DARK.palette.border
+    }
+    #[test]
+    fn a_tinted_band_paints_its_tint_then_the_hairline() {
+        let ctx = context();
+        let tint = crate::theme::tint_color([116, 27, 27]);
+        let mut band = band(None, Vec::new());
+        band.tint = Some(tint);
+        let (_, output) = draw(&ctx, &band, Vec::new());
+
+        let tinted = fills(&output, tint);
+        assert_eq!(tinted.len(), 1, "one wash over the whole band");
+        assert_eq!(tinted[0].width(), PROBE.x, "the tint spans the band");
+        assert_eq!(
+            tinted[0],
+            Rect::from_min_size(
+                Pos2::ZERO,
+                Vec2::new(PROBE.x, (hero::ART + 2.0 * space::S5).max(hero::MIN_H))
+            ),
+            "the tint covers the band and nothing else"
+        );
+        assert!(
+            fills(&output, Tokens::DARK.palette.hero_wash).is_empty(),
+            "a tinted band does not also paint the fallback"
+        );
+
+        let tinted_at = output
+            .shapes
+            .iter()
+            .position(|clipped| {
+                matches!(&clipped.shape, egui::epaint::Shape::Rect(shape) if shape.fill == tint)
+            })
+            .expect("the tint is painted");
+        let hairline_at = output
+            .shapes
+            .iter()
+            .position(|clipped| {
+                matches!(&clipped.shape, egui::epaint::Shape::Rect(shape)
+                    if shape.fill == band_marker_ink()
+                        && (shape.rect.height() - stroke::HAIRLINE).abs() < 0.01
+                        && (shape.rect.bottom() - tinted[0].bottom()).abs() < 0.01)
+            })
+            .expect("the band closes with a hairline");
+        assert!(
+            tinted_at < hairline_at,
+            "the tint is painted under the rule"
+        );
+    }
+
+    #[test]
+    fn an_untinted_band_paints_the_wash() {
+        let ctx = context();
+        let tokens = Tokens::DARK;
+        let [_, _, _, alpha] = tokens.palette.hero_wash.to_srgba_unmultiplied();
+        assert_eq!(alpha, 255, "the fallback is opaque");
+        let (_, output) = draw(&ctx, &band(None, Vec::new()), Vec::new());
+        assert_eq!(
+            fills(&output, tokens.palette.hero_wash),
+            vec![band_rect(&output)]
+        );
     }
 
     #[test]

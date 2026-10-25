@@ -11,7 +11,9 @@
 //! longer has a chip falls back to `All` for the frame without being forgotten,
 //! so a reload that brings its kind back restores it.
 
-use takofy_model::{Release, ReleaseKind};
+use takofy_model::{CoverSet, Release, ReleaseKind};
+
+use crate::layout::hero::shelf_picks;
 
 /// A chip in the discography's filter row.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -95,6 +97,43 @@ pub fn narrow(releases: &[Release], chip: Chip, needle: &str) -> Vec<usize> {
                 && (needle.is_empty() || release.name.to_lowercase().contains(&needle))
         })
         .map(|(index, _)| index)
+        .collect()
+}
+
+/// The shelf's covers: the oldest, the middle and the newest release that has
+/// art, drawn oldest first.
+///
+/// Only covered releases take part, sorted by year with an undated release first
+/// so it is never claimed as the newest; equal years keep the wire's order. A
+/// cover that repeats one already chosen is dropped, so two singles off one
+/// album never show the same art twice.
+pub fn shelf(releases: &[Release]) -> Vec<&CoverSet> {
+    let mut covered: Vec<&Release> = releases
+        .iter()
+        .filter(|release| release.cover.is_some())
+        .collect();
+    covered.sort_by_key(|release| (release.year.is_some(), release.year.unwrap_or(0)));
+    let mut art: Vec<&CoverSet> = Vec::new();
+    for cover in covered
+        .into_iter()
+        .filter_map(|release| release.cover.as_ref())
+    {
+        // The largest offered variant names the artwork, whatever size the box
+        // asks for later.
+        let Some(url) = cover.pick(u32::MAX) else {
+            continue;
+        };
+        if art
+            .iter()
+            .any(|chosen| chosen.pick(u32::MAX).is_some_and(|seen| seen == url))
+        {
+            continue;
+        }
+        art.push(cover);
+    }
+    shelf_picks(art.len())
+        .into_iter()
+        .map(|index| art[index])
         .collect()
 }
 
@@ -201,6 +240,127 @@ mod tests {
             cover: None,
             tracks: Vec::new(),
         }
+    }
+
+    fn cover_url(tail: &str) -> takofy_model::CoverUrl {
+        takofy_model::CoverUrl::from_wire(&format!("https://i.scdn.co/image/{tail}"))
+            .expect("a cover url")
+    }
+
+    fn covered(name: &str, year: Option<u16>, tail: &str) -> Release {
+        Release {
+            cover: Some(CoverSet::single(cover_url(tail))),
+            ..named(ReleaseKind::Album, name, year)
+        }
+    }
+
+    /// The tails of the URLs the shelf chose, oldest first.
+    fn shelf_tails(releases: &[Release]) -> Vec<String> {
+        shelf(releases)
+            .iter()
+            .map(|set| {
+                set.pick(u32::MAX)
+                    .expect("a picked cover")
+                    .as_str()
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or_default()
+                    .to_owned()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn an_artless_discography_has_no_shelf() {
+        assert!(shelf(&[]).is_empty());
+        assert!(
+            shelf(&[named(ReleaseKind::Album, "One", Some(2020))]).is_empty(),
+            "an uncovered release is not a cover"
+        );
+    }
+
+    #[test]
+    fn fewer_than_three_covered_releases_all_stand() {
+        let one = vec![covered("One", Some(2019), "a")];
+        assert_eq!(shelf_tails(&one), vec!["a"]);
+
+        let two = vec![
+            covered("One", Some(2019), "a"),
+            covered("Two", Some(2021), "b"),
+        ];
+        assert_eq!(shelf_tails(&two), vec!["a", "b"]);
+
+        let three = vec![
+            covered("One", Some(2019), "a"),
+            covered("Two", Some(2020), "b"),
+            covered("Three", Some(2021), "c"),
+        ];
+        assert_eq!(shelf_tails(&three), vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn five_scrambled_years_take_the_oldest_the_middle_and_the_newest() {
+        let releases = vec![
+            covered("a", Some(2021), "a"),
+            covered("b", Some(2024), "b"),
+            covered("c", Some(2019), "c"),
+            covered("d", Some(2023), "d"),
+            covered("e", Some(2022), "e"),
+        ];
+        assert_eq!(shelf_tails(&releases), vec!["c", "e", "b"]);
+    }
+
+    #[test]
+    fn four_covered_releases_take_the_oldest_the_second_and_the_newest() {
+        let releases = vec![
+            covered("a", Some(2021), "a"),
+            covered("b", Some(2024), "b"),
+            covered("c", Some(2019), "c"),
+            covered("d", Some(2023), "d"),
+        ];
+        assert_eq!(shelf_tails(&releases), vec!["c", "a", "b"]);
+    }
+
+    #[test]
+    fn an_uncovered_release_is_dropped_before_the_pick() {
+        let releases = vec![
+            covered("a", Some(2019), "a"),
+            covered("b", Some(2020), "b"),
+            named(ReleaseKind::Album, "c", Some(2021)),
+            covered("d", Some(2022), "d"),
+            covered("e", Some(2023), "e"),
+        ];
+        assert_eq!(shelf_tails(&releases), vec!["a", "b", "e"]);
+    }
+
+    #[test]
+    fn an_undated_release_is_never_the_newest() {
+        let releases = vec![
+            covered("undated", None, "undated"),
+            covered("dated", Some(2020), "dated"),
+        ];
+        assert_eq!(shelf_tails(&releases), vec!["undated", "dated"]);
+    }
+
+    #[test]
+    fn equal_years_keep_the_wires_order() {
+        let releases = vec![
+            covered("first", Some(2020), "first"),
+            covered("second", Some(2020), "second"),
+            covered("third", Some(2020), "third"),
+            covered("fourth", Some(2020), "fourth"),
+        ];
+        assert_eq!(shelf_tails(&releases), vec!["first", "second", "fourth"]);
+    }
+
+    #[test]
+    fn a_repeated_cover_is_shown_once() {
+        let releases = vec![
+            covered("album", Some(2020), "one"),
+            covered("single-a", Some(2021), "two"),
+            covered("single-b", Some(2021), "two"),
+        ];
+        assert_eq!(shelf_tails(&releases), vec!["one", "two"]);
     }
 
     #[test]

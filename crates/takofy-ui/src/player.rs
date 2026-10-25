@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use takofy_model::{CoverUrl, TrackEntry};
+use takofy_model::{CoverSet, TrackEntry};
 
 use crate::message::{Command, Failure, TransportUpdate, Update};
 use crate::signin::failure_message;
@@ -74,7 +74,7 @@ pub struct NowPlaying {
     /// The track's album cover, as it was known when the track started. The
     /// panel and the playbar look it up each frame, so a cover that arrives
     /// later still reaches them.
-    pub cover: Option<CoverUrl>,
+    pub cover: Option<CoverSet>,
 }
 
 impl From<&TrackEntry> for NowPlaying {
