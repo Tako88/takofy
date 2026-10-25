@@ -26,6 +26,7 @@ pub mod show;
 mod collected;
 mod collection;
 mod cover;
+mod label_cache;
 mod latest;
 mod loss;
 mod playstate;

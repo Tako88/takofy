@@ -39,6 +39,7 @@ use crate::context::{
 };
 use crate::cover::{pick_cover, pick_images_cover};
 use crate::followed::{self, FollowedError, ShowCard};
+use crate::label_cache::UriCache;
 use crate::lyrics::{self, LyricsError};
 use crate::playlist_edit;
 use crate::portrait::{bounded, portrait_from, portraits_of};
@@ -89,7 +90,11 @@ fn rootlist_endpoint(session: &Session, from: usize, len: usize) -> String {
 /// A playlist's cover is, in order: the picture the user set, or the cover of
 /// the first Track-kind item. The first-track cover needs one batched metadata
 /// request, only for the playlists that have no picture.
-pub(crate) async fn label_playlists(session: &Session, uris: Vec<String>) -> Vec<PlaylistEntry> {
+pub(crate) async fn label_playlists(
+    session: &Session,
+    uris: Vec<String>,
+    cache: &LabelCache,
+) -> Vec<PlaylistEntry> {
     let metas = futures_util::stream::iter(uris.iter().cloned())
         .map(|uri| async move { playlist_meta(session, &uri).await })
         .buffered(8)
@@ -106,7 +111,7 @@ pub(crate) async fn label_playlists(session: &Session, uris: Vec<String>) -> Vec
             candidates.push(track.clone());
         }
     }
-    let labels = fetch_labels(session, &candidates).await;
+    let labels = fetch_labels(session, &candidates, cache).await;
     let user = session.username();
 
     uris.into_iter()
@@ -555,7 +560,11 @@ pub(crate) async fn write_add(
 /// order and its numbering are the album's, not a playlist's. A URI that does not
 /// name an album never reaches the network, and a request that fails hands the
 /// caller the source's message so the page can show the failure with a retry.
-pub(crate) async fn read_album(session: &Session, uri: &str) -> Result<AlbumDetail, AlbumError> {
+pub(crate) async fn read_album(
+    session: &Session,
+    uri: &str,
+    cache: &LabelCache,
+) -> Result<AlbumDetail, AlbumError> {
     let id = SpotifyUri::from_uri(uri).map_err(|_| AlbumError::NotAnAlbum)?;
     if !matches!(id, SpotifyUri::Album { .. }) {
         return Err(AlbumError::NotAnAlbum);
@@ -563,7 +572,7 @@ pub(crate) async fn read_album(session: &Session, uri: &str) -> Result<AlbumDeta
     let album = Album::get(session, &id)
         .await
         .map_err(|error| AlbumError::Source(error.to_string()))?;
-    let tracks = label_tracks(session, positions(&album)).await;
+    let tracks = label_tracks(session, positions(&album), cache).await;
     Ok(detail(uri, &album, tracks))
 }
 
@@ -582,6 +591,7 @@ pub(crate) async fn read_album(session: &Session, uri: &str) -> Result<AlbumDeta
 pub(crate) async fn read_artist(
     session: &Session,
     uri: &str,
+    cache: &LabelCache,
 ) -> Result<(ArtistDetail, Option<bool>), ArtistError> {
     let id = SpotifyUri::from_uri(uri).map_err(|_| ArtistError::NotAnArtist)?;
     if !matches!(id, SpotifyUri::Artist { .. }) {
@@ -606,7 +616,7 @@ pub(crate) async fn read_artist(
     }
 
     let country = session.country();
-    let top_tracks = label_tracks(session, top_track_positions(&artist, &country)).await;
+    let top_tracks = label_tracks(session, top_track_positions(&artist, &country), cache).await;
     let followed = read_follow(session, uri).await;
     let related = related_uris(&artist);
     if related.is_empty() {
@@ -627,7 +637,11 @@ pub(crate) async fn read_artist(
 /// Unlike a position list this carries no added date: a release is a record, not
 /// a membership. A URI that cannot be labelled falls back to itself, exactly as
 /// a playlist row does.
-pub(crate) async fn read_release_tracks(session: &Session, uris: &[String]) -> Vec<TrackEntry> {
+pub(crate) async fn read_release_tracks(
+    session: &Session,
+    uris: &[String],
+    cache: &LabelCache,
+) -> Vec<TrackEntry> {
     let positions = uris
         .iter()
         .map(|uri| PageTrack {
@@ -635,7 +649,7 @@ pub(crate) async fn read_release_tracks(session: &Session, uris: &[String]) -> V
             added_at: None,
         })
         .collect();
-    label_tracks(session, positions).await
+    label_tracks(session, positions, cache).await
 }
 
 /// Reads one show: its metadata, then the labels for its episodes.
@@ -1123,7 +1137,7 @@ fn context_cover(metadata: &HashMap<String, String>) -> Option<CoverUrl> {
 /// What the wire says about one track: the name and artists the row already
 /// draws, plus the album and length it can now draw too.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct TrackLabel {
+pub(crate) struct TrackLabel {
     title: String,
     artists: String,
     album: Option<String>,
@@ -1137,6 +1151,24 @@ struct TrackLabel {
 /// Labels for tracks, keyed by URI.
 type Labels = HashMap<String, TrackLabel>;
 
+/// What one session remembers of the labels it has already read.
+pub(crate) type LabelCache = UriCache<TrackLabel>;
+
+/// A label carrying only a title, so a test can seat one in a cache.
+#[cfg(test)]
+pub(crate) fn titled_label(title: &str) -> TrackLabel {
+    TrackLabel {
+        title: title.to_owned(),
+        artists: String::new(),
+        album: None,
+        album_uri: None,
+        artist_uris: Vec::new(),
+        artist_names: Vec::new(),
+        duration_ms: None,
+        cover: None,
+    }
+}
+
 /// How many distinct URIs one metadata request asks for.
 ///
 /// The server accepted 500 without complaint, but it deduplicates within a
@@ -1148,9 +1180,13 @@ const LABEL_CHUNK: usize = 250;
 ///
 /// The URIs are deduplicated for the network request only: the result keeps one
 /// entry per position, with that position's own added date.
-pub(crate) async fn label_tracks(session: &Session, items: Vec<PageTrack>) -> Vec<TrackEntry> {
+pub(crate) async fn label_tracks(
+    session: &Session,
+    items: Vec<PageTrack>,
+    cache: &LabelCache,
+) -> Vec<TrackEntry> {
     let uris: Vec<String> = items.iter().map(|item| item.uri.clone()).collect();
-    let labels = fetch_labels(session, &distinct_uris(&uris)).await;
+    let labels = fetch_labels(session, &distinct_uris(&uris), cache).await;
     let unnamed = uris.iter().filter(|uri| !labels.contains_key(*uri)).count();
     if unnamed > 0 {
         log::warn!("{unnamed} of {} tracks could not be named", uris.len());
@@ -1227,13 +1263,23 @@ fn expand_labels(items: &[PageTrack], labels: &Labels) -> Vec<TrackEntry> {
         .collect()
 }
 
-/// Fetches names for distinct track and episode URIs.
+/// Fetches names for distinct track and episode URIs, reusing the labels this
+/// session has already read.
+async fn fetch_labels(session: &Session, distinct: &[String], cache: &LabelCache) -> Labels {
+    cache
+        .through_cache(distinct.to_vec(), |missing: Vec<String>| {
+            fetch_labels_wire(session, missing)
+        })
+        .await
+}
+
+/// The wire read behind [`fetch_labels`].
 ///
 /// The one label seam branches on URI kind: tracks keep the `TRACK_V4` batch they
 /// always used, and episodes get `EPISODE_V4`. The two batches are independent,
 /// so one failing does not lose the other.
-async fn fetch_labels(session: &Session, distinct: &[String]) -> Labels {
-    let (tracks, episodes) = partition_by_kind(distinct);
+async fn fetch_labels_wire(session: &Session, distinct: Vec<String>) -> Labels {
+    let (tracks, episodes) = partition_by_kind(&distinct);
     let (tracks, mut tally) =
         fetch_chunked(session, &tracks, ExtensionKind::TRACK_V4, track_label_from).await;
     let (episodes, episode_tally) =
@@ -1602,7 +1648,7 @@ mod tests {
     use std::collections::HashMap;
     use std::time::Duration;
 
-    use librespot::core::{SpotifyId, SpotifyUri};
+    use librespot::core::{Session, SessionConfig, SpotifyId, SpotifyUri};
     use librespot::metadata::Show;
     use librespot::protocol::entity_extension_data::{
         EntityExtensionData, EntityExtensionDataHeader,
@@ -1623,12 +1669,12 @@ mod tests {
     use crate::show::ShowError;
 
     use super::{
-        Labels, PlaylistMeta, TrackLabel, client_update_id, context_cover, distinct_uris,
-        duration_ms, episode_from, episode_labels, episode_of, expand_episodes, expand_labels,
-        first_track_uri, item_uris, label_from_episode, label_of, merge_labels, needs_labels,
-        non_blank, parse_show_uri, partition_by_kind, playlist_cover, playlist_headers,
-        playlist_label, playlist_length, playlist_owner, published_at, show_card, tally_of,
-        track_label_from, update_id,
+        LabelCache, Labels, PlaylistMeta, TrackLabel, client_update_id, context_cover,
+        distinct_uris, duration_ms, episode_from, episode_labels, episode_of, expand_episodes,
+        expand_labels, first_track_uri, item_uris, label_from_episode, label_of, label_tracks,
+        merge_labels, needs_labels, non_blank, parse_show_uri, partition_by_kind, playlist_cover,
+        playlist_headers, playlist_label, playlist_length, playlist_owner, published_at, show_card,
+        tally_of, titled_label, track_label_from, update_id,
     };
 
     const TRACK_ID: &str = "4uLU6hMCjMI75M1A2tKUQC";
@@ -1734,6 +1780,70 @@ mod tests {
     #[test]
     fn distinct_uris_of_nothing_is_nothing() {
         assert!(distinct_uris(&[]).is_empty());
+    }
+
+    /// The control for the seeded pass: with nothing cached, the same read
+    /// reaches for the wire, gets nothing from a session that is not connected,
+    /// and falls back to the URI.
+    #[tokio::test]
+    async fn an_uncached_pass_leaves_the_row_unnamed_and_stores_nothing() {
+        let cache = LabelCache::new();
+        let session = Session::new(SessionConfig::default(), None);
+
+        let rows = label_tracks(&session, items(&["spotify:track:a"]), &cache).await;
+
+        assert!(!rows[0].named);
+        assert_eq!(rows[0].title, "spotify:track:a");
+        assert_eq!(cache.len(), 0);
+    }
+
+    /// A pass over URIs the cache already holds names the rows without a wire
+    /// read: only the cache can answer, because the session is not connected.
+    #[tokio::test]
+    async fn a_cached_labelling_pass_names_the_rows_without_the_wire() {
+        let cache = LabelCache::new();
+        cache.store(&named(&[(
+            "spotify:track:a",
+            "Cached Title",
+            "Cached Band",
+        )]));
+        let session = Session::new(SessionConfig::default(), None);
+
+        let rows = label_tracks(&session, items(&["spotify:track:a"]), &cache).await;
+
+        assert!(rows[0].named);
+        assert_eq!(rows[0].title, "Cached Title");
+        assert_eq!(rows[0].artists, "Cached Band");
+        assert_eq!(cache.len(), 1);
+    }
+
+    /// Two labelling-shaped passes over the same URIs, through the same cache,
+    /// ask a stand-in wire read for those URIs exactly once.
+    #[tokio::test]
+    async fn a_second_labelling_pass_over_the_same_uris_makes_no_second_fetch() {
+        let asked = std::sync::Mutex::new(Vec::new());
+        let cache = LabelCache::new();
+        let uris = owned(&["spotify:track:a", "spotify:track:b"]);
+
+        let mut passes = Vec::new();
+        for _ in 0..2 {
+            passes.push(
+                cache
+                    .through_cache(uris.clone(), |missing: Vec<String>| {
+                        asked.lock().expect("lock").extend(missing.clone());
+                        async move {
+                            missing
+                                .into_iter()
+                                .map(|uri| (uri, titled_label("A Title")))
+                                .collect::<Labels>()
+                        }
+                    })
+                    .await,
+            );
+        }
+
+        assert_eq!(*asked.lock().expect("lock"), uris);
+        assert_eq!(passes[1], passes[0]);
     }
 
     #[test]
