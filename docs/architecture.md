@@ -191,6 +191,50 @@ a reply that was lost after the server applied the write: the held revision is
 then old, the next write fails, and the library has to be reloaded. That is
 preferred to retrying a write that is not idempotent.
 
+## Being a device
+
+The window is a Spotify Connect device rather than a remote control for one: it
+announces itself to the account's dealer, and once the account hands it the
+sound, the player here is what the user hears on every device. Four things
+follow from that.
+
+**Every write is bounded, and one gate serialises them.** Announcement,
+activation, release, the state puts that keep the phone's display honest and the
+hand-over that moves the sound elsewhere all take the same gate and each carries
+its own budget. The client underneath retries with backoff, so an unbounded call
+would hold the gate the pump needs to read pushes and the publisher needs to
+write them. A put that misses its budget is a failed put: given back where the
+server may have applied it, and reported rather than retried. The hand-over is
+the one write whose failure is not given back, because if it fails nothing else
+has claimed the sound and this window is still playing it.
+
+**The answer goes after the effect.** A command from the phone is answered only
+once the window has acted on it, and the answer is the last thing the frame
+emits, so a phone never hears that something was done before the queue moved.
+The backstop runs the other way: a command the window never answers is failed on
+a budget, so a closed window or a lost frame cannot leave a phone waiting. An
+answer becomes the account's ack and rides the next state put.
+
+**Holding the sound means answering for it.** A device that holds the sound and
+refuses its transport breaks the account: the phone stops playing because it is
+no longer active, sends pause and resume as commands, and hears nothing. So the
+receiver obeys both skips, both repeats, shuffle, options, add-to-queue and a
+wholesale queue window, and reports what it did. A phone that starts something
+new goes through the same landing path a hand-over into this window uses, so
+starting a context is not a special case.
+
+**The costs are stated, not hidden.** Volume is disabled rather than obeyed, and
+a phone that changes it here will find the account and this window disagreeing.
+A phone's queue window replaces this window's queue — ten rows behind, eighty
+ahead — so a phone-side drag is not merged with a local one. After a pick,
+activation stays live until the loss push arrives, so a local change in that
+window can put this device active over a transfer still completing; that push is
+the only signal a transfer settled, and waiting for it would silence the device
+if it never came. And a device that is not the sound's owner cannot hand it on:
+the server acks the request and never completes it, which is why a pick puts
+this window active first and hands over second, and why a second pick before the
+first settles is refused.
+
 ## Narrowing a list, and strips that stay
 
 A list can be narrowed by name as well as by kind, and the two axes multiply.
