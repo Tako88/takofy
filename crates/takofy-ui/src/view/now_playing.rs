@@ -247,14 +247,14 @@ fn meta(ui: &Ui, rect: Rect, transport: &Transport, tokens: &Tokens) {
             0.0,
             rect.width(),
         );
-        let height = artist.size().y;
         ui.painter().galley(
             Pos2::new(rect.left(), top),
             artist,
             tokens.palette.text_muted,
         );
-        top += height;
     }
+    // The artist line is reserved whether or not it holds an artist.
+    top += line_height(ui, &recipe::track_secondary());
 
     let state = transport.state.label();
     if !state.is_empty() {
@@ -701,23 +701,41 @@ mod tests {
     }
 
     #[test]
-    fn no_artist_line_is_drawn_when_the_track_has_none() {
+    fn the_state_line_stays_put_when_the_track_has_no_artist() {
         let ctx = context();
         let mut none = Panel::new(playing("A Title", ""));
         let without = none.output(&ctx);
         let mut with = Panel::new(playing("A Title", "A Band"));
         let held = with.output(&ctx);
 
-        // The state moves up with no artist line to draw it under; the rect
-        // reserves that line anyway, so the tabs below it stay put.
+        // The block holds the artist line whether or not there is an artist, so
+        // the state under it does not move.
         let title = painted_at(&without, "A Title").expect("the title is painted");
         let state = painted_at(&without, "Loading").expect("the state is painted");
         let held_title = painted_at(&held, "A Title").expect("the title is painted");
         let held_state = painted_at(&held, "Loading").expect("the state is painted");
         assert_eq!(title, held_title);
         assert!(
-            state.y < held_state.y,
-            "an absent artist must not reserve its line: {state:?} vs {held_state:?}"
+            (state.y - held_state.y).abs() < 0.01,
+            "an absent artist must reserve its line: {state:?} vs {held_state:?}"
+        );
+
+        // The reservation is the pane's own sum of three lines.
+        let mut measured = None;
+        run(&ctx, input(Vec::new()), |ui| {
+            measured = Some((
+                meta_height(ui),
+                panel::meta_reserved(
+                    line_height(ui, &recipe::panel_title()),
+                    line_height(ui, &recipe::track_secondary()),
+                    line_height(ui, &recipe::track_mono(text::XXS)),
+                ),
+            ));
+        });
+        let (reserved, summed) = measured.expect("the pane measures its reservation");
+        assert!(
+            (reserved - summed).abs() < 0.01,
+            "the reservation is three lines: {reserved} vs {summed}"
         );
     }
 
