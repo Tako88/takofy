@@ -24,7 +24,7 @@ use protobuf::Message as _;
 use takofy_model::{
     AlbumDetail, ArtistDetail, ArtistPortrait, CoverUrl, Episode, FollowedArtist, FollowedShow,
     Move, PlaylistAccess, PlaylistCover, PlaylistEntry, PublishedAt, Removal, Revision, SavedAlbum,
-    ShowDetail, TrackEntry, TrackLyrics,
+    ShowDetail, TrackEntry, TrackLyrics, composed_from,
 };
 
 use crate::album::{AlbumError, detail, positions};
@@ -88,8 +88,8 @@ fn rootlist_endpoint(session: &Session, from: usize, len: usize) -> String {
 /// Names each playlist, falling back to its URI when metadata is missing.
 ///
 /// A playlist's cover is, in order: the picture the user set, or the cover of
-/// the first Track-kind item. The first-track cover needs one batched metadata
-/// request, only for the playlists that have no picture.
+/// the first Track-kind item. Those covers need one batched metadata request, for
+/// every head a picture-less playlist brings.
 pub(crate) async fn label_playlists(
     session: &Session,
     uris: Vec<String>,
@@ -101,17 +101,7 @@ pub(crate) async fn label_playlists(
         .collect::<Vec<_>>()
         .await;
 
-    let mut candidates: Vec<String> = Vec::new();
-    let mut seen = HashSet::new();
-    for meta in &metas {
-        if meta.picture.is_none()
-            && let Some(track) = &meta.first_track
-            && seen.insert(track.clone())
-        {
-            candidates.push(track.clone());
-        }
-    }
-    let labels = fetch_labels(session, &candidates, cache).await;
+    let labels = fetch_labels(session, &head_candidates(&metas), cache).await;
     let user = session.username();
 
     uris.into_iter()
@@ -119,20 +109,22 @@ pub(crate) async fn label_playlists(
         .map(|(uri, meta)| {
             let PlaylistMeta {
                 name,
-                first_track,
+                head,
                 picture,
                 description,
                 tracks,
                 owner,
                 access,
             } = meta;
-            let cover = playlist_cover(picture, first_track.as_deref(), &labels);
+            let cover = playlist_cover(picture, head.first().map(String::as_str), &labels);
+            let composed = composed_of(&head, cover.as_ref(), &labels);
             let (name, named) = playlist_label(&uri, name);
             PlaylistEntry {
                 uri,
                 name,
                 named,
                 cover,
+                composed,
                 description,
                 tracks,
                 owner: playlist_edit::owner_of(owner.as_deref(), &user),
@@ -142,12 +134,44 @@ pub(crate) async fn label_playlists(
         .collect()
 }
 
+/// How many of a playlist's head rows are named.
+///
+/// A hard cap, so a head of a hundred rows does not turn one card into a hundred
+/// labels. Twelve leaves room for a head that repeats one album and still tiles.
+const HEAD_TRACKS: usize = 12;
+
+/// Every head URI the label batch has to name, each once, in first-seen order.
+fn head_candidates(metas: &[PlaylistMeta]) -> Vec<String> {
+    let mut candidates = Vec::new();
+    let mut seen = HashSet::new();
+    for meta in metas {
+        for track in &meta.head {
+            if seen.insert(track.clone()) {
+                candidates.push(track.clone());
+            }
+        }
+    }
+    candidates
+}
+
+/// The composed covers a playlist's head tiles, from the labels it was named by.
+fn composed_of(head: &[String], cover: Option<&PlaylistCover>, labels: &Labels) -> Vec<CoverUrl> {
+    composed_from(
+        cover.map(|cover| cover.origin),
+        head.iter()
+            .map(|uri| labels.get(uri).and_then(|label| label.cover.as_ref())),
+    )
+}
+
 /// What one playlist's metadata tells the listing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PlaylistMeta {
     name: Option<String>,
-    /// The URI of the first Track-kind item, skipping episodes and local files.
-    first_track: Option<String>,
+    /// The first [`HEAD_TRACKS`] Track-kind item URIs, in list order.
+    ///
+    /// Empty when the playlist has a picture of its own: a mosaic may never
+    /// replace that picture, so naming the head would be a request for nothing.
+    head: Vec<String>,
     /// The picture the user set, when the playlist carries a usable one.
     picture: Option<CoverUrl>,
     /// The playlist's own description, collapsed to a line, when it has one.
@@ -164,7 +188,7 @@ impl PlaylistMeta {
     fn empty() -> Self {
         Self {
             name: None,
-            first_track: None,
+            head: Vec::new(),
             picture: None,
             description: None,
             tracks: None,
@@ -209,8 +233,8 @@ fn playlist_length(length: i32) -> Option<usize> {
     usize::try_from(length).ok()
 }
 
-/// Reads one playlist's name, description, owner, first track and picture in a
-/// single request.
+/// Reads one playlist's name, description, owner, head and picture in a single
+/// request.
 async fn playlist_meta(session: &Session, uri: &str) -> PlaylistMeta {
     let Ok(id) = SpotifyUri::from_uri(uri) else {
         return PlaylistMeta::empty();
@@ -218,10 +242,11 @@ async fn playlist_meta(session: &Session, uri: &str) -> PlaylistMeta {
     let Ok(playlist) = Playlist::get(session, &id).await else {
         return PlaylistMeta::empty();
     };
+    let picture = CoverUrl::from_file_id(&playlist.attributes.picture);
     PlaylistMeta {
         name: Some(playlist.name().to_owned()),
-        first_track: first_track_uri(playlist.tracks()),
-        picture: CoverUrl::from_file_id(&playlist.attributes.picture),
+        head: head_track_uris(picture.as_ref(), playlist.tracks()),
+        picture,
         description: non_blank(&playlist.attributes.description),
         tracks: playlist_length(playlist.length),
         owner: playlist_owner(&playlist.id),
@@ -232,15 +257,24 @@ async fn playlist_meta(session: &Session, uri: &str) -> PlaylistMeta {
     }
 }
 
-/// The URI of the first Track-kind item, skipping episodes and local files.
+/// The first [`HEAD_TRACKS`] Track-kind URIs of a picture-less playlist's head.
 ///
-/// Reads the head only: a truncated list still begins with an intact item, and
-/// the derivation never pages.
-fn first_track_uri<'a>(mut uris: impl Iterator<Item = &'a SpotifyUri>) -> Option<String> {
-    uris.find_map(|uri| match uri {
+/// Reads the head only: a truncated list still begins with intact items, and the
+/// derivation never pages. Episodes and local files are not tracks, so they
+/// contribute nothing.
+fn head_track_uris<'a>(
+    picture: Option<&CoverUrl>,
+    uris: impl Iterator<Item = &'a SpotifyUri>,
+) -> Vec<String> {
+    if picture.is_some() {
+        return Vec::new();
+    }
+    uris.filter_map(|uri| match uri {
         SpotifyUri::Track { .. } => uri.to_uri().ok(),
         _ => None,
     })
+    .take(HEAD_TRACKS)
+    .collect()
 }
 
 /// The picture as a chosen cover, else the first track's album cover as a
@@ -1669,12 +1703,13 @@ mod tests {
     use crate::show::ShowError;
 
     use super::{
-        LabelCache, Labels, PlaylistMeta, TrackLabel, client_update_id, context_cover,
-        distinct_uris, duration_ms, episode_from, episode_labels, episode_of, expand_episodes,
-        expand_labels, first_track_uri, item_uris, label_from_episode, label_of, label_tracks,
-        merge_labels, needs_labels, non_blank, parse_show_uri, partition_by_kind, playlist_cover,
-        playlist_headers, playlist_label, playlist_length, playlist_owner, published_at, show_card,
-        tally_of, titled_label, track_label_from, update_id,
+        HEAD_TRACKS, LabelCache, Labels, PlaylistMeta, TrackLabel, client_update_id, composed_of,
+        context_cover, distinct_uris, duration_ms, episode_from, episode_labels, episode_of,
+        expand_episodes, expand_labels, head_candidates, head_track_uris, item_uris,
+        label_from_episode, label_of, label_tracks, merge_labels, needs_labels, non_blank,
+        parse_show_uri, partition_by_kind, playlist_cover, playlist_headers, playlist_label,
+        playlist_length, playlist_owner, published_at, show_card, tally_of, titled_label,
+        track_label_from, update_id,
     };
 
     const TRACK_ID: &str = "4uLU6hMCjMI75M1A2tKUQC";
@@ -1689,6 +1724,21 @@ mod tests {
         SpotifyUri::Track {
             id: SpotifyId::from_base62(TRACK_ID).expect("a track id"),
         }
+    }
+
+    fn track_uri(index: u8) -> SpotifyUri {
+        let mut raw = [0u8; 16];
+        raw[15] = index + 1;
+        SpotifyUri::Track {
+            id: SpotifyId::from_raw(&raw).expect("a track id"),
+        }
+    }
+
+    /// A label naming one cover, so a head can be tiled in a test.
+    fn covered_label(uri: &str, tail: &str) -> (String, TrackLabel) {
+        let mut label = titled_label(uri);
+        label.cover = CoverUrl::from_wire(&format!("https://i.scdn.co/image/{tail}"));
+        (uri.to_owned(), label)
     }
 
     fn episode() -> SpotifyUri {
@@ -2379,32 +2429,126 @@ mod tests {
     }
 
     #[test]
-    fn first_track_uri_skips_episodes_and_locals() {
+    fn the_head_skips_episodes_and_locals() {
         let uris = [episode(), local(), first_track()];
         assert_eq!(
-            first_track_uri(uris.iter()),
-            Some(format!("spotify:track:{TRACK_ID}"))
+            head_track_uris(None, uris.iter()),
+            vec![format!("spotify:track:{TRACK_ID}")]
         );
     }
 
     #[test]
-    fn first_track_uri_reads_the_head_only() {
-        let second = SpotifyUri::Track {
-            id: SpotifyId::from_base62("6rqhFgbbKwnb9MLmUQDhG7").expect("a track id"),
-        };
-        let uris = [first_track(), second];
+    fn the_head_is_capped_at_twelve_track_uris() {
+        let uris: Vec<SpotifyUri> = (0..20).map(track_uri).collect();
+        let head = head_track_uris(None, uris.iter());
+        assert_eq!(head.len(), HEAD_TRACKS);
         assert_eq!(
-            first_track_uri(uris.iter()),
-            Some(format!("spotify:track:{TRACK_ID}"))
+            head.last().map(String::as_str),
+            uris[HEAD_TRACKS - 1].to_uri().ok().as_deref(),
+            "the cap keeps the first twelve, in head order"
         );
     }
 
     #[test]
-    fn first_track_uri_is_none_for_an_empty_or_episode_only_list() {
-        let empty: Vec<SpotifyUri> = Vec::new();
-        assert_eq!(first_track_uri(empty.iter()), None);
-        let episodes = [episode()];
-        assert_eq!(first_track_uri(episodes.iter()), None);
+    fn a_playlist_with_a_chosen_picture_costs_no_head_labels() {
+        let uris = [first_track(), track_uri(1), track_uri(2)];
+        assert!(
+            head_track_uris(Some(&cover_url()), uris.iter()).is_empty(),
+            "a chosen picture is never replaced, so its head is never named"
+        );
+        let chosen = PlaylistMeta {
+            picture: Some(cover_url()),
+            ..PlaylistMeta::empty()
+        };
+        assert!(head_candidates(&[chosen]).is_empty());
+    }
+
+    #[test]
+    fn an_episode_only_head_composes_nothing() {
+        let uris = [episode(), local()];
+        let head = head_track_uris(None, uris.iter());
+        assert!(
+            head.is_empty(),
+            "neither an episode nor a local file is a track"
+        );
+        assert!(
+            composed_of(&head, None, &Labels::new()).is_empty(),
+            "no tracks, no mosaic: today's cover stands"
+        );
+    }
+
+    #[test]
+    fn a_head_of_repeated_albums_composes_fewer_than_four() {
+        let head: Vec<String> = (0..HEAD_TRACKS)
+            .map(|index| format!("spotify:track:{index}"))
+            .collect();
+
+        let labels: Labels = head
+            .iter()
+            .enumerate()
+            .map(|(index, uri)| covered_label(uri, if index % 2 == 0 { "a" } else { "b" }))
+            .collect();
+        let composed = composed_of(&head, None, &labels);
+        assert_eq!(
+            composed.len(),
+            2,
+            "two albums across twelve rows tile two quadrants: {composed:?}"
+        );
+
+        let one_album: Labels = head.iter().map(|uri| covered_label(uri, "a")).collect();
+        assert!(
+            composed_of(&head, None, &one_album).is_empty(),
+            "one album repeated is one picture, so the card keeps the single cover"
+        );
+    }
+
+    #[tokio::test]
+    async fn every_playlists_head_is_named_in_one_batch() {
+        let metas = [
+            PlaylistMeta {
+                head: owned(&["a", "b"]),
+                ..PlaylistMeta::empty()
+            },
+            PlaylistMeta {
+                head: owned(&["b", "c"]),
+                ..PlaylistMeta::empty()
+            },
+            PlaylistMeta {
+                head: owned(&["c", "d"]),
+                ..PlaylistMeta::empty()
+            },
+            PlaylistMeta {
+                picture: Some(cover_url()),
+                ..PlaylistMeta::empty()
+            },
+        ];
+        let candidates = head_candidates(&metas);
+        assert_eq!(
+            candidates,
+            owned(&["a", "b", "c", "d"]),
+            "every head, each name once, in first-seen order"
+        );
+
+        let asked = std::sync::Mutex::new(Vec::new());
+        let cache = LabelCache::new();
+        let labels = cache
+            .through_cache(candidates.clone(), |missing: Vec<String>| {
+                asked.lock().expect("lock").extend(missing.clone());
+                async move {
+                    missing
+                        .into_iter()
+                        .map(|uri| (uri, titled_label("A title")))
+                        .collect::<Labels>()
+                }
+            })
+            .await;
+
+        assert_eq!(
+            *asked.lock().expect("lock"),
+            candidates,
+            "one cache pass asks the wire for every head at once"
+        );
+        assert_eq!(labels.len(), candidates.len());
     }
 
     #[test]

@@ -1388,6 +1388,7 @@ impl Library {
         self.context_covers.remove(playlist);
         if let Some(entry) = entry {
             entry.cover = None;
+            entry.composed.clear();
         }
         self.cover_refresh.drop_for(playlist);
     }
@@ -2688,6 +2689,7 @@ mod tests {
 
     fn playlist(uri: &str, name: &str) -> PlaylistEntry {
         PlaylistEntry {
+            composed: Vec::new(),
             uri: uri.to_owned(),
             name: name.to_owned(),
             named: true,
@@ -2898,6 +2900,7 @@ mod tests {
 
     fn covered(uri: &str, name: &str, cover: PlaylistCover) -> PlaylistEntry {
         PlaylistEntry {
+            composed: Vec::new(),
             cover: Some(cover),
             ..playlist(uri, name)
         }
@@ -4776,6 +4779,7 @@ mod tests {
         tracks: Option<usize>,
     ) -> PlaylistEntry {
         PlaylistEntry {
+            composed: Vec::new(),
             access: Some(PlaylistAccess {
                 revision: revision(byte),
                 editable,
@@ -6898,6 +6902,143 @@ mod tests {
 
         assert!(library.context_covers.is_empty(), "the key must be pruned");
         assert_eq!(library.playlists, Load::Ready(vec![playlist("b", "B")]));
+    }
+
+    /// The composed covers the sidebar row for `uri` holds.
+    fn entry_composed(library: &Library, uri: &str) -> Vec<CoverUrl> {
+        sidebar_entry(library, uri)
+            .map(|entry| entry.composed.clone())
+            .unwrap_or_default()
+    }
+
+    /// A playlist row with a derived cover and a mosaic composed from its head.
+    fn covered_and_composed(
+        uri: &str,
+        name: &str,
+        cover: CoverUrl,
+        tails: &[&str],
+    ) -> PlaylistEntry {
+        PlaylistEntry {
+            composed: tails.iter().map(|tail| cover_url(tail)).collect(),
+            ..covered(uri, name, PlaylistCover::derived(cover))
+        }
+    }
+
+    #[test]
+    fn a_context_image_leaves_the_composed_covers_alone() {
+        let first = cover_url("first");
+        let context = cover_url("context");
+        let mut library = Library {
+            playlists: Load::Ready(vec![covered_and_composed(
+                "a",
+                "A",
+                first,
+                &["m0", "m1", "m2"],
+            )]),
+            ..Default::default()
+        };
+
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: vec![track("t")],
+            cover: Some(context.clone()),
+            access: None,
+        });
+
+        assert_eq!(
+            entry_cover(&library, "a"),
+            Some(PlaylistCover::derived(context)),
+            "the reply replaces the derived cover"
+        );
+        assert_eq!(
+            entry_composed(&library, "a").len(),
+            3,
+            "the card keeps tiling what the band still tiles"
+        );
+    }
+
+    #[test]
+    fn an_awaited_empty_reply_leaves_the_composed_covers_alone() {
+        let first = cover_url("first");
+        let mut library = Library {
+            playlists: Load::Ready(vec![covered_and_composed("a", "A", first, &["m0", "m1"])]),
+            ..Default::default()
+        };
+        library.cover_refresh.drop_for("a");
+        library.select("a");
+
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: Vec::new(),
+            cover: None,
+            access: None,
+        });
+
+        assert_eq!(entry_cover(&library, "a"), None);
+        assert_eq!(
+            entry_composed(&library, "a").len(),
+            2,
+            "a playlist with no context picture still tiles its head"
+        );
+    }
+
+    #[test]
+    fn a_cached_context_image_fills_the_row_and_the_mosaic_stays() {
+        let first = cover_url("first");
+        let context = cover_url("context");
+        let mut library = Library {
+            playlists: Load::Ready(vec![playlist_with_cover("a", "A", first.clone())]),
+            ..Default::default()
+        };
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: vec![track("t")],
+            cover: Some(context.clone()),
+            access: None,
+        });
+
+        library.apply(&Update::Playlists(vec![covered_and_composed(
+            "a",
+            "A",
+            first,
+            &["m0", "m1"],
+        )]));
+
+        assert_eq!(
+            entry_cover(&library, "a"),
+            Some(PlaylistCover::derived(context)),
+            "the cached context image fills the row"
+        );
+        assert_eq!(
+            entry_composed(&library, "a").len(),
+            2,
+            "the head still composes, so the card still tiles"
+        );
+    }
+
+    #[test]
+    fn removing_the_first_track_drops_the_composed_covers() {
+        let first = cover_url("first");
+        let mut library = covered_page(&first, &["spotify:track:t0", "spotify:track:t1"]);
+        if let Load::Ready(playlists) = &mut library.playlists {
+            playlists[0].composed = vec![cover_url("m0"), cover_url("m1")];
+        }
+        assert!(
+            library
+                .remove_tracks("a", &[0], &moved(&["spotify:track:t0"]))
+                .is_some()
+        );
+
+        library.apply(&Update::TracksRemoved {
+            playlist: "a".to_owned(),
+            revision: revision(0x02),
+        });
+
+        assert_eq!(entry_cover(&library, "a"), None);
+        assert!(
+            entry_composed(&library, "a").is_empty(),
+            "a head edit drops the mosaic the old head composed"
+        );
     }
 
     #[test]
@@ -9026,6 +9167,7 @@ mod tests {
     /// The row a create's reply hands the sidebar.
     fn created(uri: &str, name: &str, access: Option<PlaylistAccess>) -> PlaylistEntry {
         PlaylistEntry {
+            composed: Vec::new(),
             uri: uri.to_owned(),
             name: name.to_owned(),
             named: true,
@@ -9133,6 +9275,7 @@ mod tests {
         ]));
         assert!(library.create_playlist().is_some());
         let landed = PlaylistEntry {
+            composed: Vec::new(),
             tracks: Some(3),
             ..created("spotify:playlist:new", "Mix", access(0x09, true))
         };
@@ -9176,6 +9319,7 @@ mod tests {
         assert!(library.create_playlist().is_some());
         library.apply(&Update::PlaylistCreated {
             entry: PlaylistEntry {
+                composed: Vec::new(),
                 // The rename never landed, so the row does not claim a name.
                 named: false,
                 ..created("spotify:playlist:new", "Mix", access(0x09, true))

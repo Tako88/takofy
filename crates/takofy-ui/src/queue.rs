@@ -2586,6 +2586,7 @@ mod tests {
         clear_guard(&mut queue, &mut transport);
 
         let playlists = Update::Playlists(vec![PlaylistEntry {
+            composed: Vec::new(),
             uri: "spotify:playlist:a".to_owned(),
             name: "A".to_owned(),
             named: true,

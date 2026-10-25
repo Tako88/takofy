@@ -165,6 +165,7 @@ mod tests {
 
     fn playlist(uri: &str, name: &str) -> PlaylistEntry {
         PlaylistEntry {
+            composed: Vec::new(),
             uri: uri.to_owned(),
             name: name.to_owned(),
             named: true,

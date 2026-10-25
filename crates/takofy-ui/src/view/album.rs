@@ -1705,6 +1705,7 @@ mod tests {
         let mut library = Library::default();
         library.select(PLAYLIST);
         library.apply(&Update::Playlists(vec![PlaylistEntry {
+            composed: Vec::new(),
             uri: PLAYLIST.to_owned(),
             name: "Mix".to_owned(),
             named: true,

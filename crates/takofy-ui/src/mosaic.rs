@@ -1,6 +1,6 @@
 //! Which covers a playlist band draws as its mosaic, and when.
 //!
-//! The band shows four covers only when the list has four or more distinct album
+//! The band shows a mosaic only when the list has two or more distinct album
 //! covers and every one of them is already held. A mosaic that swapped in one
 //! quadrant at a time would flicker while the fetches land, so it swaps whole and
 //! falls back to the playlist's own cover until then.
@@ -8,38 +8,28 @@
 //! Nothing here touches the window: the selection is a function of the track
 //! list, and the arrangement a function of the covers the store answered with.
 
-use takofy_model::{CoverOrigin, CoverUrl, TrackEntry};
+use takofy_model::{CoverOrigin, CoverUrl, TrackEntry, composed_from};
 
 use crate::cover::Cover;
 
 /// How many quadrants a mosaic has.
 pub const QUADRANTS: usize = 4;
 
-/// The first four distinct covers in track order, skipping tracks with none.
+/// The first four distinct covers in track order, by the model's one rule.
 ///
-/// A playlist usually repeats an album, so a scan that stopped at four tracks
-/// would often find one cover; distinctness is counted on the covers, not the
-/// rows.
+/// The band's own origin is checked by [`wanted`]: a chosen picture is never
+/// replaced, so picking covers does not need to know where they came from.
 pub fn urls(tracks: &[TrackEntry]) -> Vec<CoverUrl> {
-    let mut picked: Vec<CoverUrl> = Vec::new();
-    for cover in tracks.iter().filter_map(|track| track.cover.as_ref()) {
-        if picked.len() == QUADRANTS {
-            break;
-        }
-        if !picked.contains(cover) {
-            picked.push(cover.clone());
-        }
-    }
-    picked
+    composed_from(None, tracks.iter().map(|track| track.cover.as_ref()))
 }
 
 /// The covers worth fetching for a mosaic.
 ///
 /// Empty when the playlist carries a cover a user chose, because that picture is
-/// the list's own and a mosaic would replace it, and empty for a list with one
-/// cover, which has nothing to tile.
+/// the list's own and a mosaic would replace it. A list with fewer than two
+/// covers has already composed nothing.
 pub fn wanted(origin: Option<CoverOrigin>, urls: &[CoverUrl]) -> Vec<CoverUrl> {
-    if origin == Some(CoverOrigin::Chosen) || urls.len() < 2 {
+    if origin == Some(CoverOrigin::Chosen) {
         return Vec::new();
     }
     urls.to_vec()
@@ -151,8 +141,9 @@ mod tests {
 
     #[test]
     fn one_cover_is_no_mosaic() {
-        assert!(wanted(None, &[url("a")]).is_empty());
-        assert!(wanted(Some(CoverOrigin::Derived), &[url("a")]).is_empty());
+        assert!(urls(&[track("a")]).is_empty());
+        assert!(urls(&[track("a"), track("a")]).is_empty());
+        assert!(wanted(Some(CoverOrigin::Derived), &urls(&[track("a")])).is_empty());
     }
 
     #[test]

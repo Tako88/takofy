@@ -19,6 +19,7 @@ use super::art;
 use super::carry;
 use super::context_menu;
 use super::controls;
+use super::hero;
 use super::text as recipe;
 
 /// One item, as either density draws it.
@@ -39,7 +40,10 @@ pub struct Media<'a> {
     pub shelf: SidebarKind,
     /// Whether pressing play on this item starts it, or it has no play.
     pub playable: bool,
+    /// The item's one picture, which a row always draws.
     pub cover: Cover,
+    /// What a tile draws in its art box: the mosaic once every quadrant is held.
+    pub picture: hero::Picture,
 }
 
 /// The columns a list row solves, left to right, inside its padding.
@@ -147,14 +151,24 @@ pub fn tile(ui: &mut Ui, rect: Rect, media: &Media<'_>, tokens: &Tokens) -> Opti
     } else {
         radius::SM
     };
-    art::tile(
-        ui.painter(),
-        art,
-        radius,
-        tokens.palette.border,
-        media.cover,
-        tokens,
-    );
+    match media.picture {
+        hero::Picture::Mosaic(covers) => art::mosaic(
+            ui.painter(),
+            art,
+            radius,
+            tokens.palette.border,
+            covers,
+            tokens,
+        ),
+        hero::Picture::Cover => art::tile(
+            ui.painter(),
+            art,
+            radius,
+            tokens.palette.border,
+            media.cover,
+            tokens,
+        ),
+    }
 
     let mut top = art.bottom() + space::S2;
     let name = recipe::line(
@@ -303,6 +317,7 @@ pub fn row(ui: &mut Ui, rect: Rect, media: &Media<'_>, tokens: &Tokens) -> Optio
     } else {
         radius::XS
     };
+    // A row keeps the single cover: the four-up is unreadable at this size.
     art::tile(
         ui.painter(),
         columns.art,
@@ -521,7 +536,68 @@ mod tests {
             shelf: SidebarKind::Albums,
             playable: true,
             cover: Cover::Missing,
+            picture: hero::Picture::Cover,
         }
+    }
+
+    /// A card holding `cover` as the single picture and `picture` as what it tiles.
+    fn pictured<'a>(uri: &'a str, cover: Cover, picture: hero::Picture) -> Media<'a> {
+        Media {
+            cover,
+            picture,
+            ..media(uri, false, "")
+        }
+    }
+
+    /// A cover the store has uploaded, so the painter can size it.
+    ///
+    /// The handle is handed back because dropping it frees the texture, and the
+    /// box would then draw a block rather than a picture.
+    fn uploaded(ctx: &egui::Context, name: &str) -> (egui::TextureHandle, Cover) {
+        let texture = ctx.load_texture(
+            name,
+            egui::ColorImage::filled([4, 4], Color32::WHITE),
+            crate::theme::art::TEXTURE,
+        );
+        // A load is queued and only reaches the texture manager in a pass.
+        let mut output = ctx.run_ui(Default::default(), |_| {});
+        output.textures_delta.clear();
+        let cover = Cover::Ready(texture.id());
+        (texture, cover)
+    }
+
+    /// The textured rects a pass painted inside `area`, in paint order.
+    fn textured(output: &egui::FullOutput, area: Rect) -> Vec<Rect> {
+        output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Rect(shape)
+                    if shape.brush.is_some() && area.contains(shape.rect.center()) =>
+                {
+                    Some(shape.rect)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// One pass over the library's own card size, reporting the tile's rect.
+    fn card_pass(ctx: &egui::Context, media: &Media<'_>) -> (Rect, egui::FullOutput) {
+        let tokens = Tokens::DARK;
+        let mut card = Rect::ZERO;
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0))),
+                ..Default::default()
+            },
+            |ui| {
+                card = Rect::from_min_size(Pos2::ZERO, Vec2::new(176.0, 176.0 + extra_height(ui)));
+                let _ = tile(ui, card, media, &tokens);
+            },
+        );
+        output.textures_delta.clear();
+        (card, output)
     }
 
     fn painted_text(output: &egui::FullOutput) -> Vec<String> {
@@ -1322,5 +1398,82 @@ mod tests {
         );
         assert!(!opened(&row_answers), "a carried row's play opened the row");
         assert_eq!(door(&row_answers), None);
+    }
+
+    #[test]
+    fn a_card_with_four_covers_draws_four_quadrants() {
+        let ctx = context();
+        let (_a, a) = uploaded(&ctx, "a");
+        let (_b, b) = uploaded(&ctx, "b");
+        let (_c, c) = uploaded(&ctx, "c");
+        let (_d, d) = uploaded(&ctx, "d");
+        let covers = [a, b, c, d];
+        let card = pictured(
+            "spotify:playlist:a",
+            covers[0],
+            hero::Picture::Mosaic(covers),
+        );
+
+        let (rect, output) = card_pass(&ctx, &card);
+        let art = art_rect(rect);
+        let quarters = textured(&output, art);
+
+        assert_eq!(quarters.len(), 4, "four covers tile four quadrants");
+        assert_eq!(quarters[0], Rect::from_min_size(art.min, art.size() / 2.0));
+        assert_eq!(
+            quarters[3].max, art.max,
+            "the last quadrant sits bottom-right"
+        );
+    }
+
+    #[test]
+    fn a_card_with_one_cover_draws_the_single_cover() {
+        let ctx = context();
+        let (_a, cover) = uploaded(&ctx, "a");
+        let card = pictured("spotify:playlist:a", cover, hero::Picture::Cover);
+
+        let (rect, output) = card_pass(&ctx, &card);
+        let art = art_rect(rect);
+
+        assert_eq!(
+            textured(&output, art),
+            vec![art],
+            "one picture fills the art box whole"
+        );
+    }
+
+    #[test]
+    fn a_row_never_draws_a_mosaic() {
+        let ctx = context();
+        let (_a, a) = uploaded(&ctx, "a");
+        let (_b, b) = uploaded(&ctx, "b");
+        let (_c, c) = uploaded(&ctx, "c");
+        let (_d, d) = uploaded(&ctx, "d");
+        let covers = [a, b, c, d];
+        let media = pictured(
+            "spotify:playlist:a",
+            covers[0],
+            hero::Picture::Mosaic(covers),
+        );
+        let tokens = Tokens::DARK;
+        let mut row_rect = Rect::ZERO;
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 200.0))),
+                ..Default::default()
+            },
+            |ui| {
+                row_rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, extent::ROW_H));
+                let _ = row(ui, row_rect, &media, &tokens);
+            },
+        );
+        output.textures_delta.clear();
+
+        let art = columns(row_rect).art;
+        assert_eq!(
+            textured(&output, art),
+            vec![art],
+            "a 36pt row keeps the single cover: a four-up there is mush"
+        );
     }
 }

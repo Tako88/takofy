@@ -1501,6 +1501,7 @@ mod tests {
         ctx.set_global_style(style(&tokens));
         let mut library = Library::default();
         library.apply(&Update::Playlists(vec![PlaylistEntry {
+            composed: Vec::new(),
             uri: "spotify:playlist:a".to_owned(),
             name: "A".to_owned(),
             named: true,
@@ -1767,6 +1768,7 @@ mod tests {
     fn the_size_counts_the_two_new_lists() {
         let mut library = Library::default();
         library.playlists = Load::Ready(vec![PlaylistEntry {
+            composed: Vec::new(),
             uri: "spotify:playlist:a".to_owned(),
             name: "A".to_owned(),
             named: true,
@@ -1887,6 +1889,7 @@ mod tests {
     /// The playlist list's one row, ready to draw.
     fn playlist(uri: &str, name: &str) -> PlaylistEntry {
         PlaylistEntry {
+            composed: Vec::new(),
             uri: uri.to_owned(),
             name: name.to_owned(),
             named: true,
