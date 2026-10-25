@@ -198,6 +198,12 @@ announces itself to the account's dealer, and once the account hands it the
 sound, the player here is what the user hears on every device. Four things
 follow from that.
 
+**The device is announced able to play before anything has played here.** The
+player is readied when the watch starts, so the phone can pick this window the
+moment it is open; a machine with no audio device is the exception, and says so
+by announcing a controller the phone greys out. Readying the player is the whole
+of it — nothing is loaded, and nothing plays until a track arrives.
+
 **Every write is bounded, and one gate serialises them.** Announcement,
 activation, release, the state puts that keep the phone's display honest and the
 hand-over that moves the sound elsewhere all take the same gate and each carries

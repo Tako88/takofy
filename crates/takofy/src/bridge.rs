@@ -1896,6 +1896,21 @@ async fn watch_devices<H: SessionHost>(
     if devices.watching {
         return Step::Done;
     }
+    // The audio path is readied before the device is announced, so the account
+    // is told this window can play before anything here has played. Without it
+    // the phone can only pick this device after a local play, which makes a
+    // freshly opened window the one device it cannot choose. A machine with no
+    // audio device is the honest exception: it announces a controller, which the
+    // phone lists and greys out.
+    match host.prepare_player() {
+        Ok(()) => host.set_playable(true),
+        Err(error) => {
+            if ends_playability(&error) {
+                host.set_playable(false);
+            }
+            log::warn!("device prepare failed: {}", error.kind());
+        }
+    }
     // Set before the await: a request that arrives while the start is in flight
     // must not reach the builder a second time.
     devices.watching = true;
@@ -10079,11 +10094,16 @@ mod tests {
     }
 
     /// Watches once, answering the signal the fake raises when it is called.
-    fn watch_now(ui_end: &UiEnd, shared: &FakeState) -> Receiver<()> {
+    /// Starts the device watch and waits for it, then forgets the calls it made.
+    ///
+    /// The watch readies the player so the device can be announced as able to
+    /// play, which is setup rather than the scenario a test is about.
+    fn watch_now(ui_end: &UiEnd, shared: &FakeState) {
         let (tx, rx) = channel();
         *shared.watch_started.lock().expect("lock") = Some(tx);
         ui_end.commands.send(Command::WatchDevices).expect("watch");
-        rx
+        rx.recv().expect("watch started");
+        shared.calls.lock().expect("lock").clear();
     }
 
     fn device_roster() -> Update {
@@ -10145,7 +10165,7 @@ mod tests {
         let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
             slot.install(Arc::new(RecordingWaker::default()));
             let _ = expect_updates(&ui_end, 2);
-            watch_now(&ui_end, &shared).recv().expect("watch started");
+            watch_now(&ui_end, &shared);
             let tx = shared
                 .device_tx
                 .lock()
@@ -10171,7 +10191,7 @@ mod tests {
         run_window(runtime(), host, store, source, |ui_end, slot| {
             slot.install(Arc::new(RecordingWaker::default()));
             let _ = expect_updates(&ui_end, 2);
-            watch_now(&ui_end, &shared).recv().expect("watch started");
+            watch_now(&ui_end, &shared);
             ui_end.commands.send(Command::WatchDevices).expect("watch");
             expect_no_update(&ui_end);
         });
@@ -10275,7 +10295,7 @@ mod tests {
         let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
             slot.install(Arc::new(RecordingWaker::default()));
             let _ = expect_updates(&ui_end, 2);
-            watch_now(&ui_end, &shared).recv().expect("watch started");
+            watch_now(&ui_end, &shared);
             ui_end
                 .commands
                 .send(Command::RefreshDevices)
@@ -10298,7 +10318,7 @@ mod tests {
         let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
             slot.install(Arc::new(RecordingWaker::default()));
             let _ = expect_updates(&ui_end, 2);
-            watch_now(&ui_end, &shared).recv().expect("watch started");
+            watch_now(&ui_end, &shared);
             let tx = shared
                 .device_tx
                 .lock()
@@ -10349,7 +10369,7 @@ mod tests {
         let update = run_window(runtime(), host, store, source, |ui_end, slot| {
             slot.install(Arc::new(RecordingWaker::default()));
             let _ = expect_updates(&ui_end, 2);
-            watch_now(&ui_end, &shared).recv().expect("watch started");
+            watch_now(&ui_end, &shared);
             ui_end
                 .commands
                 .send(Command::RefreshDevices)
@@ -10507,7 +10527,7 @@ mod tests {
         let update = run_window(runtime(), host, store, source, |ui_end, slot| {
             slot.install(Arc::new(RecordingWaker::default()));
             let _ = expect_updates(&ui_end, 2);
-            watch_now(&ui_end, &shared).recv().expect("watch started");
+            watch_now(&ui_end, &shared);
             ui_end
                 .commands
                 .send(Command::Transfer {
@@ -10548,7 +10568,7 @@ mod tests {
         let update = run_window(runtime(), host, store, source, |ui_end, slot| {
             slot.install(Arc::new(RecordingWaker::default()));
             let _ = expect_updates(&ui_end, 2);
-            watch_now(&ui_end, &shared).recv().expect("watch started");
+            watch_now(&ui_end, &shared);
             ui_end
                 .commands
                 .send(Command::Transfer {
@@ -10580,7 +10600,7 @@ mod tests {
         let update = run_window(runtime(), host, store, source, |ui_end, slot| {
             slot.install(Arc::new(RecordingWaker::default()));
             let _ = expect_updates(&ui_end, 2);
-            watch_now(&ui_end, &shared).recv().expect("watch started");
+            watch_now(&ui_end, &shared);
             ui_end
                 .commands
                 .send(Command::Transfer {
@@ -10611,7 +10631,7 @@ mod tests {
         run_window(runtime(), host, store, source, |ui_end, slot| {
             slot.install(Arc::new(RecordingWaker::default()));
             let _ = expect_updates(&ui_end, 2);
-            watch_now(&ui_end, &shared).recv().expect("watch started");
+            watch_now(&ui_end, &shared);
             ui_end
                 .commands
                 .send(Command::Transfer {
@@ -10723,7 +10743,7 @@ mod tests {
         let update = run_window(runtime(), host, store, source, |ui_end, slot| {
             slot.install(Arc::new(RecordingWaker::default()));
             let _ = expect_updates(&ui_end, 2);
-            watch_now(&ui_end, &shared).recv().expect("watch started");
+            watch_now(&ui_end, &shared);
             // The pump is gone while the window is not.
             shared.device_tx.lock().expect("lock").take();
             ui_end
@@ -10749,7 +10769,7 @@ mod tests {
         let update = run_window(runtime(), host, store, source, |ui_end, slot| {
             slot.install(Arc::new(RecordingWaker::default()));
             let _ = expect_updates(&ui_end, 2);
-            watch_now(&ui_end, &shared).recv().expect("watch started");
+            watch_now(&ui_end, &shared);
             shared.device_tx.lock().expect("lock").take();
             assert_eq!(
                 ui_end
@@ -10794,7 +10814,7 @@ mod tests {
         let watched = Arc::clone(&shared);
         let window = move || {
             let _ = expect_updates(&ui_end, 2);
-            watch_now(&ui_end, &watched).recv().expect("watch started");
+            watch_now(&ui_end, &watched);
             // Returned to the caller so it lives through teardown: the stop is
             // the only exit this test exercises.
             ui_end
@@ -10829,7 +10849,7 @@ mod tests {
         let watched = Arc::clone(&shared);
         let window = move || {
             let _ = expect_updates(&ui_end, 2);
-            watch_now(&ui_end, &watched).recv().expect("watch started");
+            watch_now(&ui_end, &watched);
             // Dropping the window's end ends the command loop by itself; there
             // is no stop signal to lean on.
             drop(ui_end);
@@ -10864,7 +10884,7 @@ mod tests {
         let watched = Arc::clone(&shared);
         let window = move || {
             let _ = expect_updates(&ui_end, 2);
-            watch_now(&ui_end, &watched).recv().expect("watch started");
+            watch_now(&ui_end, &watched);
             drop(ui_end);
         };
         let teardown = move || async move {
@@ -10903,7 +10923,7 @@ mod tests {
         let watched = Arc::clone(&shared);
         let window = move || {
             let _ = expect_updates(&ui_end, 2);
-            watch_now(&ui_end, &watched).recv().expect("watch started");
+            watch_now(&ui_end, &watched);
             ui_end
                 .commands
                 .send(Command::RefreshDevices)
@@ -10942,7 +10962,7 @@ mod tests {
         let watched = Arc::clone(&shared);
         let window = move || {
             let _ = expect_updates(&ui_end, 2);
-            watch_now(&ui_end, &watched).recv().expect("watch started");
+            watch_now(&ui_end, &watched);
         };
         let teardown = move || async move {
             let started = std::time::Instant::now();
@@ -10991,7 +11011,7 @@ mod tests {
         run_window(runtime(), host, store, source, |ui_end, slot| {
             slot.install(Arc::new(RecordingWaker::default()));
             let _ = expect_updates(&ui_end, 2);
-            watch_now(&ui_end, &shared).recv().expect("watch started");
+            watch_now(&ui_end, &shared);
 
             let id = RequestId(7);
             inbound_sender(&shared)
@@ -11044,7 +11064,7 @@ mod tests {
         run_window(runtime(), host, store, source, |ui_end, slot| {
             slot.install(Arc::new(RecordingWaker::default()));
             let _ = expect_updates(&ui_end, 2);
-            watch_now(&ui_end, &shared).recv().expect("watch started");
+            watch_now(&ui_end, &shared);
 
             let tx = inbound_sender(&shared);
             for (id, kind) in (0u64..).zip(KINDS) {
@@ -11087,7 +11107,7 @@ mod tests {
                 .commands
                 .send(Command::Report(Some(report("spotify:track:before"))))
                 .expect("report");
-            watch_now(&ui_end, &shared).recv().expect("watch started");
+            watch_now(&ui_end, &shared);
             assert!(
                 !calls(&shared)
                     .iter()
@@ -11256,7 +11276,7 @@ mod tests {
         run_window(runtime(), host, store, source, |ui_end, slot| {
             slot.install(Arc::new(RecordingWaker::default()));
             let _ = expect_updates(&ui_end, 2);
-            watch_now(&ui_end, &shared).recv().expect("watch started");
+            watch_now(&ui_end, &shared);
 
             // The account stops sending requests; the loop must carry on with
             // the window's commands.
@@ -11331,6 +11351,70 @@ mod tests {
     }
 
     #[test]
+    fn a_window_that_never_played_announces_that_it_can_play() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+
+        run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            let (tx, rx) = channel();
+            *shared.watch_started.lock().expect("lock") = Some(tx);
+            ui_end.commands.send(Command::WatchDevices).expect("watch");
+            rx.recv().expect("watch started");
+        });
+
+        // The player is readied before the announcement, so the device is
+        // pickable from launch rather than only after a local play.
+        let log = calls(&shared);
+        assert_eq!(
+            log.iter()
+                .filter(|call| matches!(call, Call::Prepare))
+                .count(),
+            1,
+            "the watch readies the player once: {log:?}"
+        );
+        assert!(
+            log.iter()
+                .any(|call| matches!(call, Call::SetPlayable(true))),
+            "the device is announced as able to play: {log:?}"
+        );
+    }
+
+    #[test]
+    fn a_machine_with_no_audio_device_announces_a_controller() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+        *shared.prepare_script.lock().expect("lock") = PrepareScript::NoAudioDevice;
+
+        run_window(runtime(), host, store, source, |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            let (tx, rx) = channel();
+            *shared.watch_started.lock().expect("lock") = Some(tx);
+            ui_end.commands.send(Command::WatchDevices).expect("watch");
+            rx.recv().expect("watch started");
+        });
+
+        // A device that cannot play says so: the phone lists it greyed out.
+        let log = calls(&shared);
+        assert!(
+            !log.iter()
+                .any(|call| matches!(call, Call::SetPlayable(true))),
+            "nothing claims this machine can play: {log:?}"
+        );
+        assert!(
+            log.iter()
+                .any(|call| matches!(call, Call::SetPlayable(false))),
+            "the stage is held down honestly: {log:?}"
+        );
+    }
+
+    #[test]
     fn a_transfer_runs_prepare_resolve_accept_load_label_in_that_order() {
         let store = Arc::new(MemoryStore::seeded("stored"));
         let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
@@ -11347,7 +11431,7 @@ mod tests {
         run_window(runtime(), host, store, source, |ui_end, slot| {
             slot.install(Arc::new(RecordingWaker::default()));
             let _ = expect_updates(&ui_end, 2);
-            watch_now(&ui_end, &shared).recv().expect("watch started");
+            watch_now(&ui_end, &shared);
             inbound(
                 &shared,
                 41,
@@ -11408,7 +11492,7 @@ mod tests {
         run_window(runtime(), host, store, source, |ui_end, slot| {
             slot.install(Arc::new(RecordingWaker::default()));
             let _ = expect_updates(&ui_end, 2);
-            watch_now(&ui_end, &shared).recv().expect("watch started");
+            watch_now(&ui_end, &shared);
             inbound(
                 &shared,
                 44,
@@ -11463,7 +11547,7 @@ mod tests {
         run_window(runtime(), host, store, source, |ui_end, slot| {
             slot.install(Arc::new(RecordingWaker::default()));
             let _ = expect_updates(&ui_end, 2);
-            watch_now(&ui_end, &shared).recv().expect("watch started");
+            watch_now(&ui_end, &shared);
             inbound(
                 &shared,
                 45,
@@ -11523,7 +11607,7 @@ mod tests {
             run_window(runtime(), host, store, source, |ui_end, slot| {
                 slot.install(Arc::new(RecordingWaker::default()));
                 let _ = expect_updates(&ui_end, 2);
-                watch_now(&ui_end, &shared).recv().expect("watch started");
+                watch_now(&ui_end, &shared);
                 inbound(
                     &shared,
                     number,
@@ -11558,7 +11642,7 @@ mod tests {
         run_window(runtime(), host, store, source, |ui_end, slot| {
             slot.install(Arc::new(RecordingWaker::default()));
             let _ = expect_updates(&ui_end, 2);
-            watch_now(&ui_end, &shared).recv().expect("watch started");
+            watch_now(&ui_end, &shared);
             inbound(&shared, 46, Kind::UpdateContext, Instruction::Ignored);
             until("the context to be answered", || answers(&shared, id) == 1);
             expect_no_update(&ui_end);
@@ -11588,7 +11672,7 @@ mod tests {
         run_window(runtime(), host, store, source, |ui_end, slot| {
             slot.install(Arc::new(RecordingWaker::default()));
             let _ = expect_updates(&ui_end, 2);
-            watch_now(&ui_end, &shared).recv().expect("watch started");
+            watch_now(&ui_end, &shared);
             inbound(
                 &shared,
                 42,
@@ -11635,7 +11719,7 @@ mod tests {
         run_window(runtime(), host, store, source, |ui_end, slot| {
             slot.install(Arc::new(RecordingWaker::default()));
             let _ = expect_updates(&ui_end, 2);
-            watch_now(&ui_end, &shared).recv().expect("watch started");
+            watch_now(&ui_end, &shared);
             inbound(
                 &shared,
                 43,
@@ -11670,7 +11754,7 @@ mod tests {
         run_window(runtime(), host, store, source, |ui_end, slot| {
             slot.install(Arc::new(RecordingWaker::default()));
             let _ = expect_updates(&ui_end, 2);
-            watch_now(&ui_end, &shared).recv().expect("watch started");
+            watch_now(&ui_end, &shared);
             inbound(
                 &shared,
                 44,
@@ -11704,7 +11788,7 @@ mod tests {
         run_window(runtime(), host, store, source, |ui_end, slot| {
             slot.install(Arc::new(RecordingWaker::default()));
             let _ = expect_updates(&ui_end, 2);
-            watch_now(&ui_end, &shared).recv().expect("watch started");
+            watch_now(&ui_end, &shared);
             inbound(
                 &shared,
                 45,
@@ -11744,7 +11828,7 @@ mod tests {
         run_window(runtime(), host, store, source, |ui_end, slot| {
             slot.install(Arc::new(RecordingWaker::default()));
             let _ = expect_updates(&ui_end, 2);
-            watch_now(&ui_end, &shared).recv().expect("watch started");
+            watch_now(&ui_end, &shared);
             inbound(
                 &shared,
                 46,
@@ -11780,7 +11864,7 @@ mod tests {
         run_window(runtime(), host, store, source, |ui_end, slot| {
             slot.install(Arc::new(RecordingWaker::default()));
             let _ = expect_updates(&ui_end, 2);
-            watch_now(&ui_end, &shared).recv().expect("watch started");
+            watch_now(&ui_end, &shared);
             inbound(
                 &shared,
                 47,
@@ -11819,7 +11903,7 @@ mod tests {
         let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
             slot.install(Arc::new(RecordingWaker::default()));
             let _ = expect_updates(&ui_end, 2);
-            watch_now(&ui_end, &shared).recv().expect("watch started");
+            watch_now(&ui_end, &shared);
             inbound(
                 &shared,
                 58,
@@ -11861,7 +11945,7 @@ mod tests {
         let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
             slot.install(Arc::new(RecordingWaker::default()));
             let _ = expect_updates(&ui_end, 2);
-            watch_now(&ui_end, &shared).recv().expect("watch started");
+            watch_now(&ui_end, &shared);
             inbound(
                 &shared,
                 59,
@@ -11896,7 +11980,7 @@ mod tests {
         run_window(runtime(), host, store, source, |ui_end, slot| {
             slot.install(Arc::new(RecordingWaker::default()));
             let _ = expect_updates(&ui_end, 2);
-            watch_now(&ui_end, &shared).recv().expect("watch started");
+            watch_now(&ui_end, &shared);
             inbound(
                 &shared,
                 48,
@@ -11927,7 +12011,7 @@ mod tests {
         run_window(runtime(), host, store, source, |ui_end, slot| {
             slot.install(Arc::new(RecordingWaker::default()));
             let _ = expect_updates(&ui_end, 2);
-            watch_now(&ui_end, &shared).recv().expect("watch started");
+            watch_now(&ui_end, &shared);
             inbound(
                 &shared,
                 49,
@@ -11965,7 +12049,7 @@ mod tests {
         run_window(runtime(), host, store, source, |ui_end, slot| {
             slot.install(Arc::new(RecordingWaker::default()));
             let _ = expect_updates(&ui_end, 2);
-            watch_now(&ui_end, &shared).recv().expect("watch started");
+            watch_now(&ui_end, &shared);
             inbound(
                 &shared,
                 50,
@@ -12003,7 +12087,7 @@ mod tests {
         run_window(runtime(), host, store, source, |ui_end, slot| {
             slot.install(Arc::new(RecordingWaker::default()));
             let _ = expect_updates(&ui_end, 2);
-            watch_now(&ui_end, &shared).recv().expect("watch started");
+            watch_now(&ui_end, &shared);
             inbound(
                 &shared,
                 51,
@@ -12070,7 +12154,7 @@ mod tests {
         run_window(runtime(), host, store, source, |ui_end, slot| {
             slot.install(Arc::new(RecordingWaker::default()));
             let _ = expect_updates(&ui_end, 2);
-            watch_now(&ui_end, &shared).recv().expect("watch started");
+            watch_now(&ui_end, &shared);
             inbound(
                 &shared,
                 53,
@@ -12108,7 +12192,7 @@ mod tests {
         run_window(runtime(), host, store, source, |ui_end, slot| {
             slot.install(Arc::new(RecordingWaker::default()));
             let _ = expect_updates(&ui_end, 2);
-            watch_now(&ui_end, &shared).recv().expect("watch started");
+            watch_now(&ui_end, &shared);
             inbound(
                 &shared,
                 58,
@@ -12146,7 +12230,7 @@ mod tests {
         run_window(runtime(), host, store, source, |ui_end, slot| {
             slot.install(Arc::new(RecordingWaker::default()));
             let _ = expect_updates(&ui_end, 2);
-            watch_now(&ui_end, &shared).recv().expect("watch started");
+            watch_now(&ui_end, &shared);
             inbound(
                 &shared,
                 54,
@@ -12204,7 +12288,7 @@ mod tests {
         run_window(runtime(), host, store, source, |ui_end, slot| {
             slot.install(Arc::new(RecordingWaker::default()));
             let _ = expect_updates(&ui_end, 2);
-            watch_now(&ui_end, &shared).recv().expect("watch started");
+            watch_now(&ui_end, &shared);
             hold_request(&shared, RequestId(60));
             inbound(&shared, 60, Kind::Pause, Instruction::Order(Order::Pause));
             until("the order to be refused", || !refusals(&shared).is_empty());
@@ -12230,7 +12314,7 @@ mod tests {
             slot.install(Arc::new(RecordingWaker::default()));
             record_logs();
             let _ = expect_updates(&ui_end, 2);
-            watch_now(&ui_end, &shared).recv().expect("watch started");
+            watch_now(&ui_end, &shared);
             // The budget answered this one already, so the phone has been told
             // it failed and the window is never asked about it.
             inbound(&shared, 61, Kind::Pause, Instruction::Order(Order::Pause));
@@ -12259,7 +12343,7 @@ mod tests {
         run_window(runtime(), host, store, source, |ui_end, slot| {
             slot.install(Arc::new(RecordingWaker::default()));
             let _ = expect_updates(&ui_end, 2);
-            watch_now(&ui_end, &shared).recv().expect("watch started");
+            watch_now(&ui_end, &shared);
             hold_request(&shared, RequestId(63));
             // The window is gone: the receiver its updates would land on is
             // dropped, so the order reaches nobody.
@@ -12288,7 +12372,7 @@ mod tests {
         run_window(runtime(), host, store, source, |ui_end, slot| {
             slot.install(Arc::new(RecordingWaker::default()));
             let _ = expect_updates(&ui_end, 2);
-            watch_now(&ui_end, &shared).recv().expect("watch started");
+            watch_now(&ui_end, &shared);
             let deadline = hold_request(&shared, RequestId(62));
             inbound(&shared, 62, Kind::Pause, Instruction::Order(Order::Pause));
 
@@ -12334,7 +12418,7 @@ mod tests {
         let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
             slot.install(Arc::new(RecordingWaker::default()));
             let _ = expect_updates(&ui_end, 2);
-            watch_now(&ui_end, &shared).recv().expect("watch started");
+            watch_now(&ui_end, &shared);
             let tx = shared
                 .device_tx
                 .lock()
