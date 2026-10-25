@@ -383,6 +383,28 @@
      Hero tint — the header colour is genuinely sampled from the artwork.
      ---------------------------------------------------------------------- */
 
+  /* hsl (0–1 hue/saturation/lightness) -> [r, g, b] in 0–1 sRGB. */
+  function hslToRgb(h, s, l) {
+    if (!s) return [l, l, l];
+    var q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+    var p = 2 * l - q;
+    return [h + 1 / 3, h, h - 1 / 3].map(function (t) {
+      t = t < 0 ? t + 1 : t > 1 ? t - 1 : t;
+      if (t < 1 / 6) return p + (q - p) * 6 * t;
+      if (t < 1 / 2) return q;
+      if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+      return p;
+    });
+  }
+
+  /* WCAG relative luminance of an sRGB triple in 0–1. */
+  function relativeLuminance(rgb) {
+    var ch = rgb.map(function (c) {
+      return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+    });
+    return 0.2126 * ch[0] + 0.7152 * ch[1] + 0.0722 * ch[2];
+  }
+
   function tintFromArtwork(hero) {
     var img = $("img[data-tint]", hero);
     if (!img || !window.HTMLCanvasElement) return;
@@ -425,18 +447,29 @@
           else if (max === g) h = ((b - r) / (max - min) + 2) / 6;
           else h = ((r - g) / (max - min) + 4) / 6;
         }
-        // Same hue, mirrored tone: 16–34% lightness is a tinted band under bone
-        // ink on black, and a slate band under charcoal ink on paper. The light
-        // theme takes the artwork's colour near the top of the scale instead,
-        // with the saturation pulled in harder — over paper a 40% wash of a
-        // mid-saturation tint reads as a coloured header block, not as a tint.
+        // Same hue, mirrored tone — but the band is now painted solid rather
+        // than faded into the page, so its lightness has to be chosen rather
+        // than inherited from the artwork's mean. Two things are deliberate:
+        // the saturation gets a floor (a photograph's mean is close to neutral,
+        // which put every header on the same grey) and the lightness is stepped
+        // down until the band's luminance is the ceiling muted ink still clears
+        // AA on. A yellow at 28% lightness is far brighter than a blue at the
+        // same HSL step, so the step alone cannot be trusted.
         var isLight = document.documentElement.getAttribute("data-theme") === "light";
-        var tone = Math.min(0.34, Math.max(0.16, l));
-        var band = isLight ? 0.94 - tone * 0.2 : tone;
-        var saturation = Math.min(isLight ? 0.32 : 0.55, s * 1.5);
-        var tint = "hsl(" + Math.round(h * 360) + ", " + Math.round(saturation * 100) + "%, " +
-          Math.round(band * 100) + "%)";
-        hero.style.setProperty("--hero-tint", tint);
+        var tone = Math.min(0.28, Math.max(0.16, l));
+        var lightness = isLight ? 0.9 - tone * 0.18 : tone;
+        var ceiling = isLight ? 0.34 : 0.62;
+        var floor = isLight ? 0.14 : 0.32;
+        var saturation = s < 0.03 ? 0 : Math.min(ceiling, Math.max(floor, s * 2.2));
+        var target = isLight ? 0.62 : 0.05;
+        var rgb = hslToRgb(h, saturation, lightness);
+        while (lightness > 0.04 && relativeLuminance(rgb) > target) {
+          lightness -= 0.015;
+          rgb = hslToRgb(h, saturation, lightness);
+        }
+        hero.style.setProperty("--hero-tint", "rgb(" + rgb.map(function (c) {
+          return Math.round(c * 255);
+        }).join(", ") + ")");
       } catch (err) {
         /* Cross-origin or canvas-less: the CSS fallback tint stands. */
       }

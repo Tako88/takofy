@@ -69,16 +69,29 @@
   </header>
 
   <main class="view">
-    <header class="hero hero--artist" data-scroll-top>
-      <img class="hero__photo" src="img/artists/vela-moreno.jpg" alt="" />
+    <header class="hero hero--artist" data-tint-scope data-scroll-top>
       <span class="hero__bg" aria-hidden="true"></span>
       <div class="hero__inner">
+        <img class="hero__art" src="img/artists/vela-moreno.jpg" alt="" data-tint />
         <div class="hero__meta">
           <span class="hero__eyebrow"><span class="badge-verified" aria-hidden="true"><svg class="icon" aria-hidden="true"><use href="#i-verified"></use></svg></span>Verified artist</span>
           <h1 class="hero__title">Vela Moreno</h1>
-          <p class="hero__listeners">1,284,930 monthly listeners</p>
+          <p class="hero__byline">
+            <span>4 releases</span>
+            <span class="hero__dot">26 tracks</span>
+            <span class="hero__dot">since 2021</span>
+          </p>
         </div>
       </div>
+      <!-- The releases in catalogue order: the strip is right-aligned, so the
+           newest cover stands at the band's edge and the earlier ones run out
+           of frame under the mask. -->
+      <ol class="hero__shelf" aria-hidden="true">
+        <li><img src="img/covers/harbour-lights.jpg" alt="" loading="lazy" /></li>
+        <li><img src="img/covers/saltglass.jpg" alt="" loading="lazy" /></li>
+        <li><img src="img/covers/kestrel-single.jpg" alt="" loading="lazy" /></li>
+        <li><img src="img/covers/slow-tide.jpg" alt="" loading="lazy" /></li>
+      </ol>
     </header>
 
     <div class="actionbar">
