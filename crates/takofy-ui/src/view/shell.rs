@@ -280,13 +280,13 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
         fullscreen,
         devices: screen.devices.button(),
     };
-    // Another device's line replaces the state word, and only a holder that lets
-    // remote control draws its transport live.
+    // Another device's line replaces the track's artist, and only a holder that
+    // lets remote control draws its transport live.
     let remote = (source == DeviceSource::Remote).then_some(playbar::Remote {
         line: &caption,
         steerable,
     });
-    let playbar_reply = region(ui, "playbar", grid.playbar, bar_rect, |ui| {
+    let mut playbar_reply = region(ui, "playbar", grid.playbar, bar_rect, |ui| {
         let display: &mut Transport = match source {
             DeviceSource::Local => screen.transport,
             DeviceSource::Remote => screen.devices.display(),
@@ -346,6 +346,10 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
         ui.ctx()
             .send_viewport_cmd(egui::ViewportCommand::Fullscreen(!current));
     }
+
+    // The playbar draws after the panel and the queue, so its link click joins
+    // theirs here; the one place that applies an open stays below.
+    let open = open.or(playbar_reply.open.take());
 
     // The panel only reports the row it was asked to play. Applying the jump
     // here, and only when no other region asked for a command, keeps a frame
@@ -898,11 +902,12 @@ fn apply_follow(screen: &mut Screen<'_>, artist: &str, followed: bool) -> Option
     })
 }
 
-/// The page this frame's link clicks named, taken from the fields the two
-/// regions report one in: the panel's own first, then the queue's.
+/// The page this frame's link clicks named, taken from the fields the panel and
+/// the queue report one in: the panel's own first, then the queue's.
 ///
-/// A frame opens at most one page, so every open is spent here whether or not it
-/// is the one taken; the shell applies the answer once.
+/// A frame opens at most one page, so both opens are spent with the one taken;
+/// the shell applies the answer once. A region that draws later joins this after
+/// its own reply.
 fn take_open(panel: &mut Option<Page>, queue: &mut Option<Page>) -> Option<Page> {
     panel.take().or(queue.take())
 }
@@ -5458,6 +5463,33 @@ mod tests {
         assert_eq!(
             window.library.page(),
             Some(&Page::Artist(QUEUE_ARTIST.to_owned())),
+            "and the page is the artist it named"
+        );
+    }
+
+    #[test]
+    fn a_playbar_link_opens_the_page() {
+        let mut transport = playing(cover("abc"));
+        let mut queue = queue_of(4, &mut transport);
+        transport.now_playing = Some(NowPlaying {
+            artist_uri: Some(ARTIST.to_owned()),
+            ..NowPlaying::named("spotify:track:x", "A Title", "A Band")
+        });
+        let mut window = Window::new(Vec2::new(1400.0, 900.0));
+        let (bar, _) = playbar_parts(&window);
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let at = on_the_words(&frame, bar, "A Band");
+
+        assert_eq!(
+            click_words(&mut window, &mut transport, &mut queue, at),
+            Some(Command::LoadArtist {
+                artist: ARTIST.to_owned()
+            }),
+            "a click on the playbar's artist opens their page"
+        );
+        assert_eq!(
+            window.library.page(),
+            Some(&Page::Artist(ARTIST.to_owned())),
             "and the page is the artist it named"
         );
     }

@@ -42,7 +42,8 @@ pub enum TransportState {
 }
 
 impl TransportState {
-    /// Operator-facing text for the bar.
+    /// Operator-facing text for a state, drawn as the Now Playing pane's state
+    /// line. The playbar names no state of its own.
     pub fn label(&self) -> &'static str {
         match self {
             Self::Idle => "",
