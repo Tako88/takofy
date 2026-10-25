@@ -193,6 +193,9 @@ fn logger_builder() -> env_logger::Builder {
     builder.filter_level(LevelFilter::Warn);
     // librespot-oauth logs tokens and auth codes at trace level.
     builder.filter_module(OAUTH_LOG_TARGET, LevelFilter::Off);
+    // The player logs a track's URI and title when it skips one. The whole
+    // module is off, not a message match, so a reword cannot start leaking it.
+    builder.filter_module("librespot_playback::player", LevelFilter::Off);
     // The one line that says a device asked this window to play something. It is
     // counts and kinds, never a URI, and it is the only evidence that a request
     // arrived at all.
@@ -235,6 +238,7 @@ mod tests {
     use log::{Level, Metadata, Record};
     use takofy_core::hold::HOLD_LOG_TARGET;
     use takofy_core::oauth::{OAUTH_LOG_TARGET, RedirectMode};
+    use takofy_core::playback::PLAYBACK_LOG_TARGET;
     use takofy_core::receive::RECEIVE_LOG_TARGET;
     use takofy_ui::remote::REMOTE_LOG_TARGET;
 
@@ -299,6 +303,30 @@ mod tests {
     fn unrelated_warn_target_is_kept() {
         let logger = logger_builder().build();
         assert!(logger.matches(&record("takofy", Level::Warn)));
+    }
+
+    /// The player's own lines carry a track's URI and title; ours says the same
+    /// without naming anything, and both the module and its submodules are off.
+    #[test]
+    fn librespot_players_own_lines_are_silenced_and_ours_shows() {
+        let logger = logger_builder().build();
+        for level in [Level::Error, Level::Warn, Level::Info] {
+            assert!(
+                !logger.matches(&record("librespot_playback::player", level)),
+                "the player's own line at {level} must be silenced"
+            );
+            assert!(
+                !logger.matches(&record("librespot_playback::player::sub", level)),
+                "a player submodule's line at {level} must be silenced too"
+            );
+        }
+        assert!(logger.matches(&record("librespot_playback::audio_backend", Level::Warn)));
+        // The decoder keeps talking: its warnings are how a broken stream shows.
+        assert!(logger.matches(&record(
+            "librespot_playback::decoder::symphonia_decoder",
+            Level::Warn
+        )));
+        assert!(logger.matches(&record(PLAYBACK_LOG_TARGET, Level::Warn)));
     }
 
     #[test]

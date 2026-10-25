@@ -2395,10 +2395,7 @@ mod tests {
     }
 
     fn auth_source(kind: SourceErrorKind) -> AuthError {
-        AuthError::Source(SourceError {
-            kind,
-            msg: "detail that must not reach the window".to_owned(),
-        })
+        AuthError::Source(SourceError { kind })
     }
 
     #[derive(Default)]
