@@ -820,6 +820,7 @@ fn idle(
     let mut relayout: Option<MediaLayout> = None;
     let mut select: Option<String> = None;
     let mut open: Option<Page> = None;
+    let mut play: Option<(String, SidebarKind)> = None;
     let mut retry_playlists = false;
     let mut retry: Option<FollowedRead> = None;
 
@@ -851,6 +852,14 @@ fn idle(
                 choose = shown.picked;
                 if let Some(layout) = view_toggle::show(ui, tokens, shown.area, library.layout) {
                     relayout = Some(layout);
+                }
+                // Under the chips, where the page's own failures are said: the
+                // press that failed is the retry, so there is no button.
+                if let Some(failure) = library.play_notice {
+                    ui.label(recipe::muted(
+                        crate::signin::failure_message(failure),
+                        tokens,
+                    ));
                 }
 
                 match view {
@@ -887,6 +896,7 @@ fn idle(
                                 library: &*library,
                                 select: &mut select,
                                 open: &mut open,
+                                play: &mut play,
                             },
                         );
                         load_note(ui, note, tokens, &mut retry);
@@ -897,6 +907,13 @@ fn idle(
 
     if let Some(layout) = relayout {
         library.layout = layout;
+    }
+    // The press is a want, not a command: the rows it needs are asked for by
+    // `logic`, which runs before the next draw.
+    if let Some((uri, kind)) = play
+        && library.want_play(&uri, kind)
+    {
+        ui.ctx().request_repaint();
     }
     if let Some(kind) = choose {
         library.root_filter.choose(kind);
@@ -939,8 +956,10 @@ fn grid(ui: &mut Ui, items: &[Item<'_>], layout: MediaLayout, draw: &mut MediaDr
             continue;
         }
         let media = draw.media_of(item);
-        if media::tile(ui, rect, &media.as_media(), draw.tokens) {
-            draw.activate(item, &media.uri);
+        match media::tile(ui, rect, &media.as_media(), draw.tokens) {
+            Some(media::Press::Open) => draw.activate(item, &media.uri),
+            Some(media::Press::Play) => draw.want_play(&media),
+            Some(media::Press::Menu(_)) | None => {}
         }
     }
 }
@@ -971,6 +990,7 @@ fn list(ui: &mut Ui, items: &[Item<'_>], draw: &mut MediaDraw<'_, '_>) {
         let words = media.as_media();
         match media::row(ui, rect, &words, draw.tokens) {
             Some(media::Press::Open) => draw.activate(item, &media.uri),
+            Some(media::Press::Play) => draw.want_play(&media),
             Some(media::Press::Menu(door)) => draw.post_menu(ui.ctx(), &media, door),
             None => {}
         }
@@ -985,9 +1005,17 @@ struct MediaDraw<'a, 'b> {
     library: &'b Library,
     select: &'b mut Option<String>,
     open: &'b mut Option<Page>,
+    /// The object whose play was pressed, and the list it belongs to.
+    play: &'b mut Option<(String, SidebarKind)>,
 }
 
 impl MediaDraw<'_, '_> {
+    /// Records a press on an item's play. The want is taken after the scroll
+    /// area, so the borrow of the items has ended by the time it is held.
+    fn want_play(&mut self, media: &MediaWords) {
+        *self.play = Some((media.uri.clone(), media.shelf));
+    }
+
     /// What a click on one item does: a playlist selects, the rest open their
     /// page.
     fn activate(&mut self, item: &Item<'_>, uri: &str) {
@@ -1087,6 +1115,7 @@ impl MediaDraw<'_, '_> {
             size,
             round,
             shelf,
+            playable: Library::playable(shelf),
             cover: self.art.look(cover, self.now),
         }
     }
@@ -1101,6 +1130,7 @@ struct MediaWords {
     size: String,
     round: bool,
     shelf: SidebarKind,
+    playable: bool,
     cover: Cover,
 }
 
@@ -1114,6 +1144,7 @@ impl MediaWords {
             size: &self.size,
             round: self.round,
             shelf: self.shelf,
+            playable: self.playable,
             cover: self.cover,
         }
     }
@@ -3841,6 +3872,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             size: "62 songs",
             round: false,
             shelf: SidebarKind::Playlists,
+            playable: true,
             cover: Cover::Missing,
         };
         let mut output = ctx.run_ui(input(Vec::new()), |ui| {
@@ -4901,6 +4933,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         let tokens = Tokens::DARK;
         let mut select = None;
         let mut open = None;
+        let mut play = None;
         let library = Library::default();
         let mut draw = MediaDraw {
             art: &mut art,
@@ -4909,6 +4942,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             library: &library,
             select: &mut select,
             open: &mut open,
+            play: &mut play,
         };
 
         let mut ours = playlist("spotify:playlist:a", "A");
@@ -8373,6 +8407,7 @@ mod root_tests {
         let tokens = Tokens::DARK;
         let mut select = None;
         let mut open = None;
+        let mut play = None;
         let library = Library::default();
         let mut draw = MediaDraw {
             art: &mut art,
@@ -8381,6 +8416,7 @@ mod root_tests {
             library: &library,
             select: &mut select,
             open: &mut open,
+            play: &mut play,
         };
         let playlist = playlist("spotify:playlist:a", "A");
         let show = show("spotify:show:a", "A");
@@ -9091,6 +9127,87 @@ mod root_tests {
                 .iter()
                 .any(|text| text.starts_with("spotify:episode:")),
             "the raw URI must not be drawn: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn a_press_on_a_cards_play_wants_the_play_and_selects_nothing() {
+        let ctx = context();
+        let mut art = Art::default();
+        let mut library = library(vec![playlist("spotify:playlist:a", "Mix")], Vec::new());
+        let card = card_rect_for(&ctx, 0, 1);
+
+        let command = click(
+            &ctx,
+            media::tile_play_rect(card).center(),
+            &mut library,
+            &mut art,
+        );
+
+        assert_eq!(command, None, "a play press took the frame's command");
+        assert_eq!(library.page(), None, "a play press opened the page");
+        assert_eq!(library.selected(), None, "a play press selected the page");
+        assert_eq!(
+            library.play_request(),
+            Some(Command::LoadTracks {
+                playlist: "spotify:playlist:a".to_owned()
+            }),
+            "the press never became a want"
+        );
+    }
+
+    #[test]
+    fn a_press_on_a_rows_play_wants_the_play_and_opens_nothing() {
+        let ctx = context();
+        let mut art = Art::default();
+        let mut library = library(vec![playlist("spotify:playlist:a", "Mix")], Vec::new());
+        library.layout = MediaLayout::List;
+        let row = row_rect_for(&ctx, 0);
+
+        let command = click(
+            &ctx,
+            media::row_play_rect(row).center(),
+            &mut library,
+            &mut art,
+        );
+
+        assert_eq!(command, None, "a play press took the frame's command");
+        assert_eq!(library.page(), None, "a play press opened the page");
+        assert_eq!(library.selected(), None, "a play press selected the page");
+        assert_eq!(
+            library.play_request(),
+            Some(Command::LoadTracks {
+                playlist: "spotify:playlist:a".to_owned()
+            }),
+            "the press never became a want"
+        );
+    }
+
+    #[test]
+    fn a_failed_shelf_play_draws_the_load_sentence_under_the_chips() {
+        let ctx = context();
+        let mut art = Art::default();
+        let mut library = library(vec![playlist("spotify:playlist:a", "Mix")], Vec::new());
+        assert!(library.want_play("spotify:playlist:a", SidebarKind::Playlists));
+        assert!(library.play_request().is_some());
+        library.apply(&Update::TracksFailed {
+            playlist: "spotify:playlist:a".to_owned(),
+            failure: Failure::Load,
+        });
+
+        let output = frame(&ctx, &mut library, &mut art);
+        let sentence = crate::signin::failure_message(Failure::Load);
+        let line = text_rect(&output, sentence).expect("the failure sentence is drawn");
+        let chips = text_rect(&output, "ALL").expect("the chips are drawn");
+        let card = text_rect(&output, "Mix").expect("the card is drawn");
+
+        assert!(
+            line.top() >= chips.bottom(),
+            "the sentence sits over the chips: {line:?} in {chips:?}"
+        );
+        assert!(
+            line.bottom() <= card.top(),
+            "the sentence sits under the cards: {line:?} in {card:?}"
         );
     }
 }

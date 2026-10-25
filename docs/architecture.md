@@ -158,6 +158,18 @@ Lyrics follow the same rule from the other side: the pane asks for the playing
 track's lines when the tab is first opened, so playback never spends a request
 nobody asked to see.
 
+Playing from a card or a row starts the same way. The press is a want on the
+window, not a command: the reducer holds the item's URI and asks for its rows
+through the ordinary read, because the single track slot belongs to whatever page
+is open and the press must not take it. The reply captures its own rows by URI,
+so a page that opened while they were in flight keeps its list, and only the
+frame that holds those rows can start them — at the item's first track, with the
+item as the queue's origin. Any page change drops the want, which is why a press
+cannot fire at a page the user has since left, and the start happens at frame end
+only when nothing else took the frame: the queue moves for a command that will
+actually be sent. A failed read starts nothing and says so under the chips;
+pressing play again is the retry, so there is no second gesture to learn.
+
 The sidebar column has two meanings, told apart by what is carried: a playlist
 row dragged to a gap moves the playlists, and a track dragged onto a playlist
 row is appended to it. One pointer position therefore cannot mean both, and a

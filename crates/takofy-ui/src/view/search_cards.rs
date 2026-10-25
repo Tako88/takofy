@@ -95,6 +95,7 @@ fn block(
                     size: "",
                     round: false,
                     shelf: SidebarKind::Albums,
+                    playable: false,
                     cover,
                 };
                 media::tile(ui, rect, &item, tokens)
@@ -118,13 +119,15 @@ fn block(
                     size: "",
                     round: true,
                     shelf: SidebarKind::Artists,
+                    playable: false,
                     cover,
                 };
                 media::tile(ui, rect, &item, tokens)
             }
-            Kind::Tracks => false,
+            // A track's card is drawn from the queue, so it is no tile here.
+            Kind::Tracks => None,
         };
-        if pressed {
+        if pressed == Some(media::Press::Open) {
             act = Some(Act::Open(position));
         }
     }

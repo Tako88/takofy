@@ -230,6 +230,11 @@ impl eframe::App for TakofyApp {
         while let Some(command) = self.library.tracks_request() {
             let _ = self.ui_end.commands.send(command);
         }
+        // A play pressed on the shelf asks for its object's rows here, because
+        // the view never fetches and the reply is what the next frame applies.
+        if let Some(command) = self.library.play_request() {
+            let _ = self.ui_end.commands.send(command);
+        }
         // The search reads are want-driven like the lists above: the menu while
         // the field is open, the page while it is on screen.
         self.request_search();
@@ -2200,6 +2205,38 @@ mod tests {
                 .iter()
                 .any(|command| matches!(command, Command::Transfer { .. })),
             "the delayed pick was sent twice: {sent:?}"
+        );
+    }
+
+    #[test]
+    fn logic_asks_for_the_shelf_play_once() {
+        let (mut app, mut received) = idle_window();
+        assert!(app.library.want_play(
+            "spotify:playlist:a",
+            takofy_ui::sidebar_kind::SidebarKind::Playlists
+        ));
+
+        logic_frame(&mut app);
+        let sent = take_commands(&mut received);
+        assert_eq!(
+            sent.iter()
+                .filter(|command| matches!(
+                    command,
+                    Command::LoadTracks { playlist } if playlist == "spotify:playlist:a"
+                ))
+                .count(),
+            1,
+            "the shelf play was not the logic pass's to send: {sent:?}"
+        );
+
+        logic_frame(&mut app);
+        let sent = take_commands(&mut received);
+        assert!(
+            !sent.iter().any(|command| matches!(
+                command,
+                Command::LoadTracks { playlist } if playlist == "spotify:playlist:a"
+            )),
+            "the shelf play was asked for twice: {sent:?}"
         );
     }
 
