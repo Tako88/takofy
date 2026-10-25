@@ -580,6 +580,7 @@ mod tests {
         access: Option<PlaylistAccess>,
     ) -> PlaylistEntry {
         PlaylistEntry {
+            composed: Vec::new(),
             uri: "spotify:playlist:a".to_owned(),
             name: "A".to_owned(),
             named: true,

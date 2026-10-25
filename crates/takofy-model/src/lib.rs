@@ -193,6 +193,40 @@ impl Owner {
     }
 }
 
+/// How many covers a composed playlist cover tiles.
+pub const COMPOSED_MAX: usize = 4;
+
+/// The fewest covers that tile: one cover is a picture, not a mosaic.
+pub const COMPOSED_MIN: usize = 2;
+
+/// The first four distinct covers `head` names, in head order.
+///
+/// A playlist usually repeats an album, so distinctness is counted on the
+/// covers, and an entry whose label did not arrive contributes nothing rather
+/// than a hole. A chosen picture is the list's own and a mosaic may never
+/// replace it; fewer than two covers have nothing to tile, so both give nothing.
+pub fn composed_from<'a, I>(origin: Option<CoverOrigin>, head: I) -> Vec<CoverUrl>
+where
+    I: IntoIterator<Item = Option<&'a CoverUrl>>,
+{
+    if origin == Some(CoverOrigin::Chosen) {
+        return Vec::new();
+    }
+    let mut picked: Vec<CoverUrl> = Vec::new();
+    for cover in head.into_iter().flatten() {
+        if picked.len() == COMPOSED_MAX {
+            break;
+        }
+        if !picked.contains(cover) {
+            picked.push(cover.clone());
+        }
+    }
+    if picked.len() < COMPOSED_MIN {
+        return Vec::new();
+    }
+    picked
+}
+
 /// A playlist as listed in the rootlist.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlaylistEntry {
@@ -202,6 +236,17 @@ pub struct PlaylistEntry {
     pub named: bool,
     /// The playlist's cover, once one of the three sources names it.
     pub cover: Option<PlaylistCover>,
+    /// Up to four distinct album covers from the playlist's head, in track order.
+    ///
+    /// Empty when the playlist has a picture a user chose, or when its head
+    /// names fewer than two distinct covers: a card then draws the single
+    /// picture. A mosaic is only ever drawn in place of [`CoverOrigin::Derived`]
+    /// or a missing cover.
+    ///
+    /// A derived cover arriving does not empty this, because the band goes on
+    /// tiling the same head and the card must keep agreeing with it. Only a
+    /// change to the rows does.
+    pub composed: Vec<CoverUrl>,
     /// The playlist's own description, collapsed to a line, when it has one.
     ///
     /// `None` is the wire giving nothing; an empty description is `None` rather
@@ -621,7 +666,7 @@ mod tests {
     use super::{
         AddedAt, CoverImage, CoverOrigin, CoverUrl, Episode, Move, Owner, OwnerName,
         PlaylistAccess, PlaylistCover, PlaylistEntry, PublishedAt, Removal, Revision, TrackEntry,
-        TrackLyrics,
+        TrackLyrics, composed_from,
     };
 
     fn revision(byte: u8) -> Revision {
@@ -634,6 +679,7 @@ mod tests {
             name: "A".to_owned(),
             named: true,
             cover: None,
+            composed: Vec::new(),
             description: None,
             tracks,
             owner: None,
@@ -713,6 +759,84 @@ mod tests {
         assert_eq!(entry.cover_url(), None, "no cover named");
         entry.cover = Some(PlaylistCover::derived(url.clone()));
         assert_eq!(entry.cover_url(), Some(&url));
+    }
+
+    fn cover(tail: &str) -> CoverUrl {
+        CoverUrl::from_wire(&format!("https://i.scdn.co/image/{tail}")).expect("a cover url")
+    }
+
+    /// `composed_from` over a head whose entries are a cover tail or a label
+    /// that did not arrive.
+    fn composed(origin: Option<CoverOrigin>, head: &[Option<&str>]) -> Vec<CoverUrl> {
+        let covers: Vec<Option<CoverUrl>> = head.iter().map(|tail| tail.map(cover)).collect();
+        composed_from(origin, covers.iter().map(Option::as_ref))
+    }
+
+    #[test]
+    fn a_chosen_picture_composes_nothing() {
+        let head = [Some("a"), Some("b"), Some("c"), Some("d")];
+        assert!(composed(Some(CoverOrigin::Chosen), &head).is_empty());
+        assert_eq!(
+            composed(Some(CoverOrigin::Derived), &head),
+            vec![cover("a"), cover("b"), cover("c"), cover("d")],
+            "a derived cover is not the list's own"
+        );
+        assert_eq!(composed(None, &head).len(), 4);
+    }
+
+    #[test]
+    fn fewer_than_two_distinct_covers_compose_nothing() {
+        assert!(composed(None, &[]).is_empty(), "an empty head");
+        assert!(composed(None, &[Some("a")]).is_empty(), "one cover");
+        assert!(
+            composed(None, &[Some("a"), Some("a")]).is_empty(),
+            "one album repeated"
+        );
+        assert!(composed(None, &[None, None]).is_empty(), "no labels");
+    }
+
+    #[test]
+    fn a_composed_head_stops_at_four() {
+        let head = [
+            Some("a"),
+            Some("b"),
+            Some("c"),
+            Some("d"),
+            Some("e"),
+            Some("f"),
+        ];
+        assert_eq!(
+            composed(None, &head),
+            vec![cover("a"), cover("b"), cover("c"), cover("d")]
+        );
+    }
+
+    #[test]
+    fn composed_covers_keep_their_head_order() {
+        let head = [Some("c"), None, Some("a"), Some("b")];
+        assert_eq!(
+            composed(None, &head),
+            vec![cover("c"), cover("a"), cover("b")]
+        );
+    }
+
+    #[test]
+    fn a_repeated_album_composes_once() {
+        let head = [Some("a"), Some("b"), Some("a"), Some("c"), Some("b")];
+        assert_eq!(
+            composed(None, &head),
+            vec![cover("a"), cover("b"), cover("c")]
+        );
+    }
+
+    #[test]
+    fn a_failed_label_is_skipped() {
+        let head = [Some("a"), None, Some("b"), None];
+        assert_eq!(composed(None, &head), vec![cover("a"), cover("b")]);
+        assert!(
+            composed(None, &[Some("a"), None]).is_empty(),
+            "one named cover cannot tile"
+        );
     }
 
     #[test]

@@ -8,7 +8,7 @@
 use std::time::Instant;
 
 use egui::{Align, Id, Layout, Pos2, Rect, Sense, Ui, UiBuilder, vec2};
-use takofy_model::{Owner, PlaylistEntry};
+use takofy_model::{CoverUrl, Owner, PlaylistEntry};
 
 use crate::cover::{Art, Cover};
 use crate::format::{
@@ -955,7 +955,7 @@ fn grid(ui: &mut Ui, items: &[Item<'_>], layout: MediaLayout, draw: &mut MediaDr
         if !table_layout::on_screen(visible, rect) {
             continue;
         }
-        let media = draw.media_of(item);
+        let media = draw.media_of(item, layout);
         match media::tile(ui, rect, &media.as_media(), draw.tokens) {
             Some(media::Press::Open) => draw.activate(item, &media.uri),
             Some(media::Press::Play) => draw.want_play(&media),
@@ -986,7 +986,7 @@ fn list(ui: &mut Ui, items: &[Item<'_>], draw: &mut MediaDraw<'_, '_>) {
         if !table_layout::on_screen(visible, rect) {
             continue;
         }
-        let media = draw.media_of(item);
+        let media = draw.media_of(item, MediaLayout::List);
         let words = media.as_media();
         match media::row(ui, rect, &words, draw.tokens) {
             Some(media::Press::Open) => draw.activate(item, &media.uri),
@@ -1057,8 +1057,11 @@ impl MediaDraw<'_, '_> {
         );
     }
 
-    /// One item's words and cover, owned so a borrow of the item is not needed.
-    fn media_of(&mut self, item: &Item<'_>) -> MediaWords {
+    /// One item's words and picture, owned so a borrow of the item is not needed.
+    ///
+    /// Only the grid composes: a four-up at a row's art column is mush, so a
+    /// list never looks its quadrants up.
+    fn media_of(&mut self, item: &Item<'_>, layout: MediaLayout) -> MediaWords {
         let (uri, name, kind, sub, size, round, cover, shelf) = match item {
             Item::Playlist(entry) => (
                 &entry.uri,
@@ -1107,6 +1110,10 @@ impl MediaDraw<'_, '_> {
                 SidebarKind::Albums,
             ),
         };
+        let composed = match (layout, item) {
+            (MediaLayout::Grid, Item::Playlist(entry)) => entry.composed.as_slice(),
+            (MediaLayout::Grid, _) | (MediaLayout::List, _) => &[],
+        };
         MediaWords {
             uri: uri.clone(),
             name: name.clone(),
@@ -1117,11 +1124,25 @@ impl MediaDraw<'_, '_> {
             shelf,
             playable: Library::playable(shelf),
             cover: self.art.look(cover, self.now),
+            picture: self.composed_picture(composed),
+        }
+    }
+
+    /// What a tile draws in its art box: the four covers it tiles, once every
+    /// one is held, else the single picture the words already carry.
+    fn composed_picture(&mut self, composed: &[CoverUrl]) -> hero::Picture {
+        let drawn: Vec<Cover> = composed
+            .iter()
+            .map(|url| self.art.look(Some(url), self.now))
+            .collect();
+        match mosaic::arrange(&drawn) {
+            Some(covers) => hero::Picture::Mosaic(covers),
+            None => hero::Picture::Cover,
         }
     }
 }
 
-/// One item's words and cover, owned so a borrow of the item is not needed.
+/// One item's words and pictures, owned so a borrow of the item is not needed.
 struct MediaWords {
     uri: String,
     name: String,
@@ -1132,6 +1153,7 @@ struct MediaWords {
     shelf: SidebarKind,
     playable: bool,
     cover: Cover,
+    picture: hero::Picture,
 }
 
 impl MediaWords {
@@ -1146,6 +1168,7 @@ impl MediaWords {
             shelf: self.shelf,
             playable: self.playable,
             cover: self.cover,
+            picture: self.picture,
         }
     }
 }
@@ -1524,6 +1547,7 @@ mod tests {
     fn library_named(tracks: Vec<TrackEntry>, name: &str) -> Library {
         let mut library = library_with(tracks);
         library.apply(&Update::Playlists(vec![PlaylistEntry {
+            composed: Vec::new(),
             uri: "spotify:playlist:a".to_owned(),
             name: name.to_owned(),
             named: true,
@@ -1569,6 +1593,7 @@ mod tests {
 
     fn listed(name: &str, description: Option<&str>, owner: Option<&str>) -> PlaylistEntry {
         PlaylistEntry {
+            composed: Vec::new(),
             uri: "spotify:playlist:a".to_owned(),
             name: name.to_owned(),
             named: true,
@@ -1592,6 +1617,7 @@ mod tests {
 
     fn playlist(uri: &str, name: &str) -> PlaylistEntry {
         PlaylistEntry {
+            composed: Vec::new(),
             uri: uri.to_owned(),
             name: name.to_owned(),
             named: true,
@@ -1620,6 +1646,7 @@ mod tests {
 
     fn playlist_with_cover(uri: &str, name: &str, cover: CoverUrl) -> PlaylistEntry {
         PlaylistEntry {
+            composed: Vec::new(),
             uri: uri.to_owned(),
             name: name.to_owned(),
             named: true,
@@ -1668,6 +1695,7 @@ mod tests {
     fn mosaic_library_with_picture(covers: &[&str]) -> Library {
         let mut library = mosaic_library(covers);
         library.apply(&Update::Playlists(vec![PlaylistEntry {
+            composed: Vec::new(),
             cover: Some(PlaylistCover::derived(cover_url("m0"))),
             ..listed("Evening", Some(DESCRIPTION), None)
         }]));
@@ -3874,6 +3902,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             shelf: SidebarKind::Playlists,
             playable: true,
             cover: Cover::Missing,
+            picture: hero::Picture::Cover,
         };
         let mut output = ctx.run_ui(input(Vec::new()), |ui| {
             let _ = crate::view::media::tile(ui, rect, &media, &tokens);
@@ -4947,14 +4976,18 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
 
         let mut ours = playlist("spotify:playlist:a", "A");
         ours.owner = Some(Owner::You);
-        assert_eq!(draw.media_of(&Item::Playlist(&ours)).sub, "Playlist");
+        assert_eq!(
+            draw.media_of(&Item::Playlist(&ours), MediaLayout::Grid).sub,
+            "Playlist"
+        );
 
         let mut named = playlist("spotify:playlist:b", "B");
         named.owner = Some(Owner::Named(
             OwnerName::from_wire("Vela Moreno").expect("a name"),
         ));
         assert_eq!(
-            draw.media_of(&Item::Playlist(&named)).sub,
+            draw.media_of(&Item::Playlist(&named), MediaLayout::Grid)
+                .sub,
             "Playlist \u{b7} Vela Moreno"
         );
     }
@@ -5310,6 +5343,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         let mut art = Art::default();
         let mut library = mosaic_library(&["m0", "m1", "m2", "m3"]);
         library.apply(&Update::Playlists(vec![PlaylistEntry {
+            composed: Vec::new(),
             cover: Some(PlaylistCover::chosen(cover_url("own"))),
             ..listed("Evening", Some(DESCRIPTION), None)
         }]));
@@ -5328,6 +5362,145 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         );
     }
 
+    /// The words and picture the root's grid builds for one playlist card.
+    fn card_media(
+        library: &Library,
+        art: &mut Art,
+        entry: &PlaylistEntry,
+        now: Instant,
+    ) -> MediaWords {
+        let tokens = Tokens::DARK;
+        let mut select = None;
+        let mut open = None;
+        let mut play = None;
+        let mut draw = MediaDraw {
+            art,
+            now,
+            tokens: &tokens,
+            library,
+            select: &mut select,
+            open: &mut open,
+            play: &mut play,
+        };
+        draw.media_of(&Item::Playlist(entry), MediaLayout::Grid)
+    }
+
+    /// The single cover the card draws, and its art box.
+    fn card_picture(
+        ctx: &Context,
+        art: &mut Art,
+        entry: &PlaylistEntry,
+        now: Instant,
+    ) -> (Vec<Rect>, hero::Picture) {
+        let library = Library::default();
+        let words = card_media(&library, art, entry, now);
+        let tokens = Tokens::DARK;
+        let mut area = Rect::ZERO;
+        let output = run(ctx, input(Vec::new()), |ui| {
+            let rect = Rect::from_min_size(
+                Pos2::ZERO,
+                Vec2::new(176.0, 176.0 + media::extra_height(ui)),
+            );
+            let _ = media::tile(ui, rect, &words.as_media(), &tokens);
+            area = media::art_rect(rect);
+        });
+        (textured(&output, area), words.picture)
+    }
+
+    #[test]
+    fn a_card_waits_for_every_quadrant_before_swapping() {
+        let ctx = context();
+        let now = Instant::now();
+        let mut art = Art::default();
+        let entry = PlaylistEntry {
+            cover: Some(PlaylistCover::derived(cover_url("m0"))),
+            composed: (0..4)
+                .map(|index| cover_url(&format!("m{index}")))
+                .collect(),
+            ..listed("Evening", None, None)
+        };
+        // Three of the four are held; the fourth is still arriving.
+        let held: Vec<CoverUrl> = (0..3)
+            .map(|index| cover_url(&format!("m{index}")))
+            .collect();
+        hold(&ctx, &mut art, &held, now);
+
+        let (drawn, picture) = card_picture(&ctx, &mut art, &entry, now);
+        assert_eq!(
+            picture,
+            hero::Picture::Cover,
+            "one quadrant still loading keeps the single cover"
+        );
+        assert_eq!(drawn.len(), 1, "no partial mosaic is drawn");
+
+        hold(&ctx, &mut art, &[cover_url("m3")], now);
+        let (drawn, picture) = card_picture(&ctx, &mut art, &entry, now);
+        assert!(
+            matches!(picture, hero::Picture::Mosaic(_)),
+            "the card swaps whole once every quadrant is held"
+        );
+        assert_eq!(drawn.len(), 4);
+    }
+
+    #[test]
+    fn a_list_row_asks_only_for_the_cover_it_draws() {
+        let now = Instant::now();
+        let mut art = Art::default();
+        let library = Library::default();
+        let entry = PlaylistEntry {
+            cover: Some(PlaylistCover::derived(cover_url("m0"))),
+            composed: (0..4)
+                .map(|index| cover_url(&format!("m{index}")))
+                .collect(),
+            ..listed("Evening", None, None)
+        };
+        let tokens = Tokens::DARK;
+        let mut select = None;
+        let mut open = None;
+        let mut play = None;
+        art.begin_frame();
+        let mut draw = MediaDraw {
+            art: &mut art,
+            now,
+            tokens: &tokens,
+            library: &library,
+            select: &mut select,
+            open: &mut open,
+            play: &mut play,
+        };
+        let _ = draw.media_of(&Item::Playlist(&entry), MediaLayout::List);
+
+        assert_eq!(
+            fetch_urls(draw.art.requests(now)),
+            vec![cover_url("m0")],
+            "a row asks only for the cover it draws"
+        );
+    }
+
+    #[test]
+    fn a_long_single_album_head_keeps_the_single_cover_on_the_card() {
+        let ctx = context();
+        let now = Instant::now();
+        let mut art = Art::default();
+        // A head of twelve rows, all from one album, is one cover: no mosaic.
+        let head: Vec<CoverUrl> = (0..12).map(|_| cover_url("one")).collect();
+        let composed = takofy_model::composed_from(None, head.iter().map(Some));
+        assert!(
+            composed.is_empty(),
+            "one album repeated has nothing to tile"
+        );
+        let entry = PlaylistEntry {
+            cover: Some(PlaylistCover::derived(cover_url("one"))),
+            composed,
+            ..listed("Evening", None, None)
+        };
+        hold(&ctx, &mut art, &[cover_url("one")], now);
+
+        let (drawn, picture) = card_picture(&ctx, &mut art, &entry, now);
+        assert_eq!(picture, hero::Picture::Cover);
+        assert_eq!(drawn.len(), 1, "the accepted gap: the card keeps one cover");
+    }
+
     #[test]
     fn one_distinct_cover_keeps_the_single_look() {
         let ctx = context();
@@ -5341,6 +5514,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             .collect();
         let mut library = library_detailed(tracks, "Evening", None, None);
         library.apply(&Update::Playlists(vec![PlaylistEntry {
+            composed: Vec::new(),
             cover: Some(PlaylistCover::derived(cover_url("one"))),
             ..listed("Evening", None, None)
         }]));
@@ -5501,6 +5675,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
     fn band_library(name: &str, editable: bool, titles: &[&str]) -> Library {
         let mut library = Library::default();
         library.apply(&Update::Playlists(vec![PlaylistEntry {
+            composed: Vec::new(),
             uri: "spotify:playlist:a".to_owned(),
             name: name.to_owned(),
             named: true,
@@ -5843,6 +6018,7 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         let mut library = band_library("Night Drive", true, &["t0"]);
         if let Load::Ready(playlists) = &mut library.playlists {
             playlists.push(PlaylistEntry {
+                composed: Vec::new(),
                 uri: "spotify:playlist:b".to_owned(),
                 name: "Other".to_owned(),
                 named: true,
@@ -8285,6 +8461,7 @@ mod root_tests {
 
     fn playlist(uri: &str, name: &str) -> PlaylistEntry {
         PlaylistEntry {
+            composed: Vec::new(),
             uri: uri.to_owned(),
             name: name.to_owned(),
             named: true,
@@ -8429,7 +8606,7 @@ mod root_tests {
             (Item::Album(&album), SidebarKind::Albums),
         ];
         for (item, shelf) in cases {
-            assert_eq!(draw.media_of(&item).shelf, shelf);
+            assert_eq!(draw.media_of(&item, MediaLayout::Grid).shelf, shelf);
         }
     }
 

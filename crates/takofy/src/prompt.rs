@@ -113,6 +113,7 @@ mod tests {
     #[test]
     fn playlist_line_names_the_playlist() {
         let entry = PlaylistEntry {
+            composed: Vec::new(),
             uri: "spotify:playlist:x".to_owned(),
             name: "Mix".to_owned(),
             named: true,

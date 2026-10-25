@@ -23,6 +23,7 @@ use crate::sidebar_kind::SidebarKind;
 use crate::theme::{Tokens, extent, space};
 
 use super::art;
+use super::hero;
 use super::list_more;
 use super::media;
 use super::section;
@@ -97,6 +98,7 @@ fn block(
                     shelf: SidebarKind::Albums,
                     playable: false,
                     cover,
+                    picture: hero::Picture::Cover,
                 };
                 media::tile(ui, rect, &item, tokens)
             }
@@ -121,6 +123,7 @@ fn block(
                     shelf: SidebarKind::Artists,
                     playable: false,
                     cover,
+                    picture: hero::Picture::Cover,
                 };
                 media::tile(ui, rect, &item, tokens)
             }

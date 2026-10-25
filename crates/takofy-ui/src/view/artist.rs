@@ -50,6 +50,7 @@ use super::carry::{self, Ghost};
 use super::context_menu;
 use super::discography_filter;
 use super::heart;
+use super::hero;
 use super::media;
 use super::pin;
 use super::release_block::{self, Block};
@@ -537,6 +538,7 @@ fn fans(
             shelf: SidebarKind::Artists,
             playable: false,
             cover: art.look(card.portrait.as_ref(), now),
+            picture: hero::Picture::Cover,
         };
         if media::tile(ui, rect, &media, tokens) == Some(media::Press::Open) {
             pressed = Some(card.uri.clone());

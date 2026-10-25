@@ -1887,6 +1887,7 @@ mod tests {
     /// Puts one named, ready playlist on screen.
     fn ready_playlist(window: &mut Window) {
         window.library.apply(&Update::Playlists(vec![PlaylistEntry {
+            composed: Vec::new(),
             uri: PLAYLIST.to_owned(),
             name: "Mix".to_owned(),
             named: true,
@@ -2450,6 +2451,7 @@ mod tests {
         let mut queue = Queue::default();
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
         window.library.apply(&Update::Playlists(vec![PlaylistEntry {
+            composed: Vec::new(),
             uri: PLAYLIST.to_owned(),
             name: "Mix".to_owned(),
             named: true,
@@ -2501,6 +2503,7 @@ mod tests {
     /// start the playlist's load again.
     fn stale_playlist_behind_an_album(library: &mut Library) {
         library.apply(&Update::Playlists(vec![PlaylistEntry {
+            composed: Vec::new(),
             uri: PLAYLIST.to_owned(),
             name: "Mix".to_owned(),
             named: true,
@@ -3664,6 +3667,7 @@ mod tests {
         let mut window = Window::new(Vec2::new(800.0, 900.0));
         window.library.apply(&Update::Playlists(vec![
             PlaylistEntry {
+                composed: Vec::new(),
                 uri: "spotify:playlist:a".to_owned(),
                 name: "A".to_owned(),
                 named: true,
@@ -3674,6 +3678,7 @@ mod tests {
                 access: None,
             },
             PlaylistEntry {
+                composed: Vec::new(),
                 uri: "spotify:playlist:b".to_owned(),
                 name: "B".to_owned(),
                 named: true,
@@ -4696,6 +4701,7 @@ mod tests {
         window.library.playlists = Load::Ready(
             rows.iter()
                 .map(|(name, tracks)| PlaylistEntry {
+                    composed: Vec::new(),
                     uri: format!("playlist:{name}"),
                     name: (*name).to_owned(),
                     named: true,
@@ -4722,6 +4728,7 @@ mod tests {
     /// A page whose rows are real track URIs, so one can be added to a playlist.
     fn page_of_tracks(window: &mut Window, uris: &[&str]) {
         window.library.apply(&Update::Playlists(vec![PlaylistEntry {
+            composed: Vec::new(),
             uri: PLAYLIST.to_owned(),
             name: "Mix".to_owned(),
             named: true,
@@ -5201,6 +5208,7 @@ mod tests {
 
     fn playlist_page_with(window: &mut Window, titles: &[&str], access: Option<PlaylistAccess>) {
         window.library.apply(&Update::Playlists(vec![PlaylistEntry {
+            composed: Vec::new(),
             uri: PLAYLIST.to_owned(),
             name: "Mix".to_owned(),
             named: true,
@@ -6917,6 +6925,7 @@ mod tests {
         // The rows name addable playlists of their own; the rootlist's read says
         // the order is not the list's to change, which only a move needs.
         let entry = |name: &str, tracks: usize| PlaylistEntry {
+            composed: Vec::new(),
             uri: format!("playlist:{name}"),
             name: name.to_owned(),
             named: true,
@@ -6995,6 +7004,7 @@ mod tests {
             let mut window = Window::new(Vec2::new(1400.0, 900.0));
             page_of_tracks(&mut window, &[TRACK_A]);
             window.library.playlists = Load::Ready(vec![PlaylistEntry {
+                composed: Vec::new(),
                 uri: "playlist:B".to_owned(),
                 name: "B".to_owned(),
                 named: true,
@@ -10494,6 +10504,7 @@ mod tests {
     /// The row a create's reply hands the sidebar.
     fn new_playlist(name: &str, access: Option<PlaylistAccess>) -> PlaylistEntry {
         PlaylistEntry {
+            composed: Vec::new(),
             uri: "spotify:playlist:new".to_owned(),
             name: name.to_owned(),
             named: true,
@@ -11460,6 +11471,7 @@ mod tests {
             names
                 .iter()
                 .map(|name| PlaylistEntry {
+                    composed: Vec::new(),
                     uri: format!("playlist:{name}"),
                     name: (*name).to_owned(),
                     named: true,
@@ -12356,6 +12368,7 @@ mod tests {
     /// A window whose sidebar holds one row the user may unlink.
     fn sidebar_row(window: &mut Window, uri: &str, name: &str) {
         window.library.apply(&Update::Playlists(vec![PlaylistEntry {
+            composed: Vec::new(),
             uri: uri.to_owned(),
             name: name.to_owned(),
             named: true,
@@ -14947,6 +14960,7 @@ mod tests {
     /// A library root holding one named playlist, with its rows already loaded.
     fn shelf_with_rows(window: &mut Window, rows: usize) {
         window.library.apply(&Update::Playlists(vec![PlaylistEntry {
+            composed: Vec::new(),
             uri: PLAYLIST.to_owned(),
             name: "Mix".to_owned(),
             named: true,
