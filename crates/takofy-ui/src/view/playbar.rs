@@ -2883,7 +2883,7 @@ mod tests {
     }
 
     /// The bar's height is its region's, and the second line keeps the font the
-    /// state word used: no state makes the words taller than the art.
+    /// state word had: no state or artist makes the words taller than the art.
     #[test]
     fn the_playbar_is_not_taller_than_before() {
         let tokens = Tokens::DARK;
