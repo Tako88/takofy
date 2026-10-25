@@ -203,7 +203,7 @@ fn row_at(ui: &Ui, rect: Rect, index: usize, present: Present, tokens: &Tokens) 
         tokens,
     );
 
-    let text = table::title_parts(columns.title).text;
+    let text = table::title_parts(columns.title, true).text;
     let stack = extent::SKELETON_LINE + space::S1 + extent::SKELETON_LINE_SM;
     let top = text.center().y - stack / 2.0;
     let title = Rect::from_min_size(

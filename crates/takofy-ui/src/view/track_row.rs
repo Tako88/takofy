@@ -201,7 +201,7 @@ impl Lifted {
 
         match self.cell {
             TitleCell::ArtThenName => {
-                let parts = title_parts(columns.title);
+                let parts = title_parts(columns.title, true);
                 if drawable(parts.art) {
                     art::tile(
                         ui.painter(),
@@ -655,7 +655,7 @@ fn title(
 
 /// The playlist's title cell: the cover's box, then the name.
 fn art_then_name(ui: &Ui, rect: Rect, row: &Row<'_>, tokens: &Tokens) {
-    let parts = title_parts(rect);
+    let parts = title_parts(rect, true);
     art::tile(
         ui.painter(),
         parts.art,
@@ -2792,6 +2792,7 @@ mod tests {
         let ctx = context();
         let tokens = Tokens::DARK;
         let present = crate::layout::table::Present {
+            shape: crate::layout::table::Shape::Slim,
             artist: false,
             album: false,
             ..crate::layout::Table::Full.columns()

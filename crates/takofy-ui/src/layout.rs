@@ -172,6 +172,7 @@ impl Table {
     pub fn columns(self) -> table::Present {
         match self {
             Self::Full => table::Present {
+                shape: table::Shape::Playlist,
                 artist: true,
                 album: true,
                 added: true,
@@ -180,6 +181,7 @@ impl Table {
                 actions: true,
             },
             Self::Reduced => table::Present {
+                shape: table::Shape::Playlist,
                 artist: true,
                 album: false,
                 added: true,
@@ -188,6 +190,7 @@ impl Table {
                 actions: true,
             },
             Self::Narrow => table::Present {
+                shape: table::Shape::Playlist,
                 artist: true,
                 album: false,
                 added: false,

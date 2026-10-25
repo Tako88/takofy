@@ -2,8 +2,9 @@
 //!
 //! The reference composes a playlist row from eight top-level tracks — index,
 //! title, artist, album, added, like, duration and actions — with the cover art
-//! nested inside the title. Only a playlist carries the artist column; a library
-//! or an album block leaves it out, and an album block leaves the album out too.
+//! nested inside the title. A row is one of three shapes: the playlist's dense
+//! row, which carries the artist and the album; the plays row, which is tight and
+//! carries the artist alone; and the slim row, which carries neither credit.
 //! `columns` solves those tracks from the fixed extents and the growth weights;
 //! `title_parts` then splits the title track into its art box and its text.
 //!
@@ -17,13 +18,31 @@ use egui::{Pos2, Rect, pos2, vec2};
 use crate::layout::tracks::{Track, solve};
 use crate::theme::{extent, grow, space};
 
+/// The row template a table draws: which credit columns it carries, how their
+/// room is shared, and how wide a gutter sits between them.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Shape {
+    /// A playlist's dense row: the artist and the album, `space-3` apart.
+    Playlist,
+    /// The plays row: the artist in a tight share of the title, `space-4` apart.
+    Plays,
+    /// A row with no credit column at all.
+    Slim,
+}
+
 /// Which optional columns a row carries at the current width.
 ///
 /// The index and the title are always present; this is the painter's per-width
 /// choice for the rest. The table never decides which columns drop, it lays out
 /// the ones it is told exist.
+///
+/// The two credit constructors produce only two combinations: `for_plays` keeps
+/// the artist and clears the album and the date, while `for_slim` clears all
+/// three. A hand-built `Present` may set `album` on a non-playlist shape — the
+/// only state that reads `grow::ALBUM` — but the app never builds one.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Present {
+    pub shape: Shape,
     pub artist: bool,
     pub album: bool,
     pub added: bool,
@@ -44,19 +63,39 @@ impl Present {
         }
     }
 
-    /// Drops the columns an album's own tracklist does not carry.
+    /// Drops the columns a plays row does not carry.
     ///
-    /// The band already names the record, so neither the artist nor the album
-    /// takes a column, and an album position has no membership date. What is
-    /// left is the reference's album table: the number, the title over its
-    /// artist, the length, the like and the more.
-    pub fn for_album(self) -> Self {
+    /// A plays row names the track's own artist, so it keeps the artist column,
+    /// but the list it sits in already says which record the track is on and a
+    /// play has no membership date.
+    pub fn for_plays(self) -> Self {
         Self {
+            shape: Shape::Plays,
+            artist: true,
+            album: false,
+            added: false,
+            ..self
+        }
+    }
+
+    /// Drops every credit column, as a release block's rows do.
+    pub fn for_slim(self) -> Self {
+        Self {
+            shape: Shape::Slim,
             artist: false,
             album: false,
             added: false,
             ..self
         }
+    }
+
+    /// A slim row, under the album block's name.
+    ///
+    /// Transitional: it is exactly [`Present::for_slim`] and exists only while
+    /// the lists that ask the album block for their columns keep the columns
+    /// they have today.
+    pub fn for_album(self) -> Self {
+        self.for_slim()
     }
 }
 
@@ -138,9 +177,10 @@ const TRACKS: usize = 8;
 
 /// The track a column is solved from.
 ///
-/// The playlist's denser weights apply when the artist column is present: the
-/// artist and the album are the two flexible columns a playlist divides its room
-/// between, and a library's album takes a smaller share.
+/// The shape decides the weights: a playlist is dense, with a wide title to pay
+/// for the two credit columns it carries, while a plays row keeps a `1fr` title
+/// and spends a narrow share on its artist. Only the playlist names the album, so
+/// a plays or a slim row never reads the album weight.
 fn track_for(index: usize, present: Present) -> Track {
     match index {
         INDEX => Track::fixed(extent::TRACK_INDEX_W),
@@ -148,7 +188,7 @@ fn track_for(index: usize, present: Present) -> Track {
             basis: 0.0,
             min: 0.0,
             max: f32::INFINITY,
-            grow: if present.artist {
+            grow: if present.shape == Shape::Playlist {
                 grow::TITLE_PLAYLIST
             } else {
                 grow::TITLE
@@ -158,13 +198,17 @@ fn track_for(index: usize, present: Present) -> Track {
             basis: 0.0,
             min: 0.0,
             max: f32::INFINITY,
-            grow: grow::ARTIST,
+            grow: if present.shape == Shape::Plays {
+                grow::ARTIST_PLAYS
+            } else {
+                grow::ARTIST
+            },
         },
         ALBUM => Track {
             basis: 0.0,
             min: 0.0,
             max: f32::INFINITY,
-            grow: if present.artist {
+            grow: if present.shape == Shape::Playlist {
                 grow::ALBUM_PLAYLIST
             } else {
                 grow::ALBUM
@@ -180,10 +224,14 @@ fn track_for(index: usize, present: Present) -> Track {
 
 /// The gutter between two columns.
 ///
-/// A playlist pays for its extra column with the tighter `space-3`; every other
-/// list keeps `space-4`.
+/// A playlist pays for its extra columns with the tighter `space-3`; every other
+/// shape keeps `space-4`.
 fn gap(present: Present) -> f32 {
-    if present.artist { space::S3 } else { space::S4 }
+    if present.shape == Shape::Playlist {
+        space::S3
+    } else {
+        space::S4
+    }
 }
 
 /// The content box of a row `width` points wide.
@@ -278,11 +326,19 @@ pub fn number_box(index: Rect) -> Rect {
 
 /// Splits the title track into its art box and its text.
 ///
-/// The reference nests a `2.25rem` art box and a `space-3` gutter inside the
-/// title track, so the split is `extent::LIBRARY_ART` then `space::S3`. The art
-/// is held to the title's own width and the text is clamped to a non-negative
-/// width, so neither can spill past the title.
-pub fn title_parts(title: Rect) -> TitleParts {
+/// With `art`, the reference nests a `2.25rem` art box and a `space-3` gutter
+/// inside the title track, so the split is `extent::LIBRARY_ART` then `space::S3`.
+/// The art is held to the title's own width and the text is clamped to a
+/// non-negative width, so neither can spill past the title. Without `art` there
+/// is no box at all: the art is a zero-width rect at the title's left edge and the
+/// whole track is the text.
+pub fn title_parts(title: Rect, art: bool) -> TitleParts {
+    if !art {
+        return TitleParts {
+            art: Rect::from_min_size(title.min, vec2(0.0, title.height())),
+            text: title,
+        };
+    }
     let art_width = extent::LIBRARY_ART.min(title.width().max(0.0));
     let art = Rect::from_min_size(title.min, vec2(art_width, title.height()));
     let text_left = (art.right() + space::S3).min(title.right());
@@ -339,6 +395,7 @@ mod tests {
 
     fn all() -> Present {
         Present {
+            shape: Shape::Playlist,
             artist: true,
             album: true,
             added: true,
@@ -348,19 +405,29 @@ mod tests {
         }
     }
 
-    /// A library row: the list already says whose record it is, so no artist
-    /// column, but it does carry the album.
-    fn library() -> Present {
-        Present {
-            artist: false,
-            ..all()
-        }
+    /// A plays row: the track's own artist in a tight column, no album, and no
+    /// membership date.
+    fn plays() -> Present {
+        all().for_plays()
     }
 
-    /// An album block: the block header names the record, so neither the artist
-    /// nor the album takes a column, and its rows carry no added date.
-    fn album_block() -> Present {
-        all().for_album()
+    /// A slim row: no credit column at all, as a release block draws it.
+    fn slim() -> Present {
+        all().for_slim()
+    }
+
+    /// Every shape, at the full width table.
+    fn shapes() -> [Present; 3] {
+        [all(), plays(), slim()]
+    }
+
+    /// The gutter a shape pays between its columns.
+    fn gutter(present: Present) -> f32 {
+        if present.shape == Shape::Playlist {
+            space::S3
+        } else {
+            space::S4
+        }
     }
 
     fn rects(columns: Columns) -> [(&'static str, Rect); 8] {
@@ -430,29 +497,35 @@ mod tests {
     #[test]
     fn the_columns_sum_to_the_available_width_when_it_is_large_enough() {
         let width = 1000.0;
-        let columns = columns(width, all());
-        let sum = columns.index.width()
-            + columns.title.width()
-            + columns.artist.width()
-            + columns.album.width()
-            + columns.added.width()
-            + columns.like.width()
-            + columns.duration.width()
-            + columns.actions.width()
-            + 7.0 * space::S3;
-        assert_close(sum, width - 2.0 * space::S3);
+        for present in shapes() {
+            let columns = columns(width, present);
+            let count = rects(columns)
+                .iter()
+                .filter(|(_, rect)| rect.width() > 0.0)
+                .count();
+            let sum = columns.index.width()
+                + columns.title.width()
+                + columns.artist.width()
+                + columns.album.width()
+                + columns.added.width()
+                + columns.like.width()
+                + columns.duration.width()
+                + columns.actions.width()
+                + (count - 1) as f32 * gutter(present);
+            assert_close(sum, width - 2.0 * space::S3);
+        }
     }
 
     #[test]
     fn an_absent_column_takes_no_width_and_no_gap() {
         let width = 1000.0;
-        let hidden = columns(width, album_block());
+        let hidden = columns(width, slim());
         assert_eq!(hidden.artist.width(), 0.0);
         assert_eq!(hidden.album.width(), 0.0);
         assert_eq!(hidden.added.width(), 0.0);
 
-        // An album block keeps the title, the like, the duration and the
-        // actions, with `space-4` between them.
+        // A slim row keeps the title, the like, the duration and the actions,
+        // with `space-4` between them.
         let sum = hidden.index.width()
             + hidden.title.width()
             + hidden.like.width()
@@ -466,43 +539,70 @@ mod tests {
     }
 
     #[test]
-    fn an_album_block_clears_the_artist_album_and_added_columns() {
+    fn a_plays_table_keeps_the_artist_and_clears_album_and_added() {
         let width = 1000.0;
-        let present = all().for_album();
-        assert!(!present.artist, "an album block names no artist column");
-        assert!(!present.album, "an album block names no album column");
-        assert!(!present.added, "an album position has no membership date");
+        let present = all().for_plays();
+        assert_eq!(present.shape, Shape::Plays);
+        assert!(present.artist, "a plays row names the track's artist");
+        assert!(!present.album, "a plays row names no album");
+        assert!(!present.added, "a plays row has no membership date");
+
+        let columns = columns(width, present);
+        assert!(columns.artist.width() > 0.0);
+        assert_eq!(columns.album.width(), 0.0);
+        assert_eq!(columns.added.width(), 0.0);
+
+        // The controls the plays row keeps: the like, the length, the more.
+        assert!(columns.like.width() > 0.0, "the plays row keeps the like");
+        assert!(columns.duration.width() > 0.0);
+        assert!(columns.actions.width() > 0.0);
+
+        // The title starts one space-4 after the index, as a slim row's does.
+        assert_close(columns.title.left(), columns.index.right() + space::S4);
+
+        // Adjacent present columns are space-4 apart, not the playlist's tighter
+        // space-3: with the album dropped, the artist and the like are neighbours.
+        assert_close(columns.like.left(), columns.artist.right() + space::S4);
+
+        // Six present columns tile the inner width with five space-4 gutters.
+        let sum = columns.index.width()
+            + columns.title.width()
+            + columns.artist.width()
+            + columns.like.width()
+            + columns.duration.width()
+            + columns.actions.width()
+            + 5.0 * space::S4;
+        assert_close(sum, width - 2.0 * space::S3);
+    }
+
+    #[test]
+    fn the_plays_artist_takes_055_of_the_titles_share() {
+        for width in [700.0, 900.0, 1200.0] {
+            let columns = columns(width, plays());
+            assert_close(
+                columns.artist.width() / columns.title.width(),
+                grow::ARTIST_PLAYS,
+            );
+        }
+    }
+
+    #[test]
+    fn a_slim_table_has_no_artist_album_or_added() {
+        let width = 1000.0;
+        let present = all().for_slim();
+        assert_eq!(present.shape, Shape::Slim);
+        assert!(!present.artist, "a slim row names no artist column");
+        assert!(!present.album, "a slim row names no album column");
+        assert!(!present.added, "a slim row has no membership date");
 
         let columns = columns(width, present);
         assert_eq!(columns.artist.width(), 0.0);
         assert_eq!(columns.album.width(), 0.0);
         assert_eq!(columns.added.width(), 0.0);
 
-        // The controls the album table keeps: the like, the length, the more.
-        assert!(columns.like.width() > 0.0, "the album keeps the like");
-        assert!(columns.duration.width() > 0.0);
-        assert!(columns.actions.width() > 0.0);
-
-        // The title starts one space-4 after the index, with no artist between.
-        assert_close(columns.title.left(), columns.index.right() + space::S4);
-
-        // Five present columns tile the inner width with four space-4 gutters.
-        let sum = columns.index.width()
-            + columns.title.width()
-            + columns.like.width()
-            + columns.duration.width()
-            + columns.actions.width()
-            + 4.0 * space::S4;
-        assert_close(sum, width - 2.0 * space::S3);
-    }
-
-    #[test]
-    fn the_album_title_takes_all_the_growth_the_dropped_columns_had() {
         // The title is the only grower left, so its width is exactly what the
         // fixed columns and the four gutters leave: this pins `grow::TITLE` as
-        // the album block's weight rather than a second flexible column.
-        let width = 1000.0;
-        let columns = columns(width, all().for_album());
+        // the slim row's weight rather than a second flexible column.
         let fixed = extent::TRACK_INDEX_W
             + extent::TRACK_LIKE_W
             + extent::TRACK_DURATION_W
@@ -514,9 +614,9 @@ mod tests {
     }
 
     #[test]
-    fn only_the_widest_album_block_keeps_the_like() {
+    fn only_the_widest_slim_row_keeps_the_like() {
         for table in [Table::Full, Table::Reduced, Table::Narrow] {
-            let present = table.columns().for_album();
+            let present = table.columns().for_slim();
             assert!(
                 !present.artist && !present.album && !present.added,
                 "{table:?} must clear the same three columns"
@@ -534,30 +634,130 @@ mod tests {
     }
 
     #[test]
-    fn only_a_playlist_carries_the_artist_column() {
+    fn only_the_widest_plays_row_keeps_the_like() {
+        for table in [Table::Full, Table::Reduced, Table::Narrow] {
+            let present = table.columns().for_plays();
+            assert!(
+                present.artist && !present.album && !present.added,
+                "{table:?} must keep the artist and clear the other two"
+            );
+            assert_eq!(
+                present.like,
+                table != Table::Narrow,
+                "{table:?} keeps the like exactly until its breakpoint drops it"
+            );
+            assert!(
+                present.duration && present.actions,
+                "{table:?} always keeps the length and the more"
+            );
+        }
+    }
+
+    #[test]
+    fn only_a_playlist_and_a_plays_row_carry_the_artist_column() {
         let width = 900.0;
         let playlist = columns(width, all());
-        let library = columns(width, library());
-        let album_block = columns(width, album_block());
+        let plays = columns(width, plays());
+        let slim = columns(width, slim());
 
         assert!(playlist.artist.width() > 0.0);
-        assert_eq!(library.artist.width(), 0.0);
-        assert_eq!(album_block.artist.width(), 0.0);
+        assert!(plays.artist.width() > 0.0);
+        assert_eq!(slim.artist.width(), 0.0);
 
-        assert!(library.album.width() > 0.0);
-        assert_eq!(album_block.album.width(), 0.0);
+        // Only the playlist names the album.
+        assert!(playlist.album.width() > 0.0);
+        assert_eq!(plays.album.width(), 0.0);
+        assert_eq!(slim.album.width(), 0.0);
 
-        // The absent artist leaves no gap behind: the album starts where the
-        // title ends plus one gutter.
-        assert_close(library.album.left(), library.title.right() + space::S4);
+        // The playlist's absent album leaves no gap behind: the artist starts
+        // one gutter after the title whether or not the album is dropped.
+        let reduced = columns(
+            width,
+            Present {
+                album: false,
+                ..all()
+            },
+        );
+        assert_close(reduced.artist.left(), reduced.title.right() + space::S3);
+
+        // Each shape keeps its own gutter.
+        assert_close(playlist.artist.left(), playlist.title.right() + space::S3);
+        assert_close(plays.artist.left(), plays.title.right() + space::S4);
+        assert_close(slim.like.left(), slim.title.right() + space::S4);
     }
 
     #[test]
     fn the_title_starts_after_the_index_and_its_gutter() {
-        for present in [all(), library(), album_block()] {
+        for present in shapes() {
             let columns = columns(900.0, present);
-            let gutter = if present.artist { space::S3 } else { space::S4 };
-            assert_close(columns.title.left(), columns.index.right() + gutter);
+            assert_close(
+                columns.title.left(),
+                columns.index.right() + gutter(present),
+            );
+        }
+    }
+
+    #[test]
+    fn the_playlist_columns_have_not_moved() {
+        // The rects the playlist tables solved to before the row shapes were
+        // named, at a pane 1000 points wide: naming the shape must not move a
+        // single playlist column.
+        let expected: [(Table, [(f32, f32); 8]); 3] = [
+            (
+                Table::Full,
+                [
+                    (12.0, 36.0),
+                    (60.0, 281.14285),
+                    (353.14285, 187.42856),
+                    (552.5714, 187.42859),
+                    (752.0, 88.0),
+                    (852.0, 28.0),
+                    (892.0, 56.0),
+                    (960.0, 28.0),
+                ],
+            ),
+            (
+                Table::Reduced,
+                [
+                    (12.0, 36.0),
+                    (60.0, 400.8),
+                    (472.8, 267.2),
+                    (752.0, 0.0),
+                    (752.0, 88.0),
+                    (852.0, 28.0),
+                    (892.0, 56.0),
+                    (960.0, 28.0),
+                ],
+            ),
+            (
+                Table::Narrow,
+                [
+                    (12.0, 36.0),
+                    (60.0, 484.80005),
+                    (556.80005, 323.19995),
+                    (892.0, 0.0),
+                    (892.0, 0.0),
+                    (892.0, 0.0),
+                    (892.0, 56.0),
+                    (960.0, 28.0),
+                ],
+            ),
+        ];
+
+        for (table, expected) in expected {
+            let solved = columns(1000.0, table.columns());
+            for ((name, rect), (left, width)) in rects(solved).into_iter().zip(expected) {
+                assert!(
+                    (rect.left() - left).abs() < 0.01,
+                    "{table:?} {name} left: {} is not {left}",
+                    rect.left()
+                );
+                assert!(
+                    (rect.width() - width).abs() < 0.01,
+                    "{table:?} {name} width: {} is not {width}",
+                    rect.width()
+                );
+            }
         }
     }
 
@@ -579,10 +779,11 @@ mod tests {
     }
 
     #[test]
-    fn a_playlist_rows_columns_never_overlap_at_its_narrowest_width() {
+    fn a_rows_columns_never_overlap_at_its_narrowest_width() {
         // The narrowest content area the shell hands the tracklist at WINDOW_MIN,
         // then every width up to a full playlist. A playlist keeps the artist by
-        // dropping the album; below 760 it also drops the date and the like.
+        // dropping the album; below 760 it also drops the date and the like. A
+        // plays row drops the album and the date at every width.
         let narrowest = WINDOW_MIN[0];
         for present in [
             Present {
@@ -595,6 +796,8 @@ mod tests {
                 like: false,
                 ..all()
             },
+            all().for_plays(),
+            Table::Narrow.columns().for_plays(),
         ] {
             for width in [narrowest, 400.0, 700.0, 900.0, 1440.0] {
                 let columns = columns(width, present);
@@ -620,7 +823,7 @@ mod tests {
     #[test]
     fn every_column_stays_inside_the_inner_rect_at_the_minimum_window() {
         // The narrowest content area the shell can hand the tracklist at
-        // WINDOW_MIN, with every column present, then widths below it.
+        // WINDOW_MIN, then widths below it, for every shape.
         for width in [
             WINDOW_MIN[0] - extent::SIDEBAR_W,
             WINDOW_MIN[0],
@@ -629,27 +832,29 @@ mod tests {
             24.0,
             0.0,
         ] {
-            let columns = columns(width, all());
-            let inner = inner_rect(width);
-            for (name, rect) in rects(columns) {
-                assert!(
-                    rect.left() >= inner.left() - 0.01,
-                    "{name} at {width}: {rect:?} spills left of {inner:?}"
-                );
-                assert!(
-                    rect.right() <= inner.right() + 0.01,
-                    "{name} at {width}: {rect:?} spills right of {inner:?}"
-                );
-                assert!(
-                    rect.top() >= inner.top() - 0.01,
-                    "{name} at {width}: {rect:?} spills above {inner:?}"
-                );
-                assert!(
-                    rect.bottom() <= inner.bottom() + 0.01,
-                    "{name} at {width}: {rect:?} spills below {inner:?}"
-                );
-                assert!(rect.width() >= 0.0, "{name} at {width} is negative");
-                assert!(rect.height() >= 0.0, "{name} at {width} is negative");
+            for present in shapes() {
+                let columns = columns(width, present);
+                let inner = inner_rect(width);
+                for (name, rect) in rects(columns) {
+                    assert!(
+                        rect.left() >= inner.left() - 0.01,
+                        "{name} at {width}: {rect:?} spills left of {inner:?}"
+                    );
+                    assert!(
+                        rect.right() <= inner.right() + 0.01,
+                        "{name} at {width}: {rect:?} spills right of {inner:?}"
+                    );
+                    assert!(
+                        rect.top() >= inner.top() - 0.01,
+                        "{name} at {width}: {rect:?} spills above {inner:?}"
+                    );
+                    assert!(
+                        rect.bottom() <= inner.bottom() + 0.01,
+                        "{name} at {width}: {rect:?} spills below {inner:?}"
+                    );
+                    assert!(rect.width() >= 0.0, "{name} at {width} is negative");
+                    assert!(rect.height() >= 0.0, "{name} at {width} is negative");
+                }
             }
         }
     }
@@ -668,7 +873,7 @@ mod tests {
     #[test]
     fn title_parts_splits_at_the_art_and_the_gutter() {
         let title = Rect::from_min_size(pos2(0.0, 0.0), vec2(400.0, extent::LIBRARY_ART));
-        let parts = title_parts(title);
+        let parts = title_parts(title, true);
         assert_eq!(parts.art.width(), extent::LIBRARY_ART);
         assert_eq!(parts.art.height(), title.height());
         assert_eq!(parts.text.left(), extent::LIBRARY_ART + space::S3);
@@ -676,20 +881,38 @@ mod tests {
     }
 
     #[test]
+    fn title_parts_without_art_hands_the_whole_title_to_the_text() {
+        let title = Rect::from_min_size(pos2(10.0, 0.0), vec2(400.0, extent::LIBRARY_ART));
+        let parts = title_parts(title, false);
+        assert_eq!(parts.art.width(), 0.0);
+        assert_eq!(parts.art.min, title.min);
+        assert_eq!(parts.art.height(), title.height());
+        assert_eq!(parts.text, title);
+    }
+
+    #[test]
     fn title_parts_never_goes_negative() {
-        for width in [
-            0.0,
-            1.0,
-            extent::LIBRARY_ART,
-            extent::LIBRARY_ART + space::S3,
-            extent::LIBRARY_ART + space::S3 + 100.0,
-        ] {
-            let title = Rect::from_min_size(pos2(10.0, 0.0), vec2(width, extent::LIBRARY_ART));
-            let parts = title_parts(title);
-            assert!(parts.art.width() >= 0.0, "{width}");
-            assert!(parts.text.width() >= 0.0, "{width}");
-            assert!(parts.art.right() <= title.right() + 0.01, "{width}");
-            assert!(parts.text.right() <= title.right() + 0.01, "{width}");
+        for art in [true, false] {
+            for width in [
+                0.0,
+                1.0,
+                extent::LIBRARY_ART,
+                extent::LIBRARY_ART + space::S3,
+                extent::LIBRARY_ART + space::S3 + 100.0,
+            ] {
+                let title = Rect::from_min_size(pos2(10.0, 0.0), vec2(width, extent::LIBRARY_ART));
+                let parts = title_parts(title, art);
+                assert!(parts.art.width() >= 0.0, "{width} art={art}");
+                assert!(parts.text.width() >= 0.0, "{width} art={art}");
+                assert!(
+                    parts.art.right() <= title.right() + 0.01,
+                    "{width} art={art}"
+                );
+                assert!(
+                    parts.text.right() <= title.right() + 0.01,
+                    "{width} art={art}"
+                );
+            }
         }
     }
 
