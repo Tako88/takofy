@@ -1140,6 +1140,11 @@ fn drawer_overlay(
     let picked = area
         .show(ui.ctx(), |ui| {
             ui.set_clip_rect(grid.drawer);
+            // The drawer paints at explicit rects and draws its rows in a child,
+            // so nothing would allocate here and the area would be zero-sized.
+            // A zero-sized area never holds the pointer: the page behind would
+            // stay the top layer, take the wheel and leave the drawer unscrollable.
+            ui.set_min_size(grid.drawer.size());
             panel(ui, grid.drawer, tokens.palette.surface, tokens);
             let mut child = ui.new_child(
                 UiBuilder::new()
@@ -1159,10 +1164,9 @@ fn drawer_overlay(
         })
         .inner;
 
-    // The area's own response is zero-sized: the column draws at explicit
-    // rects rather than allocating in the area's child, so asking it whether a
-    // click was elsewhere answers yes for a click on the drawer's own field.
-    // The box the drawer covers is the one it was given.
+    // The drawer's own field draws inside this box, so the area is given its
+    // size above: asking the area whether a click was elsewhere would answer yes
+    // for a click on the field. The box the drawer covers is what decides.
     let outside = ui.input(|input| {
         input.pointer.any_click()
             && input
@@ -11700,6 +11704,63 @@ mod tests {
             window.drawer,
             Drawer::Closed,
             "the press was still a pick, so the drawer closes"
+        );
+    }
+
+    /// The drawer draws after every region, and a `ScrollArea` takes the wheel
+    /// only when its own layer holds the pointer. A drawer whose area is
+    /// zero-sized never holds it, so the page behind scrolled and the drawer's
+    /// rows did not.
+    #[test]
+    fn the_wheel_scrolls_the_drawer_and_leaves_the_page_behind() {
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut window = Window::new(Vec2::new(800.0, 900.0));
+        let tracks: Vec<String> = (0..40).map(|index| format!("t{index}")).collect();
+        let titles: Vec<&str> = tracks.iter().map(String::as_str).collect();
+        playlist_page(&mut window, &titles);
+        let names: Vec<String> = (0..40).map(|index| format!("Row {index}")).collect();
+        let rows: Vec<(&str, Option<usize>)> =
+            names.iter().map(|name| (name.as_str(), None)).collect();
+        sidebar_playlists(&mut window, &rows, None);
+        open_drawer(&mut window, &mut transport, &mut queue);
+        let drawer = drawer_rect(&window);
+
+        let _ = window.frame(
+            &mut transport,
+            &mut queue,
+            vec![egui::Event::PointerMoved(drawer.center())],
+        );
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let page_before = painted_at(&frame, "t3").expect("the page drew its tracks");
+        let drawer_before = text_in(&frame, "Row 6", drawer).expect("the drawer drew its rows");
+
+        let wheel = egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -120.0),
+            phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Wheel,
+            modifiers: egui::Modifiers::NONE,
+        };
+        for _ in 0..4 {
+            let _ = window.frame(&mut transport, &mut queue, vec![wheel.clone()]);
+        }
+        let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
+        let page_after = painted_at(&frame, "t3").expect("the page still draws its tracks");
+        let drawer_after =
+            text_in(&frame, "Row 6", drawer).expect("the drawer still draws its rows");
+
+        assert!(
+            drawer_after.top() < drawer_before.top() - 20.0,
+            "the wheel did not scroll the drawer: {} then {}",
+            drawer_before.top(),
+            drawer_after.top()
+        );
+        assert!(
+            (page_after.y - page_before.y).abs() < 0.01,
+            "the page behind the drawer moved: {} then {}",
+            page_before.y,
+            page_after.y
         );
     }
 
