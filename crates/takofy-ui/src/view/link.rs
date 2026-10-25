@@ -7,10 +7,11 @@
 
 use std::sync::Arc;
 
-use egui::{Color32, FontId, Galley, Pos2, Rect, Sense, Ui};
+use egui::emath::GuiRounding as _;
+use egui::{Color32, FontId, Galley, Pos2, Rect, Sense, Ui, vec2};
 
 use crate::route::{Page, credit_is_show};
-use crate::theme::{Tokens, ease, motion};
+use crate::theme::{Tokens, ease, extent, motion, radius, stroke};
 use crate::view::text as recipe;
 
 /// The page a link opens.
@@ -87,6 +88,10 @@ impl Placed {
     /// cell. The interaction is created before the label is painted so the
     /// painter can read its hover. The sense is `Sense::CLICK` rather than
     /// `Sense::click()`: a link must not add a focus stop to a long list.
+    ///
+    /// The hover eases the words from `rest` to full ink and fades a hairline
+    /// underline in under them on the same animation, so a link whose rest ink
+    /// is already full ink still answers the pointer.
     pub(super) fn link(
         self,
         ui: &Ui,
@@ -124,7 +129,24 @@ impl Placed {
             motion::FAST,
             ease::out,
         );
-        self.paint(ui, rest.lerp_to_gamma(tokens.palette.text, reveal));
+        let ink = rest.lerp_to_gamma(tokens.palette.text, reveal);
+        self.paint(ui, ink);
+        if reveal > 0.0 {
+            // Snap y and height only: a hairline must land on whole pixels, but
+            // the rule stays exactly as wide as the words.
+            let scale = ui.pixels_per_point();
+            let underline = Rect::from_min_size(
+                Pos2::new(
+                    rect.left(),
+                    (rect.bottom() - extent::LINK_UNDERLINE_INSET).round_to_pixels(scale),
+                ),
+                vec2(rect.width(), stroke::HAIRLINE.round_to_pixels(scale)),
+            );
+            // The rule fades in by alpha; the ink itself is already the hovered
+            // ink, so a mid-fade difference in opacity is the fade at work.
+            ui.painter()
+                .rect_filled(underline, radius::NONE, ink.gamma_multiply(reveal));
+        }
         Shown {
             rect,
             hovered,
@@ -153,6 +175,8 @@ mod tests {
 
     const TEXT: &str = "Slow Tide";
     const ID: &str = "link";
+    /// The rest ink every link in these tests is drawn in, unless it says so.
+    const REST: Color32 = Tokens::DARK.palette.text_muted;
 
     fn context() -> egui::Context {
         let tokens = Tokens::DARK;
@@ -182,20 +206,21 @@ mod tests {
         Rect::from_min_size(Pos2::new(100.0, 100.0), vec2(300.0, 40.0))
     }
 
-    /// Draws the words into `place` and hit-tests them against `clip`.
-    fn draw(ui: &Ui, place: Rect, clip: Rect, target: Option<Target<'_>>, width: f32) -> Shown {
+    /// Draws the words into `place` in `rest` ink and hit-tests them against
+    /// `clip`.
+    fn draw(
+        ui: &Ui,
+        place: Rect,
+        clip: Rect,
+        target: Option<Target<'_>>,
+        rest: Color32,
+        width: f32,
+    ) -> Shown {
         let tokens = Tokens::DARK;
         let face = face();
         let galley = lay(ui, TEXT, &face, width);
         let pos = Pos2::new(place.left(), place.center().y - galley.size().y / 2.0);
-        Placed { pos, galley }.link(
-            ui,
-            egui::Id::unique(ID),
-            clip,
-            target,
-            tokens.palette.text_muted,
-            &tokens,
-        )
+        Placed { pos, galley }.link(ui, egui::Id::unique(ID), clip, target, rest, &tokens)
     }
 
     /// One pass, with the box the link's interaction registered.
@@ -204,13 +229,14 @@ mod tests {
         place: Rect,
         clip: Rect,
         target: Option<Target<'_>>,
+        rest: Color32,
         width: f32,
         events: Vec<Event>,
     ) -> (egui::FullOutput, Shown, Option<Rect>) {
         let mut shown = None;
         let mut hit = None;
         let mut output = ctx.run_ui(input(events), |ui| {
-            shown = Some(draw(ui, place, clip, target, width));
+            shown = Some(draw(ui, place, clip, target, rest, width));
             hit = ui
                 .ctx()
                 .read_response(egui::Id::unique(ID))
@@ -220,19 +246,42 @@ mod tests {
         (output, shown.expect("the pass draws the link"), hit)
     }
 
+    /// The pass the hover settles in, with the pointer resting on the words.
+    fn settle(
+        ctx: &egui::Context,
+        place: Rect,
+        clip: Rect,
+        target: Option<Target<'_>>,
+        rest: Color32,
+        width: f32,
+    ) -> egui::FullOutput {
+        let (_, shown, _) = frame(ctx, place, clip, target, rest, width, Vec::new());
+        let mut events = vec![Event::PointerMoved(shown.rect.center())];
+        let mut settled = None;
+        // The ink eases in, so the hover is read once the animation has settled.
+        for _ in 0..60 {
+            let (output, on, _) = frame(ctx, place, clip, target, rest, width, events);
+            assert!(on.hovered, "the pointer rests on the words");
+            settled = Some(output);
+            events = Vec::new();
+        }
+        settled.expect("the pass runs")
+    }
+
     /// One click, returning the release pass's link and output.
     fn click(
         ctx: &egui::Context,
         place: Rect,
         clip: Rect,
         target: Option<Target<'_>>,
+        rest: Color32,
         width: f32,
         at: Pos2,
     ) -> (egui::FullOutput, Shown) {
-        let _ = frame(ctx, place, clip, target, width, Vec::new());
+        let _ = frame(ctx, place, clip, target, rest, width, Vec::new());
         let mut last = None;
         for event in click_events(at) {
-            let (output, shown, _) = frame(ctx, place, clip, target, width, vec![event]);
+            let (output, shown, _) = frame(ctx, place, clip, target, rest, width, vec![event]);
             last = Some((output, shown));
         }
         last.expect("the click runs")
@@ -250,6 +299,18 @@ mod tests {
                 )),
                 _ => None,
             })
+    }
+
+    /// Every filled rect a pass painted, as its box and its fill.
+    fn fills(output: &egui::FullOutput) -> Vec<(Rect, Color32)> {
+        output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Rect(rect) => Some((rect.rect, rect.fill)),
+                _ => None,
+            })
+            .collect()
     }
 
     /// Every label a pass gave a link node.
@@ -276,12 +337,21 @@ mod tests {
     fn only_the_painted_words_take_the_click() {
         let target = Some(Target::Credit("spotify:artist:b"));
         let ctx = context();
-        let (_, shown, _) = frame(&ctx, cell(), cell(), target, cell().width(), Vec::new());
+        let (_, shown, _) = frame(
+            &ctx,
+            cell(),
+            cell(),
+            target,
+            REST,
+            cell().width(),
+            Vec::new(),
+        );
         let (_, on) = click(
             &ctx,
             cell(),
             cell(),
             target,
+            REST,
             cell().width(),
             shown.rect.center(),
         );
@@ -289,12 +359,212 @@ mod tests {
         assert!(on.hovered);
 
         let ctx = context();
-        let (_, shown, _) = frame(&ctx, cell(), cell(), target, cell().width(), Vec::new());
+        let (_, shown, _) = frame(
+            &ctx,
+            cell(),
+            cell(),
+            target,
+            REST,
+            cell().width(),
+            Vec::new(),
+        );
         let past = Pos2::new(shown.rect.right() + 10.0, shown.rect.center().y);
         assert!(cell().contains(past), "the probe must stay inside the cell");
-        let (_, off) = click(&ctx, cell(), cell(), target, cell().width(), past);
+        let (_, off) = click(&ctx, cell(), cell(), target, REST, cell().width(), past);
         assert_eq!(off.page, None, "a click past the words opened the page");
         assert!(!off.hovered);
+    }
+
+    #[test]
+    fn at_rest_no_underline_is_painted() {
+        let ctx = context();
+        let target = Some(Target::Credit("spotify:artist:b"));
+        let (output, shown, _) = frame(
+            &ctx,
+            cell(),
+            cell(),
+            target,
+            REST,
+            cell().width(),
+            Vec::new(),
+        );
+        assert!(!shown.hovered, "the pointer is off the words");
+        assert!(
+            fills(&output).is_empty(),
+            "a link at rest painted {:?}",
+            fills(&output)
+        );
+    }
+
+    #[test]
+    fn hover_paints_an_underline_under_the_words() {
+        let ctx = context();
+        let target = Some(Target::Credit("spotify:artist:b"));
+        let output = settle(&ctx, cell(), cell(), target, REST, cell().width());
+        let (ink, words) = painted(&output, TEXT).expect("the words are painted");
+        let rules: Vec<(Rect, Color32)> = fills(&output)
+            .into_iter()
+            .filter(|(rect, _)| (rect.height() - stroke::HAIRLINE).abs() < 0.01)
+            .collect();
+        assert_eq!(rules.len(), 1, "the hover painted {rules:?}");
+        let (rule, rule_ink) = rules[0];
+        assert!(
+            (rule.width() - words.width()).abs() < 0.01,
+            "the underline spans {} under words {} wide",
+            rule.width(),
+            words.width()
+        );
+        assert!(
+            rule.left() >= words.left() - 0.01 && rule.right() <= words.right() + 0.01,
+            "the underline {rule:?} runs past the words {words:?}"
+        );
+        assert!(
+            rule.top() >= words.top() && rule.bottom() <= words.bottom(),
+            "the underline {rule:?} leaves the line box {words:?}"
+        );
+        assert!(
+            rule.center().y > words.center().y,
+            "the underline sits above the words' centre"
+        );
+        let snap = 0.5 / output.pixels_per_point;
+        let want_top = words.bottom() - extent::LINK_UNDERLINE_INSET;
+        assert!(
+            (rule.top() - want_top).abs() <= snap,
+            "the underline top {} sits {} above the words' bottom {}",
+            rule.top(),
+            words.bottom() - rule.top(),
+            words.bottom()
+        );
+        assert!(
+            (rule.height() - stroke::HAIRLINE).abs() < 0.01,
+            "the underline is {} tall, not a hairline",
+            rule.height()
+        );
+        assert_eq!(rule_ink, ink, "the underline is drawn in another ink");
+    }
+
+    #[test]
+    fn an_elided_link_underlines_only_its_visible_run() {
+        let ctx = context();
+        let target = Some(Target::Album("spotify:album:a"));
+        let width = 48.0;
+        let output = settle(&ctx, cell(), cell(), target, REST, width);
+        let (_, words) = painted(&output, TEXT).expect("the words are painted");
+        let rules: Vec<Rect> = fills(&output)
+            .into_iter()
+            .filter(|(rect, _)| (rect.height() - stroke::HAIRLINE).abs() < 0.01)
+            .map(|(rect, _)| rect)
+            .collect();
+        assert_eq!(rules.len(), 1, "the hover painted {rules:?}");
+        let rule = rules[0];
+        assert!(
+            rule.width() <= words.width() + 0.01,
+            "the underline spans {} under {} wide elided words",
+            rule.width(),
+            words.width()
+        );
+        assert!(
+            rule.right() <= words.right() + 0.01,
+            "the underline {rule:?} runs past the elided words {words:?}"
+        );
+        assert!(
+            rule.left() >= words.left() - 0.01,
+            "the underline {rule:?} starts before the elided words {words:?}"
+        );
+    }
+
+    #[test]
+    fn hovering_adds_no_hit_area() {
+        let ctx = context();
+        let target = Some(Target::Credit("spotify:artist:b"));
+        let (_, shown, rest) = frame(
+            &ctx,
+            cell(),
+            cell(),
+            target,
+            REST,
+            cell().width(),
+            Vec::new(),
+        );
+        let rest = rest.expect("the link is interacted at rest");
+        let mut events = vec![Event::PointerMoved(shown.rect.center())];
+        for _ in 0..60 {
+            let (_, on, hit) = frame(&ctx, cell(), cell(), target, REST, cell().width(), events);
+            assert!(on.hovered, "the pointer rests on the words");
+            assert_eq!(
+                hit.expect("the link stays interacted"),
+                rest,
+                "the hover changed the hit area"
+            );
+            events = Vec::new();
+        }
+    }
+
+    #[test]
+    fn hover_eases_the_rest_ink_toward_text() {
+        let tokens = Tokens::DARK;
+        let ctx = context();
+        let target = Some(Target::Credit("spotify:artist:b"));
+        let (_, shown, _) = frame(
+            &ctx,
+            cell(),
+            cell(),
+            target,
+            REST,
+            cell().width(),
+            Vec::new(),
+        );
+        let mut events = vec![Event::PointerMoved(shown.rect.center())];
+        let mut seen = Vec::new();
+        for _ in 0..60 {
+            let (output, _, _) = frame(&ctx, cell(), cell(), target, REST, cell().width(), events);
+            seen.push(painted(&output, TEXT).expect("the words are painted").0);
+            events = Vec::new();
+        }
+        let between = seen
+            .iter()
+            .position(|ink| *ink != REST)
+            .expect("the ink never left its rest colour");
+        assert_ne!(seen[between], tokens.palette.text, "the ink jumped to full");
+        for pair in seen.windows(2) {
+            assert!(
+                pair[0].r() <= pair[1].r()
+                    && pair[0].g() <= pair[1].g()
+                    && pair[0].b() <= pair[1].b(),
+                "the ink stepped back from {:?} to {:?}",
+                pair[0],
+                pair[1]
+            );
+        }
+        assert_eq!(
+            seen.last(),
+            Some(&tokens.palette.text),
+            "the hover ink settles at full ink"
+        );
+    }
+
+    #[test]
+    fn a_text_ink_link_still_shows_the_underline() {
+        let tokens = Tokens::DARK;
+        let ctx = context();
+        let target = Some(Target::Credit("spotify:artist:b"));
+        let output = settle(
+            &ctx,
+            cell(),
+            cell(),
+            target,
+            tokens.palette.text,
+            cell().width(),
+        );
+        let (ink, words) = painted(&output, TEXT).expect("the words are painted");
+        assert_eq!(ink, tokens.palette.text, "the words keep their rest ink");
+        assert!(
+            fills(&output)
+                .iter()
+                .any(|(rect, _)| (rect.height() - stroke::HAIRLINE).abs() < 0.01
+                    && rect.center().y > words.center().y),
+            "a link already at full ink painted no underline"
+        );
     }
 
     #[test]
@@ -308,6 +578,7 @@ mod tests {
             cell(),
             cell(),
             None,
+            REST,
             cell().width(),
             vec![Event::PointerMoved(at)],
         );
@@ -331,18 +602,7 @@ mod tests {
         let tokens = Tokens::DARK;
         let ctx = context();
         let target = Some(Target::Credit("spotify:artist:b"));
-        let (_, shown, _) = frame(&ctx, cell(), cell(), target, cell().width(), Vec::new());
-        let at = shown.rect.center();
-        let mut events = vec![Event::PointerMoved(at)];
-        // The ink eases in, so the hover is read once the animation has settled.
-        let mut settled = None;
-        for _ in 0..60 {
-            let (output, on, _) = frame(&ctx, cell(), cell(), target, cell().width(), events);
-            assert!(on.hovered, "the pointer rests on the words");
-            settled = Some(output);
-            events = Vec::new();
-        }
-        let output = settled.expect("the pass runs");
+        let output = settle(&ctx, cell(), cell(), target, REST, cell().width());
         assert_eq!(
             output.platform_output.cursor_icon,
             egui::CursorIcon::PointingHand,
@@ -364,6 +624,7 @@ mod tests {
             cell(),
             cell(),
             Some(Target::Album("spotify:album:a")),
+            REST,
             width,
             Vec::new(),
         );
@@ -394,6 +655,7 @@ mod tests {
             place,
             clip,
             Some(Target::Credit("spotify:artist:b")),
+            REST,
             cell().width(),
             Vec::new(),
         );
@@ -419,6 +681,7 @@ mod tests {
             place,
             clip,
             Some(Target::Album("spotify:album:a")),
+            REST,
             place.width(),
             Vec::new(),
         );
@@ -443,6 +706,7 @@ mod tests {
                 cell(),
                 cell(),
                 Some(target),
+                REST,
                 cell().width(),
                 Vec::new(),
             );
