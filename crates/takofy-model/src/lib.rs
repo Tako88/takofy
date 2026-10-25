@@ -5,8 +5,11 @@
 //! depending on the crate that talks to Spotify, so "a view cannot reach the
 //! network" stays enforced by the compiler.
 
+pub mod cover;
 pub mod device;
 pub mod remote;
+
+pub use cover::{CoverSet, CoverVariant, SMALL_MAX_PX};
 
 pub use device::{Device, DeviceKind, RemotePlayback, RemoteState};
 pub use remote::{
