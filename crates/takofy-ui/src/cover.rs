@@ -113,7 +113,7 @@ impl Art {
                     return;
                 }
                 self.pending.push((url.clone(), image.clone()));
-                self.cache.insert(url);
+                self.cache.insert(url, image.rgba.len());
             }
             Update::CoverFailed { url } => {
                 if self.in_flight.remove(url).is_none() {

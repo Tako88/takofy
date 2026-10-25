@@ -1,9 +1,9 @@
 //! The pure cover cache: what is held, what is wanted, and what to fetch next.
 //!
-//! The cache is keyed by [`CoverUrl`] and holds at most [`MAX_HELD`] entries,
-//! evicting the least recently used first. An entry wanted in the current or the
-//! previous frame is never evicted, so the bound is soft by at most the tiles
-//! drawn in two frames.
+//! The cache is keyed by [`CoverUrl`] and bounded by both [`MAX_BYTES`] of held
+//! pixels and [`MAX_HELD`] entries, evicting the least recently used first. An
+//! entry wanted in the current or the previous frame is never evicted, so the
+//! bounds are soft by at most the tiles drawn in two frames.
 //!
 //! Everything time-related is passed in as an [`Instant`]; the cache never reads
 //! a clock, so its retry and timeout behaviour is pinned by advancing a base
@@ -14,8 +14,17 @@ use std::time::{Duration, Instant};
 
 use takofy_model::CoverUrl;
 
-/// How many entries the cache holds. About 46 MB at 300×300×4.
-pub const MAX_HELD: usize = 128;
+/// How much decoded cover data the cache holds, in RGBA bytes.
+///
+/// A 2× library grid is about twenty 640² tiles and the previous frame stays
+/// pinned while scrolling, so the budget has to hold roughly forty of them.
+pub const MAX_BYTES: usize = 96 * 1024 * 1024;
+
+/// How many entries the cache holds, whatever their size.
+///
+/// The byte budget binds for every tile the wire actually offers; this cap
+/// bounds a page of tiny ones.
+pub const MAX_HELD: usize = 256;
 
 /// How long a fetch may stay unanswered before the window calls it a failure.
 ///
@@ -44,8 +53,8 @@ pub enum Look {
 /// What the cache knows about one URL.
 #[derive(Debug, Clone, Copy)]
 enum Entry {
-    /// The decoded image is held.
-    Ready,
+    /// The decoded image is held, and its pixels cost `bytes`.
+    Ready { bytes: usize },
     /// A fetch is wanted but has not been sent, because the in-flight cap was
     /// full when it was last looked at.
     Wanted { attempts: u32 },
@@ -58,10 +67,22 @@ enum Entry {
     },
 }
 
+impl Entry {
+    /// The bytes this entry holds; anything but a decoded image holds none.
+    fn bytes(self) -> usize {
+        match self {
+            Entry::Ready { bytes } => bytes,
+            _ => 0,
+        }
+    }
+}
+
 /// A bounded, least-recently-used set of covers with retry state.
 #[derive(Debug, Default)]
 pub struct Cache {
     entries: HashMap<CoverUrl, Entry>,
+    /// The sum of the bytes held by the ready entries.
+    bytes: usize,
     /// LRU order, least recently used at the front.
     order: VecDeque<CoverUrl>,
     /// The URLs looked at in the frame before this one.
@@ -101,7 +122,7 @@ impl Cache {
                     .insert(url.clone(), Entry::Wanted { attempts: 0 });
                 Look::Loading
             }
-            Some(Entry::Ready) => Look::Ready,
+            Some(Entry::Ready { .. }) => Look::Ready,
             Some(Entry::Wanted { .. }) => Look::Loading,
             Some(Entry::InFlight { .. }) => Look::Loading,
             Some(Entry::Failed { attempts, retry_at }) => match retry_at {
@@ -116,9 +137,13 @@ impl Cache {
         look
     }
 
-    /// Records that a decoded image is held for `url`.
-    pub fn insert(&mut self, url: &CoverUrl) {
-        self.entries.insert(url.clone(), Entry::Ready);
+    /// Records that a decoded image of `bytes` is held for `url`.
+    pub fn insert(&mut self, url: &CoverUrl, bytes: usize) {
+        let replaced = self.entries.insert(url.clone(), Entry::Ready { bytes });
+        if let Some(old) = replaced {
+            self.bytes -= old.bytes();
+        }
+        self.bytes += bytes;
         self.touch(url);
         self.evict();
     }
@@ -132,7 +157,7 @@ impl Cache {
             Entry::Wanted { attempts }
             | Entry::InFlight { attempts, .. }
             | Entry::Failed { attempts, .. } => attempts,
-            Entry::Ready => return,
+            Entry::Ready { .. } => return,
         };
         self.entries.insert(
             url.clone(),
@@ -152,7 +177,7 @@ impl Cache {
             Entry::Wanted { attempts }
             | Entry::InFlight { attempts, .. }
             | Entry::Failed { attempts, .. } => attempts.saturating_add(1),
-            Entry::Ready => return,
+            Entry::Ready { .. } => return,
         };
         let retry_at = if attempts >= MAX_ATTEMPTS {
             None
@@ -212,13 +237,13 @@ impl Cache {
         self.order.push_back(url.clone());
     }
 
-    /// Drops the least recently used entries until the bound holds.
+    /// Drops the least recently used entries until both bounds hold.
     ///
     /// An entry in the current or the previous frame is pinned, so when every
-    /// entry is pinned the bound is exceeded rather than dropping a tile that is
-    /// on screen.
+    /// entry is pinned the bounds are exceeded rather than dropping a tile that
+    /// is on screen.
     fn evict(&mut self) {
-        while self.entries.len() > MAX_HELD {
+        while self.bytes > MAX_BYTES || self.entries.len() > MAX_HELD {
             let Some(index) = self.order.iter().position(|url| {
                 !self.current_set.contains(url)
                     && !self.previous.contains(url)
@@ -232,7 +257,9 @@ impl Cache {
             let Some(url) = self.order.remove(index) else {
                 break;
             };
-            self.entries.remove(&url);
+            if let Some(entry) = self.entries.remove(&url) {
+                self.bytes -= entry.bytes();
+            }
             self.removed.push(url);
         }
     }
@@ -251,12 +278,25 @@ mod tests {
         Instant::now()
     }
 
+    /// The bytes a decoded 300×300 tile costs, the wire's default size.
+    const DEFAULT_TILE: usize = 300 * 300 * 4;
+
+    /// The bytes a decoded 640×640 tile costs, the wire's large size.
+    const LARGE_TILE: usize = 640 * 640 * 4;
+
+    /// The bytes a decoded 64×64 tile costs, the wire's small size.
+    const ROW_TILE: usize = 64 * 64 * 4;
+
+    fn tile(index: usize) -> CoverUrl {
+        cover_url(&format!("u{index:03}"))
+    }
+
     #[test]
     fn a_new_entry_is_loading_and_ready_after_insert() {
         let now = base();
         let mut cache = Cache::new();
         assert_eq!(cache.look(&cover_url("a"), now), Look::Loading);
-        cache.insert(&cover_url("a"));
+        cache.insert(&cover_url("a"), DEFAULT_TILE);
         assert_eq!(cache.look(&cover_url("a"), now), Look::Ready);
     }
 
@@ -264,8 +304,8 @@ mod tests {
     fn distinct_urls_are_distinct_entries() {
         let now = base();
         let mut cache = Cache::new();
-        cache.insert(&cover_url("a"));
-        cache.insert(&cover_url("b"));
+        cache.insert(&cover_url("a"), DEFAULT_TILE);
+        cache.insert(&cover_url("b"), DEFAULT_TILE);
         assert_eq!(cache.look(&cover_url("a"), now), Look::Ready);
         assert_eq!(cache.look(&cover_url("b"), now), Look::Ready);
         assert_eq!(cache.entries.len(), 2);
@@ -276,11 +316,11 @@ mod tests {
         let now = base();
         let mut cache = Cache::new();
         for index in 0..MAX_HELD {
-            cache.insert(&cover_url(&format!("u{index:03}")));
+            cache.insert(&cover_url(&format!("u{index:03}")), DEFAULT_TILE);
         }
         // Touch the oldest so it is no longer the least recently used.
         assert_eq!(cache.look(&cover_url("u000"), now), Look::Ready);
-        cache.insert(&cover_url("overflow"));
+        cache.insert(&cover_url("overflow"), DEFAULT_TILE);
 
         assert!(
             !cache.entries.contains_key(&cover_url("u001")),
@@ -309,7 +349,7 @@ mod tests {
                 // Looked at, then fetched: a tile that appears and resolves.
                 let url = cover_url(&format!("f{frame:02}-t{slot:02}"));
                 cache.look(&url, now);
-                cache.insert(&url);
+                cache.insert(&url, DEFAULT_TILE);
             }
         }
 
@@ -342,11 +382,11 @@ mod tests {
         let now = base();
         let mut cache = Cache::new();
         for index in 0..MAX_HELD {
-            cache.insert(&cover_url(&format!("u{index:03}")));
+            cache.insert(&cover_url(&format!("u{index:03}")), DEFAULT_TILE);
         }
         assert_eq!(cache.look(&cover_url("u000"), now), Look::Ready);
         for index in 0..MAX_HELD {
-            cache.insert(&cover_url(&format!("v{index:03}")));
+            cache.insert(&cover_url(&format!("v{index:03}")), DEFAULT_TILE);
         }
         assert_eq!(cache.look(&cover_url("u000"), now), Look::Ready);
     }
@@ -356,13 +396,13 @@ mod tests {
         let now = base();
         let mut cache = Cache::new();
         for index in 0..MAX_HELD {
-            cache.insert(&cover_url(&format!("u{index:03}")));
+            cache.insert(&cover_url(&format!("u{index:03}")), DEFAULT_TILE);
         }
         assert_eq!(cache.look(&cover_url("u000"), now), Look::Ready);
         // The next frame wants nothing: u000 moves from current to previous.
         cache.begin_frame();
         for index in 0..MAX_HELD {
-            cache.insert(&cover_url(&format!("v{index:03}")));
+            cache.insert(&cover_url(&format!("v{index:03}")), DEFAULT_TILE);
         }
         assert!(cache.entries.contains_key(&cover_url("u000")));
     }
@@ -409,7 +449,7 @@ mod tests {
         // Push the failed entry out by filling the cache without it.
         for index in 0..MAX_HELD {
             cache.begin_frame();
-            cache.insert(&cover_url(&format!("u{index:03}")));
+            cache.insert(&cover_url(&format!("u{index:03}")), DEFAULT_TILE);
         }
         assert!(!cache.entries.contains_key(&url));
         assert_eq!(cache.look(&url, now), Look::Loading, "a fresh entry");
@@ -459,7 +499,7 @@ mod tests {
         let now = base();
         let mut cache = Cache::new();
         let url = cover_url("a");
-        cache.insert(&url);
+        cache.insert(&url, DEFAULT_TILE);
         cache.begin_frame();
         cache.look(&url, now);
         assert_eq!(cache.next_wake(now), None);
@@ -484,7 +524,7 @@ mod tests {
         let mut cache = Cache::new();
         let fresh = cover_url("a");
         let ready = cover_url("b");
-        cache.insert(&ready);
+        cache.insert(&ready, DEFAULT_TILE);
         cache.look(&fresh, now);
         cache.look(&ready, now);
         assert_eq!(cache.wanted(), vec![fresh]);
@@ -498,6 +538,94 @@ mod tests {
         cache.look(&url, now);
         cache.look(&url, now);
         assert_eq!(cache.wanted(), vec![url]);
+    }
+
+    /// The count cap, not the budget, bounds the default tile: a 96 MiB budget
+    /// would hold 279 of them.
+    #[test]
+    fn a_default_tile_is_bounded_by_the_count_cap() {
+        let mut cache = Cache::new();
+        for index in 0..MAX_HELD {
+            cache.insert(&tile(index), DEFAULT_TILE);
+        }
+        // The count cap is the bound for this tile, not the budget.
+        const { assert!(MAX_BYTES / DEFAULT_TILE > MAX_HELD) };
+
+        cache.insert(&tile(MAX_HELD), DEFAULT_TILE);
+        assert_eq!(cache.entries.len(), MAX_HELD);
+        assert!(!cache.entries.contains_key(&tile(0)), "the oldest went");
+        assert!(cache.entries.contains_key(&tile(MAX_HELD)));
+    }
+
+    #[test]
+    fn a_large_tile_costs_its_pixels() {
+        let mut cache = Cache::new();
+        let held = MAX_BYTES / LARGE_TILE;
+        assert!(held < MAX_HELD, "the budget is the bound");
+        for index in 0..held {
+            cache.insert(&tile(index), LARGE_TILE);
+        }
+        assert_eq!(cache.bytes, held * LARGE_TILE);
+
+        cache.insert(&tile(held), LARGE_TILE);
+        assert_eq!(cache.entries.len(), held);
+        assert!(!cache.entries.contains_key(&tile(0)), "the oldest went");
+        assert!(cache.bytes <= MAX_BYTES);
+    }
+
+    #[test]
+    fn a_row_tile_is_bounded_by_the_entry_cap() {
+        let mut cache = Cache::new();
+        for index in 0..MAX_HELD + 8 {
+            cache.insert(&tile(index), ROW_TILE);
+        }
+        assert_eq!(cache.entries.len(), MAX_HELD);
+        assert!(!cache.entries.contains_key(&tile(0)), "the oldest went");
+        assert!(cache.bytes <= MAX_BYTES);
+    }
+
+    #[test]
+    fn replacing_an_entry_does_not_double_count_its_bytes() {
+        let mut cache = Cache::new();
+        let url = cover_url("a");
+        cache.insert(&url, LARGE_TILE);
+        cache.insert(&url, LARGE_TILE);
+        assert_eq!(cache.bytes, LARGE_TILE);
+        assert_eq!(cache.entries.len(), 1);
+    }
+
+    #[test]
+    fn an_evicted_entry_gives_its_bytes_back() {
+        let mut cache = Cache::new();
+        let held = MAX_BYTES / LARGE_TILE;
+        for index in 0..held {
+            cache.insert(&tile(index), LARGE_TILE);
+        }
+        assert_eq!(cache.bytes, held * LARGE_TILE);
+
+        cache.insert(&cover_url("overflow"), LARGE_TILE);
+        assert_eq!(cache.bytes, held * LARGE_TILE, "no byte leaked");
+        let mut held_bytes = 0;
+        for entry in cache.entries.values() {
+            held_bytes += entry.bytes();
+        }
+        assert_eq!(held_bytes, cache.bytes, "the total matches the entries");
+    }
+
+    #[test]
+    fn a_wanted_large_tile_survives_a_full_budget() {
+        let now = base();
+        let mut cache = Cache::new();
+        let wanted = cover_url("wanted");
+        assert_eq!(cache.look(&wanted, now), Look::Loading);
+        cache.insert(&wanted, LARGE_TILE);
+
+        for index in 0..MAX_BYTES / LARGE_TILE {
+            cache.insert(&tile(index), LARGE_TILE);
+        }
+
+        assert_eq!(cache.look(&wanted, now), Look::Ready);
+        assert!(cache.bytes <= MAX_BYTES);
     }
 
     #[test]
@@ -514,7 +642,7 @@ mod tests {
         // keeps it.
         for index in 0..MAX_HELD {
             cache.begin_frame();
-            cache.insert(&cover_url(&format!("u{index:03}")));
+            cache.insert(&cover_url(&format!("u{index:03}")), DEFAULT_TILE);
         }
 
         assert!(
