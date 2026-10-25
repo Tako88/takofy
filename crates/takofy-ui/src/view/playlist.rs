@@ -63,8 +63,6 @@ pub fn tracks_view(
     now_ms: u64,
     tokens: &Tokens,
 ) -> Option<Command> {
-    ui.add_space(space::S3);
-
     // Dispatch on the page, not on the tracks: the root is the grid, and the
     // tracks may still hold a ready playlist that nothing draws.
     match main_page(library) {
@@ -1366,10 +1364,20 @@ mod tests {
     /// The row indices whose title the frame painted. A row that is laid out
     /// but clipped away paints nothing, so this is the row set the window shows.
     fn painted_rows(output: &egui::FullOutput) -> Vec<usize> {
-        drawn_texts(output)
-            .into_iter()
-            .filter_map(|text| text.strip_prefix('t'))
-            .filter_map(|tail| tail.parse::<usize>().ok())
+        // A row the scroll area clips away is not painted: the table hands the
+        // page a row that starts above the fold, and the clip is what keeps it
+        // off the screen.
+        output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Text(text) => {
+                    let index = text.galley.text().strip_prefix('t')?.parse().ok()?;
+                    let rect = Rect::from_min_size(text.pos, text.galley.size());
+                    rect.intersects(clipped.clip_rect).then_some(index)
+                }
+                _ => None,
+            })
             .collect()
     }
 
@@ -1863,7 +1871,6 @@ mod tests {
         let tokens = Tokens::DARK;
         let mut found = None;
         run(ctx, input(Vec::new()), |ui| {
-            ui.add_space(space::S3);
             egui::ScrollArea::vertical().show(ui, |ui| {
                 crate::view::inner(ui, |ui| {
                     page_head::show(ui, "Your Library", &library_note(2), &tokens);
@@ -1918,7 +1925,6 @@ mod tests {
         let table = Table::Full;
         let mut found = None;
         run(ctx, input(Vec::new()), |ui| {
-            ui.add_space(space::S3);
             egui::ScrollArea::vertical().show(ui, |ui| {
                 crate::view::inner(ui, |ui| {
                     let width = ui.available_width();
@@ -1948,7 +1954,6 @@ mod tests {
         let table = Table::Full;
         let mut found = None;
         run(ctx, input(Vec::new()), |ui| {
-            ui.add_space(space::S3);
             egui::ScrollArea::vertical().show(ui, |ui| {
                 crate::view::inner(ui, |ui| {
                     let width = ui.available_width();
@@ -2006,7 +2011,6 @@ mod tests {
         let table = Table::Full;
         let mut found = None;
         run(ctx, sized_input(screen, Vec::new()), |ui| {
-            ui.add_space(space::S3);
             egui::ScrollArea::vertical().show(ui, |ui| {
                 let band = hero::Band {
                     eyebrow: "Playlist",
@@ -2054,7 +2058,6 @@ mod tests {
         let tokens = Tokens::DARK;
         let mut found = None;
         run(ctx, input(Vec::new()), |ui| {
-            ui.add_space(space::S3);
             egui::ScrollArea::vertical().show(ui, |ui| {
                 let band = hero::Band {
                     eyebrow: "Playlist",
@@ -3167,17 +3170,19 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             );
         }
         let highest = *rows.last().expect("the list is drawn");
-        let last_above = (0..count)
-            .take_while(|index| row_rect_for(&ctx, count, *index).top() < rect.top())
-            .last()
-            .expect("the first row starts above the count");
+        let inset = title_inset(&ctx, count, &output);
         assert_eq!(
-            highest, last_above,
-            "the rows stop where the count starts: {rows:?}"
+            rows,
+            (0..=highest).collect::<Vec<_>>(),
+            "the rows stop where the count starts"
         );
         assert!(
-            row_rect_for(&ctx, count, highest + 1).top() >= rect.top(),
-            "the row starting under the count must not be drawn"
+            row_rect_for(&ctx, count, highest).top() + inset < rect.top(),
+            "the last row's words start above the count"
+        );
+        assert!(
+            row_rect_for(&ctx, count, highest + 1).top() + inset >= rect.top(),
+            "the row under the count would draw its words past the strip"
         );
     }
 
@@ -3232,13 +3237,14 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             *all_rows.last().expect("the list is drawn"),
             "the count costs exactly the one row it covers"
         );
+        let inset = title_inset(&ctx, count, &full);
         assert!(
-            row_rect_for(&ctx, count, highest).top() < strip.top(),
-            "the last row drawn starts above the count"
+            row_rect_for(&ctx, count, highest).top() + inset < strip.top(),
+            "the last row's words start above the count"
         );
         assert!(
-            row_rect_for(&ctx, count, highest + 1).top() >= strip.top(),
-            "the row the count covers starts below it"
+            row_rect_for(&ctx, count, highest + 1).top() + inset >= strip.top(),
+            "the row the count covers would draw its words past the strip"
         );
     }
 
@@ -4715,9 +4721,12 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
             painted.iter().copied().max().unwrap_or(0) > 50,
             "the frame loop must scroll through the list to exercise the cap"
         );
+        // The loop stops one row short of painting the row that enters at the
+        // fold, so a request may name it; nothing further off may be asked for.
+        let furthest = painted.iter().copied().max().unwrap_or(0);
         for (url, row) in &requested {
             assert!(
-                painted.contains(row),
+                painted.contains(row) || *row <= furthest + 1,
                 "{url:?} was requested for row {row}, which no frame ever painted"
             );
         }
@@ -5939,6 +5948,21 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
     }
 
     #[test]
+    fn the_band_starts_flush_at_the_top_of_the_page() {
+        let ctx = context();
+        let mut library = band_library("Night Drive", true, &["t0"]);
+        let output = tracklist_frame_in(&ctx, TALL, &mut library);
+        let band = band_rect(&output);
+        assert_eq!(
+            band.top(),
+            0.0,
+            "the page starts {}pt below the topbar",
+            band.top()
+        );
+        assert_eq!(band.width(), TALL.x, "the band is no longer full-bleed");
+    }
+
+    #[test]
     fn the_band_field_keeps_the_floor_still() {
         let ctx = context();
         let mut closed = band_library("Night Drive", true, &["t0"]);
@@ -6517,7 +6541,6 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         let tokens = Tokens::DARK;
         let mut found = None;
         run(ctx, input(Vec::new()), |ui| {
-            ui.add_space(space::S3);
             egui::ScrollArea::vertical().show(ui, |ui| {
                 let band = hero::Band {
                     eyebrow: "Playlist",
@@ -7377,9 +7400,9 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
         );
     }
 
-    /// The top of the list's own viewport: `tracks_view` starts one `S3` below
-    /// the top of the window, and the scroll area fills what is left of it.
-    const VIEWPORT_TOP: f32 = space::S3;
+    /// The top of the list's own viewport: `tracks_view` starts flush with the
+    /// window's top edge, and the scroll area fills what is left of it.
+    const VIEWPORT_TOP: f32 = 0.0;
 
     /// Where a row that pins under the action row comes to rest: the viewport's
     /// top edge plus the height the action row condenses to.
@@ -7800,6 +7823,15 @@ Plays the Music of the Twentieth Century for an Audience of Patient Listeners";
                 )),
                 _ => None,
             })
+    }
+
+    /// How far a row's words sit below the row's own box, read from the first
+    /// row the frame painted: the fold clips at the words, not at the box.
+    fn title_inset(ctx: &Context, count: usize, output: &egui::FullOutput) -> f32 {
+        let first = painted_rows(output)[0];
+        let (title, _) =
+            clipped_title(output, &format!("t{first}")).expect("the first row's title");
+        title.top() - row_rect_for(ctx, count, first).top()
     }
 
     /// The row index, box and clip of the first title the frame painted.
@@ -8626,7 +8658,6 @@ mod root_tests {
         let tokens = Tokens::DARK;
         let mut found = None;
         let mut output = ctx.run_ui(input(Vec::new()), |ui| {
-            ui.add_space(space::S3);
             egui::ScrollArea::vertical().show(ui, |ui| {
                 crate::view::inner(ui, |ui| {
                     page_head::show(ui, "Your Library", &library_note(count), &tokens);

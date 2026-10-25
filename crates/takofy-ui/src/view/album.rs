@@ -2071,11 +2071,11 @@ mod tests {
         );
     }
 
-    /// The album page starts where every other page starts. The leading gap is
-    /// the pane's, added once by `tracks_view`; a page that adds its own sits a
-    /// whole step lower, which no painted string can catch.
+    /// The album page starts where every other page starts: flush under the
+    /// topbar. A page that adds its own air sits a whole step lower, which no
+    /// painted string can catch.
     #[test]
-    fn the_album_page_starts_at_the_playlists_leading_gap() {
+    fn the_album_page_starts_where_the_playlist_does() {
         let album = pane_band_top(&mut library_with(detail(vec![track(
             "spotify:track:a",
             "One",
@@ -2084,11 +2084,7 @@ mod tests {
         )])));
         let playlist = pane_band_top(&mut playlist_library());
 
-        assert_eq!(
-            album,
-            space::S3,
-            "the album band's top is the page's leading gap"
-        );
+        assert_eq!(album, 0.0, "the album band starts below the topbar");
         assert_eq!(
             album, playlist,
             "the album band's top {album} is not the playlist's {playlist}"

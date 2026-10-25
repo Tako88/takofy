@@ -2,7 +2,9 @@
 //!
 //! The reference sets the title at `--text-2xl` in 800 and the note as a small
 //! tracked mono line sitting on the title's baseline, then closes the head with
-//! a hairline and one `S5` of air.
+//! a hairline and one `S5` of air. Above the title it asks for one `S5` too, and
+//! the head brings that air itself: a page that draws a band instead must start
+//! flush with the bar, so the inset cannot belong to the page.
 
 use egui::{Pos2, Rect, Sense, Ui, vec2};
 
@@ -15,6 +17,7 @@ use super::text as recipe;
 /// The title gives way to the note, so a long one elides instead of running
 /// under it. One label node speaks both, as `title, note`.
 pub(super) fn show(ui: &mut Ui, title: &str, note: &str, tokens: &Tokens) {
+    ui.add_space(space::S3);
     let width = ui.available_width();
     let font = recipe::page_title();
     let title_h = ui.ctx().fonts_mut(|fonts| fonts.row_height(&font));
@@ -135,6 +138,25 @@ mod tests {
     }
 
     #[test]
+    fn the_title_sits_the_reference_air_below_the_page_top() {
+        // The reference's `.page-head` carries `padding-top: var(--space-5)`, and
+        // nothing above it may add to that: a page's own inset would push the
+        // head down and, worse, push a band down with it.
+        let (output, _) = draw("Your Library", "18 saved");
+        let title = lines(&output)
+            .into_iter()
+            .find(|(line, _)| line == "Your Library")
+            .expect("the title")
+            .1;
+        assert!(
+            (title.top() - space::S5).abs() < 0.01,
+            "the title sits at {} rather than {}",
+            title.top(),
+            space::S5
+        );
+    }
+
+    #[test]
     fn the_title_and_the_uppercased_note_are_painted() {
         let (output, _) = draw("Your Library", "18 saved");
         let painted: Vec<String> = lines(&output).into_iter().map(|(line, _)| line).collect();
@@ -198,7 +220,7 @@ mod tests {
         assert_eq!(rules, 1);
         let title_h = lines(&output)[0].1.height();
         assert!(
-            (end - (space::S3 + title_h + space::S4 + space::S5)).abs() < 1.5,
+            (end - (space::S3 + space::S3 + title_h + space::S4 + space::S5)).abs() < 1.5,
             "{end}"
         );
     }
