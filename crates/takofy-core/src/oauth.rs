@@ -83,9 +83,8 @@ impl TokenSource for SpotifyOAuth {
 
 /// Maps an empty refresh token to `None`; an empty access token is an error.
 fn token_set(token: OAuthToken) -> Result<TokenSet, SourceError> {
-    let access = AccessToken::new(token.access_token).ok_or_else(|| SourceError {
+    let access = AccessToken::new(token.access_token).ok_or(SourceError {
         kind: SourceErrorKind::Other,
-        msg: "Spotify returned an empty access token".to_owned(),
     })?;
     Ok(TokenSet {
         access,
@@ -98,10 +97,7 @@ fn map_oauth_error(error: &OAuthError) -> SourceError {
         OAuthError::AuthCodeListenerBind { .. } => SourceErrorKind::PortBusy,
         _ => SourceErrorKind::Other,
     };
-    SourceError {
-        kind,
-        msg: error.to_string(),
-    }
+    SourceError { kind }
 }
 
 /// Mirrors librespot-oauth's `get_socket_address`: only `http` URIs with an
@@ -134,7 +130,7 @@ mod tests {
         OAUTH_LOG_TARGET, REDIRECT_LOOPBACK, REDIRECT_PASTE, SCOPES, has_explicit_port,
         map_oauth_error, token_set,
     };
-    use crate::login::SourceErrorKind;
+    use crate::login::{AuthError, SourceErrorKind};
 
     fn oauth_token(access: &str, refresh: &str) -> OAuthToken {
         OAuthToken {
@@ -181,6 +177,30 @@ mod tests {
             e: io::Error::new(io::ErrorKind::AddrInUse, "busy"),
         };
         assert_eq!(map_oauth_error(&error).kind, SourceErrorKind::PortBusy);
+    }
+
+    /// The exchange's response text can carry the code and the token, so the
+    /// message a failed exchange prints is authored here instead.
+    #[test]
+    fn a_failed_exchange_never_surfaces_the_response_text() {
+        let error = OAuthError::ExchangeCode {
+            e: "code=AUTHCODE123 access_token=TOKEN456".to_owned(),
+        };
+
+        let source = map_oauth_error(&error);
+        let printed = AuthError::Source(source.clone()).to_string();
+
+        for text in [source.to_string(), printed] {
+            assert_eq!(text, "sign-in failed");
+            assert!(
+                !text.contains("AUTHCODE123"),
+                "must not print the code: {text}"
+            );
+            assert!(
+                !text.contains("TOKEN456"),
+                "must not print the token: {text}"
+            );
+        }
     }
 
     #[test]

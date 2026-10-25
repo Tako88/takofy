@@ -25,16 +25,19 @@ pub enum SourceErrorKind {
     Other,
 }
 
-/// A failed token exchange, with the message the source supplied.
+/// A failed token exchange. The message it prints is chosen here, not by the
+/// source, whose own text can embed a response body or a callback URI.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceError {
     pub kind: SourceErrorKind,
-    pub msg: String,
 }
 
 impl fmt::Display for SourceError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.msg)
+        f.write_str(match self.kind {
+            SourceErrorKind::PortBusy => "the sign-in port is already in use",
+            SourceErrorKind::Other => "sign-in failed",
+        })
     }
 }
 
@@ -136,7 +139,6 @@ mod tests {
     fn other_error() -> SourceError {
         SourceError {
             kind: SourceErrorKind::Other,
-            msg: "boom".to_owned(),
         }
     }
 
@@ -367,11 +369,23 @@ mod tests {
     }
 
     #[test]
+    fn source_errors_display_an_authored_message_per_kind() {
+        let busy = SourceError {
+            kind: SourceErrorKind::PortBusy,
+        };
+        let other = SourceError {
+            kind: SourceErrorKind::Other,
+        };
+
+        assert_eq!(busy.to_string(), "the sign-in port is already in use");
+        assert_eq!(other.to_string(), "sign-in failed");
+    }
+
+    #[test]
     fn port_busy_kind_is_preserved() {
         let store = FakeStore::new();
         let source = ScriptedSource::new().on_interactive(Err(SourceError {
             kind: SourceErrorKind::PortBusy,
-            msg: "busy".to_owned(),
         }));
 
         let error = authenticate(&store, &source).expect_err("login fails");

@@ -209,7 +209,7 @@ pub fn album_view(
 
                         for (index, entry) in album.tracks.iter().enumerate() {
                             let rect = table_layout::row_rect(list, index, extent::ROW_H);
-                            if !visible.intersects(rect) {
+                            if !table_layout::on_screen(visible, rect) {
                                 // A row the cull skipped draws nothing, so it has
                                 // no reveal of its own; one that holds the keyboard
                                 // is asked for once the loop is done.

@@ -20,6 +20,13 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 /// The loudest level a slider can name.
 pub const VOLUME_MAX: u16 = 100;
 
+/// The log target our own playback lines are filed under.
+pub const PLAYBACK_LOG_TARGET: &str = "takofy_core::playback";
+
+/// What an unavailable track logs: no cause, because `forward` cannot know one,
+/// and no track. A preload failure reaches here before the track is playing.
+const SKIPPED: &str = "a track could not be loaded and is unavailable";
+
 /// The gain, shared with the player thread.
 ///
 /// librespot reads the attenuation per packet through the `VolumeGetter` it was
@@ -290,6 +297,9 @@ fn into_sole<T>(arc: Arc<T>) -> Result<T, Arc<T>> {
 /// Forwards mapped events until the player's receiver closes.
 async fn forward(mut raw: PlayerEventChannel, tx: UnboundedSender<PlaybackEvent>) {
     while let Some(event) = raw.recv().await {
+        if matches!(event, PlayerEvent::Unavailable { .. }) {
+            log::warn!(target: PLAYBACK_LOG_TARGET, "{SKIPPED}");
+        }
         let Some(mapped) = map_event(&event) else {
             continue;
         };
@@ -302,6 +312,7 @@ async fn forward(mut raw: PlayerEventChannel, tx: UnboundedSender<PlaybackEvent>
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use std::sync::Mutex;
 
     use librespot::core::SpotifyUri;
     use librespot::metadata::artist::ArtistsWithRole;
@@ -311,8 +322,8 @@ mod tests {
     use librespot::playback::mixer::VolumeGetter;
 
     use super::{
-        Outcome, PlaybackError, PlaybackEvent, Volume, attenuation, drive, duration_of, into_sole,
-        map_event, playable_track,
+        Outcome, PLAYBACK_LOG_TARGET, PlaybackError, PlaybackEvent, Volume, attenuation, drive,
+        duration_of, forward, into_sole, map_event, playable_track,
     };
 
     /// The player reads the getter it was built with, so the cell behind it is
@@ -631,5 +642,90 @@ mod tests {
         let clone = Arc::clone(&arc);
         let returned = into_sole(arc).expect_err("shared arc cannot be unwrapped");
         assert!(Arc::ptr_eq(&returned, &clone));
+    }
+
+    /// The message an unavailable track logs; the test spells it out so a reword
+    /// is seen.
+    const SKIPPED: &str = "a track could not be loaded and is unavailable";
+
+    /// The lines this module logged, so a test can count them.
+    static LOGGED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+    struct Recorder;
+
+    impl log::Log for Recorder {
+        fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+            metadata.level() <= log::Level::Warn
+        }
+
+        fn log(&self, record: &log::Record<'_>) {
+            if record.target() != PLAYBACK_LOG_TARGET || !self.enabled(record.metadata()) {
+                return;
+            }
+            LOGGED.lock().expect("lock").push(record.args().to_string());
+        }
+
+        fn flush(&self) {}
+    }
+
+    /// Begins recording this module's lines, once for the whole test binary.
+    fn record_logs() {
+        static RECORDER: Recorder = Recorder;
+        static INSTALL: std::sync::Once = std::sync::Once::new();
+        INSTALL.call_once(|| {
+            if log::set_logger(&RECORDER).is_ok() {
+                log::set_max_level(log::LevelFilter::Warn);
+            }
+        });
+    }
+
+    fn unavailable(play_request_id: u64, id: &str) -> PlayerEvent {
+        PlayerEvent::Unavailable {
+            play_request_id,
+            track_id: SpotifyUri::from_uri(&format!("spotify:track:{id}")).expect("valid track"),
+        }
+    }
+
+    /// One line per unavailable event, and the line names no track.
+    #[tokio::test]
+    async fn each_unavailable_event_logs_one_line_that_names_no_track() {
+        record_logs();
+        LOGGED.lock().expect("lock").clear();
+
+        let ids = ["4uLU6hMCjMI75M1A2tKUQC", "6rqhFgbbKwnb9MLmUQDhG6"];
+        let (raw_tx, raw) = tokio::sync::mpsc::unbounded_channel();
+        for (index, id) in ids.iter().enumerate() {
+            raw_tx
+                .send(unavailable(index as u64, id))
+                .expect("raw send");
+        }
+        drop(raw_tx);
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        forward(raw, tx).await;
+
+        let lines = LOGGED.lock().expect("lock").clone();
+        assert_eq!(lines.len(), 2, "one line per event, got {lines:?}");
+        for line in &lines {
+            assert_eq!(line, SKIPPED);
+            assert!(!line.contains("spotify"), "must not name a uri: {line}");
+            for id in ids {
+                assert!(!line.contains(id), "must not name the track: {line}");
+            }
+        }
+
+        assert!(matches!(rx.try_recv(), Ok(PlaybackEvent::Unavailable)));
+        assert!(matches!(rx.try_recv(), Ok(PlaybackEvent::Unavailable)));
+        assert!(rx.try_recv().is_err(), "only the two events were forwarded");
+    }
+
+    /// The line reaches the log only if the binary names this exact target.
+    #[test]
+    fn the_log_target_is_the_module_that_logs() {
+        assert_eq!(
+            module_path!().strip_suffix("::tests"),
+            Some(PLAYBACK_LOG_TARGET),
+            "the line's target must be the module that logs it"
+        );
     }
 }

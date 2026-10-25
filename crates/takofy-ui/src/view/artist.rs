@@ -302,7 +302,10 @@ pub fn artist_view(
 
                             for &index in &shown.hits {
                                 let release = &artist.releases[index];
-                                let on_screen = ui.clip_rect().intersects(block_rect(ui, release));
+                                let on_screen = table_layout::on_screen(
+                                    ui.clip_rect(),
+                                    block_rect(ui, release),
+                                );
                                 if !on_screen {
                                     let block = Block {
                                         release,
@@ -521,7 +524,7 @@ fn fans(
     let mut pressed = None;
     for (index, card) in cards.iter().enumerate() {
         let rect = solved.card_rect(index);
-        if !visible.intersects(rect) {
+        if !table_layout::on_screen(visible, rect) {
             continue;
         }
         let media = media::Media {
@@ -590,7 +593,7 @@ fn popular(
 
     for (index, entry) in artist.top_tracks.iter().enumerate() {
         let rect = table_layout::row_rect(list, index, extent::ROW_H);
-        if !visible.intersects(rect) {
+        if !table_layout::on_screen(visible, rect) {
             // A row the cull skipped draws nothing, so it has no reveal of its
             // own; one that holds the keyboard is asked for once the loop is
             // done.

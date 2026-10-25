@@ -308,6 +308,17 @@ pub fn row_rect(list: Rect, index: usize, row_h: f32) -> Rect {
     Rect::from_min_size(pos2(list.left(), top), vec2(list.width(), row_h))
 }
 
+/// Whether any of `rect` lies inside `visible`.
+///
+/// `Rect::intersects` counts a shared edge as an overlap, which would lay out an
+/// item just past the fold and fetch its cover for nothing.
+pub fn on_screen(visible: Rect, rect: Rect) -> bool {
+    rect.left() < visible.right()
+        && visible.left() < rect.right()
+        && rect.top() < visible.bottom()
+        && visible.top() < rect.bottom()
+}
+
 /// The boundary nearest `y`: 0 is before the first row, `count` after the last.
 ///
 /// The inverse of [`row_rect`], so a pointer's height and the row it landed on
@@ -745,6 +756,38 @@ mod tests {
         assert_eq!(boundary_at(list, y, -1.0, 4), 0);
         assert_eq!(boundary_at(list, y, f32::NAN, 4), 0);
         assert_eq!(boundary_at(list, f32::NAN, extent::ROW_H, 4), 0);
+    }
+
+    #[test]
+    fn a_rect_that_only_shares_an_edge_is_not_on_screen() {
+        let visible = Rect::from_min_size(pos2(0.0, 0.0), vec2(100.0, 100.0));
+        let below = Rect::from_min_size(pos2(10.0, visible.bottom()), vec2(20.0, 20.0));
+        let above = Rect::from_min_size(pos2(10.0, -20.0), vec2(20.0, 20.0));
+        let beside = Rect::from_min_size(pos2(visible.right(), 10.0), vec2(20.0, 20.0));
+
+        assert!(
+            !on_screen(visible, below),
+            "a rect sharing the viewport's bottom edge is not on screen"
+        );
+        assert!(
+            !on_screen(visible, above),
+            "a rect sharing the viewport's top edge is not on screen"
+        );
+        assert!(
+            !on_screen(visible, beside),
+            "a rect sharing the viewport's side edge is not on screen"
+        );
+
+        let overlap = Rect::from_min_size(pos2(10.0, visible.bottom() - 1.0), vec2(20.0, 20.0));
+        let inside = Rect::from_min_size(pos2(10.0, 10.0), vec2(20.0, 20.0));
+        assert!(
+            on_screen(visible, overlap),
+            "a rect one point over the fold is on screen"
+        );
+        assert!(
+            on_screen(visible, inside),
+            "a rect inside the viewport is on screen"
+        );
     }
 
     #[test]
