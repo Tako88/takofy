@@ -2364,7 +2364,7 @@ mod tests {
     use tokio::runtime::Runtime;
 
     use super::*;
-    use crate::session::{ArtistPage, SessionError, SessionHost, TrackPage};
+    use crate::session::{ArtistPage, Retired, SessionError, SessionHost, TrackPage};
 
     fn runtime() -> Runtime {
         tokio::runtime::Builder::new_multi_thread()
@@ -3004,6 +3004,7 @@ mod tests {
         SetPlayable(bool),
         Refuse(RequestId),
         HandOver(String),
+        Retire,
     }
 
     #[derive(Default)]
@@ -3061,6 +3062,8 @@ mod tests {
         last_resolution: Mutex<Option<Resolution>>,
         /// Every call that moved the account's view of this device, in order.
         calls: Mutex<Vec<Call>>,
+        /// Whether the session is known to be dead.
+        down: AtomicBool,
         /// Every request the loop refused, in order.
         refusals: Mutex<Vec<RequestId>>,
         connected: AtomicBool,
@@ -4273,6 +4276,10 @@ mod tests {
                 .store(usize::from(percent), Ordering::SeqCst);
         }
 
+        fn is_down(&self) -> bool {
+            self.shared.down.load(Ordering::SeqCst)
+        }
+
         fn shutdown(self) -> impl Future<Output = Result<(), SessionError>> + Send {
             self.shared.shutdowns.fetch_add(1, Ordering::SeqCst);
             self.shared
@@ -4281,6 +4288,15 @@ mod tests {
                 .expect("lock")
                 .push("shutdown");
             async move { Ok(()) }
+        }
+
+        fn retire(&mut self) -> impl Future<Output = Retired> + Send {
+            self.shared.calls.lock().expect("lock").push(Call::Retire);
+            // The session is gone with it, so the next connect and the next
+            // player are built from scratch.
+            self.shared.player_started.store(false, Ordering::SeqCst);
+            self.shared.connected.store(false, Ordering::SeqCst);
+            async { Retired::Joined }
         }
     }
 

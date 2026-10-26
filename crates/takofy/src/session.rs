@@ -5,7 +5,9 @@
 //! thin: a call-through or one `Option` check.
 
 use std::future::Future;
-use std::time::Instant;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 use librespot::core::SessionConfig;
 use takofy_core::connect::{ClusterEvent, ClusterView, ConnectError, Steer};
@@ -22,15 +24,33 @@ use takofy_model::{
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::oneshot::Receiver;
 
+/// How long a rebuild waits for the dead session's player thread before going
+/// ahead without it.
+#[cfg_attr(not(test), expect(dead_code))]
+const RETIRE_BUDGET: Duration = Duration::from_secs(3);
+
 /// Why a session-side operation failed, including the wiring's own state.
 #[derive(Debug)]
 pub(crate) enum SessionError {
     /// No engine exists yet, so the call had nothing to run on.
     NotConnected,
+    /// The engine exists but its session is known to be dead, so the call would
+    /// fail on the wire and read as a fault of the track.
+    LinkLost,
     /// The engine call itself failed.
     Engine(EngineError),
     /// The player could not be started, driven or shut down.
     Playback(PlaybackError),
+}
+
+/// How retiring a dead session ended.
+#[cfg_attr(not(test), expect(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Retired {
+    /// The old player's thread was joined.
+    Joined,
+    /// The join outlasted the budget, and the thread finishes on its own.
+    Lingering,
 }
 
 impl SessionError {
@@ -55,6 +75,7 @@ impl SessionError {
     pub(crate) fn kind(&self) -> &'static str {
         match self {
             Self::NotConnected => "not connected",
+            Self::LinkLost => "link lost",
             Self::Engine(EngineError::Session(_)) => "session",
             Self::Engine(EngineError::Rootlist(_)) => "rootlist",
             Self::Engine(EngineError::Context(_)) => "context",
@@ -365,7 +386,18 @@ pub(crate) trait SessionHost: Send + 'static {
 
     fn stop(&self);
 
+    /// Whether the engine's session is known to be dead. A window that never
+    /// connected has no link to lose.
+    fn is_down(&self) -> bool;
+
     fn shutdown(self) -> impl Future<Output = Result<(), SessionError>> + Send;
+
+    /// Ends the dead session: its engine, its streams and its player.
+    ///
+    /// The player is joined under a budget, because a thread mid-decode can
+    /// outlast it; the answer says which happened.
+    #[cfg_attr(not(test), expect(dead_code))]
+    fn retire(&mut self) -> impl Future<Output = Retired> + Send;
 }
 
 /// Runs one host call, or gives up on it if the window closes first.
@@ -394,6 +426,11 @@ pub(crate) struct LiveSession {
     /// The level the player will read, kept here so a change before the player
     /// exists is still the level it starts with.
     volume: Volume,
+    /// Whether this device announced it can play, kept so a rebuilt engine can
+    /// be told again.
+    playable: AtomicBool,
+    /// The newest report published, kept for the same reason.
+    report: Mutex<Option<Report>>,
 }
 
 impl LiveSession {
@@ -406,7 +443,16 @@ impl LiveSession {
             devices: None,
             inbound: None,
             volume: Volume::default(),
+            playable: AtomicBool::new(false),
+            report: Mutex::new(None),
         }
+    }
+
+    fn held_report(&self) -> Option<Report> {
+        self.report
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     /// Starts the player on first use, keeping its event stream so the one drain
@@ -429,6 +475,9 @@ impl SessionHost for LiveSession {
         let engine = Engine::connect(self.cfg.clone(), token)
             .await
             .map_err(SessionError::Engine)?;
+        // A fresh engine starts with an empty stage and no report, so what the
+        // window already said is told again before anything reads it.
+        engine.restore(self.playable.load(Ordering::SeqCst), self.held_report());
         self.engine = Some(engine);
         Ok(())
     }
@@ -735,6 +784,7 @@ impl SessionHost for LiveSession {
     }
 
     fn set_playable(&self, playable: bool) {
+        self.playable.store(playable, Ordering::SeqCst);
         if let Some(engine) = &self.engine {
             engine.set_playable(playable);
         }
@@ -742,8 +792,9 @@ impl SessionHost for LiveSession {
 
     fn report(&self, report: Option<Report>) {
         if let Some(engine) = &self.engine {
-            engine.report(report);
+            engine.report(report.clone());
         }
+        *self.report.lock().unwrap_or_else(PoisonError::into_inner) = report;
     }
 
     fn refuse(&self, id: RequestId) {
@@ -821,6 +872,11 @@ impl SessionHost for LiveSession {
     }
 
     fn load(&mut self, uri: &str, position_ms: u32, play: bool) -> Result<(), SessionError> {
+        // A dead session would fail this load on its key request and read as a
+        // track that cannot be played, so the player never sees it.
+        if self.is_down() {
+            return Err(SessionError::LinkLost);
+        }
         self.ensure_player()?
             .load(uri, position_ms, play)
             .map_err(SessionError::Playback)
@@ -886,6 +942,10 @@ impl SessionHost for LiveSession {
         }
     }
 
+    fn is_down(&self) -> bool {
+        self.engine.as_ref().is_some_and(Engine::is_down)
+    }
+
     async fn shutdown(self) -> Result<(), SessionError> {
         // Consuming the player is what joins its thread; the engine drops with
         // the adapter.
@@ -894,19 +954,42 @@ impl SessionHost for LiveSession {
             None => Ok(()),
         }
     }
+
+    async fn retire(&mut self) -> Retired {
+        if let Some(engine) = self.engine.take() {
+            engine.close();
+        }
+        // The old streams end with the engine. Dropping them here is what keeps
+        // a retired drain quiet, down to its end-of-stream device notice.
+        self.events = None;
+        self.devices = None;
+        self.inbound = None;
+
+        let Some(playback) = self.playback.take() else {
+            return Retired::Joined;
+        };
+        match tokio::time::timeout(RETIRE_BUDGET, playback.shutdown()).await {
+            Ok(Ok(())) => Retired::Joined,
+            // A player that did not hand its thread back is still running: the
+            // rebuild goes ahead and finds out whether the device is free.
+            Ok(Err(_)) | Err(_) => Retired::Lingering,
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::Ordering;
+
     use librespot::core::SessionConfig;
     use librespot::playback::mixer::VolumeGetter;
     use takofy_core::connect::Steer;
     use takofy_core::playback::Volume;
     use takofy_core::{Resolution, TransferPlan};
-    use takofy_model::RequestId;
+    use takofy_model::{Report, RequestId, Status, TrackEntry};
     use tokio::sync::oneshot;
 
-    use super::{LiveSession, SessionError, SessionHost, stop_or};
+    use super::{LiveSession, Retired, SessionError, SessionHost, stop_or};
 
     #[tokio::test]
     async fn stop_or_returns_the_work_when_it_finishes_first() {
@@ -1028,10 +1111,18 @@ mod tests {
 
     #[test]
     fn a_report_before_sign_in_is_ignored() {
-        use takofy_model::{Report, Status, TrackEntry};
-
         let live = LiveSession::new(SessionConfig::default());
-        let report = Report {
+        let report = report();
+
+        // There is no engine to report to yet, so the call has nowhere to go and
+        // must not panic.
+        SessionHost::report(&live, Some(report));
+        SessionHost::report(&live, None);
+    }
+
+    /// The report the window would publish while a track plays.
+    fn report() -> Report {
+        Report {
             status: Status::Playing,
             track: Some(TrackEntry {
                 uri: "spotify:track:x".to_owned(),
@@ -1053,12 +1144,75 @@ mod tests {
             options: None,
             position_ms: 0,
             duration_ms: None,
-        };
+        }
+    }
 
-        // There is no engine to report to yet, so the call has nowhere to go and
-        // must not panic.
-        SessionHost::report(&live, Some(report));
+    #[test]
+    fn playability_and_the_last_report_are_held_for_a_rebuilt_session() {
+        let live = LiveSession::new(SessionConfig::default());
+
+        // A fresh engine starts blank, so what the window said before the drop
+        // has to be held here to be told again.
+        SessionHost::set_playable(&live, true);
+        SessionHost::report(&live, Some(report()));
+        assert!(live.playable.load(Ordering::SeqCst));
+        assert_eq!(
+            *live.report.lock().expect("lock"),
+            Some(report()),
+            "the newest report is held, not only forwarded"
+        );
+
+        SessionHost::set_playable(&live, false);
         SessionHost::report(&live, None);
+        assert!(!live.playable.load(Ordering::SeqCst));
+        assert_eq!(*live.report.lock().expect("lock"), None);
+    }
+
+    #[test]
+    fn a_lost_link_is_named_for_the_log_without_the_reason() {
+        assert_eq!(SessionError::LinkLost.kind(), "link lost");
+    }
+
+    #[test]
+    fn a_session_with_no_engine_is_not_down() {
+        let live = LiveSession::new(SessionConfig::default());
+        assert!(
+            !SessionHost::is_down(&live),
+            "a window that never connected has no link to lose"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_load_before_sign_in_reports_the_missing_engine_not_a_lost_link() {
+        let mut live = LiveSession::new(SessionConfig::default());
+        assert!(matches!(
+            SessionHost::load(&mut live, "spotify:track:x", 0, true),
+            Err(SessionError::NotConnected)
+        ));
+    }
+
+    #[tokio::test]
+    async fn retiring_an_empty_session_has_nothing_to_join() {
+        let mut live = LiveSession::new(SessionConfig::default());
+        assert_eq!(SessionHost::retire(&mut live).await, Retired::Joined);
+        assert!(!SessionHost::is_down(&live));
+    }
+
+    #[tokio::test]
+    async fn retiring_drops_the_streams_the_old_session_held() {
+        let (_devices_tx, devices) = tokio::sync::mpsc::unbounded_channel();
+        let (_inbound_tx, inbound) = tokio::sync::mpsc::unbounded_channel();
+        let mut live = LiveSession::new(SessionConfig::default());
+        live.devices = Some(devices);
+        live.inbound = Some(inbound);
+
+        assert_eq!(SessionHost::retire(&mut live).await, Retired::Joined);
+
+        assert!(
+            SessionHost::take_devices(&mut live).is_none(),
+            "a retired drain is handed nothing more"
+        );
+        assert!(SessionHost::take_inbound(&mut live).is_none());
     }
 
     #[test]

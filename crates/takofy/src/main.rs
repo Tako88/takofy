@@ -14,6 +14,8 @@ mod keychain;
 mod playhead;
 mod preferences;
 mod prompt;
+#[cfg_attr(not(test), expect(dead_code))]
+mod recovery;
 mod session;
 
 use std::process::ExitCode;
