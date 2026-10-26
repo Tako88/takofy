@@ -59,8 +59,7 @@ sets (`app::APP_ID`), and a test fails if the two drift apart.
 
 ## Before the first submission
 
-- A release that carries `share/`. The `v0.1.0-rc1` tarball predates the desktop
-  entry and the icons, so `takofy-bin` needs a newer tag — the release workflow
-  packs `share/` from now on.
+- Nothing blocking: `v0.1.0-rc2` carries `share/`, and both recipes install the
+  binary, the desktop entry, the icons and the licences from it.
 - AppStream metainfo (`io.github.Tako88.Takofy.metainfo.xml`) for Flathub. The
   AUR does not need it; a store does.
