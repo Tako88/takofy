@@ -1,0 +1,9 @@
+# The licences ship inside every artefact, so their bytes must not depend on the
+# machine that checked them out. A Windows checkout otherwise turns them into
+# CRLF and the release carries a different file than the tag.
+* text=auto eol=lf
+
+*.ttf binary
+*.jpg binary
+*.png binary
+*.woff2 binary
