@@ -26,6 +26,21 @@ for size in 16 24 32 48 64 128 256 512; do
 done
 ```
 
+`takofy.ico` is the same tile for Windows: one frame per size, up to 256. It is
+built from the rendered PNGs rather than from the 512, so each frame is its own
+render instead of a downscale, and it needs ImageMagick:
+
+```
+magick hicolor/16x16/apps/io.github.Tako88.Takofy.png \
+    hicolor/24x24/apps/io.github.Tako88.Takofy.png \
+    hicolor/32x32/apps/io.github.Tako88.Takofy.png \
+    hicolor/48x48/apps/io.github.Tako88.Takofy.png \
+    hicolor/64x64/apps/io.github.Tako88.Takofy.png \
+    hicolor/128x128/apps/io.github.Tako88.Takofy.png \
+    hicolor/256x256/apps/io.github.Tako88.Takofy.png \
+    takofy.ico
+```
+
 Install the tree into `/usr/share/icons/hicolor/` as it is. The sizes that carry
 a PNG are the ones listed above; 16 and 32 are the ones a window list actually
 uses, so look at those before believing the 512.
