@@ -35,6 +35,9 @@ pub enum TransportState {
     Paused,
     /// The track could not be played.
     Unavailable,
+    /// The connection was lost and the worker is rebuilding it. The track and
+    /// its position are kept.
+    Reconnecting,
     /// Playback ended or was stopped.
     Stopped,
     /// The command could not be carried out.
@@ -51,6 +54,7 @@ impl TransportState {
             Self::Playing => "Playing",
             Self::Paused => "Paused",
             Self::Unavailable => "Unavailable",
+            Self::Reconnecting => "Reconnecting",
             Self::Stopped => "Stopped",
             Self::Failed(failure) => failure_message(*failure),
         }
@@ -169,6 +173,10 @@ impl Transport {
                 self.state = TransportState::Unavailable;
                 self.scrub = None;
             }
+            TransportUpdate::Reconnecting => {
+                self.state = TransportState::Reconnecting;
+                self.scrub = None;
+            }
             TransportUpdate::Duration { duration_ms } => self.duration_ms = Some(*duration_ms),
             TransportUpdate::Seeked { position_ms } => {
                 self.position_ms = *position_ms;
@@ -226,6 +234,10 @@ impl Transport {
     /// glyph promises what Enter will do (R10/R11), and the shell performs it.
     /// A glyph that promised a pause the action turns into a restart is what
     /// this rules out.
+    ///
+    /// A rebuild holds its track too: the worker is already loading it back, so
+    /// a play asked mid-rebuild would start a second load. A held `Reconnecting`
+    /// row sends the shell to the transport's toggle, which asks for nothing.
     pub fn hold(&self, uri: &str) -> Hold {
         let loaded = self.now_playing.as_ref().is_some_and(|now| now.uri == uri);
         Hold {
@@ -233,7 +245,10 @@ impl Transport {
             held: loaded
                 && matches!(
                     self.state,
-                    TransportState::Playing | TransportState::Loading | TransportState::Paused
+                    TransportState::Playing
+                        | TransportState::Loading
+                        | TransportState::Paused
+                        | TransportState::Reconnecting
                 ),
         }
     }
@@ -468,6 +483,44 @@ mod tests {
         assert_eq!(transport.state, TransportState::Stopped);
     }
 
+    /// A rebuild holds the track where the drop caught it: the position is
+    /// frozen, a held seek is dropped, and the track stays named.
+    #[test]
+    fn reconnecting_freezes_the_position_and_keeps_the_track() {
+        let mut transport = Transport::default();
+        transport.play(NowPlaying::named("spotify:track:a", "A", "B"));
+        transport.apply(&transport_update(TransportUpdate::Duration {
+            duration_ms: 100_000,
+        }));
+        transport.apply(&transport_update(TransportUpdate::Position {
+            position_ms: 10_000,
+            paused: false,
+        }));
+        transport.scrub_to(0.5);
+
+        assert!(transport.apply(&transport_update(TransportUpdate::Reconnecting)));
+        assert_eq!(transport.state, TransportState::Reconnecting);
+        assert_eq!(transport.position_ms, 10_000);
+        assert_eq!(
+            transport.scrub, None,
+            "a held seek is not where the track is"
+        );
+        assert_eq!(
+            transport.now_playing.as_ref().map(|now| now.uri.as_str()),
+            Some("spotify:track:a")
+        );
+        assert_eq!(
+            transport.shown_position(Duration::from_secs(10)),
+            10_000,
+            "a rebuild holds the position it caught"
+        );
+    }
+
+    #[test]
+    fn reconnecting_names_itself() {
+        assert_eq!(TransportState::Reconnecting.label(), "Reconnecting");
+    }
+
     #[test]
     fn a_failed_command_maps_to_failed() {
         let mut transport = Transport::default();
@@ -480,8 +533,10 @@ mod tests {
         );
     }
 
-    /// The one hold decision: only playing, loading and paused can be paused;
-    /// every other state is a restart, and a row draws its glyph from this.
+    /// The one hold decision: only playing, loading, paused and reconnecting
+    /// can be paused; every other state is a restart, and a row draws its glyph
+    /// from this. A rebuild is held rather than restarted: its load is already
+    /// under way.
     #[test]
     fn hold_separates_a_pausable_track_from_a_restart() {
         let cases = [
@@ -490,6 +545,7 @@ mod tests {
             (TransportState::Playing, true),
             (TransportState::Paused, true),
             (TransportState::Unavailable, false),
+            (TransportState::Reconnecting, true),
             (TransportState::Stopped, false),
             (TransportState::Failed(Failure::Other), false),
         ];

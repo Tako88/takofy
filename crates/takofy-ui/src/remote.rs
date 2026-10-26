@@ -82,7 +82,7 @@ fn pause(transport: &Transport) -> Reaction {
         return Reaction::refused();
     }
     match transport.state {
-        TransportState::Playing | TransportState::Loading => {
+        TransportState::Playing | TransportState::Loading | TransportState::Reconnecting => {
             Reaction::carried_out(vec![Command::Pause])
         }
         // Asking to pause what is already still names a state, not a step, so a
@@ -101,7 +101,9 @@ fn pause(transport: &Transport) -> Reaction {
 fn resume(queue: &mut Queue, transport: &mut Transport) -> Reaction {
     match transport.state {
         TransportState::Paused => Reaction::carried_out(vec![Command::Resume]),
-        TransportState::Playing | TransportState::Loading => Reaction::carried_out(Vec::new()),
+        TransportState::Playing | TransportState::Loading | TransportState::Reconnecting => {
+            Reaction::carried_out(Vec::new())
+        }
         // Nothing is loaded to start, so the one row the queue can still name is
         // played; with no row there is nothing the phone could mean.
         TransportState::Idle
@@ -274,6 +276,31 @@ mod tests {
         let reaction = react(&Order::Pause, &mut Queue::default(), &mut transport, 0);
 
         assert!(reaction.commands.is_empty(), "nothing is left to pause");
+        assert!(reaction.ok);
+    }
+
+    #[test]
+    fn pause_while_reconnecting_sends_pause() {
+        let (_, mut transport) = started(&["a", "b"], 0);
+        transport.state = TransportState::Reconnecting;
+
+        let reaction = react(&Order::Pause, &mut Queue::default(), &mut transport, 0);
+
+        assert_eq!(reaction.commands, vec![Command::Pause]);
+        assert!(reaction.ok);
+    }
+
+    #[test]
+    fn resume_while_reconnecting_sends_nothing() {
+        let (mut queue, mut transport) = started(&["a", "b"], 0);
+        transport.state = TransportState::Reconnecting;
+
+        let reaction = react(&Order::Resume, &mut queue, &mut transport, 0);
+
+        assert!(
+            reaction.commands.is_empty(),
+            "the rebuild already carries the play"
+        );
         assert!(reaction.ok);
     }
 
