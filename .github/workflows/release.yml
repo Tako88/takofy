@@ -1,0 +1,121 @@
+name: Release
+
+# A tag is the only way in: every artefact anyone installs comes from a commit
+# that was tagged, so what a checksum names can always be looked up.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  linux:
+    name: Linux tarball
+    runs-on: ubuntu-latest
+    # The container is the glibc floor the tarball promises — 2.35, so anything
+    # newer than Ubuntu 22.04 runs it — rather than whatever the runner image
+    # happens to ship this month.
+    container: ubuntu:22.04
+    steps:
+      # Before checkout: the container has no git of its own.
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends \
+            build-essential ca-certificates curl git libasound2-dev pkg-config
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.0
+      - uses: Swatinem/rust-cache@v2
+      # A tag that disagrees with the version in the tree would publish binaries
+      # that call themselves something else.
+      - name: The tag matches the workspace version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          tag="${tag%%-*}"
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
+          if [ "$tag" != "$version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match workspace version $version"
+            exit 1
+          fi
+      - name: Build
+        run: cargo build --release --locked -p takofy
+      # Flat, so an AUR `-bin` recipe can install two files out of it without a
+      # path to learn.
+      - name: Pack
+        run: |
+          name="takofy-${GITHUB_REF_NAME}-linux-x86_64"
+          mkdir -p dist
+          install -m755 target/release/takofy dist/takofy
+          install -m644 LICENSE dist/
+          install -m644 crates/takofy-ui/assets/fonts/OFL-*.txt dist/
+          tar -C dist -czf "$name.tar.gz" takofy LICENSE OFL-Archivo.txt OFL-JetBrainsMono.txt OFL-NotoSansCJK.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: takofy-*.tar.gz
+          if-no-files-found: error
+
+  windows:
+    name: Windows zip
+    runs-on: windows-latest
+    env:
+      # The Visual C runtime is linked in, so the zip runs on a machine that has
+      # never had a compiler on it.
+      RUSTFLAGS: -C target-feature=+crt-static
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release --locked -p takofy
+      - name: Pack
+        shell: pwsh
+        run: |
+          $name = "takofy-$env:GITHUB_REF_NAME-windows-x86_64"
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target/release/takofy.exe dist/
+          Copy-Item LICENSE dist/
+          Copy-Item crates/takofy-ui/assets/fonts/OFL-*.txt dist/
+          Compress-Archive -Path dist/* -DestinationPath "$name.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: takofy-*.zip
+          if-no-files-found: error
+
+  publish:
+    name: Publish
+    needs: [linux, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum takofy-* > sha256sums.txt
+          cat sha256sums.txt
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prerelease=""
+          case "$GITHUB_REF_NAME" in
+            *-*) prerelease="--prerelease" ;;
+          esac
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            $prerelease
