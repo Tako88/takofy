@@ -3,6 +3,8 @@
 A fast, lean Spotify client for Windows and Linux, in Rust. One binary, no
 Electron, no web view.
 
+![The library as a grid of covers, beside the Now Playing queue and the transport bar](docs/screenshot.png)
+
 ## Features
 
 Your playlists, albums, artists, shows and Liked Songs in a three-column window
