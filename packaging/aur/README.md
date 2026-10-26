@@ -14,22 +14,18 @@ and the AUR gets a copy.
 
 ## Bumping for a release
 
-Three numbers change, and they must agree:
-
-1. `pkgver` in both `PKGBUILD`s. AUR's `pkgver` cannot contain a hyphen (it
-   separates the release), so a release candidate is `0.1.0rc1` while its tag is
-   `v0.1.0-rc1`. A plain release has both: `pkgver=0.1.0`, `_tag=v0.1.0`.
-2. `_tag`, the tag itself, in both.
-3. `sha256sums`: the tag archive for the source package, the Linux tarball for
-   `-bin`. `makepkg -g` prints them, or take them from the release's
-   `sha256sums.txt`.
-
-Then regenerate the metadata AUR actually reads:
+One command, after the tag exists locally and its release has been published:
 
 ```
-cd packaging/aur/takofy && makepkg --printsrcinfo > .SRCINFO
-cd ../takofy-bin && makepkg --printsrcinfo > .SRCINFO
+./packaging/aur/bump v0.1.0
 ```
+
+It hashes the tag archive and the release tarball, rewrites `pkgver`, `_tag` and
+both `sha256sums`, and regenerates each `.SRCINFO`. AUR's `pkgver` cannot carry
+a hyphen (it separates the release), so a candidate is `0.1.0rc2` while its tag
+is `v0.1.0-rc2`; a plain release has both the same. Running it twice changes
+nothing, which is the way to check that the recipes really name the artefacts
+that were published.
 
 ## Why the source recipe turns makepkg's LTO off
 

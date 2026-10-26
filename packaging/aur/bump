@@ -1,0 +1,90 @@
+#!/bin/sh
+# Point both AUR recipes at a tag, and refresh the metadata the AUR reads.
+#
+#   ./packaging/aur/bump v0.1.0
+#
+# AUR's pkgver cannot carry a hyphen, so a release candidate is `0.1.0rc1`
+# while the tag is `v0.1.0-rc1`. A plain release has both the same.
+set -eu
+
+tag=${1:-}
+case $tag in
+    v[0-9]*) ;;
+    *)
+        echo "usage: $(basename "$0") v<version>   e.g. v0.1.0" >&2
+        exit 2
+        ;;
+esac
+
+version=${tag#v}
+pkgver=$(printf '%s' "$version" | tr -d '-')
+repo=https://github.com/Tako88/takofy
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+
+if ! git -C "$here" rev-parse --verify --quiet "refs/tags/$tag" >/dev/null; then
+    echo "error: $tag is not a local tag; fetch it first" >&2
+    exit 1
+fi
+
+# Streamed, not saved: two archives, 74 MB, and nothing to clean up after.
+sha_of() {
+    curl -fsSL "$1" | sha256sum | cut -d' ' -f1
+}
+
+echo "==> hashing the two sources of $tag"
+source_sha=$(sha_of "$repo/archive/refs/tags/$tag.tar.gz")
+binary_sha=$(sha_of "$repo/releases/download/$tag/takofy-$tag-linux-x86_64.tar.gz")
+
+rewrite() {
+    file=$1
+    sha=$2
+    python3 - "$file" "$pkgver" "$tag" "$sha" <<'PY'
+import re
+import sys
+
+path, pkgver, tag, sha = sys.argv[1:5]
+text = open(path).read()
+
+
+def replace(pattern: str, value: str) -> None:
+    global text
+    text, count = re.subn(pattern, value, text, count=1, flags=re.MULTILINE)
+    if count != 1:
+        sys.exit(f"error: {path}: {pattern!r} matched {count} times")
+
+
+replace(r"^pkgver=\S+$", f"pkgver={pkgver}")
+replace(r"^_tag='[^']*'$", f"_tag='{tag}'")
+replace(r"^sha256sums=\('[0-9a-f]+'\)$", f"sha256sums=('{sha}')")
+# The comment that spells the candidate/release rule names both versions.
+text = re.sub(
+    r"(release candidate is `)[^`]*(` while the tag is `)[^`]*(`)",
+    rf"\g<1>{pkgver}\g<2>{tag}\g<3>",
+    text,
+    count=1,
+)
+open(path, "w").write(text)
+PY
+}
+
+echo "==> rewriting the recipes"
+rewrite "$here/takofy/PKGBUILD" "$source_sha"
+rewrite "$here/takofy-bin/PKGBUILD" "$binary_sha"
+
+echo "==> regenerating .SRCINFO"
+(cd "$here/takofy" && makepkg --printsrcinfo > .SRCINFO)
+(cd "$here/takofy-bin" && makepkg --printsrcinfo > .SRCINFO)
+
+echo "==> done: $pkgver ($tag)"
+git -C "$here" --no-pager diff --stat -- packaging/aur || true
+cat <<EOF
+
+Next, by hand, once the numbers above read correctly:
+
+  git clone ssh://aur@aur.archlinux.org/takofy.git
+  git clone ssh://aur@aur.archlinux.org/takofy-bin.git
+
+Commit the recipes here first, then copy each PKGBUILD and .SRCINFO into its
+repository and push. The AUR wants .SRCINFO in the same commit as the PKGBUILD,
+so never edit one without the other.
+EOF
