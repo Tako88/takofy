@@ -1,6 +1,6 @@
 # Maintainer: Tako <takoman8825@gmail.com>
 pkgname=takofy
-pkgver=0.1.0
+pkgver=0.1.1
 pkgrel=1
 pkgdesc='A fast, lean Spotify client for Windows and Linux'
 arch=('x86_64')
@@ -13,11 +13,11 @@ conflicts=('takofy-bin')
 # AUR's pkgver cannot carry a hyphen (it separates the release), so a release
 # candidate is `0.1.0rc1` while the tag is `v0.1.0-rc1`. A plain release has
 # both: pkgver=0.1.0, _tag=v0.1.0.
-_tag='v0.1.0'
+_tag='v0.1.1'
 # The tag archive unpacks under the repository's name and the tag.
 _src="takofy-${_tag#v}"
 source=("$pkgname-$pkgver.tar.gz::https://github.com/Tako88/takofy/archive/refs/tags/$_tag.tar.gz")
-sha256sums=('e4aad3d2ebe2248dc5bdfdd13b44d76f275c3ba0761ad5b5cbce8e251d4fbb6e')
+sha256sums=('c46361af7bf0c0ae8478cfcd98794ac365dfc8b8dcdd1c23dd3488c0316d2222')
 # makepkg adds -flto to CFLAGS by default. That reaches the C and assembly a
 # build script compiles (ring, behind rustls), and GCC's LTO objects then fail to
 # resolve against the Rust link: undefined ring_core_* symbols. The Rust profile
