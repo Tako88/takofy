@@ -23,4 +23,9 @@ package() {
   for licence in OFL-Archivo.txt OFL-JetBrainsMono.txt OFL-NotoSansCJK.txt; do
     install -Dm644 "$licence" "$pkgdir/usr/share/licenses/$pkgname/$licence"
   done
+
+  # Both arrive in the release tarball's share/ tree, already named by the app id.
+  install -Dm644 share/applications/io.github.Tako88.Takofy.desktop \
+    "$pkgdir/usr/share/applications/io.github.Tako88.Takofy.desktop"
+  cp -a share/icons "$pkgdir/usr/share/"
 }

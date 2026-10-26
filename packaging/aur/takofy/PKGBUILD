@@ -49,4 +49,15 @@ package() {
     install -Dm644 "crates/takofy-ui/assets/fonts/$licence" \
       "$pkgdir/usr/share/licenses/$pkgname/$licence"
   done
+
+  # The id the window sets, so a compositor matches the window to this entry.
+  install -Dm644 packaging/io.github.Tako88.Takofy.desktop \
+    "$pkgdir/usr/share/applications/io.github.Tako88.Takofy.desktop"
+  install -Dm644 packaging/icons/takofy.svg \
+    "$pkgdir/usr/share/icons/hicolor/scalable/apps/io.github.Tako88.Takofy.svg"
+  local size
+  for size in 16 24 32 48 64 128 256 512; do
+    install -Dm644 "packaging/icons/hicolor/${size}x${size}/apps/io.github.Tako88.Takofy.png" \
+      "$pkgdir/usr/share/icons/hicolor/${size}x${size}/apps/io.github.Tako88.Takofy.png"
+  done
 }

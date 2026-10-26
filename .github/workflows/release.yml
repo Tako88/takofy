@@ -55,7 +55,17 @@ jobs:
           install -m755 target/release/takofy dist/takofy
           install -m644 LICENSE dist/
           install -m644 crates/takofy-ui/assets/fonts/OFL-*.txt dist/
-          tar -C dist -czf "$name.tar.gz" takofy LICENSE OFL-Archivo.txt OFL-JetBrainsMono.txt OFL-NotoSansCJK.txt
+          # The desktop entry and the icon tree, so an installing package needs
+          # nothing but this tarball.
+          install -Dm644 packaging/io.github.Tako88.Takofy.desktop \
+            dist/share/applications/io.github.Tako88.Takofy.desktop
+          install -Dm644 packaging/icons/takofy.svg \
+            dist/share/icons/hicolor/scalable/apps/io.github.Tako88.Takofy.svg
+          for size in 16 24 32 48 64 128 256 512; do
+            install -Dm644 "packaging/icons/hicolor/${size}x${size}/apps/io.github.Tako88.Takofy.png" \
+              "dist/share/icons/hicolor/${size}x${size}/apps/io.github.Tako88.Takofy.png"
+          done
+          tar -C dist -czf "$name.tar.gz" takofy LICENSE OFL-Archivo.txt OFL-JetBrainsMono.txt OFL-NotoSansCJK.txt share
       - uses: actions/upload-artifact@v4
         with:
           name: linux

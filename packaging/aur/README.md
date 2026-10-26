@@ -45,10 +45,22 @@ lockfile. Running 4,420 tests inside every install adds a minute and a half, and
 turns any flake into a build a user cannot fix. #58 is the one flake that has
 been seen.
 
-## Still missing before submitting
+## What the packages install
 
-- A desktop entry and an icon. Without them the package installs a binary and no
-  menu entry, which is not something to publish. Both belong to #57.
-- `.desktop` in `/usr/share/applications`, icon in
-  `/usr/share/icons/hicolor/<size>/apps`, and a `StartupWMClass`/app id that
-  matches what the window sets. The app sets no id today.
+```
+/usr/bin/takofy
+/usr/share/applications/io.github.Tako88.Takofy.desktop
+/usr/share/icons/hicolor/{scalable,16x16,...,512x512}/apps/io.github.Tako88.Takofy.{svg,png}
+/usr/share/licenses/takofy/{LICENSE,OFL-*.txt}
+```
+
+The id in the desktop entry's `Icon=` and `StartupWMClass=` is the one the window
+sets (`app::APP_ID`), and a test fails if the two drift apart.
+
+## Before the first submission
+
+- A release that carries `share/`. The `v0.1.0-rc1` tarball predates the desktop
+  entry and the icons, so `takofy-bin` needs a newer tag — the release workflow
+  packs `share/` from now on.
+- AppStream metainfo (`io.github.Tako88.Takofy.metainfo.xml`) for Flathub. The
+  AUR does not need it; a store does.

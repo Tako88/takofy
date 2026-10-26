@@ -29,19 +29,46 @@ use crate::preferences::{Loaded, PrefsSync};
 /// frame loop, so a clock that is already due waits this long instead.
 const WAKE_FLOOR: Duration = Duration::from_millis(1);
 
+/// The application id. Reverse-DNS and permanent: a Wayland compositor tracks
+/// the window by it, the desktop entry is named after it, the icons are filed
+/// under it, and a store asks for one that never changes.
+const APP_ID: &str = "io.github.Tako88.Takofy";
+
 /// Window options. `run_and_return` must stay true: shutdown runs after the
 /// window closes, and eframe must return instead of exiting the process.
 pub(crate) fn native_options() -> eframe::NativeOptions {
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_app_id(APP_ID)
+        .with_inner_size(layout::WINDOW_DEFAULT)
+        .with_min_inner_size(layout::WINDOW_MIN);
+    // A missing or undecodable icon is cosmetic: the window opens without one
+    // rather than refusing to open.
+    if let Some(icon) = window_icon() {
+        viewport = viewport.with_icon(icon);
+    }
     eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size(layout::WINDOW_DEFAULT)
-            .with_min_inner_size(layout::WINDOW_MIN),
+        viewport,
         run_and_return: true,
         // Every glyph is bundled, so a system fallback would hide a gap on this
         // machine and ship boxes on any other.
         system_font_fallback: false,
         ..Default::default()
     }
+}
+
+/// The window icon: the same 512 tile the packages install, decoded once at
+/// startup so the task bar and the window list draw the app's own mark.
+fn window_icon() -> Option<egui::IconData> {
+    let png =
+        include_bytes!("../../../packaging/icons/hicolor/512x512/apps/io.github.Tako88.Takofy.png");
+    let image = image::load_from_memory_with_format(png, image::ImageFormat::Png).ok()?;
+    let image = image.to_rgba8();
+    let (width, height) = image.dimensions();
+    Some(egui::IconData {
+        rgba: image.into_raw(),
+        width,
+        height,
+    })
 }
 
 /// The window and its end of the bridge.
@@ -498,6 +525,31 @@ fn schedule_wake(ctx: &egui::Context, art: &Art, now: Instant) {
 
 #[cfg(test)]
 mod tests {
+    /// The desktop entry is another file that names the app id, and a mismatch
+    /// is invisible until a compositor shows a second icon in the dock.
+    #[test]
+    fn the_desktop_entry_names_the_id_the_window_sets() {
+        let entry = include_str!("../../../packaging/io.github.Tako88.Takofy.desktop");
+        let field = |name: &str| {
+            entry
+                .lines()
+                .find_map(|line| line.strip_prefix(name))
+                .map(str::trim)
+        };
+        assert_eq!(field("Icon="), Some(APP_ID));
+        assert_eq!(field("StartupWMClass="), Some(APP_ID));
+        assert_eq!(field("Exec="), Some("takofy"), "the installed binary");
+    }
+
+    /// The icon is compiled in, so a corrupt one would be a silent blank in the
+    /// task bar rather than a build failure.
+    #[test]
+    fn the_window_icon_decodes_at_the_size_the_packages_install() {
+        let icon = window_icon().expect("the bundled icon decodes");
+        assert_eq!((icon.width, icon.height), (512, 512));
+        assert_eq!(icon.rgba.len(), 512 * 512 * 4);
+    }
+
     use std::sync::mpsc::channel;
     use std::sync::{Arc, Mutex};
 

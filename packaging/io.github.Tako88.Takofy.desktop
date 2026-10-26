@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Takofy
+GenericName=Music Player
+Comment=A fast, lean Spotify client
+Exec=takofy
+Icon=io.github.Tako88.Takofy
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+Keywords=spotify;music;player;streaming;
+StartupNotify=true
+StartupWMClass=io.github.Tako88.Takofy

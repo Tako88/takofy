@@ -1,7 +1,10 @@
 # The application icon
 
-`takofy.svg` is the source. `hicolor/<size>x<size>/apps/takofy.png` are rendered
-from it, so a desktop can pick the size it wants instead of scaling.
+`takofy.svg` is the source. `hicolor/<size>x<size>/apps/io.github.Tako88.Takofy.png`
+are rendered from it, so a desktop can pick the size it wants instead of scaling.
+The files are named by the application id because that is what the desktop
+entry's `Icon=` names, and the window sets the same id so a compositor groups
+them.
 
 The mark is the app's own logo: the `i-logo` glyph, whose two polygons are in
 `crates/takofy-ui/src/icon/data.rs` as `LOGO_FILLS`, drawn in the sprite's
@@ -18,7 +21,8 @@ moves with it, and the sprite's drift hash is what says so.
 cd packaging/icons
 rsvg-convert -w 512 -h 512 takofy.svg -o /tmp/check.png   # look at it first
 for size in 16 24 32 48 64 128 256 512; do
-    rsvg-convert -w "$size" -h "$size" takofy.svg -o "hicolor/${size}x${size}/apps/takofy.png"
+    rsvg-convert -w "$size" -h "$size" takofy.svg \
+        -o "hicolor/${size}x${size}/apps/io.github.Tako88.Takofy.png"
 done
 ```
 

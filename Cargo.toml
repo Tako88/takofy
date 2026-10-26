@@ -49,9 +49,10 @@ eframe = { version = "0.37.0", default-features = false, features = [
     "x11",
 ] }
 egui = "0.37.0"
-# Cover art: `image` decodes JPEG under explicit limits; `reqwest` fetches the
-# public CDN URL with a timeout and a cancellable request.
-image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
+# Cover art: `image` decodes JPEG under explicit limits, and the one PNG is the
+# window icon at startup; `reqwest` fetches the public CDN URL with a timeout and
+# a cancellable request.
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 
 [workspace.lints.rust]
