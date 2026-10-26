@@ -2498,6 +2498,7 @@ mod tests {
             TransportState::Loading,
             TransportState::Paused,
             TransportState::Unavailable,
+            TransportState::Reconnecting,
             TransportState::Stopped,
             TransportState::Failed(crate::message::Failure::Load),
         ] {
@@ -2693,6 +2694,7 @@ mod tests {
             TransportState::Playing,
             TransportState::Paused,
             TransportState::Unavailable,
+            TransportState::Reconnecting,
             TransportState::Stopped,
             TransportState::Failed(crate::message::Failure::Load),
             TransportState::Failed(crate::message::Failure::Other),
@@ -2710,7 +2712,14 @@ mod tests {
                 Vec::new(),
             );
             let texts = text_inside(&output, heart_bar());
-            for word in ["Loading", "Playing", "Paused", "Unavailable", "Stopped"] {
+            for word in [
+                "Loading",
+                "Playing",
+                "Paused",
+                "Unavailable",
+                "Reconnecting",
+                "Stopped",
+            ] {
                 assert!(
                     !texts.contains(&word.to_owned()),
                     "{state:?}: the bar painted the state word {word:?}"
@@ -3352,6 +3361,7 @@ mod tests {
             TransportState::Paused,
             TransportState::Stopped,
             TransportState::Unavailable,
+            TransportState::Reconnecting,
         ] {
             assert_eq!(play_glyph(state), Icon::Play, "{state:?}");
         }

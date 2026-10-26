@@ -149,6 +149,10 @@ pub fn failure_message(failure: Failure) -> &'static str {
         }
         Failure::Devices => "Could not reach your devices. Check your connection and try again.",
         Failure::DevicesOff => "Could not reach your devices. Restart Takofy to try again.",
+        Failure::Reconnect => {
+            "Lost the connection to Spotify. Takofy keeps trying to reconnect; if this stays, \
+             restart Takofy."
+        }
         Failure::Steer => "That device did not respond. Try again.",
         Failure::Transfer => "Could not move the sound. Try again.",
         Failure::NoContext => "Play a list first: there is nothing to hand over.",
@@ -447,7 +451,7 @@ mod tests {
     }
 
     /// Every `Failure` value there is, so a test can sweep them all.
-    fn every_failure() -> [Failure; 19] {
+    fn every_failure() -> [Failure; 20] {
         [
             Failure::PortBusy,
             Failure::Keychain,
@@ -464,11 +468,27 @@ mod tests {
             Failure::Search,
             Failure::Devices,
             Failure::DevicesOff,
+            Failure::Reconnect,
             Failure::Steer,
             Failure::Transfer,
             Failure::NoContext,
             Failure::Other,
         ]
+    }
+
+    #[test]
+    fn failure_message_for_reconnect_names_the_connection_and_no_secret() {
+        let message = failure_message(Failure::Reconnect);
+        assert!(
+            message.contains("connect") && message.contains("restart"),
+            "the copy must name what is being tried and what the listener can do: {message}"
+        );
+        for term in ["token", "refresh", "password", "auth code"] {
+            assert!(
+                !message.contains(term),
+                "the copy would echo {term}: {message}"
+            );
+        }
     }
 
     #[test]

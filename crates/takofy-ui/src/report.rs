@@ -76,7 +76,7 @@ pub fn report_of(queue: &Queue, transport: &Transport, position_ms: u32) -> Opti
 fn status_of(state: TransportState) -> Option<Status> {
     match state {
         TransportState::Playing => Some(Status::Playing),
-        TransportState::Loading => Some(Status::Loading),
+        TransportState::Loading | TransportState::Reconnecting => Some(Status::Loading),
         TransportState::Paused
         | TransportState::Stopped
         | TransportState::Unavailable
@@ -182,6 +182,7 @@ mod tests {
         let table = [
             (TransportState::Playing, Status::Playing),
             (TransportState::Loading, Status::Loading),
+            (TransportState::Reconnecting, Status::Loading),
             (TransportState::Paused, Status::Paused),
             (TransportState::Stopped, Status::Paused),
             (TransportState::Unavailable, Status::Paused),

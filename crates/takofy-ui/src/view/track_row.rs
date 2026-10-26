@@ -1437,6 +1437,7 @@ mod tests {
             (TransportState::Paused, State::Paused),
             (TransportState::Unavailable, State::Stopped),
             (TransportState::Stopped, State::Stopped),
+            (TransportState::Reconnecting, State::Playing),
             (
                 TransportState::Failed(crate::message::Failure::Other),
                 State::Stopped,

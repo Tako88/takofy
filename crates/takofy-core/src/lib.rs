@@ -45,7 +45,7 @@ mod watch;
 mod wire;
 
 pub use context::{ContextError, Page, PageTrack, page_from_proto, parse_page_json};
-pub use engine::{Engine, EngineError, PlaylistPage, TrackPages};
+pub use engine::{Engine, EngineError, OrderAnswer, Orders, PlaylistPage, TrackPages};
 pub use playback::{Outcome, Playback, PlaybackError, PlaybackEvent, drive, map_event};
 pub use rootlist::{RootlistError, RootlistPage, RootlistWire, parse_rootlist};
 pub use transfer::{Resolution, TransferPlan};

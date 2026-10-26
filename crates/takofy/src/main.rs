@@ -10,8 +10,10 @@ mod decode;
 mod devices;
 mod headless;
 mod keychain;
+mod playhead;
 mod preferences;
 mod prompt;
+mod recovery;
 mod session;
 
 use std::process::ExitCode;

@@ -184,6 +184,8 @@ pub enum Failure {
     Devices,
     /// The devices cannot be reached without a restart.
     DevicesOff,
+    /// The connection to Spotify is gone and is being rebuilt.
+    Reconnect,
     /// A transport action did not reach the device holding the sound.
     Steer,
     /// The sound could not be moved to another device.
@@ -261,6 +263,8 @@ pub enum TransportUpdate {
     Loading,
     /// Playback is at `position_ms`; `paused` says whether it is running.
     Position { position_ms: u32, paused: bool },
+    /// Playback is stopped while the worker rebuilds the connection.
+    Reconnecting,
     /// The track reached its end.
     Ended,
     /// The track could not be played.

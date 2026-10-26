@@ -63,6 +63,30 @@ pub enum EngineError {
     Connect(#[from] ConnectError),
 }
 
+/// Answers one incoming order while something else holds the engine.
+pub trait OrderAnswer: Send + Sync {
+    /// Answers one order, saying whether the entry was still pending.
+    fn answer(&self, id: RequestId, ok: bool) -> bool;
+}
+
+/// A handle to the orders in flight, so one can be answered without owning the
+/// engine that holds them.
+pub type Orders = Arc<dyn OrderAnswer>;
+
+/// The orders the engine's registry holds, reached through the handle.
+struct RegistryOrders(Arc<Registry>);
+
+impl OrderAnswer for RegistryOrders {
+    fn answer(&self, id: RequestId, ok: bool) -> bool {
+        let verdict = if ok {
+            Verdict::Success
+        } else {
+            Verdict::Failure
+        };
+        self.0.answer_order(id, verdict)
+    }
+}
+
 /// A connected Spotify session.
 pub struct Engine {
     session: Session,
@@ -120,6 +144,20 @@ impl Engine {
         Ok(Self::new(session))
     }
 
+    /// Whether the session this engine was built on is known to be dead.
+    ///
+    /// librespot sets this on a closed socket and on its keep-alive timeout, so
+    /// it stays false while a silent drop is still undetected.
+    pub fn is_down(&self) -> bool {
+        self.session.is_invalid()
+    }
+
+    /// Ends the session: every request in flight fails, and the dealer's stream
+    /// closes with it. The engine cannot be used afterwards.
+    pub fn close(self) {
+        self.session.shutdown();
+    }
+
     /// Starts watching the account's devices, answering the streams the window
     /// reads.
     ///
@@ -168,18 +206,28 @@ impl Engine {
         self.latest.set(report);
     }
 
+    /// Re-applies what the window knew before this session existed.
+    ///
+    /// A fresh engine starts with an empty stage and no report, so a rebuild
+    /// would otherwise make the device unplayable and forget what plays here.
+    pub fn restore(&self, playable: bool, report: Option<Report>) {
+        self.presence.set_playable(playable);
+        self.latest.set(report);
+    }
+
     /// Answers one order the window carried out, and says whether the entry was
     /// still pending.
     ///
     /// The verdict is the window's own. Either way its ack is recorded, because
     /// the next state put is what tells the phone the order was heard.
     pub fn answer_order(&self, id: RequestId, ok: bool) -> bool {
-        let verdict = if ok {
-            Verdict::Success
-        } else {
-            Verdict::Failure
-        };
-        self.registry.answer_order(id, verdict)
+        self.orders().answer(id, ok)
+    }
+
+    /// A handle that answers orders without borrowing the engine, so a caller
+    /// that already owns it can still answer a phone.
+    pub fn orders(&self) -> Orders {
+        Arc::new(RegistryOrders(Arc::clone(&self.registry)))
     }
 
     /// When a pending request's budget answers it.
@@ -665,7 +713,7 @@ mod tests {
     use super::{Engine, page_cover, resolve_within, search_page};
     use crate::context::{ContextError, Page, PageSource, PageTrack, Resolved};
     use crate::remote::titled_label;
-    use takofy_model::{CoverSet, CoverUrl, TrackEntry};
+    use takofy_model::{CoverSet, CoverUrl, Report, Status, TrackEntry};
 
     /// A source that records every URI it is asked to resolve and answers one
     /// page with one track.
@@ -893,5 +941,66 @@ mod tests {
     #[test]
     fn page_cover_is_none_for_an_empty_page() {
         assert_eq!(page_cover(None, &[]), None);
+    }
+
+    fn session() -> librespot::core::Session {
+        librespot::core::Session::new(librespot::core::SessionConfig::default(), None)
+    }
+
+    fn report() -> Report {
+        Report {
+            status: Status::Playing,
+            track: None,
+            prev: Vec::new(),
+            next: Vec::new(),
+            context: None,
+            queue_revision: String::new(),
+            options: None,
+            position_ms: 1_000,
+            duration_ms: Some(200_000),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_fresh_session_is_not_down() {
+        let engine = Engine::new(session());
+        assert!(!engine.is_down());
+    }
+
+    #[tokio::test]
+    async fn a_shut_down_session_reads_as_down() {
+        let held = session();
+        let engine = Engine::new(held.clone());
+        held.shutdown();
+        assert!(engine.is_down());
+    }
+
+    #[tokio::test]
+    async fn closing_an_engine_invalidates_the_session_it_held() {
+        let held = session();
+        let engine = Engine::new(held.clone());
+        engine.close();
+        assert!(
+            held.is_invalid(),
+            "the session a close leaves behind must not look usable"
+        );
+    }
+
+    #[tokio::test]
+    async fn restoring_reapplies_the_stage_and_the_last_report() {
+        let engine = Engine::new(session());
+        engine.restore(true, Some(report()));
+
+        assert!(engine.presence.playable());
+        assert!(engine.latest.has_report());
+    }
+
+    #[tokio::test]
+    async fn restoring_nothing_leaves_a_fresh_engine_empty() {
+        let engine = Engine::new(session());
+        engine.restore(false, None);
+
+        assert!(!engine.presence.playable());
+        assert!(!engine.latest.has_report());
     }
 }
