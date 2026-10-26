@@ -5190,7 +5190,7 @@ dependencies = [
 
 [[package]]
 name = "takofy"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "eframe",
  "egui",
@@ -5209,7 +5209,7 @@ dependencies = [
 
 [[package]]
 name = "takofy-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "futures-util",
  "http",
@@ -5225,11 +5225,11 @@ dependencies = [
 
 [[package]]
 name = "takofy-model"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "takofy-ui"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "egui",
  "log",
