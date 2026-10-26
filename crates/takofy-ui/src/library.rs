@@ -28,7 +28,7 @@ use crate::removal;
 use crate::reorder;
 use crate::route::{History, Page};
 use crate::search::Search;
-use crate::show_order::ShowOrder;
+use crate::show_order::{ShowOrder, default_order};
 use crate::sidebar_kind::{SidebarFilter, SidebarKind};
 use crate::track_filter::TrackFilter;
 
@@ -955,8 +955,13 @@ impl Library {
                 if self.wanted_show.as_deref() == Some(detail.show.uri.as_str())
                     && matches!(self.show, Load::Loading)
                 {
-                    self.show_orders.entry(detail.show.uri.clone()).or_default();
+                    self.show_orders
+                        .entry(detail.show.uri.clone())
+                        .or_insert_with(|| default_order(&detail.episodes));
                     self.show = Load::Ready(detail.clone());
+                    // A show that has never been sorted opens on its own order,
+                    // which is only knowable once its list lands.
+                    self.adopt_show_order();
                 }
             }
             Update::ShowFailed { show, failure } => {
@@ -2680,8 +2685,8 @@ impl Library {
 mod tests {
     use takofy_model::{
         AddedAt, AlbumDetail, ArtistDetail, ArtistPortrait, CoverSet, CoverUrl, Episode,
-        FollowedShow, Move, PlaylistAccess, PlaylistCover, PlaylistEntry, ReleaseKind, Removal,
-        Revision, Show, ShowDetail, TrackEntry, TrackLyrics,
+        FollowedShow, Move, PlaylistAccess, PlaylistCover, PlaylistEntry, PublishedAt, ReleaseKind,
+        Removal, Revision, Show, ShowDetail, TrackEntry, TrackLyrics,
     };
 
     use super::*;
@@ -6697,8 +6702,27 @@ mod tests {
 
         assert_eq!(
             library.show_order,
-            ShowOrder::Wire,
+            ShowOrder::Newest,
             "the order is a view of one show's own list"
+        );
+    }
+
+    #[test]
+    fn a_show_that_intends_the_oldest_first_opens_that_way() {
+        let mut library = Library::default();
+        library.open(show("spotify:show:a"));
+        let mut detail = show_detail("spotify:show:a");
+        let mut first = episode("spotify:episode:1");
+        first.published = PublishedAt::from_millis(1_700_000_000_000);
+        let mut last = episode("spotify:episode:2");
+        last.published = PublishedAt::from_millis(1_700_000_900_000);
+        detail.episodes = vec![first, last];
+        library.apply(&Update::Show(detail));
+
+        assert_eq!(
+            library.show_order,
+            ShowOrder::Oldest,
+            "the chip opens naming the order the wire sent"
         );
     }
 

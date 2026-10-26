@@ -13,7 +13,7 @@
 
 use std::time::Instant;
 
-use egui::{Id, Rect, Sense, Ui, Vec2, pos2, vec2};
+use egui::{Id, Rect, Sense, Ui, Vec2};
 use takofy_model::Episode;
 
 use crate::availability::Control;
@@ -30,7 +30,7 @@ use crate::route::Page;
 use crate::scroll;
 use crate::show_order::{ShowOrder, ordered};
 use crate::sidebar_kind::SidebarKind;
-use crate::theme::{Tokens, space};
+use crate::theme::Tokens;
 
 use crate::verbs;
 
@@ -189,7 +189,7 @@ pub fn show_view(
                     }
 
                     super::inner(ui, |ui| {
-                        let (size, chips) = order_cluster(ui, tokens);
+                        let size = order_chip_size(ui, tokens, library.show_order);
                         let head = section::head_chips(ui, "Episodes", size, tokens);
                         if detail.episodes.is_empty() {
                             ui.label(recipe::muted("No episodes.", tokens));
@@ -209,27 +209,15 @@ pub fn show_view(
                             count,
                         );
 
-                        if let Some(picked) =
-                            order_chips(ui, tokens, library.show_order, head, &chips)
-                        {
-                            // Pressing the pressed chip returns to the wire's
-                            // own order, so the control is reversible without a
-                            // third chip.
-                            let next = if picked == library.show_order {
-                                ShowOrder::Wire
-                            } else {
-                                picked
-                            };
-                            if next != library.show_order {
-                                // A pick left behind would point at a row that
-                                // now holds a different episode.
-                                selection.restrict(|_| false);
-                                order = Some(next);
-                                // This frame draws the old order: the new one
-                                // lands once the draw's borrow of the library
-                                // ends, so the next frame is asked for here.
-                                ui.ctx().request_repaint();
-                            }
+                        if draw_order_chip(ui, tokens, library.show_order, head) {
+                            // A pick left behind would point at a row that now
+                            // holds a different episode.
+                            selection.restrict(|_| false);
+                            order = Some(library.show_order.flip());
+                            // This frame draws the old order: the new one lands
+                            // once the draw's borrow of the library ends, so the
+                            // next frame is asked for here.
+                            ui.ctx().request_repaint();
                         }
 
                         // The id the rows draw under, so a focused row is read from
@@ -336,84 +324,28 @@ fn entries(episodes: &[&Episode]) -> Vec<takofy_model::TrackEntry> {
     episodes.iter().map(|episode| episode.entry()).collect()
 }
 
-/// The two order chips in the head's cluster, and the order a press asked for.
+/// The order chip's label, which names the order the page is drawn in.
 ///
-/// The chips are the ones the head measured: `chips` is what [`order_cluster`]
-/// handed back, so the boxes drawn here cannot disagree with the room the head
-/// reserved. Each chip is keyed by its label, so neither shares the other's
-/// hover, focus or AccessKit node. A press on the pressed chip is reported like
-/// any other; the caller reads it as a return to the wire's order.
-fn order_chips(
-    ui: &mut Ui,
-    tokens: &Tokens,
-    order: ShowOrder,
-    rect: Rect,
-    chips: &[OrderChip],
-) -> Option<ShowOrder> {
-    let mut picked = None;
-    for chip in chips {
-        let box_ = Rect::from_min_size(
-            pos2(
-                rect.left() + chip.offset,
-                rect.center().y - chip.size.y / 2.0,
-            ),
-            chip.size,
-        );
-        let slot = controls::chip_in_keyed(
-            ui,
-            tokens,
-            Control::EpisodeOrder,
-            chip.label,
-            box_,
-            chip.label,
-            order == chip.order,
-        );
-        if slot.response.clicked() {
-            picked = Some(chip.order);
-        }
+/// The chip states the order rather than offering one, so a show that opens on
+/// its own order says so, and a press is the only thing that changes it.
+fn order_label(order: ShowOrder) -> &'static str {
+    match order {
+        ShowOrder::Newest => "Newest first",
+        ShowOrder::Oldest => "Oldest first",
     }
-    picked
 }
 
-/// The order chips, left to right: the label each one carries and the order it
-/// asks for.
-const ORDER_CHIPS: [(&str, ShowOrder); 2] = [
-    ("Newest first", ShowOrder::Newest),
-    ("Oldest first", ShowOrder::Oldest),
-];
-
-/// One chip's place in the cluster: what it says, what it asks for, and the box
-/// it takes, measured from the cluster's left edge.
-struct OrderChip {
-    label: &'static str,
-    order: ShowOrder,
-    offset: f32,
-    size: Vec2,
+/// The box the order chip takes, which is what the head reserves for it.
+fn order_chip_size(ui: &Ui, tokens: &Tokens, order: ShowOrder) -> Vec2 {
+    controls::chip_size(ui, tokens, order_label(order))
 }
 
-/// The order chips laid out left to right, and the size the cluster takes.
-///
-/// The one place the cluster is measured: the head reserves this size and the
-/// chips paint in these boxes, so what the head measured and what the page drew
-/// cannot disagree.
-fn order_cluster(ui: &Ui, tokens: &Tokens) -> (Vec2, [OrderChip; ORDER_CHIPS.len()]) {
-    let mut offset = 0.0;
-    let mut width: f32 = 0.0;
-    let mut height: f32 = 0.0;
-    let chips = ORDER_CHIPS.map(|(label, order)| {
-        let size = controls::chip_size(ui, tokens, label);
-        let chip = OrderChip {
-            label,
-            order,
-            offset,
-            size,
-        };
-        width = width.max(offset + size.x);
-        height = height.max(size.y);
-        offset += size.x + space::S1;
-        chip
-    });
-    (vec2(width, height), chips)
+/// Draws the order chip in the box the head reserved, and reports a press.
+fn draw_order_chip(ui: &mut Ui, tokens: &Tokens, order: ShowOrder, rect: Rect) -> bool {
+    let label = order_label(order);
+    controls::chip_in_keyed(ui, tokens, Control::EpisodeOrder, (), rect, label, false)
+        .response
+        .clicked()
 }
 
 #[cfg(test)]
@@ -690,24 +622,6 @@ mod tests {
         Some(text.expand2(Vec2::new(extent::CHIP_PAD_X, extent::CHIP_PAD_Y)))
     }
 
-    /// Whether the chip carrying `label` is the one drawn as selected, read from
-    /// the wash a selected chip fills its own box with.
-    fn drawn_pressed(output: &egui::FullOutput, label: &str) -> bool {
-        let Some(chip) = chip_rect(output, label) else {
-            return false;
-        };
-        output.shapes.iter().any(|clipped| match &clipped.shape {
-            egui::epaint::Shape::Rect(shape) if shape.fill == Tokens::DARK.palette.pressed => {
-                let box_ = shape.rect;
-                (box_.left() - chip.left()).abs() < 0.5
-                    && (box_.right() - chip.right()).abs() < 0.5
-                    && (box_.top() - chip.top()).abs() < 0.5
-                    && (box_.bottom() - chip.bottom()).abs() < 0.5
-            }
-            _ => false,
-        })
-    }
-
     /// How long the page asked the host to wait before the next frame.
     fn repaint_delay(output: &egui::FullOutput) -> std::time::Duration {
         output
@@ -958,7 +872,7 @@ mod tests {
         assert_eq!(command, None, "a press picks a row and plays nothing");
         assert!(picked(&ctx, 2, 0), "the press picks the row it landed on");
 
-        let chip = chip_rect(&output, "Newest first").expect("the newest chip");
+        let chip = chip_rect(&output, "Oldest first").expect("the chip naming the order drawn");
         let command = click(
             &ctx,
             chip.center(),
@@ -1064,6 +978,7 @@ mod tests {
     #[test]
     fn a_chip_click_reorders_without_a_command() {
         let ctx = context();
+        // The wire lists the oldest first, so the page opens naming that order.
         let mut library = library_with(detail(vec![dated(1, 20), dated(2, 10)]));
         let mut transport = Transport::default();
         let mut queue = Queue::default();
@@ -1077,10 +992,10 @@ mod tests {
             &mut queue,
             &mut art,
         );
-        let newest = chip_rect(&output, "Newest first").expect("the newest chip");
+        let oldest = chip_rect(&output, "Oldest first").expect("the chip naming the order drawn");
         let command = click(
             &ctx,
-            newest.center(),
+            oldest.center(),
             &mut library,
             &mut transport,
             &mut queue,
@@ -1090,7 +1005,7 @@ mod tests {
         assert_eq!(
             library.show_order,
             ShowOrder::Newest,
-            "the chip asked for the newest order"
+            "the press turned the list round"
         );
 
         let (_, output) = frame(
@@ -1107,12 +1022,16 @@ mod tests {
             leading.top() < trailing.top(),
             "the page draws the order the chip asked for"
         );
+        let named = chip_rect(&output, "Newest first").expect("the chip renamed itself");
+        assert!(
+            chip_rect(&output, "Oldest first").is_none(),
+            "one chip names one order"
+        );
 
-        // The pressed chip is the way back to the wire's own order.
-        let pressed = chip_rect(&output, "Newest first").expect("the newest chip");
+        // The chip is the way back: pressing the order it names gives the other.
         let command = click(
             &ctx,
-            pressed.center(),
+            named.center(),
             &mut library,
             &mut transport,
             &mut queue,
@@ -1121,8 +1040,8 @@ mod tests {
         assert_eq!(command, None, "a sort is page state, not a command");
         assert_eq!(
             library.show_order,
-            ShowOrder::Wire,
-            "pressing the pressed chip returns to the wire's order"
+            ShowOrder::Oldest,
+            "a second press turns it back"
         );
     }
 
@@ -1143,7 +1062,7 @@ mod tests {
             &mut queue,
             &mut art,
         );
-        let chip = chip_rect(&output, "Oldest first").expect("the oldest chip");
+        let chip = chip_rect(&output, "Newest first").expect("the chip naming the order drawn");
 
         // The press in full, then nothing at all: the chip's order lands after
         // this frame's draw, so that frame has to be asked for by name.
@@ -1193,10 +1112,10 @@ mod tests {
     }
 
     #[test]
-    fn pressing_oldest_first_reorders_and_draws_pressed() {
+    fn pressing_the_chip_reverses_the_list_and_renames_itself() {
         let ctx = context();
-        // The wire lists the newest first, so oldest-first has to lead with the
-        // episode at the far end of it.
+        // The wire lists the newest first, so the page opens naming that order
+        // and one press has to lead with the episode at the far end of it.
         let mut library = library_with(detail(vec![dated(3, 10), dated(2, 20), dated(1, 30)]));
         let mut transport = Transport::default();
         let mut queue = Queue::default();
@@ -1210,10 +1129,10 @@ mod tests {
             &mut queue,
             &mut art,
         );
-        let oldest = chip_rect(&output, "Oldest first").expect("the oldest chip");
+        let chip = chip_rect(&output, "Newest first").expect("the chip naming the order drawn");
         let command = click(
             &ctx,
-            oldest.center(),
+            chip.center(),
             &mut library,
             &mut transport,
             &mut queue,
@@ -1236,12 +1155,12 @@ mod tests {
             "the drawn first row is the episode at the newest one's far end"
         );
         assert!(
-            drawn_pressed(&output, "Oldest first"),
-            "the pressed chip is the selected one"
+            chip_rect(&output, "Oldest first").is_some(),
+            "the chip now names the order it turned the page to"
         );
         assert!(
-            !drawn_pressed(&output, "Newest first"),
-            "and the chip it replaced is not"
+            chip_rect(&output, "Newest first").is_none(),
+            "and no longer names the one it left"
         );
     }
 
