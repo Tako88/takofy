@@ -30,6 +30,36 @@ that gives up columns as it narrows, down to a drawer for the sidebar.
 - Every cover is fetched at the size its box draws it, so a full-width band is
   not a stretched thumbnail.
 
+## Installing
+
+There is no package in any distribution's repository yet — that is
+[#57](https://github.com/Tako88/takofy/issues/57). A release tag carries a
+Flatpak bundle beside the Linux tarball and the Windows zip, and on Linux the
+bundle is the quickest way in:
+
+```
+flatpak install --user ./takofy-<version>-x86_64.flatpak
+flatpak run io.github.Tako88.Takofy
+```
+
+It needs the `org.freedesktop.Platform` 25.08 runtime, which Flatpak offers to
+fetch from Flathub as it installs, and the sandbox brings the sound socket, the
+display and the keyring with it. The bundle is unsigned and does not update
+itself: install the next release's bundle over the top.
+
+The tarball needs no installation either: unpack it anywhere and run `./takofy`.
+On Windows the zip is the same, with the Visual C runtime linked in, so no
+redistributable is needed.
+
+```
+flatpak uninstall io.github.Tako88.Takofy
+```
+
+Signing out of the account is not built yet, so uninstalling leaves the refresh
+token in the keychain. On Linux that is
+`secret-tool clear service takofy username spotify-refresh-token`; on Windows it
+is Credential Manager, under `takofy`.
+
 ## Building
 
 ```
@@ -40,9 +70,6 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 Linux needs ALSA development headers (`alsa-lib-devel` on Fedora, `alsa-lib` on
 Arch, `libasound2-dev` on Debian and Ubuntu).
-
-Prebuilt Linux and Windows archives are attached to each release tag. System
-packages are [#57](https://github.com/Tako88/takofy/issues/57).
 
 ## Requirements
 
