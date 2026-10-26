@@ -22,3 +22,8 @@ reqwest.workspace = true
 
 [lints]
 workspace = true
+
+[build-dependencies]
+# Finds Windows' own resource compiler, which is the awkward half of embedding
+# an icon; the script does nothing unless the target is Windows.
+winresource = "0.1.34"
