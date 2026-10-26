@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Regenerates cargo-sources.json from Cargo.lock, and the stamp `build` checks.
+#
+# The generator is a Python tool that lives in a throwaway virtualenv, because
+# nothing else here is allowed to need Python.
+#
+#   bash packaging/flatpak/sources
+set -euo pipefail
+
+here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+root=$(cd -- "$here/../.." && pwd)
+venv="${FLATPAK_CARGO_VENV:-$root/.pi/scratch/flatpak/venv}"
+
+if [ ! -x "$venv/bin/flatpak-cargo-generator" ]; then
+	echo "no generator at $venv/bin/flatpak-cargo-generator; create it with:" >&2
+	echo "  python3 -m venv $venv && $venv/bin/pip install flatpak-cargo-generator" >&2
+	exit 1
+fi
+
+"$venv/bin/flatpak-cargo-generator" "$root/Cargo.lock" -o "$here/cargo-sources.json"
+(cd "$root" && sha256sum Cargo.lock >"$here/cargo-sources.sha256")
+echo "wrote $here/cargo-sources.json and its stamp"

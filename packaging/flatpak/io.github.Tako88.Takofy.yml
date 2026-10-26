@@ -1,0 +1,71 @@
+# A local build of the window in the sandbox every distribution gets, without
+# Flathub in the way yet: `sources`, `build` and `install` beside this file.
+#
+# The source is the working tree, not a tag, so what is built is what is on
+# disk. A submission needs `type: git` with a tag and a commit instead, because
+# nobody else can check a directory.
+id: io.github.Tako88.Takofy
+runtime: org.freedesktop.Platform
+runtime-version: '25.08'
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: takofy
+
+finish-args:
+  # Spotify's own protocol and the cover CDN.
+  - --share=network
+  # librespot plays through rodio, which is cpal, which is ALSA.
+  - --socket=pulseaudio
+  # eframe is built with both, and X11 needs the ipc socket to draw.
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=ipc
+  # eframe draws through glow, which is OpenGL.
+  - --device=dri
+  # The refresh token lives in the user's keyring, reached over the session bus.
+  # Without this every launch would have to sign in again.
+  - --talk-name=org.freedesktop.secrets
+
+modules:
+  - name: takofy
+    buildsystem: simple
+    build-options:
+      append-path: /usr/lib/sdk/rust-stable/bin
+      env:
+        CARGO_HOME: /run/build/takofy/cargo-home
+    build-commands:
+      # The crate set arrives as sources, so the build cannot reach the network.
+      - mkdir -p .cargo
+      - |
+        cat > .cargo/config.toml <<'EOF'
+        [source.crates-io]
+        replace-with = "vendored-sources"
+
+        [source.vendored-sources]
+        directory = "cargo/vendor"
+        EOF
+      - cargo build --release --locked --offline -p takofy
+      - install -Dm755 target/release/takofy /app/bin/takofy
+      - install -Dm644 packaging/io.github.Tako88.Takofy.desktop /app/share/applications/io.github.Tako88.Takofy.desktop
+      - install -Dm644 packaging/icons/takofy.svg /app/share/icons/hicolor/scalable/apps/io.github.Tako88.Takofy.svg
+      - |
+        for size in 16 24 32 48 64 128 256 512; do
+          install -Dm644 "packaging/icons/hicolor/${size}x${size}/apps/io.github.Tako88.Takofy.png" \
+            "/app/share/icons/hicolor/${size}x${size}/apps/io.github.Tako88.Takofy.png"
+        done
+      - install -Dm644 LICENSE /app/share/licenses/takofy/LICENSE
+      - install -Dm644 crates/takofy-ui/assets/fonts/OFL-Archivo.txt /app/share/licenses/takofy/OFL-Archivo.txt
+      - install -Dm644 crates/takofy-ui/assets/fonts/OFL-JetBrainsMono.txt /app/share/licenses/takofy/OFL-JetBrainsMono.txt
+      - install -Dm644 crates/takofy-ui/assets/fonts/OFL-NotoSansCJK.txt /app/share/licenses/takofy/OFL-NotoSansCJK.txt
+    sources:
+      - type: dir
+        path: ../..
+        skip:
+          - .git/
+          - .github/
+          - .pi/
+          - docs/
+          - target/
+          - packaging/flatpak/.build/
+      - cargo-sources.json
