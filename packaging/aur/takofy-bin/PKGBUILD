@@ -1,6 +1,6 @@
 # Maintainer: Tako <takoman8825@gmail.com>
 pkgname=takofy-bin
-pkgver=0.1.0rc2
+pkgver=0.1.0
 pkgrel=1
 pkgdesc='A fast, lean Spotify client for Windows and Linux'
 arch=('x86_64')
@@ -10,9 +10,9 @@ depends=('alsa-lib' 'gcc-libs' 'glibc')
 provides=('takofy')
 conflicts=('takofy')
 # Kept in step with the tag, which is what the release asset is named after.
-_tag='v0.1.0-rc2'
+_tag='v0.1.0'
 source=("$pkgname-$pkgver.tar.gz::https://github.com/Tako88/takofy/releases/download/$_tag/takofy-$_tag-linux-x86_64.tar.gz")
-sha256sums=('a3384cef8560f9680d86e490a12ce93d8811897ffd73c247c2aa19b877aa3363')
+sha256sums=('af2cb61762d92016eeb076b2abec556d2813a49779955c599885e9fc320ac582')
 
 package() {
   # The release tarball is flat: the binary and the licences, nothing to learn.

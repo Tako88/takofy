@@ -12,6 +12,27 @@ They conflict with each other and both provide `takofy`.
 Neither is on the AUR yet. When they are, this directory is the source of truth
 and the AUR gets a copy.
 
+## Why the AUR repositories are not inside this one
+
+They cannot be. An AUR package is a repository hosted at
+`ssh://aur@aur.archlinux.org/<name>.git`, created by pushing to a name that does
+not exist yet; the files it holds are a copy, not the original. Nested clones,
+submodules or a `remote` pointing there would all mean this repository's history
+depends on two servers it cannot write to without a key, and a contributor's
+`git clone` would fail on them.
+
+The recipes here are the original. `push` copies them over:
+
+```
+git clone ssh://aur@aur.archlinux.org/takofy.git ~/dev/aur/takofy
+git clone ssh://aur@aur.archlinux.org/takofy-bin.git ~/dev/aur/takofy-bin
+./packaging/aur/push ~/dev/aur
+```
+
+It copies `PKGBUILD` and `.SRCINFO` into each clone, commits `Update to
+<version>` when something changed, and pushes. The first push creates the AUR
+package.
+
 ## Bumping for a release
 
 One command, after the tag exists locally and its release has been published:

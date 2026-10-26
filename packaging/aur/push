@@ -1,0 +1,44 @@
+#!/bin/sh
+# Copy the recipes here into the two AUR repositories and push them.
+#
+#   ./packaging/aur/push ~/dev/aur
+#
+# The argument holds the two clones, `takofy` and `takofy-bin`. The AUR cannot
+# live inside this repository (see the README), but the copies it needs can be
+# produced without hand-copying files.
+set -eu
+
+root=${1:-}
+if [ -z "$root" ] || [ ! -d "$root" ]; then
+    echo "usage: $(basename "$0") <dir holding the takofy and takofy-bin AUR clones>" >&2
+    exit 2
+fi
+
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+
+publish() {
+    name=$1
+    clone=$root/$name
+
+    if [ ! -d "$clone/.git" ]; then
+        echo "error: $clone is not a clone of the AUR repository" >&2
+        echo "       git clone ssh://aur@aur.archlinux.org/$name.git $clone" >&2
+        return 1
+    fi
+
+    cp "$here/$name/PKGBUILD" "$here/$name/.SRCINFO" "$clone/"
+
+    git -C "$clone" add --all
+    if git -C "$clone" diff --cached --quiet; then
+        echo "==> $name: already current"
+        return 0
+    fi
+
+    version=$(sed -n 's/^pkgver=//p' "$here/$name/PKGBUILD")
+    git -C "$clone" commit --quiet -m "Update to $version"
+    git -C "$clone" push --quiet origin HEAD
+    echo "==> $name: pushed $version"
+}
+
+publish takofy
+publish takofy-bin
