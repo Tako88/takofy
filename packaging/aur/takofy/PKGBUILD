@@ -1,0 +1,52 @@
+# Maintainer: Tako <takoman8825@gmail.com>
+pkgname=takofy
+pkgver=0.1.0rc1
+pkgrel=1
+pkgdesc='A fast, lean Spotify client for Windows and Linux'
+arch=('x86_64')
+url='https://github.com/Tako88/takofy'
+license=('MIT')
+depends=('alsa-lib' 'gcc-libs' 'glibc')
+makedepends=('cargo' 'pkgconf')
+provides=('takofy')
+conflicts=('takofy-bin')
+# AUR's pkgver cannot carry a hyphen (it separates the release), so a release
+# candidate is `0.1.0rc1` while the tag is `v0.1.0-rc1`. A plain release has
+# both: pkgver=0.1.0, _tag=v0.1.0.
+_tag='v0.1.0-rc1'
+# The tag archive unpacks under the repository's name and the tag.
+_src="takofy-${_tag#v}"
+source=("$pkgname-$pkgver.tar.gz::https://github.com/Tako88/takofy/archive/refs/tags/$_tag.tar.gz")
+sha256sums=('ba6374335048fa09133b7ac896a7f09006b467a334066d0f0c49fcd371004739')
+# makepkg adds -flto to CFLAGS by default. That reaches the C and assembly a
+# build script compiles (ring, behind rustls), and GCC's LTO objects then fail to
+# resolve against the Rust link: undefined ring_core_* symbols. The Rust profile
+# already asks for its own LTO, so makepkg's is turned off.
+options=('!lto')
+
+prepare() {
+  cd "$_src"
+  # Fetch first, so a missing crate fails before the long build.
+  cargo fetch --locked
+}
+
+build() {
+  cd "$_src"
+  cargo build --release --locked -p takofy
+}
+
+# No check(). The suite already runs on every push in CI, on both platforms and
+# against the committed lockfile; making each install run 4,420 tests adds a
+# minute and a half and turns any flake into a build a user cannot fix.
+
+package() {
+  cd "$_src"
+  install -Dm755 target/release/takofy "$pkgdir/usr/bin/takofy"
+
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  local licence
+  for licence in OFL-Archivo.txt OFL-JetBrainsMono.txt OFL-NotoSansCJK.txt; do
+    install -Dm644 "crates/takofy-ui/assets/fonts/$licence" \
+      "$pkgdir/usr/share/licenses/$pkgname/$licence"
+  done
+}

@@ -1,0 +1,26 @@
+# Maintainer: Tako <takoman8825@gmail.com>
+pkgname=takofy-bin
+pkgver=0.1.0rc1
+pkgrel=1
+pkgdesc='A fast, lean Spotify client for Windows and Linux'
+arch=('x86_64')
+url='https://github.com/Tako88/takofy'
+license=('MIT')
+depends=('alsa-lib' 'gcc-libs' 'glibc')
+provides=('takofy')
+conflicts=('takofy')
+# Kept in step with the tag, which is what the release asset is named after.
+_tag='v0.1.0-rc1'
+source=("$pkgname-$pkgver.tar.gz::https://github.com/Tako88/takofy/releases/download/$_tag/takofy-$_tag-linux-x86_64.tar.gz")
+sha256sums=('cd649c97e6bde01d6e7e0aef39dfa9fdbcfdc3f355d58f08f28d6e39f1550795')
+
+package() {
+  # The release tarball is flat: the binary and the licences, nothing to learn.
+  install -Dm755 takofy "$pkgdir/usr/bin/takofy"
+
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  local licence
+  for licence in OFL-Archivo.txt OFL-JetBrainsMono.txt OFL-NotoSansCJK.txt; do
+    install -Dm644 "$licence" "$pkgdir/usr/share/licenses/$pkgname/$licence"
+  done
+}
