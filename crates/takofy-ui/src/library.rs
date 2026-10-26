@@ -28,6 +28,7 @@ use crate::removal;
 use crate::reorder;
 use crate::route::{History, Page};
 use crate::search::Search;
+use crate::show_order::ShowOrder;
 use crate::sidebar_kind::{SidebarFilter, SidebarKind};
 use crate::track_filter::TrackFilter;
 
@@ -202,6 +203,16 @@ pub struct Library {
     /// The playlist page's filter. A page change clears it, because the query
     /// names one playlist's rows; a reload of the same playlist keeps it.
     pub track_filter: TrackFilter,
+    /// The show page's episode order. It belongs to a show rather than to the
+    /// page: `show_orders` remembers what each show was last left in, so Back
+    /// onto a show draws it as it was and an unseen one starts on the wire's
+    /// own order.
+    pub show_order: ShowOrder,
+    /// The order each show visited this session was left in.
+    ///
+    /// Session-scoped and unbounded: the choice belongs to the show, so every
+    /// show the user sorts keeps its own for as long as the session lasts.
+    show_orders: HashMap<String, ShowOrder>,
     /// The rail's name filter. A page change and a reload of any library list
     /// keep it, because the query names the rail's rows rather than a page's;
     /// only the field's clear control, its Escape, and the create field's
@@ -937,11 +948,14 @@ impl Library {
                     self.artist = Load::Failed(*failure);
                 }
             }
-            // The show's reply is guarded exactly as the album's is.
+            // The show's reply is guarded exactly as the album's is. The show
+            // is recorded on landing, so Back to it finds the order it was left
+            // in; a reply for a show the page has left touches nothing drawn.
             Update::Show(detail) => {
                 if self.wanted_show.as_deref() == Some(detail.show.uri.as_str())
                     && matches!(self.show, Load::Loading)
                 {
+                    self.show_orders.entry(detail.show.uri.clone()).or_default();
                     self.show = Load::Ready(detail.clone());
                 }
             }
@@ -1507,8 +1521,19 @@ impl Library {
         self.track_filter.clear();
         self.play = None;
         self.play_notice = None;
+        self.adopt_show_order();
         if self.renaming.surface() == Surface::Band {
             self.renaming.dismiss();
+        }
+    }
+
+    /// Takes the order recorded for the page's show.
+    ///
+    /// A show the user has sorted draws as it was left, and one this session
+    /// has not seen starts on the wire's own order.
+    fn adopt_show_order(&mut self) {
+        if let Some(Page::Show(uri)) = self.history.current() {
+            self.show_order = self.show_orders.get(uri).copied().unwrap_or_default();
         }
     }
 
@@ -1831,6 +1856,14 @@ impl Library {
             && tracks.notice == Some(Failure::Rename)
         {
             tracks.notice = None;
+        }
+    }
+
+    /// Sets the order the show page draws its episodes in.
+    pub fn set_show_order(&mut self, order: ShowOrder) {
+        self.show_order = order;
+        if let Some(Page::Show(uri)) = self.history.current() {
+            self.show_orders.insert(uri.clone(), order);
         }
     }
 
@@ -6649,6 +6682,76 @@ mod tests {
             library.track_filter.needle("a").as_deref(),
             Some("midnight"),
             "a reload of the same page is not a page change"
+        );
+    }
+
+    #[test]
+    fn opening_another_show_starts_on_its_own_default() {
+        let mut library = Library::default();
+        library.open(show("spotify:show:a"));
+        library.apply(&Update::Show(show_detail("spotify:show:a")));
+        library.set_show_order(ShowOrder::Newest);
+
+        library.open(show("spotify:show:b"));
+        library.apply(&Update::Show(show_detail("spotify:show:b")));
+
+        assert_eq!(
+            library.show_order,
+            ShowOrder::Wire,
+            "the order is a view of one show's own list"
+        );
+    }
+
+    #[test]
+    fn back_from_another_show_keeps_the_first_shows_sort() {
+        let mut library = Library::default();
+        library.open(show("spotify:show:a"));
+        library.apply(&Update::Show(show_detail("spotify:show:a")));
+        library.set_show_order(ShowOrder::Oldest);
+
+        library.open(show("spotify:show:b"));
+        library.apply(&Update::Show(show_detail("spotify:show:b")));
+        let _ = library.back();
+
+        assert_eq!(library.page(), Some(&show("spotify:show:a")));
+        assert_eq!(
+            library.show_order,
+            ShowOrder::Oldest,
+            "each show keeps the order it was left in"
+        );
+    }
+
+    #[test]
+    fn back_to_the_same_show_keeps_the_sort() {
+        let mut library = Library::default();
+        library.open(show("spotify:show:a"));
+        library.apply(&Update::Show(show_detail("spotify:show:a")));
+        library.set_show_order(ShowOrder::Oldest);
+
+        library.open(album("spotify:album:a"));
+        assert_eq!(library.back(), None, "a ready show is already settled");
+
+        assert_eq!(library.page(), Some(&show("spotify:show:a")));
+        assert_eq!(
+            library.show_order,
+            ShowOrder::Oldest,
+            "Back onto the show the choice was made on keeps it"
+        );
+    }
+
+    #[test]
+    fn reopening_the_same_show_keeps_the_sort() {
+        let mut library = Library::default();
+        library.open(show("spotify:show:a"));
+        library.apply(&Update::Show(show_detail("spotify:show:a")));
+        library.set_show_order(ShowOrder::Oldest);
+
+        library.open(show("spotify:show:a"));
+
+        assert_eq!(
+            library.show_order,
+            ShowOrder::Oldest,
+            "a reload of the same show is not a page change"
         );
     }
 

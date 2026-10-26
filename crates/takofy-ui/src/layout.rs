@@ -19,6 +19,7 @@ pub mod panel;
 pub mod playbar;
 pub mod queue;
 pub mod search_menu;
+pub mod section;
 pub mod sticky;
 pub mod table;
 pub mod tracks;

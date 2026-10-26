@@ -39,6 +39,7 @@ pub mod scroll;
 pub mod search;
 pub mod search_index;
 pub mod selection;
+pub mod show_order;
 pub mod shuffle;
 pub mod sidebar_kind;
 pub mod signin;

@@ -13,9 +13,10 @@
 
 use std::time::Instant;
 
-use egui::{Id, Sense, Ui};
+use egui::{Id, Rect, Sense, Ui, Vec2, pos2, vec2};
 use takofy_model::Episode;
 
+use crate::availability::Control;
 use crate::cover::{Art, want_px};
 use crate::format::{episode_meta, plain_description, show_meta, total_label};
 use crate::layout::actionbar::Kind;
@@ -27,14 +28,16 @@ use crate::player::Transport;
 use crate::queue::Queue;
 use crate::route::Page;
 use crate::scroll;
+use crate::show_order::{ShowOrder, ordered};
 use crate::sidebar_kind::SidebarKind;
-use crate::theme::Tokens;
+use crate::theme::{Tokens, space};
 
 use crate::verbs;
 
 use super::actionbar;
 use super::carry::{self, Ghost};
 use super::context_menu;
+use super::controls;
 use super::episode_row;
 use super::hero;
 use super::pin;
@@ -74,6 +77,9 @@ pub fn show_view(
     // The band's heart asks for the library, which the show is borrowed from.
     // The value the heart asked for, and the name the write needs.
     let mut save: Option<(String, bool)> = None;
+    // The order a chip asked for, applied once the draw's borrow of the library
+    // ends.
+    let mut order: Option<ShowOrder> = None;
 
     // The scroll offset is this show's, not the album's or the playlist's that
     // share the pane.
@@ -105,6 +111,9 @@ pub fn show_view(
                         return;
                     };
                     let detail = show;
+                    // One ordered view per frame: the rows, the queue and a lift
+                    // all read the order the page draws.
+                    let view = ordered(&detail.episodes, library.show_order);
                     // The one cover lookup on this page: the rows carry none.
                     let want = want_px(crate::theme::hero::ART, ui.pixels_per_point());
                     let cover = art.look(detail.show.cover.as_ref(), want, now);
@@ -167,7 +176,7 @@ pub fn show_view(
                     }
                     if acted.played && !detail.episodes.is_empty() {
                         command = queue.start(
-                            &entries(detail),
+                            &entries(&view),
                             0,
                             Some(detail.show.uri.as_str()),
                             transport,
@@ -180,13 +189,14 @@ pub fn show_view(
                     }
 
                     super::inner(ui, |ui| {
-                        section::head(ui, "Episodes", "", tokens);
+                        let (size, chips) = order_cluster(ui, tokens);
+                        let head = section::head_chips(ui, "Episodes", size, tokens);
                         if detail.episodes.is_empty() {
                             ui.label(recipe::muted("No episodes.", tokens));
                             return;
                         }
 
-                        let count = detail.episodes.len();
+                        let count = view.len();
                         // The whole list is reserved at once, so the scrollbar is
                         // right, and only the rows the viewport can show are laid
                         // out and given interaction.
@@ -199,19 +209,44 @@ pub fn show_view(
                             count,
                         );
 
+                        if let Some(picked) =
+                            order_chips(ui, tokens, library.show_order, head, &chips)
+                        {
+                            // Pressing the pressed chip returns to the wire's
+                            // own order, so the control is reversible without a
+                            // third chip.
+                            let next = if picked == library.show_order {
+                                ShowOrder::Wire
+                            } else {
+                                picked
+                            };
+                            if next != library.show_order {
+                                // A pick left behind would point at a row that
+                                // now holds a different episode.
+                                selection.restrict(|_| false);
+                                order = Some(next);
+                                // This frame draws the old order: the new one
+                                // lands once the draw's borrow of the library
+                                // ends, so the next frame is asked for here.
+                                ui.ctx().request_repaint();
+                            }
+                        }
+
                         // The id the rows draw under, so a focused row is read from
                         // the same `Ui` that drew them, and the box it holds, read
                         // before the clip culls it.
                         let focused_now = ui.memory(|memory| memory.focused());
                         let mut reveal = None;
 
-                        for (index, episode) in detail.episodes.iter().enumerate() {
+                        for (index, episode) in view.iter().enumerate() {
                             let rect = table_layout::row_rect(list, index, episode_layout::ROW_H);
                             if !table_layout::on_screen(visible, rect) {
                                 // A row the cull skipped draws nothing, so it has
                                 // no reveal of its own; one that holds the keyboard
                                 // is asked for once the loop is done.
-                                if focused_now == Some(episode_row::id(ui, (&episode.uri, index))) {
+                                if focused_now
+                                    == Some(episode_row::id(ui, (episode.uri.as_str(), index)))
+                                {
                                     reveal = Some(rect);
                                 }
                                 continue;
@@ -229,14 +264,14 @@ pub fn show_view(
                                 show_uri: Some(detail.show.uri.as_str()),
                                 age: meta.age.as_deref().unwrap_or_default(),
                                 duration: duration.as_deref(),
-                                state: state_of(&episode.uri, transport),
+                                state: state_of(episode.uri.as_str(), transport),
                                 look: selection.look(index),
                                 refocus: false,
                             };
                             match episode_row::show(ui, rect, &row, tokens) {
                                 Some(Click::Play) => {
                                     command = queue.start(
-                                        &entries(detail),
+                                        &entries(&view),
                                         index,
                                         Some(detail.show.uri.as_str()),
                                         transport,
@@ -246,7 +281,7 @@ pub fn show_view(
                                 Some(Click::Lift) => {
                                     let ghost = Ghost::Queue(row.lifted());
                                     selection.lift(index, rect.size(), ghost, |row| {
-                                        detail.episodes.get(row).map(Episode::entry)
+                                        view.get(row).map(|episode| episode.entry())
                                     });
                                 }
                                 Some(Click::Open(page)) => opened = Some(page),
@@ -268,6 +303,9 @@ pub fn show_view(
             }
         });
 
+    if let Some(order) = order {
+        library.set_show_order(order);
+    }
     if retry {
         return library.open(Page::Show(uri));
     }
@@ -291,10 +329,91 @@ pub fn show_view(
 
 /// The show's episodes as the queue wants them.
 ///
-/// Built at click time only: the row list is the page's own order, and turning
-/// every episode into an entry up front would copy the whole show each frame.
-fn entries(detail: &takofy_model::ShowDetail) -> Vec<takofy_model::TrackEntry> {
-    detail.episodes.iter().map(Episode::entry).collect()
+/// Built at click time only: turning every episode into an entry up front would
+/// copy the whole show each frame. The rows are the frame's ordered view, so the
+/// queue starts and plays what the page draws.
+fn entries(episodes: &[&Episode]) -> Vec<takofy_model::TrackEntry> {
+    episodes.iter().map(|episode| episode.entry()).collect()
+}
+
+/// The two order chips in the head's cluster, and the order a press asked for.
+///
+/// The chips are the ones the head measured: `chips` is what [`order_cluster`]
+/// handed back, so the boxes drawn here cannot disagree with the room the head
+/// reserved. Each chip is keyed by its label, so neither shares the other's
+/// hover, focus or AccessKit node. A press on the pressed chip is reported like
+/// any other; the caller reads it as a return to the wire's order.
+fn order_chips(
+    ui: &mut Ui,
+    tokens: &Tokens,
+    order: ShowOrder,
+    rect: Rect,
+    chips: &[OrderChip],
+) -> Option<ShowOrder> {
+    let mut picked = None;
+    for chip in chips {
+        let box_ = Rect::from_min_size(
+            pos2(
+                rect.left() + chip.offset,
+                rect.center().y - chip.size.y / 2.0,
+            ),
+            chip.size,
+        );
+        let slot = controls::chip_in_keyed(
+            ui,
+            tokens,
+            Control::EpisodeOrder,
+            chip.label,
+            box_,
+            chip.label,
+            order == chip.order,
+        );
+        if slot.response.clicked() {
+            picked = Some(chip.order);
+        }
+    }
+    picked
+}
+
+/// The order chips, left to right: the label each one carries and the order it
+/// asks for.
+const ORDER_CHIPS: [(&str, ShowOrder); 2] = [
+    ("Newest first", ShowOrder::Newest),
+    ("Oldest first", ShowOrder::Oldest),
+];
+
+/// One chip's place in the cluster: what it says, what it asks for, and the box
+/// it takes, measured from the cluster's left edge.
+struct OrderChip {
+    label: &'static str,
+    order: ShowOrder,
+    offset: f32,
+    size: Vec2,
+}
+
+/// The order chips laid out left to right, and the size the cluster takes.
+///
+/// The one place the cluster is measured: the head reserves this size and the
+/// chips paint in these boxes, so what the head measured and what the page drew
+/// cannot disagree.
+fn order_cluster(ui: &Ui, tokens: &Tokens) -> (Vec2, [OrderChip; ORDER_CHIPS.len()]) {
+    let mut offset = 0.0;
+    let mut width: f32 = 0.0;
+    let mut height: f32 = 0.0;
+    let chips = ORDER_CHIPS.map(|(label, order)| {
+        let size = controls::chip_size(ui, tokens, label);
+        let chip = OrderChip {
+            label,
+            order,
+            offset,
+            size,
+        };
+        width = width.max(offset + size.x);
+        height = height.max(size.y);
+        offset += size.x + space::S1;
+        chip
+    });
+    (vec2(width, height), chips)
 }
 
 #[cfg(test)]
@@ -409,6 +528,15 @@ mod tests {
             duration_ms: Some(2_773_461),
             cover: None,
             named: true,
+        }
+    }
+
+    /// An episode published `days_ago` days before the probe's clock, so a
+    /// reordering has dates to read.
+    fn dated(n: usize, days_ago: u64) -> Episode {
+        Episode {
+            published: PublishedAt::from_millis((NOW_MS - days_ago * DAY_MS) as i64),
+            ..episode(n)
         }
     }
 
@@ -555,6 +683,46 @@ mod tests {
         )
     }
 
+    /// The box a chip occupies, recovered from the label it painted: a chip's
+    /// label sits at the chip's top-left plus its padding.
+    fn chip_rect(output: &egui::FullOutput, label: &str) -> Option<Rect> {
+        let text = text_rect(output, &label.to_uppercase())?;
+        Some(text.expand2(Vec2::new(extent::CHIP_PAD_X, extent::CHIP_PAD_Y)))
+    }
+
+    /// Whether the chip carrying `label` is the one drawn as selected, read from
+    /// the wash a selected chip fills its own box with.
+    fn drawn_pressed(output: &egui::FullOutput, label: &str) -> bool {
+        let Some(chip) = chip_rect(output, label) else {
+            return false;
+        };
+        output.shapes.iter().any(|clipped| match &clipped.shape {
+            egui::epaint::Shape::Rect(shape) if shape.fill == Tokens::DARK.palette.pressed => {
+                let box_ = shape.rect;
+                (box_.left() - chip.left()).abs() < 0.5
+                    && (box_.right() - chip.right()).abs() < 0.5
+                    && (box_.top() - chip.top()).abs() < 0.5
+                    && (box_.bottom() - chip.bottom()).abs() < 0.5
+            }
+            _ => false,
+        })
+    }
+
+    /// How long the page asked the host to wait before the next frame.
+    fn repaint_delay(output: &egui::FullOutput) -> std::time::Duration {
+        output
+            .viewport_output
+            .get(&egui::ViewportId::ROOT)
+            .map_or(std::time::Duration::MAX, |viewport| viewport.repaint_delay)
+    }
+
+    /// Whether the page's list holds `row` as a pick.
+    fn picked(ctx: &Context, count: usize, row: usize) -> bool {
+        crate::view::carry::List::open(ctx, egui::Id::unique(("show-episodes", SHOW)), count)
+            .look(row)
+            .selected
+    }
+
     /// The action row's play tile, solved the way the page solves it.
     fn play_tile_rect_for(ctx: &Context) -> Rect {
         let tokens = Tokens::DARK;
@@ -592,6 +760,489 @@ mod tests {
     /// A show with more episodes than one screen holds.
     fn long_detail() -> ShowDetail {
         detail((0..12).map(episode).collect())
+    }
+
+    #[test]
+    fn newest_first_puts_the_last_episode_first_and_keeps_every_row() {
+        let ctx = context();
+        // The wire lists the oldest first, so newest-first has to turn it round.
+        let mut library = library_with(detail(vec![dated(1, 30), dated(2, 20), dated(3, 10)]));
+        library.set_show_order(ShowOrder::Newest);
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let (_, output) = frame(
+            &ctx,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let top = |label: &str| {
+            text_rect(&output, label)
+                .unwrap_or_else(|| panic!("{label} is drawn"))
+                .top()
+        };
+        assert!(
+            top("Episode 3") < top("Episode 2") && top("Episode 2") < top("Episode 1"),
+            "the newest episode leads and the other two follow it"
+        );
+
+        let texts = drawn_texts(&output);
+        for number in 1..=3 {
+            let label = format!("Episode {number}");
+            assert_eq!(
+                texts.iter().filter(|text| **text == label).count(),
+                1,
+                "every episode is drawn once: {texts:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_click_on_a_sorted_row_plays_that_episode() {
+        let ctx = context();
+        // Newest first, Episode 1 is the list's second row while it is the
+        // wire's first: a draw over the wire's order would play Episode 2.
+        let mut library = library_with(detail(vec![dated(1, 20), dated(2, 10)]));
+        library.set_show_order(ShowOrder::Newest);
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let (_, output) = frame(
+            &ctx,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let sorted = text_rect(&output, "Episode 1").expect("the sorted row is drawn");
+        let leading = text_rect(&output, "Episode 2").expect("the newest row is drawn");
+        assert!(
+            leading.top() < sorted.top(),
+            "the sorted row is not the first one"
+        );
+
+        let command = click(
+            &ctx,
+            toggle_centre(&output, "Episode 1"),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        assert_eq!(
+            command,
+            Some(Command::Play {
+                uri: "spotify:episode:1".to_owned()
+            }),
+            "the toggle under the click plays the row the page drew there"
+        );
+    }
+
+    #[test]
+    fn a_lift_on_a_sorted_row_carries_that_episode() {
+        let ctx = context();
+        let mut library = library_with(detail(vec![dated(1, 20), dated(2, 10)]));
+        library.set_show_order(ShowOrder::Newest);
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let (_, output) = frame(
+            &ctx,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let row = text_rect(&output, "Episode 1").expect("the sorted row is drawn");
+        let mut events = crate::view::test_support::drag_events(
+            row.center(),
+            row.center() - Vec2::new(0.0, extent::EPISODE_ROW_H),
+        );
+        // Stop with the button still down: the lift is what this reads.
+        events.pop();
+        let mut carried = None;
+        for event in events {
+            let _ = frame(
+                &ctx,
+                vec![event],
+                &mut library,
+                &mut transport,
+                &mut queue,
+                &mut art,
+            );
+            carried = carried.or_else(|| crate::view::carry::carried(&ctx));
+        }
+        let carried = carried.expect("the drag lifts the row");
+        assert_eq!(
+            carried.rows,
+            vec![1],
+            "the sorted row is the one that travels"
+        );
+        let uris: Vec<&str> = carried
+            .entries
+            .iter()
+            .map(|entry| entry.uri.as_str())
+            .collect();
+        assert_eq!(
+            uris,
+            ["spotify:episode:1"],
+            "the carried entry is the row's own episode"
+        );
+    }
+
+    #[test]
+    fn the_band_plays_the_drawn_order() {
+        let ctx = context();
+        let mut library = library_with(detail(vec![dated(1, 20), dated(2, 10)]));
+        library.set_show_order(ShowOrder::Newest);
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let tile = play_tile_rect_for(&ctx);
+        let command = click(
+            &ctx,
+            tile.center(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+
+        assert_eq!(
+            command,
+            Some(Command::Play {
+                uri: "spotify:episode:2".to_owned()
+            }),
+            "the band starts the show from what the page draws on top"
+        );
+        assert!(
+            queue.can_next(),
+            "the whole show is queued, not just its first episode"
+        );
+    }
+
+    #[test]
+    fn a_sort_clears_the_picks_so_the_highlight_does_not_move() {
+        let ctx = context();
+        let mut library = library_with(detail(vec![dated(1, 20), dated(2, 10)]));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let (_, output) = frame(
+            &ctx,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let row = text_rect(&output, "Episode 1").expect("the wire's first row");
+        let command = click(
+            &ctx,
+            row.center(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        assert_eq!(command, None, "a press picks a row and plays nothing");
+        assert!(picked(&ctx, 2, 0), "the press picks the row it landed on");
+
+        let chip = chip_rect(&output, "Newest first").expect("the newest chip");
+        let command = click(
+            &ctx,
+            chip.center(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        assert_eq!(command, None, "a sort is no command");
+        assert_eq!(
+            library.show_order,
+            ShowOrder::Newest,
+            "the chip reordered the page"
+        );
+        assert!(
+            !picked(&ctx, 2, 0),
+            "the pick on the row that moved is gone"
+        );
+        assert!(!picked(&ctx, 2, 1), "and no other row took it");
+    }
+
+    #[test]
+    fn a_sort_keeps_the_scroll_area_inside_its_bounds() {
+        let ctx = context();
+        const EPISODES: usize = 12;
+        // Episode 1 is the newest, so oldest-first reverses the wire's order.
+        let episodes = (1..=EPISODES).map(|n| dated(n, n as u64 * 10)).collect();
+        let mut library = library_with(detail(episodes));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let (_, first) = frame(
+            &ctx,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let list_bottom = row_bottom(&first, "Episode 1").expect("the first row's edge")
+            + (EPISODES - 1) as f32 * extent::EPISODE_ROW_H;
+        let max_scroll = list_bottom - PROBE.y;
+
+        let mut offset = show_offset(&ctx).expect("the page keeps its scroll offset");
+        let mut settled = false;
+        for _ in 0..400 {
+            let _ = wheel(
+                &ctx,
+                -extent::EPISODE_ROW_H,
+                &mut library,
+                &mut transport,
+                &mut queue,
+                &mut art,
+            );
+            let next = show_offset(&ctx).expect("the page keeps its scroll offset");
+            if (next - offset).abs() < 0.01 {
+                offset = next;
+                settled = true;
+                break;
+            }
+            offset = next;
+        }
+        assert!(settled, "the scroll must come to rest");
+        assert!(
+            (offset - max_scroll).abs() < 0.5,
+            "the scroll rests at {offset}, not the list's end {max_scroll}"
+        );
+
+        library.set_show_order(ShowOrder::Oldest);
+        let mut output = frame(
+            &ctx,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        )
+        .1;
+        for _ in 0..4 {
+            output = frame(
+                &ctx,
+                Vec::new(),
+                &mut library,
+                &mut transport,
+                &mut queue,
+                &mut art,
+            )
+            .1;
+        }
+
+        let after = show_offset(&ctx).expect("the page keeps its scroll offset");
+        assert!(
+            (0.0..=max_scroll + 0.5).contains(&after),
+            "the sorted page keeps {after} inside the list, whose end is {max_scroll}"
+        );
+        assert!(
+            text_rect(&output, "Episode 1").is_some(),
+            "the newest episode ends an oldest-first list, and the end is what the bottom shows"
+        );
+    }
+
+    #[test]
+    fn a_chip_click_reorders_without_a_command() {
+        let ctx = context();
+        let mut library = library_with(detail(vec![dated(1, 20), dated(2, 10)]));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let (_, output) = frame(
+            &ctx,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let newest = chip_rect(&output, "Newest first").expect("the newest chip");
+        let command = click(
+            &ctx,
+            newest.center(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        assert_eq!(command, None, "a sort is page state, not a command");
+        assert_eq!(
+            library.show_order,
+            ShowOrder::Newest,
+            "the chip asked for the newest order"
+        );
+
+        let (_, output) = frame(
+            &ctx,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let leading = text_rect(&output, "Episode 2").expect("the newest row");
+        let trailing = text_rect(&output, "Episode 1").expect("the oldest row");
+        assert!(
+            leading.top() < trailing.top(),
+            "the page draws the order the chip asked for"
+        );
+
+        // The pressed chip is the way back to the wire's own order.
+        let pressed = chip_rect(&output, "Newest first").expect("the newest chip");
+        let command = click(
+            &ctx,
+            pressed.center(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        assert_eq!(command, None, "a sort is page state, not a command");
+        assert_eq!(
+            library.show_order,
+            ShowOrder::Wire,
+            "pressing the pressed chip returns to the wire's order"
+        );
+    }
+
+    #[test]
+    fn a_chip_press_draws_the_new_order_without_a_second_event() {
+        let ctx = context();
+        // The wire lists the newest first, so oldest-first has to turn it round.
+        let mut library = library_with(detail(vec![dated(2, 10), dated(1, 20)]));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let (_, output) = frame(
+            &ctx,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let chip = chip_rect(&output, "Oldest first").expect("the oldest chip");
+
+        // The press in full, then nothing at all: the chip's order lands after
+        // this frame's draw, so that frame has to be asked for by name.
+        let mut command = None;
+        let mut pressed = None;
+        for event in click_events(chip.center()) {
+            let (asked, drawn) = frame(
+                &ctx,
+                vec![event],
+                &mut library,
+                &mut transport,
+                &mut queue,
+                &mut art,
+            );
+            command = command.or(asked);
+            pressed = Some(drawn);
+        }
+        assert_eq!(command, None, "a sort is page state, not a command");
+        let pressed = pressed.expect("the press drew a frame");
+        let drew = |output: &egui::FullOutput, label: &str| {
+            text_rect(output, label)
+                .unwrap_or_else(|| panic!("{label} is drawn"))
+                .top()
+        };
+        assert!(
+            drew(&pressed, "Episode 2") < drew(&pressed, "Episode 1"),
+            "the press frame itself still draws the order it started with"
+        );
+        assert_eq!(
+            repaint_delay(&pressed),
+            std::time::Duration::ZERO,
+            "the press asks for the frame that paints the order it took"
+        );
+
+        let (_, after) = frame(
+            &ctx,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        assert!(
+            drew(&after, "Episode 1") < drew(&after, "Episode 2"),
+            "the frame after the press draws the oldest episode first"
+        );
+    }
+
+    #[test]
+    fn pressing_oldest_first_reorders_and_draws_pressed() {
+        let ctx = context();
+        // The wire lists the newest first, so oldest-first has to lead with the
+        // episode at the far end of it.
+        let mut library = library_with(detail(vec![dated(3, 10), dated(2, 20), dated(1, 30)]));
+        let mut transport = Transport::default();
+        let mut queue = Queue::default();
+        let mut art = Art::default();
+
+        let (_, output) = frame(
+            &ctx,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let oldest = chip_rect(&output, "Oldest first").expect("the oldest chip");
+        let command = click(
+            &ctx,
+            oldest.center(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        assert_eq!(command, None, "a sort is page state, not a command");
+
+        let (_, output) = frame(
+            &ctx,
+            Vec::new(),
+            &mut library,
+            &mut transport,
+            &mut queue,
+            &mut art,
+        );
+        let leading = text_rect(&output, "Episode 1").expect("the oldest row");
+        let trailing = text_rect(&output, "Episode 3").expect("the newest row");
+        assert!(
+            leading.top() < trailing.top(),
+            "the drawn first row is the episode at the newest one's far end"
+        );
+        assert!(
+            drawn_pressed(&output, "Oldest first"),
+            "the pressed chip is the selected one"
+        );
+        assert!(
+            !drawn_pressed(&output, "Newest first"),
+            "and the chip it replaced is not"
+        );
     }
 
     #[test]

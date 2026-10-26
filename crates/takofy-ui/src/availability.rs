@@ -57,6 +57,9 @@ pub enum Control {
     /// a later phase.
     ReleaseLike,
     ReleaseMore,
+    /// The show page's Newest/Oldest chips. Both orders are a sort over episodes
+    /// the page already holds, so there is nothing to leave.
+    EpisodeOrder,
     /// The library root's filter row, one control per chip. All, Playlists and
     /// Podcasts exist; Artists and Albums are the reference's chips with no data
     /// yet, drawn dim and inert like the sidebar's waiting filters.
@@ -77,7 +80,7 @@ pub enum Control {
 }
 
 impl Control {
-    pub const ALL: [Self; 49] = [
+    pub const ALL: [Self; 50] = [
         Self::NavHome,
         Self::LibraryCreate,
         Self::FilterPlaylists,
@@ -125,6 +128,7 @@ impl Control {
         Self::EpisodeToggle,
         Self::ReleaseLike,
         Self::ReleaseMore,
+        Self::EpisodeOrder,
         Self::CardPlay,
         Self::Authorize,
     ];
@@ -216,6 +220,7 @@ pub fn availability(control: Control) -> Availability {
         Control::EpisodeToggle => Availability::Ready,
         Control::ReleaseLike => Availability::Ready, // #35
         Control::ReleaseMore => Availability::Ready, // #35
+        Control::EpisodeOrder => Availability::Ready,
 
         // The sign-in card's one control; the state decides whether it acts.
         Control::Authorize => Availability::Ready,
@@ -260,6 +265,7 @@ mod tests {
                     | Control::ReleaseLike
                     | Control::ReleaseMore
                     | Control::EpisodeToggle
+                    | Control::EpisodeOrder
                     | Control::TrackMore
                     | Control::TrackLike
                     | Control::Like
