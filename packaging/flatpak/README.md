@@ -30,11 +30,25 @@ without it:
 
 | flag | for |
 | --- | --- |
-| `--share=network` | Spotify's own protocol, and the cover CDN over HTTPS |
+| `--share=network` | Spotify's own protocol, the cover CDN over HTTPS, and the sign-in redirect: the OAuth listener binds `127.0.0.1:8898` inside the sandbox, and the browser outside it reaches that port only because the network is the host's |
 | `--socket=pulseaudio` | sound: librespot plays through rodio, which is cpal, which is ALSA, and the runtime's ALSA is configured to reach the pulse socket |
 | `--socket=wayland`, `--socket=fallback-x11`, `--share=ipc` | the window; eframe is built with both backends and X11 needs the ipc socket |
 | `--device=dri` | eframe draws through glow, which is OpenGL |
 | `--talk-name=org.freedesktop.secrets` | the refresh token in the user's keyring; without it the app starts at the sign-in card on every launch |
+
+## What has been checked, on a real account
+
+- The build, the install, the window, the library, and covers fetched over the
+  network.
+- Signing in from a cleared keychain: the browser opens from inside the sandbox
+  through the portal (the runtime's own `xdg-open` reaches
+  `xdg-desktop-portal`, so nothing needs a shim), the loopback redirect lands,
+  the token is written back to the keyring, and the library loads. The sandbox
+  and a host build share that one keyring entry, so signing in either one signs
+  in both.
+- Sound has a path — the runtime's ALSA carries the pulse plugin and
+  `PULSE_SERVER` points at the sandbox's socket — but no track has been played
+  through it inside the sandbox yet.
 
 ## Known gaps in the sandbox
 
