@@ -304,7 +304,6 @@ mod tests {
             input.events.push(event);
             frames.push(rings_in(&painted(&ctx, input, &mut draw)));
         }
-        drop(draw);
 
         assert!(frames[0].contains(&ring), "a pointer move is not input");
         assert!(!frames[1].contains(&ring), "the press hides the ring");

@@ -148,7 +148,9 @@ agent.
 
 - Rust 2024, with no `unsafe`. `unsafe_code` is denied. No `unwrap` or `expect`
   outside tests and startup, where failing loudly is the point.
-- rustc 1.99, pinned in `rust-toolchain.toml`. `librespot` 0.8.0 and
+- rustc 1.98.1, pinned in `rust-toolchain.toml` and in the release workflow
+  because it is the compiler the Flatpak SDK ships, so the artefacts and the
+  sandbox agree. `librespot` 0.8.0 and
   `eframe`/`egui` 0.37.0. Versions live in `[workspace.dependencies]`; a crate
   never names one.
 - egui immediate mode. There is no stylesheet and no CSS: `theme::style()` builds

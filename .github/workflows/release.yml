@@ -31,7 +31,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: 1.99.0
+          toolchain: 1.98.1
       - uses: Swatinem/rust-cache@v2
       # A tag that disagrees with the version in the tree would publish binaries
       # that call themselves something else.
@@ -83,7 +83,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: 1.99.0
+          toolchain: 1.98.1
       - uses: Swatinem/rust-cache@v2
       - name: Build
         run: cargo build --release --locked -p takofy
