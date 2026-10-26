@@ -26,9 +26,12 @@ mkdir -p "$build"
 flatpak-builder \
 	--user \
 	--force-clean \
+	--default-branch=stable \
 	--repo="$repo" \
 	--state-dir="$build/state" \
 	"$build/app" "$manifest"
 
-flatpak build-bundle "$repo" "$bundle" io.github.Tako88.Takofy
+flatpak build-bundle \
+	--runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo \
+	"$repo" "$bundle" io.github.Tako88.Takofy stable
 echo "built $bundle"

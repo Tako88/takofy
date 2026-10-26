@@ -5,6 +5,10 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  # The two platform builds need a tag; the Flatpak does not, and it is the one
+  # job whose first run is likely to need a fix. Running it by hand must not
+  # cost a release.
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -16,6 +20,7 @@ env:
 jobs:
   linux:
     name: Linux tarball
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     # The container is the glibc floor the tarball promises — 2.35, so anything
     # newer than Ubuntu 22.04 runs it — rather than whatever the runner image
@@ -74,6 +79,7 @@ jobs:
 
   windows:
     name: Windows zip
+    if: github.event_name == 'push'
     runs-on: windows-latest
     env:
       # The Visual C runtime is linked in, so the zip runs on a machine that has
@@ -102,9 +108,41 @@ jobs:
           path: takofy-*.zip
           if-no-files-found: error
 
+  flatpak:
+    name: Flatpak bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The sandbox brings its own compiler: the SDK's Rust extension carries
+      # 1.98.1, which is what rust-toolchain.toml pins.
+      - name: Install flatpak and the SDK
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends flatpak flatpak-builder
+          flatpak remote-add --user --if-not-exists flathub \
+            https://dl.flathub.org/repo/flathub.flatpakrepo
+          flatpak install --user --noninteractive flathub \
+            org.freedesktop.Sdk//25.08 \
+            org.freedesktop.Sdk.Extension.rust-stable//25.08
+      # The same script a developer runs, so there is one description of how a
+      # Flatpak is built rather than two that can disagree.
+      - name: Build
+        run: bash packaging/flatpak/build
+      - name: Pack
+        run: |
+          mkdir -p dist
+          cp packaging/flatpak/.build/io.github.Tako88.Takofy.flatpak \
+            "dist/takofy-${GITHUB_REF_NAME}-x86_64.flatpak"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flatpak
+          path: takofy-*.flatpak
+          if-no-files-found: error
+
   publish:
     name: Publish
-    needs: [linux, windows]
+    if: github.event_name == 'push'
+    needs: [linux, windows, flatpak]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4

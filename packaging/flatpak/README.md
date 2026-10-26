@@ -20,8 +20,25 @@ says otherwise. `build` refuses to run when the crate set no longer matches
 `Cargo.lock` — the alternative is a `no matching package` error ten minutes into
 a sandboxed build.
 
-A clean build takes about four minutes and produces a 75 MB bundle; the codecs,
+A clean build takes about four minutes and produces a 22 MB bundle; the codecs,
 the fonts and the whole crate set are inside it. `.build/` is ignored.
+
+## In a release
+
+Tagging runs the same `build` script on CI and attaches the bundle to the
+release as `takofy-$TAG-x86_64.flatpak`. It is a sideload, not a channel: it
+installs, it never updates, it is unsigned, and it needs
+`org.freedesktop.Platform//25.08` — which the bundle names, so `flatpak install`
+offers to fetch it from Flathub by itself.
+
+The bundle is built on the Flatpak branch `stable`, not the `master` that
+`flatpak build-bundle` defaults to. That is the branch inside Flatpak's own
+namespace (`app/io.github.Tako88.Takofy/x86_64/stable`) and has nothing to do
+with this repository's `main`; the point is that a later Flathub install, which
+publishes to `stable`, then upgrades the same ref instead of appearing beside
+it. A build from before that change is still installed as `master`, and shows up
+as a second Takofy until `flatpak uninstall --user
+io.github.Tako88.Takofy//master`.
 
 ## What the sandbox is given, and why
 

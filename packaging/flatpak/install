@@ -7,15 +7,25 @@ set -euo pipefail
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 bundle="$here/.build/io.github.Tako88.Takofy.flatpak"
+app=io.github.Tako88.Takofy
 
 if [ ! -f "$bundle" ]; then
 	echo "no bundle at $bundle; run: bash $here/build" >&2
 	exit 1
 fi
 
+# A second branch of the same app is a second entry in every launcher, and it
+# does not update with this one.
+others=$(flatpak list --user --app --columns=ref 2>/dev/null |
+	grep "^$app/" | grep -v '/stable$' || true)
+for ref in $others; do
+	echo "another branch is installed beside this one: $ref" >&2
+	echo "  flatpak uninstall --user $ref" >&2
+done
+
 flatpak install --user --reinstall --noninteractive "$bundle"
 
 if [ "${1-}" = "--no-run" ]; then
 	exit 0
 fi
-exec flatpak run io.github.Tako88.Takofy
+exec flatpak run "$app"
