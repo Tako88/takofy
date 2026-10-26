@@ -1,11 +1,32 @@
 # Takofy
 
-A fast, lean Spotify client for Windows and Linux, in Rust.
+A fast, lean Spotify client for Windows and Linux, in Rust. One binary, no
+Electron, no web view.
 
-## How it is put together
+## Features
 
-The crate boundaries, the threading model and the invariants are in
-[`docs/architecture.md`](docs/architecture.md).
+Your playlists, albums, artists, shows and Liked Songs in a three-column window
+that gives up columns as it narrows, down to a drawer for the sidebar.
+
+- Artist pages carry the discography and the artists it is heard with. Shows
+  list their episodes, albums their tracks.
+- Library filters for playlists, artists, albums and podcasts, and the same set
+  as a grid or a list.
+- Search answers tracks, then names the albums and artists those tracks came
+  from.
+- A Now Playing panel with the queue and the lyrics, following the current line
+  when the track carries timings.
+- Transport with drag-to-seek, shuffle, and repeat off, all or one. The queue is
+  reorderable by dragging.
+- Editing without leaving the window: drag a row to reorder, drag a playlist to
+  the sidebar to move it, press Delete to remove, click the heart to like. A
+  row's menu has the rest: add to a playlist or the queue, open the album or the
+  artist, copy the link.
+- Make playlists. Follow artists.
+- Spotify Connect in both directions. Send the sound to your phone or speaker,
+  or let the phone play through this window.
+- Every cover is fetched at the size its box draws it, so a full-width band is
+  not a stretched thumbnail.
 
 ## Building
 
@@ -15,19 +36,11 @@ cargo test
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-Linux needs ALSA development headers (`alsa-lib-devel` on Fedora,
-`alsa-lib` on Arch, `libasound2-dev` on Debian/Ubuntu).
+Linux needs ALSA development headers (`alsa-lib-devel` on Fedora, `alsa-lib` on
+Arch, `libasound2-dev` on Debian and Ubuntu).
 
-## Status
-
-The window is the default: `cargo run` opens it, completes the PKCE sign-in in
-the browser once, and stores the refresh token in the OS keychain. The sidebar
-lists your playlists; clicking one shows its tracks, double-clicking a track
-plays it, and the transport bar names what is playing with a position that
-advances. `cargo run -- --headless` still drives the terminal driver unchanged.
-
-Not there yet: search, folders, album art, and seeking or transport controls
-([#13](https://github.com/Tako88/takofy/issues/13)).
+Prebuilt Linux and Windows archives are attached to each release tag. System
+packages are [#57](https://github.com/Tako88/takofy/issues/57).
 
 ## Requirements
 
@@ -45,16 +58,20 @@ Not there yet: search, folders, album art, and seeking or transport controls
 
 ## `--paste`
 
-Normal login opens `http://127.0.0.1:8898/login` in the browser. If that port
-is busy, or the redirect is rejected, `cargo run -- --headless --paste` switches
-to the portless `http://127.0.0.1/login` and reads the pasted redirect URL from
-stdin.
-That portless redirect may not be registered for the client ID, so `--paste` is
-a last resort, not the primary path.
+Normal login opens `http://127.0.0.1:8898/login` in the browser. If that port is
+busy, or the redirect is rejected, `--headless --paste` switches to the portless
+`http://127.0.0.1/login` and reads the pasted redirect URL from stdin. That
+portless redirect may not be registered for the client ID, so `--paste` is a
+last resort rather than the normal path.
 
 ## A note on Spotify
 
 Takofy plays audio through [librespot](https://github.com/librespot-org/librespot),
-a community implementation of Spotify's own protocol. It needs a **Premium**
+a community implementation of Spotify's own protocol. It needs a Premium
 account, and it is not built on Spotify's public Web API or their developer
 dashboard. It is not affiliated with or endorsed by Spotify.
+
+## How it is put together
+
+The crate boundaries, the threading model and the invariants are in
+[`docs/architecture.md`](docs/architecture.md).
