@@ -204,11 +204,15 @@ impl Recovery {
         }
     }
 
+    /// The point a rebuild reloads, borrowed so the attempt can read it without
+    /// ending recovery.
+    pub fn point(&self) -> Option<&ResumePoint> {
+        self.active.as_ref().and_then(|state| state.point.as_ref())
+    }
+
     /// Whether a rebuild has a track to reload.
     pub fn has_resume(&self) -> bool {
-        self.active
-            .as_ref()
-            .is_some_and(|state| state.point.is_some())
+        self.point().is_some()
     }
 }
 

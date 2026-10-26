@@ -350,6 +350,13 @@ re-entry keeps both what was revealed and where the reader was.
 - Playback events leave librespot on a task spawned on the runtime and reach the
   window through one plain drain thread. That thread is detached, so it cannot
   delay the runtime drop.
+- The command task owns session recovery: it polls whether the session is still
+  alive, snapshots the playhead, retires the dead session, and rebuilds it under
+  a backoff. A retired drain goes silent, so the old player and the old device
+  watch cannot keep reporting. A play pressed during an outage, before
+  librespot's keep-alive notices the dead socket (up to 80 s), can still cost one
+  failed load per session generation, and the queue advances by at most that
+  one; after a drop has been detected, no dead session ever reaches a load.
 
 Shutdown runs in a fixed order: the window closes, teardown tells the command
 task to stop, the task shuts the player down, and then the runtime drops. The

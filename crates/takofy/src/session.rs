@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use librespot::core::SessionConfig;
 use takofy_core::connect::{ClusterEvent, ClusterView, ConnectError, Steer};
 use takofy_core::credentials::AccessToken;
-use takofy_core::engine::{Engine, EngineError, RootlistRead};
+use takofy_core::engine::{Engine, EngineError, Orders, RootlistRead};
 use takofy_core::playback::{Playback, PlaybackError, PlaybackEvent, Volume};
 use takofy_core::receive::Inbound;
 use takofy_core::{Resolution, TransferPlan};
@@ -26,7 +26,6 @@ use tokio::sync::oneshot::Receiver;
 
 /// How long a rebuild waits for the dead session's player thread before going
 /// ahead without it.
-#[cfg_attr(not(test), expect(dead_code))]
 const RETIRE_BUDGET: Duration = Duration::from_secs(3);
 
 /// Why a session-side operation failed, including the wiring's own state.
@@ -44,7 +43,6 @@ pub(crate) enum SessionError {
 }
 
 /// How retiring a dead session ended.
-#[cfg_attr(not(test), expect(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Retired {
     /// The old player's thread was joined.
@@ -123,6 +121,11 @@ pub(crate) struct ArtistPage {
 /// to be spawnable. `&mut self` is only where the lazily started player is
 /// written; `shutdown` consumes, because that is what joins the thread.
 pub(crate) trait SessionHost: Send + 'static {
+    /// Opens the session with `token`.
+    ///
+    /// A caller that replaces a live-but-dead engine retires it first: this
+    /// assigns the new engine over the old one, which would otherwise be left
+    /// running with its own player and sockets.
     fn connect(
         &mut self,
         token: &AccessToken,
@@ -367,6 +370,10 @@ pub(crate) trait SessionHost: Send + 'static {
     /// the next state put either way.
     fn answer_order(&self, id: RequestId, ok: bool) -> bool;
 
+    /// A handle that answers an order without borrowing this host, so a rebuild
+    /// that owns the host can still answer a phone.
+    fn orders(&self) -> Option<Orders>;
+
     /// When a pending request's budget answers it.
     fn expires(&self, id: RequestId) -> Option<Instant>;
 
@@ -396,7 +403,6 @@ pub(crate) trait SessionHost: Send + 'static {
     ///
     /// The player is joined under a budget, because a thread mid-decode can
     /// outlast it; the answer says which happened.
-    #[cfg_attr(not(test), expect(dead_code))]
     fn retire(&mut self) -> impl Future<Output = Retired> + Send;
 }
 
@@ -901,6 +907,10 @@ impl SessionHost for LiveSession {
             Some(engine) => engine.answer_order(id, ok),
             None => false,
         }
+    }
+
+    fn orders(&self) -> Option<Orders> {
+        self.engine.as_ref().map(Engine::orders)
     }
 
     fn expires(&self, id: RequestId) -> Option<Instant> {

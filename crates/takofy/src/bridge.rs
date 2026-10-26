@@ -6,12 +6,12 @@
 //! browser callback must not hold up runtime shutdown, and a detached thread
 //! dies with the process.
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use takofy_core::connect::{ClusterEvent, Steer as CoreSteer, WITHDRAW_TIMEOUT};
 use takofy_core::credentials::{AccessToken, CredentialStore};
@@ -33,7 +33,9 @@ use tokio::task::JoinSet;
 
 use crate::cover::{FETCH_TIMEOUT, MAX_CONCURRENT_COVERS, fetch_cover, spawn_cover};
 use crate::devices::SentRoster;
-use crate::session::{SessionError, SessionHost, stop_or};
+use crate::playhead::{Playhead, ResumePoint, Verdict};
+use crate::recovery::{Attempt, Change, Pacing, Recovery};
+use crate::session::{Retired, SessionError, SessionHost, stop_or};
 
 /// A handle the worker can wake to ask for the next frame.
 pub(crate) trait Waker: Send + Sync + 'static {
@@ -129,6 +131,25 @@ enum Event {
     Command(Option<Command>),
     /// A request from the account, or `None` once that stream has ended.
     Inbound(Option<Inbound>),
+    /// The once-a-second look at whether the session is still alive.
+    LinkPoll,
+    /// The rebuild schedule fell due.
+    Retry,
+    /// A playback drain judged a failure to be the link, naming its generation;
+    /// `None` once the signal channel has closed.
+    LinkSignal(Option<u64>),
+}
+
+/// How one rebuild attempt ended.
+enum Rebuilt {
+    /// The session is back and the track reloaded.
+    Done,
+    /// A step failed, and the schedule decides when to try again.
+    Failed,
+    /// A command arrived first, and waits in the deferred queue.
+    Interrupted,
+    /// The window closed.
+    Stopped,
 }
 
 /// Whether a host call finished or was abandoned because the window closed.
@@ -148,6 +169,9 @@ impl Step {
 /// the pump has ended.
 struct Devices {
     watching: bool,
+    /// Whether the watch was running when its session was retired, so a rebuilt
+    /// one starts it again.
+    rewatch: bool,
     inbound: Option<UnboundedReceiver<Inbound>>,
     sent: SentRoster,
     dead: Arc<AtomicBool>,
@@ -157,9 +181,44 @@ impl Default for Devices {
     fn default() -> Self {
         Self {
             watching: false,
+            rewatch: false,
             inbound: None,
             sent: SentRoster::default(),
             dead: Arc::new(AtomicBool::new(false)),
+        }
+    }
+}
+
+impl Devices {
+    /// Stops the watch this session owned: its request stream, and the
+    /// end-of-stream notice its drain would otherwise send.
+    ///
+    /// A watch that was already due to be restarted stays due, so a session
+    /// retired twice is still watched again by the rebuild.
+    fn retire(&mut self) {
+        self.rewatch |= self.watching;
+        self.watching = false;
+        self.inbound = None;
+        self.dead = Arc::new(AtomicBool::new(false));
+    }
+}
+
+/// What the drains need to know about the session that feeds them.
+#[derive(Clone)]
+struct Drains {
+    /// Set when a session is retired, so a drain from the old one goes quiet
+    /// even as its streams end.
+    retired: Arc<AtomicBool>,
+    playhead: Playhead,
+    signal: UnboundedSender<u64>,
+}
+
+impl Drains {
+    fn new(signal: UnboundedSender<u64>) -> Self {
+        Self {
+            retired: Arc::new(AtomicBool::new(false)),
+            playhead: Playhead::new(),
+            signal,
         }
     }
 }
@@ -231,21 +290,26 @@ pub(crate) fn start<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
     store: Arc<dyn CredentialStore>,
     source: Arc<S>,
 ) -> (UiEnd, WakeSlot, Worker) {
-    start_with(handle, host, store, source, WITHDRAW_TIMEOUT)
+    start_with(handle, host, store, source, WITHDRAW_TIMEOUT, Pacing::LIVE)
 }
 
-/// Starts the worker with an explicit outer withdraw bound.
+/// Starts the worker with an explicit outer withdraw bound and rebuild
+/// schedule.
 fn start_with<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
     handle: &Handle,
     host: H,
     store: Arc<dyn CredentialStore>,
     source: Arc<S>,
     withdraw_timeout: Duration,
+    pacing: Pacing,
 ) -> (UiEnd, WakeSlot, Worker) {
     let (updates_tx, updates_rx) = channel();
     let (commands_tx, mut commands_rx) = tokio::sync::mpsc::unbounded_channel();
     let (tokens_tx, mut tokens_rx) = tokio::sync::mpsc::unbounded_channel();
     let (stop_tx, mut stop_rx) = oneshot::channel();
+    // A playback drain names the generation whose failure it judged, so a
+    // signal from a retired drain cannot start a rebuild for the live one.
+    let (signal_tx, mut signal_rx) = tokio::sync::mpsc::unbounded_channel();
     let slot = WakeSlot::default();
     let notifier = Notifier {
         tx: updates_tx,
@@ -274,6 +338,26 @@ fn start_with<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
         let mut connected = false;
         let mut devices = Devices::default();
         let mut token: Option<AccessToken> = None;
+        let mut recovery = Recovery::new(pacing);
+        let mut drains = Drains::new(signal_tx);
+        // Whether an engine is up. A dead engine is still up until it is
+        // retired, and a retired one is gone even though the account is signed
+        // in.
+        let mut engine_up = false;
+        // Whether the window already carries the stuck words, so the schedule
+        // says them once.
+        let mut stalled = false;
+        // Whether the window is still showing the loss, so it can be settled
+        // when the rebuild finds nothing left to reload.
+        let mut reconnecting = false;
+        // Commands that arrived during an attempt and have no say in it, kept
+        // in order until the attempt ends.
+        let mut deferred: VecDeque<Command> = VecDeque::new();
+        // The one refresh that may be in flight, kept so a cancelled attempt
+        // does not start a second exchange with the rotating token.
+        let mut refresh: Option<Refresh> = None;
+        let mut poll = tokio::time::interval(pacing.poll);
+        poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         // Built once: the timeout, the redirect ban, and the bounded pool live
         // on the client, and covers are the only thing it is ever used for.
         // Redirects are refused so an allowlisted host cannot hand the fetch to
@@ -297,12 +381,25 @@ fn start_with<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
         let mut cover_tasks = JoinSet::new();
         loop {
             reap_finished_covers(&mut cover_tasks);
-            let event = tokio::select! {
-                biased;
-                _ = &mut stop_rx => break,
-                received = tokens_rx.recv() => Event::Token(received),
-                command = commands_rx.recv() => Event::Command(command),
-                request = next_inbound(&mut devices.inbound) => Event::Inbound(request),
+            // A command an attempt set aside, the interrupting one included,
+            // is run here in the order it was sent.
+            let event = match deferred
+                .pop_front()
+                .map(|command| Event::Command(Some(command)))
+            {
+                Some(event) => event,
+                None => tokio::select! {
+                    biased;
+                    _ = &mut stop_rx => break,
+                    received = tokens_rx.recv() => Event::Token(received),
+                    command = commands_rx.recv() => Event::Command(command),
+                    request = next_inbound(&mut devices.inbound) => Event::Inbound(request),
+                    _ = poll.tick() => Event::LinkPoll,
+                    _ = sleep_until(recovery.wake_at()) => Event::Retry,
+                    generation = signal_rx.recv(), if !signal_rx.is_closed() => {
+                        Event::LinkSignal(generation)
+                    }
+                },
             };
             match event {
                 Event::Token(Some(received)) => {
@@ -320,11 +417,103 @@ fn start_with<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                         &mut connected,
                     )
                     .await;
+                    if connected {
+                        engine_up = true;
+                    }
                     if step.stopped() {
                         break;
                     }
                 }
                 Event::Token(None) => {}
+                Event::LinkPoll => {
+                    let down = host.is_down();
+                    drains.playhead.set_down(down);
+                    if down && !recovery.is_active() {
+                        let step = lose_link(
+                            &mut host,
+                            &mut stop_rx,
+                            &task_notifier,
+                            &mut devices,
+                            &drains,
+                            &mut recovery,
+                            &mut engine_up,
+                            &mut reconnecting,
+                        )
+                        .await;
+                        if step.stopped() {
+                            break;
+                        }
+                    }
+                }
+                Event::LinkSignal(generation) => {
+                    let live = generation.is_some_and(|generation| {
+                        link_signal_applies(generation, &drains.playhead, &recovery)
+                    });
+                    if live {
+                        let step = lose_link(
+                            &mut host,
+                            &mut stop_rx,
+                            &task_notifier,
+                            &mut devices,
+                            &drains,
+                            &mut recovery,
+                            &mut engine_up,
+                            &mut reconnecting,
+                        )
+                        .await;
+                        if step.stopped() {
+                            break;
+                        }
+                    }
+                }
+                Event::Retry => {
+                    if !recovery.due(Instant::now()) {
+                        continue;
+                    }
+                    let point = recovery.point().cloned();
+                    let had_point = point.is_some();
+                    let outcome = rebuild_attempt(
+                        &mut host,
+                        &mut stop_rx,
+                        &task_notifier,
+                        &mut devices,
+                        &mut drains,
+                        &mut commands_rx,
+                        &mut deferred,
+                        &mut refresh,
+                        &mut token,
+                        &mut engine_up,
+                        &store,
+                        &source,
+                        point,
+                        pacing.attempt,
+                    )
+                    .await;
+                    let stalled_now = settle(&mut recovery, &outcome, Instant::now());
+                    if stalled_now == Some(Attempt::Stalled) && !stalled {
+                        stalled = true;
+                        task_notifier.send(Update::Transport(TransportUpdate::Failed(
+                            Failure::Reconnect,
+                        )));
+                    }
+                    match outcome {
+                        Rebuilt::Done => {
+                            // Nothing is coming back to settle the transport, so
+                            // whatever the window was last told about the loss
+                            // ends here.
+                            if !had_point && (reconnecting || stalled) {
+                                task_notifier.send(Update::Transport(TransportUpdate::Stopped));
+                            }
+                            stalled = false;
+                            reconnecting = false;
+                        }
+                        Rebuilt::Failed => {}
+                        // What ended it is already queued behind the commands
+                        // the attempt set aside, so the loop runs it next.
+                        Rebuilt::Interrupted => {}
+                        Rebuilt::Stopped => break,
+                    }
+                }
                 Event::Command(Some(Command::Authorize)) => {
                     spawn_authorize(
                         task_notifier.clone(),
@@ -334,6 +523,7 @@ fn start_with<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                     );
                 }
                 Event::Command(Some(Command::ReloadLibrary)) => {
+                    let signed_in = connected;
                     let step = load_library(
                         &mut host,
                         &mut stop_rx,
@@ -342,6 +532,9 @@ fn start_with<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                         &mut connected,
                     )
                     .await;
+                    if connected && !signed_in {
+                        engine_up = true;
+                    }
                     if step.stopped() {
                         break;
                     }
@@ -590,6 +783,7 @@ fn start_with<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                         &mut stop_rx,
                         &task_notifier,
                         &mut devices,
+                        &drains,
                         connected,
                     )
                     .await;
@@ -603,6 +797,7 @@ fn start_with<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                         &mut stop_rx,
                         &task_notifier,
                         &mut devices,
+                        &drains,
                         connected,
                     )
                     .await;
@@ -645,20 +840,27 @@ fn start_with<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                     }
                 }
                 Event::Command(Some(Command::Play { uri })) => {
-                    play(&mut host, &task_notifier, &uri);
+                    let step = play_now(
+                        &mut host,
+                        &mut stop_rx,
+                        &task_notifier,
+                        &mut devices,
+                        &drains,
+                        &mut recovery,
+                        &mut engine_up,
+                        &mut reconnecting,
+                        &uri,
+                    )
+                    .await;
+                    if step.stopped() {
+                        break;
+                    }
                 }
                 // The window applied an order, or could not. An entry the budget
                 // already answered is gone: the phone has been told `Failure`,
                 // and the next report put corrects what it shows.
                 Event::Command(Some(Command::Answer { id, ok })) => {
-                    if host.answer_order(id, ok) {
-                        log::info!(target: LANDING_LOG_TARGET, "answer delivered");
-                    } else {
-                        log::info!(
-                            target: LANDING_LOG_TARGET,
-                            "answer found the entry gone"
-                        );
-                    }
+                    deliver_answer(host.answer_order(id, ok));
                 }
                 // A report only has a wire to reach while the device is on the
                 // account; before that the engine's own slot is not announced.
@@ -667,10 +869,34 @@ fn start_with<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                         host.report(report);
                     }
                 }
-                Event::Command(Some(Command::Pause)) => host.pause(),
-                Event::Command(Some(Command::Resume)) => host.resume(),
-                Event::Command(Some(Command::Stop)) => host.stop(),
-                Event::Command(Some(Command::Seek { position_ms })) => host.seek(position_ms),
+                Event::Command(Some(Command::Pause)) => {
+                    if recovery.is_active() {
+                        recovery.adjust(Change::Play(false));
+                    } else {
+                        host.pause();
+                    }
+                }
+                Event::Command(Some(Command::Resume)) => {
+                    if recovery.is_active() {
+                        recovery.adjust(Change::Play(true));
+                    } else {
+                        host.resume();
+                    }
+                }
+                Event::Command(Some(Command::Stop)) => {
+                    if recovery.is_active() {
+                        recovery.adjust(Change::Clear);
+                    } else {
+                        host.stop();
+                    }
+                }
+                Event::Command(Some(Command::Seek { position_ms })) => {
+                    if recovery.is_active() {
+                        recovery.adjust(Change::Seek(position_ms));
+                    } else {
+                        host.seek(position_ms);
+                    }
+                }
                 Event::Command(Some(Command::Volume { percent })) => host.set_volume(percent),
                 // The arm only spawns: the fetch must not park the command loop
                 // that also awaits host calls. A signed-out window has no cover
@@ -702,6 +928,7 @@ fn start_with<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                                 &mut host,
                                 &mut stop_rx,
                                 &task_notifier,
+                                &drains,
                                 request.id,
                                 instruction,
                             )
@@ -1616,15 +1843,17 @@ fn ends_playability(error: &SessionError) -> bool {
 }
 
 /// Starts the player if needed and hands the one drain thread its events.
-fn play<H: SessionHost>(host: &mut H, notifier: &Notifier, uri: &str) {
+fn play<H: SessionHost>(host: &mut H, notifier: &Notifier, drains: &Drains, uri: &str) {
+    drains.playhead.loaded(uri, 0, true, Instant::now());
     match host.play(uri) {
         Ok(()) => {
             // The device can be picked from now on, so the account is told so
             // before the player's first event arrives.
             host.set_playable(true);
-            ensure_drain(host, notifier);
+            ensure_drain(host, notifier, drains);
         }
         Err(error) => {
+            drains.playhead.clear();
             if ends_playability(&error) {
                 host.set_playable(false);
             }
@@ -1635,15 +1864,371 @@ fn play<H: SessionHost>(host: &mut H, notifier: &Notifier, uri: &str) {
     }
 }
 
+/// Plays `uri` now, or drops the link first when the session is dead or being
+/// rebuilt.
+///
+/// A play pressed mid-rebuild is not handed to the player: the window already
+/// loads the pressed track once the session is back.
+#[allow(clippy::too_many_arguments)]
+async fn play_now<H: SessionHost>(
+    host: &mut H,
+    stop: &mut StopReceiver<()>,
+    notifier: &Notifier,
+    devices: &mut Devices,
+    drains: &Drains,
+    recovery: &mut Recovery,
+    engine_up: &mut bool,
+    reconnecting: &mut bool,
+    uri: &str,
+) -> Step {
+    if !host.is_down() && !recovery.is_active() {
+        play(host, notifier, drains, uri);
+        return Step::Done;
+    }
+    if !recovery.is_active() {
+        let step = lose_link(
+            host,
+            stop,
+            notifier,
+            devices,
+            drains,
+            recovery,
+            engine_up,
+            reconnecting,
+        )
+        .await;
+        if step.stopped() {
+            return Step::Stopped;
+        }
+    }
+    recovery.defer(
+        ResumePoint {
+            uri: uri.to_owned(),
+            position_ms: 0,
+            play: true,
+        },
+        Instant::now(),
+    );
+    Step::Done
+}
+
+/// Loads one track, recording it for the playhead and settling a paused load's
+/// transport, which librespot may not announce.
+fn start_load<H: SessionHost>(
+    host: &mut H,
+    playhead: &Playhead,
+    notifier: &Notifier,
+    uri: &str,
+    position_ms: u32,
+    play: bool,
+) -> Result<(), SessionError> {
+    playhead.loaded(uri, position_ms, play, Instant::now());
+    host.load(uri, position_ms, play)?;
+    if !play {
+        notifier.send(Update::Transport(TransportUpdate::Position {
+            position_ms,
+            paused: true,
+        }));
+    }
+    Ok(())
+}
+
 /// Hands the player's events to the one drain thread, if a player was started
 /// since the last call.
 ///
 /// A transfer normally follows a local play, so this is usually a no-op. A
 /// stale picker row can still send one to a window that never played, and then
 /// preparing the player would leave its events with nobody to read them.
-fn ensure_drain<H: SessionHost>(host: &mut H, notifier: &Notifier) {
+fn ensure_drain<H: SessionHost>(host: &mut H, notifier: &Notifier, drains: &Drains) {
     if let Some(events) = host.take_events() {
-        spawn_drain(notifier.clone(), events);
+        spawn_drain(notifier.clone(), events, drains);
+    }
+}
+
+/// Waits for a deadline that may not exist; an idle schedule never wakes.
+async fn sleep_until(at: Option<Instant>) {
+    match at {
+        Some(at) => tokio::time::sleep_until(tokio::time::Instant::from_std(at)).await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Whether a drain's signal is about the current session and no rebuild is
+/// already underway.
+fn link_signal_applies(generation: u64, playhead: &Playhead, recovery: &Recovery) -> bool {
+    generation == playhead.generation() && !recovery.is_active()
+}
+
+/// Applies one attempt's outcome to the schedule, so every exit leaves the next
+/// attempt either cleared or moved forward.
+fn settle(recovery: &mut Recovery, outcome: &Rebuilt, now: Instant) -> Option<Attempt> {
+    match outcome {
+        Rebuilt::Done => {
+            recovery.recovered();
+            None
+        }
+        Rebuilt::Failed => Some(recovery.failed(now)),
+        Rebuilt::Interrupted => {
+            recovery.interrupted(now);
+            None
+        }
+        Rebuilt::Stopped => None,
+    }
+}
+
+/// Silences what a session fed before it is replaced: its drains, its device
+/// watch, and the flag that says an engine is up.
+fn silence_session(devices: &mut Devices, drains: &Drains, engine_up: &mut bool) {
+    // The old streams end with the session; a retired drain must not announce
+    // that end as a lost device.
+    drains.retired.store(true, Ordering::SeqCst);
+    devices.retire();
+    *engine_up = false;
+}
+
+/// Says which way one order's answer landed, in the same words from the loop
+/// and from a rebuild that answers it while it runs.
+fn deliver_answer(answered: bool) {
+    if answered {
+        log::info!(target: LANDING_LOG_TARGET, "answer delivered");
+    } else {
+        log::info!(
+            target: LANDING_LOG_TARGET,
+            "answer found the entry gone"
+        );
+    }
+}
+
+/// Begins recovering from a dead link: snapshot the track, silence the old
+/// drains, retire the session, and tell the window when there is something to
+/// come back to.
+#[allow(clippy::too_many_arguments)]
+async fn lose_link<H: SessionHost>(
+    host: &mut H,
+    stop: &mut StopReceiver<()>,
+    notifier: &Notifier,
+    devices: &mut Devices,
+    drains: &Drains,
+    recovery: &mut Recovery,
+    engine_up: &mut bool,
+    reconnecting: &mut bool,
+) -> Step {
+    if recovery.is_active() {
+        return Step::Done;
+    }
+    let now = Instant::now();
+    recovery.lost(now, drains.playhead.resume_point(now));
+    silence_session(devices, drains, engine_up);
+    let retired = match stop_or(stop, host.retire()).await {
+        None => return Step::Stopped,
+        Some(retired) => retired,
+    };
+    log::info!(
+        "session retired: {}",
+        match retired {
+            Retired::Joined => "joined",
+            Retired::Lingering => "lingering",
+        }
+    );
+    if recovery.has_resume() {
+        notifier.send(Update::Transport(TransportUpdate::Reconnecting));
+        *reconnecting = true;
+    }
+    Step::Done
+}
+
+/// Whether a command has a say in where a rebuild resumes, or signs in again,
+/// so it is handled at once instead of after the attempt.
+fn interrupts_attempt(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::Play { .. }
+            | Command::Pause
+            | Command::Resume
+            | Command::Seek { .. }
+            | Command::Stop
+            | Command::Authorize
+    )
+}
+
+/// One bounded attempt to bring the session and the player back, raced against
+/// the window closing and the next command that retargets it.
+#[allow(clippy::too_many_arguments)]
+async fn rebuild_attempt<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
+    host: &mut H,
+    stop: &mut StopReceiver<()>,
+    notifier: &Notifier,
+    devices: &mut Devices,
+    drains: &mut Drains,
+    commands: &mut UnboundedReceiver<Command>,
+    deferred: &mut VecDeque<Command>,
+    refresh: &mut Option<Refresh>,
+    token: &mut Option<AccessToken>,
+    engine_up: &mut bool,
+    store: &Arc<dyn CredentialStore>,
+    source: &Arc<S>,
+    point: Option<ResumePoint>,
+    budget: Duration,
+) -> Rebuilt {
+    // Taken before the attempt borrows the host, so an order can be answered
+    // while a step holds it.
+    let orders = host.orders();
+    // Set around the watch, whose start cannot be dropped, and set once a
+    // command has ended the attempt while it waits there.
+    let arming = AtomicBool::new(false);
+    let ended = AtomicBool::new(false);
+    let mut work = std::pin::pin!(async {
+        // A live-but-dead engine is closed before anything replaces it:
+        // `connect` assigns over the field, leaving the old session and its
+        // player running.
+        if host.is_down() {
+            silence_session(devices, drains, engine_up);
+            host.retire().await;
+        }
+        if !*engine_up {
+            let fresh = refresh_token(refresh, store, source).await?;
+            host.connect(&fresh).await?;
+            *token = Some(fresh);
+            *engine_up = true;
+            // A new session opens a new generation, and the drains of the old
+            // one stay retired.
+            drains.playhead.next_generation();
+            drains.retired = Arc::new(AtomicBool::new(false));
+            // The account still names the track from before the drop. A fresh
+            // state is honest until the new player reports what it is doing.
+            host.report(None);
+        }
+        host.prepare_player()?;
+        ensure_drain(host, notifier, drains);
+        if devices.rewatch {
+            arm_watch(host, devices);
+            // Not raced against the commands: a start that is dropped spends
+            // the session's one dealer builder, so this one is always
+            // answered.
+            arming.store(true, Ordering::SeqCst);
+            let result = host.watch_devices().await;
+            arming.store(false, Ordering::SeqCst);
+            adopt_watch(host, notifier, devices, drains, result);
+            if ended.load(Ordering::SeqCst) {
+                // What ended the attempt waited for the watch, and the reload
+                // is the next attempt's business.
+                return Ok(());
+            }
+        }
+        if let Some(point) = point {
+            start_load(
+                host,
+                &drains.playhead,
+                notifier,
+                &point.uri,
+                point.position_ms,
+                point.play,
+            )?;
+        }
+        Ok::<(), SessionError>(())
+    });
+    let raced = async {
+        loop {
+            tokio::select! {
+                biased;
+                _ = &mut *stop => return Rebuilt::Stopped,
+                // Polled before the commands, so a stream of them cannot hold
+                // the attempt still.
+                result = &mut work => {
+                    return match result {
+                        Ok(()) if ended.load(Ordering::SeqCst) => Rebuilt::Interrupted,
+                        Ok(()) => Rebuilt::Done,
+                        Err(error) => {
+                            log::info!("rebuild step failed: {}", error.kind());
+                            Rebuilt::Failed
+                        }
+                    };
+                }
+                command = commands.recv() => match command {
+                    // An answer is the phone's, not the attempt's: it is
+                    // delivered at once and the attempt carries on.
+                    Some(Command::Answer { id, ok }) => {
+                        deliver_answer(orders.as_ref().is_some_and(|orders| orders.answer(id, ok)));
+                    }
+                    Some(command)
+                        if interrupts_attempt(&command) && arming.load(Ordering::SeqCst) =>
+                    {
+                        // The watch cannot be dropped, but an attempt that
+                        // did not finish its track has not rebuilt it.
+                        ended.store(true, Ordering::SeqCst);
+                        deferred.push_back(command);
+                    }
+                    Some(command) if interrupts_attempt(&command) => {
+                        // It joins the commands already waiting, so nothing
+                        // overtakes the order the window sent them in.
+                        deferred.push_back(command);
+                        return Rebuilt::Interrupted;
+                    }
+                    // Anything else is no reason to drop an attempt: it waits
+                    // its turn, in order, once the attempt is over.
+                    Some(command) => deferred.push_back(command),
+                    None => return Rebuilt::Stopped,
+                },
+            }
+        }
+    };
+    match tokio::time::timeout(budget, raced).await {
+        Ok(outcome) => outcome,
+        Err(_) => {
+            log::info!("rebuild attempt timed out");
+            Rebuilt::Failed
+        }
+    }
+}
+
+/// The one token refresh that may be in flight.
+type Refresh = oneshot::Receiver<Option<AccessToken>>;
+
+/// Starts one refresh on a detached thread, so a blocking exchange cannot hold
+/// up the runtime's drop.
+fn start_refresh<S: TokenSource + Send + Sync + 'static>(
+    store: &Arc<dyn CredentialStore>,
+    source: &Arc<S>,
+) -> Refresh {
+    let (tx, rx) = oneshot::channel();
+    let store = Arc::clone(store);
+    let source = Arc::clone(source);
+    std::thread::spawn(move || {
+        let answer = match resume(store.as_ref(), source.as_ref()) {
+            Ok(Some(token)) => Some(token),
+            // A revoked sign-in and an offline machine look the same here.
+            Ok(None) | Err(_) => None,
+        };
+        let _ = tx.send(answer);
+    });
+    rx
+}
+
+/// Awaits the refresh the task already has in flight, or starts the one it does
+/// not.
+///
+/// The receiver stays in the task across a cancelled attempt, so the next one
+/// waits on the same exchange instead of rotating the token a second time.
+async fn refresh_token<S: TokenSource + Send + Sync + 'static>(
+    pending: &mut Option<Refresh>,
+    store: &Arc<dyn CredentialStore>,
+    source: &Arc<S>,
+) -> Result<AccessToken, SessionError> {
+    if pending.is_none() {
+        *pending = Some(start_refresh(store, source));
+    }
+    let answer = std::future::poll_fn(|cx| match pending.as_mut() {
+        Some(receiver) => std::future::Future::poll(std::pin::Pin::new(receiver), cx).map(Some),
+        None => std::task::Poll::Ready(None),
+    })
+    .await;
+    *pending = None;
+    match answer {
+        Some(Ok(Some(token))) => Ok(token),
+        Some(Ok(None)) | Some(Err(_)) | None => {
+            log::info!("session refresh failed");
+            Err(SessionError::NotConnected)
+        }
     }
 }
 
@@ -1715,6 +2300,7 @@ async fn serve_landing<H: SessionHost>(
     host: &mut H,
     stop: &mut StopReceiver<()>,
     notifier: &Notifier,
+    drains: &Drains,
     id: RequestId,
     instruction: Instruction,
 ) -> Step {
@@ -1759,7 +2345,7 @@ async fn serve_landing<H: SessionHost>(
         return Step::Done;
     }
     host.set_playable(true);
-    ensure_drain(host, notifier);
+    ensure_drain(host, notifier, drains);
     log::info!(target: LANDING_LOG_TARGET, "landing player ready");
 
     // The phone's own pages cost no read; a context is read only when they are
@@ -1831,7 +2417,10 @@ async fn serve_landing<H: SessionHost>(
 
     // A loss between the announcement and the load leaves the player paused,
     // which is where the transport settles through its own event.
-    if let Err(error) = host.load(
+    if let Err(error) = start_load(
+        host,
+        &drains.playhead,
+        notifier,
         &current,
         landing.position_ms,
         landing.playing && host.holding(),
@@ -1888,6 +2477,7 @@ async fn watch_devices<H: SessionHost>(
     stop: &mut StopReceiver<()>,
     notifier: &Notifier,
     devices: &mut Devices,
+    drains: &Drains,
     connected: bool,
 ) -> Step {
     if !connected {
@@ -1897,6 +2487,19 @@ async fn watch_devices<H: SessionHost>(
     if devices.watching {
         return Step::Done;
     }
+    arm_watch(host, devices);
+    match stop_or(stop, host.watch_devices()).await {
+        None => Step::Stopped,
+        Some(result) => {
+            adopt_watch(host, notifier, devices, drains, result);
+            Step::Done
+        }
+    }
+}
+
+/// Readies the player and marks the watch as running, before the dealer call so
+/// a racing request cannot start it twice.
+fn arm_watch<H: SessionHost>(host: &mut H, devices: &mut Devices) {
     // The audio path is readied before the device is announced, so the account
     // is told this window can play before anything here has played. Without it
     // the phone can only pick this device after a local play, which makes a
@@ -1912,13 +2515,20 @@ async fn watch_devices<H: SessionHost>(
             log::warn!("device prepare failed: {}", error.kind());
         }
     }
-    // Set before the await: a request that arrives while the start is in flight
-    // must not reach the builder a second time.
     devices.watching = true;
     devices.dead.store(false, Ordering::SeqCst);
-    match stop_or(stop, host.watch_devices()).await {
-        None => Step::Stopped,
-        Some(Err(error)) => {
+}
+
+/// Adopts one watch's answer: its streams, or the failure the window is told.
+fn adopt_watch<H: SessionHost>(
+    host: &mut H,
+    notifier: &Notifier,
+    devices: &mut Devices,
+    drains: &Drains,
+    result: Result<(), SessionError>,
+) {
+    match result {
+        Err(error) => {
             log_device_error(&error);
             devices.watching = false;
             let failure = if error.devices_terminal() {
@@ -1927,15 +2537,16 @@ async fn watch_devices<H: SessionHost>(
                 Failure::Devices
             };
             notifier.send(device_failure(failure));
-            Step::Done
         }
-        Some(Ok(())) => {
+        Ok(()) => {
+            devices.rewatch = false;
             if let Some(events) = host.take_devices() {
                 spawn_device_drain(
                     notifier.clone(),
                     events,
                     devices.sent.clone(),
                     Arc::clone(&devices.dead),
+                    Arc::clone(&drains.retired),
                 );
             } else {
                 // No stream to read, but the device was announced: keep
@@ -1945,7 +2556,6 @@ async fn watch_devices<H: SessionHost>(
             // Taken beside the events: the loop answers requests through it,
             // and a stream with nobody to read it would refuse them untold.
             devices.inbound = host.take_inbound();
-            Step::Done
         }
     }
 }
@@ -1957,10 +2567,11 @@ async fn refresh_devices<H: SessionHost>(
     stop: &mut StopReceiver<()>,
     notifier: &Notifier,
     devices: &mut Devices,
+    drains: &Drains,
     connected: bool,
 ) -> Step {
     if !devices.watching {
-        return watch_devices(host, stop, notifier, devices, connected).await;
+        return watch_devices(host, stop, notifier, devices, drains, connected).await;
     }
     if devices.dead.load(Ordering::SeqCst) {
         notifier.send(device_failure(Failure::DevicesOff));
@@ -2137,9 +2748,13 @@ fn spawn_device_drain(
     mut events: UnboundedReceiver<ClusterEvent>,
     sent: SentRoster,
     dead: Arc<AtomicBool>,
+    retired: Arc<AtomicBool>,
 ) {
     std::thread::spawn(move || {
         while let Some(event) = events.blocking_recv() {
+            if retired.load(Ordering::SeqCst) {
+                return;
+            }
             match event {
                 ClusterEvent::View(view) => {
                     for update in sent.updates(&view) {
@@ -2158,19 +2773,39 @@ fn spawn_device_drain(
             }
         }
         // The pump is gone while the window is not: a stale remote would
-        // otherwise keep advancing with nobody left to report it. The flag
-        // keeps a refresh from announcing on a stream that will never push.
+        // otherwise keep advancing with nobody left to report it.
         dead.store(true, Ordering::SeqCst);
-        notifier.send(device_failure(Failure::DevicesOff));
+        if !retired.load(Ordering::SeqCst) {
+            notifier.send(device_failure(Failure::DevicesOff));
+        }
     });
 }
 
 /// Drains playback events onto the update channel for as long as the player
 /// lives. A plain thread needs no runtime, so `blocking_recv` cannot delay the
 /// runtime's drop.
-fn spawn_drain(notifier: Notifier, mut events: UnboundedReceiver<PlaybackEvent>) {
+///
+/// A failure the playhead reads as the link is withheld, and its generation is
+/// signalled instead: the command task rebuilds, and the reload decides what to
+/// tell the window.
+fn spawn_drain(notifier: Notifier, mut events: UnboundedReceiver<PlaybackEvent>, drains: &Drains) {
+    let retired = Arc::clone(&drains.retired);
+    let playhead = drains.playhead.clone();
+    let signal = drains.signal.clone();
+    let generation = playhead.generation();
     std::thread::spawn(move || {
         while let Some(event) = events.blocking_recv() {
+            if retired.load(Ordering::SeqCst) {
+                return;
+            }
+            let now = Instant::now();
+            if event == PlaybackEvent::Unavailable
+                && playhead.judge_unavailable(generation, now) != Verdict::Forward
+            {
+                let _ = signal.send(generation);
+                continue;
+            }
+            playhead.observe(generation, &event, now);
             notifier.send(transport_of(&event));
         }
     });
@@ -2207,6 +2842,7 @@ pub(crate) fn playback_failure(error: &SessionError) -> Failure {
     log::warn!("playback failure: {}", error.kind());
     match error {
         SessionError::Playback(PlaybackError::NoAudioDevice) => Failure::NoAudioDevice,
+        SessionError::LinkLost => Failure::Reconnect,
         _ => Failure::Other,
     }
 }
@@ -2540,6 +3176,79 @@ mod tests {
                 .take()
                 .expect("interactive was scripted")
         }
+    }
+
+    /// A refresh source that answers a queue, and can hold one answer so a test
+    /// can act while it is in flight.
+    #[derive(Default)]
+    struct ScriptedSource {
+        refreshes: Mutex<std::collections::VecDeque<Result<TokenSet, SourceError>>>,
+        /// One sender per refresh, so a test can see each one begin.
+        started: Mutex<std::collections::VecDeque<Sender<()>>>,
+        /// One gate per refresh; a refresh waits for its gate before answering.
+        gates: Mutex<std::collections::VecDeque<Receiver<()>>>,
+        /// How many refreshes have answered, so a test can count the attempts.
+        delivered: AtomicUsize,
+    }
+
+    impl ScriptedSource {
+        fn sequencer(results: Vec<Result<TokenSet, SourceError>>) -> Self {
+            Self {
+                refreshes: Mutex::new(results.into()),
+                ..Self::default()
+            }
+        }
+
+        /// Makes the next refresh announce its start and wait for the returned
+        /// sender to release it.
+        fn hold_next(&self) -> (Sender<()>, Receiver<()>) {
+            let (started, start) = channel();
+            let (release, gate) = channel();
+            self.started.lock().expect("lock").push_back(started);
+            self.gates.lock().expect("lock").push_back(gate);
+            (release, start)
+        }
+    }
+
+    impl TokenSource for ScriptedSource {
+        fn refresh(&self, _token: &RefreshToken) -> Result<TokenSet, SourceError> {
+            let started = self.started.lock().expect("lock").pop_front();
+            if let Some(started) = started {
+                let _ = started.send(());
+            }
+            // Popped into a binding first: a gate held in the `if let` scrutinee
+            // would keep this lock while it waits.
+            let gate = self.gates.lock().expect("lock").pop_front();
+            if let Some(gate) = gate {
+                let _ = gate.recv();
+            }
+            let answer = self
+                .refreshes
+                .lock()
+                .expect("lock")
+                .pop_front()
+                .unwrap_or(Err(SourceError {
+                    kind: SourceErrorKind::Other,
+                }));
+            self.delivered.fetch_add(1, Ordering::SeqCst);
+            answer
+        }
+
+        fn interactive(&self) -> Result<TokenSet, SourceError> {
+            Err(SourceError {
+                kind: SourceErrorKind::Other,
+            })
+        }
+    }
+
+    fn good(value: &str) -> Result<TokenSet, SourceError> {
+        Ok(token_set(value, None))
+    }
+
+    fn no_token() -> Result<TokenSet, SourceError> {
+        Err(SourceError {
+            kind: SourceErrorKind::Other,
+        })
     }
 
     #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -2886,6 +3595,8 @@ mod tests {
     enum WatchScript {
         #[default]
         Ready,
+        /// Succeeds once the test releases it, so a start can be held open.
+        Held,
         /// A start that failed before anything was subscribed.
         Fail,
         /// The start reports success with no stream to hand over, which is
@@ -2985,11 +3696,21 @@ mod tests {
         Held,
     }
 
+    /// A scripted session retirement. The default joins at once.
+    #[derive(Clone, Copy, Default)]
+    enum RetireScript {
+        #[default]
+        Ok,
+        /// Never answers, so a test can stop the window mid-retirement.
+        Pending,
+    }
+
     /// One host call, in the order the command loop made it.
     #[derive(Clone, Debug, PartialEq, Eq)]
     enum Call {
         Play(String),
         Prepare,
+        Volume(u16),
         Resolve(String),
         Accept(RequestId),
         Answer(RequestId, bool),
@@ -3051,6 +3772,8 @@ mod tests {
         /// The sender that says the held load started, and the receiver that
         /// lets it finish.
         load_gate: Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
+        /// The gate a held watch waits behind before it answers.
+        watch_gate: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
         /// Whether giving the sound back is refused.
         sound_release_fails: AtomicBool,
         /// The answer each holding check gives; the last entry repeats.
@@ -3064,6 +3787,14 @@ mod tests {
         calls: Mutex<Vec<Call>>,
         /// Whether the session is known to be dead.
         down: AtomicBool,
+        /// How retiring is scripted.
+        retire_script: Mutex<RetireScript>,
+        retire_started: Mutex<Option<Sender<()>>>,
+        /// The connect count at each retirement, so the retire-before-connect
+        /// order is visible.
+        retires_at_connect: Mutex<Vec<usize>>,
+        /// The token the last connect was handed.
+        last_connect_token: Mutex<Option<String>>,
         /// Every request the loop refused, in order.
         refusals: Mutex<Vec<RequestId>>,
         connected: AtomicBool,
@@ -3217,12 +3948,35 @@ mod tests {
         }
     }
 
+    /// The fake registry, reached without the host that owns it.
+    struct FakeOrders(Arc<FakeState>);
+
+    impl takofy_core::OrderAnswer for FakeOrders {
+        fn answer(&self, id: RequestId, ok: bool) -> bool {
+            answer_order(&self.0, id, ok)
+        }
+    }
+
+    /// Answers one order in the fake registry, saying whether it was pending.
+    fn answer_order(shared: &FakeState, id: RequestId, ok: bool) -> bool {
+        shared
+            .calls
+            .lock()
+            .expect("lock")
+            .push(Call::Answer(id, ok));
+        let mut pending = shared.pending.lock().expect("lock");
+        let held = pending.len();
+        pending.retain(|(waiting, _)| *waiting != id);
+        pending.len() != held
+    }
+
     impl SessionHost for FakeHost {
         fn connect(
             &mut self,
-            _token: &AccessToken,
+            token: &AccessToken,
         ) -> impl Future<Output = Result<(), SessionError>> + Send {
             self.shared.connects.fetch_add(1, Ordering::SeqCst);
+            *self.shared.last_connect_token.lock().expect("lock") = Some(token.expose().to_owned());
             if let Some(tx) = self.shared.connect_started.lock().expect("lock").take() {
                 let _ = tx.send(());
             }
@@ -3907,7 +4661,7 @@ mod tests {
                     scripts.first().cloned().unwrap_or_default()
                 }
             };
-            if matches!(script, WatchScript::Ready) {
+            if matches!(script, WatchScript::Ready | WatchScript::Held) {
                 // The streams exist before the signal fires, so a test that
                 // waits for the start can use them straight away.
                 let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -3920,9 +4674,16 @@ mod tests {
             if let Some(tx) = self.shared.watch_started.lock().expect("lock").take() {
                 let _ = tx.send(());
             }
+            let gate = self.shared.watch_gate.lock().expect("lock").take();
             async move {
                 match script {
                     WatchScript::Ready => Ok(()),
+                    WatchScript::Held => {
+                        if let Some(gate) = gate {
+                            let _ = gate.await;
+                        }
+                        Ok(())
+                    }
                     WatchScript::Spent => Err(SessionError::Engine(EngineError::Connect(
                         ConnectError::DealerSpent,
                     ))),
@@ -4229,15 +4990,11 @@ mod tests {
         }
 
         fn answer_order(&self, id: RequestId, ok: bool) -> bool {
-            self.shared
-                .calls
-                .lock()
-                .expect("lock")
-                .push(Call::Answer(id, ok));
-            let mut pending = self.shared.pending.lock().expect("lock");
-            let held = pending.len();
-            pending.retain(|(waiting, _)| *waiting != id);
-            pending.len() != held
+            answer_order(&self.shared, id, ok)
+        }
+
+        fn orders(&self) -> Option<takofy_core::Orders> {
+            Some(Arc::new(FakeOrders(Arc::clone(&self.shared))))
         }
 
         fn expires(&self, id: RequestId) -> Option<Instant> {
@@ -4270,6 +5027,11 @@ mod tests {
         }
 
         fn set_volume(&self, percent: u16) {
+            self.shared
+                .calls
+                .lock()
+                .expect("lock")
+                .push(Call::Volume(percent));
             self.shared.volumes.fetch_add(1, Ordering::SeqCst);
             self.shared
                 .last_volume
@@ -4292,11 +5054,30 @@ mod tests {
 
         fn retire(&mut self) -> impl Future<Output = Retired> + Send {
             self.shared.calls.lock().expect("lock").push(Call::Retire);
+            self.shared
+                .retires_at_connect
+                .lock()
+                .expect("lock")
+                .push(self.shared.connects.load(Ordering::SeqCst));
+            if let Some(tx) = self.shared.retire_started.lock().expect("lock").take() {
+                let _ = tx.send(());
+            }
+            let script = *self.shared.retire_script.lock().expect("lock");
             // The session is gone with it, so the next connect and the next
-            // player are built from scratch.
+            // player are built from scratch, and the streams the old drains
+            // read end here.
             self.shared.player_started.store(false, Ordering::SeqCst);
             self.shared.connected.store(false, Ordering::SeqCst);
-            async { Retired::Joined }
+            self.shared.down.store(false, Ordering::SeqCst);
+            *self.shared.device_tx.lock().expect("lock") = None;
+            *self.shared.inbound_tx.lock().expect("lock") = None;
+            *self.shared.event_tx.lock().expect("lock") = None;
+            async move {
+                match script {
+                    RetireScript::Ok => Retired::Joined,
+                    RetireScript::Pending => std::future::pending().await,
+                }
+            }
         }
     }
 
@@ -4351,6 +5132,13 @@ mod tests {
         let deadline = Instant::now() + ORDER_BUDGET;
         shared.pending.lock().expect("lock").push((id, deadline));
         deadline
+    }
+
+    /// Makes the next watch wait for the returned sender before it answers.
+    fn hold_watch(shared: &FakeState) -> tokio::sync::oneshot::Sender<()> {
+        let (release, gate) = tokio::sync::oneshot::channel();
+        *shared.watch_gate.lock().expect("lock") = Some(gate);
+        release
     }
 
     /// Reads updates until the one naming `id`, which an order sends to the
@@ -6808,6 +7596,11 @@ mod tests {
         assert_eq!(
             playback_failure(&SessionError::NotConnected),
             Failure::Other
+        );
+        assert_eq!(
+            playback_failure(&SessionError::LinkLost),
+            Failure::Reconnect,
+            "a load refused for a dead link is a rebuild, not a bad track"
         );
         assert_eq!(
             playback_failure(&SessionError::Playback(PlaybackError::NoAudioBackend)),
@@ -10080,6 +10873,151 @@ mod tests {
     }
     // ---- the account's devices ----
 
+    // ---- session recovery ----
+
+    /// Starts the worker on the test schedule, so a rebuild is measured in
+    /// milliseconds instead of seconds.
+    fn start_paced<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
+        runtime: &Runtime,
+        host: H,
+        store: Arc<dyn CredentialStore>,
+        source: Arc<S>,
+    ) -> (UiEnd, WakeSlot, Worker) {
+        start_with(
+            runtime.handle(),
+            host,
+            store,
+            source,
+            WITHDRAW_TIMEOUT,
+            Pacing::FAST,
+        )
+    }
+
+    /// Runs the window on the test schedule and finishes the worker after it.
+    fn run_window_paced<H, S, R>(
+        runtime: Runtime,
+        host: H,
+        store: Arc<dyn CredentialStore>,
+        source: Arc<S>,
+        window: impl FnOnce(UiEnd, WakeSlot) -> R,
+    ) -> R
+    where
+        H: SessionHost,
+        S: TokenSource + Send + Sync + 'static,
+    {
+        let (ui_end, slot, worker) = start_paced(&runtime, host, store, source);
+        run_ordered(
+            runtime,
+            move || window(ui_end, slot),
+            move || worker.finish(),
+        )
+    }
+
+    /// The test schedule with an attempt budget long enough that a step held
+    /// open by a test is not ended by the schedule.
+    fn patient() -> Pacing {
+        Pacing {
+            attempt: Duration::from_secs(5),
+            ..Pacing::FAST
+        }
+    }
+
+    /// Starts the worker on [`patient`], so a held step outlives the wait a
+    /// test needs to act while it is in flight.
+    fn run_window_patient<H, S, R>(
+        runtime: Runtime,
+        host: H,
+        store: Arc<dyn CredentialStore>,
+        source: Arc<S>,
+        window: impl FnOnce(UiEnd, WakeSlot) -> R,
+    ) -> R
+    where
+        H: SessionHost,
+        S: TokenSource + Send + Sync + 'static,
+    {
+        let (ui_end, slot, worker) = start_with(
+            runtime.handle(),
+            host,
+            store,
+            source,
+            WITHDRAW_TIMEOUT,
+            patient(),
+        );
+        run_ordered(
+            runtime,
+            move || window(ui_end, slot),
+            move || worker.finish(),
+        )
+    }
+
+    /// Reads updates until one matches, passing over the rest.
+    fn await_update(ui_end: &UiEnd, what: &str, mut matches: impl FnMut(&Update) -> bool) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while std::time::Instant::now() < deadline {
+            match ui_end.updates.recv_timeout(Duration::from_millis(100)) {
+                Ok(update) => {
+                    if matches(&update) {
+                        return;
+                    }
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => panic!("the worker went away"),
+            }
+        }
+        panic!("timed out waiting for {what}");
+    }
+
+    /// Everything already queued, without waiting for more.
+    fn queued(ui_end: &UiEnd) -> Vec<Update> {
+        let mut seen = Vec::new();
+        while let Ok(update) = ui_end.updates.try_recv() {
+            seen.push(update);
+        }
+        seen
+    }
+
+    /// How many calls satisfy `wanted`.
+    fn call_count(shared: &FakeState, wanted: impl Fn(&Call) -> bool) -> usize {
+        calls(shared).iter().filter(|call| wanted(call)).count()
+    }
+
+    /// The event sender of the current fake player.
+    fn events(shared: &FakeState) -> UnboundedSender<PlaybackEvent> {
+        shared
+            .event_tx
+            .lock()
+            .expect("lock")
+            .clone()
+            .expect("the player has an event stream")
+    }
+
+    /// Plays one track and anchors it where the test wants, so a rebuild has a
+    /// position to resume from.
+    fn play_anchored(ui_end: &UiEnd, shared: &FakeState, uri: &str, position_ms: u32) {
+        let (started, start) = channel();
+        *shared.play_started.lock().expect("lock") = Some(started);
+        ui_end
+            .commands
+            .send(Command::Play {
+                uri: uri.to_owned(),
+            })
+            .expect("play");
+        start.recv().expect("play started");
+        events(shared)
+            .send(PlaybackEvent::Playing { position_ms })
+            .expect("playing");
+        await_update(ui_end, "the playing position", |update| {
+            *update
+                == Update::Transport(TransportUpdate::Position {
+                    position_ms,
+                    paused: false,
+                })
+        });
+    }
+
+    /// Long enough for a load to pass librespot's key timeout.
+    const PRE_DETECTION: Duration = Duration::from_millis(1_600);
+
     /// Asserts the worker sent nothing within a wait long enough to notice.
     fn expect_no_update(ui_end: &UiEnd) {
         match ui_end.updates.recv_timeout(Duration::from_millis(100)) {
@@ -10995,7 +11933,8 @@ mod tests {
 
         let runtime = runtime();
         let bound = Duration::from_millis(50);
-        let (ui_end, slot, worker) = start_with(runtime.handle(), host, store, source, bound);
+        let (ui_end, slot, worker) =
+            start_with(runtime.handle(), host, store, source, bound, Pacing::LIVE);
         slot.install(Arc::new(RecordingWaker::default()));
 
         let watched = Arc::clone(&shared);
@@ -12561,5 +13500,1488 @@ mod tests {
 
         assert_eq!(update, Update::Remote(RemoteUpdate::Labelled(vec![named])));
         assert_eq!(calls(&shared), vec![Call::Label(vec![TRACK.to_owned()])]);
+    }
+    // ---- session recovery ----
+
+    #[test]
+    fn a_drop_while_playing_retires_then_connects_then_reloads_in_place() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(ScriptedSource::sequencer(vec![
+            good("access"),
+            good("fresh"),
+        ]));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+        let watched = Arc::clone(&shared);
+
+        let updates = run_window_paced(runtime(), host, store, source, move |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            play_anchored(&ui_end, &watched, TRACK, 1_000);
+            watched.down.store(true, Ordering::SeqCst);
+            until("the reload", || {
+                calls(&watched)
+                    .iter()
+                    .any(|call| matches!(call, Call::Load { .. }))
+            });
+            queued(&ui_end)
+        });
+
+        let log = calls(&shared);
+        assert_eq!(
+            log.len(),
+            6,
+            "one play, one retire, then the rebuild: {log:?}"
+        );
+        assert_eq!(log[0], Call::Play(TRACK.to_owned()));
+        assert_eq!(log[1], Call::SetPlayable(true));
+        assert_eq!(
+            log[2],
+            Call::Retire,
+            "the session is retired before it is replaced"
+        );
+        assert_eq!(log[3], Call::Report(Box::new(None)));
+        assert_eq!(log[4], Call::Prepare);
+        match &log[5] {
+            Call::Load {
+                uri,
+                position_ms,
+                play,
+            } => {
+                assert_eq!(uri, TRACK);
+                assert!(
+                    *position_ms >= 1_000,
+                    "the reload resumes at or past the anchor"
+                );
+                assert!(*play, "a playing track comes back playing");
+            }
+            other => panic!("the last call must be the reload, got {other:?}"),
+        }
+        assert_eq!(
+            call_count(&shared, |call| matches!(call, Call::Retire)),
+            1,
+            "exactly one session is retired"
+        );
+        assert_eq!(
+            &*shared.retires_at_connect.lock().expect("lock"),
+            &[1],
+            "the rebuild's connect follows the retire"
+        );
+        assert_eq!(
+            *shared.last_connect_token.lock().expect("lock"),
+            Some("fresh".to_owned()),
+            "the rebuild connects with the refreshed token"
+        );
+        assert_eq!(shared.connects.load(Ordering::SeqCst), 2);
+        assert_eq!(shared.watches.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            updates
+                .iter()
+                .filter(|update| **update == Update::Transport(TransportUpdate::Reconnecting))
+                .count(),
+            1,
+            "the window is told once that the link is coming back"
+        );
+    }
+
+    #[test]
+    fn a_drop_while_paused_reloads_paused_and_says_where() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(ScriptedSource::sequencer(vec![
+            good("access"),
+            good("fresh"),
+        ]));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+        let watched = Arc::clone(&shared);
+
+        let updates = run_window_paced(runtime(), host, store, source, move |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            play_anchored(&ui_end, &watched, TRACK, 1_000);
+            events(&watched)
+                .send(PlaybackEvent::Paused {
+                    position_ms: 20_000,
+                })
+                .expect("paused");
+            await_update(&ui_end, "the paused position", |update| {
+                *update
+                    == Update::Transport(TransportUpdate::Position {
+                        position_ms: 20_000,
+                        paused: true,
+                    })
+            });
+            watched.down.store(true, Ordering::SeqCst);
+            until("the reload", || {
+                calls(&watched)
+                    .iter()
+                    .any(|call| matches!(call, Call::Load { .. }))
+            });
+            queued(&ui_end)
+        });
+
+        let load = calls(&shared)
+            .into_iter()
+            .find(|call| matches!(call, Call::Load { .. }))
+            .expect("the paused track is reloaded");
+        match load {
+            Call::Load {
+                position_ms, play, ..
+            } => {
+                assert!(!play, "a paused track comes back paused");
+                assert!(position_ms >= 20_000);
+            }
+            other => panic!("expected a load, got {other:?}"),
+        }
+        let reconnect = updates
+            .iter()
+            .position(|update| *update == Update::Transport(TransportUpdate::Reconnecting))
+            .expect("the window is told the link is coming back");
+        let settled = updates
+            .iter()
+            .position(|update| {
+                matches!(
+                    update,
+                    Update::Transport(TransportUpdate::Position { paused: true, .. })
+                )
+            })
+            .expect("the paused reload is reported");
+        assert!(reconnect < settled, "the reload settles the flash");
+    }
+
+    #[test]
+    fn a_drop_with_nothing_loaded_rebuilds_without_a_flash_or_a_load() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(ScriptedSource::sequencer(vec![
+            good("access"),
+            good("fresh"),
+        ]));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+        let watched = Arc::clone(&shared);
+
+        let updates = run_window_paced(runtime(), host, store, source, move |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            watched.down.store(true, Ordering::SeqCst);
+            until("the rebuilt session", || {
+                watched.connects.load(Ordering::SeqCst) == 2
+                    && call_count(&watched, |call| matches!(call, Call::Prepare)) >= 1
+            });
+            std::thread::sleep(Duration::from_millis(50));
+            queued(&ui_end)
+        });
+
+        assert!(
+            !updates.contains(&Update::Transport(TransportUpdate::Reconnecting)),
+            "there is nothing to flash about"
+        );
+        assert_eq!(
+            call_count(&shared, |call| matches!(call, Call::Load { .. })),
+            0,
+            "nothing was loaded, so nothing is reloaded"
+        );
+        assert_eq!(shared.connects.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn the_eighth_failed_refresh_is_said_in_words_and_retries_continue() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let mut tokens = vec![good("access")];
+        tokens.extend((0..8).map(|_| no_token()));
+        tokens.push(good("fresh"));
+        let source = Arc::new(ScriptedSource::sequencer(tokens));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+        let watched = Arc::clone(&shared);
+        let probe = Arc::clone(&source);
+
+        let updates = run_window_paced(runtime(), host, store, source, move |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            play_anchored(&ui_end, &watched, TRACK, 0);
+            watched.down.store(true, Ordering::SeqCst);
+            let mut seen = Vec::new();
+            loop {
+                let update = ui_end
+                    .updates
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("an update");
+                let said_in_words =
+                    update == Update::Transport(TransportUpdate::Failed(Failure::Reconnect));
+                seen.push(update);
+                if said_in_words {
+                    break;
+                }
+            }
+            assert!(
+                probe.delivered.load(Ordering::SeqCst) >= 9,
+                "the words wait for the eighth failed refresh"
+            );
+            until("the load after the stall", || {
+                calls(&watched)
+                    .iter()
+                    .any(|call| matches!(call, Call::Load { .. }))
+            });
+            seen.extend(queued(&ui_end));
+            seen
+        });
+        assert_eq!(
+            updates
+                .iter()
+                .filter(|update| {
+                    **update == Update::Transport(TransportUpdate::Failed(Failure::Reconnect))
+                })
+                .count(),
+            1,
+            "the stuck words are said once"
+        );
+        assert_eq!(
+            shared.connects.load(Ordering::SeqCst),
+            2,
+            "a success connects"
+        );
+        assert_eq!(
+            call_count(&shared, |call| matches!(call, Call::Load { .. })),
+            1,
+            "the first success reloads the track"
+        );
+    }
+
+    #[test]
+    fn a_store_that_cannot_be_read_is_a_failed_attempt_without_a_connect() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let probe = Arc::clone(&store);
+        let source = Arc::new(ScriptedSource::sequencer(vec![good("access")]));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+        let watched = Arc::clone(&shared);
+
+        run_window_paced(runtime(), host, store, source, move |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            play_anchored(&ui_end, &watched, TRACK, 0);
+            // The store fails from here on, which is the `Err` arm rather than
+            // a refused exchange.
+            probe.unavailable.store(true, Ordering::SeqCst);
+            watched.down.store(true, Ordering::SeqCst);
+            await_update(&ui_end, "the stuck words", |update| {
+                *update == Update::Transport(TransportUpdate::Failed(Failure::Reconnect))
+            });
+        });
+
+        assert_eq!(
+            shared.connects.load(Ordering::SeqCst),
+            1,
+            "a refresh that the store could not start never connects"
+        );
+        assert_eq!(
+            call_count(&shared, |call| matches!(call, Call::Load { .. })),
+            0
+        );
+    }
+
+    #[test]
+    fn a_failed_refresh_makes_no_connect_and_keeps_trying() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(ScriptedSource::sequencer(vec![
+            good("access"),
+            no_token(),
+            good("fresh"),
+        ]));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+        let watched = Arc::clone(&shared);
+        let probe = Arc::clone(&source);
+
+        run_window_paced(runtime(), host, store, source, move |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            let (release, started) = probe.hold_next();
+            let (release_next, started_next) = probe.hold_next();
+            watched.down.store(true, Ordering::SeqCst);
+            started.recv().expect("the refresh started");
+            assert_eq!(
+                watched.connects.load(Ordering::SeqCst),
+                1,
+                "a refresh in flight has not connected"
+            );
+            release.send(()).expect("release the failed refresh");
+            started_next.recv().expect("the next attempt started");
+            assert_eq!(
+                watched.connects.load(Ordering::SeqCst),
+                1,
+                "a refused refresh is a failed attempt, not a connect"
+            );
+            release_next.send(()).expect("release the success");
+            until("the connect after the success", || {
+                watched.connects.load(Ordering::SeqCst) == 2
+            });
+        });
+    }
+
+    #[test]
+    fn a_failed_reload_retries_without_reconnecting() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(ScriptedSource::sequencer(vec![
+            good("access"),
+            good("fresh"),
+        ]));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+        let watched = Arc::clone(&shared);
+
+        run_window_paced(runtime(), host, store, source, move |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            play_anchored(&ui_end, &watched, TRACK, 0);
+            *watched.load_script.lock().expect("lock") = LoadScript::Fail;
+            watched.down.store(true, Ordering::SeqCst);
+            until("the first failed reload", || {
+                call_count(&watched, |call| matches!(call, Call::Load { .. })) >= 1
+            });
+            until("the second reload", || {
+                call_count(&watched, |call| matches!(call, Call::Load { .. })) >= 2
+            });
+        });
+
+        assert_eq!(
+            shared.connects.load(Ordering::SeqCst),
+            2,
+            "a failed load retries on the session it already has"
+        );
+        assert_eq!(
+            call_count(&shared, |call| matches!(call, Call::Retire)),
+            1,
+            "the dead session is retired once"
+        );
+    }
+
+    #[test]
+    fn a_session_that_dies_mid_recovery_is_retired_before_it_is_replaced() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(ScriptedSource::sequencer(vec![
+            good("access"),
+            good("fresh"),
+            good("again"),
+        ]));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+        let watched = Arc::clone(&shared);
+
+        let updates = run_window_paced(runtime(), host, store, source, move |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            play_anchored(&ui_end, &watched, TRACK, 0);
+            *watched.load_script.lock().expect("lock") = LoadScript::Fail;
+            // The first rebuild connects, and its reload fails, so recovery
+            // stays active with a live engine.
+            watched.down.store(true, Ordering::SeqCst);
+            until("the first rebuild", || {
+                watched.connects.load(Ordering::SeqCst) == 2
+                    && call_count(&watched, |call| matches!(call, Call::Load { .. })) >= 1
+            });
+            // A watch opened while recovering belongs to that session too.
+            let (started, start) = channel();
+            *watched.watch_started.lock().expect("lock") = Some(started);
+            ui_end.commands.send(Command::WatchDevices).expect("watch");
+            start.recv().expect("watch started");
+            let old_events = events(&watched);
+            let old_devices = watched
+                .device_tx
+                .lock()
+                .expect("lock")
+                .clone()
+                .expect("the watch opened a stream");
+            // That engine dies while recovery is already running: the attempt
+            // must close it before it connects over it.
+            watched.down.store(true, Ordering::SeqCst);
+            until("the second retirement", || {
+                call_count(&watched, |call| matches!(call, Call::Retire)) == 2
+            });
+            until("the rebuilt connect", || {
+                watched.connects.load(Ordering::SeqCst) == 3
+            });
+            until("the watch the rebuilt session restarts", || {
+                watched.watches.load(Ordering::SeqCst) == 2
+            });
+            // The drains of the session that died are silent, even as their
+            // streams end.
+            old_events
+                .send(PlaybackEvent::Playing { position_ms: 7 })
+                .expect("old playback");
+            old_devices.send(ClusterEvent::Failed).expect("old devices");
+            drop(old_devices);
+            std::thread::sleep(Duration::from_millis(100));
+            queued(&ui_end)
+        });
+
+        assert_eq!(
+            &*shared.retires_at_connect.lock().expect("lock"),
+            &[1, 2],
+            "each retirement happens before the connect that replaces it"
+        );
+        assert_eq!(
+            shared.watches.load(Ordering::SeqCst),
+            2,
+            "the watch of the session that died is started again"
+        );
+        assert!(
+            !updates
+                .iter()
+                .any(|update| matches!(update, Update::Devices(_))),
+            "the drain of the session that died says nothing: {updates:?}"
+        );
+        assert!(
+            !updates.iter().any(|update| matches!(
+                update,
+                Update::Transport(TransportUpdate::Position { position_ms: 7, .. })
+            )),
+            "the old playback drain is silent: {updates:?}"
+        );
+    }
+
+    #[test]
+    fn a_command_that_does_not_retarget_waits_for_the_attempt() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(ScriptedSource::sequencer(vec![
+            good("access"),
+            good("fresh"),
+        ]));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+        let watched = Arc::clone(&shared);
+        let probe = Arc::clone(&source);
+
+        run_window_paced(runtime(), host, store, source, move |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            play_anchored(&ui_end, &watched, TRACK, 0);
+            watch_now(&ui_end, &watched);
+            let (release, started) = probe.hold_next();
+            watched.down.store(true, Ordering::SeqCst);
+            started.recv().expect("the rebuild refresh started");
+            // A report says nothing about where the rebuild resumes, so it
+            // waits instead of cancelling the attempt.
+            ui_end
+                .commands
+                .send(Command::Report(Some(report(TRACK))))
+                .expect("report");
+            ui_end
+                .commands
+                .send(Command::Report(Some(report(SECOND))))
+                .expect("report");
+            std::thread::sleep(Duration::from_millis(50));
+            assert_eq!(
+                calls(&watched)
+                    .iter()
+                    .filter(|call| matches!(call, Call::Report(value) if value.is_some()))
+                    .count(),
+                0,
+                "a report waits for the attempt to finish"
+            );
+            release.send(()).expect("release the refresh");
+            until("the reload", || {
+                calls(&watched)
+                    .iter()
+                    .any(|call| matches!(call, Call::Load { .. }))
+            });
+            ui_end
+                .commands
+                .send(Command::Play {
+                    uri: SECOND.to_owned(),
+                })
+                .expect("play");
+            until("the play", || {
+                calls(&watched)
+                    .iter()
+                    .any(|call| matches!(call, Call::Play(_)))
+            });
+        });
+
+        let log = calls(&shared);
+        let reported: Vec<_> = log
+            .iter()
+            .filter_map(|call| match call {
+                Call::Report(value) => (**value).clone(),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            reported,
+            vec![report(TRACK), report(SECOND)],
+            "both reports are applied after the attempt, once, in order: {log:?}"
+        );
+        let last_report = log
+            .iter()
+            .rposition(|call| matches!(call, Call::Report(value) if value.is_some()))
+            .expect("the reports are applied");
+        let play = log
+            .iter()
+            .position(|call| matches!(call, Call::Play(_)))
+            .expect("the play lands");
+        assert!(
+            last_report < play,
+            "a following control command lands after the buffered ones: {log:?}"
+        );
+    }
+
+    #[test]
+    fn an_interrupting_command_waits_behind_the_ones_the_attempt_deferred() {
+        let store: Arc<dyn CredentialStore> = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(ScriptedSource::sequencer(vec![good("access")]));
+        let probe = Arc::clone(&source);
+        let mut host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let (updates, _read) = channel();
+        let notifier = Notifier {
+            tx: updates,
+            slot: WakeSlot::default(),
+        };
+        let (signal, _signals) = tokio::sync::mpsc::unbounded_channel();
+        let mut drains = Drains::new(signal);
+        let mut devices = Devices::default();
+        let (_stop, mut stop) = tokio::sync::oneshot::channel();
+        let (commands, mut received) = tokio::sync::mpsc::unbounded_channel();
+        let mut deferred = VecDeque::new();
+        let mut refresh: Option<Refresh> = None;
+        let mut token: Option<AccessToken> = None;
+        let mut engine_up = false;
+        let (release, started) = probe.hold_next();
+        // The refresh holds the attempt open long enough for the window's
+        // commands to arrive in the order it sent them.
+        let driver = std::thread::spawn(move || {
+            started.recv().expect("the refresh started");
+            commands
+                .send(Command::Report(Some(report(TRACK))))
+                .expect("report");
+            commands
+                .send(Command::Volume { percent: 35 })
+                .expect("volume");
+            commands
+                .send(Command::Play {
+                    uri: SECOND.to_owned(),
+                })
+                .expect("play");
+        });
+
+        let outcome = runtime().block_on(rebuild_attempt(
+            &mut host,
+            &mut stop,
+            &notifier,
+            &mut devices,
+            &mut drains,
+            &mut received,
+            &mut deferred,
+            &mut refresh,
+            &mut token,
+            &mut engine_up,
+            &store,
+            &source,
+            None,
+            patient().attempt,
+        ));
+        driver.join().expect("the driver");
+        drop(release);
+
+        assert!(
+            matches!(outcome, Rebuilt::Interrupted),
+            "an interrupting command ends the attempt"
+        );
+        assert_eq!(
+            deferred.iter().cloned().collect::<Vec<_>>(),
+            vec![
+                Command::Report(Some(report(TRACK))),
+                Command::Volume { percent: 35 },
+                Command::Play {
+                    uri: SECOND.to_owned(),
+                },
+            ],
+            "the interrupt waits behind the commands sent before it"
+        );
+    }
+
+    #[test]
+    fn an_answer_during_the_attempt_is_delivered_without_ending_it() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(ScriptedSource::sequencer(vec![
+            good("access"),
+            good("fresh"),
+        ]));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+        let watched = Arc::clone(&shared);
+        let probe = Arc::clone(&source);
+
+        run_window_patient(runtime(), host, store, source, move |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            play_anchored(&ui_end, &watched, TRACK, 0);
+            let id = RequestId(77);
+            hold_request(&watched, id);
+            let (release, started) = probe.hold_next();
+            watched.down.store(true, Ordering::SeqCst);
+            started.recv().expect("the rebuild refresh started");
+            ui_end
+                .commands
+                .send(Command::Answer { id, ok: true })
+                .expect("answer");
+            // The answer reaches the registry while the attempt still waits on
+            // the refresh, so the order's own budget cannot end it first.
+            until("the answer", || {
+                call_count(
+                    &watched,
+                    |call| matches!(call, Call::Answer(answered, _) if *answered == id),
+                ) == 1
+            });
+            assert_eq!(
+                watched.connects.load(Ordering::SeqCst),
+                1,
+                "an answer does not restart the attempt"
+            );
+            release.send(()).expect("release the refresh");
+            until("the reload", || {
+                calls(&watched)
+                    .iter()
+                    .any(|call| matches!(call, Call::Load { .. }))
+            });
+        });
+
+        assert_eq!(
+            answers(&shared, RequestId(77)),
+            1,
+            "the order is answered once"
+        );
+        assert_eq!(
+            shared.connects.load(Ordering::SeqCst),
+            2,
+            "the attempt the answer joined carries on"
+        );
+        assert_eq!(
+            call_count(&shared, |call| matches!(call, Call::Load { .. })),
+            1
+        );
+    }
+
+    #[test]
+    fn a_command_during_the_watch_does_not_spend_the_start() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(ScriptedSource::sequencer(vec![
+            good("access"),
+            good("fresh"),
+        ]));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+        let watched = Arc::clone(&shared);
+
+        let updates = run_window_patient(runtime(), host, store, source, move |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            play_anchored(&ui_end, &watched, TRACK, 0);
+            watch_now(&ui_end, &watched);
+            // The rebuild's watch is held open, and a second start on the same
+            // session answers what the dealer's spent builder answers.
+            *watched.watch_scripts.lock().expect("lock") =
+                vec![WatchScript::Held, WatchScript::Spent];
+            let (started, start) = channel();
+            *watched.watch_started.lock().expect("lock") = Some(started);
+            let release = hold_watch(&watched);
+            watched.down.store(true, Ordering::SeqCst);
+            start.recv().expect("the rebuild watch started");
+            ui_end
+                .commands
+                .send(Command::Play {
+                    uri: SECOND.to_owned(),
+                })
+                .expect("play");
+            // Long enough for the command to reach the attempt, which must
+            // keep the watch it started.
+            std::thread::sleep(Duration::from_millis(20));
+            assert!(
+                release.send(()).is_ok(),
+                "the watch is still waiting for its answer"
+            );
+            until("the pressed track", || {
+                calls(&watched)
+                    .iter()
+                    .any(|call| matches!(call, Call::Load { .. }))
+            });
+            queued(&ui_end)
+        });
+
+        assert_eq!(
+            shared.watches.load(Ordering::SeqCst),
+            2,
+            "the rebuild finishes the one watch it started"
+        );
+        assert!(
+            !updates
+                .iter()
+                .any(|update| matches!(update, Update::Devices(DeviceUpdate::Failed(_)))),
+            "the watch is not announced as lost: {updates:?}"
+        );
+        let load = calls(&shared)
+            .into_iter()
+            .find(|call| matches!(call, Call::Load { .. }))
+            .expect("the pressed track is loaded");
+        assert_eq!(
+            load,
+            Call::Load {
+                uri: SECOND.to_owned(),
+                position_ms: 0,
+                play: true,
+            },
+            "the command the watch held up is applied after it"
+        );
+    }
+
+    #[test]
+    fn a_cancelled_attempt_reuses_the_refresh_it_left_in_flight() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(ScriptedSource::sequencer(vec![
+            good("access"),
+            good("fresh"),
+        ]));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+        let watched = Arc::clone(&shared);
+        let probe = Arc::clone(&source);
+        let outside = Arc::clone(&shared);
+        let counted = Arc::clone(&probe);
+
+        run_window_paced(runtime(), host, store, source, move |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            play_anchored(&ui_end, &watched, TRACK, 0);
+            let (release, started) = probe.hold_next();
+            watched.down.store(true, Ordering::SeqCst);
+            started.recv().expect("the rebuild refresh started");
+            // A play retargets the rebuild, cancelling the attempt while its
+            // refresh is still out.
+            ui_end
+                .commands
+                .send(Command::Play {
+                    uri: SECOND.to_owned(),
+                })
+                .expect("play");
+            std::thread::sleep(Duration::from_millis(50));
+            assert_eq!(
+                probe.delivered.load(Ordering::SeqCst),
+                1,
+                "the attempt kept waiting on the one refresh in flight"
+            );
+            assert_eq!(
+                shared.connects.load(Ordering::SeqCst),
+                1,
+                "a second refresh would have begun its own exchange"
+            );
+            release.send(()).expect("release the refresh");
+            until("the reload of the pressed track", || {
+                calls(&watched)
+                    .iter()
+                    .any(|call| matches!(call, Call::Load { .. }))
+            });
+        });
+
+        assert_eq!(
+            counted.delivered.load(Ordering::SeqCst),
+            2,
+            "one refresh serves both attempts"
+        );
+        assert_eq!(outside.connects.load(Ordering::SeqCst), 2);
+        let load = calls(&outside)
+            .into_iter()
+            .find(|call| matches!(call, Call::Load { .. }))
+            .expect("the pressed track is loaded");
+        assert_eq!(
+            load,
+            Call::Load {
+                uri: SECOND.to_owned(),
+                position_ms: 0,
+                play: true,
+            }
+        );
+    }
+
+    #[test]
+    fn a_stop_during_recovery_leaves_the_transport_stopped() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(ScriptedSource::sequencer(vec![
+            good("access"),
+            good("fresh"),
+        ]));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+        let watched = Arc::clone(&shared);
+        let probe = Arc::clone(&source);
+
+        let updates = run_window_paced(runtime(), host, store, source, move |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            play_anchored(&ui_end, &watched, TRACK, 10_000);
+            let (release, started) = probe.hold_next();
+            watched.down.store(true, Ordering::SeqCst);
+            started.recv().expect("the rebuild refresh started");
+            ui_end.commands.send(Command::Stop).expect("stop");
+            std::thread::sleep(Duration::from_millis(50));
+            release.send(()).expect("release the refresh");
+            until("the rebuilt session", || {
+                watched.connects.load(Ordering::SeqCst) == 2
+            });
+            std::thread::sleep(Duration::from_millis(100));
+            queued(&ui_end)
+        });
+
+        assert!(
+            updates.contains(&Update::Transport(TransportUpdate::Reconnecting)),
+            "the window was told the link was coming back: {updates:?}"
+        );
+        let last = updates
+            .iter()
+            .rev()
+            .find(|update| matches!(update, Update::Transport(_)));
+        assert_eq!(
+            last,
+            Some(&Update::Transport(TransportUpdate::Stopped)),
+            "a stopped recovery settles the transport: {updates:?}"
+        );
+        assert_eq!(
+            call_count(&shared, |call| matches!(call, Call::Load { .. })),
+            0,
+            "a stopped recovery has nothing to reload"
+        );
+        assert_eq!(
+            shared.stops.load(Ordering::SeqCst),
+            0,
+            "a stop during recovery never reaches the host"
+        );
+    }
+
+    #[test]
+    fn a_stall_with_nothing_to_reload_ends_when_the_link_returns() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let mut tokens = vec![good("access")];
+        tokens.extend((0..8).map(|_| no_token()));
+        tokens.push(good("fresh"));
+        let source = Arc::new(ScriptedSource::sequencer(tokens));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+        let watched = Arc::clone(&shared);
+
+        let updates = run_window_paced(runtime(), host, store, source, move |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            watched.down.store(true, Ordering::SeqCst);
+            await_update(&ui_end, "the stall words", |update| {
+                *update == Update::Transport(TransportUpdate::Failed(Failure::Reconnect))
+            });
+            until("the rebuilt session", || {
+                watched.connects.load(Ordering::SeqCst) == 2
+            });
+            std::thread::sleep(Duration::from_millis(100));
+            queued(&ui_end)
+        });
+
+        let last = updates
+            .iter()
+            .rev()
+            .find(|update| matches!(update, Update::Transport(_)));
+        assert_eq!(
+            last,
+            Some(&Update::Transport(TransportUpdate::Stopped)),
+            "the stall words do not outlive the recovery: {updates:?}"
+        );
+        assert_eq!(
+            call_count(&shared, |call| matches!(call, Call::Load { .. })),
+            0,
+            "nothing was loaded, so nothing is reloaded"
+        );
+    }
+
+    #[test]
+    fn a_play_during_the_connect_loads_the_pressed_track_afterwards() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(ScriptedSource::sequencer(vec![
+            good("access"),
+            good("mid"),
+            good("fresh"),
+        ]));
+        let host = FakeHost::with_connect_scripts(
+            vec![ConnectScript::Ok, ConnectScript::Pending, ConnectScript::Ok],
+            RootlistScript::Ready(Vec::new()),
+        );
+        let shared = Arc::clone(&host.shared);
+        let watched = Arc::clone(&shared);
+
+        let updates = run_window_paced(runtime(), host, store, source, move |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            let (started, start) = channel();
+            *watched.connect_started.lock().expect("lock") = Some(started);
+            watched.down.store(true, Ordering::SeqCst);
+            start.recv().expect("the rebuild connect started");
+            ui_end
+                .commands
+                .send(Command::Play {
+                    uri: SECOND.to_owned(),
+                })
+                .expect("play");
+            until("the reload of the pressed track", || {
+                calls(&watched)
+                    .iter()
+                    .any(|call| matches!(call, Call::Load { .. }))
+            });
+            queued(&ui_end)
+        });
+
+        assert_eq!(
+            shared.plays.load(Ordering::SeqCst),
+            0,
+            "no play reaches the dead session"
+        );
+        let load = calls(&shared)
+            .into_iter()
+            .find(|call| matches!(call, Call::Load { .. }))
+            .expect("the pressed track is loaded");
+        assert_eq!(
+            load,
+            Call::Load {
+                uri: SECOND.to_owned(),
+                position_ms: 0,
+                play: true,
+            }
+        );
+        assert_eq!(shared.connects.load(Ordering::SeqCst), 3);
+        assert!(
+            !updates.contains(&Update::Transport(TransportUpdate::Failed(
+                Failure::Reconnect
+            ))),
+            "an interrupted attempt is not a failure"
+        );
+    }
+
+    #[test]
+    fn a_pause_during_the_rebuild_reloads_paused() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(ScriptedSource::sequencer(vec![
+            good("access"),
+            good("mid"),
+            good("fresh"),
+        ]));
+        let host = FakeHost::with_connect_scripts(
+            vec![ConnectScript::Ok, ConnectScript::Pending, ConnectScript::Ok],
+            RootlistScript::Ready(Vec::new()),
+        );
+        let shared = Arc::clone(&host.shared);
+        let watched = Arc::clone(&shared);
+
+        let updates = run_window_paced(runtime(), host, store, source, move |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            play_anchored(&ui_end, &watched, TRACK, 30_000);
+            let (started, start) = channel();
+            *watched.connect_started.lock().expect("lock") = Some(started);
+            watched.down.store(true, Ordering::SeqCst);
+            start.recv().expect("the rebuild connect started");
+            ui_end.commands.send(Command::Pause).expect("pause");
+            until("the paused reload", || {
+                calls(&watched)
+                    .iter()
+                    .any(|call| matches!(call, Call::Load { .. }))
+            });
+            queued(&ui_end)
+        });
+
+        let load = calls(&shared)
+            .into_iter()
+            .find(|call| matches!(call, Call::Load { .. }))
+            .expect("the track is reloaded");
+        match load {
+            Call::Load {
+                position_ms, play, ..
+            } => {
+                assert!(!play, "a pause during the rebuild comes back paused");
+                assert!(position_ms >= 30_000);
+            }
+            other => panic!("expected a load, got {other:?}"),
+        }
+        assert!(
+            updates.iter().any(|update| matches!(
+                update,
+                Update::Transport(TransportUpdate::Position { paused: true, .. })
+            )),
+            "the paused reload settles the transport"
+        );
+    }
+
+    #[test]
+    fn a_stop_during_the_rebuild_leaves_nothing_to_reload() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(ScriptedSource::sequencer(vec![
+            good("access"),
+            good("mid"),
+            good("fresh"),
+        ]));
+        let host = FakeHost::with_connect_scripts(
+            vec![ConnectScript::Ok, ConnectScript::Pending, ConnectScript::Ok],
+            RootlistScript::Ready(Vec::new()),
+        );
+        let shared = Arc::clone(&host.shared);
+        let watched = Arc::clone(&shared);
+
+        run_window_paced(runtime(), host, store, source, move |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            play_anchored(&ui_end, &watched, TRACK, 0);
+            let (started, start) = channel();
+            *watched.connect_started.lock().expect("lock") = Some(started);
+            watched.down.store(true, Ordering::SeqCst);
+            start.recv().expect("the rebuild connect started");
+            ui_end.commands.send(Command::Stop).expect("stop");
+            until("the next attempt", || {
+                call_count(&watched, |call| matches!(call, Call::Prepare)) >= 1
+            });
+            std::thread::sleep(Duration::from_millis(50));
+        });
+
+        assert_eq!(
+            call_count(&shared, |call| matches!(call, Call::Load { .. })),
+            0,
+            "a stopped recovery has nothing to reload"
+        );
+        assert_eq!(shared.stops.load(Ordering::SeqCst), 0);
+        assert_eq!(shared.connects.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn a_play_during_the_token_refresh_interrupts_it() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(ScriptedSource::sequencer(vec![
+            good("access"),
+            good("fresh"),
+        ]));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+        let watched = Arc::clone(&shared);
+        let probe = Arc::clone(&source);
+
+        run_window_paced(runtime(), host, store, source, move |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            let (release, started) = probe.hold_next();
+            watched.down.store(true, Ordering::SeqCst);
+            started.recv().expect("the refresh started");
+            ui_end
+                .commands
+                .send(Command::Play {
+                    uri: SECOND.to_owned(),
+                })
+                .expect("play");
+            // The next attempt waits on the refresh this one left in flight.
+            std::thread::sleep(Duration::from_millis(50));
+            release.send(()).expect("release the refresh");
+            until("the reload of the pressed track", || {
+                calls(&watched)
+                    .iter()
+                    .any(|call| matches!(call, Call::Load { .. }))
+            });
+        });
+
+        assert_eq!(shared.plays.load(Ordering::SeqCst), 0);
+        let load = calls(&shared)
+            .into_iter()
+            .find(|call| matches!(call, Call::Load { .. }))
+            .expect("the pressed track is loaded");
+        assert_eq!(
+            load,
+            Call::Load {
+                uri: SECOND.to_owned(),
+                position_ms: 0,
+                play: true,
+            }
+        );
+    }
+
+    #[test]
+    fn a_play_inside_the_pre_detection_window_costs_one_rebuild_only() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(ScriptedSource::sequencer(vec![
+            good("access"),
+            good("fresh"),
+            good("again"),
+        ]));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+        let watched = Arc::clone(&shared);
+
+        let updates = run_window_paced(runtime(), host, store, source, move |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            play_anchored(&ui_end, &watched, TRACK, 0);
+            ui_end
+                .commands
+                .send(Command::Play {
+                    uri: SECOND.to_owned(),
+                })
+                .expect("play");
+            until("the load that will not start", || {
+                watched.plays.load(Ordering::SeqCst) == 2
+            });
+            std::thread::sleep(PRE_DETECTION);
+            events(&watched)
+                .send(PlaybackEvent::Unavailable)
+                .expect("unavailable");
+            await_update(&ui_end, "the reconnecting flash", |update| {
+                *update == Update::Transport(TransportUpdate::Reconnecting)
+            });
+            until("the one reload", || {
+                calls(&watched)
+                    .iter()
+                    .any(|call| matches!(call, Call::Load { .. }))
+            });
+            // The reload is a new generation, so its failure is a real one and
+            // goes to the window.
+            events(&watched)
+                .send(PlaybackEvent::Unavailable)
+                .expect("unavailable");
+            await_update(&ui_end, "the forwarded failure", |update| {
+                *update == Update::Transport(TransportUpdate::Unavailable)
+            });
+            std::thread::sleep(Duration::from_millis(100));
+            queued(&ui_end)
+        });
+
+        assert_eq!(
+            call_count(&shared, |call| matches!(call, Call::Retire)),
+            1,
+            "the window is bounded to one rebuild"
+        );
+        assert_eq!(shared.connects.load(Ordering::SeqCst), 2);
+        let loads: Vec<_> = calls(&shared)
+            .into_iter()
+            .filter(|call| matches!(call, Call::Load { .. }))
+            .collect();
+        assert_eq!(loads.len(), 1, "one reload: {loads:?}");
+        assert_eq!(
+            loads[0],
+            Call::Load {
+                uri: SECOND.to_owned(),
+                position_ms: 0,
+                play: true,
+            }
+        );
+        assert_eq!(
+            updates
+                .iter()
+                .filter(|update| **update == Update::Transport(TransportUpdate::Unavailable))
+                .count(),
+            0,
+            "only the real failure reaches the window"
+        );
+    }
+
+    #[test]
+    fn a_failure_after_the_rebuild_is_forwarded_without_another_rebuild() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(ScriptedSource::sequencer(vec![
+            good("access"),
+            good("fresh"),
+        ]));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+        let watched = Arc::clone(&shared);
+
+        run_window_paced(runtime(), host, store, source, move |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            play_anchored(&ui_end, &watched, TRACK, 0);
+            watched.down.store(true, Ordering::SeqCst);
+            until("the reload", || {
+                calls(&watched)
+                    .iter()
+                    .any(|call| matches!(call, Call::Load { .. }))
+            });
+            events(&watched)
+                .send(PlaybackEvent::Unavailable)
+                .expect("unavailable");
+            await_update(&ui_end, "the forwarded failure", |update| {
+                *update == Update::Transport(TransportUpdate::Unavailable)
+            });
+            std::thread::sleep(Duration::from_millis(100));
+        });
+
+        assert_eq!(
+            call_count(&shared, |call| matches!(call, Call::Retire)),
+            1,
+            "a fresh generation's first failure is not the link"
+        );
+    }
+
+    #[test]
+    fn a_dead_flag_withholds_the_failure_and_keeps_the_resume_point() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(ScriptedSource::sequencer(vec![
+            good("access"),
+            good("fresh"),
+        ]));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+        let watched = Arc::clone(&shared);
+
+        let updates = run_window_paced(runtime(), host, store, source, move |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            play_anchored(&ui_end, &watched, TRACK, 30_000);
+            watched.down.store(true, Ordering::SeqCst);
+            events(&watched)
+                .send(PlaybackEvent::Unavailable)
+                .expect("unavailable");
+            await_update(&ui_end, "the reconnecting flash", |update| {
+                *update == Update::Transport(TransportUpdate::Reconnecting)
+            });
+            until("the reload", || {
+                calls(&watched)
+                    .iter()
+                    .any(|call| matches!(call, Call::Load { .. }))
+            });
+            queued(&ui_end)
+        });
+
+        assert!(
+            !updates.contains(&Update::Transport(TransportUpdate::Unavailable)),
+            "a dead link is not an unavailable track"
+        );
+        let load = calls(&shared)
+            .into_iter()
+            .find(|call| matches!(call, Call::Load { .. }))
+            .expect("the resume point survives the dead flag");
+        match load {
+            Call::Load {
+                position_ms, play, ..
+            } => {
+                assert!(position_ms >= 30_000);
+                assert!(play);
+            }
+            other => panic!("expected a load, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_signal_from_a_retired_generation_is_ignored() {
+        let playhead = Playhead::new();
+        let recovery = Recovery::new(Pacing::FAST);
+        let current = playhead.generation();
+        assert!(link_signal_applies(current, &playhead, &recovery));
+
+        playhead.next_generation();
+        assert!(
+            !link_signal_applies(current, &playhead, &recovery),
+            "a stale generation cannot start a rebuild for the live one"
+        );
+
+        let mut active = Recovery::new(Pacing::FAST);
+        active.lost(Instant::now(), None);
+        assert!(
+            !link_signal_applies(playhead.generation(), &playhead, &active),
+            "a rebuild already underway is not started twice"
+        );
+    }
+
+    #[test]
+    fn a_retired_watch_stays_due_to_be_restarted() {
+        // A watch whose last restart failed is already due.
+        let mut devices = Devices {
+            rewatch: true,
+            ..Devices::default()
+        };
+        devices.retire();
+        assert!(
+            devices.rewatch,
+            "a second retirement does not clear a restart already due"
+        );
+
+        devices.watching = true;
+        devices.retire();
+        assert!(devices.rewatch, "a running watch is due to start again");
+        assert!(!devices.watching, "the watch of the retired session is off");
+    }
+
+    #[test]
+    fn every_attempt_outcome_leaves_the_schedule_moved() {
+        let base = Instant::now();
+        let point = ResumePoint {
+            uri: TRACK.to_owned(),
+            position_ms: 0,
+            play: true,
+        };
+        let outcomes = [Rebuilt::Done, Rebuilt::Failed, Rebuilt::Interrupted];
+        for outcome in outcomes {
+            let mut recovery = Recovery::new(Pacing::LIVE);
+            recovery.lost(base, Some(point.clone()));
+            let now = base + Duration::from_millis(1);
+            settle(&mut recovery, &outcome, now);
+            if let Some(at) = recovery.wake_at() {
+                assert!(
+                    at > base,
+                    "an outcome must move the wake time past the loss, not leave it due"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_retired_session_does_not_say_the_devices_are_lost() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(ScriptedSource::sequencer(vec![
+            good("access"),
+            good("fresh"),
+        ]));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+        let watched = Arc::clone(&shared);
+
+        let updates = run_window_paced(runtime(), host, store, source, move |ui_end, slot| {
+            slot.install(Arc::new(RecordingWaker::default()));
+            let _ = expect_updates(&ui_end, 2);
+            play_anchored(&ui_end, &watched, TRACK, 0);
+            watch_now(&ui_end, &watched);
+            let old_events = events(&watched);
+            let old_devices = watched
+                .device_tx
+                .lock()
+                .expect("lock")
+                .clone()
+                .expect("the watch opened a stream");
+            watched.down.store(true, Ordering::SeqCst);
+            await_update(&ui_end, "the reconnecting flash", |update| {
+                *update == Update::Transport(TransportUpdate::Reconnecting)
+            });
+            until("the reload", || {
+                calls(&watched)
+                    .iter()
+                    .any(|call| matches!(call, Call::Load { .. }))
+            });
+            old_events
+                .send(PlaybackEvent::Playing { position_ms: 1 })
+                .expect("old playback");
+            old_devices.send(ClusterEvent::Failed).expect("old devices");
+            drop(old_devices);
+            std::thread::sleep(Duration::from_millis(100));
+            queued(&ui_end)
+        });
+
+        assert_eq!(
+            shared.watches.load(Ordering::SeqCst),
+            2,
+            "the rebuild restarts the watch it retired"
+        );
+        assert!(
+            !updates
+                .iter()
+                .any(|update| matches!(update, Update::Devices(_))),
+            "a retired drain says nothing about the devices: {updates:?}"
+        );
+    }
+
+    #[test]
+    fn a_stop_during_the_retire_still_shuts_down() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(ScriptedSource::sequencer(vec![good("access")]));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+        *shared.retire_script.lock().expect("lock") = RetireScript::Pending;
+
+        let runtime = runtime();
+        let (ui_end, slot, worker) = start_paced(&runtime, host, store, source);
+        slot.install(Arc::new(RecordingWaker::default()));
+
+        let watched = Arc::clone(&shared);
+        let window = move || {
+            let _ = expect_updates(&ui_end, 2);
+            let (started, start) = channel();
+            *watched.retire_started.lock().expect("lock") = Some(started);
+            watched.down.store(true, Ordering::SeqCst);
+            start.recv().expect("the retire started");
+        };
+        let teardown = move || async move {
+            tokio::time::timeout(Duration::from_secs(1), worker.finish())
+                .await
+                .expect("a stop during the retire must end the task");
+            assert_eq!(shared.shutdowns.load(Ordering::SeqCst), 1);
+        };
+
+        run_ordered(runtime, window, teardown);
+    }
+
+    #[test]
+    fn a_stop_during_the_token_refresh_still_shuts_down() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(ScriptedSource::sequencer(vec![
+            good("access"),
+            good("fresh"),
+        ]));
+        let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+        let shared = Arc::clone(&host.shared);
+        let watched = Arc::clone(&shared);
+        let probe = Arc::clone(&source);
+        let release = Arc::new(Mutex::new(None));
+
+        let runtime = runtime();
+        let (ui_end, slot, worker) = start_paced(&runtime, host, store, source);
+        slot.install(Arc::new(RecordingWaker::default()));
+
+        let window_release = Arc::clone(&release);
+        let window = move || {
+            let _ = expect_updates(&ui_end, 2);
+            let (release, started) = probe.hold_next();
+            *window_release.lock().expect("lock") = Some(release);
+            watched.down.store(true, Ordering::SeqCst);
+            started.recv().expect("the refresh started");
+        };
+        let teardown = move || async move {
+            tokio::time::timeout(Duration::from_secs(1), worker.finish())
+                .await
+                .expect("a stop during the refresh must end the task");
+            if let Some(release) = release.lock().expect("lock").take() {
+                release.send(()).expect("release the abandoned refresh");
+            }
+            assert_eq!(shared.shutdowns.load(Ordering::SeqCst), 1);
+        };
+
+        run_ordered(runtime, window, teardown);
+    }
+
+    #[test]
+    fn a_stop_during_the_rebuild_connect_still_shuts_down() {
+        let store = Arc::new(MemoryStore::seeded("stored"));
+        let source = Arc::new(ScriptedSource::sequencer(vec![
+            good("access"),
+            good("fresh"),
+        ]));
+        let host = FakeHost::with_connect_scripts(
+            vec![ConnectScript::Ok, ConnectScript::Pending],
+            RootlistScript::Ready(Vec::new()),
+        );
+        let shared = Arc::clone(&host.shared);
+        let watched = Arc::clone(&shared);
+
+        let runtime = runtime();
+        let (ui_end, slot, worker) = start_paced(&runtime, host, store, source);
+        slot.install(Arc::new(RecordingWaker::default()));
+
+        let window = move || {
+            let _ = expect_updates(&ui_end, 2);
+            let (started, start) = channel();
+            *watched.connect_started.lock().expect("lock") = Some(started);
+            watched.down.store(true, Ordering::SeqCst);
+            start.recv().expect("the rebuild connect started");
+        };
+        let teardown = move || async move {
+            tokio::time::timeout(Duration::from_secs(1), worker.finish())
+                .await
+                .expect("a stop during the connect must end the task");
+            assert_eq!(shared.shutdowns.load(Ordering::SeqCst), 1);
+        };
+
+        run_ordered(runtime, window, teardown);
     }
 }

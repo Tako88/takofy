@@ -63,6 +63,30 @@ pub enum EngineError {
     Connect(#[from] ConnectError),
 }
 
+/// Answers one incoming order while something else holds the engine.
+pub trait OrderAnswer: Send + Sync {
+    /// Answers one order, saying whether the entry was still pending.
+    fn answer(&self, id: RequestId, ok: bool) -> bool;
+}
+
+/// A handle to the orders in flight, so one can be answered without owning the
+/// engine that holds them.
+pub type Orders = Arc<dyn OrderAnswer>;
+
+/// The orders the engine's registry holds, reached through the handle.
+struct RegistryOrders(Arc<Registry>);
+
+impl OrderAnswer for RegistryOrders {
+    fn answer(&self, id: RequestId, ok: bool) -> bool {
+        let verdict = if ok {
+            Verdict::Success
+        } else {
+            Verdict::Failure
+        };
+        self.0.answer_order(id, verdict)
+    }
+}
+
 /// A connected Spotify session.
 pub struct Engine {
     session: Session,
@@ -197,12 +221,13 @@ impl Engine {
     /// The verdict is the window's own. Either way its ack is recorded, because
     /// the next state put is what tells the phone the order was heard.
     pub fn answer_order(&self, id: RequestId, ok: bool) -> bool {
-        let verdict = if ok {
-            Verdict::Success
-        } else {
-            Verdict::Failure
-        };
-        self.registry.answer_order(id, verdict)
+        self.orders().answer(id, ok)
+    }
+
+    /// A handle that answers orders without borrowing the engine, so a caller
+    /// that already owns it can still answer a phone.
+    pub fn orders(&self) -> Orders {
+        Arc::new(RegistryOrders(Arc::clone(&self.registry)))
     }
 
     /// When a pending request's budget answers it.

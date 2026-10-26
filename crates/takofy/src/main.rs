@@ -10,11 +10,9 @@ mod decode;
 mod devices;
 mod headless;
 mod keychain;
-#[cfg_attr(not(test), expect(dead_code))]
 mod playhead;
 mod preferences;
 mod prompt;
-#[cfg_attr(not(test), expect(dead_code))]
 mod recovery;
 mod session;
 
