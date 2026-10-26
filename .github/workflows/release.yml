@@ -121,7 +121,10 @@ jobs:
           sudo apt-get install --yes --no-install-recommends flatpak flatpak-builder
           flatpak remote-add --user --if-not-exists flathub \
             https://dl.flathub.org/repo/flathub.flatpakrepo
+          # The Platform is named: the SDK does not pull it in by itself, and
+          # flatpak-builder refuses to start without the runtime beside the SDK.
           flatpak install --user --noninteractive flathub \
+            org.freedesktop.Platform//25.08 \
             org.freedesktop.Sdk//25.08 \
             org.freedesktop.Sdk.Extension.rust-stable//25.08
       # The same script a developer runs, so there is one description of how a

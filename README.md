@@ -47,10 +47,6 @@ fetch from Flathub as it installs, and the sandbox brings the sound socket, the
 display and the keyring with it. The bundle is unsigned and does not update
 itself: install the next release's bundle over the top.
 
-The tarball needs no installation either: unpack it anywhere and run `./takofy`.
-On Windows the zip is the same, with the Visual C runtime linked in, so no
-redistributable is needed.
-
 ```
 flatpak uninstall io.github.Tako88.Takofy
 ```
@@ -59,6 +55,10 @@ Signing out of the account is not built yet, so uninstalling leaves the refresh
 token in the keychain. On Linux that is
 `secret-tool clear service takofy username spotify-refresh-token`; on Windows it
 is Credential Manager, under `takofy`.
+
+The tarball needs no installation: unpack it anywhere and run `./takofy`. On
+Windows the zip is the same, with the Visual C runtime linked in, so no
+redistributable is needed.
 
 ## Building
 
