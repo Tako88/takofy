@@ -929,8 +929,8 @@ fn update_id(millis: u128, seq: u64) -> String {
 /// An empty set asks for no metadata at all.
 ///
 /// The cards are read `REMOTE_FETCH_WIDTH` at a time. A show whose metadata
-/// does not answer, or answers without a name, keeps
-/// its URI and stays in the list: one unreadable show must not hide the others.
+/// does not answer, or answers without a name, keeps its URI and stays in the
+/// list: one unreadable show must not hide the others.
 pub(crate) async fn read_followed_shows(
     session: &Session,
 ) -> Result<Vec<FollowedShow>, FollowedError> {

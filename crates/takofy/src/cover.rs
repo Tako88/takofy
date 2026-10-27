@@ -32,15 +32,20 @@ pub(crate) const MAX_CONCURRENT_COVERS: usize = 6;
 ///
 /// Ties [`takofy_ui::cover::cache::IN_FLIGHT_TIMEOUT`] to [`FETCH_TIMEOUT`] plus
 /// [`DECODE_TIMEOUT`], and [`takofy_ui::cover::MAX_IN_FLIGHT`] to
-/// [`MAX_CONCURRENT_COVERS`]: raising one side alone fails the build.
+/// [`MAX_CONCURRENT_COVERS`]. The build fails when the worker's fetch plus
+/// decode would outlast the window's in-flight timeout — that is, when
+/// [`FETCH_TIMEOUT`] or [`DECODE_TIMEOUT`] is raised in this file, or when
+/// [`takofy_ui::cover::cache::IN_FLIGHT_TIMEOUT`] is lowered in
+/// `takofy-ui/src/cover/cache.rs` — and on any change to either concurrency
+/// limit that leaves the two unequal.
 const _: () = assert!(
-    takofy_ui::cover::cache::IN_FLIGHT_TIMEOUT.as_secs()
-        > FETCH_TIMEOUT.as_secs() + DECODE_TIMEOUT.as_secs(),
-    "the window's in-flight timeout must outlast the worker's fetch and decode"
+    takofy_ui::cover::cache::IN_FLIGHT_TIMEOUT.as_millis()
+        > FETCH_TIMEOUT.as_millis() + DECODE_TIMEOUT.as_millis(),
+    "the window's in-flight timeout must outlast the worker's fetch and decode: raise IN_FLIGHT_TIMEOUT in takofy-ui/src/cover/cache.rs, or lower FETCH_TIMEOUT or DECODE_TIMEOUT in this file"
 );
 const _: () = assert!(
     takofy_ui::cover::MAX_IN_FLIGHT == MAX_CONCURRENT_COVERS,
-    "the window's in-flight cap and the worker's permits must agree"
+    "the window's in-flight cap and the worker's permits must agree: change MAX_IN_FLIGHT in takofy-ui/src/cover.rs, or MAX_CONCURRENT_COVERS in this file, so the two are equal"
 );
 
 /// Why a cover could not be produced. Kind only: no body, no URL, so nothing
