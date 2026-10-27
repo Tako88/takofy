@@ -54,9 +54,15 @@ the storage and query layer, anything that touches credentials or user data.
 
 Not TDD: appearance, layout, density, and typography. These are judged by looking
 at them. Test UI only where there is a contract — keyboard navigation, stores,
-reducers, state machines.
+reducers, state machines. A rect assertion is a contract only where a click, a
+drag or a key reads that rect; a label sitting a little lower is judged by eye,
+not pinned by a number.
 
 Every non-trivial module ships with its test in the same change.
+
+A module's tests live beside it, not inside it: `#[cfg(test)] mod tests;` naming
+`<module>/tests.rs`, split by concern once they pass about a thousand lines, with
+what several of them share in a `test_support` module. #75 is the migration.
 
 `cargo test` runs the suite. `cargo test -p <crate> <name>` runs one file or case.
 
