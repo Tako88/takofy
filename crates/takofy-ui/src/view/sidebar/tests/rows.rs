@@ -243,6 +243,7 @@ fn a_playlist_row_announces_its_selection() {
 
     assert_eq!(announced, Some(true), "a selected row says so");
 }
+
 /// The fills the row chrome paints with the pointer at `at`.
 fn chrome_fills(at: Option<Pos2>) -> Vec<Color32> {
     let ctx = context();
