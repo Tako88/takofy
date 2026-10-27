@@ -1,5 +1,6 @@
 use super::super::*;
 use super::test_support::*;
+use crate::view::test_support::click_events;
 use egui::{Event, RawInput};
 
 /// The rect the extras draw `control` into, walked the way the draw walks.
@@ -82,7 +83,7 @@ fn click_volume(
     let _ = volume_frame(ctx, tokens, transport, form, Vec::new());
     let _ = volume_frame(ctx, tokens, transport, form, vec![Event::PointerMoved(at)]);
     let _ = transport.take_volume();
-    for event in crate::view::test_support::click_events(at) {
+    for event in click_events(at) {
         let _ = volume_frame(ctx, tokens, transport, form, vec![event]);
         if let Some(command) = transport.take_volume() {
             asked.push(command);
