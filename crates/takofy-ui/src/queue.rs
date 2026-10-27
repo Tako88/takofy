@@ -33,6 +33,7 @@
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
+use takofy_model::uri::{UriKind, parse};
 use takofy_model::{Landing, TrackEntry};
 
 use crate::message::{Command, RemoteUpdate, TransportUpdate, Update};
@@ -1112,23 +1113,19 @@ fn unnamed(uri: &str) -> TrackEntry {
     }
 }
 
-/// The kinds a queue row can carry: the phone sends rows it can play.
-const ROW_KINDS: [&str; 3] = ["track", "episode", "local"];
-
 /// Whether `uri` is a row this queue holds: a Spotify uri of a kind that names a
-/// playable thing, with something naming it.
+/// playable thing.
 ///
 /// The window is built in `takofy-ui`, which cannot reach librespot's parser, and
 /// a row only has to be one the worker can be handed; what is refused is a row
 /// that names no track at all, which would fail only once someone played it.
 fn spotify_uri(uri: &str) -> bool {
-    let Some(rest) = uri.strip_prefix("spotify:") else {
-        return false;
-    };
-    let Some((kind, id)) = rest.split_once(':') else {
-        return false;
-    };
-    ROW_KINDS.contains(&kind) && !id.is_empty()
+    parse(uri).is_some_and(|parsed| {
+        matches!(
+            parsed.kind,
+            UriKind::Track | UriKind::Episode | UriKind::Local
+        )
+    })
 }
 
 #[cfg(test)]
@@ -3750,6 +3747,46 @@ mod tests {
         assert_eq!(order(&queue), uris(&["t1"]));
         assert_eq!(queue.index, Some(0));
         assert!(!queue.can_next(), "nothing follows the current row");
+    }
+
+    #[test]
+    fn a_local_row_with_colons_is_a_row() {
+        for uri in [
+            "spotify:track:abc",
+            "spotify:episode:abc",
+            "spotify:local:A:B:C:222",
+        ] {
+            assert!(spotify_uri(uri), "must accept {uri}");
+        }
+        for uri in [
+            "spotify:album:a",
+            "spotify:show:s",
+            "spotify:track:",
+            "spotify:local:",
+            "spotify::x",
+            "t2",
+        ] {
+            assert!(!spotify_uri(uri), "must refuse {uri}");
+        }
+    }
+
+    #[test]
+    fn a_window_of_local_rows_is_accepted() {
+        let mut queue = started(2, 1);
+        let local = "spotify:local:A:B:C:222".to_owned();
+        let rows = vec![local.clone()];
+
+        assert_eq!(
+            queue.replace_window(&rows, &rows, "rev-1".to_owned()),
+            Ok(())
+        );
+
+        assert_eq!(
+            order(&queue),
+            vec![local.clone(), "t1".to_owned(), local],
+            "a local file is a row the queue can be handed"
+        );
+        assert_eq!(queue.index, Some(1));
     }
 
     #[test]

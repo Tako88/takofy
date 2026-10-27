@@ -3,6 +3,8 @@
 //! A page is one of the four kinds the main panel can show; `None` is the
 //! library root, the playlists grid. Nothing here draws or fetches.
 
+use takofy_model::uri::{UriKind, parse};
+
 /// One page the main panel can show.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Page {
@@ -70,7 +72,7 @@ impl Page {
 ///
 /// The rule [`Page::credit`] opens a page by.
 pub fn credit_is_show(uri: &str) -> bool {
-    uri.starts_with("spotify:show:")
+    parse(uri).is_some_and(|parsed| parsed.kind == UriKind::Show)
 }
 
 /// The oldest entry dropped when the history grows past this length.
