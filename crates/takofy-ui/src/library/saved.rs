@@ -1,6 +1,8 @@
 //! Whether a track, album, show, playlist or artist is saved, as the last
 //! read or write said.
 
+use takofy_model::uri::{UriKind, parse};
+
 use crate::message::Command;
 
 use super::{Library, Load, SidebarPending, listed};
@@ -27,23 +29,23 @@ impl Library {
         if let Some((_, saved)) = self.saved_known.iter().find(|(known, _)| known == uri) {
             return Some(*saved);
         }
-        let kind = uri.strip_prefix("spotify:")?.split_once(':')?.0;
+        let kind = parse(uri)?.kind;
         let (here, ready) = match kind {
-            "album" => (
+            UriKind::Album => (
                 listed(&self.saved_albums, uri, |album| &album.uri),
                 matches!(self.saved_albums, Load::Ready(_)),
             ),
-            "show" => (
+            UriKind::Show => (
                 listed(&self.followed, uri, |show| &show.uri),
                 matches!(self.followed, Load::Ready(_)),
             ),
-            "playlist" => (
+            UriKind::Playlist => (
                 listed(&self.playlists, uri, |entry| &entry.uri),
                 !matches!(self.playlists, Load::Idle | Load::Loading),
             ),
             // An artist's entry in the library is its follow, and the page's own
             // state is the only thing that knows it before the list is read.
-            "artist" => (
+            UriKind::Artist => (
                 listed(&self.followed_artists, uri, |artist| &artist.uri)
                     || (self.follow.artist() == Some(uri) && self.follow.confirmed() == Some(true)),
                 !matches!(self.followed_artists, Load::Idle),
@@ -99,12 +101,9 @@ impl Library {
             // An add names no card, so the list cannot gain the row on its own.
             // Re-arming the read is what puts it in the sidebar; the next visit to
             // the chip that lists this kind draws it there.
-            match uri
-                .strip_prefix("spotify:")
-                .and_then(|rest| rest.split_once(':'))
-            {
-                Some(("album", _)) => self.saved_albums = Load::Idle,
-                Some(("show", _)) => self.followed = Load::Idle,
+            match parse(uri).map(|parsed| parsed.kind) {
+                Some(UriKind::Album) => self.saved_albums = Load::Idle,
+                Some(UriKind::Show) => self.followed = Load::Idle,
                 _ => {}
             }
             return;
@@ -118,5 +117,74 @@ impl Library {
         if let Load::Ready(artists) = &mut self.followed_artists {
             artists.retain(|artist| artist.uri != uri);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use takofy_model::PlaylistEntry;
+
+    use super::*;
+
+    /// The older playlist shape, whose second segment is the owner rather than
+    /// the kind.
+    const ACCOUNT: &str = "spotify:user:someone:playlist:4lRh9XA5hFPyKVnThKW3mi";
+
+    fn playlist(uri: &str) -> PlaylistEntry {
+        PlaylistEntry {
+            composed: Vec::new(),
+            uri: uri.to_owned(),
+            name: "A list".to_owned(),
+            named: true,
+            cover: None,
+            description: None,
+            owner: None,
+            tracks: None,
+            access: None,
+        }
+    }
+
+    fn lib(playlists: Vec<PlaylistEntry>) -> Library {
+        Library {
+            playlists: Load::Ready(playlists),
+            ..Library::default()
+        }
+    }
+
+    #[test]
+    fn an_account_named_playlist_reads_as_saved_when_its_list_holds_it() {
+        let library = lib(vec![playlist(ACCOUNT)]);
+
+        assert_eq!(library.is_saved(ACCOUNT), Some(true));
+    }
+
+    #[test]
+    fn an_account_named_playlist_reads_as_unsaved_when_its_ready_list_lacks_it() {
+        let library = lib(Vec::new());
+
+        assert_eq!(library.is_saved(ACCOUNT), Some(false));
+    }
+
+    #[test]
+    fn a_saved_echo_for_an_account_named_playlist_is_remembered() {
+        let mut library = lib(Vec::new());
+        library.sidebar_pending = Some(SidebarPending::Saved {
+            uri: ACCOUNT.to_owned(),
+            saved: true,
+        });
+
+        library.end_saved(ACCOUNT, true);
+
+        assert_eq!(library.sidebar_pending, None);
+        assert_eq!(library.is_saved(ACCOUNT), Some(true));
+    }
+
+    #[test]
+    fn an_echo_with_no_write_in_flight_leaves_the_list_answer() {
+        let mut library = lib(Vec::new());
+
+        library.end_saved(ACCOUNT, true);
+
+        assert_eq!(library.is_saved(ACCOUNT), Some(false));
     }
 }

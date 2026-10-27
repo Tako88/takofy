@@ -12,6 +12,8 @@
 
 use std::collections::HashSet;
 
+use takofy_model::uri::{UriKind, parse};
+
 use crate::message::Failure;
 
 /// What a pick's members have in common, as the menu's save row reads it.
@@ -279,8 +281,7 @@ impl Likes {
 
 /// Whether a URI names a track the collection set can hold.
 fn is_track(uri: &str) -> bool {
-    uri.strip_prefix("spotify:track:")
-        .is_some_and(|id| !id.is_empty())
+    parse(uri).is_some_and(|parsed| parsed.kind == UriKind::Track)
 }
 
 /// Whether two picks name the same tracks, whatever their order.
@@ -339,6 +340,23 @@ mod tests {
         ] {
             assert_eq!(likes(&[A]).state(uri), None, "{uri:?}");
         }
+    }
+
+    #[test]
+    fn a_bare_track_address_is_not_a_track() {
+        let mut set_likes = likes(&[]);
+
+        assert_eq!(
+            set(&mut set_likes, &["spotify:track:"], true),
+            None,
+            "an address naming no track cannot be liked"
+        );
+        assert_eq!(set_likes.state("spotify:track:"), None);
+        assert_eq!(
+            likes(&["spotify:track:a:b"]).state("spotify:track:a:b"),
+            Some(true),
+            "a colon in the id is part of the id"
+        );
     }
 
     #[test]

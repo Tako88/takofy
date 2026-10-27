@@ -6,6 +6,7 @@
 use std::collections::HashSet;
 
 use takofy_model::TrackEntry;
+use takofy_model::uri::{UriKind, parse};
 
 use crate::likes::Standing;
 use crate::menu::{Door, Item, Kind, LibraryItem, Listing, Request, Verb};
@@ -41,18 +42,24 @@ pub enum Outcome {
 
 /// The web address a URI stands for, or `None` when it has none.
 ///
-/// Only the kinds a row or the library can be are mapped. A user or a local
-/// file has no page and a malformed URI has no id, so neither yields a link.
+/// Only the kinds a row or the library can be are mapped. A local file has no
+/// page, and a web address needs one path segment, so an id carrying a colon
+/// has none either.
 pub fn spotify_link(uri: &str) -> Option<String> {
-    let (kind, id) = uri.strip_prefix("spotify:")?.split_once(':')?;
-    if id.is_empty() || id.contains(':') {
+    let parsed = parse(uri)?;
+    if parsed.id.contains(':') {
         return None;
     }
-    let kind = match kind {
-        "track" | "episode" | "playlist" | "album" | "artist" | "show" => kind,
-        _ => return None,
+    let kind = match parsed.kind {
+        UriKind::Track => "track",
+        UriKind::Episode => "episode",
+        UriKind::Playlist => "playlist",
+        UriKind::Album => "album",
+        UriKind::Artist => "artist",
+        UriKind::Show => "show",
+        UriKind::Local => return None,
     };
-    Some(format!("https://open.spotify.com/{kind}/{id}"))
+    Some(format!("https://open.spotify.com/{kind}/{}", parsed.id))
 }
 
 /// What a library row may do about its place in the library.
@@ -504,6 +511,19 @@ mod tests {
         ] {
             assert_eq!(spotify_link(refused), None, "{refused}");
         }
+    }
+
+    #[test]
+    fn copy_link_maps_an_account_named_playlist_to_its_playlist_page() {
+        assert_eq!(
+            spotify_link("spotify:user:someone:playlist:4lRh9XA5hFPyKVnThKW3mi").as_deref(),
+            Some("https://open.spotify.com/playlist/4lRh9XA5hFPyKVnThKW3mi")
+        );
+    }
+
+    #[test]
+    fn copy_link_refuses_an_id_that_is_not_one_path_segment() {
+        assert_eq!(spotify_link("spotify:playlist:abc:extra"), None);
     }
 
     #[test]

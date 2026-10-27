@@ -14,6 +14,7 @@
 //! edge. The clamp is the contract: nothing here overflows.
 
 use egui::{Pos2, Rect, pos2, vec2};
+use takofy_model::uri::{UriKind, parse};
 
 use crate::layout::tracks::{Track, solve};
 use crate::theme::{extent, grow, space};
@@ -109,24 +110,12 @@ impl Present {
 }
 
 /// Whether a context URI names a playlist: `spotify:playlist:<id>`, or the named
-/// `spotify:user:<user>:playlist:<id>`. The id must be non-empty.
+/// `spotify:user:<user>:playlist:<id>`.
 ///
-/// The first segment is matched exactly and the id is only checked for
-/// emptiness: the loaded URI was already validated where it came from, so this
-/// is a question of identity, not of well-formedness.
+/// The id is not inspected: a URI that names a playlist still names it whatever
+/// it spells into the id, so this is a question of identity.
 pub fn is_playlist(uri: &str) -> bool {
-    let Some(rest) = uri.strip_prefix("spotify:") else {
-        return false;
-    };
-    let mut parts = rest.split(':');
-    match parts.next() {
-        Some("playlist") => parts.next().is_some_and(|id| !id.is_empty()),
-        Some("user") => {
-            parts.next();
-            parts.next() == Some("playlist") && parts.next().is_some_and(|id| !id.is_empty())
-        }
-        _ => false,
-    }
+    parse(uri).is_some_and(|parsed| parsed.kind == UriKind::Playlist)
 }
 
 /// The eight top-level rects of a track row, in the reference's order.
