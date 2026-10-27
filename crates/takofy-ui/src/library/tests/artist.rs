@@ -1,5 +1,7 @@
-use super::super::*; // the module under test
-use super::*; // the slice's shared fixtures, from tests/mod.rs
+use super::super::*;
+use super::test_support::*;
+use crate::discography::Chip;
+use takofy_model::ReleaseKind;
 
 #[test]
 fn open_an_artist_starts_its_load_and_keeps_the_album() {

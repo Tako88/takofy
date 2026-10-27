@@ -1,5 +1,5 @@
-use super::super::*; // the module under test
-use super::*; // the slice's shared fixtures, from tests/mod.rs
+use super::super::*;
+use super::test_support::*;
 
 #[test]
 fn an_emptied_playlist_stays_ready_and_empty() {

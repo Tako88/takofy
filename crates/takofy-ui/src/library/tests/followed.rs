@@ -1,5 +1,6 @@
-use super::super::*; // the module under test
-use super::*; // the slice's shared fixtures, from tests/mod.rs
+use super::super::*;
+use super::test_support::*;
+use crate::library_filter::RootKind;
 
 fn related_artist(uri: &str, related: Vec<String>) -> ArtistDetail {
     ArtistDetail {

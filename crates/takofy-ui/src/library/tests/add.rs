@@ -1,5 +1,5 @@
-use super::super::*; // the module under test
-use super::*; // the slice's shared fixtures, from tests/mod.rs
+use super::super::*;
+use super::test_support::*;
 
 #[test]
 fn an_add_asks_for_one_write_on_the_entrys_revision_and_length() {

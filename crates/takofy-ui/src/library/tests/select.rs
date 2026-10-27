@@ -1,5 +1,7 @@
-use super::super::*; // the module under test
-use super::*; // the slice's shared fixtures, from tests/mod.rs
+use super::super::*;
+use super::test_support::*;
+use crate::message::{DeviceUpdate, TransportUpdate};
+use takofy_model::AddedAt;
 
 fn dated(uri: &str, wire: &str) -> TrackEntry {
     TrackEntry {

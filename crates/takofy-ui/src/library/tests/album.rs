@@ -1,5 +1,8 @@
-use super::super::*; // the module under test
-use super::*; // the slice's shared fixtures, from tests/mod.rs
+use super::super::*;
+use super::test_support::*;
+use crate::lyrics::Tab;
+use crate::player::NowPlaying;
+use takofy_model::TrackLyrics;
 
 #[test]
 fn a_lyrics_reply_reaches_the_panel_whatever_the_page() {

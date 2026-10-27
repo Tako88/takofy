@@ -1,5 +1,5 @@
-use super::super::*; // the module under test
-use super::*; // the slice's shared fixtures, from tests/mod.rs
+use super::super::*;
+use super::test_support::*;
 
 #[test]
 fn back_to_a_ready_playlist_returns_no_command() {

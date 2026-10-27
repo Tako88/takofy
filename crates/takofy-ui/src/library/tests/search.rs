@@ -1,5 +1,6 @@
-use super::super::*; // the module under test
-use super::*; // the slice's shared fixtures, from tests/mod.rs
+use super::super::*;
+use super::test_support::*;
+use takofy_model::{ArtistPortrait, CoverUrl};
 
 fn search_request(library: &mut Library) -> Option<Command> {
     let page = library.page_search_query().map(str::to_owned);

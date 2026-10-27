@@ -1,5 +1,5 @@
-use super::super::*; // the module under test
-use super::*; // the slice's shared fixtures, from tests/mod.rs
+use super::super::*;
+use super::test_support::*;
 
 #[test]
 fn a_save_asks_for_the_write_and_is_confirmed_by_its_echo() {

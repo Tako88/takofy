@@ -1,5 +1,6 @@
-use super::super::*; // the module under test
-use super::*; // the slice's shared fixtures, from tests/mod.rs
+use super::super::*;
+use super::test_support::*;
+use takofy_model::Removal;
 
 #[test]
 fn a_removal_issues_one_command_with_the_chain_and_the_held_revision() {

@@ -1,5 +1,8 @@
-use super::super::*; // the module under test
-use super::*; // the slice's shared fixtures, from tests/mod.rs
+use super::super::*;
+use super::test_support::*;
+use crate::discography::Chip;
+use crate::library_filter::RootKind;
+use takofy_model::ReleaseKind;
 
 #[test]
 fn the_filter_starts_on_all() {
@@ -283,4 +286,14 @@ fn another_artists_ep_chip_does_not_keep_the_choice() {
         Chip::All,
         "B still draws All pressed, because the choice belonged to A"
     );
+}
+
+#[test]
+fn a_chip_change_clears_the_remove_sentence() {
+    let mut library = sidebar_library(&["a"], 0x07, true, None);
+    library.sidebar_notice = Some(SidebarWrite::Remove);
+
+    assert!(library.choose_kind(SidebarKind::Podcasts));
+
+    assert_eq!(library.sidebar_notice, None);
 }

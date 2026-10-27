@@ -1,5 +1,6 @@
-use super::super::*; // the module under test
-use super::*; // the slice's shared fixtures, from tests/mod.rs
+use super::super::*;
+use super::test_support::*;
+use takofy_model::Move;
 
 #[test]
 fn the_next_page_write_carries_the_rename_replys_revision() {
