@@ -1,5 +1,8 @@
-use super::super::*; // the module under test
-use super::*; // the shared fixtures, from tests/mod.rs
+use egui::{Event, Pos2};
+use takofy_model::TrackEntry;
+
+use super::super::*;
+use super::test_support::*;
 
 /// A track that names the record it is on, which is the cell's credit.
 fn on_album(uri: &str, title: &str, album: &str) -> TrackEntry {

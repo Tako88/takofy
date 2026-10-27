@@ -1,8 +1,14 @@
-use super::super::*; // the module under test
-use super::*; // the shared fixtures, from tests/mod.rs
+use egui::{pos2, vec2};
+use takofy_model::{ArtistDetail, Release as _Release, ReleaseKind};
+
+use super::super::*;
+use super::test_support::*;
 use crate::cover::Cover;
+use crate::message::{Failure, Update};
 use crate::releases::Labels;
+use crate::theme::stroke;
 use crate::view::release_block::Block;
+use crate::view::test_support::click_events;
 
 #[test]
 fn a_release_rows_double_click_plays_that_track() {

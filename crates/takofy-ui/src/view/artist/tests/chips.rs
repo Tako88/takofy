@@ -1,5 +1,11 @@
-use super::super::*; // the module under test
-use super::*; // the shared fixtures, from tests/mod.rs
+use egui::Context;
+use takofy_model::ReleaseKind;
+
+use super::super::*;
+use super::test_support::*;
+use crate::discography::{Chip, chips};
+use crate::message::Update;
+use crate::theme::stroke;
 
 #[test]
 fn the_row_has_all_plus_the_kinds_the_artist_has() {
@@ -965,4 +971,35 @@ fn the_wrapped_row_never_overlaps_the_first_block() {
             first_block.top()
         );
     }
+}
+
+/// One release of every kind, so the row has all five chips.
+fn every_kind() -> Vec<Release> {
+    vec![
+        release_of_kind("spotify:a", "An Album", ReleaseKind::Album, &["t1"]),
+        release_of_kind("spotify:b", "An EP", ReleaseKind::Ep, &["t2"]),
+        release_of_kind("spotify:c", "A Single", ReleaseKind::Single, &["t3"]),
+        release_of_kind(
+            "spotify:d",
+            "A Compilation",
+            ReleaseKind::Compilation,
+            &["t4"],
+        ),
+    ]
+}
+
+/// The sizes the five chips need, as the row measures them.
+fn chip_sizes(ctx: &Context) -> Vec<Vec2> {
+    let tokens = Tokens::DARK;
+    let row = chips(&every_kind());
+    let mut sizes = Vec::new();
+    run(ctx, input(Vec2::new(900.0, 800.0), Vec::new()), |ui| {
+        sizes = row
+            .iter()
+            .map(|chip| {
+                crate::view::controls::chip_size(ui, &tokens, crate::format::filter_label(*chip))
+            })
+            .collect();
+    });
+    sizes
 }

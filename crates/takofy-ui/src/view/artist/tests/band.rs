@@ -1,6 +1,12 @@
-use super::super::*; // the module under test
-use super::*; // the shared fixtures, from tests/mod.rs
+use egui::{Context, Pos2};
+use takofy_model::ReleaseKind;
+
+use super::super::*;
+use super::test_support::*;
+use crate::discography::Chip;
+use crate::message::Update;
 use crate::theme::hero;
+use crate::theme::stroke;
 
 // -----------------------------------------------------------------------
 // The chip row as a band: it holds under the bar, paints its own surface,

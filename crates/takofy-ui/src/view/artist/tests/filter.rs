@@ -1,5 +1,12 @@
-use super::super::*; // the module under test
-use super::*; // the shared fixtures, from tests/mod.rs
+use egui::{Context, Event, pos2, vec2};
+use takofy_model::ReleaseKind;
+
+use super::super::*;
+use super::test_support::*;
+use crate::discography::Chip;
+use crate::message::Update;
+use crate::theme::stroke;
+use crate::view::test_support::click_events;
 
 #[test]
 fn a_page_with_no_band_leaves_the_bar_inset_alone() {

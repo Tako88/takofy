@@ -1,4 +1,6 @@
-use super::*; // the shared fixtures, from tests/mod.rs
+use super::super::*;
+use super::test_support::*;
+use crate::message::Update;
 
 #[test]
 fn a_right_click_posts_the_popular_menu() {

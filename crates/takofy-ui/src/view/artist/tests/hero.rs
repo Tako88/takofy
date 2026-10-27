@@ -1,5 +1,8 @@
-use super::super::*; // the module under test
-use super::*; // the shared fixtures, from tests/mod.rs
+use egui::{Context, vec2};
+
+use super::super::*;
+use super::test_support::*;
+use crate::message::{Failure, Update};
 
 #[test]
 fn the_hero_draws_the_artists_name() {
@@ -596,4 +599,36 @@ fn bar_tiles(ctx: &Context, size: Vec2, label: &str) -> (Rect, Rect) {
         placed.play,
         placed.follow.expect("the artist's bar has a text slot"),
     )
+}
+
+/// The size the artist's word needs, as the page measures it.
+fn word(ctx: &Context, label: &str) -> Vec2 {
+    let tokens = Tokens::DARK;
+    let mut size = Vec2::ZERO;
+    run(ctx, input(PAGE, Vec::new()), |ui| {
+        size = crate::view::controls::text_button_size(ui, &tokens, label);
+    });
+    size
+}
+
+/// The action row's parts on this page: the tools and the word.
+fn bar_parts(ctx: &Context, label: &str) -> crate::layout::actionbar::Parts {
+    crate::layout::actionbar::Parts {
+        shuffle: true,
+        field: false,
+        follow: Some(word(ctx, label)),
+    }
+}
+
+/// The row's slot in the page's flow, solved where the page puts it: the
+/// hero's band first, then the shared row.
+fn bar_row(ctx: &Context, size: Vec2) -> Rect {
+    let mut found = None;
+    run(ctx, input(size, Vec::new()), |ui| {
+        ui.add_space(space::S3);
+        let band = crate::layout::hero::artist_frame(ui.ctx().content_rect().width()).height(0.0);
+        let _ = ui.allocate_exact_size(vec2(ui.available_width(), band), Sense::hover());
+        found = Some(actionbar::row_rect(ui));
+    });
+    found.expect("the band and its action row lay out")
 }

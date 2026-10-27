@@ -1,5 +1,8 @@
-use super::super::*; // the module under test
-use super::*; // the shared fixtures, from tests/mod.rs
+use egui::Pos2;
+use takofy_model::TrackEntry;
+
+use super::super::*;
+use super::test_support::*;
 use crate::releases::Labels;
 
 /// A Popular row reveals through the page's seam: a row the pinned bar
