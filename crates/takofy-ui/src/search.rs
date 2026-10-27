@@ -5,7 +5,7 @@
 //! field's own: the mark starts on the field and lives on the rows, typing returns
 //! it there, Escape is two steps, results start at the first character, the answer
 //! ends in a floor row when a band hides something, a miss is one line, and no
-//! read in flight draws a skeleton. Each one has a test below.
+//! read in flight draws a skeleton. Each one has a test beside this file.
 //!
 //! Two reads share one key space. The menu holds the answer it derives its
 //! bands from; the page holds the whole answer. They are keyed by the same

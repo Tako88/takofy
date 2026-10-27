@@ -359,7 +359,7 @@ fn the_menu_width_tokens_are_twelve_and_twenty_rem() {
 
 #[test]
 fn the_track_columns_are_the_reference_rem_values() {
-    // 16 points to the rem, which is the base every value in this file uses.
+    // 16 points to the rem, which is the base the token layer uses.
     const REM: f32 = 16.0;
     const {
         assert!(extent::TRACK_INDEX_W == 2.25 * REM);

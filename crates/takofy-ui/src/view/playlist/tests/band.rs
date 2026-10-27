@@ -1,3 +1,4 @@
+use super::super::root::{MediaDraw, MediaWords};
 use super::super::*;
 use super::test_support::*;
 use crate::library::MediaLayout;
@@ -284,6 +285,7 @@ fn the_band_keeps_an_already_held_cover_while_the_tracks_reload() {
     assert!(fetch_urls(art.requests(now)).is_empty());
 }
 
+/// 62 tracks of 223_548 ms, which the byline rounds to `3 hr 51 min`.
 const META: &str = "Made by alice \u{b7} 62 songs \u{b7} 3 hr 51 min";
 /// Long enough that two rows of the band's column cannot hold it.
 const LONG_DESCRIPTION: &str = "Windows down, city behind you. Updated every \
@@ -1579,6 +1581,4 @@ fn fetch_urls(commands: Vec<Command>) -> Vec<CoverUrl> {
         .collect()
 }
 
-/// The band's worded parts below: 62 tracks of 223_548 ms sum to 13_859_976
-/// ms, which the byline rounds to `3 hr 51 min`.
 const DESCRIPTION: &str = "Windows down, city behind you.";

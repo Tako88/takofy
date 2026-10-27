@@ -45,11 +45,6 @@ pub(in crate::view) mod root;
 
 use root::idle;
 pub use root::{FollowedRead, IdleView, LoadNote, idle_view};
-// Only the tests still reach the root's grid through this module.
-#[cfg(test)]
-use root::media_grid;
-#[cfg(test)]
-use root::{MediaDraw, MediaWords};
 
 /// The main pane: the selected playlist's tracks, or the state of their load.
 #[expect(

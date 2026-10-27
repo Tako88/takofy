@@ -88,8 +88,9 @@ impl Run {
 
 /// The controls each column holds, with the glyph each draws.
 ///
-/// The layout reserves the extras' width from the same shape, and a test here
-/// pins the two together so a control added to one cannot drift from the other.
+/// The layout reserves the extras' width from the same shape, and the tests in
+/// `playbar/tests/extras.rs` pin the two together so a control added to one
+/// cannot drift from the other.
 /// The now column's controls: the heart is the column's one button.
 const NOW: [Run; 1] = [Run::plain(Control::Like, Icon::Heart)];
 const EXTRAS_FULL: [Run; 5] = [

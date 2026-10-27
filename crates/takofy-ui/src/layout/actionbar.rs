@@ -12,9 +12,10 @@
 //! second, so a keystroke that brings the count in does not shift the field.
 //!
 //! Everything here is pure: the solver answers rects and the view paints them, so
-//! the tests that check a place in the row never draw a widget. One measures the
-//! artist's word through the control that will draw it, because a sweep at the
-//! size the word actually takes is worth more than a guessed number.
+//! `actionbar/tests.rs` checks a place in the row without drawing a widget. One of
+//! its tests measures the artist's word through the control that will draw it,
+//! because a sweep at the size the word actually takes is worth more than a
+//! guessed number.
 
 use egui::{Pos2, Rect, Vec2};
 

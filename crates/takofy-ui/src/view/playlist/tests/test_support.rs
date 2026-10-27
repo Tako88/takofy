@@ -1,3 +1,4 @@
+use super::super::root::media_grid;
 use super::super::*;
 use crate::format::{library_note, root_filter_label};
 use crate::library_filter::{self, RootKind};

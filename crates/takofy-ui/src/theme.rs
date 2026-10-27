@@ -1,8 +1,8 @@
 //! The token layer.
 //!
-//! `clippy.toml` denies the `egui::Color32` constructors crate-wide, and this is
-//! the one file where that allow is lifted — a literal colour anywhere else is a
-//! build failure rather than a review comment.
+//! `clippy.toml` denies the `egui::Color32` constructors crate-wide, and this
+//! module, the files under it included, is the one place that allow is lifted — a
+//! literal colour anywhere else is a build failure rather than a review comment.
 //!
 //! Every value here is transcribed from `docs/reference/styles/tokens.css`,
 //! including the steps whose consumers have not been written yet. The token layer
