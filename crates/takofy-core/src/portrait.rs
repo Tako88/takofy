@@ -5,8 +5,6 @@
 //! the one file that performs librespot I/O.
 
 use std::collections::{HashMap, HashSet};
-use std::future::Future;
-use std::time::Duration;
 
 use librespot::core::{SpotifyId, SpotifyUri};
 use librespot::protocol::metadata::Artist as ArtistMessage;
@@ -82,18 +80,9 @@ pub fn portraits_of(
         .collect()
 }
 
-/// The future's answer, or `None` when `limit` passes first.
-///
-/// librespot's HTTP client has no request timeout, so this is the only bound a
-/// speculative read has.
-pub async fn bounded<T>(future: impl Future<Output = T>, limit: Duration) -> Option<T> {
-    tokio::time::timeout(limit, future).await.ok()
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
-    use std::time::Duration;
 
     use librespot::core::{SpotifyId, SpotifyUri};
     use librespot::protocol::metadata::image::Size;
@@ -101,7 +90,7 @@ mod tests {
     use protobuf::Message as _;
     use takofy_model::{CoverSet, CoverUrl};
 
-    use super::{Portrait, bounded, portrait_from, portrait_of, portraits_of};
+    use super::{Portrait, portrait_from, portrait_of, portraits_of};
 
     fn image(size: Size, width: i32, id: &[u8]) -> Image {
         let mut image = Image::new();
@@ -268,19 +257,5 @@ mod tests {
         let found = found(&[("spotify:artist:a", None)]);
         assert!(portraits_of(&artist_uris(&["spotify:artist:z"]), &found).is_empty());
         assert!(portraits_of(&[], &found).is_empty());
-    }
-
-    #[tokio::test]
-    async fn bounded_gives_none_for_a_future_that_never_completes() {
-        let pending = std::future::pending::<u8>();
-        assert_eq!(bounded(pending, Duration::from_millis(1)).await, None);
-    }
-
-    #[tokio::test]
-    async fn bounded_gives_some_for_a_future_that_does_complete() {
-        assert_eq!(
-            bounded(std::future::ready(7_u8), Duration::from_secs(30)).await,
-            Some(7)
-        );
     }
 }
