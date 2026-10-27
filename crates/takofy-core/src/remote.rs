@@ -3,6 +3,7 @@
 //! The only file in this crate that performs librespot I/O.
 
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -42,13 +43,16 @@ use crate::followed::{self, FollowedError, ShowCard};
 use crate::label_cache::UriCache;
 use crate::lyrics::{self, LyricsError};
 use crate::playlist_edit;
-use crate::portrait::{bounded, portrait_from, portraits_of};
+use crate::portrait::{portrait_from, portraits_of};
 use crate::rootlist::{RootlistError, RootlistPage, RootlistSource, RootlistWire, parse_rootlist};
 use crate::show::{ShowError, detail as show_detail, episode_uris};
 use crate::status_tally::StatusTally;
 
 /// The wire the live rootlist is read as; flip to `Json` if the binary parse fails.
 pub(crate) const ROOTLIST_WIRE: RootlistWire = RootlistWire::Binary;
+
+/// How many metadata reads one pass keeps in flight.
+const REMOTE_FETCH_WIDTH: usize = 8;
 
 /// Reads rootlist pages through librespot's spclient.
 pub(crate) struct RemoteRootlist<'a> {
@@ -97,7 +101,7 @@ pub(crate) async fn label_playlists(
 ) -> Vec<PlaylistEntry> {
     let metas = futures_util::stream::iter(uris.iter().cloned())
         .map(|uri| async move { playlist_meta(session, &uri).await })
-        .buffered(8)
+        .buffered(REMOTE_FETCH_WIDTH)
         .collect::<Vec<_>>()
         .await;
 
@@ -924,9 +928,9 @@ fn update_id(millis: u128, seq: u64) -> String {
 ///
 /// An empty set asks for no metadata at all.
 ///
-/// The cards are read one show at a time, `buffered(8)`, as the playlist listing
-/// does. A show whose metadata does not answer, or answers without a name, keeps
-/// its URI and stays in the list: one unreadable show must not hide the others.
+/// The cards are read `REMOTE_FETCH_WIDTH` at a time. A show whose metadata
+/// does not answer, or answers without a name, keeps its URI and stays in the
+/// list: one unreadable show must not hide the others.
 pub(crate) async fn read_followed_shows(
     session: &Session,
 ) -> Result<Vec<FollowedShow>, FollowedError> {
@@ -942,7 +946,7 @@ pub(crate) async fn read_followed_shows(
             let card = show_meta(session, &uri).await;
             (uri, card)
         })
-        .buffered(8)
+        .buffered(REMOTE_FETCH_WIDTH)
         .collect::<Vec<_>>()
         .await
         .into_iter()
@@ -1000,7 +1004,7 @@ pub(crate) async fn read_followed_artists(
             let card = artist_meta(session, &uri).await;
             (uri, card)
         })
-        .buffered(8)
+        .buffered(REMOTE_FETCH_WIDTH)
         .collect::<Vec<_>>()
         .await
         .into_iter()
@@ -1022,6 +1026,14 @@ pub(crate) async fn read_followed_artists(
 /// A surface asks for at most ten artists in one request, so this is generous
 /// for the bytes and short enough that the queue behind it barely notices.
 const PORTRAIT_LIMIT: Duration = Duration::from_secs(3);
+
+/// The future's answer, or `None` when `limit` passes first.
+///
+/// librespot's HTTP client has no request timeout, so this is the only bound a
+/// speculative read has.
+async fn bounded<T>(future: impl Future<Output = T>, limit: Duration) -> Option<T> {
+    tokio::time::timeout(limit, future).await.ok()
+}
 
 /// The portraits for `artists`, in the order asked for, from one batched read.
 ///
@@ -1057,10 +1069,10 @@ pub(crate) async fn read_portraits(
 
 /// The related artists an artist page shows as cards, in the payload's order.
 ///
-/// An empty list asks for no metadata at all. The cards are read one artist at a
-/// time, `buffered(8)`, as the followed-artists list does. An artist whose
-/// metadata does not answer, or answers without a name, keeps its URI and stays
-/// in the row: one unreadable relative must not shrink it.
+/// An empty list asks for no metadata at all. The cards are read
+/// `REMOTE_FETCH_WIDTH` at a time. An artist whose metadata does not answer, or
+/// answers without a name, keeps its URI and stays in the row: one unreadable
+/// relative must not shrink it.
 pub(crate) async fn read_related(
     session: &Session,
     uris: Vec<String>,
@@ -1074,7 +1086,7 @@ pub(crate) async fn read_related(
             let card = artist_meta(session, &uri).await;
             (uri, card)
         })
-        .buffered(8)
+        .buffered(REMOTE_FETCH_WIDTH)
         .collect::<Vec<_>>()
         .await
         .into_iter()
@@ -1705,9 +1717,9 @@ mod tests {
     use crate::show::ShowError;
 
     use super::{
-        HEAD_TRACKS, LabelCache, Labels, PlaylistMeta, TrackLabel, client_update_id, composed_of,
-        context_cover, distinct_uris, duration_ms, episode_from, episode_labels, episode_of,
-        expand_episodes, expand_labels, head_candidates, head_track_uris, item_uris,
+        HEAD_TRACKS, LabelCache, Labels, PlaylistMeta, TrackLabel, bounded, client_update_id,
+        composed_of, context_cover, distinct_uris, duration_ms, episode_from, episode_labels,
+        episode_of, expand_episodes, expand_labels, head_candidates, head_track_uris, item_uris,
         label_from_episode, label_of, label_tracks, merge_labels, needs_labels, non_blank,
         parse_show_uri, partition_by_kind, playlist_cover, playlist_headers, playlist_label,
         playlist_length, playlist_owner, published_at, show_card, tally_of, titled_label,
@@ -3320,5 +3332,19 @@ mod tests {
     fn an_entity_with_no_header_records_nothing() {
         let response = status_response(200, &[("spotify:track:a", None)]);
         assert_eq!(tally_of(&response).summary(), None);
+    }
+
+    #[tokio::test]
+    async fn bounded_gives_none_for_a_future_that_never_completes() {
+        let pending = std::future::pending::<u8>();
+        assert_eq!(bounded(pending, Duration::from_millis(1)).await, None);
+    }
+
+    #[tokio::test]
+    async fn bounded_gives_some_for_a_future_that_does_complete() {
+        assert_eq!(
+            bounded(std::future::ready(7_u8), Duration::from_secs(30)).await,
+            Some(7)
+        );
     }
 }
