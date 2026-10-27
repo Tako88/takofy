@@ -45,7 +45,7 @@ use root::idle;
 pub use root::{FollowedRead, IdleView, LoadNote, idle_view};
 // Only the tests still reach the root's grid through this module.
 #[cfg(test)]
-pub(super) use root::media_grid;
+use root::media_grid;
 #[cfg(test)]
 use root::{MediaDraw, MediaWords};
 
