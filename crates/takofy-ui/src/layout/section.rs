@@ -115,5 +115,14 @@ mod tests {
         assert_eq!(rows.bottom(), list.top(), "the list keeps no height");
         assert_eq!(strip.top(), list.top());
         assert_eq!(strip.bottom(), list.bottom());
+
+        // A line exactly the list's height takes all of it, so the list keeps
+        // no rows and the line is still the foot.
+        let (rows, strip) = foot(list, list.height());
+        assert_eq!(rows.top(), list.top());
+        assert_eq!(rows.bottom(), list.top(), "the list keeps no height");
+        assert_eq!(strip.top(), list.top(), "the line starts at the top");
+        assert_eq!(strip.bottom(), list.bottom());
+        assert_eq!(strip.height(), list.height(), "and holds the whole list");
     }
 }

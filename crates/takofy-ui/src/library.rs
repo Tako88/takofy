@@ -829,12 +829,7 @@ impl Library {
                             notice: None,
                         });
                     }
-                    // An empty page has nowhere to show a query: the field is
-                    // drawn beside rows, so the query would only hide a list
-                    // that has none.
-                    if matches!(&self.tracks, Load::Ready(tracks) if tracks.tracks.is_empty()) {
-                        self.track_filter.clear();
-                    }
+                    self.clear_filter_when_empty();
                 }
             }
             Update::TracksFailed { playlist, failure } => {
@@ -1691,11 +1686,26 @@ impl Library {
             access: Some(access.clone()),
             notice: None,
         });
+        // Taking out the last row leaves nowhere to show the query, and no
+        // reply for a removal carries a track list, so this is the only place
+        // that can drop it.
+        self.clear_filter_when_empty();
         Some(Command::RemoveTracks {
             playlist: playlist.to_owned(),
             revision: access.revision,
             removals: found.removals,
         })
+    }
+
+    /// Drops the page's query when the page it filters has no rows to show.
+    ///
+    /// The field is drawn beside rows, so an empty page can never show a query.
+    /// Left to sit, it would come back and silently filter the next list that
+    /// has rows.
+    fn clear_filter_when_empty(&mut self) {
+        if matches!(&self.tracks, Load::Ready(tracks) if tracks.tracks.is_empty()) {
+            self.track_filter.clear();
+        }
     }
 
     /// What a page write may name now, when `rows` still hold `carried`.
@@ -8303,6 +8313,24 @@ mod tests {
                 before: moved(&["t0", "t1", "t2", "t3"]),
                 after: moved(&["t0", "t3"]),
             })
+        );
+    }
+
+    #[test]
+    fn a_removal_that_empties_the_page_drops_the_track_filter() {
+        let mut library = page_with("a", &["midnight"], access(0x01, true));
+        library.track_filter.edit("a").push_str("midnight");
+
+        assert!(
+            library
+                .remove_tracks("a", &[0], &moved(&["midnight"]))
+                .is_some()
+        );
+
+        assert_eq!(
+            library.track_filter.needle("a"),
+            None,
+            "an empty page cannot show the query, so the last row takes it with it"
         );
     }
 
