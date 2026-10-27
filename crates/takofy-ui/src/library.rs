@@ -3,6 +3,12 @@
 //! The library is a reducer over worker updates: it decides what is on screen
 //! and which load a reply belongs to, and it hands the view a command when the
 //! user asks for one.
+//!
+//! This module keeps the library's state, the sidebar write ledger, the
+//! permission checks, and the create, move, remove and rename methods. The
+//! rest sits in the child modules: `nav` walks the page stack, `requests`
+//! sends the reads, `saved` tracks what the library holds, `shelf_play` starts
+//! a play from a shelf, and `writes` holds the writes in flight.
 
 use std::collections::HashMap;
 use std::ops::Range;

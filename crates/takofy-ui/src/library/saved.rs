@@ -1,4 +1,5 @@
-//! Whether the library holds a thing, as the last read or write said.
+//! Whether a track, album, show, playlist or artist is saved, as the last
+//! read or write said.
 
 use crate::message::Command;
 
