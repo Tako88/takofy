@@ -2,12 +2,15 @@
 //!
 //! This is a reducer, like [`crate::drawer::Drawer`]: the views draw what it
 //! decides and never decide anything themselves. The rules it encodes are the
-//! brief's R1–R3 and R12–R14, and each one has a test below.
+//! field's own: the mark starts on the field and lives on the rows, typing returns
+//! it there, Escape is two steps, results start at the first character, the answer
+//! ends in a floor row when a band hides something, a miss is one line, and no
+//! read in flight draws a skeleton. Each one has a test below.
 //!
 //! Two reads share one key space. The menu holds the answer it derives its
 //! bands from; the page holds the whole answer. They are keyed by the same
 //! collapsed query, so one reply can fill both, and a reply for a query the
-//! user has typed past fills neither (R14).
+//! user has typed past fills neither.
 
 use takofy_model::TrackEntry;
 
@@ -28,8 +31,9 @@ pub const SEARCH_CAP: usize = 20;
 
 /// Trims and joins runs of whitespace with one space, or `None` when blank.
 ///
-/// It is the single key for both reads, the menu's heading and the floor row
-/// (R6, R12), so "a  b" and "a b" are the same search everywhere.
+/// It is the single key for both reads, the menu's heading and the floor row,
+/// so "a  b" and "a b" are the same search everywhere, and a blank key asks for
+/// nothing: the first character is what starts a read.
 pub fn collapse(raw: &str) -> Option<String> {
     let joined = raw.split_whitespace().collect::<Vec<_>>().join(" ");
     if joined.is_empty() {
@@ -101,15 +105,17 @@ pub enum Act {
     /// Nothing past the field's own state.
     #[default]
     None,
-    /// Play the result at this index of the answer the menu came from (R16).
+    /// Play the result at this index of the whole answer, so the queue becomes
+    /// the results and next walks them.
     Play(usize),
     /// Open the album at this index of the derived index.
     OpenAlbum(usize),
     /// Open the artist at this index of the derived index.
     OpenArtist(usize),
-    /// Open the results page for the field's query (R1, R12).
+    /// Open the results page for the field's query: what Enter on the field asks
+    /// for, and what the floor row asks for.
     OpenResults,
-    /// Escape cleared the query and closed the menu (R3 step two).
+    /// Escape cleared the query and closed the menu, its second step.
     Close,
 }
 
@@ -126,12 +132,12 @@ pub struct Listing<'a> {
 pub enum MenuView<'a> {
     /// The current answer, its derived index, and the bands the menu draws.
     Bands(Listing<'a>),
-    /// The answer was empty: one muted line, nothing to press (R13).
+    /// The answer was empty: one muted line, nothing to press.
     Empty,
-    /// The read failed: the same line with its own words (R13).
+    /// The read failed: the same line with its own words.
     Failed(Failure),
     /// Nothing true to say yet: idle, in flight, another query's answer, or
-    /// blank text. There is no skeleton (R14).
+    /// blank text. There is no skeleton.
     Nothing,
 }
 
@@ -165,10 +171,11 @@ pub struct Search {
     /// Whether the drop-down is drawn. Typing sets it; only the shell closes it,
     /// once per frame, after the field and the menu have both been drawn.
     open: bool,
-    /// The marked row's ordinal in the walk, or `None` for the field (R1).
+    /// The marked row's ordinal in the walk, or `None` for the field, which is
+    /// where the menu opens.
     mark: Option<usize>,
-    /// The input that chose the mark, so the two highlight tiers never mix
-    /// (R9).
+    /// The input that chose the mark, so the two highlight tiers never mix: the
+    /// last device wins.
     device: Device,
     /// The answer the menu derives its bands from.
     menu: Read,
@@ -288,8 +295,8 @@ impl Search {
     /// answer for the text as it stands.
     ///
     /// [`Self::menu_view`] carries only the rows the menu draws; the queue is
-    /// the whole answer the wire returned (R16), so the shell asks for it here
-    /// rather than taking the menu's capped prefix.
+    /// the whole answer the wire returned, so the shell asks for it here rather
+    /// than taking the menu's capped prefix.
     pub fn answer(&self) -> Option<&[TrackEntry]> {
         let key = collapse(&self.text)?;
         if self.menu.key.as_deref() != Some(key.as_str()) {
@@ -356,7 +363,7 @@ impl Search {
     /// Points the menu at the text as it now stands.
     ///
     /// An edit that moves the key drops the old answer, so a superseded reply
-    /// can never be drawn (R14). A programmatic edit — the clear control — calls
+    /// can never be drawn. A programmatic edit — the clear control — calls
     /// this too, because only the text edit itself reports `typed`.
     pub fn text_changed(&mut self) {
         let key = collapse(&self.text);
@@ -390,8 +397,8 @@ impl Search {
             return Act::None;
         }
         if input.typed || input.clicked_field {
-            // R2: typing, and a click on the field, put the rule back on the
-            // field and re-open the menu on the query it now stands for.
+            // Typing, and a click on the field, put the rule back on the field
+            // and re-open the menu on the query it now stands for.
             self.mark = None;
             self.device = Device::Keyboard;
             self.text_changed();
@@ -422,7 +429,7 @@ impl Search {
                 if rows > 0 {
                     self.mark = match self.mark {
                         None => Some(rows - 1),
-                        // Up from the first row is the field: R1's mark lives on
+                        // Up from the first row is the field: the mark lives on
                         // the rows and the field is where Enter opens the page.
                         Some(0) => None,
                         Some(index) => Some(index - 1),
@@ -435,10 +442,10 @@ impl Search {
         }
         if input.escape {
             if self.mark.is_some() {
-                // R3 step one: back to the field, query kept, menu open.
+                // Escape's first step: back to the field, query kept, menu open.
                 self.mark = None;
             } else if self.open || !self.text.is_empty() {
-                // R3 step two: clear the query, which closes the menu.
+                // Escape's second step: clear the query, which closes the menu.
                 self.text.clear();
                 self.text_changed();
                 self.open = false;
@@ -484,7 +491,8 @@ impl Search {
         self.mark = None;
     }
 
-    /// The pointer moved over the menu, so the pointer owns the highlight (R9).
+    /// The pointer moved over the menu, so the pointer takes the highlight from
+    /// the keyboard: the last device wins.
     pub fn pointer_moved(&mut self) {
         self.device = Device::Pointer;
     }
@@ -1187,7 +1195,7 @@ mod tests {
         };
         assert_eq!(state.step(focused), Act::None);
         assert_eq!(state.request(None), None);
-        assert!(!state.is_open(), "focus alone opens nothing (R6)");
+        assert!(!state.is_open(), "focus alone opens nothing");
 
         // Spaces are not a query either.
         type_text(&mut state, "   ");
@@ -1291,7 +1299,11 @@ mod tests {
     #[test]
     fn down_marks_the_first_row_from_the_field() {
         let mut state = answered_open("abc", &["a", "b", "c"]);
-        assert_eq!(state.mark(), None, "the menu opens unmarked (R1)");
+        assert_eq!(
+            state.mark(),
+            None,
+            "the menu opens with the mark on the field"
+        );
         assert_eq!(state.step(key("down")), Act::None);
         assert_eq!(state.mark(), Some(0));
         assert_eq!(state.device(), Device::Keyboard);
@@ -1590,7 +1602,7 @@ mod tests {
         state.step(key("down"));
         assert_eq!(state.step(key("escape")), Act::None);
         assert_eq!(state.mark(), None);
-        assert_eq!(state.text, "abc", "the query is kept (R3)");
+        assert_eq!(state.text, "abc", "the query is kept");
         assert!(state.is_open(), "and the menu stays up");
         assert!(state.escapes(), "Escape still has something to undo");
     }
@@ -1641,7 +1653,7 @@ mod tests {
         state.step(key("down"));
         assert_eq!(state.mark(), Some(0));
         type_text(&mut state, "abcd");
-        assert_eq!(state.mark(), None, "R2: typing puts the rule back");
+        assert_eq!(state.mark(), None, "typing puts the rule back on the field");
         assert!(state.is_open());
     }
 
@@ -1663,7 +1675,7 @@ mod tests {
         state.pointer_moved();
         assert!(
             state.is_open(),
-            "a click re-opens it on the same query (R2)"
+            "a click re-opens it on the query it already held"
         );
         assert_eq!(state.mark(), None);
     }

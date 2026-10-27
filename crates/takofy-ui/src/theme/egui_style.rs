@@ -189,8 +189,8 @@ mod tests {
     }
 
     /// A selection has to be seen: the reference draws it as the accent under
-    /// inverse text, and the text field's own fill is a grey one step from the
-    /// row hover that used to stand here.
+    /// inverse text. The field's own fill is `surface_raised`, one step below
+    /// `surface_hover`; the accent is what tells a selection apart from both.
     #[test]
     fn text_selection_is_the_accent_under_inverse_text() {
         let tokens = Tokens::DARK;

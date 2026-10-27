@@ -6,16 +6,16 @@
 //! keeps only its own row grammar: the cover, the title over the owner, the
 //! action glyph and the floor row.
 //!
-//! The menu is a foreground `Area` anchored to the field's own box (R7): the
-//! same width and `extent::MENU_GAP` below it. It is not clipped by the topbar
+//! The menu is a foreground `Area` anchored to the field's own box: the same
+//! width and `extent::MENU_GAP` below it. It is not clipped by the topbar
 //! and it draws over the view, the way the drawer's `Area` does.
 //!
-//! Two tiers, never three (R9). The keyboard owns the 2px rule, the
-//! `row_selected` wash and the action glyph; the pointer owns a `row_hover` wash
-//! and a 1rem tick, and never borrows the rule or the glyph. The playing row
-//! keeps the accent rule and the equaliser, and identity beats focus: if the
-//! playing row is also marked, the accent rule stays and the glyph becomes pause
-//! (R11).
+//! Two tiers, never three, and the last device wins. The keyboard owns the 2px
+//! rule, the `row_selected` wash and the action glyph; the pointer owns a
+//! `row_hover` wash and a 1rem tick, and never borrows the rule or the glyph.
+//! The playing row keeps the accent rule and the equaliser, and identity beats
+//! focus: if the playing row is also marked, the accent rule stays and the glyph
+//! becomes pause.
 //!
 //! The washes are the app-wide row tokens (`row_hover` for the pointer,
 //! `row_selected` for the mark), not the reference's literal values: its 4% wash
@@ -49,7 +49,7 @@ pub struct Menu {
     /// this view's.
     pub click: Option<Act>,
     /// The frame the menu was drawn in, so the shell can tell whether a pointer
-    /// is on it. `None` when there was nothing true to draw (R14).
+    /// is on it. `None` when there was nothing true to draw.
     pub rect: Option<Rect>,
 }
 
@@ -84,7 +84,7 @@ struct Drawer<'a> {
 /// Draws the menu under `field` and returns what its rows asked for.
 ///
 /// The answer is read from the search state, guarded by the query it was asked
-/// for: an answer to the query the user has typed past is never drawn (R14).
+/// for: an answer to the query the user has typed past is never drawn.
 pub fn show(
     ui: &mut Ui,
     field: Rect,
@@ -100,7 +100,7 @@ pub fn show(
             geometry::bands_height(&listing.shape.rows_per_band(), listing.shape.floor)
         }
         MenuView::Empty | MenuView::Failed(_) => geometry::line_height(),
-        // No skeleton, no empty box: nothing true to say (R14).
+        // No skeleton, no empty box: nothing true to say.
         MenuView::Nothing => return Menu::default(),
     };
     let menu = geometry::menu_rect(field, ui.ctx().content_rect(), height);
@@ -110,7 +110,7 @@ pub fn show(
     let base = ui.make_persistent_id("search-menu-row");
 
     // A pointer that is merely resting over the menu is not the last device; a
-    // pointer that moves over it is (R9).
+    // pointer that moves over it is.
     let pointer_moved = ui.input(|input| {
         input.pointer.is_moving()
             && input
@@ -131,7 +131,7 @@ pub fn show(
             rect: menu,
             id: base.with("surface"),
             // The rows are the only Tab stops a menu of results needs, and it has
-            // none: the keyboard path is arrows only (R18).
+            // none: the keyboard path is arrows only.
             sense: Sense::CLICK,
             tokens,
         };
@@ -267,7 +267,7 @@ pub fn show(
         });
     });
 
-    // The pointer moved over the menu, so the pointer owns the highlight (R9).
+    // The pointer moved over the menu, so the pointer owns the highlight.
     if pointer_moved {
         search.pointer_moved();
     }
@@ -374,7 +374,7 @@ impl Drawer<'_> {
         paint_highlight(ui, self.tokens, spec.rect, corners, tier);
 
         // Identity beats focus: the playing row keeps the accent rule even while
-        // it is marked (R11).
+        // it is marked.
         if spec.current || marked {
             paint_marker(
                 ui,
@@ -438,7 +438,8 @@ impl Drawer<'_> {
     }
 
     /// Draws the floor row: `See more results for “q”`, with the chevron and the
-    /// same highlight a result row takes (R12).
+    /// same highlight a result row takes. It is drawn exactly when a band hid
+    /// something.
     fn floor(&mut self, ui: &mut Ui, row: Rect, base: egui::Id) -> Option<Act> {
         let marked = self.search.marked() == Some(crate::search_index::Row::Floor);
         let hit = ui.interact(row, base.with("floor"), Sense::CLICK);
@@ -519,7 +520,8 @@ impl Drawer<'_> {
     }
 }
 
-/// The single muted line for no matches or a failed read (R13).
+/// The single muted line for no matches or a failed read: nothing to press, no
+/// spinner.
 fn line(ui: &mut Ui, tokens: &Tokens, menu: Rect, message: &str, base: egui::Id) {
     let row = geometry::row_rect(menu, 0);
     // The line has no action, but it is still one node in the accessibility
@@ -546,7 +548,7 @@ fn line(ui: &mut Ui, tokens: &Tokens, menu: Rect, message: &str, base: egui::Id)
     );
 }
 
-/// The title over `artist · album`, both truncated to the text column (R8).
+/// The title over `artist · album`, both truncated to the text column.
 fn paint_text(ui: &Ui, rect: Rect, title_text: &str, subtitle: &str, lit: bool, tokens: &Tokens) {
     if rect.width() <= 0.0 {
         return;
@@ -675,7 +677,7 @@ mod tests {
     }
 
     /// A search state with `count` plain tracks answered for "a", open the way
-    /// a click on the field opens it (R2).
+    /// a click on the field opens it: the query kept and the menu open.
     fn answered(count: usize) -> Search {
         let mut search = Search::default();
         search.text = "a".to_owned();
