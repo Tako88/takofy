@@ -1,6 +1,9 @@
 use super::super::hero; // the band recipe, which the tests' own `hero` module shadows
-use super::super::*; // the module under test
-use super::*; // the slice's shared fixtures, from tests/mod.rs
+use super::super::*;
+use super::test_support::*;
+use crate::message::{Failure, Update};
+use egui::{Context, Event, Modifiers, Pos2, Rect, Vec2};
+use takofy_model::TrackEntry;
 
 /// The clear control's centre, solved the way the view places it: the field's
 /// right padding, then the glyph's side.

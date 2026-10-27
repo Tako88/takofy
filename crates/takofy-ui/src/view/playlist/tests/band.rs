@@ -1,6 +1,16 @@
 use super::super::hero; // the band recipe, which the tests' own `hero` module shadows
-use super::super::*; // the module under test
-use super::*; // the slice's shared fixtures, from tests/mod.rs
+use super::super::*;
+use super::test_support::*;
+use crate::library::MediaLayout;
+use crate::library_filter::Item;
+use crate::message::Update;
+use crate::theme::stroke;
+use crate::view::media;
+use egui::{
+    Context, Event, Modifiers, MouseWheelSource, MouseWheelUnit, Pos2, Rect, TouchPhase, Vec2,
+};
+use std::time::Duration;
+use takofy_model::{CoverImage, CoverSet, CoverUrl, Owner, OwnerName, PlaylistCover, TrackEntry};
 
 #[test]
 fn the_frame_loop_requests_only_visible_covers() {
@@ -1284,3 +1294,292 @@ fn the_band_does_not_clip_the_eyebrow_at_its_tallest_content() {
          tallest content does not fit the band's height"
     );
 }
+
+/// The height of the galley whose text is exactly `label`.
+fn galley_height(drawn: &[(String, f32, f32)], label: &str) -> f32 {
+    drawn
+        .iter()
+        .find(|(text, _, _)| text == label)
+        .unwrap_or_else(|| panic!("{label:?} was not painted: {drawn:?}"))
+        .2
+}
+
+/// The same selection, with a playlist entry that carries a description and
+/// an owner, so the band has both to draw.
+fn library_detailed(
+    tracks: Vec<TrackEntry>,
+    name: &str,
+    description: Option<&str>,
+    owner: Option<&str>,
+) -> Library {
+    let mut library = library_with(tracks);
+    library.apply(&Update::Playlists(vec![listed(name, description, owner)]));
+    library
+}
+
+/// The selection listed but its tracks not asked for yet: the band draws
+/// before anything is ready.
+fn library_listed(name: &str, description: Option<&str>, owner: Option<&str>) -> Library {
+    let mut library = Library::default();
+    library.select("spotify:playlist:a");
+    library.apply(&Update::Playlists(vec![listed(name, description, owner)]));
+    library
+}
+
+/// The same page, heading a list of our own.
+fn library_ours(tracks: Vec<TrackEntry>, name: &str) -> Library {
+    let mut library = library_with(tracks);
+    let mut entry = listed(name, None, None);
+    entry.owner = Some(Owner::You);
+    library.apply(&Update::Playlists(vec![entry]));
+    library
+}
+
+fn listed(name: &str, description: Option<&str>, owner: Option<&str>) -> PlaylistEntry {
+    PlaylistEntry {
+        composed: Vec::new(),
+        uri: "spotify:playlist:a".to_owned(),
+        name: name.to_owned(),
+        named: true,
+        cover: None,
+        description: description.map(str::to_owned),
+        owner: owner.and_then(OwnerName::from_wire).map(Owner::Named),
+        tracks: None,
+        access: None,
+    }
+}
+
+/// `count` tracks, all `duration_ms` long, so the band's total is exact.
+fn timed_tracks(count: usize, duration_ms: u32) -> Vec<TrackEntry> {
+    (0..count)
+        .map(|index| TrackEntry {
+            duration_ms: Some(duration_ms),
+            ..track(&format!("t{index}"), &format!("t{index}"))
+        })
+        .collect()
+}
+
+/// A cover offering 64, 300 and 640 squares, with their URLs.
+fn sized(tail: &str) -> (CoverSet, CoverUrl, CoverUrl, CoverUrl) {
+    let small = cover_url(&format!("{tail}-64"));
+    let middle = cover_url(&format!("{tail}-300"));
+    let large = cover_url(&format!("{tail}-640"));
+    let set = CoverSet::from_sizes([
+        (Some((64, 64)), small.clone()),
+        (Some((300, 300)), middle.clone()),
+        (Some((640, 640)), large.clone()),
+    ])
+    .expect("a cover set");
+    (set, small, middle, large)
+}
+
+fn playlist_with_cover(uri: &str, name: &str, cover: CoverUrl) -> PlaylistEntry {
+    PlaylistEntry {
+        composed: Vec::new(),
+        uri: uri.to_owned(),
+        name: name.to_owned(),
+        named: true,
+        cover: Some(PlaylistCover::derived(CoverSet::single(cover))),
+        description: None,
+        owner: None,
+        tracks: None,
+        access: None,
+    }
+}
+
+fn image() -> CoverImage {
+    CoverImage::new(1, 1, vec![0; 4]).expect("a 1x1 image")
+}
+
+/// A playlist page whose band heads `covers`, one per track, ready.
+fn mosaic_library(covers: &[&str]) -> Library {
+    let tracks = covers
+        .iter()
+        .enumerate()
+        .map(|(index, tail)| TrackEntry {
+            cover: Some(cover_set(tail)),
+            ..track(&format!("t{index}"), &format!("t{index}"))
+        })
+        .collect();
+    library_detailed(tracks, "Evening", Some(DESCRIPTION), None)
+}
+
+/// The same page, with a picture of its own to fall back to.
+fn mosaic_library_with_picture(covers: &[&str]) -> Library {
+    let mut library = mosaic_library(covers);
+    library.apply(&Update::Playlists(vec![PlaylistEntry {
+        composed: Vec::new(),
+        cover: Some(PlaylistCover::derived(CoverSet::single(cover_url("m0")))),
+        ..listed("Evening", Some(DESCRIPTION), None)
+    }]));
+    library
+}
+
+/// A long list whose first four tracks carry distinct covers, so the band has
+/// a mosaic to draw beside a full byline and description.
+fn mosaic_full() -> Library {
+    let mut tracks = timed_tracks(62, 223_548);
+    for (index, track) in tracks.iter_mut().enumerate().take(mosaic::QUADRANTS) {
+        track.cover = Some(cover_set(&format!("m{index}")));
+    }
+    library_detailed(tracks, "Evening", Some(DESCRIPTION), Some("alice"))
+}
+
+/// Holds every URL in `art`, as the fetches would have by the time the band
+/// draws.
+///
+/// One URL at a time: a batch larger than the store's in-flight cap would
+/// leave its tail wanted and never sent.
+fn hold(ctx: &Context, art: &mut Art, urls: &[CoverUrl], now: Instant) {
+    for url in urls {
+        art.begin_frame();
+        let _ = art.look(Some(&CoverSet::single(url.clone())), 64, now);
+        while !art.requests(now).is_empty() {}
+        art.apply(
+            &Update::Cover {
+                url: url.clone(),
+                image: image(),
+            },
+            now,
+        );
+        art.upload(ctx, crate::theme::TintParams::DARK.alpha_floor);
+    }
+}
+
+/// Holds `url` with a one-pixel cover of `rgba`, so its tint is known.
+fn hold_pixel(ctx: &Context, art: &mut Art, url: &CoverUrl, rgba: [u8; 4], now: Instant) {
+    art.begin_frame();
+    let _ = art.look(Some(&CoverSet::single(url.clone())), 64, now);
+    while !art.requests(now).is_empty() {}
+    art.apply(
+        &Update::Cover {
+            url: url.clone(),
+            image: CoverImage::new(1, 1, rgba.to_vec()).expect("a 1x1 image"),
+        },
+        now,
+    );
+    art.upload(ctx, crate::theme::TintParams::DARK.alpha_floor);
+}
+
+/// Drives `url` to a failure it will not retry, as three failed answers do.
+///
+/// The second and third attempts are only sent once their retry delay is
+/// due, so the clock moves with the store's own schedule.
+fn fail_permanently(art: &mut Art, url: &CoverUrl, now: Instant) -> Instant {
+    let mut at = now;
+    for delay in [
+        Duration::ZERO,
+        Duration::from_secs(5),
+        Duration::from_secs(30),
+    ] {
+        at += delay;
+        art.begin_frame();
+        let _ = art.look(Some(&CoverSet::single(url.clone())), 64, at);
+        while !art.requests(at).is_empty() {}
+        art.apply(&Update::CoverFailed { url: url.clone() }, at);
+    }
+    at
+}
+
+/// One frame of the tracklist with a store the test owns.
+fn band_frame_with(
+    ctx: &Context,
+    library: &mut Library,
+    art: &mut Art,
+    now: Instant,
+) -> egui::FullOutput {
+    let tokens = Tokens::DARK;
+    let mut transport = Transport::default();
+    let mut queue = Queue::default();
+    run(ctx, input(Vec::new()), |ui| {
+        let _ = tracks_view(
+            ui,
+            Table::Full,
+            library,
+            &mut transport,
+            &mut queue,
+            art,
+            now,
+            NOW_MS,
+            &tokens,
+        );
+    })
+}
+
+/// The covers the band paints, read from the art box's own hairline.
+fn band_art(output: &egui::FullOutput) -> Rect {
+    let tokens = Tokens::DARK;
+    output
+        .shapes
+        .iter()
+        .find_map(|clipped| match &clipped.shape {
+            egui::epaint::Shape::Rect(shape)
+                if (shape.rect.width() - crate::theme::hero::ART).abs() < 0.01
+                    && (shape.rect.height() - crate::theme::hero::ART).abs() < 0.01
+                    && (shape.stroke.width - stroke::HAIRLINE).abs() < 0.01
+                    && shape.stroke.color == tokens.palette.border_strong =>
+            {
+                Some(shape.rect)
+            }
+            _ => None,
+        })
+        .expect("the band draws its art box")
+}
+
+/// The textured rects inside `area`, in paint order.
+fn textured(output: &egui::FullOutput, area: Rect) -> Vec<Rect> {
+    output
+        .shapes
+        .iter()
+        .filter_map(|clipped| match &clipped.shape {
+            egui::epaint::Shape::Rect(shape)
+                if shape.brush.is_some() && area.contains(shape.rect.center()) =>
+            {
+                Some(shape.rect)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// The sunken holes inside `area`, in paint order.
+fn holes(output: &egui::FullOutput, area: Rect) -> Vec<Rect> {
+    let tokens = Tokens::DARK;
+    output
+        .shapes
+        .iter()
+        .filter_map(|clipped| match &clipped.shape {
+            egui::epaint::Shape::Rect(shape)
+                if shape.brush.is_none()
+                    && shape.fill == tokens.palette.surface_sunken
+                    && area.contains(shape.rect.center()) =>
+            {
+                Some(shape.rect)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// A held cover's drawing, so a quadrant can be named without a texture id.
+fn drawn_cover(art: &mut Art, tail: &str, now: Instant) -> Cover {
+    art.look(
+        Some(&cover_set(tail)),
+        crate::cover::want_px(crate::theme::hero::ART / 2.0, 1.0),
+        now,
+    )
+}
+
+fn fetch_urls(commands: Vec<Command>) -> Vec<CoverUrl> {
+    commands
+        .into_iter()
+        .filter_map(|command| match command {
+            Command::Fetch { url } => Some(url),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The band's worded parts below: 62 tracks of 223_548 ms sum to 13_859_976
+/// ms, which the byline rounds to `3 hr 51 min`.
+const DESCRIPTION: &str = "Windows down, city behind you.";

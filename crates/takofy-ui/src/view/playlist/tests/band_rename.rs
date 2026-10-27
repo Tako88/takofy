@@ -1,5 +1,8 @@
-use super::super::*; // the module under test
-use super::*; // the slice's shared fixtures, from tests/mod.rs
+use super::super::*;
+use super::test_support::*;
+use crate::message::{Failure, Update};
+use egui::{Context, Event, Modifiers, Pos2, Rect, Vec2};
+use takofy_model::{PlaylistAccess, Revision};
 
 /// A playlist page whose sidebar entry says whether the user may write it.
 fn band_library(name: &str, editable: bool, titles: &[&str]) -> Library {

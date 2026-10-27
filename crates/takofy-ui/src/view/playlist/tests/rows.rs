@@ -1,5 +1,8 @@
-use super::super::*; // the module under test
-use super::*; // the slice's shared fixtures, from tests/mod.rs
+use super::super::*;
+use super::test_support::*;
+use crate::message::{Failure, Update};
+use egui::{Context, Event, Pos2, RawInput, Vec2};
+use takofy_model::TrackEntry;
 
 /// The grid sits one gutter inside the pane, like every other page's content.
 #[test]
@@ -498,4 +501,17 @@ fn the_failed_page_draws_its_failure_and_a_retry_that_reloads() {
         }),
         "the retry asks for the page again"
     );
+}
+
+/// The same page, read at a revision the user may not write.
+fn read_only_library_with(tracks: Vec<TrackEntry>) -> Library {
+    let mut library = Library::default();
+    library.select("spotify:playlist:a");
+    library.apply(&Update::Tracks {
+        playlist: "spotify:playlist:a".to_owned(),
+        tracks,
+        cover: None,
+        access: access(false),
+    });
+    library
 }

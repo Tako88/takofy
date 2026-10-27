@@ -1,5 +1,4 @@
-use super::super::*; // the module under test
-use super::*; // the slice's shared fixtures, from tests/mod.rs
+use super::super::*;
 
 #[test]
 fn main_page_maps_show_to_the_show_view() {

@@ -1,6 +1,10 @@
 use super::super::hero; // the band recipe, which the tests' own `hero` module shadows
-use super::super::*; // the module under test
-use super::*; // the slice's shared fixtures, from tests/mod.rs
+use super::super::*;
+use super::test_support::*;
+use crate::library_filter::Item;
+use crate::message::Update;
+use egui::{Context, Event, Pos2, Rect};
+use takofy_model::{AlbumDetail, TrackEntry};
 
 /// The rect `tracks_view` draws the `index`-th row's `cell` into, solved the
 /// way the painter solves it: the row's own rect, then the columns at its

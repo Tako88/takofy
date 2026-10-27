@@ -1,6 +1,12 @@
 use super::super::hero; // the band recipe, which the tests' own `hero` module shadows
-use super::super::*; // the module under test
-use super::*; // the slice's shared fixtures, from tests/mod.rs
+use super::super::*;
+use super::test_support::*;
+use crate::library_filter::{self, Item, RootKind};
+use crate::message::{Failure, Update};
+use crate::view::rows::Look;
+use crate::view::track_row::State;
+use egui::{Context, Pos2, Rect, Vec2};
+use takofy_model::TrackEntry;
 
 /// The rect `tracks_view` draws the `index`-th row into while the band is
 /// drawn, solved the same way the view solves it: the band and its action row

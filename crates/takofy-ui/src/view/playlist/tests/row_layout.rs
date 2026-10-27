@@ -1,4 +1,9 @@
-use super::*; // the slice's shared fixtures, from tests/mod.rs
+use super::super::*;
+use super::test_support::*;
+use crate::view::rows::Look;
+use crate::view::track_row::State;
+use egui::{Context, Event, Pos2, Rect, Vec2};
+use takofy_model::{AddedAt, TrackEntry};
 
 /// How far a row's words sit below the row's own box, read from the first
 /// row the frame painted: the fold clips at the words, not at the box.
@@ -654,4 +659,32 @@ fn a_row_that_only_touches_the_fold_asks_for_no_cover() {
         requested, painted,
         "the covers asked for are the rows the window shows"
     );
+}
+
+/// One day in milliseconds.
+const DAY: u64 = 86_400_000;
+
+fn date(millis: u64) -> AddedAt {
+    AddedAt::from_wire(&millis.to_string()).expect("a date above the floor")
+}
+
+fn dated(uri: &str, title: &str, added_at: Option<AddedAt>) -> TrackEntry {
+    TrackEntry {
+        added_at,
+        ..track(uri, title)
+    }
+}
+
+/// The visible run of every painted line: an elided line is read as what it
+/// shows, not as the string it was given.
+fn painted_runs(ctx: &Context, table: Table, library: &mut Library) -> Vec<String> {
+    tracklist_frame(ctx, table, library)
+        .shapes
+        .iter()
+        .filter_map(|clipped| match &clipped.shape {
+            egui::epaint::Shape::Text(text) => text.galley.rows.first(),
+            _ => None,
+        })
+        .map(|row| row.row.text().to_owned())
+        .collect()
 }

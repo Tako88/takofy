@@ -1,5 +1,8 @@
-use super::super::*; // the module under test
-use super::*; // the slice's shared fixtures, from tests/mod.rs
+use super::super::*;
+use super::test_support::*;
+use egui::{
+    Context, Event, Modifiers, MouseWheelSource, MouseWheelUnit, Pos2, Rect, TouchPhase, Vec2,
+};
 
 /// One frame of the tracklist with a wheel jump applied in the frame it
 /// arrives, as the window's own draw pass does: `view::show` calls
