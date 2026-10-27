@@ -5,11 +5,26 @@
 //! turns a click or an arrow into a command; a track with no known duration
 //! draws the track alone and a dash for the time left.
 //!
-//! Only what the shell owns is reported: a transport move asks the queue for the
-//! command it implies, and the pane, the window and the devices button come back
-//! as presses for the shell to apply. The rest it changes in place and reports
-//! nothing about — shuffle, repeat, the mute lid and the dragged level are the
-//! queue's and the level's own state, so there is nothing for a caller to apply.
+//! [`Reply`] carries every channel the bar has. `command` comes from two places
+//! that do not wait on each other: a transport move — Previous, Next, PlayPause —
+//! asks the queue which command it implies, while the seek track builds its own
+//! from the click or the key it was given. `steer` is the same three presses and
+//! the same seek asked of another device while it holds the sound; nothing there
+//! reaches the local queue. `devices` is the devices button's own widget id, so
+//! the shell can hang the list off the button it pressed, and `pane` and
+//! `fullscreen` are the queue button's and the window's presses for the shell to
+//! apply. `open` is the page a title or artist click named.
+//!
+//! The rest it changes in place and reports nothing about. A transport move goes
+//! through the queue, which moves its row where the move means one, rewrites the
+//! transport onto that track and hands back the command, and shuffle and repeat
+//! toggle and cycle the queue's modes. The mute lid and the dragged or arrowed
+//! level are written straight to the transport's volume, which the player reads
+//! back afterwards, and a drag on the seek track writes its preview onto the
+//! transport too: the seek command comes on release. A press on the heart posts the
+//! new liked state through `heart::post`, a side channel of its own. While another
+//! device holds the sound the local queue is left alone and so is the level, which
+//! is the holder's.
 
 use egui::{EventFilter, FontId, Key, Pos2, Rect, Ui, Vec2};
 
@@ -315,9 +330,9 @@ pub struct Remote<'a> {
 
 /// What the bar's controls asked for this frame.
 ///
-/// A transport move is a command the shell hands on; the pane and the window
-/// are the shell's own to change, so their presses are reported as presses. A
-/// steer is the holder's transport and never reaches the local queue.
+/// A transport move and the seek track are a command the shell hands on; the pane
+/// and the window are the shell's own to change, so their presses are reported as
+/// presses. A steer is the holder's transport and never reaches the local queue.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Reply {
     pub command: Option<Command>,
@@ -1087,11 +1102,13 @@ fn run_rect(rect: Rect, form: Playbar, control: Control) -> Option<Rect> {
 }
 
 /// A `BUTTON` square whose left edge is `x` and whose centre is `centre_y`.
+///
+/// Walked through `place_run` as the row's leading slot — it adds no gap, and
+/// `x` is discarded — so the rect the shell derives and the rect the draw paints
+/// are one definition rather than two.
 fn square(x: f32, centre_y: f32) -> Rect {
-    Rect::from_min_size(
-        Pos2::new(x, centre_y - extent::BUTTON / 2.0),
-        Vec2::splat(extent::BUTTON),
-    )
+    let mut at = x;
+    layout::playbar::place_run(&mut at, true, layout::playbar::Slot::Button, centre_y)
 }
 
 /// Where the queue button is drawn inside the bar `rect`: the shell's drop area
