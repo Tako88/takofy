@@ -2,9 +2,12 @@
 //!
 //! The trail, the history pair and the drawer toggle say where you are and how
 //! to leave. The search field is a real text edit: it owns the query, the clear
-//! control and the keyboard path its drop-down reads (R1–R5, R17, R18). Its
-//! states are border-only, because the menu hangs off the field's own width and
-//! a field that resizes while you type moves the thing you are aiming at.
+//! control and the keyboard path its drop-down reads. No row is lit while the
+//! field has the keyboard, typing returns the mark to the field, Escape is two
+//! steps, and the rows are reached by arrows only, never Tab. Its states are
+//! border-only, and its clear control sits inside the right padding: the menu
+//! hangs off the field's own width, so a field that resizes while you type moves
+//! the thing you are aiming at.
 
 use egui::{
     Align, FontId, Key, Layout, Modifiers, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Ui,
@@ -312,7 +315,7 @@ fn trail(
     clicked
 }
 
-/// The placeholder, in every topbar (R17).
+/// The placeholder, in every topbar, naming the three kinds the index holds.
 const PLACEHOLDER: &str = "Artists, albums or tracks";
 
 /// The search field: a real text edit inside the painted box.
@@ -323,7 +326,7 @@ const PLACEHOLDER: &str = "Artists, albums or tracks";
 /// so a drawer under an empty, closed search keeps its own Escape.
 ///
 /// The right inset is reserved whether or not the clear control is drawn, so the
-/// text column — and therefore the field's width — never changes (R4/R5).
+/// text column — and therefore the field's width — never changes.
 fn search(
     ui: &mut Ui,
     column: Rect,
@@ -338,7 +341,7 @@ fn search(
     let rect = Rect::from_center_size(column.center(), Vec2::new(column.width(), extent::SEARCH_H));
 
     // The fill first, the border last: TextEdit paints its own text in between,
-    // and the border is the only thing that changes with focus (R4).
+    // and the border is the only thing that changes with focus.
     ui.painter()
         .rect_filled(rect, radius::SM, tokens.palette.surface_raised);
 
@@ -368,7 +371,7 @@ fn search(
     );
     // The text edit is the whole painted box and insets its text instead of
     // being a narrower widget: a click on the magnifier, either gap or the
-    // padding is a click on the field (R2), not "elsewhere" that blurs it,
+    // padding is a click on the field, not "elsewhere" that blurs it,
     // closes the menu and never reaches `clicked_field`. The clear control is
     // interacted after this, in the same layer, so it still wins on its own rect.
     let inset = egui::Margin {
@@ -435,7 +438,7 @@ fn search(
     child.visuals_mut().weak_text_color = Some(tokens.palette.text_subtle);
     child.visuals_mut().text_cursor.stroke = Stroke::new(stroke::HAIRLINE, tokens.palette.text);
     // While a row carries the rule, the field must not also blink a caret: the
-    // rule is what says where Enter lands (Q2). A zero-width stroke is empty, so
+    // rule is what says where Enter lands. A zero-width stroke is empty, so
     // epaint's line tessellator draws nothing for it.
     if search.mark().is_some() {
         child.visuals_mut().text_cursor.stroke.width = 0.0;
@@ -465,7 +468,7 @@ fn search(
     // The text edit's own `WidgetInfo` reports the generic text-input role.
     // Refining the node directly — rather than through a second `widget_info` —
     // sets the search role and the name without emitting a duplicate
-    // value-changed event for every keystroke (Q3).
+    // value-changed event for every keystroke.
     ui.ctx().accesskit_node_builder(id, |node| {
         node.set_role(egui::Role::SearchInput);
         node.set_label("Search");
@@ -477,7 +480,7 @@ fn search(
             search.text.clear();
             // Only the text edit reports `changed`; a programmatic clear has to
             // tell the state the key moved itself, and close the menu the query
-            // was keeping open (R3 step two, without the keyboard).
+            // was keeping open, as Escape's second step would.
             search.text_changed();
             search.close();
             ui.memory_mut(|memory| {
@@ -503,7 +506,7 @@ fn search(
     }
 
     // Focus is read after the text edit so the border is this frame's truth. It
-    // is border-only: no glow, no icon swap, no width change (R4).
+    // is border-only: no glow, no icon swap, no width change.
     let border = if focused {
         tokens.palette.text
     } else {
@@ -543,9 +546,9 @@ fn search(
 mod tests {
     use super::*;
 
-    /// Q3: a later `widget_info` on the text edit's own id refines the role
-    /// egui's builder gave it. Read inside the pass, because that is when an
-    /// AccessKit node exists.
+    /// A later `widget_info` on the text edit's own id refines the role egui's
+    /// builder gave it. Read inside the pass, because that is when an AccessKit
+    /// node exists.
     #[test]
     fn the_field_announces_itself_as_a_search_input() {
         let tokens = Tokens::DARK;

@@ -1,6 +1,6 @@
 //! The search menu's geometry: the frame under the field, and one row's parts.
 //!
-//! The menu is an overlay `Area` that the field itself sizes (R7): it is the
+//! The menu is an overlay `Area` that the field itself sizes: it is the
 //! field's own width, `extent::MENU_GAP` below it, and clamped back into the
 //! window so a field near an edge cannot hang a menu off screen. The view keeps
 //! the `Area` unconstrained, so this module is the single place that decides
@@ -8,7 +8,7 @@
 //!
 //! A row is the reference's `2.25rem minmax(0, 1fr) auto` grid with a `space-3`
 //! gap and `space-3`/`space-1` padding, plus the rule/tick slot at the margin
-//! that the two highlight tiers share (R9). Every rect is clamped inside the
+//! that the two highlight tiers share. Every rect is clamped inside the
 //! row: a row too narrow for its parts yields zero-width rects rather than
 //! inverted ones.
 //!
@@ -32,7 +32,7 @@ use crate::theme::{extent, icon, space, stroke};
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Parts {
     /// The slot at the margin that the keyboard's rule and the pointer's tick
-    /// are drawn in (R9). Full row height, because the rule is the row's full
+    /// are drawn in. Full row height, because the rule is the row's full
     /// height and the `space::S4` pointer tick — `stroke::RULE` wide — is centred
     /// vertically inside it, far clear of the row's own `space::S1` padding.
     pub marker: Rect,
@@ -41,7 +41,8 @@ pub struct Parts {
     pub art: Rect,
     /// The title over the artist and album.
     pub text: Rect,
-    /// The action glyph at the right edge (R10).
+    /// The action glyph at the right edge: play, or pause on the loaded row,
+    /// because Enter plays rather than opens.
     pub glyph: Rect,
 }
 
@@ -104,13 +105,13 @@ pub fn menu_rect(field: Rect, window: Rect, height: f32) -> Rect {
 }
 
 /// The height of `shown` result rows plus, when the answer is longer than the
-/// menu, the floor row (R12).
+/// menu, the floor row.
 pub fn rows_height(shown: usize, floor: bool) -> f32 {
     (shown + usize::from(floor)) as f32 * extent::ROW_H
 }
 
-/// The height of the single muted line drawn for no matches or a failed read
-/// (R13). One row, since that is the room the design gives a line of text.
+/// The height of the single muted line drawn for no matches or a failed read:
+/// one row, since that is the room the design gives a line of text.
 pub fn line_height() -> f32 {
     extent::ROW_H
 }
