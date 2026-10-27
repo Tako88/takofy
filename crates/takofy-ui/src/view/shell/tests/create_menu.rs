@@ -1,5 +1,5 @@
-use super::super::*; // the module under test — what `use super::*` gave the flat module
-use super::*; // the slice's shared fixtures, from tests/mod.rs
+use super::super::*;
+use super::test_support::*;
 
 #[test]
 fn a_create_is_refused_while_a_block_is_carried() {

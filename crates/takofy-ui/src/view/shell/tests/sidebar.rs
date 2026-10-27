@@ -1,6 +1,5 @@
-use super::super::topbar;
-use super::super::*; // the module under test — what `use super::*` gave the flat module
-use super::*; // the slice's shared fixtures, from tests/mod.rs
+use super::super::*;
+use super::test_support::*;
 
 #[test]
 fn the_playlists_crumb_returns_to_the_root_and_back_loads_the_playlist() {

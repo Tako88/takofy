@@ -1,6 +1,5 @@
-use super::super::sidebar;
-use super::super::*; // the module under test — what `use super::*` gave the flat module
-use super::*; // the slice's shared fixtures, from tests/mod.rs
+use super::super::*;
+use super::test_support::*;
 
 #[test]
 fn dropping_a_track_on_a_playlist_row_sends_one_add() {

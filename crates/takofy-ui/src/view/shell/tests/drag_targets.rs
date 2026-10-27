@@ -1,5 +1,5 @@
-use super::super::*; // the module under test — what `use super::*` gave the flat module
-use super::*; // the slice's shared fixtures, from tests/mod.rs
+use super::super::*;
+use super::test_support::*;
 
 #[test]
 fn the_ghost_is_painted_on_the_frame_of_the_lift() {

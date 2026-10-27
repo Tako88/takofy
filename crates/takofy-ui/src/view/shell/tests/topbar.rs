@@ -1,5 +1,5 @@
-use super::super::*; // the module under test — what `use super::*` gave the flat module
-use super::*; // the slice's shared fixtures, from tests/mod.rs
+use super::super::*;
+use super::test_support::*;
 
 /// In drawer mode the layout hands the toggle a whole column; the button in
 /// it is still a button, the same square as its neighbours.

@@ -1,5 +1,24 @@
-use super::super::*; // the module under test — what `use super::*` gave the flat module
-use super::*; // the slice's shared fixtures, from tests/mod.rs
+use super::super::*;
+use super::test_support::*;
+
+/// The playbar's fullscreen button: the last of the extras, which the
+/// columns and the run tables both end with.
+fn fullscreen_button_at(window: &Window) -> Rect {
+    let content = Rect::from_min_size(egui::Pos2::ZERO, window.size);
+    let regions = layout::regions_with(content.width(), window.pane);
+    let shell = layout::shell_for(&regions);
+    let bar = layout::grid_for(content, &shell)
+        .playbar
+        .shrink(stroke::HAIRLINE);
+    let [_, _, extras] = layout::playbar_for(bar, regions.playbar).columns(bar);
+    Rect::from_min_size(
+        egui::pos2(
+            extras.right() - extent::BUTTON,
+            extras.center().y - extent::BUTTON / 2.0,
+        ),
+        Vec2::splat(extent::BUTTON),
+    )
+}
 
 #[test]
 fn fullscreen_click_sends_fullscreen_true_when_the_window_reports_false() {

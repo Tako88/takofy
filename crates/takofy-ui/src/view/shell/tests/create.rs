@@ -1,6 +1,40 @@
-use super::super::sidebar;
-use super::super::*; // the module under test — what `use super::*` gave the flat module
-use super::*; // the slice's shared fixtures, from tests/mod.rs
+use super::super::*;
+use super::test_support::*;
+
+/// The rail filter's box, read from the hairline under it inside `area`.
+fn rail_filter_rect(output: &egui::FullOutput, area: Rect) -> Rect {
+    let tokens = Tokens::DARK;
+    // The lowest match: the drawer is drawn over the topbar, and the
+    // topbar's search field can fall inside the drawer's own box.
+    let (hairline, _) = output
+        .shapes
+        .iter()
+        .filter_map(|clipped| match &clipped.shape {
+            egui::Shape::Rect(shape)
+                if (shape.rect.height() - stroke::HAIRLINE).abs() < 0.01
+                    && shape.rect.width() > 80.0
+                    && shape.rect.width() < 200.0
+                    && area.contains_rect(shape.rect)
+                    && (shape.fill == tokens.palette.border
+                        || shape.fill == tokens.palette.text) =>
+            {
+                Some((shape.rect, shape.fill))
+            }
+            _ => None,
+        })
+        .max_by(|left, right| left.0.bottom().total_cmp(&right.0.bottom()))
+        .expect("the rail filter paints its hairline");
+    Rect::from_min_max(
+        egui::pos2(hairline.left(), hairline.bottom() - extent::BUTTON),
+        egui::pos2(hairline.right(), hairline.bottom()),
+    )
+}
+
+/// The rect the widget holding the keyboard was laid out in.
+fn focused_stop(window: &Window) -> Option<Rect> {
+    let focused = window.ctx.memory(|memory| memory.focused())?;
+    window.ctx.read_response(focused).map(|drawn| drawn.rect)
+}
 
 #[test]
 fn plus_opens_the_field_and_the_keyboard_follows_next_frame() {

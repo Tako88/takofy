@@ -1,6 +1,5 @@
-use super::super::reorder;
-use super::super::*; // the module under test — what `use super::*` gave the flat module
-use super::*; // the slice's shared fixtures, from tests/mod.rs
+use super::super::*;
+use super::test_support::*;
 
 #[test]
 fn the_pick_a_carry_held_before_the_toggle_is_refused_after_it() {

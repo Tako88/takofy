@@ -1,5 +1,5 @@
-use super::super::*; // the module under test — what `use super::*` gave the flat module
-use super::*; // the slice's shared fixtures, from tests/mod.rs
+use super::super::*;
+use super::test_support::*;
 
 #[test]
 fn the_panel_asks_for_the_size_its_own_art_box_takes() {

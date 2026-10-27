@@ -1,6 +1,5 @@
-use super::super::sidebar;
-use super::super::*; // the module under test — what `use super::*` gave the flat module
-use super::*; // the slice's shared fixtures, from tests/mod.rs
+use super::super::*;
+use super::test_support::*;
 
 /// A caret with a zero stroke width paints nothing: epaint treats a
 /// zero-width stroke as empty, so the marked row's rule is the only thing

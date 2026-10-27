@@ -1,6 +1,17 @@
-use super::super::*; // the module under test — what `use super::*` gave the flat module
-use super::NowPlaying;
-use super::*; // the slice's shared fixtures, from tests/mod.rs
+use super::super::*;
+use super::test_support::NowPlaying;
+use super::test_support::*;
+
+/// What the holder is playing, as the cluster reports it.
+fn playback(state: RemoteState, steerable: bool) -> Update {
+    Update::Devices(DeviceUpdate::Playing(Some(RemotePlayback {
+        track: track(9, None),
+        state,
+        position_ms: 3_000,
+        duration_ms: Some(60_000),
+        steerable,
+    })))
+}
 
 #[test]
 fn the_devices_button_opens_the_card() {

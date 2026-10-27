@@ -1,6 +1,13 @@
-use super::super::context_menu;
-use super::super::*; // the module under test — what `use super::*` gave the flat module
-use super::*; // the slice's shared fixtures, from tests/mod.rs
+use super::super::*;
+use super::test_support::*;
+
+/// The page's listing, under the id its rows are picked by.
+fn playlist_listing() -> Listing {
+    Listing::Playlist {
+        uri: PLAYLIST.to_owned(),
+        list: egui::Id::unique(("playlist-tracks", PLAYLIST)),
+    }
+}
 
 #[test]
 fn a_chosen_remove_on_a_playlist_issues_the_command_and_forgets_the_pick() {

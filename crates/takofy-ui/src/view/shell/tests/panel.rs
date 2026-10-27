@@ -1,5 +1,25 @@
-use super::super::*; // the module under test — what `use super::*` gave the flat module
-use super::*; // the slice's shared fixtures, from tests/mod.rs
+use super::super::*;
+use super::test_support::*;
+
+/// The action row's box once it pins: the page's surface fill at the height
+/// it condenses to, inside the view.
+fn action_row(output: &egui::FullOutput, window: &Window) -> Option<Rect> {
+    let tokens = Tokens::DARK;
+    let view = view_rect(window);
+    output
+        .shapes
+        .iter()
+        .find_map(|clipped| match &clipped.shape {
+            egui::Shape::Rect(shape)
+                if shape.fill == tokens.palette.surface
+                    && (shape.rect.height() - crate::theme::actionbar::STUCK_H).abs() < 0.01
+                    && view.contains_rect(shape.rect) =>
+            {
+                Some(shape.rect)
+            }
+            _ => None,
+        })
+}
 
 #[test]
 fn the_panels_queue_reveal_does_not_inherit_the_pages_inset() {
