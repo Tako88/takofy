@@ -4,6 +4,29 @@ use std::sync::atomic::Ordering;
 use std::sync::mpsc::channel;
 use takofy_model::{Move, Removal};
 
+/// A scripted follow write.
+#[derive(Clone, Copy, Default)]
+pub(super) enum FollowScript {
+    #[default]
+    Ok,
+    Fail,
+}
+
+/// A scripted move write; the default names a revision the window has not
+/// seen, so a test that cares names its own.
+#[derive(Clone)]
+pub(super) enum MoveScript {
+    Ready(Revision),
+    Fail,
+    Pending,
+}
+
+impl Default for MoveScript {
+    fn default() -> Self {
+        Self::Ready(Revision::from_wire(&[1]).expect("a revision"))
+    }
+}
+
 #[test]
 fn a_scripted_release_announces_its_labelled_tracks() {
     let store = Arc::new(MemoryStore::seeded("stored"));

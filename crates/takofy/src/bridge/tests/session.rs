@@ -1,9 +1,44 @@
+use super::super::wake::Waker;
 use super::super::*;
 use super::test_support::*;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::channel;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc::{Receiver, channel};
 use takofy_core::engine::RootlistRead;
 use takofy_model::PlaylistAccess;
+
+/// A waker that peeks at the channel when it runs, so the test can see
+/// whether the update was queued first.
+pub(super) struct QueueProbe {
+    rx: Mutex<Receiver<Update>>,
+    seen: Mutex<Option<Update>>,
+    wakes: AtomicUsize,
+}
+
+impl QueueProbe {
+    pub(super) fn new(rx: Receiver<Update>) -> Self {
+        Self {
+            rx: Mutex::new(rx),
+            seen: Mutex::new(None),
+            wakes: AtomicUsize::new(0),
+        }
+    }
+
+    pub(super) fn seen(&self) -> Option<Update> {
+        self.seen.lock().expect("lock").clone()
+    }
+
+    pub(super) fn wakes(&self) -> usize {
+        self.wakes.load(Ordering::SeqCst)
+    }
+}
+
+impl Waker for QueueProbe {
+    fn wake(&self) {
+        self.wakes.fetch_add(1, Ordering::SeqCst);
+        let seen = self.rx.lock().expect("lock").try_recv().ok();
+        *self.seen.lock().expect("lock") = seen;
+    }
+}
 
 #[test]
 fn every_update_wakes_once_after_it_is_queued() {

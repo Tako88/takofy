@@ -2,6 +2,18 @@
 
 use super::super::wake::Waker;
 use super::super::*;
+use super::announce::{
+    AlbumScript, FollowedArtistsScript, FollowedScript, SavedAlbumsScript, ShowScript,
+    followed_artist,
+};
+use super::create::{CreateScript, EntryScript, LinkScript};
+use super::devices::{
+    PHONE, PlayScript, RefreshScript, SteerScript, TransferScript, WithdrawScript, tablet,
+};
+use super::follow::{FollowScript, MoveScript};
+use super::reads::{ArtistScript, LikedScript, LyricsScript, PortraitScript, SearchScript};
+use super::recovery::RetireScript;
+use super::transfer::{AcceptScript, PrepareScript, ResolveScript, default_landing};
 use crate::session::{ArtistPage, Retired, SessionError, SessionHost, TrackPage};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
@@ -14,9 +26,9 @@ use takofy_core::login::{SourceError, SourceErrorKind, TokenSet, TokenSource};
 use takofy_core::playback::{PlaybackError, PlaybackEvent};
 use takofy_core::{Resolution, TransferPlan};
 use takofy_model::{
-    AlbumDetail, ArtistDetail, ArtistPortrait, Device, DeviceKind, Episode, FollowedArtist,
-    FollowedShow, Landing, Move, PlaylistAccess, PlaylistEntry, RemotePlayback, RemoteState,
-    Removal, Report, RequestId, SavedAlbum, Show, ShowDetail, Status, TrackEntry, TrackLyrics,
+    AlbumDetail, ArtistPortrait, Device, DeviceKind, FollowedArtist, FollowedShow, Landing, Move,
+    PlaylistAccess, PlaylistEntry, RemotePlayback, RemoteState, Removal, Report, RequestId,
+    SavedAlbum, ShowDetail, Status, TrackEntry, TrackLyrics,
 };
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc::UnboundedSender;
@@ -64,40 +76,6 @@ impl RecordingWaker {
 impl Waker for RecordingWaker {
     fn wake(&self) {
         self.wakes.fetch_add(1, Ordering::SeqCst);
-    }
-}
-
-/// A waker that peeks at the channel when it runs, so the test can see
-/// whether the update was queued first.
-pub(super) struct QueueProbe {
-    rx: Mutex<Receiver<Update>>,
-    seen: Mutex<Option<Update>>,
-    wakes: AtomicUsize,
-}
-
-impl QueueProbe {
-    pub(super) fn new(rx: Receiver<Update>) -> Self {
-        Self {
-            rx: Mutex::new(rx),
-            seen: Mutex::new(None),
-            wakes: AtomicUsize::new(0),
-        }
-    }
-
-    pub(super) fn seen(&self) -> Option<Update> {
-        self.seen.lock().expect("lock").clone()
-    }
-
-    pub(super) fn wakes(&self) -> usize {
-        self.wakes.load(Ordering::SeqCst)
-    }
-}
-
-impl Waker for QueueProbe {
-    fn wake(&self) {
-        self.wakes.fetch_add(1, Ordering::SeqCst);
-        let seen = self.rx.lock().expect("lock").try_recv().ok();
-        *self.seen.lock().expect("lock") = seen;
     }
 }
 
@@ -293,56 +271,6 @@ impl Default for TracksScript {
     }
 }
 
-/// A scripted album answer; the default is a bare one at [`ALBUM`].
-#[derive(Clone)]
-pub(super) enum AlbumScript {
-    Ready(AlbumDetail),
-    Fail,
-}
-
-impl Default for AlbumScript {
-    fn default() -> Self {
-        Self::Ready(album_detail(ALBUM))
-    }
-}
-
-/// A scripted show answer; the default is a bare one at [`SHOW`].
-///
-/// `Pending` never answers, so a stop can be tested while the load is still
-/// in flight (the same shape [`TracksScript`] uses).
-#[derive(Clone)]
-pub(super) enum ShowScript {
-    Ready(ShowDetail),
-    Fail,
-    Pending,
-}
-
-impl Default for ShowScript {
-    fn default() -> Self {
-        Self::Ready(show_detail(SHOW))
-    }
-}
-
-/// A scripted followed-shows answer; the default is an empty list.
-#[derive(Clone)]
-pub(super) enum FollowedScript {
-    Ready(Vec<FollowedShow>),
-    Fail,
-}
-
-impl Default for FollowedScript {
-    fn default() -> Self {
-        Self::Ready(Vec::new())
-    }
-}
-
-/// A scripted followed-artists answer; the default is an empty list.
-#[derive(Clone)]
-pub(super) enum FollowedArtistsScript {
-    Ready(Vec<FollowedArtist>),
-    Fail,
-}
-
 /// What a likeness read answers in a test.
 #[derive(Clone, Default)]
 pub(super) enum RelatedScript {
@@ -354,38 +282,6 @@ pub(super) enum RelatedScript {
     Fail,
 }
 
-impl Default for FollowedArtistsScript {
-    fn default() -> Self {
-        Self::Ready(Vec::new())
-    }
-}
-
-/// A scripted saved-albums answer; the default is an empty list.
-#[derive(Clone)]
-pub(super) enum SavedAlbumsScript {
-    Ready(Vec<SavedAlbum>),
-    Fail,
-}
-
-impl Default for SavedAlbumsScript {
-    fn default() -> Self {
-        Self::Ready(Vec::new())
-    }
-}
-
-/// A scripted liked-tracks answer; the default is an empty set.
-#[derive(Clone)]
-pub(super) enum LikedScript {
-    Ready(Vec<String>),
-    Fail,
-}
-
-impl Default for LikedScript {
-    fn default() -> Self {
-        Self::Ready(Vec::new())
-    }
-}
-
 /// A scripted like write.
 #[derive(Clone, Copy, Default)]
 pub(super) enum LikeScript {
@@ -395,73 +291,6 @@ pub(super) enum LikeScript {
     Pending,
 }
 
-/// A scripted artist answer; the default is a bare one at [`ARTIST`].
-#[derive(Clone)]
-pub(super) enum ArtistScript {
-    Ready(ArtistPage),
-    Fail,
-}
-
-impl Default for ArtistScript {
-    fn default() -> Self {
-        Self::Ready(ArtistPage {
-            artist: artist_detail(ARTIST),
-            followed: Some(false),
-        })
-    }
-}
-
-/// A scripted lyrics answer; the default is no lines.
-///
-/// `Pending` never answers, so a stop can be tested while the load is still
-/// in flight (the same shape [`ShowScript`] uses).
-#[derive(Clone)]
-pub(super) enum LyricsScript {
-    Ready(TrackLyrics),
-    Fail,
-    Pending,
-}
-
-impl Default for LyricsScript {
-    fn default() -> Self {
-        Self::Ready(TrackLyrics::default())
-    }
-}
-
-/// A scripted search answer; the default is no tracks.
-///
-/// `Pending` never answers, so a stop can be tested while the load is still
-/// in flight (the same shape [`LyricsScript`] uses).
-#[derive(Clone)]
-pub(super) enum SearchScript {
-    Ready(Vec<TrackEntry>),
-    Fail,
-    Pending,
-}
-
-impl Default for SearchScript {
-    fn default() -> Self {
-        Self::Ready(Vec::new())
-    }
-}
-
-/// A scripted portrait read; the default is no portraits.
-///
-/// `Pending` never answers, so a stop can be tested while the read is still
-/// in flight (the same shape [`SearchScript`] uses).
-#[derive(Clone)]
-pub(super) enum PortraitScript {
-    Ready(Vec<ArtistPortrait>),
-    Fail,
-    Pending,
-}
-
-impl Default for PortraitScript {
-    fn default() -> Self {
-        Self::Ready(Vec::new())
-    }
-}
-
 /// A scripted release-label answer.
 #[derive(Clone, Default)]
 pub(super) enum ReleaseScript {
@@ -469,29 +298,6 @@ pub(super) enum ReleaseScript {
     Ready,
     Named(Vec<TrackEntry>),
     Fail,
-}
-
-/// A scripted follow write.
-#[derive(Clone, Copy, Default)]
-pub(super) enum FollowScript {
-    #[default]
-    Ok,
-    Fail,
-}
-
-/// A scripted move write; the default names a revision the window has not
-/// seen, so a test that cares names its own.
-#[derive(Clone)]
-pub(super) enum MoveScript {
-    Ready(Revision),
-    Fail,
-    Pending,
-}
-
-impl Default for MoveScript {
-    fn default() -> Self {
-        Self::Ready(Revision::from_wire(&[1]).expect("a revision"))
-    }
 }
 
 /// A scripted rootlist move; the default names a revision the window has
@@ -542,46 +348,6 @@ impl Default for RenameScript {
 /// the name it should carry afterwards.
 type RenameWrite = (String, Revision, String);
 
-/// A scripted one-playlist read; the default answers nothing.
-#[derive(Clone, Default)]
-pub(super) enum EntryScript {
-    #[default]
-    Missing,
-    Ready(Box<PlaylistEntry>),
-}
-
-/// The playlist a scripted create makes.
-pub(super) const CREATED: &str = "spotify:playlist:0JQ5DAqbMKFEC4WFtoNRpw";
-
-/// A scripted create; the default makes [`CREATED`].
-#[derive(Clone)]
-pub(super) enum CreateScript {
-    Ready(String),
-    Fail,
-    Pending,
-}
-
-impl Default for CreateScript {
-    fn default() -> Self {
-        Self::Ready(CREATED.to_owned())
-    }
-}
-
-/// A scripted rootlist link; the default names a revision the window has
-/// not seen.
-#[derive(Clone)]
-pub(super) enum LinkScript {
-    Ready(Revision),
-    Fail,
-    Pending,
-}
-
-impl Default for LinkScript {
-    fn default() -> Self {
-        Self::Ready(Revision::from_wire(&[4]).expect("a revision"))
-    }
-}
-
 /// A scripted playlist-state read. The default answers nothing, the way a
 /// list the session cannot see yet does.
 #[derive(Clone, Default)]
@@ -610,86 +376,6 @@ pub(super) enum WatchScript {
     Pending,
 }
 
-/// A scripted device refresh; the default answers the phone that holds the
-/// sound.
-#[derive(Clone, Default)]
-pub(super) enum RefreshScript {
-    #[default]
-    Phone,
-    TwoDevices,
-    Fail,
-    Pending,
-}
-
-/// A scripted steer. The default obeys.
-#[derive(Clone, Copy, Default)]
-pub(super) enum SteerScript {
-    #[default]
-    Ok,
-    Fail,
-}
-
-/// A scripted hand-over. The default moves the sound.
-#[derive(Clone, Copy, Default)]
-pub(super) enum TransferScript {
-    #[default]
-    Ok,
-    Fail,
-    NoContext,
-    Pending,
-}
-
-/// A scripted withdraw. The default answers.
-#[derive(Clone, Copy, Default)]
-pub(super) enum WithdrawScript {
-    #[default]
-    Ok,
-    Pending,
-}
-
-/// A scripted play. The default starts the player.
-#[derive(Clone, Copy, Default)]
-pub(super) enum PlayScript {
-    #[default]
-    Ok,
-    /// The machine has no output, so nothing can ever play here.
-    NoAudioDevice,
-    /// One track the player refuses; the player itself is fine.
-    NotPlayable,
-}
-
-/// A scripted player start. The default starts it.
-#[derive(Clone, Copy, Default)]
-pub(super) enum PrepareScript {
-    #[default]
-    Ok,
-    NoAudioDevice,
-}
-
-/// A scripted context read. The default answers no rows.
-#[derive(Clone)]
-pub(super) enum ResolveScript {
-    Ok(Vec<String>),
-    Fail,
-    Pending,
-}
-
-impl Default for ResolveScript {
-    fn default() -> Self {
-        Self::Ok(Vec::new())
-    }
-}
-
-/// A scripted hand-over. The default lands on the test track, playing.
-#[derive(Clone, Default)]
-pub(super) enum AcceptScript {
-    #[default]
-    Ok,
-    Landed(Box<Landing>),
-    Fail,
-    Pending,
-}
-
 /// A scripted positioned load. The default loads it.
 #[derive(Clone, Copy, Default)]
 pub(super) enum LoadScript {
@@ -699,15 +385,6 @@ pub(super) enum LoadScript {
     /// Starts only when the test releases it, so what the loop sent before
     /// the load can be read while it is still in flight.
     Held,
-}
-
-/// A scripted session retirement. The default joins at once.
-#[derive(Clone, Copy, Default)]
-pub(super) enum RetireScript {
-    #[default]
-    Ok,
-    /// Never answers, so a test can stop the window mid-retirement.
-    Pending,
 }
 
 /// One host call, in the order the command loop made it.
@@ -2080,12 +1757,6 @@ impl SessionHost for FakeHost {
     }
 }
 
-/// The album the shell tests open; one name, so a URI and its detail agree.
-const ALBUM: &str = "spotify:album:a";
-
-/// The show the shell tests open.
-pub(super) const SHOW: &str = "spotify:show:a";
-
 /// The artist the shell tests open.
 pub(super) const ARTIST: &str = "spotify:artist:a";
 
@@ -2094,21 +1765,6 @@ pub(super) const TRACK: &str = "spotify:track:4uLU6hMCjMI75M1A2tKUQ1";
 
 /// A row the context read answers with, after [`TRACK`].
 pub(super) const SECOND: &str = "spotify:track:4uLU6hMCjMI75M1A2tKUQ2";
-
-/// The landing the fake accept answers with unless a test scripts its own.
-pub(super) fn default_landing() -> Landing {
-    Landing {
-        rows: vec![TRACK.to_owned()],
-        index: 0,
-        position_ms: 0,
-        playing: true,
-        context: None,
-        shuffle: Some(false),
-        repeat_context: Some(false),
-        repeat_track: Some(false),
-        epoch: 1,
-    }
-}
 
 /// The deadline the fake registry gives each request, standing in for the
 /// answer budget the real one runs on.
@@ -2120,69 +1776,6 @@ pub(super) fn hold_request(shared: &FakeState, id: RequestId) -> Instant {
     let deadline = Instant::now() + ORDER_BUDGET;
     shared.pending.lock().expect("lock").push((id, deadline));
     deadline
-}
-
-/// One artist page's data, with no top tracks and no releases, so a test
-/// names only what it reads.
-pub(super) fn artist_detail(uri: &str) -> ArtistDetail {
-    ArtistDetail {
-        uri: uri.to_owned(),
-        name: "Vela Moreno".to_owned(),
-        portrait: None,
-        top_tracks: Vec::new(),
-        releases: Vec::new(),
-        related: Vec::new(),
-    }
-}
-
-/// One album page's data, with no tracks, so a test names only what it reads.
-pub(super) fn album_detail(uri: &str) -> AlbumDetail {
-    AlbumDetail {
-        uri: uri.to_owned(),
-        name: "Record".to_owned(),
-        artists: "Band".to_owned(),
-        artist_uri: None,
-        year: Some(1997),
-        cover: None,
-        tracks: Vec::new(),
-    }
-}
-
-/// One show page's data, with one episode, so a test names only what it
-/// reads.
-pub(super) fn show_detail(uri: &str) -> ShowDetail {
-    ShowDetail {
-        show: Show {
-            uri: uri.to_owned(),
-            name: "Lateral".to_owned(),
-            publisher: "Lateral".to_owned(),
-            description: String::new(),
-            cover: None,
-        },
-        episodes: vec![Episode {
-            uri: "spotify:episode:e".to_owned(),
-            title: "An episode".to_owned(),
-            show: "Lateral".to_owned(),
-            show_uri: Some(uri.to_owned()),
-            description: None,
-            published: None,
-            duration_ms: None,
-            cover: None,
-            named: true,
-        }],
-    }
-}
-
-/// One followed-artist card, named after its URI so a test can tell two
-/// apart.
-pub(super) fn followed_artist(uri: &str) -> FollowedArtist {
-    FollowedArtist {
-        uri: uri.to_owned(),
-        name: uri.to_owned(),
-        named: true,
-        portrait: None,
-        releases: None,
-    }
 }
 
 pub(super) fn playlist(uri: &str, name: &str) -> PlaylistEntry {
@@ -2239,9 +1832,6 @@ pub(super) fn report(uri: &str) -> Report {
     }
 }
 
-/// The other device every scripted device answer names.
-pub(super) const PHONE: &str = "phone";
-
 pub(super) fn phone() -> Device {
     Device {
         id: PHONE.to_owned(),
@@ -2257,14 +1847,6 @@ fn remote_playback() -> RemotePlayback {
         position_ms: 1_000,
         duration_ms: Some(200_000),
         steerable: true,
-    }
-}
-
-pub(super) fn tablet() -> Device {
-    Device {
-        id: "tablet".to_owned(),
-        name: "Tablet".to_owned(),
-        kind: DeviceKind::Tablet,
     }
 }
 

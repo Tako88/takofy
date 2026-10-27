@@ -3,7 +3,100 @@ use super::test_support::*;
 use crate::session::ArtistPage;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::channel;
-use takofy_model::{ArtistPortrait, CoverSet, LyricLine, TrackLyrics};
+use takofy_model::{ArtistDetail, ArtistPortrait, CoverSet, LyricLine, TrackEntry, TrackLyrics};
+
+/// A scripted liked-tracks answer; the default is an empty set.
+#[derive(Clone)]
+pub(super) enum LikedScript {
+    Ready(Vec<String>),
+    Fail,
+}
+
+impl Default for LikedScript {
+    fn default() -> Self {
+        Self::Ready(Vec::new())
+    }
+}
+
+/// A scripted artist answer; the default is a bare one at [`ARTIST`].
+#[derive(Clone)]
+pub(super) enum ArtistScript {
+    Ready(ArtistPage),
+    Fail,
+}
+
+impl Default for ArtistScript {
+    fn default() -> Self {
+        Self::Ready(ArtistPage {
+            artist: artist_detail(ARTIST),
+            followed: Some(false),
+        })
+    }
+}
+
+/// A scripted lyrics answer; the default is no lines.
+///
+/// `Pending` never answers, so a stop can be tested while the load is still
+/// in flight (the same shape [`ShowScript`] uses).
+#[derive(Clone)]
+pub(super) enum LyricsScript {
+    Ready(TrackLyrics),
+    Fail,
+    Pending,
+}
+
+impl Default for LyricsScript {
+    fn default() -> Self {
+        Self::Ready(TrackLyrics::default())
+    }
+}
+
+/// A scripted search answer; the default is no tracks.
+///
+/// `Pending` never answers, so a stop can be tested while the load is still
+/// in flight (the same shape [`LyricsScript`] uses).
+#[derive(Clone)]
+pub(super) enum SearchScript {
+    Ready(Vec<TrackEntry>),
+    Fail,
+    Pending,
+}
+
+impl Default for SearchScript {
+    fn default() -> Self {
+        Self::Ready(Vec::new())
+    }
+}
+
+/// A scripted portrait read; the default is no portraits.
+///
+/// `Pending` never answers, so a stop can be tested while the read is still
+/// in flight (the same shape [`SearchScript`] uses).
+#[derive(Clone)]
+pub(super) enum PortraitScript {
+    Ready(Vec<ArtistPortrait>),
+    Fail,
+    Pending,
+}
+
+impl Default for PortraitScript {
+    fn default() -> Self {
+        Self::Ready(Vec::new())
+    }
+}
+
+/// One artist page's data, with no top tracks and no releases, so a test
+/// names only what it reads.
+pub(super) fn artist_detail(uri: &str) -> ArtistDetail {
+    ArtistDetail {
+        uri: uri.to_owned(),
+        name: "Vela Moreno".to_owned(),
+        portrait: None,
+        top_tracks: Vec::new(),
+        releases: Vec::new(),
+        related: Vec::new(),
+    }
+}
 
 #[test]
 fn loading_the_liked_tracks_announces_the_whole_set() {

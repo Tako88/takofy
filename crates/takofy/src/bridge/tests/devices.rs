@@ -3,9 +3,68 @@ use super::test_support::*;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::channel;
 use takofy_core::instruction::Kind;
-use takofy_model::RequestId;
+use takofy_model::{Device, DeviceKind, RequestId};
 
 // ---- the account's devices ----
+
+/// A scripted device refresh; the default answers the phone that holds the
+/// sound.
+#[derive(Clone, Default)]
+pub(super) enum RefreshScript {
+    #[default]
+    Phone,
+    TwoDevices,
+    Fail,
+    Pending,
+}
+
+/// A scripted steer. The default obeys.
+#[derive(Clone, Copy, Default)]
+pub(super) enum SteerScript {
+    #[default]
+    Ok,
+    Fail,
+}
+
+/// A scripted hand-over. The default moves the sound.
+#[derive(Clone, Copy, Default)]
+pub(super) enum TransferScript {
+    #[default]
+    Ok,
+    Fail,
+    NoContext,
+    Pending,
+}
+
+/// A scripted withdraw. The default answers.
+#[derive(Clone, Copy, Default)]
+pub(super) enum WithdrawScript {
+    #[default]
+    Ok,
+    Pending,
+}
+
+/// A scripted play. The default starts the player.
+#[derive(Clone, Copy, Default)]
+pub(super) enum PlayScript {
+    #[default]
+    Ok,
+    /// The machine has no output, so nothing can ever play here.
+    NoAudioDevice,
+    /// One track the player refuses; the player itself is fine.
+    NotPlayable,
+}
+
+/// The other device every scripted device answer names.
+pub(super) const PHONE: &str = "phone";
+
+pub(super) fn tablet() -> Device {
+    Device {
+        id: "tablet".to_owned(),
+        name: "Tablet".to_owned(),
+        kind: DeviceKind::Tablet,
+    }
+}
 
 #[test]
 fn core_steer_speaks_every_action() {

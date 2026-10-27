@@ -13,6 +13,15 @@ use tokio::sync::mpsc::UnboundedSender;
 
 // ---- session recovery ----
 
+/// A scripted session retirement. The default joins at once.
+#[derive(Clone, Copy, Default)]
+pub(super) enum RetireScript {
+    #[default]
+    Ok,
+    /// Never answers, so a test can stop the window mid-retirement.
+    Pending,
+}
+
 /// Starts the worker on the test schedule, so a rebuild is measured in
 /// milliseconds instead of seconds.
 fn start_paced<H: SessionHost, S: TokenSource + Send + Sync + 'static>(

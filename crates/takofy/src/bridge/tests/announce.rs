@@ -3,7 +3,134 @@ use super::test_support::*;
 use crate::session::{SessionError, TrackPage};
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{RecvTimeoutError, channel};
-use takofy_model::{AlbumDetail, CoverSet, FollowedArtist, FollowedShow, SavedAlbum, ShowDetail};
+use takofy_model::{
+    AlbumDetail, CoverSet, Episode, FollowedArtist, FollowedShow, SavedAlbum, Show, ShowDetail,
+};
+
+/// A scripted album answer; the default is a bare one at [`ALBUM`].
+#[derive(Clone)]
+pub(super) enum AlbumScript {
+    Ready(AlbumDetail),
+    Fail,
+}
+
+impl Default for AlbumScript {
+    fn default() -> Self {
+        Self::Ready(album_detail(ALBUM))
+    }
+}
+
+/// A scripted show answer; the default is a bare one at [`SHOW`].
+///
+/// `Pending` never answers, so a stop can be tested while the load is still
+/// in flight (the same shape [`TracksScript`] uses).
+#[derive(Clone)]
+pub(super) enum ShowScript {
+    Ready(ShowDetail),
+    Fail,
+    Pending,
+}
+
+impl Default for ShowScript {
+    fn default() -> Self {
+        Self::Ready(show_detail(SHOW))
+    }
+}
+
+/// A scripted followed-shows answer; the default is an empty list.
+#[derive(Clone)]
+pub(super) enum FollowedScript {
+    Ready(Vec<FollowedShow>),
+    Fail,
+}
+
+impl Default for FollowedScript {
+    fn default() -> Self {
+        Self::Ready(Vec::new())
+    }
+}
+
+/// A scripted followed-artists answer; the default is an empty list.
+#[derive(Clone)]
+pub(super) enum FollowedArtistsScript {
+    Ready(Vec<FollowedArtist>),
+    Fail,
+}
+
+impl Default for FollowedArtistsScript {
+    fn default() -> Self {
+        Self::Ready(Vec::new())
+    }
+}
+
+/// A scripted saved-albums answer; the default is an empty list.
+#[derive(Clone)]
+pub(super) enum SavedAlbumsScript {
+    Ready(Vec<SavedAlbum>),
+    Fail,
+}
+
+impl Default for SavedAlbumsScript {
+    fn default() -> Self {
+        Self::Ready(Vec::new())
+    }
+}
+
+/// The album the shell tests open; one name, so a URI and its detail agree.
+const ALBUM: &str = "spotify:album:a";
+
+/// The show the shell tests open.
+pub(super) const SHOW: &str = "spotify:show:a";
+
+/// One album page's data, with no tracks, so a test names only what it reads.
+pub(super) fn album_detail(uri: &str) -> AlbumDetail {
+    AlbumDetail {
+        uri: uri.to_owned(),
+        name: "Record".to_owned(),
+        artists: "Band".to_owned(),
+        artist_uri: None,
+        year: Some(1997),
+        cover: None,
+        tracks: Vec::new(),
+    }
+}
+
+/// One show page's data, with one episode, so a test names only what it
+/// reads.
+pub(super) fn show_detail(uri: &str) -> ShowDetail {
+    ShowDetail {
+        show: Show {
+            uri: uri.to_owned(),
+            name: "Lateral".to_owned(),
+            publisher: "Lateral".to_owned(),
+            description: String::new(),
+            cover: None,
+        },
+        episodes: vec![Episode {
+            uri: "spotify:episode:e".to_owned(),
+            title: "An episode".to_owned(),
+            show: "Lateral".to_owned(),
+            show_uri: Some(uri.to_owned()),
+            description: None,
+            published: None,
+            duration_ms: None,
+            cover: None,
+            named: true,
+        }],
+    }
+}
+
+/// One followed-artist card, named after its URI so a test can tell two
+/// apart.
+pub(super) fn followed_artist(uri: &str) -> FollowedArtist {
+    FollowedArtist {
+        uri: uri.to_owned(),
+        name: uri.to_owned(),
+        named: true,
+        portrait: None,
+        releases: None,
+    }
+}
 
 #[test]
 fn announce_sends_tracks_for_a_page() {

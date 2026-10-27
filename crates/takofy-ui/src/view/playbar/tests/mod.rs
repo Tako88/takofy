@@ -1,5 +1,3 @@
-//! view::playbar's tests, split by concern; what several share is in test_support.
-
 mod centring;
 mod devices;
 mod extras;

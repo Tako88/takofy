@@ -4,6 +4,46 @@ use std::sync::atomic::Ordering;
 use std::sync::mpsc::channel;
 use takofy_model::{CoverSet, Move, PlaylistAccess, PlaylistCover, PlaylistEntry};
 
+/// A scripted one-playlist read; the default answers nothing.
+#[derive(Clone, Default)]
+pub(super) enum EntryScript {
+    #[default]
+    Missing,
+    Ready(Box<PlaylistEntry>),
+}
+
+/// The playlist a scripted create makes.
+pub(super) const CREATED: &str = "spotify:playlist:0JQ5DAqbMKFEC4WFtoNRpw";
+
+/// A scripted create; the default makes [`CREATED`].
+#[derive(Clone)]
+pub(super) enum CreateScript {
+    Ready(String),
+    Fail,
+    Pending,
+}
+
+impl Default for CreateScript {
+    fn default() -> Self {
+        Self::Ready(CREATED.to_owned())
+    }
+}
+
+/// A scripted rootlist link; the default names a revision the window has
+/// not seen.
+#[derive(Clone)]
+pub(super) enum LinkScript {
+    Ready(Revision),
+    Fail,
+    Pending,
+}
+
+impl Default for LinkScript {
+    fn default() -> Self {
+        Self::Ready(Revision::from_wire(&[4]).expect("a revision"))
+    }
+}
+
 #[test]
 fn a_create_makes_links_reads_state_and_announces_the_entry() {
     let store = Arc::new(MemoryStore::seeded("stored"));

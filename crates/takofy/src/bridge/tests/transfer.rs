@@ -14,6 +14,54 @@ pub(super) const PLAYLIST: &str = "spotify:playlist:p";
 
 /// A local file the phone can hold in its queue and this window cannot fetch.
 pub(super) const LOCAL: &str = "spotify:local:artist:album:title:200";
+
+/// A scripted player start. The default starts it.
+#[derive(Clone, Copy, Default)]
+pub(super) enum PrepareScript {
+    #[default]
+    Ok,
+    NoAudioDevice,
+}
+
+/// A scripted context read. The default answers no rows.
+#[derive(Clone)]
+pub(super) enum ResolveScript {
+    Ok(Vec<String>),
+    Fail,
+    Pending,
+}
+
+impl Default for ResolveScript {
+    fn default() -> Self {
+        Self::Ok(Vec::new())
+    }
+}
+
+/// A scripted hand-over. The default lands on the test track, playing.
+#[derive(Clone, Default)]
+pub(super) enum AcceptScript {
+    #[default]
+    Ok,
+    Landed(Box<Landing>),
+    Fail,
+    Pending,
+}
+
+/// The landing the fake accept answers with unless a test scripts its own.
+pub(super) fn default_landing() -> Landing {
+    Landing {
+        rows: vec![TRACK.to_owned()],
+        index: 0,
+        position_ms: 0,
+        playing: true,
+        context: None,
+        shuffle: Some(false),
+        repeat_context: Some(false),
+        repeat_track: Some(false),
+        epoch: 1,
+    }
+}
+
 /// The lines the bridge logged about its own decisions, so a test can tell
 /// two arms that answer the same request apart.
 static LOGGED: Mutex<Vec<String>> = Mutex::new(Vec::new());
