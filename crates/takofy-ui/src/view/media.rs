@@ -58,10 +58,6 @@ pub struct Columns {
     pub more: Rect,
 }
 
-/// The column widths the reference gives the list density.
-pub const TYPE_W: f32 = 144.0;
-pub const SIZE_W: f32 = 80.0;
-
 /// The rects of one row's five columns.
 pub fn columns(rect: Rect) -> Columns {
     let inner = Rect::from_min_max(
@@ -77,12 +73,12 @@ pub fn columns(rect: Rect) -> Columns {
         Vec2::splat(extent::BUTTON),
     );
     let size = Rect::from_min_size(
-        Pos2::new(more.left() - space::S4 - SIZE_W, rect.top()),
-        Vec2::new(SIZE_W, rect.height()),
+        Pos2::new(more.left() - space::S4 - extent::SIZE_W, rect.top()),
+        Vec2::new(extent::SIZE_W, rect.height()),
     );
     let kind = Rect::from_min_size(
-        Pos2::new(size.left() - space::S4 - TYPE_W, rect.top()),
-        Vec2::new(TYPE_W, rect.height()),
+        Pos2::new(size.left() - space::S4 - extent::TYPE_W, rect.top()),
+        Vec2::new(extent::TYPE_W, rect.height()),
     );
     let body_left = art.right() + space::S4;
     let body = Rect::from_min_max(
@@ -483,7 +479,7 @@ fn spoken(media: &Media<'_>) -> String {
 /// galley's own height; the tile reserves what is actually painted.
 fn row_height(ui: &Ui, font: &egui::FontId) -> f32 {
     ui.painter()
-        .layout_no_wrap(" ".to_owned(), font.clone(), egui::Color32::WHITE)
+        .layout_no_wrap(" ".to_owned(), font.clone(), crate::theme::art::TINT)
         .size()
         .y
 }
@@ -556,7 +552,7 @@ mod tests {
     fn uploaded(ctx: &egui::Context, name: &str) -> (egui::TextureHandle, Cover) {
         let texture = ctx.load_texture(
             name,
-            egui::ColorImage::filled([4, 4], Color32::WHITE),
+            egui::ColorImage::filled([4, 4], crate::theme::art::TINT),
             crate::theme::art::TEXTURE,
         );
         // A load is queued and only reaches the texture manager in a pass.
@@ -1127,8 +1123,8 @@ mod tests {
         assert!(columns.kind.right() <= columns.size.left());
         assert!(columns.size.right() <= columns.more.left());
         assert!(
-            (columns.kind.width() - TYPE_W).abs() < 0.01
-                && (columns.size.width() - SIZE_W).abs() < 0.01
+            (columns.kind.width() - extent::TYPE_W).abs() < 0.01
+                && (columns.size.width() - extent::SIZE_W).abs() < 0.01
         );
         assert!(rect.contains_rect(columns.more));
     }

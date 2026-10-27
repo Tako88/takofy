@@ -244,6 +244,10 @@ pub mod extent {
     /// The box a row's number or glyph sits in, 1.5 rem. The reference
     /// right-justifies it inside the wider index column.
     pub const TRACK_NUMBER_W: f32 = 24.0;
+    /// The list density's Type and Size cells, 9 rem and 5 rem. The reference
+    /// draws them only in that density, which is why they are not track columns.
+    pub const TYPE_W: f32 = 144.0;
+    pub const SIZE_W: f32 = 80.0;
 
     /// A card's minimum width, 9 rem, which is what the grid's auto-fill counts.
     pub const CARD_MIN_W: f32 = 144.0;

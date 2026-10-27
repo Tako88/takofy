@@ -17,7 +17,7 @@ use egui::{Mesh, Pos2, Rect, Sense, Shape, Ui, Vec2, pos2, vec2};
 use crate::layout::cards;
 use crate::layout::episode;
 use crate::layout::table::{self, Present};
-use crate::theme::{Tokens, extent, motion, radius, space};
+use crate::theme::{Tokens, eq, extent, motion, radius, space};
 
 use super::media;
 
@@ -28,6 +28,10 @@ pub const SCREENFUL: usize = 8;
 /// playlist can name hundreds, and a placeholder is not worth more than a few
 /// screens of a bar that will never be read.
 pub const MAX_ROWS: usize = 200;
+
+/// How long a placeholder waits between frames: two of the animation clock's
+/// own, so the sheen moves with the pulse rather than at a rate of its own.
+const WAKE: Duration = Duration::from_millis((2.0 * eq::FRAME * 1_000.0) as u64);
 
 /// The rows a loading list holds open: the count when it is known, one screenful
 /// when it is not, and never past what is worth drawing.
@@ -93,7 +97,7 @@ pub fn row_title(index: usize) -> f32 {
 /// window, so the sheen asks for a frame about thirty times a second. It is the
 /// same cost the spinner paid and it stops with the placeholder.
 fn wake(ui: &Ui) {
-    ui.ctx().request_repaint_after(Duration::from_millis(33));
+    ui.ctx().request_repaint_after(WAKE);
 }
 
 fn time(ui: &Ui) -> f64 {
@@ -376,6 +380,15 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn a_placeholder_wakes_on_the_animation_clock() {
+        let frames = WAKE.as_secs_f64() / f64::from(eq::FRAME);
+        assert!(
+            (frames - 2.0).abs() < 0.001,
+            "a wake covers {frames} frames of the animation clock"
+        );
     }
 
     #[test]
