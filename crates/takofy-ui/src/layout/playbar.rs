@@ -129,6 +129,21 @@ pub fn seek_row(column_w: f32) -> SeekRow {
     }
 }
 
+/// The seek row's rect: centred on `centre_x`, under a transport that starts at
+/// `top`.
+///
+/// The stack is centred on the column, so the seek row sits one tile and its
+/// gap below the transport's top.
+pub fn seek_line(centre_x: f32, top: f32, seek: SeekRow) -> Rect {
+    Rect::from_min_size(
+        Pos2::new(
+            centre_x - seek.width / 2.0,
+            top + extent::BUTTON_LG + space::S1,
+        ),
+        Vec2::new(seek.width, extent::SLIDER_H),
+    )
+}
+
 /// Solves the now column's text and controls.
 ///
 /// `natural_w` is the unclamped width of the wider text line, measured before
@@ -291,6 +306,17 @@ mod tests {
     #[test]
     fn the_transport_stack_is_the_tile_the_gap_and_the_seek_row() {
         assert_eq!(transport_stack(), TILE + RUN_GAP + SLIDER);
+    }
+
+    #[test]
+    fn the_seek_line_hangs_a_tile_and_a_gap_below_the_transport() {
+        let top = 100.0;
+        let line = seek_line(500.0, top, seek_row(900.0));
+
+        assert_eq!(line.width(), SEEK_MAX);
+        assert_eq!(line.height(), SLIDER);
+        assert_eq!(line.center().x, 500.0, "the row is centred on the column");
+        assert_eq!(line.top(), top + TILE + RUN_GAP);
     }
 
     #[test]

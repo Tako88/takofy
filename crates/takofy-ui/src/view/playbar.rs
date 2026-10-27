@@ -736,13 +736,7 @@ fn centre_column(
     // until its cap, with a readout and a gap on each side of the track.
     let centre = ui.max_rect().center().x;
     let seek = layout::playbar::seek_row(ui.max_rect().width());
-    let line = Rect::from_min_size(
-        Pos2::new(
-            centre - seek.width / 2.0,
-            top + extent::BUTTON_LG + space::S1,
-        ),
-        Vec2::new(seek.width, extent::SLIDER_H),
-    );
+    let line = layout::playbar::seek_line(centre, top, seek);
     let text_top = line.center().y - text::XXS;
     let readout_font = FontId::new(text::XXS, fonts::mono(MonoWeight::Regular));
 
@@ -1631,7 +1625,7 @@ mod tests {
 
         // The transport and the seek row are one stack, centred together, so the
         // play button's top is half the stack above the bar's centre.
-        let stack = extent::BUTTON_LG + space::S1 + extent::SLIDER_H;
+        let stack = layout::playbar::transport_stack();
         let play = boxes(extent::BUTTON_LG);
         assert!(!play.is_empty(), "the centre column draws the play button");
         assert!(

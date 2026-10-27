@@ -223,7 +223,7 @@ fn head(
     );
 
     // The field takes what the button leaves, which is the reference's line for
-    // the rail: the count used to sit in this slot, and now the field does.
+    // the rail: the slot runs from the row's start up to the create button.
     let slot = Rect::from_min_max(row.min, Pos2::new(create.left() - space::S2, row.bottom()));
     let mut changed = false;
     let field = if open {

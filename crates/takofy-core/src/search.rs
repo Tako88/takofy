@@ -6,8 +6,8 @@
 /// endpoint routes on the `spotify:search:` authority, and a bare `never+gonna`
 /// is not a URI it resolves. So the encoded query is what follows the prefix.
 ///
-/// The measured wire, from the probe in `.pi/scratch/search-probe` (recorded in
-/// the plan's "Q1, answered"):
+/// The measured wire: every rule below comes from these answers rather than a
+/// guess about what the server does.
 ///
 /// | sent | result |
 /// |---|---|

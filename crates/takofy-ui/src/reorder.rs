@@ -51,12 +51,16 @@ pub fn apply<T>(rows: &mut Vec<T>, step: Step) {
     rows.insert(step.landed, row);
 }
 
-/// The write in flight: its playlist, the rows before it and the rows it wrote.
+/// The write in flight: its playlist, the rows before it, the rows it wrote,
+/// and the query it took with them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pending {
     pub playlist: String,
     pub before: Vec<TrackEntry>,
     pub after: Vec<TrackEntry>,
+    /// The page's query, when taking the last row emptied the page and took the
+    /// query too. A failed write puts it back beside the rows.
+    pub query: Option<String>,
 }
 
 /// The rows a drop carries to one boundary, and where they land there.

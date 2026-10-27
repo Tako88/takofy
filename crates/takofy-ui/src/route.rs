@@ -18,8 +18,8 @@ pub enum Page {
     Show(String),
     /// A search's results, by query.
     ///
-    /// The payload is not a URI: it is the collapsed query the field stands for
-    /// (R6). It can therefore look like one — a query of `spotify:playlist:x`
+    /// The payload is not a URI: it is the collapsed query the field stands
+    /// for. It can therefore look like one — a query of `spotify:playlist:x`
     /// is a legitimate thing to type — so every consumer decides by [`Page`]
     /// variant first and reads the payload second. Nothing may guess a page's
     /// kind from its payload's shape.

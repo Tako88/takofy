@@ -3575,9 +3575,9 @@ mod tests {
         command
     }
 
-    /// Q2's executor check: zeroing the caret's stroke width removes its pixels.
-    /// epaint treats a zero-width stroke as empty and paints nothing, so the
-    /// marked row's rule is the only thing saying where Enter lands.
+    /// A caret with a zero stroke width paints nothing: epaint treats a
+    /// zero-width stroke as empty, so the marked row's rule is the only thing
+    /// saying where Enter lands.
     #[test]
     fn a_marked_row_hides_the_caret() {
         let mut transport = Transport::default();
@@ -3983,7 +3983,7 @@ mod tests {
     }
 
     /// Press a row, then release it: the menu must survive the frame in which
-    /// the press surrenders the field's focus (Q4). Both outcomes are staged:
+    /// the press surrenders the field's focus. Both outcomes are staged:
     /// the natural one, and the opposite one forced between press and release.
     #[test]
     fn a_row_click_plays_under_both_focus_outcomes() {

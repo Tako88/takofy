@@ -895,6 +895,11 @@ impl Library {
                     tracks.tracks = pending.before;
                     tracks.notice = Some(*failure);
                 }
+                // The rows are back, so a query that left with the last one
+                // comes back with them.
+                if let Some(query) = pending.query {
+                    self.track_filter.edit(playlist).push_str(&query);
+                }
             }
             // A reply lands only while its own load is in flight: a stale one is
             // discarded, and a second reply cannot replace the first. A shelf
@@ -1640,6 +1645,7 @@ impl Library {
             playlist: playlist.to_owned(),
             before: tracks.tracks.clone(),
             after: found.order.clone(),
+            query: None,
         });
         self.tracks = Load::Ready(TracksFor {
             playlist: playlist.to_owned(),
@@ -1661,9 +1667,9 @@ impl Library {
     ///
     /// It runs the same guards a move does, because both name a revision and
     /// only one write may be in flight. The rows are gone on screen at once and
-    /// kept until the reply lands; a write that fails puts them back and the
-    /// page says so. Nothing is re-requested, so a removal can never leave a
-    /// ready page waiting.
+    /// kept until the reply lands; a write that fails puts them back — and the
+    /// query the last row took with it — and the page says so. Nothing is
+    /// re-requested, so a removal can never leave a ready page waiting.
     pub fn remove_tracks(
         &mut self,
         playlist: &str,
@@ -1675,21 +1681,24 @@ impl Library {
             return None;
         };
         let found = removal::plan(&tracks.tracks, rows)?;
-        self.pending = Some(reorder::Pending {
-            playlist: playlist.to_owned(),
-            before: tracks.tracks.clone(),
-            after: found.kept.clone(),
-        });
+        let before = tracks.tracks.clone();
         self.tracks = Load::Ready(TracksFor {
             playlist: playlist.to_owned(),
-            tracks: found.kept,
+            tracks: found.kept.clone(),
             access: Some(access.clone()),
             notice: None,
         });
         // Taking out the last row leaves nowhere to show the query, and no
         // reply for a removal carries a track list, so this is the only place
-        // that can drop it.
-        self.clear_filter_when_empty();
+        // that can drop it. The write keeps the words, so a failed one can put
+        // the query back beside the rows it restores.
+        let query = self.clear_filter_when_empty();
+        self.pending = Some(reorder::Pending {
+            playlist: playlist.to_owned(),
+            before,
+            after: found.kept,
+            query,
+        });
         Some(Command::RemoveTracks {
             playlist: playlist.to_owned(),
             revision: access.revision,
@@ -1697,15 +1706,18 @@ impl Library {
         })
     }
 
-    /// Drops the page's query when the page it filters has no rows to show.
+    /// Drops the page's query when the page it filters has no rows to show, and
+    /// hands back the text it took.
     ///
     /// The field is drawn beside rows, so an empty page can never show a query.
     /// Left to sit, it would come back and silently filter the next list that
     /// has rows.
-    fn clear_filter_when_empty(&mut self) {
+    fn clear_filter_when_empty(&mut self) -> Option<String> {
         if matches!(&self.tracks, Load::Ready(tracks) if tracks.tracks.is_empty()) {
-            self.track_filter.clear();
+            let text = self.track_filter.take();
+            return (!text.is_empty()).then_some(text);
         }
+        None
     }
 
     /// What a page write may name now, when `rows` still hold `carried`.
@@ -5069,6 +5081,7 @@ mod tests {
                 playlist: "a".to_owned(),
                 before: moved(&["t0", "t1", "t2"]),
                 after: moved(&["t1", "t0", "t2"]),
+                query: None,
             })
         );
     }
@@ -5173,6 +5186,7 @@ mod tests {
                 playlist: "a".to_owned(),
                 before: moved(&["t0", "t1", "t2", "t3"]),
                 after: moved(&["t1", "t3", "t0", "t2"]),
+                query: None,
             })
         );
     }
@@ -8312,7 +8326,36 @@ mod tests {
                 playlist: "a".to_owned(),
                 before: moved(&["t0", "t1", "t2", "t3"]),
                 after: moved(&["t0", "t3"]),
+                query: None,
             })
+        );
+    }
+
+    #[test]
+    fn a_removal_that_fails_puts_the_query_back_with_the_rows() {
+        let mut library = page_with("a", &["midnight"], access(0x01, true));
+        library.track_filter.edit("a").push_str("midnight");
+
+        assert!(
+            library
+                .remove_tracks("a", &[0], &moved(&["midnight"]))
+                .is_some()
+        );
+        assert_eq!(
+            library.track_filter.needle("a"),
+            None,
+            "arrange: the empty page takes the query with the last row"
+        );
+
+        library.apply(&Update::RemoveFailed {
+            playlist: "a".to_owned(),
+            failure: Failure::Save,
+        });
+
+        assert_eq!(
+            library.track_filter.needle("a").as_deref(),
+            Some("midnight"),
+            "a failed write puts the rows back, and the query with them"
         );
     }
 
