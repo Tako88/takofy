@@ -1,10 +1,15 @@
 //! The playbar: what is playing, the transport, and the extras.
 //!
 //! Everything it shows comes from the transport — the title, the artist, the
-//! elapsed time, the glyph — and its controls report clicks rather than change
-//! state. The seek track fills from the interpolation and turns a click or an
-//! arrow into a command; a track with no known duration draws the track alone
-//! and a dash for the time left.
+//! elapsed time, the glyph. The seek track fills from the interpolation and
+//! turns a click or an arrow into a command; a track with no known duration
+//! draws the track alone and a dash for the time left.
+//!
+//! Only what the shell owns is reported: a transport move asks the queue for the
+//! command it implies, and the pane, the window and the devices button come back
+//! as presses for the shell to apply. The rest it changes in place and reports
+//! nothing about — shuffle, repeat, the mute lid and the dragged level are the
+//! queue's and the level's own state, so there is nothing for a caller to apply.
 
 use egui::{EventFilter, FontId, Key, Pos2, Rect, Ui, Vec2};
 
@@ -448,21 +453,19 @@ fn seek_fraction(transport: &Transport, position_ms: u32) -> Option<f32> {
     transport.fraction(position_ms)
 }
 
+/// What one run is in a row: a square button, or the level's own slot.
+fn slot_of(run: &Run) -> layout::playbar::Slot {
+    if run.control == VOLUME {
+        layout::playbar::Slot::Volume
+    } else {
+        layout::playbar::Slot::Button
+    }
+}
+
 /// The width one run of controls occupies, margins and gaps included. The view
 /// draws it and the layout reserves it, and both read this.
 fn run_width(controls: &[Run]) -> f32 {
-    let mut width = 0.0;
-    for (index, run) in controls.iter().enumerate() {
-        if index > 0 {
-            width += space::S1;
-        }
-        width += if run.control == VOLUME {
-            extent::VOLUME_W + 2.0 * space::S2
-        } else {
-            extent::BUTTON
-        };
-    }
-    width
+    layout::playbar::row_width(controls.iter().map(slot_of))
 }
 
 /// What the now column asked for: the heart's new state and the page a link
@@ -643,7 +646,7 @@ fn centre_column(
     remote: Option<Remote<'_>>,
     tokens: &Tokens,
 ) -> Pressed {
-    let stack = extent::BUTTON_LG + space::S1 + extent::SLIDER_H;
+    let stack = layout::playbar::transport_stack();
     let top = row_centre(ui) - stack / 2.0;
     let carrying = carry::carrying(ui.ctx());
     let claimed = bar.queue_claimed.then_some(Control::Queue);
@@ -1075,22 +1078,7 @@ fn run_rect(rect: Rect, form: Playbar, control: Control) -> Option<Rect> {
     let runs = extras_controls(form);
     let mut x = extras.right() - run_width(runs);
     for (index, run) in runs.iter().enumerate() {
-        if index > 0 {
-            x += space::S1;
-        }
-        let slot = if run.control == VOLUME {
-            x += space::S2;
-            let slot = Rect::from_min_size(
-                Pos2::new(x, extras.center().y - extent::SLIDER_H / 2.0),
-                Vec2::new(extent::VOLUME_W, extent::SLIDER_H),
-            );
-            x += extent::VOLUME_W + space::S2;
-            slot
-        } else {
-            let slot = square(x, extras.center().y);
-            x += extent::BUTTON;
-            slot
-        };
+        let slot = layout::playbar::place_run(&mut x, index == 0, slot_of(run), extras.center().y);
         if run.control == control {
             return Some(slot);
         }
@@ -1127,7 +1115,7 @@ pub fn queue_button(rect: Rect, form: Playbar) -> Rect {
             extras.center().y,
         ),
         Playbar::Reduced => {
-            let stack = extent::BUTTON_LG + space::S1 + extent::SLIDER_H;
+            let stack = layout::playbar::transport_stack();
             let y = centre.center().y - stack / 2.0 + extent::BUTTON / 2.0;
             let row = layout::playbar::transport_row(centre.center().x, run_width(&DOWN));
             square(row.up_x + run_width(up_controls(form)) - extent::BUTTON, y)
@@ -1179,15 +1167,8 @@ fn draw_run(
     } = pen;
     let mut clicked = None;
     for (index, run) in controls.iter().enumerate() {
-        if index > 0 {
-            *x += space::S1;
-        }
+        let rect = layout::playbar::place_run(x, index == 0, slot_of(run), centre_y);
         if run.control == VOLUME {
-            *x += space::S2;
-            let rect = Rect::from_min_size(
-                Pos2::new(*x, centre_y - extent::SLIDER_H / 2.0),
-                Vec2::new(extent::VOLUME_W, extent::SLIDER_H),
-            );
             // Only the extras carry the slider, and they are the only caller with
             // a level to draw, so a bar without one cannot reach here.
             if let Some(volume) = volume.as_deref_mut() {
@@ -1202,12 +1183,7 @@ fn draw_run(
                 );
                 drag_volume(ui, volume, &slot, rect);
             }
-            *x += extent::VOLUME_W + space::S2;
         } else {
-            let rect = Rect::from_min_size(
-                Pos2::new(*x, centre_y - extent::BUTTON / 2.0),
-                Vec2::splat(extent::BUTTON),
-            );
             let slot = if claimed == Some(run.control) {
                 // A claimed control is inert, so the moment is not consulted.
                 controls::icon_button_claimed(
@@ -1252,7 +1228,6 @@ fn draw_run(
             if let Some(badge) = run.badge {
                 paint_badge(ui, tokens, rect, badge);
             }
-            *x += extent::BUTTON;
         }
     }
     clicked
