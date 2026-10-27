@@ -8,6 +8,7 @@
 pub mod cover;
 pub mod device;
 pub mod remote;
+pub mod uri;
 
 pub use cover::{CoverSet, CoverVariant, SMALL_MAX_PX};
 
@@ -15,6 +16,7 @@ pub use device::{Device, DeviceKind, RemotePlayback, RemoteState};
 pub use remote::{
     Landing, MAX_NEXT_TRACKS, MAX_PREV_TRACKS, Options, Order, Report, RequestId, Status,
 };
+pub use uri::{Uri, UriKind, parse};
 
 /// An absolute URL for a cover image, restricted to the hosts Takofy fetches.
 ///
@@ -389,7 +391,7 @@ impl TrackEntry {
     /// An episode and a local file are rows too, but neither may be added to a
     /// playlist, so the URI kind decides rather than the row's shape.
     pub fn is_track(&self) -> bool {
-        self.uri.starts_with("spotify:track:")
+        uri::parse(&self.uri).is_some_and(|uri| uri.kind == UriKind::Track)
     }
 }
 
@@ -855,6 +857,12 @@ mod tests {
             assert!(!track(uri).is_track(), "must refuse {uri:?}");
         }
         assert!(track("spotify:track:4uLU6hMCjMI75M1A2tKUQC").is_track());
+    }
+
+    #[test]
+    fn a_bare_track_uri_is_not_a_track() {
+        assert!(!track("spotify:track:").is_track());
+        assert!(!track("spotify:track").is_track());
     }
 
     #[test]
