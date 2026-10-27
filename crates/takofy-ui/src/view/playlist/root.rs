@@ -454,8 +454,8 @@ impl MediaDraw<'_, '_> {
             Item::Artist(artist) => (
                 &artist.uri,
                 &artist.name,
-                "Artist",
-                "Artist".to_owned(),
+                media_type(RootKind::Artists),
+                library_kind(media_type(RootKind::Artists), None),
                 media_size(
                     RootKind::Artists,
                     artist.releases.map(|count| count as usize),
@@ -556,8 +556,9 @@ pub(in crate::view) fn media_grid(ui: &mut Ui) -> cards::Grid {
 }
 
 /// The rect that holds every tile: the width the grid solved and the rows'
-/// total height, gaps included.
-fn grid_rect(ui: &mut Ui, grid: &cards::Grid, count: usize) -> Rect {
+/// total height, gaps included. An empty grid has no rows, so it asks for no
+/// height and the list after it starts where the head left off.
+pub(in crate::view) fn grid_rect(ui: &mut Ui, grid: &cards::Grid, count: usize) -> Rect {
     let height = if count == 0 {
         0.0
     } else {

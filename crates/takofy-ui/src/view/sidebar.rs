@@ -13,12 +13,14 @@ use takofy_model::{
 use crate::availability::Control;
 use crate::cover::{Art, Cover, want_px};
 use crate::format::{
-    library_count, library_kind, playlist_detail, rail_nothing, sidebar_kind_label, sidebar_notice,
+    library_count, library_kind, media_type, playlist_detail, rail_nothing, root_empty_label,
+    root_loading_label, sidebar_kind_label, sidebar_notice,
 };
 use crate::icon::Icon;
 use crate::landing::Zone;
-use crate::layout::chips;
+use crate::layout::{chips, section as section_layout};
 use crate::library::{Library, Load};
+use crate::library_filter::RootKind;
 use crate::menu::{Door, LibraryItem};
 use crate::message::{Command, Failure};
 use crate::naming::{Renaming, Surface};
@@ -225,11 +227,6 @@ fn head(
     let slot = Rect::from_min_max(row.min, Pos2::new(create.left() - space::S2, row.bottom()));
     let mut changed = false;
     let field = if open {
-        // A created playlist would be hidden by a query that does not match the
-        // name being typed. The create field and the filter field share one
-        // slot, because the head row holds one field at a time, so opening the
-        // create field clears the query rather than drawing two fields.
-        library.rail_filter.clear();
         name_field(ui, slot, library, tokens);
         None
     } else {
@@ -273,7 +270,7 @@ fn head(
         if open {
             library.naming.cancel();
         } else {
-            library.naming.open();
+            library.begin_create();
         }
     }
     // The keyboard comes back here after a cancel and after a create: the field
@@ -586,10 +583,17 @@ impl Ids {
 }
 
 /// The list's own words while it loads, or when there is nothing in it.
-#[derive(Debug, Clone, Copy)]
-struct Words {
-    loading: &'static str,
-    empty: &'static str,
+///
+/// Both lines are the root's, so a kind reads the same in the column as it does
+/// under the cards.
+fn words(kind: SidebarKind) -> (&'static str, &'static str) {
+    let root = match kind {
+        SidebarKind::Playlists => RootKind::Playlists,
+        SidebarKind::Artists => RootKind::Artists,
+        SidebarKind::Albums => RootKind::Albums,
+        SidebarKind::Podcasts => RootKind::Podcasts,
+    };
+    (root_loading_label(root), root_empty_label(root))
 }
 
 /// What a press opens.
@@ -677,16 +681,16 @@ fn list_rows<T: ListItem + Clone>(
     view: ListView<'_, T>,
     current: Option<&str>,
     ids: Ids,
-    words: Words,
     draw: &mut Draw<'_>,
 ) -> Option<Action> {
+    let (loading, empty) = words(ids.shelf);
     match view {
         ListView::Loading => {
-            state(ui, rect, recipe::muted(words.loading, draw.tokens));
+            state(ui, rect, recipe::muted(loading, draw.tokens));
             None
         }
         ListView::Empty => {
-            state(ui, rect, recipe::muted(words.empty, draw.tokens));
+            state(ui, rect, recipe::muted(empty, draw.tokens));
             None
         }
         ListView::Failed(failure, retry) => {
@@ -953,7 +957,7 @@ impl ListItem for FollowedArtist {
     /// An artist's line is its kind alone: the reference puts a listener count
     /// there, and this client's wire does not carry one.
     fn kind(&self) -> String {
-        "Artist".to_owned()
+        library_kind(media_type(RootKind::Artists), None)
     }
 
     fn cover(&self) -> Option<&CoverSet> {
@@ -1032,18 +1036,12 @@ fn rows(
     // for it rather than drawing over it.
     let notice = library.sidebar_notice.map(sidebar_notice);
     let line = egui::FontId::new(text::XXS, fonts::mono(MonoWeight::Regular));
-    let foot = notice.map(|_| ui.fonts_mut(|fonts| fonts.row_height(&line)));
-    let (rect, foot) = match foot {
-        Some(height) => (
-            Rect::from_min_max(
-                rect.min,
-                Pos2::new(rect.right(), (rect.bottom() - height).max(rect.top())),
-            ),
-            Some(Rect::from_min_max(
-                Pos2::new(rect.left(), (rect.bottom() - height).max(rect.top())),
-                rect.max,
-            )),
-        ),
+    let height = notice.map(|_| ui.fonts_mut(|fonts| fonts.row_height(&line)));
+    let (rect, foot) = match height {
+        Some(height) => {
+            let (rows, foot) = section_layout::foot(rect, height);
+            (rows, Some(foot))
+        }
         None => (rect, None),
     };
 
@@ -1084,10 +1082,6 @@ fn rows(
                     shelf: SidebarKind::Playlists,
                     lifts: true,
                 },
-                Words {
-                    loading: "Loading your playlists…",
-                    empty: "No playlists yet.",
-                },
                 &mut draw,
             ),
             Open::Playlist,
@@ -1103,10 +1097,6 @@ fn rows(
                     kind: "library-show",
                     shelf: SidebarKind::Podcasts,
                     lifts: false,
-                },
-                Words {
-                    loading: "Loading your shows…",
-                    empty: "No shows followed yet.",
                 },
                 &mut draw,
             ),
@@ -1124,10 +1114,6 @@ fn rows(
                     shelf: SidebarKind::Artists,
                     lifts: false,
                 },
-                Words {
-                    loading: "Loading your artists…",
-                    empty: "No artists followed yet.",
-                },
                 &mut draw,
             ),
             Open::Page(Page::Artist),
@@ -1143,10 +1129,6 @@ fn rows(
                     kind: "library-album",
                     shelf: SidebarKind::Albums,
                     lifts: false,
-                },
-                Words {
-                    loading: "Loading your albums…",
-                    empty: "No albums saved yet.",
                 },
                 &mut draw,
             ),
@@ -4007,7 +3989,7 @@ mod tests {
             "the query is drawn before the create field opens"
         );
 
-        library.naming.open();
+        library.begin_create();
         let (output, _) = run_column(&ctx, Vec::new(), &mut library, &mut art);
 
         assert!(
@@ -4081,9 +4063,9 @@ mod tests {
     fn the_per_kind_sentence_stays_when_the_kind_alone_is_empty() {
         for (kind, words) in [
             (SidebarKind::Playlists, "No playlists yet."),
-            (SidebarKind::Podcasts, "No shows followed yet."),
-            (SidebarKind::Artists, "No artists followed yet."),
-            (SidebarKind::Albums, "No albums saved yet."),
+            (SidebarKind::Podcasts, "You don't follow any shows yet."),
+            (SidebarKind::Artists, "You don't follow any artists yet."),
+            (SidebarKind::Albums, "You haven't saved any albums yet."),
         ] {
             let ctx = context();
             let mut library = Library::default();

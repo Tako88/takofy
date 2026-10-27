@@ -23,15 +23,16 @@
 
 use std::time::Instant;
 
-use egui::{Id, Rect, Sense, Ui, Vec2, vec2};
+use egui::{Id, Rect, Sense, Ui, Vec2};
 use takofy_model::{FollowedArtist, Release};
 
 use crate::cover::{Art, Cover, want_px};
-use crate::format::{discography_meta, format_position};
+use crate::format::{discography_meta, format_position, library_kind, media_type};
 use crate::layout::actionbar::Kind;
 use crate::layout::sticky;
-use crate::layout::{Table, cards, table as table_layout};
+use crate::layout::{Table, table as table_layout};
 use crate::library::{Library, Load};
+use crate::library_filter::RootKind;
 use crate::likes::Likes;
 use crate::menu::LibraryItem;
 use crate::message::Command;
@@ -53,6 +54,7 @@ use super::heart;
 use super::hero;
 use super::media;
 use super::pin;
+use super::playlist::root::{grid_rect, media_grid};
 use super::release_block::{self, Block};
 use super::section;
 use super::skeleton;
@@ -140,7 +142,6 @@ pub fn artist_view(
                     });
                 }
                 Load::Failed(failure) => {
-                    page.filter.clear_query();
                     ui.label(recipe::muted(
                         crate::signin::failure_message(*failure),
                         tokens,
@@ -267,7 +268,6 @@ pub fn artist_view(
                             tokens,
                         );
                         if artist.releases.is_empty() {
-                            page.filter.clear_query();
                             ui.label(recipe::muted("No releases.", tokens));
                         } else {
                             // The row the artist's own kinds allow, and the chip it
@@ -540,20 +540,15 @@ fn fans(
     ui.add_space(space::S6);
     section::head(ui, "Fans also like", &cards.len().to_string(), tokens);
 
-    let solved = cards::grid(
-        Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), 0.0)),
-        extent::MEDIA_MIN_W,
-        space::S3,
-        media::extra_height(ui),
-    );
-    let rows = solved.rows(cards.len());
-    let height =
-        rows as f32 * solved.card_rect(0).height() + (rows.saturating_sub(1)) as f32 * space::S3;
-    let list = Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), height));
+    let solved = media_grid(ui);
+    let list = grid_rect(ui, &solved, cards.len());
     ui.allocate_rect(list, egui::Sense::hover());
     let visible = ui.clip_rect();
 
     let want = want_px(solved.card_w, ui.pixels_per_point());
+    // An artist's subline is its kind alone: the wire carries no listener count,
+    // which is what the reference puts there.
+    let sub = library_kind(media_type(RootKind::Artists), None);
     let mut pressed = None;
     for (index, card) in cards.iter().enumerate() {
         let rect = solved.card_rect(index);
@@ -563,8 +558,8 @@ fn fans(
         let media = media::Media {
             uri: &card.uri,
             name: &card.name,
-            kind: "Artist",
-            sub: "Artist",
+            kind: media_type(RootKind::Artists),
+            sub: &sub,
             size: "",
             round: true,
             shelf: SidebarKind::Artists,

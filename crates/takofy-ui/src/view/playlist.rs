@@ -7,13 +7,15 @@
 
 use std::time::Instant;
 
-use egui::{Align, Color32, Id, Layout, Pos2, Rect, Sense, Ui, UiBuilder, vec2};
+use egui::{Align, Color32, Id, Layout, Sense, Ui, UiBuilder, vec2};
 use takofy_model::PlaylistEntry;
 
 use crate::cover::{Art, Cover, want_px};
 use crate::format::{added_label, byline, format_position, plain_description, total_duration_ms};
 use crate::landing::Zone;
-use crate::layout::{Table, actionbar as actionbar_layout, table as table_layout};
+use crate::layout::{
+    Table, actionbar as actionbar_layout, section as section_layout, table as table_layout,
+};
 use crate::library::{BandCover, Library, Load, TracksFor, band_cover};
 use crate::menu::{Cut, LibraryItem};
 use crate::message::Command;
@@ -39,7 +41,7 @@ use super::track_list::{head, list_rect};
 use super::track_row::{self, Click, Row, state_of};
 use crate::verbs::{self, LibraryRights};
 
-mod root;
+pub(in crate::view) mod root;
 
 use root::idle;
 pub use root::{FollowedRead, IdleView, LoadNote, idle_view};
@@ -110,11 +112,7 @@ pub fn tracks_view(
     let strip = note.as_ref().map(|_| {
         let font = egui::TextStyle::Body.resolve(ui.style());
         let line = ui.ctx().fonts_mut(|fonts| fonts.row_height(&font));
-        let height = line + space::S1;
-        Rect::from_min_max(
-            Pos2::new(page.left(), (page.bottom() - height).max(page.top())),
-            page.max,
-        )
+        section_layout::foot(page, line + space::S1).1
     });
     let mut area = egui::ScrollArea::vertical();
     if let Some(strip) = strip {
@@ -322,7 +320,6 @@ pub fn tracks_view(
                     skeleton::rows(ui, count, table.columns().for_playlist(true), true, tokens);
                 }
                 Load::Failed(failure) => {
-                    library.track_filter.clear();
                     ui.label(recipe::muted(
                         crate::signin::failure_message(*failure),
                         tokens,
@@ -332,7 +329,6 @@ pub fn tracks_view(
                     }
                 }
                 Load::Ready(tracks) if tracks.tracks.is_empty() => {
-                    library.track_filter.clear();
                     ui.label(recipe::muted("No tracks in this playlist.", tokens));
                 }
                 Load::Ready(tracks) => {
@@ -708,8 +704,8 @@ mod tests {
     use std::time::Duration;
 
     use egui::{
-        Context, Event, Modifiers, MouseWheelSource, MouseWheelUnit, Pos2, RawInput, TouchPhase,
-        Vec2,
+        Context, Event, Modifiers, MouseWheelSource, MouseWheelUnit, Pos2, RawInput, Rect,
+        TouchPhase, Vec2,
     };
 
     use super::*;

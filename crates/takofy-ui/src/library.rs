@@ -829,6 +829,7 @@ impl Library {
                             notice: None,
                         });
                     }
+                    self.clear_filter_when_empty();
                 }
             }
             Update::TracksFailed { playlist, failure } => {
@@ -840,6 +841,9 @@ impl Library {
                 self.cover_refresh.answer(playlist);
                 if self.wanted.as_deref() == Some(playlist.as_str()) {
                     self.tracks = Load::Failed(*failure);
+                    // A failed page draws no rows and no field, so the query
+                    // it carried would come back to a list nobody filtered.
+                    self.track_filter.clear();
                 }
             }
             // The reply ends the write and names the revision the next one uses.
@@ -922,6 +926,11 @@ impl Library {
                 {
                     self.releases.retain(&detail.releases);
                     self.artist = Load::Ready(detail.clone());
+                    // The chip row is drawn only beside releases, so a query
+                    // over an empty discography is one nobody can see or clear.
+                    if detail.releases.is_empty() {
+                        self.filter.clear_query();
+                    }
                 }
             }
             Update::ArtistFailed { artist, failure } => {
@@ -929,6 +938,8 @@ impl Library {
                     && matches!(self.artist, Load::Loading)
                 {
                     self.artist = Load::Failed(*failure);
+                    // A failed page draws no chip row to hold the query either.
+                    self.filter.clear_query();
                 }
             }
             // The show's reply is guarded exactly as the album's is. The show
@@ -1433,6 +1444,16 @@ impl Library {
         true
     }
 
+    /// Opens the head's new-playlist field, with the rail's query dropped.
+    ///
+    /// A created playlist the query does not match would land in the list
+    /// already hidden, and the head keeps one field at a time: the create field
+    /// and the filter field share the slot.
+    pub fn begin_create(&mut self) {
+        self.rail_filter.clear();
+        self.naming.open();
+    }
+
     /// Starts a rename for the name in the field, and asks for one write.
     ///
     /// A name the server already holds closes the field and sends nothing, so
@@ -1665,11 +1686,26 @@ impl Library {
             access: Some(access.clone()),
             notice: None,
         });
+        // Taking out the last row leaves nowhere to show the query, and no
+        // reply for a removal carries a track list, so this is the only place
+        // that can drop it.
+        self.clear_filter_when_empty();
         Some(Command::RemoveTracks {
             playlist: playlist.to_owned(),
             revision: access.revision,
             removals: found.removals,
         })
+    }
+
+    /// Drops the page's query when the page it filters has no rows to show.
+    ///
+    /// The field is drawn beside rows, so an empty page can never show a query.
+    /// Left to sit, it would come back and silently filter the next list that
+    /// has rows.
+    fn clear_filter_when_empty(&mut self) {
+        if matches!(&self.tracks, Load::Ready(tracks) if tracks.tracks.is_empty()) {
+            self.track_filter.clear();
+        }
     }
 
     /// What a page write may name now, when `rows` still hold `carried`.
@@ -5727,6 +5763,79 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_tracks_load_clears_the_query_on_the_update() {
+        let mut library = Library::default();
+        library.select("a");
+        library.track_filter.edit("a").push_str("midnight");
+
+        library.apply(&Update::TracksFailed {
+            playlist: "a".to_owned(),
+            failure: Failure::Load,
+        });
+
+        assert_eq!(
+            library.track_filter.needle("a"),
+            None,
+            "a failure that lands while another page is drawn still clears the query"
+        );
+    }
+
+    #[test]
+    fn an_empty_tracks_reply_clears_the_query_on_the_update() {
+        let mut library = Library::default();
+        library.select("a");
+        library.track_filter.edit("a").push_str("midnight");
+
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: Vec::new(),
+            cover: None,
+            access: None,
+        });
+
+        assert_eq!(
+            library.track_filter.needle("a"),
+            None,
+            "an emptied page has no field for the query to sit in"
+        );
+    }
+
+    #[test]
+    fn a_rows_reply_keeps_the_query() {
+        let mut library = Library::default();
+        library.select("a");
+        library.track_filter.edit("a").push_str("midnight");
+
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: vec![track("t")],
+            cover: None,
+            access: None,
+        });
+
+        assert_eq!(
+            library.track_filter.needle("a").as_deref(),
+            Some("midnight"),
+            "a page with rows keeps what the field holds"
+        );
+    }
+
+    #[test]
+    fn opening_the_create_field_clears_the_rail_query_on_the_update() {
+        let mut library = Library::default();
+        library.rail_filter.edit().push_str("midnight");
+
+        library.begin_create();
+
+        assert_eq!(
+            library.rail_filter.query(),
+            "",
+            "a created playlist must not land in a list already hidden"
+        );
+        assert!(library.naming.is_open(), "the field opens with the clear");
+    }
+
+    #[test]
     fn a_page_change_keeps_the_rail_query() {
         let mut library = Library::default();
         library.apply(&Update::Playlists(vec![
@@ -7772,6 +7881,41 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_artist_load_clears_the_discography_query_on_the_update() {
+        let mut library = Library::default();
+        library.open(artist("spotify:artist:a"));
+        library.filter.edit().push_str("midnight");
+
+        library.apply(&Update::ArtistFailed {
+            artist: "spotify:artist:a".to_owned(),
+            failure: Failure::Load,
+        });
+
+        assert_eq!(
+            library.filter.needle(),
+            None,
+            "a failure that lands while another page is drawn still clears the query"
+        );
+    }
+
+    #[test]
+    fn an_artist_with_no_releases_clears_the_discography_query_on_the_update() {
+        let mut library = Library::default();
+        library.open(artist("spotify:artist:a"));
+        library.filter.edit().push_str("midnight");
+
+        let mut detail = artist_detail("spotify:artist:a");
+        detail.releases.clear();
+        library.apply(&Update::Artist(detail));
+
+        assert_eq!(
+            library.filter.needle(),
+            None,
+            "an empty discography draws no chip row to hold the query"
+        );
+    }
+
+    #[test]
     fn to_playlists_keeps_the_filter() {
         let mut library = Library::default();
         library.open(artist("spotify:artist:a"));
@@ -8169,6 +8313,24 @@ mod tests {
                 before: moved(&["t0", "t1", "t2", "t3"]),
                 after: moved(&["t0", "t3"]),
             })
+        );
+    }
+
+    #[test]
+    fn a_removal_that_empties_the_page_drops_the_track_filter() {
+        let mut library = page_with("a", &["midnight"], access(0x01, true));
+        library.track_filter.edit("a").push_str("midnight");
+
+        assert!(
+            library
+                .remove_tracks("a", &[0], &moved(&["midnight"]))
+                .is_some()
+        );
+
+        assert_eq!(
+            library.track_filter.needle("a"),
+            None,
+            "an empty page cannot show the query, so the last row takes it with it"
         );
     }
 
