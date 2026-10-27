@@ -1,5 +1,8 @@
 use super::super::*;
 use super::test_support::*;
+use std::sync::atomic::Ordering;
+use std::sync::mpsc::channel;
+use takofy_model::{Move, Removal};
 
 #[test]
 fn a_scripted_release_announces_its_labelled_tracks() {

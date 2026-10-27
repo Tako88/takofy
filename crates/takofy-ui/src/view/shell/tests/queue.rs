@@ -1,6 +1,13 @@
 use super::super::*;
-use super::test_support::NowPlaying;
 use super::test_support::*;
+use crate::player::{NowPlaying, Transport};
+use crate::queue::Queue;
+use crate::route::Page;
+use crate::theme::extent;
+use takofy_model::{Move, TrackEntry};
+
+pub(super) const QUEUE_ALBUM: &str = "spotify:album:q";
+pub(super) const QUEUE_ARTIST: &str = "spotify:artist:q";
 
 #[test]
 fn a_queue_link_opens_the_page() {

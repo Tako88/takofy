@@ -1,5 +1,10 @@
 use super::super::*;
 use super::test_support::*;
+use crate::library::Load;
+use crate::message::Update;
+use crate::player::Transport;
+use crate::queue::Queue;
+use crate::route::Page;
 
 #[test]
 fn a_create_is_refused_while_a_block_is_carried() {

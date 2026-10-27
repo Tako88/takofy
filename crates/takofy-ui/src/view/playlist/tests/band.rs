@@ -1,4 +1,3 @@
-use super::super::hero; // the band recipe, which the tests' own `hero` module shadows
 use super::super::*;
 use super::test_support::*;
 use crate::library::MediaLayout;

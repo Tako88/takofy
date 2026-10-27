@@ -1,5 +1,39 @@
 use super::super::*;
 use super::test_support::*;
+use crate::cover::Art;
+use crate::device_list::DeviceList;
+use crate::devices::Devices;
+use crate::library::{Library, Load, MediaLayout};
+use crate::library_filter::RootKind;
+use crate::menu::LibraryItem;
+use crate::message::Update;
+use crate::player::Transport;
+use crate::queue::Queue;
+use crate::route::Page;
+use crate::sidebar_kind::SidebarKind;
+use crate::signin::SignIn;
+use crate::theme::{extent, fonts, style};
+use std::time::Instant;
+use takofy_model::{FollowedArtist, PlaylistEntry, SavedAlbum};
+
+/// The sidebar's highlighted library rows, which wear a bone rule at the
+/// left edge.
+pub(super) fn selected_rows(output: &egui::FullOutput) -> usize {
+    let tokens = Tokens::DARK;
+    output
+        .shapes
+        .iter()
+        .filter(|clipped| match &clipped.shape {
+            egui::Shape::Rect(shape) => {
+                shape.fill == tokens.palette.text
+                    && (shape.rect.width() - stroke::RULE).abs() < 0.01
+                    && shape.rect.height() > extent::ROW_H
+                    && shape.rect.left() < extent::SIDEBAR_W
+            }
+            _ => false,
+        })
+        .count()
+}
 
 #[test]
 fn the_playlists_crumb_returns_to_the_root_and_back_loads_the_playlist() {

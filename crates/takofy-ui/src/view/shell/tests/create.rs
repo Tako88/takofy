@@ -1,5 +1,15 @@
 use super::super::*;
 use super::test_support::*;
+use crate::cover::Art;
+use crate::library::{Library, Load};
+use crate::message::{Failure, Update};
+use crate::player::Transport;
+use crate::queue::Queue;
+use crate::route::Page;
+use crate::sidebar_kind::SidebarKind;
+use crate::theme::{extent, fonts, space, style};
+use std::time::Instant;
+use takofy_model::PlaylistEntry;
 
 /// The rail filter's box, read from the hairline under it inside `area`.
 fn rail_filter_rect(output: &egui::FullOutput, area: Rect) -> Rect {

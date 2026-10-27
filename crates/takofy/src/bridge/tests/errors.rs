@@ -1,6 +1,9 @@
 use super::super::signin::{authorize_update, failure_of};
 use super::super::*;
 use super::test_support::*;
+use takofy_core::credentials::StoreError;
+use takofy_core::login::{AuthError, SourceError, SourceErrorKind};
+use takofy_ui::signin::failure_message;
 
 fn auth_source(kind: SourceErrorKind) -> AuthError {
     AuthError::Source(SourceError { kind })

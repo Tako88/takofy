@@ -1,5 +1,7 @@
 use super::super::*;
 use super::test_support::*;
+use std::sync::atomic::Ordering;
+use std::sync::mpsc::channel;
 
 #[test]
 fn rootlist_replies_keep_the_order_their_commands_were_sent_in() {

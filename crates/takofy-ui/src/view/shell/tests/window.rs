@@ -1,5 +1,9 @@
 use super::super::*;
 use super::test_support::*;
+use crate::player::{Transport, TransportState};
+use crate::queue::Queue;
+use crate::theme::extent;
+use takofy_model::TrackEntry;
 
 /// The playbar's fullscreen button: the last of the extras, which the
 /// columns and the run tables both end with.

@@ -1,30 +1,23 @@
 //! Fixtures and probes shared by the shell's tests.
 
-pub(super) use std::time::Instant;
-
-pub(super) use takofy_model::{
-    ArtistDetail, CoverUrl, Device, DeviceKind, FollowedArtist, Move, PlaylistAccess,
-    PlaylistEntry, Release, ReleaseKind, RemotePlayback, RemoteState, Removal, SavedAlbum,
-    TrackEntry,
-};
-use takofy_model::{CoverSet, FollowedShow, Revision};
-
 use super::super::*;
-pub(super) use crate::cover::Art;
-pub(super) use crate::device_list::DeviceList;
-pub(super) use crate::devices::Devices;
-pub(super) use crate::library::{Library, Load, MediaLayout};
-pub(super) use crate::library_filter::RootKind;
-pub(super) use crate::menu::LibraryItem;
-pub(super) use crate::message::{DeviceUpdate, Failure, Steer, Update};
-pub(super) use crate::player::{NowPlaying, Transport, TransportState};
-pub(super) use crate::queue::Queue;
-pub(super) use crate::route::Page;
-pub(super) use crate::search::Device as SearchDevice;
-pub(super) use crate::selection::Press;
-pub(super) use crate::sidebar_kind::SidebarKind;
-pub(super) use crate::signin::SignIn;
-pub(super) use crate::theme::{extent, fonts, icon, space, style};
+use crate::cover::Art;
+use crate::device_list::DeviceList;
+use crate::devices::Devices;
+use crate::library::{Library, Load};
+use crate::menu::LibraryItem;
+use crate::message::Update;
+use crate::player::{NowPlaying, Transport};
+use crate::queue::Queue;
+use crate::route::Page;
+use crate::sidebar_kind::SidebarKind;
+use crate::signin::SignIn;
+use crate::theme::{extent, fonts, space, style};
+use std::time::Instant;
+use takofy_model::{
+    CoverSet, CoverUrl, Device, DeviceKind, FollowedArtist, FollowedShow, PlaylistAccess,
+    PlaylistEntry, Revision, SavedAlbum, TrackEntry,
+};
 
 pub(super) fn cover_url(tail: &str) -> CoverUrl {
     CoverUrl::from_wire(&format!("https://i.scdn.co/image/{tail}")).expect("a cover url")
@@ -32,23 +25,6 @@ pub(super) fn cover_url(tail: &str) -> CoverUrl {
 
 pub(super) fn cover(tail: &str) -> CoverSet {
     CoverSet::single(cover_url(tail))
-}
-
-/// A cover offering 64, 300 and 640 squares, with their URLs.
-pub(super) fn sized(tail: &str) -> (CoverSet, CoverUrl, CoverUrl, CoverUrl) {
-    let small =
-        CoverUrl::from_wire(&format!("https://i.scdn.co/image/{tail}-64")).expect("a cover url");
-    let middle =
-        CoverUrl::from_wire(&format!("https://i.scdn.co/image/{tail}-300")).expect("a cover url");
-    let large =
-        CoverUrl::from_wire(&format!("https://i.scdn.co/image/{tail}-640")).expect("a cover url");
-    let set = CoverSet::from_sizes([
-        (Some((64, 64)), small.clone()),
-        (Some((300, 300)), middle.clone()),
-        (Some((640, 640)), large.clone()),
-    ])
-    .expect("a cover set");
-    (set, small, middle, large)
 }
 
 pub(super) fn playing(cover: CoverSet) -> Transport {
@@ -310,24 +286,6 @@ pub(super) fn painted_at(output: &egui::FullOutput, label: &str) -> Option<egui:
         })
 }
 
-/// The seek track the bar painted inside `column`.
-pub(super) fn painted_seek_track(output: &egui::FullOutput, column: Rect) -> Rect {
-    output
-        .shapes
-        .iter()
-        .find_map(|clipped| match &clipped.shape {
-            egui::Shape::Rect(shape)
-                if (shape.rect.height() - extent::SLIDER_TRACK_H).abs() < 0.01
-                    && shape.fill == Tokens::DARK.palette.border_strong
-                    && column.contains(shape.rect.center()) =>
-            {
-                Some(shape.rect)
-            }
-            _ => None,
-        })
-        .expect("the bar paints its seek track")
-}
-
 /// The rect the first text shape with `label` inside `area` was painted in.
 pub(super) fn text_in(output: &egui::FullOutput, label: &str, area: Rect) -> Option<Rect> {
     output
@@ -366,22 +324,6 @@ pub(super) fn view_rect(window: &Window) -> Rect {
     let regions = layout::regions_with(content.width(), window.pane);
     let shell = layout::shell_for(&regions);
     layout::grid_for(content, &shell).view
-}
-
-/// The bottom rule the topbar paints, which spells out the width it drew at.
-pub(super) fn topbar_rule(frame: &egui::FullOutput, bar: Rect) -> Rect {
-    frame
-        .shapes
-        .iter()
-        .find_map(|clipped| match &clipped.shape {
-            egui::Shape::Rect(shape)
-                if shape.stroke.width == 0.0 && (shape.rect.top() - bar.bottom()).abs() < 0.01 =>
-            {
-                Some(shape.rect)
-            }
-            _ => None,
-        })
-        .expect("the topbar paints its bottom rule")
 }
 
 /// One press or release of `key` with no modifiers.
@@ -493,31 +435,10 @@ pub(super) fn search_field(output: &egui::FullOutput) -> Option<Rect> {
         })
 }
 
-/// The sidebar's highlighted library rows, which wear a bone rule at the
-/// left edge.
-pub(super) fn selected_rows(output: &egui::FullOutput) -> usize {
-    let tokens = Tokens::DARK;
-    output
-        .shapes
-        .iter()
-        .filter(|clipped| match &clipped.shape {
-            egui::Shape::Rect(shape) => {
-                shape.fill == tokens.palette.text
-                    && (shape.rect.width() - stroke::RULE).abs() < 0.01
-                    && shape.rect.height() > extent::ROW_H
-                    && shape.rect.left() < extent::SIDEBAR_W
-            }
-            _ => false,
-        })
-        .count()
-}
-
 pub(super) const PLAYLIST: &str = "spotify:playlist:a";
 pub(super) const ARTIST: &str = "spotify:artist:a";
 pub(super) const ALBUM: &str = "spotify:album:b";
 pub(super) const ALBUM_B: &str = "spotify:album:c";
-pub(super) const QUEUE_ALBUM: &str = "spotify:album:q";
-pub(super) const QUEUE_ARTIST: &str = "spotify:artist:q";
 
 /// Puts one named, ready playlist on screen.
 pub(super) fn ready_playlist(window: &mut Window) {
@@ -539,15 +460,6 @@ pub(super) fn ready_playlist(window: &mut Window) {
         cover: None,
         access: None,
     });
-}
-
-/// The middle of a three-page history: album A on screen, the playlist
-/// behind it and album B ahead.
-pub(super) fn history_of_three(window: &mut Window) {
-    ready_playlist(window);
-    window.library.open(Page::Album(ALBUM.to_owned()));
-    window.library.open(Page::Album(ALBUM_B.to_owned()));
-    window.library.back();
 }
 
 /// A track a menu's verbs can all act on: a real track URI, an album and an
@@ -983,7 +895,6 @@ pub(super) fn page_of_tracks(window: &mut Window, uris: &[&str]) {
 }
 
 pub(super) const TRACK_A: &str = "spotify:track:4uLU6hMCjMI75M1A2tKUQC";
-pub(super) const TRACK_B: &str = "spotify:track:7ouMYWpwJ422jRcDASZB7P";
 
 /// The top of the sidebar row painted as `title`, from the two lines it
 /// draws. A row centres its name and kind in itself, and that offset is the

@@ -1,5 +1,9 @@
 use super::super::*;
 use super::test_support::*;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::channel;
+use takofy_core::engine::RootlistRead;
+use takofy_model::PlaylistAccess;
 
 #[test]
 fn every_update_wakes_once_after_it_is_queued() {

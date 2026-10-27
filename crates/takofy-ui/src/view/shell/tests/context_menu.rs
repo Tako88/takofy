@@ -1,5 +1,8 @@
 use super::super::*;
 use super::test_support::*;
+use crate::player::Transport;
+use crate::queue::Queue;
+use crate::route::Page;
 
 #[test]
 fn selection_resets_when_the_page_changes() {
@@ -607,5 +610,3 @@ fn now_playings_more_waits_without_a_current_entry() {
         "a waiting more button opened a menu"
     );
 }
-
-// ---- the library head's new-playlist field ----

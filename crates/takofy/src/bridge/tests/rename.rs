@@ -1,5 +1,8 @@
 use super::super::*;
 use super::test_support::*;
+use std::sync::atomic::Ordering;
+use std::sync::mpsc::channel;
+use takofy_model::PlaylistAccess;
 
 #[test]
 fn a_rename_reads_the_state_then_writes_and_announces_the_reply_revision() {

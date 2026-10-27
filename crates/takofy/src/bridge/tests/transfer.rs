@@ -1,8 +1,19 @@
 use super::super::*;
 use super::test_support::*;
+use std::sync::atomic::Ordering;
+use std::sync::mpsc::{RecvTimeoutError, channel};
+use takofy_core::instruction::{Kind, Refusal};
+use takofy_core::playback::PlaybackEvent;
+use takofy_core::{ORDER_MARGIN, Resolution};
+use takofy_model::{Landing, Order, RequestId, TrackEntry};
 
 // ---- serving a landing ----
 
+/// The playlist the landing tests hand over and play from.
+pub(super) const PLAYLIST: &str = "spotify:playlist:p";
+
+/// A local file the phone can hold in its queue and this window cannot fetch.
+pub(super) const LOCAL: &str = "spotify:local:artist:album:title:200";
 /// The lines the bridge logged about its own decisions, so a test can tell
 /// two arms that answer the same request apart.
 static LOGGED: Mutex<Vec<String>> = Mutex::new(Vec::new());

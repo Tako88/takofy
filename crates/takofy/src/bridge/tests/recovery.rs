@@ -1,5 +1,15 @@
 use super::super::*;
 use super::test_support::*;
+use crate::playhead::Playhead;
+use crate::session::SessionHost;
+use std::sync::atomic::Ordering;
+use std::sync::mpsc::{RecvTimeoutError, channel};
+use takofy_core::connect::WITHDRAW_TIMEOUT;
+use takofy_core::credentials::{AccessToken, CredentialStore};
+use takofy_core::login::{SourceError, SourceErrorKind, TokenSet, TokenSource};
+use takofy_core::playback::PlaybackEvent;
+use takofy_model::RequestId;
+use tokio::sync::mpsc::UnboundedSender;
 
 // ---- session recovery ----
 

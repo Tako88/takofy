@@ -1,5 +1,11 @@
 use super::super::*;
 use super::test_support::*;
+use crate::message::Update;
+use crate::player::Transport;
+use crate::queue::Queue;
+use crate::route::Page;
+use crate::theme::space;
+use takofy_model::{ArtistDetail, Release, ReleaseKind};
 
 /// The action row's box once it pins: the page's surface fill at the height
 /// it condenses to, inside the view.
@@ -201,8 +207,6 @@ fn an_artist_page_leaves_the_chip_rows_reach_in_the_seam_and_the_panel_forgets_i
         "the panel's queue rows were revealed clear of the artist's chip row"
     );
 }
-
-// ---- the devices card and the holder's transport ----
 
 /// The chip row's own surface once it pins: a band taller than the bar's
 /// condensed height, so the two fills are told apart.

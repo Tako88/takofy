@@ -1,5 +1,8 @@
 use super::super::*;
 use super::test_support::*;
+use crate::player::Transport;
+use crate::queue::Queue;
+use takofy_model::Removal;
 
 /// The page's listing, under the id its rows are picked by.
 fn playlist_listing() -> Listing {

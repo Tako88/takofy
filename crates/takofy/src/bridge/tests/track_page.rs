@@ -1,5 +1,8 @@
 use super::super::*;
 use super::test_support::*;
+use crate::session::TrackPage;
+use std::sync::atomic::Ordering;
+use takofy_model::{CoverSet, PlaylistAccess};
 
 #[test]
 fn a_failed_track_load_is_announced_and_the_task_shuts_down() {

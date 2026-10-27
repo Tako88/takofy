@@ -1,6 +1,10 @@
 use super::super::playback::transport_of;
 use super::super::*;
 use super::test_support::*;
+use crate::session::SessionError;
+use std::sync::atomic::Ordering;
+use std::sync::mpsc::channel;
+use takofy_core::playback::{PlaybackError, PlaybackEvent};
 
 #[test]
 fn transport_of_maps_every_event() {

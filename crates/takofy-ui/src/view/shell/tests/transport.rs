@@ -1,5 +1,7 @@
 use super::super::*;
 use super::test_support::*;
+use crate::player::{Transport, TransportState};
+use crate::queue::Queue;
 
 #[test]
 fn space_pauses_and_resumes_the_transport() {

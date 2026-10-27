@@ -1,5 +1,9 @@
 use super::super::*;
 use super::test_support::*;
+use crate::player::Transport;
+use crate::queue::Queue;
+use crate::route::Page;
+use crate::theme::{extent, space};
 
 #[test]
 fn the_ghost_is_painted_on_the_frame_of_the_lift() {

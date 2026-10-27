@@ -1,6 +1,30 @@
 use super::super::*;
-use super::test_support::NowPlaying;
 use super::test_support::*;
+use crate::library::Load;
+use crate::message::{DeviceUpdate, Steer, Update};
+use crate::player::{NowPlaying, Transport, TransportState};
+use crate::queue::Queue;
+use crate::sidebar_kind::SidebarKind;
+use crate::theme::{extent, space};
+use takofy_model::{DeviceKind, PlaylistEntry, RemotePlayback, RemoteState};
+
+/// The seek track the bar painted inside `column`.
+pub(super) fn painted_seek_track(output: &egui::FullOutput, column: Rect) -> Rect {
+    output
+        .shapes
+        .iter()
+        .find_map(|clipped| match &clipped.shape {
+            egui::Shape::Rect(shape)
+                if (shape.rect.height() - extent::SLIDER_TRACK_H).abs() < 0.01
+                    && shape.fill == Tokens::DARK.palette.border_strong
+                    && column.contains(shape.rect.center()) =>
+            {
+                Some(shape.rect)
+            }
+            _ => None,
+        })
+        .expect("the bar paints its seek track")
+}
 
 /// What the holder is playing, as the cluster reports it.
 fn playback(state: RemoteState, steerable: bool) -> Update {

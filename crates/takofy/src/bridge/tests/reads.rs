@@ -1,5 +1,9 @@
 use super::super::*;
 use super::test_support::*;
+use crate::session::ArtistPage;
+use std::sync::atomic::Ordering;
+use std::sync::mpsc::channel;
+use takofy_model::{ArtistPortrait, CoverSet, LyricLine, TrackLyrics};
 
 #[test]
 fn loading_the_liked_tracks_announces_the_whole_set() {

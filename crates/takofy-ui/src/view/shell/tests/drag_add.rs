@@ -1,5 +1,14 @@
 use super::super::*;
 use super::test_support::*;
+use crate::library::Load;
+use crate::message::Update;
+use crate::player::Transport;
+use crate::queue::Queue;
+use crate::selection::Press;
+use crate::theme::space;
+use takofy_model::{PlaylistAccess, PlaylistEntry, TrackEntry};
+
+pub(super) const TRACK_B: &str = "spotify:track:7ouMYWpwJ422jRcDASZB7P";
 
 #[test]
 fn dropping_a_track_on_a_playlist_row_sends_one_add() {

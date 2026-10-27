@@ -1,5 +1,12 @@
 use super::super::*;
 use super::test_support::*;
+use crate::library::Load;
+use crate::menu::LibraryItem;
+use crate::message::{Failure, Update};
+use crate::player::Transport;
+use crate::queue::Queue;
+use crate::sidebar_kind::SidebarKind;
+use takofy_model::TrackEntry;
 
 #[test]
 fn apply_rename_opens_the_field_on_the_row_or_the_band() {

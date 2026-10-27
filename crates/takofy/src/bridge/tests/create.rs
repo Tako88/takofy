@@ -1,5 +1,8 @@
 use super::super::*;
 use super::test_support::*;
+use std::sync::atomic::Ordering;
+use std::sync::mpsc::channel;
+use takofy_model::{CoverSet, Move, PlaylistAccess, PlaylistCover, PlaylistEntry};
 
 #[test]
 fn a_create_makes_links_reads_state_and_announces_the_entry() {

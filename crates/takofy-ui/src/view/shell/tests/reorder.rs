@@ -1,5 +1,11 @@
 use super::super::*;
 use super::test_support::*;
+use crate::message::{Failure, Update};
+use crate::player::Transport;
+use crate::queue::Queue;
+use crate::selection::Press;
+use crate::theme::{extent, space};
+use takofy_model::{Move, TrackEntry};
 
 #[test]
 fn the_pick_a_carry_held_before_the_toggle_is_refused_after_it() {

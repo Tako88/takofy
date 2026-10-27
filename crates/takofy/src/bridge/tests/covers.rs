@@ -1,5 +1,10 @@
+use super::super::wake::Waker;
 use super::super::*;
 use super::test_support::*;
+use crate::cover::spawn_cover;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc::channel;
+use takofy_model::CoverImage;
 
 #[test]
 fn a_fetched_cover_decodes_and_reaches_the_window() {

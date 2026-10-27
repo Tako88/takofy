@@ -1,5 +1,10 @@
 use super::super::*;
 use super::test_support::*;
+use crate::library::Load;
+use crate::message::{Failure, Update};
+use crate::player::Transport;
+use crate::queue::Queue;
+use crate::route::Page;
 
 #[test]
 fn the_search_page_renders_its_heading_and_count() {

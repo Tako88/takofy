@@ -1,5 +1,25 @@
 use super::super::*;
 use super::test_support::*;
+use crate::player::Transport;
+use crate::queue::Queue;
+use takofy_model::{CoverSet, CoverUrl};
+
+/// A cover offering 64, 300 and 640 squares, with their URLs.
+pub(super) fn sized(tail: &str) -> (CoverSet, CoverUrl, CoverUrl, CoverUrl) {
+    let small =
+        CoverUrl::from_wire(&format!("https://i.scdn.co/image/{tail}-64")).expect("a cover url");
+    let middle =
+        CoverUrl::from_wire(&format!("https://i.scdn.co/image/{tail}-300")).expect("a cover url");
+    let large =
+        CoverUrl::from_wire(&format!("https://i.scdn.co/image/{tail}-640")).expect("a cover url");
+    let set = CoverSet::from_sizes([
+        (Some((64, 64)), small.clone()),
+        (Some((300, 300)), middle.clone()),
+        (Some((640, 640)), large.clone()),
+    ])
+    .expect("a cover set");
+    (set, small, middle, large)
+}
 
 #[test]
 fn the_panel_asks_for_the_size_its_own_art_box_takes() {

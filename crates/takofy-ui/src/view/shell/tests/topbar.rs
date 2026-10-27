@@ -1,5 +1,35 @@
 use super::super::*;
 use super::test_support::*;
+use crate::library::Load;
+use crate::player::Transport;
+use crate::queue::Queue;
+use crate::route::Page;
+use crate::theme::extent;
+
+/// The bottom rule the topbar paints, which spells out the width it drew at.
+pub(super) fn topbar_rule(frame: &egui::FullOutput, bar: Rect) -> Rect {
+    frame
+        .shapes
+        .iter()
+        .find_map(|clipped| match &clipped.shape {
+            egui::Shape::Rect(shape)
+                if shape.stroke.width == 0.0 && (shape.rect.top() - bar.bottom()).abs() < 0.01 =>
+            {
+                Some(shape.rect)
+            }
+            _ => None,
+        })
+        .expect("the topbar paints its bottom rule")
+}
+
+/// The middle of a three-page history: album A on screen, the playlist
+/// behind it and album B ahead.
+pub(super) fn history_of_three(window: &mut Window) {
+    ready_playlist(window);
+    window.library.open(Page::Album(ALBUM.to_owned()));
+    window.library.open(Page::Album(ALBUM_B.to_owned()));
+    window.library.back();
+}
 
 /// In drawer mode the layout hands the toggle a whole column; the button in
 /// it is still a button, the same square as its neighbours.
