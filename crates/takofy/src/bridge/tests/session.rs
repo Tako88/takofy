@@ -1,5 +1,5 @@
-use super::super::*; // the module under test
-use super::*; // the shared test harness
+use super::super::*;
+use super::test_support::*;
 
 #[test]
 fn every_update_wakes_once_after_it_is_queued() {

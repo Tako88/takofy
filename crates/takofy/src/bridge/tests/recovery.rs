@@ -1,5 +1,5 @@
-use super::super::*; // the module under test
-use super::*; // the shared test harness
+use super::super::*;
+use super::test_support::*;
 
 // ---- session recovery ----
 
@@ -122,6 +122,42 @@ fn play_anchored(ui_end: &UiEnd, shared: &FakeState, uri: &str, position_ms: u32
                 paused: false,
             })
     });
+}
+
+fn good(value: &str) -> Result<TokenSet, SourceError> {
+    Ok(token_set(value, None))
+}
+
+fn no_token() -> Result<TokenSet, SourceError> {
+    Err(SourceError {
+        kind: SourceErrorKind::Other,
+    })
+}
+
+/// Everything already queued, without waiting for more.
+fn queued(ui_end: &UiEnd) -> Vec<Update> {
+    let mut seen = Vec::new();
+    while let Ok(update) = ui_end.updates.try_recv() {
+        seen.push(update);
+    }
+    seen
+}
+
+/// The event sender of the current fake player.
+fn events(shared: &FakeState) -> UnboundedSender<PlaybackEvent> {
+    shared
+        .event_tx
+        .lock()
+        .expect("lock")
+        .clone()
+        .expect("the player has an event stream")
+}
+
+/// Makes the next watch wait for the returned sender before it answers.
+fn hold_watch(shared: &FakeState) -> tokio::sync::oneshot::Sender<()> {
+    let (release, gate) = tokio::sync::oneshot::channel();
+    *shared.watch_gate.lock().expect("lock") = Some(gate);
+    release
 }
 
 /// Long enough for a load to pass librespot's key timeout.

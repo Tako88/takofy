@@ -1,5 +1,5 @@
-use super::super::*; // the module under test
-use super::*; // the shared test harness
+use super::super::*;
+use super::test_support::*;
 
 #[test]
 fn a_failed_track_load_is_announced_and_the_task_shuts_down() {

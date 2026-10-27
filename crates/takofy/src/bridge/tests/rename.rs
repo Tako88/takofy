@@ -1,5 +1,5 @@
-use super::super::*; // the module under test
-use super::*; // the shared test harness
+use super::super::*;
+use super::test_support::*;
 
 #[test]
 fn a_rename_reads_the_state_then_writes_and_announces_the_reply_revision() {

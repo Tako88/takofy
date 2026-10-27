@@ -1,5 +1,5 @@
-use super::super::*; // the module under test
-use super::*; // the shared test harness
+use super::super::*;
+use super::test_support::*;
 
 #[test]
 fn loading_the_liked_tracks_announces_the_whole_set() {
@@ -239,6 +239,19 @@ fn a_failed_artist_load_is_announced() {
         }
     );
     assert_eq!(shared.artists.load(Ordering::SeqCst), 1);
+}
+
+/// One track's lyrics with a single timed line, so a test names only what
+/// it reads.
+fn lyrics_of(words: &str) -> TrackLyrics {
+    TrackLyrics {
+        lines: vec![LyricLine {
+            start_ms: Some(0),
+            end_ms: Some(1_000),
+            words: words.to_owned(),
+        }],
+        synced: true,
+    }
 }
 
 #[test]

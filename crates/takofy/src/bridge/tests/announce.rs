@@ -1,5 +1,5 @@
-use super::super::*; // the module under test
-use super::*; // the shared test harness
+use super::super::*;
+use super::test_support::*;
 
 #[test]
 fn announce_sends_tracks_for_a_page() {
@@ -386,6 +386,18 @@ fn run_followed(shows: Vec<FollowedShow>) -> Update {
     })
 }
 
+/// One followed-show card, named after its URI so a test can tell two apart.
+fn followed_show(uri: &str) -> FollowedShow {
+    FollowedShow {
+        uri: uri.to_owned(),
+        name: uri.to_owned(),
+        named: true,
+        publisher: None,
+        cover: None,
+        episodes: None,
+    }
+}
+
 #[test]
 fn a_scripted_followed_list_reaches_the_window() {
     let shows = vec![
@@ -602,6 +614,19 @@ fn run_saved_albums(albums: Vec<SavedAlbum>) -> Update {
             .expect("load");
         ui_end.updates.recv().expect("saved albums")
     })
+}
+
+/// One saved-album card, named after its URI so a test can tell two apart.
+fn saved_album(uri: &str) -> SavedAlbum {
+    SavedAlbum {
+        uri: uri.to_owned(),
+        name: uri.to_owned(),
+        named: true,
+        artists: String::new(),
+        year: None,
+        cover: None,
+        tracks: None,
+    }
 }
 
 #[test]

@@ -1,5 +1,6 @@
-use super::super::*; // the module under test
-use super::*; // the shared test harness
+use super::super::playback::transport_of;
+use super::super::*;
+use super::test_support::*;
 
 #[test]
 fn transport_of_maps_every_event() {

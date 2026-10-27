@@ -1,4 +1,10 @@
-use super::*; // the shared test harness
+use super::super::signin::{authorize_update, failure_of};
+use super::super::*;
+use super::test_support::*;
+
+fn auth_source(kind: SourceErrorKind) -> AuthError {
+    AuthError::Source(SourceError { kind })
+}
 
 #[test]
 fn failure_of_maps_each_error() {

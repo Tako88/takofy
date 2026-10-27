@@ -1,5 +1,5 @@
-use super::super::*; // the module under test
-use super::*; // the shared test harness
+use super::super::*;
+use super::test_support::*;
 
 // ---- serving a landing ----
 
@@ -38,6 +38,186 @@ fn record_logs() {
 /// Whether the bridge logged exactly `line` about one of its decisions.
 fn logged(line: &str) -> bool {
     LOGGED.lock().expect("lock").iter().any(|seen| seen == line)
+}
+
+/// Scripts the answers the landing's holding checks get; the last repeats.
+fn hold_with(shared: &FakeState, script: &[bool]) {
+    *shared.holding_script.lock().expect("lock") = script.to_vec();
+}
+
+/// Reads updates until the one naming `id`, which an order sends to the
+/// window; anything else the watch sends on its own is passed over.
+fn order_update(ui_end: &UiEnd, id: RequestId) -> (Order, Instant) {
+    let started = std::time::Instant::now();
+    while started.elapsed() < Duration::from_secs(2) {
+        match ui_end.updates.recv_timeout(Duration::from_millis(100)) {
+            Ok(Update::Remote(RemoteUpdate::Order {
+                id: named,
+                order,
+                expires,
+            })) if named == id => return (order, expires),
+            Ok(_) => {}
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => panic!("the worker went away"),
+        }
+    }
+    panic!("timed out waiting for the order update");
+}
+
+/// A decoded transfer, built from the wire shape the request loop reads.
+fn transfer_instruction(current: &str, context: Option<&str>, pages: &[&str]) -> Instruction {
+    use librespot::core::dealer::protocol::{
+        Command as WireCommand, LoggingParams, Request, TransferCommand, TransferOptions,
+    };
+    use librespot::protocol::context::Context;
+    use librespot::protocol::context_page::ContextPage;
+    use librespot::protocol::context_track::ContextTrack;
+    use librespot::protocol::playback::Playback as WirePlayback;
+    use librespot::protocol::session::Session as WireSession;
+    use librespot::protocol::transfer_state::TransferState;
+    use takofy_core::instruction::instruction_of;
+
+    let page_of = |uris: &[&str]| ContextPage {
+        tracks: uris
+            .iter()
+            .map(|uri| ContextTrack {
+                uri: Some((*uri).to_owned()),
+                ..Default::default()
+            })
+            .collect(),
+        ..Default::default()
+    };
+    let playback = WirePlayback {
+        current_track: Some(ContextTrack {
+            uri: Some(current.to_owned()),
+            ..Default::default()
+        })
+        .into(),
+        position_as_of_timestamp: Some(5_000),
+        timestamp: Some(1_000_000),
+        is_paused: Some(false),
+        ..Default::default()
+    };
+    let session = WireSession {
+        context: context
+            .map(|uri| Context {
+                uri: Some(uri.to_owned()),
+                pages: vec![page_of(pages)],
+                ..Default::default()
+            })
+            .into(),
+        ..Default::default()
+    };
+    let data = TransferState {
+        playback: Some(playback).into(),
+        current_session: Some(session).into(),
+        ..Default::default()
+    };
+    let request = Request {
+        message_id: 1,
+        sent_by_device_id: "phone".to_owned(),
+        command: WireCommand::Transfer(TransferCommand {
+            data: Some(data),
+            options: TransferOptions::default(),
+            from_device_identifier: String::new(),
+            logging_params: LoggingParams {
+                interaction_ids: None,
+                device_identifier: None,
+                command_initiated_time: None,
+                page_instance_ids: None,
+                command_id: None,
+            },
+        }),
+    };
+    instruction_of(&request)
+}
+
+/// One phone-side play, decoded the way the receiver decodes it.
+///
+/// The row it starts on comes from `skip`; a play whose pages are empty is
+/// read from its context instead.
+fn play_instruction(
+    context: &str,
+    pages: &[&str],
+    skip: Option<librespot::core::dealer::protocol::SkipTo>,
+) -> Instruction {
+    use librespot::core::dealer::protocol::{
+        Command as WireCommand, LoggingParams, PlayCommand, PlayOptions, Request,
+    };
+    use librespot::protocol::context::Context;
+    use librespot::protocol::context_page::ContextPage;
+    use librespot::protocol::context_track::ContextTrack;
+    use librespot::protocol::player::PlayOrigin;
+    use takofy_core::instruction::instruction_of;
+
+    let page = ContextPage {
+        tracks: pages
+            .iter()
+            .map(|uri| ContextTrack {
+                uri: Some((*uri).to_owned()),
+                ..Default::default()
+            })
+            .collect(),
+        ..Default::default()
+    };
+    let request = Request {
+        message_id: 1,
+        sent_by_device_id: "phone".to_owned(),
+        command: WireCommand::Play(Box::new(PlayCommand {
+            context: Context {
+                uri: Some(context.to_owned()),
+                pages: if pages.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![page]
+                },
+                ..Default::default()
+            },
+            play_origin: PlayOrigin::default(),
+            options: PlayOptions {
+                skip_to: skip,
+                player_options_override: None,
+                license: None,
+                seek_to: None,
+                always_play_something: None,
+                audio_stream: None,
+                initially_paused: None,
+                prefetch_level: None,
+                system_initiated: None,
+            },
+            logging_params: LoggingParams {
+                interaction_ids: None,
+                device_identifier: None,
+                command_initiated_time: None,
+                page_instance_ids: None,
+                command_id: None,
+            },
+        })),
+    };
+    instruction_of(&request)
+}
+
+/// Reads the next `count` updates, failing instead of hanging when one the
+/// window owes never comes.
+fn expect_updates_within(ui_end: &UiEnd, count: usize) -> Vec<Update> {
+    (0..count)
+        .map(|_| {
+            ui_end
+                .updates
+                .recv_timeout(Duration::from_secs(2))
+                .expect("update")
+        })
+        .collect()
+}
+
+fn inbound(shared: &FakeState, id: u64, kind: Kind, instruction: Instruction) {
+    inbound_sender(shared)
+        .send(Inbound {
+            id: RequestId(id),
+            kind,
+            instruction,
+        })
+        .expect("inbound");
 }
 
 #[test]

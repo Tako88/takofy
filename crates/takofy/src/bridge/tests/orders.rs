@@ -1,5 +1,5 @@
-use super::super::*; // the module under test
-use super::*; // the shared test harness
+use super::super::*;
+use super::test_support::*;
 
 #[test]
 fn a_playlist_move_announces_the_reply_revision_and_sends_what_was_asked() {
