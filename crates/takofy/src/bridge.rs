@@ -1,127 +1,78 @@
-//! The rendezvous between the window and the sign-in worker.
+//! The rendezvous between the window and the worker: updates out, commands in.
 //!
-//! The window owns only what it draws. The worker owns the blocking sign-in
-//! calls, and teardown finishes it before the runtime is dropped. Sign-in work
-//! runs on plain threads rather than the runtime: a blocking call parked on a
-//! browser callback must not hold up runtime shutdown, and a detached thread
-//! dies with the process.
+//! The window owns only what it draws. The worker owns the blocking calls, and
+//! teardown finishes it before the runtime is dropped. Blocking work runs on
+//! plain threads rather than the runtime: a call parked on a browser callback
+//! must not hold up runtime shutdown, and a detached thread dies with the
+//! process.
+//!
+//! The command loop and the per-command helpers stay here; the jobs below have
+//! their own module:
+//!
+//! - [`wake`]: the waker slot, the notifier, and both ends of the loop.
+//! - [`signin`]: starts the sign-in worker and turns an auth result into an
+//!   update.
+//! - [`playback`]: starts the player, loads a track, and drains its events.
+//! - [`rebuild`]: settles a failed attempt and times the next one.
+//! - [`orders`]: hands a transport order to the window and reads its answer.
+//! - [`devices`]: keeps the device watch and re-arms it after a rebuild.
+//! - [`covers`]: answers cover requests, and the drains a session feeds.
+//! - [`errors`]: maps a session error onto the failure the window can name.
+
+mod covers;
+mod devices;
+mod errors;
+mod orders;
+mod playback;
+mod rebuild;
+mod signin;
+mod wake;
+
+pub(crate) use orders::LANDING_LOG_TARGET;
+pub(crate) use wake::{Notifier, UiEnd};
+
+use covers::{Drains, handle_fetch, reap_finished_covers};
+use devices::{Devices, adopt_watch, arm_watch};
+use errors::{
+    albums_failure, artists_failure, ends_playability, followed_failure, library_failure,
+    liked_failure, lyrics_failure, playback_failure, related_failure, search_failure,
+};
+use orders::{deliver_answer, run_ordered, serve_order};
+use playback::{ensure_drain, interrupts_attempt, play, start_load};
+use rebuild::{
+    Rebuilt, Refresh, Step, link_signal_applies, settle, silence_session, start_refresh,
+};
+use signin::{resume_update, spawn_authorize, start};
+use wake::{WakeSlot, Worker};
 
 use std::collections::{HashSet, VecDeque};
-use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, Sender, channel};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::mpsc::channel;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use takofy_core::connect::{ClusterEvent, Steer as CoreSteer, WITHDRAW_TIMEOUT};
+use takofy_core::Resolution;
+use takofy_core::connect::{ClusterEvent, Steer as CoreSteer};
 use takofy_core::credentials::{AccessToken, CredentialStore};
-use takofy_core::instruction::{Instruction, Kind};
-use takofy_core::login::{AuthError, SourceErrorKind, TokenSource, authorize, resume};
-use takofy_core::playback::{PlaybackError, PlaybackEvent};
+use takofy_core::instruction::Instruction;
+use takofy_core::login::{TokenSource, resume};
 use takofy_core::receive::Inbound;
-use takofy_core::{ORDER_MARGIN, Resolution};
-use takofy_model::{CoverUrl, Move, Order, Owner, PlaylistEntry, Removal, RequestId, Revision};
+use takofy_model::{CoverUrl, Move, Owner, PlaylistEntry, Removal, RequestId, Revision};
 use takofy_ui::message::{
     Command, DeviceUpdate, Failure, RemoteUpdate, Steer, TransportUpdate, Update,
 };
 use tokio::runtime::{Handle, Runtime};
 use tokio::sync::Semaphore;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::oneshot;
 use tokio::sync::oneshot::Receiver as StopReceiver;
 use tokio::task::JoinSet;
 
-use crate::cover::{FETCH_TIMEOUT, MAX_CONCURRENT_COVERS, fetch_cover, spawn_cover};
+use crate::cover::{FETCH_TIMEOUT, MAX_CONCURRENT_COVERS};
 use crate::devices::SentRoster;
-use crate::playhead::{Playhead, ResumePoint, Verdict};
+use crate::playhead::ResumePoint;
 use crate::recovery::{Attempt, Change, Pacing, Recovery};
 use crate::session::{Retired, SessionError, SessionHost, stop_or};
-
-/// A handle the worker can wake to ask for the next frame.
-pub(crate) trait Waker: Send + Sync + 'static {
-    fn wake(&self);
-}
-
-impl Waker for egui::Context {
-    fn wake(&self) {
-        self.request_repaint();
-    }
-}
-
-/// Holds the waker that exists only once the window does.
-///
-/// A resume result can arrive before the window is created. It waits in the
-/// update channel, and the first frame drains it.
-#[derive(Clone, Default)]
-pub(crate) struct WakeSlot(Arc<OnceLock<Arc<dyn Waker>>>);
-
-impl WakeSlot {
-    /// Installs the waker. The first install wins; a later one is ignored.
-    pub(crate) fn install(&self, waker: Arc<dyn Waker>) {
-        let _ = self.0.set(waker);
-    }
-
-    fn wake(&self) {
-        if let Some(waker) = self.0.get() {
-            waker.wake();
-        }
-    }
-}
-
-/// Queues an update, then wakes the window.
-#[derive(Clone)]
-pub(crate) struct Notifier {
-    tx: Sender<Update>,
-    slot: WakeSlot,
-}
-
-impl Notifier {
-    /// Queues an update, then wakes the window.
-    ///
-    /// `false` means the window is gone and the update reached nobody, which a
-    /// caller that owes the phone an answer has to know.
-    pub(crate) fn send(&self, update: Update) -> bool {
-        // The update must be readable before the waker runs: a wake that beats
-        // the queue into the channel would be spent on a frame with nothing to
-        // drain.
-        if self.tx.send(update).is_err() {
-            return false;
-        }
-        self.slot.wake();
-        true
-    }
-}
-
-/// The window's end: updates in, commands out.
-pub(crate) struct UiEnd {
-    pub updates: Receiver<Update>,
-    pub commands: UnboundedSender<Command>,
-}
-
-/// The worker's end: a stop signal and the task that owns the command loop.
-pub(crate) struct Worker {
-    stop: oneshot::Sender<()>,
-    task: tokio::task::JoinHandle<()>,
-}
-
-impl Worker {
-    /// Signals the command loop and waits for it to end.
-    pub(crate) async fn finish(self) {
-        let _ = self.stop.send(());
-        if let Err(error) = self.task.await {
-            // A panic message can be third-party text. The default hook has
-            // already printed it, so only the kind is worth logging.
-            let reason = if error.is_panic() {
-                "panicked"
-            } else if error.is_cancelled() {
-                "cancelled"
-            } else {
-                "ended abnormally"
-            };
-            log::error!("session task {reason}");
-        }
-    }
-}
 
 /// What the task received from the select, once the borrow on `stop` is gone.
 enum Event {
@@ -140,89 +91,6 @@ enum Event {
     LinkSignal(Option<u64>),
 }
 
-/// How one rebuild attempt ended.
-enum Rebuilt {
-    /// The session is back and the track reloaded.
-    Done,
-    /// A step failed, and the schedule decides when to try again.
-    Failed,
-    /// A command arrived first, and waits in the deferred queue.
-    Interrupted,
-    /// The window closed.
-    Stopped,
-}
-
-/// Whether a host call finished or was abandoned because the window closed.
-enum Step {
-    Done,
-    Stopped,
-}
-
-impl Step {
-    fn stopped(&self) -> bool {
-        matches!(self, Self::Stopped)
-    }
-}
-
-/// State the device watch keeps across commands: whether it was started, the
-/// request stream it handed over, the roster the window was told, and whether
-/// the pump has ended.
-struct Devices {
-    watching: bool,
-    /// Whether the watch was running when its session was retired, so a rebuilt
-    /// one starts it again.
-    rewatch: bool,
-    inbound: Option<UnboundedReceiver<Inbound>>,
-    sent: SentRoster,
-    dead: Arc<AtomicBool>,
-}
-
-impl Default for Devices {
-    fn default() -> Self {
-        Self {
-            watching: false,
-            rewatch: false,
-            inbound: None,
-            sent: SentRoster::default(),
-            dead: Arc::new(AtomicBool::new(false)),
-        }
-    }
-}
-
-impl Devices {
-    /// Stops the watch this session owned: its request stream, and the
-    /// end-of-stream notice its drain would otherwise send.
-    ///
-    /// A watch that was already due to be restarted stays due, so a session
-    /// retired twice is still watched again by the rebuild.
-    fn retire(&mut self) {
-        self.rewatch |= self.watching;
-        self.watching = false;
-        self.inbound = None;
-        self.dead = Arc::new(AtomicBool::new(false));
-    }
-}
-
-/// What the drains need to know about the session that feeds them.
-#[derive(Clone)]
-struct Drains {
-    /// Set when a session is retired, so a drain from the old one goes quiet
-    /// even as its streams end.
-    retired: Arc<AtomicBool>,
-    playhead: Playhead,
-    signal: UnboundedSender<u64>,
-}
-
-impl Drains {
-    fn new(signal: UnboundedSender<u64>) -> Self {
-        Self {
-            retired: Arc::new(AtomicBool::new(false)),
-            playhead: Playhead::new(),
-            signal,
-        }
-    }
-}
-
 /// Waits for the account's next request, forgetting a stream that has ended.
 ///
 /// A stream that closed leaves no receiver behind, so this arm never resolves
@@ -238,59 +106,6 @@ async fn next_inbound(slot: &mut Option<UnboundedReceiver<Inbound>>) -> Option<I
         *slot = None;
     }
     inbound
-}
-
-/// Removes finished fetch tasks so their cells do not accumulate over a
-/// session, and logs a panic that would otherwise go unobserved.
-fn reap_finished_covers(tasks: &mut JoinSet<()>) {
-    while let Some(joined) = tasks.try_join_next() {
-        if let Err(error) = joined {
-            log::warn!("cover task ended: {error}");
-        }
-    }
-}
-
-/// Answers one cover request. Every request ends in exactly one update: the
-/// fetch is spawned, or a failure is sent straight back, so the window's
-/// in-flight entry always resolves.
-fn handle_fetch(
-    connected: bool,
-    client: Option<&reqwest::Client>,
-    tasks: &mut JoinSet<()>,
-    permits: Arc<Semaphore>,
-    in_flight: Arc<Mutex<HashSet<CoverUrl>>>,
-    url: CoverUrl,
-    notifier: Notifier,
-) {
-    let (true, Some(client)) = (connected, client) else {
-        // A signed-out window has no cover to want, and a client that failed
-        // to build can never serve one; both resolve the request now.
-        notifier.send(Update::CoverFailed { url });
-        return;
-    };
-    let client = client.clone();
-    let requested = url.clone();
-    let fetch = async move { fetch_cover(&client, &requested).await };
-    spawn_cover(
-        tasks,
-        permits,
-        in_flight,
-        url,
-        fetch,
-        |bytes| crate::decode::decode(&bytes),
-        notifier,
-    );
-}
-
-/// Starts the sign-in worker and kicks off the resume attempt immediately, so
-/// it overlaps window creation.
-pub(crate) fn start<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
-    handle: &Handle,
-    host: H,
-    store: Arc<dyn CredentialStore>,
-    source: Arc<S>,
-) -> (UiEnd, WakeSlot, Worker) {
-    start_with(handle, host, store, source, WITHDRAW_TIMEOUT, Pacing::LIVE)
 }
 
 /// Starts the worker with an explicit outer withdraw bound and rebuild
@@ -966,24 +781,6 @@ fn start_with<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
     )
 }
 
-/// Runs the authorize flow off the runtime and hands the task its token.
-fn spawn_authorize<S: TokenSource + Send + Sync + 'static>(
-    notifier: Notifier,
-    tokens: UnboundedSender<AccessToken>,
-    store: Arc<dyn CredentialStore>,
-    source: Arc<S>,
-) {
-    std::thread::spawn(move || {
-        let result = authorize(store.as_ref(), source.as_ref());
-        if let Ok(token) = &result
-            && tokens.send(token.clone()).is_err()
-        {
-            return;
-        }
-        send_update(&notifier, authorize_update(result));
-    });
-}
-
 /// Connects if needed and lists the rootlist, announcing the outcome.
 ///
 /// `Stopped` means the window closed while the call was in flight, so the
@@ -1263,13 +1060,6 @@ async fn load_related<H: SessionHost>(
             Step::Done
         }
     }
-}
-
-/// The failure the window shows for a likeness read: its kind reaches the log,
-/// nothing else does.
-fn related_failure(error: &SessionError) -> Failure {
-    log::warn!("the likeness read failed: {}", error.kind());
-    Failure::Related
 }
 
 async fn load_artist<H: SessionHost>(
@@ -1831,39 +1621,6 @@ async fn create_playlist<H: SessionHost>(
     Step::Done
 }
 
-/// Whether this failure means the device can no longer play at all.
-///
-/// One track that will not play is not that: the player is up and the next one
-/// may play, so the announced stage must stay where it was.
-fn ends_playability(error: &SessionError) -> bool {
-    matches!(
-        error,
-        SessionError::NotConnected | SessionError::Playback(PlaybackError::NoAudioDevice)
-    )
-}
-
-/// Starts the player if needed and hands the one drain thread its events.
-fn play<H: SessionHost>(host: &mut H, notifier: &Notifier, drains: &Drains, uri: &str) {
-    drains.playhead.loaded(uri, 0, true, Instant::now());
-    match host.play(uri) {
-        Ok(()) => {
-            // The device can be picked from now on, so the account is told so
-            // before the player's first event arrives.
-            host.set_playable(true);
-            ensure_drain(host, notifier, drains);
-        }
-        Err(error) => {
-            drains.playhead.clear();
-            if ends_playability(&error) {
-                host.set_playable(false);
-            }
-            notifier.send(Update::Transport(TransportUpdate::Failed(
-                playback_failure(&error),
-            )));
-        }
-    }
-}
-
 /// Plays `uri` now, or drops the link first when the session is dead or being
 /// rebuilt.
 ///
@@ -1912,90 +1669,11 @@ async fn play_now<H: SessionHost>(
     Step::Done
 }
 
-/// Loads one track, recording it for the playhead and settling a paused load's
-/// transport, which librespot may not announce.
-fn start_load<H: SessionHost>(
-    host: &mut H,
-    playhead: &Playhead,
-    notifier: &Notifier,
-    uri: &str,
-    position_ms: u32,
-    play: bool,
-) -> Result<(), SessionError> {
-    playhead.loaded(uri, position_ms, play, Instant::now());
-    host.load(uri, position_ms, play)?;
-    if !play {
-        notifier.send(Update::Transport(TransportUpdate::Position {
-            position_ms,
-            paused: true,
-        }));
-    }
-    Ok(())
-}
-
-/// Hands the player's events to the one drain thread, if a player was started
-/// since the last call.
-///
-/// A transfer normally follows a local play, so this is usually a no-op. A
-/// stale picker row can still send one to a window that never played, and then
-/// preparing the player would leave its events with nobody to read them.
-fn ensure_drain<H: SessionHost>(host: &mut H, notifier: &Notifier, drains: &Drains) {
-    if let Some(events) = host.take_events() {
-        spawn_drain(notifier.clone(), events, drains);
-    }
-}
-
 /// Waits for a deadline that may not exist; an idle schedule never wakes.
 async fn sleep_until(at: Option<Instant>) {
     match at {
         Some(at) => tokio::time::sleep_until(tokio::time::Instant::from_std(at)).await,
         None => std::future::pending().await,
-    }
-}
-
-/// Whether a drain's signal is about the current session and no rebuild is
-/// already underway.
-fn link_signal_applies(generation: u64, playhead: &Playhead, recovery: &Recovery) -> bool {
-    generation == playhead.generation() && !recovery.is_active()
-}
-
-/// Applies one attempt's outcome to the schedule, so every exit leaves the next
-/// attempt either cleared or moved forward.
-fn settle(recovery: &mut Recovery, outcome: &Rebuilt, now: Instant) -> Option<Attempt> {
-    match outcome {
-        Rebuilt::Done => {
-            recovery.recovered();
-            None
-        }
-        Rebuilt::Failed => Some(recovery.failed(now)),
-        Rebuilt::Interrupted => {
-            recovery.interrupted(now);
-            None
-        }
-        Rebuilt::Stopped => None,
-    }
-}
-
-/// Silences what a session fed before it is replaced: its drains, its device
-/// watch, and the flag that says an engine is up.
-fn silence_session(devices: &mut Devices, drains: &Drains, engine_up: &mut bool) {
-    // The old streams end with the session; a retired drain must not announce
-    // that end as a lost device.
-    drains.retired.store(true, Ordering::SeqCst);
-    devices.retire();
-    *engine_up = false;
-}
-
-/// Says which way one order's answer landed, in the same words from the loop
-/// and from a rebuild that answers it while it runs.
-fn deliver_answer(answered: bool) {
-    if answered {
-        log::info!(target: LANDING_LOG_TARGET, "answer delivered");
-    } else {
-        log::info!(
-            target: LANDING_LOG_TARGET,
-            "answer found the entry gone"
-        );
     }
 }
 
@@ -2035,20 +1713,6 @@ async fn lose_link<H: SessionHost>(
         *reconnecting = true;
     }
     Step::Done
-}
-
-/// Whether a command has a say in where a rebuild resumes, or signs in again,
-/// so it is handled at once instead of after the attempt.
-fn interrupts_attempt(command: &Command) -> bool {
-    matches!(
-        command,
-        Command::Play { .. }
-            | Command::Pause
-            | Command::Resume
-            | Command::Seek { .. }
-            | Command::Stop
-            | Command::Authorize
-    )
 }
 
 /// One bounded attempt to bring the session and the player back, raced against
@@ -2181,29 +1845,6 @@ async fn rebuild_attempt<H: SessionHost, S: TokenSource + Send + Sync + 'static>
     }
 }
 
-/// The one token refresh that may be in flight.
-type Refresh = oneshot::Receiver<Option<AccessToken>>;
-
-/// Starts one refresh on a detached thread, so a blocking exchange cannot hold
-/// up the runtime's drop.
-fn start_refresh<S: TokenSource + Send + Sync + 'static>(
-    store: &Arc<dyn CredentialStore>,
-    source: &Arc<S>,
-) -> Refresh {
-    let (tx, rx) = oneshot::channel();
-    let store = Arc::clone(store);
-    let source = Arc::clone(source);
-    std::thread::spawn(move || {
-        let answer = match resume(store.as_ref(), source.as_ref()) {
-            Ok(Some(token)) => Some(token),
-            // A revoked sign-in and an offline machine look the same here.
-            Ok(None) | Err(_) => None,
-        };
-        let _ = tx.send(answer);
-    });
-    rx
-}
-
 /// Awaits the refresh the task already has in flight, or starts the one it does
 /// not.
 ///
@@ -2232,70 +1873,11 @@ async fn refresh_token<S: TokenSource + Send + Sync + 'static>(
     }
 }
 
-/// Hands one transport order to the window, which applies it and answers.
-///
-/// The entry stays pending here: the window's answer is the phone's, and until
-/// it arrives the registry's own budget is what ends the order. Nothing is
-/// applied without an answer, so a phone that hears nothing is never obeyed in
-/// secret.
-fn serve_order<H: SessionHost>(
-    host: &H,
-    notifier: &Notifier,
-    id: RequestId,
-    kind: Kind,
-    order: Order,
-) -> Step {
-    if !host.holding() {
-        log::info!(
-            target: LANDING_LOG_TARGET,
-            "order refused, nothing is held: {}",
-            kind.word()
-        );
-        host.refuse(id);
-        return Step::Done;
-    }
-    // A deadline is what a pending entry has: one the budget already answered is
-    // gone, and the phone has been told it failed.
-    let Some(deadline) = host.expires(id) else {
-        log::info!(
-            target: LANDING_LOG_TARGET,
-            "order refused, entry gone: {}",
-            kind.word()
-        );
-        host.refuse(id);
-        return Step::Done;
-    };
-    // The window drops an order it receives within the margin of the budget:
-    // the effect could not be answered before the phone is told it failed.
-    let expires = deadline.checked_sub(ORDER_MARGIN).unwrap_or(deadline);
-    if !notifier.send(Update::Remote(RemoteUpdate::Order { id, order, expires })) {
-        // A window that has closed cannot carry the order out, and leaving the
-        // phone to wait out its budget costs it the whole of it.
-        log::info!(
-            target: LANDING_LOG_TARGET,
-            "order refused, no window: {}",
-            kind.word()
-        );
-        host.refuse(id);
-        return Step::Done;
-    }
-    log::info!(
-        target: LANDING_LOG_TARGET,
-        "order forwarded: {}",
-        kind.word()
-    );
-    Step::Done
-}
-
 /// Serves one hand-over or one phone-side play: prepare, read what is missing,
 /// take the sound, name the track and load it.
 ///
 /// Every refusal is answered before anything is put, so a transfer or a play
 /// this window cannot carry out leaves the phone's own playback untouched.
-/// The hand-over path's own log target. It carries decisions, never a URI: which
-/// arm refused, whether the player was ready, and what the put answered.
-pub(crate) const LANDING_LOG_TARGET: &str = "takofy::bridge";
-
 async fn serve_landing<H: SessionHost>(
     host: &mut H,
     stop: &mut StopReceiver<()>,
@@ -2493,69 +2075,6 @@ async fn watch_devices<H: SessionHost>(
         Some(result) => {
             adopt_watch(host, notifier, devices, drains, result);
             Step::Done
-        }
-    }
-}
-
-/// Readies the player and marks the watch as running, before the dealer call so
-/// a racing request cannot start it twice.
-fn arm_watch<H: SessionHost>(host: &mut H, devices: &mut Devices) {
-    // The audio path is readied before the device is announced, so the account
-    // is told this window can play before anything here has played. Without it
-    // the phone can only pick this device after a local play, which makes a
-    // freshly opened window the one device it cannot choose. A machine with no
-    // audio device is the honest exception: it announces a controller, which the
-    // phone lists and greys out.
-    match host.prepare_player() {
-        Ok(()) => host.set_playable(true),
-        Err(error) => {
-            if ends_playability(&error) {
-                host.set_playable(false);
-            }
-            log::warn!("device prepare failed: {}", error.kind());
-        }
-    }
-    devices.watching = true;
-    devices.dead.store(false, Ordering::SeqCst);
-}
-
-/// Adopts one watch's answer: its streams, or the failure the window is told.
-fn adopt_watch<H: SessionHost>(
-    host: &mut H,
-    notifier: &Notifier,
-    devices: &mut Devices,
-    drains: &Drains,
-    result: Result<(), SessionError>,
-) {
-    match result {
-        Err(error) => {
-            log_device_error(&error);
-            devices.watching = false;
-            let failure = if error.devices_terminal() {
-                Failure::DevicesOff
-            } else {
-                Failure::Devices
-            };
-            notifier.send(device_failure(failure));
-        }
-        Ok(()) => {
-            devices.rewatch = false;
-            if let Some(events) = host.take_devices() {
-                spawn_device_drain(
-                    notifier.clone(),
-                    events,
-                    devices.sent.clone(),
-                    Arc::clone(&devices.dead),
-                    Arc::clone(&drains.retired),
-                );
-            } else {
-                // No stream to read, but the device was announced: keep
-                // `watching` so the exit still withdraws it.
-                notifier.send(device_failure(Failure::DevicesOff));
-            }
-            // Taken beside the events: the loop answers requests through it,
-            // and a stream with nobody to read it would refuse them untold.
-            devices.inbound = host.take_inbound();
         }
     }
 }
@@ -2781,126 +2300,6 @@ fn spawn_device_drain(
     });
 }
 
-/// Drains playback events onto the update channel for as long as the player
-/// lives. A plain thread needs no runtime, so `blocking_recv` cannot delay the
-/// runtime's drop.
-///
-/// A failure the playhead reads as the link is withheld, and its generation is
-/// signalled instead: the command task rebuilds, and the reload decides what to
-/// tell the window.
-fn spawn_drain(notifier: Notifier, mut events: UnboundedReceiver<PlaybackEvent>, drains: &Drains) {
-    let retired = Arc::clone(&drains.retired);
-    let playhead = drains.playhead.clone();
-    let signal = drains.signal.clone();
-    let generation = playhead.generation();
-    std::thread::spawn(move || {
-        while let Some(event) = events.blocking_recv() {
-            if retired.load(Ordering::SeqCst) {
-                return;
-            }
-            let now = Instant::now();
-            if event == PlaybackEvent::Unavailable
-                && playhead.judge_unavailable(generation, now) != Verdict::Forward
-            {
-                let _ = signal.send(generation);
-                continue;
-            }
-            playhead.observe(generation, &event, now);
-            notifier.send(transport_of(&event));
-        }
-    });
-}
-
-/// Turns a playback event into the window's vocabulary. Total over the event
-/// set, so a new event is a build failure here.
-pub(crate) fn transport_of(event: &PlaybackEvent) -> Update {
-    Update::Transport(match event {
-        PlaybackEvent::Loading => TransportUpdate::Loading,
-        PlaybackEvent::Playing { position_ms } => TransportUpdate::Position {
-            position_ms: *position_ms,
-            paused: false,
-        },
-        PlaybackEvent::Paused { position_ms } => TransportUpdate::Position {
-            position_ms: *position_ms,
-            paused: true,
-        },
-        PlaybackEvent::Ended => TransportUpdate::Ended,
-        PlaybackEvent::Unavailable => TransportUpdate::Unavailable,
-        PlaybackEvent::Stopped => TransportUpdate::Stopped,
-        PlaybackEvent::Duration { duration_ms } => TransportUpdate::Duration {
-            duration_ms: *duration_ms,
-        },
-        PlaybackEvent::Seeked { position_ms } => TransportUpdate::Seeked {
-            position_ms: *position_ms,
-        },
-    })
-}
-
-/// A playback failure the bar can name, or `Other` when it cannot. The reason
-/// is for the log, never the window.
-pub(crate) fn playback_failure(error: &SessionError) -> Failure {
-    log::warn!("playback failure: {}", error.kind());
-    match error {
-        SessionError::Playback(PlaybackError::NoAudioDevice) => Failure::NoAudioDevice,
-        SessionError::LinkLost => Failure::Reconnect,
-        _ => Failure::Other,
-    }
-}
-
-/// Every session-side failure reads the same to the window; the reason is for
-/// the log.
-pub(crate) fn library_failure(error: &SessionError) -> Failure {
-    log::warn!("session failure: {}", error.kind());
-    Failure::Load
-}
-
-/// The followed-shows list has its own failure: the playlists beside it draw
-/// fine, so the library did not fail. The reason is for the log, never the
-/// window.
-pub(crate) fn followed_failure(error: &SessionError) -> Failure {
-    log::warn!("session failure: {}", error.kind());
-    Failure::Followed
-}
-
-/// The followed-artists list has its own failure: the playlists beside it draw
-/// fine, so the library did not fail. The reason is for the log, never the
-/// window.
-pub(crate) fn artists_failure(error: &SessionError) -> Failure {
-    log::warn!("session failure: {}", error.kind());
-    Failure::FollowedArtists
-}
-
-/// The saved-albums list has its own failure: the playlists beside it draw
-/// fine, so the library did not fail. The reason is for the log, never the
-/// window.
-pub(crate) fn albums_failure(error: &SessionError) -> Failure {
-    log::warn!("session failure: {}", error.kind());
-    Failure::SavedAlbums
-}
-
-/// A liked-songs read has no surface of its own; its failure is the library's
-/// load. The reason is for the log, never the window.
-pub(crate) fn liked_failure(error: &SessionError) -> Failure {
-    log::warn!("session failure: {}", error.kind());
-    Failure::Load
-}
-
-/// The lyrics pane has its own failure: the page around it may draw fine, and
-/// its message names only the lyrics. The reason is for the log, never the
-/// window.
-pub(crate) fn lyrics_failure(error: &SessionError) -> Failure {
-    log::warn!("session failure: {}", error.kind());
-    Failure::Lyrics
-}
-
-/// A search has its own failure: the menu and the page name only the search,
-/// and the field stays editable so typing retries. The reason is for the log,
-/// never the window.
-pub(crate) fn search_failure(error: &SessionError) -> Failure {
-    log::warn!("search failure: {}", error.kind());
-    Failure::Search
-}
-
 /// Logs the failure variant, then hands the update to the window. The variant
 /// is a fixed name; the underlying error can embed a response body and is
 /// never formatted.
@@ -2909,24 +2308,6 @@ fn send_update(notifier: &Notifier, update: Update) {
         log::warn!("sign-in failed: {failure:?}");
     }
     notifier.send(update);
-}
-
-/// Runs the window with the runtime entered, then teardown, then drops the
-/// runtime.
-///
-/// `window` must return. eframe's `run_and_return` option is what makes it do
-/// so, and the runtime is dropped only after teardown has awaited the worker.
-pub(crate) fn run_ordered<R, F: Future<Output = ()>>(
-    runtime: Runtime,
-    window: impl FnOnce() -> R,
-    teardown: impl FnOnce() -> F,
-) -> R {
-    let entered = runtime.enter();
-    let result = window();
-    drop(entered);
-    runtime.block_on(teardown());
-    drop(runtime);
-    result
 }
 
 /// Builds the bridge, runs the window, and finishes the worker before the
@@ -2949,34 +2330,6 @@ where
     )
 }
 
-/// Collapses an auth failure to a variant that carries no detail, because some
-/// source errors embed a response body.
-pub(crate) fn failure_of(error: &AuthError) -> Failure {
-    match error {
-        AuthError::Store(_) => Failure::Keychain,
-        AuthError::MissingRefreshToken => Failure::NoRefreshToken,
-        AuthError::Source(source) if source.kind == SourceErrorKind::PortBusy => Failure::PortBusy,
-        AuthError::Source(_) => Failure::Other,
-    }
-}
-
-/// Turns a resume result into an update. The token is consumed, never shown.
-pub(crate) fn resume_update(result: Result<Option<AccessToken>, AuthError>) -> Update {
-    match result {
-        Ok(Some(_)) => Update::SignedIn,
-        Ok(None) => Update::NeedsAuthorization,
-        Err(error) => Update::SignInFailed(failure_of(&error)),
-    }
-}
-
-/// Turns an authorize result into an update. The token is consumed, never shown.
-pub(crate) fn authorize_update(result: Result<AccessToken, AuthError>) -> Update {
-    match result {
-        Ok(_) => Update::SignedIn,
-        Err(error) => Update::SignInFailed(failure_of(&error)),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -2984,22 +2337,29 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
-    use takofy_core::connect::{ClusterView, ConnectError};
+    use takofy_core::connect::{ClusterView, ConnectError, WITHDRAW_TIMEOUT};
     use takofy_core::credentials::{AccessToken, CredentialStore, RefreshToken, StoreError};
     use takofy_core::engine::{EngineError, RootlistRead};
     use takofy_core::instruction::{Instruction, Kind, Refusal};
-    use takofy_core::login::{SourceError, SourceErrorKind, TokenSet, TokenSource};
-    use takofy_core::{Resolution, TransferPlan};
+    use takofy_core::login::{AuthError, SourceError, SourceErrorKind, TokenSet, TokenSource};
+    use takofy_core::playback::{PlaybackError, PlaybackEvent};
+    use takofy_core::{ORDER_MARGIN, Resolution, TransferPlan};
     use takofy_model::{
         AlbumDetail, ArtistDetail, ArtistPortrait, CoverImage, CoverSet, CoverUrl, Device,
-        DeviceKind, Episode, FollowedArtist, FollowedShow, Landing, LyricLine, Move,
+        DeviceKind, Episode, FollowedArtist, FollowedShow, Landing, LyricLine, Move, Order,
         PlaylistAccess, PlaylistCover, PlaylistEntry, RemotePlayback, RemoteState, Removal, Report,
         RequestId, SavedAlbum, Show, ShowDetail, Status, TrackEntry, TrackLyrics,
     };
     use takofy_ui::signin::failure_message;
     use tokio::runtime::Runtime;
+    use tokio::sync::mpsc::UnboundedSender;
 
+    use super::playback::transport_of;
+    use super::signin::{authorize_update, failure_of};
+    use super::wake::Waker;
     use super::*;
+    use crate::cover::spawn_cover;
+    use crate::playhead::Playhead;
     use crate::session::{ArtistPage, Retired, SessionError, SessionHost, TrackPage};
 
     fn runtime() -> Runtime {
