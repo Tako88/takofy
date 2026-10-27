@@ -231,7 +231,8 @@ impl Transport {
     /// whether a pause would act on it.
     ///
     /// One decision, because two callers draw the same row: the search menu's
-    /// glyph promises what Enter will do (R10/R11), and the shell performs it.
+    /// glyph promises what Enter will do — play, or pause on the loaded track —
+    /// and the shell performs it.
     /// A glyph that promised a pause the action turns into a restart is what
     /// this rules out.
     ///

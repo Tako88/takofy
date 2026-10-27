@@ -1578,7 +1578,7 @@ mod tests {
         logic_frame(&mut app);
         assert!(
             received.try_recv().is_err(),
-            "an empty query fetches nothing (R6)"
+            "an empty query fetches nothing: the first character starts a read"
         );
     }
 

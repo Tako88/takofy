@@ -40,6 +40,14 @@ impl TrackFilter {
     pub fn clear(&mut self) {
         self.text.clear();
     }
+
+    /// Drops the query and hands back the text it held.
+    ///
+    /// A write that empties the page keeps the words, so a failed one can put
+    /// them back beside the rows it restores.
+    pub fn take(&mut self) -> String {
+        std::mem::take(&mut self.text)
+    }
 }
 
 /// The ascending true indices whose title, artists or album contain `needle`.
@@ -153,6 +161,16 @@ mod tests {
 
         let text = filter.edit("spotify:playlist:b");
         assert!(text.is_empty(), "another playlist starts unfiltered");
+    }
+
+    #[test]
+    fn take_hands_back_the_text_it_dropped() {
+        let mut filter = TrackFilter::default();
+        filter.edit("spotify:playlist:a").push_str("  midnight  ");
+
+        assert_eq!(filter.take(), "  midnight  ");
+        assert_eq!(filter.needle("spotify:playlist:a"), None);
+        assert_eq!(filter.take(), "", "nothing left to hand back");
     }
 
     #[test]

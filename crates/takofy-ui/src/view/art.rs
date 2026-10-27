@@ -226,7 +226,7 @@ mod tests {
         let ctx = egui::Context::default();
         let texture = ctx.load_texture(
             "a cover",
-            egui::ColorImage::filled([4, 4], Color32::WHITE),
+            egui::ColorImage::filled([4, 4], art::TINT),
             art::TEXTURE,
         );
         // A load is queued and only reaches the texture manager in a pass.
@@ -291,7 +291,7 @@ mod tests {
         ctx.set_pixels_per_point(pixels_per_point);
         let texture = ctx.load_texture(
             "a cover on an odd box",
-            egui::ColorImage::filled([4, 4], Color32::WHITE),
+            egui::ColorImage::filled([4, 4], art::TINT),
             art::TEXTURE,
         );
         // The first pass applies the scale and reaches the texture manager.
@@ -319,7 +319,7 @@ mod tests {
         let ctx = egui::Context::default();
         let texture = ctx.load_texture(
             "a wide cover",
-            egui::ColorImage::filled([64, 36], Color32::WHITE),
+            egui::ColorImage::filled([64, 36], art::TINT),
             art::TEXTURE,
         );
         let mut output = ctx.run_ui(Default::default(), |_| {});

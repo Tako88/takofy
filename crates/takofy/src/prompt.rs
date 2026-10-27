@@ -40,21 +40,6 @@ pub(crate) fn format_track_line(index: usize, track: &TrackEntry) -> String {
     )
 }
 
-/// Reads one trimmed line from stdin, or `None` at EOF or on error.
-pub(crate) async fn read_line() -> Option<String> {
-    tokio::task::spawn_blocking(|| {
-        let mut line = String::new();
-        match std::io::stdin().read_line(&mut line) {
-            Ok(0) => None,
-            Ok(_) => Some(line.trim().to_owned()),
-            Err(_) => None,
-        }
-    })
-    .await
-    .ok()
-    .flatten()
-}
-
 #[cfg(test)]
 mod tests {
     use super::{Choice, format_playlist_line, format_track_line, parse_choice};

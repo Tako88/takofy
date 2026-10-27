@@ -14,7 +14,7 @@ use takofy_core::playback::Volume;
 use takofy_core::{Outcome, PlaybackError, PlaybackEvent, TrackPages, drive};
 use takofy_model::TrackEntry;
 
-use crate::prompt::{Choice, format_playlist_line, format_track_line, parse_choice, read_line};
+use crate::prompt::{Choice, format_playlist_line, format_track_line, parse_choice};
 
 /// Drives the terminal, against `context` when one was given and against the
 /// rootlist otherwise.
@@ -168,4 +168,19 @@ async fn prompt_playlist(count: usize) -> Option<usize> {
             Choice::Next | Choice::Invalid => {}
         }
     }
+}
+
+/// Reads one trimmed line from stdin, or `None` at EOF or on error.
+async fn read_line() -> Option<String> {
+    tokio::task::spawn_blocking(|| {
+        let mut line = String::new();
+        match std::io::stdin().read_line(&mut line) {
+            Ok(0) => None,
+            Ok(_) => Some(line.trim().to_owned()),
+            Err(_) => None,
+        }
+    })
+    .await
+    .ok()
+    .flatten()
 }

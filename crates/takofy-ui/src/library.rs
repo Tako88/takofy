@@ -3,16 +3,22 @@
 //! The library is a reducer over worker updates: it decides what is on screen
 //! and which load a reply belongs to, and it hands the view a command when the
 //! user asks for one.
+//!
+//! This module keeps the library's state, the sidebar write ledger, the
+//! permission checks, and the create, move, remove and rename methods. The
+//! rest sits in the child modules: `nav` walks the page stack, `requests`
+//! sends the reads, `saved` tracks what the library holds, `shelf_play` starts
+//! a play from a shelf, and `writes` holds the writes in flight.
 
 use std::collections::HashMap;
 use std::ops::Range;
 
 use takofy_model::{
     AlbumDetail, ArtistDetail, CoverOrigin, CoverSet, FollowedArtist, FollowedShow, PlaylistAccess,
-    PlaylistCover, PlaylistEntry, Revision, SavedAlbum, ShowDetail, TrackEntry,
+    PlaylistCover, PlaylistEntry, SavedAlbum, ShowDetail, TrackEntry,
 };
 
-use crate::cover_refresh::{CoverRefresh, first_track_uri};
+use crate::cover_refresh::CoverRefresh;
 use crate::discography::Filter;
 use crate::follow::Follow;
 use crate::library_filter::{RootFilter, RootKind};
@@ -31,6 +37,15 @@ use crate::search::Search;
 use crate::show_order::{ShowOrder, default_order};
 use crate::sidebar_kind::{SidebarFilter, SidebarKind};
 use crate::track_filter::TrackFilter;
+
+mod nav;
+mod requests;
+mod saved;
+mod shelf_play;
+mod writes;
+
+use shelf_play::PendingPlay;
+pub use shelf_play::Start;
 
 /// How the library page draws its saved things.
 ///
@@ -116,38 +131,6 @@ pub struct ArtistPage<'a> {
     pub related: &'a Load<Vec<FollowedArtist>>,
     /// The liked-songs set, so a row's menu knows its library row.
     pub likes: &'a Likes,
-}
-
-/// A play pressed on a card or a row of the library root.
-///
-/// The rows are held here rather than in `tracks`, which belongs to the page: the
-/// press is not a navigation, and a page the user opens while the rows are in
-/// flight must keep its own list.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PendingPlay {
-    uri: String,
-    kind: SidebarKind,
-    stage: Stage,
-}
-
-/// How far a pending play has got.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Stage {
-    /// Pressed, and the rows have not been asked for yet.
-    Wanted,
-    /// The rows are in flight.
-    Asked,
-    /// The rows landed and wait for a frame that can start them.
-    Landed(Vec<TrackEntry>),
-}
-
-/// What a landed shelf play hands the queue: the object's own rows.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Start {
-    /// The page the rows came from, so a later move can tell its target what to
-    /// play.
-    pub origin: String,
-    pub tracks: Vec<TrackEntry>,
 }
 
 /// The sidebar's playlists and the tracks the current page has loaded.
@@ -846,6 +829,7 @@ impl Library {
                             notice: None,
                         });
                     }
+                    self.clear_filter_when_empty();
                 }
             }
             Update::TracksFailed { playlist, failure } => {
@@ -857,6 +841,9 @@ impl Library {
                 self.cover_refresh.answer(playlist);
                 if self.wanted.as_deref() == Some(playlist.as_str()) {
                     self.tracks = Load::Failed(*failure);
+                    // A failed page draws no rows and no field, so the query
+                    // it carried would come back to a list nobody filtered.
+                    self.track_filter.clear();
                 }
             }
             // The reply ends the write and names the revision the next one uses.
@@ -908,6 +895,11 @@ impl Library {
                     tracks.tracks = pending.before;
                     tracks.notice = Some(*failure);
                 }
+                // The rows are back, so a query that left with the last one
+                // comes back with them.
+                if let Some(query) = pending.query {
+                    self.track_filter.edit(playlist).push_str(&query);
+                }
             }
             // A reply lands only while its own load is in flight: a stale one is
             // discarded, and a second reply cannot replace the first. A shelf
@@ -939,6 +931,11 @@ impl Library {
                 {
                     self.releases.retain(&detail.releases);
                     self.artist = Load::Ready(detail.clone());
+                    // The chip row is drawn only beside releases, so a query
+                    // over an empty discography is one nobody can see or clear.
+                    if detail.releases.is_empty() {
+                        self.filter.clear_query();
+                    }
                 }
             }
             Update::ArtistFailed { artist, failure } => {
@@ -946,6 +943,8 @@ impl Library {
                     && matches!(self.artist, Load::Loading)
                 {
                     self.artist = Load::Failed(*failure);
+                    // A failed page draws no chip row to hold the query either.
+                    self.filter.clear_query();
                 }
             }
             // The show's reply is guarded exactly as the album's is. The show
@@ -1119,505 +1118,6 @@ impl Library {
         {
             self.play = None;
         }
-    }
-
-    /// Whether pressing play on a library item of `kind` starts that object.
-    ///
-    /// A show needs episode ordering and an artist needs top-tracks semantics,
-    /// and both have their own loaders, so neither draws a play.
-    pub fn playable(kind: SidebarKind) -> bool {
-        matches!(kind, SidebarKind::Playlists | SidebarKind::Albums)
-    }
-
-    /// Holds a play pressed on the shelf until its rows can start the queue.
-    ///
-    /// Rows the window already holds are taken as they stand, so a press on the
-    /// page's own playlist sends nothing. A second press replaces the first, and
-    /// the same object pressed again is the same play. Returns whether the press
-    /// was taken: a kind with no play refuses it.
-    pub fn want_play(&mut self, uri: &str, kind: SidebarKind) -> bool {
-        if !Self::playable(kind) {
-            return false;
-        }
-        self.play_notice = None;
-        if self.play.as_ref().is_some_and(|play| play.uri == uri) {
-            return true;
-        }
-        let held = match (kind, &self.tracks, &self.album) {
-            (SidebarKind::Playlists, Load::Ready(tracks), _) if tracks.playlist == uri => {
-                Some(tracks.tracks.clone())
-            }
-            (SidebarKind::Albums, _, Load::Ready(detail)) if detail.uri == uri => {
-                Some(detail.tracks.clone())
-            }
-            _ => None,
-        };
-        let stage = match held {
-            Some(rows) => Stage::Landed(rows),
-            None => Stage::Wanted,
-        };
-        self.play = Some(PendingPlay {
-            uri: uri.to_owned(),
-            kind,
-            stage,
-        });
-        true
-    }
-
-    /// The command that fetches the pending play's rows, if one is due.
-    ///
-    /// It is want-driven like the followed lists: one ask per press, and never
-    /// through [`Self::load`], so the page's own slot and want stay as they are.
-    pub fn play_request(&mut self) -> Option<Command> {
-        let play = self.play.as_mut()?;
-        if play.stage != Stage::Wanted {
-            return None;
-        }
-        let command = match play.kind {
-            SidebarKind::Playlists => Command::LoadTracks {
-                playlist: play.uri.clone(),
-            },
-            SidebarKind::Albums => Command::LoadAlbum {
-                album: play.uri.clone(),
-            },
-            SidebarKind::Artists | SidebarKind::Podcasts => return None,
-        };
-        play.stage = Stage::Asked;
-        Some(command)
-    }
-
-    /// Takes the rows a landed shelf play holds, clearing it.
-    ///
-    /// An empty list clears the play and starts nothing: there is no first track
-    /// to start on.
-    pub fn take_play(&mut self) -> Option<Start> {
-        match self.play.take() {
-            Some(PendingPlay {
-                uri,
-                stage: Stage::Landed(tracks),
-                ..
-            }) if !tracks.is_empty() => Some(Start {
-                origin: uri,
-                tracks,
-            }),
-            Some(PendingPlay {
-                stage: Stage::Landed(_),
-                ..
-            }) => None,
-            Some(play) => {
-                self.play = Some(play);
-                None
-            }
-            None => None,
-        }
-    }
-
-    /// Whether a shelf play's rows have landed and no frame has started them.
-    pub fn has_landed_play(&self) -> bool {
-        self.play
-            .as_ref()
-            .is_some_and(|play| matches!(play.stage, Stage::Landed(_)))
-    }
-
-    /// Whether a play is waiting on `uri`'s rows.
-    ///
-    /// A reply is copied out of the update only when this says so, because every
-    /// page read would otherwise pay for a play nobody pressed.
-    fn wants(&self, uri: &str) -> bool {
-        self.play.as_ref().is_some_and(|play| {
-            play.uri == uri && matches!(play.stage, Stage::Wanted | Stage::Asked)
-        })
-    }
-
-    /// Lands `rows` on the pending play for `uri`, while it waits on them.
-    fn land(&mut self, uri: &str, rows: Vec<TrackEntry>) {
-        let Some(play) = self.play.as_mut() else {
-            return;
-        };
-        if play.uri != uri || !matches!(play.stage, Stage::Wanted | Stage::Asked) {
-            return;
-        }
-        play.stage = Stage::Landed(rows);
-    }
-
-    /// Drops the pending play for `uri` and says why its rows did not arrive.
-    fn fail_play(&mut self, uri: &str, failure: Failure) {
-        if !self.wants(uri) {
-            return;
-        }
-        self.play = None;
-        self.play_notice = Some(failure);
-    }
-
-    /// Whether a saved write of `uri` is in flight, in this direction.
-    ///
-    /// A page's own write asks this before sending: two writes for one saved
-    /// thing would land in order and leave its row and its label disagreeing.
-    pub fn saved_pending(&self, uri: &str, saved: bool) -> bool {
-        matches!(
-            &self.sidebar_pending,
-            Some(SidebarPending::Saved { uri: pending, saved: pending_saved })
-                if pending == uri && *pending_saved == saved
-        )
-    }
-
-    /// Whether the library has `uri`, as the last read or the last write said.
-    ///
-    /// The write's echo outlives the list it would change: an add names no card,
-    /// so the list cannot gain the row until its next read, and the heart would
-    /// fall back off in between.
-    pub fn is_saved(&self, uri: &str) -> Option<bool> {
-        if let Some((_, saved)) = self.saved_known.iter().find(|(known, _)| known == uri) {
-            return Some(*saved);
-        }
-        let kind = uri.strip_prefix("spotify:")?.split_once(':')?.0;
-        let (here, ready) = match kind {
-            "album" => (
-                listed(&self.saved_albums, uri, |album| &album.uri),
-                matches!(self.saved_albums, Load::Ready(_)),
-            ),
-            "show" => (
-                listed(&self.followed, uri, |show| &show.uri),
-                matches!(self.followed, Load::Ready(_)),
-            ),
-            "playlist" => (
-                listed(&self.playlists, uri, |entry| &entry.uri),
-                !matches!(self.playlists, Load::Idle | Load::Loading),
-            ),
-            // An artist's entry in the library is its follow, and the page's own
-            // state is the only thing that knows it before the list is read.
-            "artist" => (
-                listed(&self.followed_artists, uri, |artist| &artist.uri)
-                    || (self.follow.artist() == Some(uri) && self.follow.confirmed() == Some(true)),
-                !matches!(self.followed_artists, Load::Idle),
-            ),
-            _ => return None,
-        };
-        if here {
-            return Some(true);
-        }
-        ready.then_some(false)
-    }
-
-    /// Records one URI's place in the library, replacing an older answer.
-    fn remember_saved(&mut self, uri: &str, saved: bool) {
-        self.saved_known.retain(|(known, _)| known != uri);
-        self.saved_known.push((uri.to_owned(), saved));
-        // A page can only be one place at a time, so one answer is enough to keep.
-        if self.saved_known.len() > 64 {
-            self.saved_known.remove(0);
-        }
-    }
-
-    /// Asks whether the page's own album or show is in the library.
-    ///
-    /// The lists cannot answer this: a saved album is listed only after the
-    /// albums read has run, which happens when that chip is chosen. A band's
-    /// heart would therefore be inert on every page opened from search or from
-    /// another artist.
-    pub fn saved_request(&mut self) -> Option<Command> {
-        let uri = match self.page()? {
-            crate::route::Page::Album(uri) | crate::route::Page::Show(uri) => uri.clone(),
-            _ => return None,
-        };
-        if self.saved_known.iter().any(|(known, _)| *known == uri) {
-            return None;
-        }
-        if self.saved_probe.as_deref() == Some(uri.as_str()) {
-            return None;
-        }
-        self.saved_probe = Some(uri.clone());
-        Some(Command::LoadSaved { uri })
-    }
-
-    /// Ends a saved write: a removal drops the row, an add remembers it.
-    fn end_saved(&mut self, uri: &str, saved: bool) {
-        if !self.saved_pending(uri, saved) {
-            return;
-        }
-        self.sidebar_pending = None;
-        self.sidebar_notice = None;
-        self.remember_saved(uri, saved);
-        if saved {
-            // An add names no card, so the list cannot gain the row on its own.
-            // Re-arming the read is what puts it in the sidebar; the next visit to
-            // the chip that lists this kind draws it there.
-            match uri
-                .strip_prefix("spotify:")
-                .and_then(|rest| rest.split_once(':'))
-            {
-                Some(("album", _)) => self.saved_albums = Load::Idle,
-                Some(("show", _)) => self.followed = Load::Idle,
-                _ => {}
-            }
-            return;
-        }
-        if let Load::Ready(albums) = &mut self.saved_albums {
-            albums.retain(|album| album.uri != uri);
-        }
-        if let Load::Ready(shows) = &mut self.followed {
-            shows.retain(|show| show.uri != uri);
-        }
-        if let Load::Ready(artists) = &mut self.followed_artists {
-            artists.retain(|artist| artist.uri != uri);
-        }
-    }
-
-    /// Ends the page write for `playlist` and holds `revision` for the next one.
-    fn end_page_write(&mut self, playlist: &str, revision: &Revision) -> bool {
-        if !self.writing(playlist) {
-            return false;
-        }
-        self.pending = None;
-        if let Load::Ready(tracks) = &mut self.tracks
-            && tracks.playlist == *playlist
-        {
-            tracks.notice = None;
-            if let Some(access) = &mut tracks.access {
-                access.revision = revision.clone();
-            }
-        }
-        if let Load::Ready(playlists) = &mut self.playlists
-            && let Some(entry) = playlists.iter_mut().find(|entry| entry.uri == *playlist)
-            && let Some(access) = &mut entry.access
-        {
-            access.revision = revision.clone();
-        }
-        true
-    }
-
-    /// Drops `playlist`'s derived cover and queues the read that replaces it.
-    ///
-    /// A chosen picture is the user's own, so no row edit invalidates it. The
-    /// cached context image goes with the cover it was drawn from, and the ask
-    /// is only queued: one drain turns it into a read.
-    fn drop_derived_cover(&mut self, playlist: &str) {
-        let entry = match &mut self.playlists {
-            Load::Ready(playlists) => playlists.iter_mut().find(|entry| entry.uri == playlist),
-            Load::Idle | Load::Loading | Load::Failed(_) => None,
-        };
-        if entry.as_ref().is_some_and(|entry| {
-            entry
-                .cover
-                .as_ref()
-                .is_some_and(|cover| cover.origin == CoverOrigin::Chosen)
-        }) {
-            return;
-        }
-        self.context_covers.remove(playlist);
-        if let Some(entry) = entry {
-            entry.cover = None;
-            entry.composed.clear();
-        }
-        self.cover_refresh.drop_for(playlist);
-    }
-
-    /// The first track of the page write in flight for `playlist`, before and
-    /// after the write.
-    ///
-    /// Both are read before the reply ends the write, because that is when the
-    /// rows it held are dropped. A reply with no write pending names no row, so
-    /// it can change nothing.
-    fn pending_first_tracks(&self, playlist: &str) -> (Option<String>, Option<String>) {
-        let Some(pending) = self
-            .pending
-            .as_ref()
-            .filter(|pending| pending.playlist == playlist)
-        else {
-            return (None, None);
-        };
-        (
-            first_track_uri(&pending.before).map(str::to_owned),
-            first_track_uri(&pending.after).map(str::to_owned),
-        )
-    }
-
-    /// Brings the artist list in step with an answer about one artist.
-    ///
-    /// The list is a whole set read from the server, so an answer that disagrees
-    /// with it is the only thing worth acting on: a row the server says is gone
-    /// goes, and one it says should be there means the set is stale, which only a
-    /// read can fix. An answer that agrees changes nothing, so a page's opening
-    /// probe costs nothing.
-    fn settle_follow(&mut self, artist: &str, followed: bool) {
-        let Load::Ready(artists) = &self.followed_artists else {
-            return;
-        };
-        let held = artists.iter().any(|held| held.uri == artist);
-        match (followed, held) {
-            (false, true) => {
-                if let Load::Ready(artists) = &mut self.followed_artists {
-                    artists.retain(|held| held.uri != artist);
-                }
-            }
-            // A row the list does not hold needs its name and portrait, which
-            // only the read brings.
-            (true, false) => self.followed_artists = Load::Idle,
-            _ => {}
-        }
-    }
-
-    /// Lowers the sidebar's declared count for `playlist` by `gone` rows.
-    fn lower_page_count(&mut self, playlist: &str, gone: usize) {
-        if gone == 0 {
-            return;
-        }
-        if let Load::Ready(playlists) = &mut self.playlists
-            && let Some(entry) = playlists.iter_mut().find(|entry| entry.uri == playlist)
-        {
-            entry.tracks = entry.tracks.map(|count| count.saturating_sub(gone));
-        }
-    }
-
-    /// The page on screen, or `None` for the library root.
-    pub fn page(&self) -> Option<&Page> {
-        self.history.current()
-    }
-
-    /// The query of the results page on screen, if one is.
-    ///
-    /// Search is the one page whose identity is a query rather than a URI, so
-    /// the shell hands it to the search state instead of a page handle. It is
-    /// `None` on every other page, including one whose text happens to spell a
-    /// URL: the page variant decides.
-    pub fn page_search_query(&self) -> Option<&str> {
-        match self.history.current()? {
-            Page::Search(query) => Some(query),
-            Page::Playlist(_) | Page::Album(_) | Page::Artist(_) | Page::Show(_) => None,
-        }
-    }
-
-    /// Which playlist's tracks are on screen, if any.
-    ///
-    /// This is `None` on an album, artist, show or search page: the main panel
-    /// is not showing a playlist, so the sidebar highlight clears and the entry
-    /// and name helpers see no selection. A search whose query spells a playlist
-    /// URI is still a search.
-    pub fn selected(&self) -> Option<&str> {
-        match self.history.current()? {
-            Page::Playlist(uri) => Some(uri),
-            Page::Album(_) | Page::Artist(_) | Page::Show(_) | Page::Search(_) => None,
-        }
-    }
-
-    /// Moves to a playlist and returns the command that loads it.
-    ///
-    /// Re-selecting the page already on screen reloads it without growing the
-    /// history.
-    pub fn select(&mut self, playlist: &str) -> Command {
-        if self.history.go(Some(Page::Playlist(playlist.to_owned()))) {
-            self.left_page();
-        }
-        self.load(playlist)
-    }
-
-    /// Moves to any page and returns the command that settles it.
-    pub fn open(&mut self, page: Page) -> Option<Command> {
-        if self.history.go(Some(page)) {
-            self.left_page();
-        }
-        self.settle()
-    }
-
-    /// A page change ends the like sentence and any play pressed on the shelf:
-    /// the row the play names is no longer on screen.
-    fn left_page(&mut self) {
-        self.likes.clear_notice();
-        self.track_filter.clear();
-        self.play = None;
-        self.play_notice = None;
-        self.adopt_show_order();
-        if self.renaming.surface() == Surface::Band {
-            self.renaming.dismiss();
-        }
-    }
-
-    /// Takes the order recorded for the page's show.
-    ///
-    /// A show the user has sorted draws as it was left, and one this session
-    /// has not seen starts on the wire's own order.
-    fn adopt_show_order(&mut self) {
-        if let Some(Page::Show(uri)) = self.history.current() {
-            self.show_order = self.show_orders.get(uri).copied().unwrap_or_default();
-        }
-    }
-
-    /// Moves to the playlists grid.
-    ///
-    /// The stale-reply guard is cleared so a late reply for the playlist just
-    /// left is discarded. A settled list is kept for the page Back returns to;
-    /// an in-flight or failed one is dropped, because nothing will ever settle
-    /// it and the root must not sit on a spinner.
-    pub fn to_playlists(&mut self) {
-        if self.history.go(None) {
-            self.left_page();
-        }
-        self.wanted = None;
-        self.wanted_album = None;
-        self.wanted_artist = None;
-        self.wanted_show = None;
-        self.follow = Follow::default();
-        if matches!(self.tracks, Load::Loading | Load::Failed(_)) {
-            self.tracks = Load::Idle;
-        }
-        if matches!(self.album, Load::Loading | Load::Failed(_)) {
-            self.album = Load::Idle;
-        }
-        if matches!(self.artist, Load::Loading | Load::Failed(_)) {
-            self.artist = Load::Idle;
-        }
-        if matches!(self.show, Load::Loading | Load::Failed(_)) {
-            self.show = Load::Idle;
-        }
-    }
-
-    /// Moves back one page and returns the command that settles it.
-    ///
-    /// A Back with nowhere to go changes nothing, so it never reloads the page
-    /// it is already on.
-    pub fn back(&mut self) -> Option<Command> {
-        if !self.history.back() {
-            return None;
-        }
-        self.left_page();
-        self.settle()
-    }
-
-    /// Moves forward one page and returns the command that settles it.
-    ///
-    /// A Forward with nowhere to go changes nothing, so it never reloads the
-    /// page it is already on.
-    pub fn forward(&mut self) -> Option<Command> {
-        if !self.history.forward() {
-            return None;
-        }
-        self.left_page();
-        self.settle()
-    }
-
-    /// Whether there is a page to go back to.
-    pub fn can_back(&self) -> bool {
-        self.history.can_back()
-    }
-
-    /// Whether there is a page to go forward to.
-    pub fn can_forward(&self) -> bool {
-        self.history.can_forward()
-    }
-
-    /// Whether a write for this playlist is in flight.
-    fn writing(&self, playlist: &str) -> bool {
-        self.pending
-            .as_ref()
-            .is_some_and(|pending| pending.playlist == playlist)
-    }
-
-    /// Whether any write is in flight, on the page or in the sidebar.
-    ///
-    /// A menu opened over a write would act on rows that write is already
-    /// replacing, so it waits for the reply.
-    pub fn write_in_flight(&self) -> bool {
-        self.pending.is_some() || self.sidebar_pending.is_some()
     }
 
     /// Whether a row may be lifted off the loaded page now.
@@ -1949,6 +1449,16 @@ impl Library {
         true
     }
 
+    /// Opens the head's new-playlist field, with the rail's query dropped.
+    ///
+    /// A created playlist the query does not match would land in the list
+    /// already hidden, and the head keeps one field at a time: the create field
+    /// and the filter field share the slot.
+    pub fn begin_create(&mut self) {
+        self.rail_filter.clear();
+        self.naming.open();
+    }
+
     /// Starts a rename for the name in the field, and asks for one write.
     ///
     /// A name the server already holds closes the field and sends nothing, so
@@ -2135,6 +1645,7 @@ impl Library {
             playlist: playlist.to_owned(),
             before: tracks.tracks.clone(),
             after: found.order.clone(),
+            query: None,
         });
         self.tracks = Load::Ready(TracksFor {
             playlist: playlist.to_owned(),
@@ -2156,9 +1667,9 @@ impl Library {
     ///
     /// It runs the same guards a move does, because both name a revision and
     /// only one write may be in flight. The rows are gone on screen at once and
-    /// kept until the reply lands; a write that fails puts them back and the
-    /// page says so. Nothing is re-requested, so a removal can never leave a
-    /// ready page waiting.
+    /// kept until the reply lands; a write that fails puts them back — and the
+    /// query the last row took with it — and the page says so. Nothing is
+    /// re-requested, so a removal can never leave a ready page waiting.
     pub fn remove_tracks(
         &mut self,
         playlist: &str,
@@ -2170,22 +1681,43 @@ impl Library {
             return None;
         };
         let found = removal::plan(&tracks.tracks, rows)?;
-        self.pending = Some(reorder::Pending {
-            playlist: playlist.to_owned(),
-            before: tracks.tracks.clone(),
-            after: found.kept.clone(),
-        });
+        let before = tracks.tracks.clone();
         self.tracks = Load::Ready(TracksFor {
             playlist: playlist.to_owned(),
-            tracks: found.kept,
+            tracks: found.kept.clone(),
             access: Some(access.clone()),
             notice: None,
+        });
+        // Taking out the last row leaves nowhere to show the query, and no
+        // reply for a removal carries a track list, so this is the only place
+        // that can drop it. The write keeps the words, so a failed one can put
+        // the query back beside the rows it restores.
+        let query = self.clear_filter_when_empty();
+        self.pending = Some(reorder::Pending {
+            playlist: playlist.to_owned(),
+            before,
+            after: found.kept,
+            query,
         });
         Some(Command::RemoveTracks {
             playlist: playlist.to_owned(),
             revision: access.revision,
             removals: found.removals,
         })
+    }
+
+    /// Drops the page's query when the page it filters has no rows to show, and
+    /// hands back the text it took.
+    ///
+    /// The field is drawn beside rows, so an empty page can never show a query.
+    /// Left to sit, it would come back and silently filter the next list that
+    /// has rows.
+    fn clear_filter_when_empty(&mut self) -> Option<String> {
+        if matches!(&self.tracks, Load::Ready(tracks) if tracks.tracks.is_empty()) {
+            let text = self.track_filter.take();
+            return (!text.is_empty()).then_some(text);
+        }
+        None
     }
 
     /// What a page write may name now, when `rows` still hold `carried`.
@@ -2219,356 +1751,6 @@ impl Library {
             return None;
         }
         Some(access)
-    }
-
-    /// Marks a playlist as wanted and returns the command that loads it.
-    ///
-    /// It never touches the history: Back and Forward move the page first and
-    /// only reload what they land on.
-    fn load(&mut self, playlist: &str) -> Command {
-        self.wanted = Some(playlist.to_owned());
-        self.tracks = Load::Loading;
-        // A navigation to a playlist whose cover is due doubles as its ask: the
-        // page read answers the cover too, so no second read is issued.
-        self.cover_refresh.asked(playlist);
-        Command::LoadTracks {
-            playlist: playlist.to_owned(),
-        }
-    }
-
-    /// Marks an album as wanted and returns the command that loads it.
-    ///
-    /// Like [`Self::load`] it never touches the history: Back and Forward move
-    /// the page first and only reload what they land on.
-    fn load_album(&mut self, album: &str) -> Command {
-        self.wanted_album = Some(album.to_owned());
-        self.album = Load::Loading;
-        Command::LoadAlbum {
-            album: album.to_owned(),
-        }
-    }
-
-    /// Marks a show as wanted and returns the command that loads it.
-    ///
-    /// Like [`Self::load`] and [`Self::load_album`] it never touches the
-    /// history: Back and Forward move the page first and only reload what they
-    /// land on.
-    fn load_show(&mut self, show: &str) -> Command {
-        self.wanted_show = Some(show.to_owned());
-        self.show = Load::Loading;
-        Command::LoadShow {
-            show: show.to_owned(),
-        }
-    }
-
-    /// Points the artist page at `artist` and returns the command that loads it.
-    ///
-    /// Like [`Self::load`] it never touches the history. It also opens the
-    /// Follow state and the discography filter at this artist, so a label
-    /// confirmed for another one cannot be drawn over this page and another
-    /// artist's filter choice is not carried into this one.
-    fn load_artist(&mut self, artist: &str) -> Command {
-        if self.wanted_artist.as_deref() != Some(artist) {
-            // Another artist's likeness list is no use here.
-            self.related = Load::Idle;
-            self.wanted_related = None;
-        }
-        self.wanted_artist = Some(artist.to_owned());
-        self.artist = Load::Loading;
-        self.follow.open(artist);
-        self.filter.open(artist);
-        Command::LoadArtist {
-            artist: artist.to_owned(),
-        }
-    }
-
-    /// Returns the command the current page needs, if any.
-    ///
-    /// A page whose wanted load is in flight or ready is left alone; any other
-    /// page of a loadable kind is reloaded through its own loader. A failed load
-    /// therefore reloads, which is what makes the Retry control and a Back onto a
-    /// failed page the same request. A page never matches another one's want, so
-    /// Back onto one whose load was superseded asks again rather than showing
-    /// nothing.
-    fn settle(&mut self) -> Option<Command> {
-        match self.history.current() {
-            Some(Page::Playlist(playlist)) => {
-                let playlist = playlist.clone();
-                if self.wanted.as_deref() == Some(playlist.as_str())
-                    && matches!(self.tracks, Load::Loading | Load::Ready(_))
-                {
-                    return None;
-                }
-                Some(self.load(&playlist))
-            }
-            Some(Page::Album(album)) => {
-                let album = album.clone();
-                if self.wanted_album.as_deref() == Some(album.as_str())
-                    && matches!(self.album, Load::Loading | Load::Ready(_))
-                {
-                    return None;
-                }
-                Some(self.load_album(&album))
-            }
-            Some(Page::Artist(artist)) => {
-                let artist = artist.clone();
-                if self.wanted_artist.as_deref() == Some(artist.as_str())
-                    && matches!(self.artist, Load::Loading | Load::Ready(_))
-                {
-                    return None;
-                }
-                Some(self.load_artist(&artist))
-            }
-            Some(Page::Show(show)) => {
-                let show = show.clone();
-                if self.wanted_show.as_deref() == Some(show.as_str())
-                    && matches!(self.show, Load::Loading | Load::Ready(_))
-                {
-                    return None;
-                }
-                Some(self.load_show(&show))
-            }
-            // A search page is never fetched by `settle`: its read belongs to
-            // the search state, and the shell asks for it from `logic` because
-            // only the query, not the page, is what that read is about. A held
-            // answer is what Back and Forward land on, so it is kept as it
-            // stands; a dropped, idle or failed one is pointed at the page's
-            // query again, which is what makes Back ask once. The page itself
-            // never carries a load, so no command comes back from here.
-            Some(Page::Search(query)) => {
-                let query = query.clone();
-                if matches!(
-                    self.search.page_answer(&query),
-                    Some(Load::Loading | Load::Ready(_))
-                ) {
-                    return None;
-                }
-                self.search.open_results(&query);
-                None
-            }
-            _ => None,
-        }
-    }
-
-    /// Marks the playlists loading again and returns the command that fetches
-    /// them.
-    ///
-    /// The followed lists restart with them: a playlist retry is the root's
-    /// Retry, so every half of the page asks again. A reply already in flight
-    /// from before the retry still lands, and its list is valid — only a little
-    /// older than the retry's.
-    pub fn reload(&mut self) -> Command {
-        self.playlists = Load::Loading;
-        self.followed = Load::Idle;
-        self.followed_artists = Load::Idle;
-        self.saved_albums = Load::Idle;
-        self.likes.reload();
-        Command::ReloadLibrary
-    }
-
-    /// The library read a failed link asks for, if one is due.
-    ///
-    /// Want-driven like the followed lists: the update carries no command, so it
-    /// is asked for after the drain, when the failed write is no longer pending
-    /// and the read can therefore be adopted.
-    pub fn rootlist_request(&mut self) -> Option<Command> {
-        if self.write_in_flight() || !std::mem::take(&mut self.rootlist_stale) {
-            return None;
-        }
-        Some(self.reload())
-    }
-
-    /// The command that reads a playlist's cover again, if one is due.
-    ///
-    /// A page whose playlist has no rows loaded is asked for itself: a write can
-    /// leave the open page blank, and only the page's own read would ever fill
-    /// it. That ask is the read the page needs anyway, so it goes through
-    /// [`Self::load`] and doubles as the cover ask.
-    ///
-    /// A read for any other due playlist is a bare `LoadTracks`: its reply
-    /// writes that playlist's cover only, because the rows are written for the
-    /// wanted playlist alone. It therefore leaves the want and the page on
-    /// screen exactly as they are. The page on screen is kept out of the asks
-    /// only while its own read is in flight, because that reply answers its
-    /// cover; a settled page has no reply coming, so its dropped cover must be
-    /// asked for like any other.
-    pub fn tracks_request(&mut self) -> Option<Command> {
-        if let Some(Page::Playlist(playlist)) = self.history.current() {
-            let playlist = playlist.clone();
-            if listed(&self.playlists, &playlist, |entry| &entry.uri)
-                && matches!(self.tracks, Load::Idle)
-                && self.wanted.as_deref() != Some(playlist.as_str())
-            {
-                return Some(self.load(&playlist));
-            }
-        }
-        let present: Vec<String> = match &self.playlists {
-            Load::Ready(playlists) => playlists.iter().map(|entry| entry.uri.clone()).collect(),
-            Load::Idle | Load::Loading | Load::Failed(_) => Vec::new(),
-        };
-        let keep = match (self.selected(), &self.tracks) {
-            (Some(page), Load::Loading) if self.wanted.as_deref() == Some(page) => {
-                Some(page.to_owned())
-            }
-            _ => None,
-        };
-        let playlist = self.cover_refresh.take_due(&present, keep.as_deref())?;
-        Some(Command::LoadTracks { playlist })
-    }
-
-    /// The command that starts the likeness load, if one is due.
-    ///
-    /// The cards are the page's second read: they are asked for only once the
-    /// artist's own detail has landed and named somebody, so the hero and the
-    /// discography never wait on a dozen `Artist::get` calls. A page that names
-    /// nobody asks for nothing.
-    pub fn related_request(&mut self) -> Option<Command> {
-        let Load::Ready(detail) = &self.artist else {
-            return None;
-        };
-        let artist = detail.uri.clone();
-        let uris = detail.related.clone();
-        if uris.is_empty() {
-            return None;
-        }
-        if matches!(self.related, Load::Loading)
-            || (matches!(self.related, Load::Ready(_) | Load::Failed(_))
-                && self.wanted_related.as_deref() == Some(artist.as_str()))
-        {
-            return None;
-        }
-        self.wanted_related = Some(artist.clone());
-        self.related = Load::Loading;
-        Some(Command::LoadRelated { artist, uris })
-    }
-
-    /// Marks the likeness list loading again, for the page's own Retry.
-    pub fn reload_related(&mut self) -> Option<Command> {
-        self.related = Load::Idle;
-        self.related_request()
-    }
-
-    /// Marks the results page's read idle again and returns the command that
-    /// fetches it, for the page's own Retry.
-    ///
-    /// The page is the only place that knows a Retry was pressed, and the read
-    /// is want-driven, so this resets the read and asks for it in the same call
-    /// rather than waiting a frame for `logic`'s next look. It asks for the
-    /// page's own query even while the menu is open and due, which is what
-    /// [`crate::search::Search::request_page`] is for.
-    pub fn reload_search(&mut self) -> Option<Command> {
-        let query = self.page_search_query().map(str::to_owned)?;
-        self.search.retry_page(&query);
-        self.search.request_page(Some(&query))
-    }
-
-    /// Marks the followed-shows list loading again and returns the command that
-    /// fetches it.
-    ///
-    /// This is the list's own Retry, so it asks directly rather than going
-    /// through the playlists.
-    pub fn reload_followed(&mut self) -> Command {
-        self.followed = Load::Loading;
-        Command::LoadFollowedShows
-    }
-
-    /// The command that starts the followed-shows load, if one is due.
-    ///
-    /// The list is want-driven rather than chained onto the rootlist, so the
-    /// worker's update stream is unchanged. It asks exactly when nothing has
-    /// been asked for yet and the playlists can name a signed-in window; a
-    /// window that never loads its playlists therefore never asks for shows.
-    pub fn followed_request(&mut self) -> Option<Command> {
-        if self.followed == Load::Idle && matches!(self.playlists, Load::Ready(_)) {
-            self.followed = Load::Loading;
-            Some(Command::LoadFollowedShows)
-        } else {
-            None
-        }
-    }
-
-    /// Marks the followed-artists list loading again and returns the command
-    /// that fetches it.
-    ///
-    /// This is the list's own Retry, so it asks directly rather than going
-    /// through the playlists. A reply already in flight from before the retry
-    /// still lands, and its list is valid — only a little older than the
-    /// retry's.
-    pub fn reload_followed_artists(&mut self) -> Command {
-        self.followed_artists = Load::Loading;
-        Command::LoadFollowedArtists
-    }
-
-    /// Marks the saved-albums list loading again and returns the command that
-    /// fetches it.
-    ///
-    /// The followed-artists shape, one list over.
-    pub fn reload_saved_albums(&mut self) -> Command {
-        self.saved_albums = Load::Loading;
-        Command::LoadSavedAlbums
-    }
-
-    /// The command that starts the followed-artists load, if one is due.
-    ///
-    /// Like the followed shows it is want-driven: it asks exactly when nothing
-    /// has been asked for yet, the playlists can name a signed-in window, and a
-    /// chip naming artists is the one the user is looking at.
-    pub fn followed_artists_request(&mut self) -> Option<Command> {
-        if self.followed_artists == Load::Idle
-            && matches!(self.playlists, Load::Ready(_))
-            && artists_chosen(self.root_filter.chosen(), self.sidebar_kind.chosen())
-        {
-            self.followed_artists = Load::Loading;
-            Some(Command::LoadFollowedArtists)
-        } else {
-            None
-        }
-    }
-
-    /// The command that starts the saved-albums load, if one is due.
-    ///
-    /// The followed-artists shape, one chip over.
-    pub fn saved_albums_request(&mut self) -> Option<Command> {
-        if self.saved_albums == Load::Idle
-            && matches!(self.playlists, Load::Ready(_))
-            && (albums_chosen(self.root_filter.chosen(), self.sidebar_kind.chosen())
-                || self.on_artist_page())
-        {
-            self.saved_albums = Load::Loading;
-            Some(Command::LoadSavedAlbums)
-        } else {
-            None
-        }
-    }
-
-    /// Whether the page on screen draws a heart on releases it did not read.
-    ///
-    /// An artist page draws one per release, and only the saved-albums set can
-    /// say what each one is.
-    fn on_artist_page(&self) -> bool {
-        matches!(self.page(), Some(crate::route::Page::Artist(_)))
-    }
-
-    /// The command that starts the liked-songs read, if one is due.
-    ///
-    /// It waits for the playlists, because a signed-out window has no set to
-    /// read and no heart to draw; every later sweep is the set's own to ask for.
-    pub fn likes_request(&mut self) -> Option<Command> {
-        self.likes
-            .request(matches!(self.playlists, Load::Ready(_)))
-            .then_some(Command::LoadLikedTracks)
-    }
-
-    /// Flips the liked set and asks for the write, or changes nothing.
-    ///
-    /// The set mutates only when it has a change to send, so a refused or empty
-    /// flip never leaves a write pending with nothing on the wire.
-    pub fn set_liked(&mut self, tracks: Vec<String>, liked: bool) -> Option<Command> {
-        let change = self.likes.set(&tracks, liked)?;
-        Some(Command::SetLiked {
-            tracks: change.tracks,
-            liked: change.liked,
-        })
     }
 
     /// The album the album page draws, once it is loaded and named by that page.
@@ -5899,6 +5081,7 @@ mod tests {
                 playlist: "a".to_owned(),
                 before: moved(&["t0", "t1", "t2"]),
                 after: moved(&["t1", "t0", "t2"]),
+                query: None,
             })
         );
     }
@@ -6003,6 +5186,7 @@ mod tests {
                 playlist: "a".to_owned(),
                 before: moved(&["t0", "t1", "t2", "t3"]),
                 after: moved(&["t1", "t3", "t0", "t2"]),
+                query: None,
             })
         );
     }
@@ -6590,6 +5774,79 @@ mod tests {
             library.track_filter.edit("b").is_empty(),
             "going home clears the query"
         );
+    }
+
+    #[test]
+    fn a_failed_tracks_load_clears_the_query_on_the_update() {
+        let mut library = Library::default();
+        library.select("a");
+        library.track_filter.edit("a").push_str("midnight");
+
+        library.apply(&Update::TracksFailed {
+            playlist: "a".to_owned(),
+            failure: Failure::Load,
+        });
+
+        assert_eq!(
+            library.track_filter.needle("a"),
+            None,
+            "a failure that lands while another page is drawn still clears the query"
+        );
+    }
+
+    #[test]
+    fn an_empty_tracks_reply_clears_the_query_on_the_update() {
+        let mut library = Library::default();
+        library.select("a");
+        library.track_filter.edit("a").push_str("midnight");
+
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: Vec::new(),
+            cover: None,
+            access: None,
+        });
+
+        assert_eq!(
+            library.track_filter.needle("a"),
+            None,
+            "an emptied page has no field for the query to sit in"
+        );
+    }
+
+    #[test]
+    fn a_rows_reply_keeps_the_query() {
+        let mut library = Library::default();
+        library.select("a");
+        library.track_filter.edit("a").push_str("midnight");
+
+        library.apply(&Update::Tracks {
+            playlist: "a".to_owned(),
+            tracks: vec![track("t")],
+            cover: None,
+            access: None,
+        });
+
+        assert_eq!(
+            library.track_filter.needle("a").as_deref(),
+            Some("midnight"),
+            "a page with rows keeps what the field holds"
+        );
+    }
+
+    #[test]
+    fn opening_the_create_field_clears_the_rail_query_on_the_update() {
+        let mut library = Library::default();
+        library.rail_filter.edit().push_str("midnight");
+
+        library.begin_create();
+
+        assert_eq!(
+            library.rail_filter.query(),
+            "",
+            "a created playlist must not land in a list already hidden"
+        );
+        assert!(library.naming.is_open(), "the field opens with the clear");
     }
 
     #[test]
@@ -8638,6 +7895,41 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_artist_load_clears_the_discography_query_on_the_update() {
+        let mut library = Library::default();
+        library.open(artist("spotify:artist:a"));
+        library.filter.edit().push_str("midnight");
+
+        library.apply(&Update::ArtistFailed {
+            artist: "spotify:artist:a".to_owned(),
+            failure: Failure::Load,
+        });
+
+        assert_eq!(
+            library.filter.needle(),
+            None,
+            "a failure that lands while another page is drawn still clears the query"
+        );
+    }
+
+    #[test]
+    fn an_artist_with_no_releases_clears_the_discography_query_on_the_update() {
+        let mut library = Library::default();
+        library.open(artist("spotify:artist:a"));
+        library.filter.edit().push_str("midnight");
+
+        let mut detail = artist_detail("spotify:artist:a");
+        detail.releases.clear();
+        library.apply(&Update::Artist(detail));
+
+        assert_eq!(
+            library.filter.needle(),
+            None,
+            "an empty discography draws no chip row to hold the query"
+        );
+    }
+
+    #[test]
     fn to_playlists_keeps_the_filter() {
         let mut library = Library::default();
         library.open(artist("spotify:artist:a"));
@@ -8819,8 +8111,9 @@ mod tests {
         library.open(artist("spotify:artist:a"));
         library.apply(&Update::Artist(artist_detail("spotify:artist:a")));
 
-        // R1 is asked for, so its entry is in flight rather than idle: that is
-        // what makes a dropped entry distinguishable from a retained one below.
+        // The first release is asked for, so its entry is in flight rather than
+        // idle: that is what makes a dropped entry distinguishable from a
+        // retained one below.
         library.releases.look("spotify:album:r1");
         assert_eq!(
             library.releases.requests(),
@@ -8830,7 +8123,8 @@ mod tests {
             }]
         );
 
-        // Coming back to the artist reloads it; the reply no longer names R1.
+        // Coming back to the artist reloads it; the reply no longer names that
+        // release.
         library.open(artist("spotify:artist:b"));
         library.open(artist("spotify:artist:a"));
         let mut other = artist_detail("spotify:artist:a");
@@ -9032,7 +8326,54 @@ mod tests {
                 playlist: "a".to_owned(),
                 before: moved(&["t0", "t1", "t2", "t3"]),
                 after: moved(&["t0", "t3"]),
+                query: None,
             })
+        );
+    }
+
+    #[test]
+    fn a_removal_that_fails_puts_the_query_back_with_the_rows() {
+        let mut library = page_with("a", &["midnight"], access(0x01, true));
+        library.track_filter.edit("a").push_str("midnight");
+
+        assert!(
+            library
+                .remove_tracks("a", &[0], &moved(&["midnight"]))
+                .is_some()
+        );
+        assert_eq!(
+            library.track_filter.needle("a"),
+            None,
+            "arrange: the empty page takes the query with the last row"
+        );
+
+        library.apply(&Update::RemoveFailed {
+            playlist: "a".to_owned(),
+            failure: Failure::Save,
+        });
+
+        assert_eq!(
+            library.track_filter.needle("a").as_deref(),
+            Some("midnight"),
+            "a failed write puts the rows back, and the query with them"
+        );
+    }
+
+    #[test]
+    fn a_removal_that_empties_the_page_drops_the_track_filter() {
+        let mut library = page_with("a", &["midnight"], access(0x01, true));
+        library.track_filter.edit("a").push_str("midnight");
+
+        assert!(
+            library
+                .remove_tracks("a", &[0], &moved(&["midnight"]))
+                .is_some()
+        );
+
+        assert_eq!(
+            library.track_filter.needle("a"),
+            None,
+            "an empty page cannot show the query, so the last row takes it with it"
         );
     }
 

@@ -80,8 +80,11 @@ pub fn show(ui: &mut Ui, tokens: &Tokens, row: Rect, chosen: MediaLayout) -> Opt
         egui::StrokeKind::Inside,
     );
     let divider = Rect::from_min_size(
-        Pos2::new(group.center().x - stroke::HAIRLINE / 2.0, group.top() + 2.0),
-        Vec2::new(stroke::HAIRLINE, group.height() - 4.0),
+        Pos2::new(
+            group.center().x - stroke::HAIRLINE / 2.0,
+            group.top() + space::S1 / 2.0,
+        ),
+        Vec2::new(stroke::HAIRLINE, group.height() - space::S1),
     );
     ui.painter()
         .rect_filled(divider, 0.0, tokens.palette.border);

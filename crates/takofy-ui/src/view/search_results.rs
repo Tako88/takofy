@@ -1,7 +1,7 @@
 //! The search results page: the whole answer, one block per kind under its
 //! query's heading.
 //!
-//! The brief's R15, redrawn: `Results for “q”` is the page head, with the note
+//! `Results for “q”` is the page head, with the note
 //! that says the cap once (`Top 20 tracks`) and nothing else. Under it come up to
 //! three blocks — Tracks as the tracklist this app already draws, Albums and
 //! Artists as the library's card grid — each capped at ten and each ending in a
@@ -277,7 +277,7 @@ fn tracks(
             menu: gate.allows(),
             liked: stores.library.likes.state(&entry.uri),
         };
-        // R16: a row plays the whole answer, entered here, so next and previous
+        // A row plays the whole answer, entered here, so next and previous
         // walk the results. A merged answer is no single page, so it names no
         // context for a move to carry.
         match track_row::show(ui, rect, columns, &row, tokens) {

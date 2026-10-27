@@ -1,10 +1,15 @@
-//! Where a section head's trailing cluster sits.
+//! Where a section head's trailing cluster sits, and the line a list keeps at
+//! its foot.
 //!
 //! A head is one line: the title at the left, and a cluster — the show page's
 //! order chips — flush right. The cluster takes that line only when the title
 //! leaves it room; when it does not, it takes a line of its own under the title.
 //! Both rects are computed here, so the view measures the title once, draws into
 //! the rect it is given, and decides nothing about the geometry.
+//!
+//! A list's foot is the other one-line reservation: a count or a failure line
+//! below a list belongs to the viewport rather than the flow, so a long list
+//! scrolls under it instead of carrying it out of sight.
 
 use egui::{Rect, Vec2, pos2};
 
@@ -32,6 +37,20 @@ pub fn place(head: Rect, title_right: f32, size: Vec2, gap: f32) -> Placement {
         ));
     }
     Placement::Under(Rect::from_min_size(pos2(right, head.bottom() + gap), size))
+}
+
+/// The rect a list keeps for a line at its foot, and the list's own rect above
+/// it.
+///
+/// `height` is the line's row height. A rect too short to hold it keeps its top
+/// edge, so the list never gains a negative height and the line is clipped
+/// rather than drawn above the list's first row.
+pub fn foot(rect: Rect, height: f32) -> (Rect, Rect) {
+    let top = (rect.bottom() - height).max(rect.top());
+    (
+        Rect::from_min_max(rect.min, pos2(rect.right(), top)),
+        Rect::from_min_max(pos2(rect.left(), top), rect.max),
+    )
 }
 
 #[cfg(test)]
@@ -72,5 +91,38 @@ mod tests {
             placed.top() > narrow.bottom(),
             "on a line of its own under the head"
         );
+    }
+
+    #[test]
+    fn a_list_keeps_the_line_at_its_foot_and_nothing_above_it() {
+        let list = Rect::from_min_size(pos2(10.0, 20.0), Vec2::new(300.0, 400.0));
+
+        let (rows, strip) = foot(list, 16.0);
+        assert_eq!(strip.top(), list.bottom() - 16.0, "the line holds the foot");
+        assert_eq!(strip.bottom(), list.bottom());
+        assert_eq!(strip.width(), list.width(), "it is the list's own width");
+        assert_eq!(rows.top(), list.top(), "the list keeps its top");
+        assert_eq!(
+            rows.bottom(),
+            strip.top(),
+            "and stops where the line starts"
+        );
+
+        // A line taller than the list is clipped at the top rather than given a
+        // negative height.
+        let (rows, strip) = foot(list, 1000.0);
+        assert_eq!(rows.top(), list.top());
+        assert_eq!(rows.bottom(), list.top(), "the list keeps no height");
+        assert_eq!(strip.top(), list.top());
+        assert_eq!(strip.bottom(), list.bottom());
+
+        // A line exactly the list's height takes all of it, so the list keeps
+        // no rows and the line is still the foot.
+        let (rows, strip) = foot(list, list.height());
+        assert_eq!(rows.top(), list.top());
+        assert_eq!(rows.bottom(), list.top(), "the list keeps no height");
+        assert_eq!(strip.top(), list.top(), "the line starts at the top");
+        assert_eq!(strip.bottom(), list.bottom());
+        assert_eq!(strip.height(), list.height(), "and holds the whole list");
     }
 }

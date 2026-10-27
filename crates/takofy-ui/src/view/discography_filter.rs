@@ -190,7 +190,10 @@ pub fn show(ui: &mut Ui, tokens: &Tokens, row: Row<'_>) -> Shown {
                 )
             });
             let painted_left = count.right() - label.size().x;
-            if painted_left >= first_line_right(&laid.chips) + space::S1 {
+            if cluster_layout::count_clears_chips(
+                painted_left,
+                laid.chips.iter().map(|(_, rect)| rect),
+            ) {
                 filter_count::paint(ui, count.translate(delta), label, tokens);
             }
         }
@@ -220,16 +223,4 @@ pub fn show(ui: &mut Ui, tokens: &Tokens, row: Row<'_>) -> Shown {
         hits,
         queried,
     }
-}
-
-/// The right edge of the first line's last chip.
-fn first_line_right(chips: &[(Chip, Rect)]) -> f32 {
-    let Some(first) = chips.first() else {
-        return 0.0;
-    };
-    chips
-        .iter()
-        .filter(|(_, rect)| (rect.top() - first.1.top()).abs() < 0.01)
-        .map(|(_, rect)| rect.right())
-        .fold(0.0, f32::max)
 }

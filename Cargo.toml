@@ -56,6 +56,9 @@ egui = "0.37.0"
 # a cancellable request.
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+# Build-time only: the resource compiler that embeds the window icon on
+# Windows. Linux never runs the script.
+winresource = "0.1.34"
 
 [workspace.lints.rust]
 unsafe_code = "deny"

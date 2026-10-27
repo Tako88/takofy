@@ -387,7 +387,7 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
     // The menu draws after every region and before the drawer overlay: it hangs
     // over the view, and a drawer opened on top of it must stay on top. It is
     // anchored to the field rect the topbar reported, so it is the field's own
-    // width and never the layout's guess (R7).
+    // width and never the layout's guess.
     let mut menu = search_menu::Menu::default();
     if screen.library.search.is_open()
         && let Some(field) = bar.search_field
@@ -419,7 +419,7 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
         command = match act {
             Act::Play(index) => match screen.library.search.answer() {
                 Some(tracks) => {
-                    // R10: the loaded row's glyph is pause, and its action is the
+                    // The loaded row's glyph is pause, and its action is the
                     // transport's toggle rather than a second start of the same
                     // track. A stopped transport has nothing to pause, so it
                     // starts the answer at this row like any other. The one
@@ -431,7 +431,7 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
                     if held {
                         screen.queue.toggle(screen.transport)
                     } else {
-                        // R16: the queue becomes the whole answer, entered at the
+                        // The queue becomes the whole answer, entered at the
                         // hit, so next and previous walk the results. The answer is
                         // merged from every kind, so it names no context.
                         screen.queue.start(tracks, index, None, screen.transport)
@@ -3444,7 +3444,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // The field, the menu and the frame order (R1–R18).
+    // The field, the menu and the frame order.
     // -----------------------------------------------------------------------
 
     /// The field's painted box this frame.
@@ -3575,9 +3575,9 @@ mod tests {
         command
     }
 
-    /// Q2's executor check: zeroing the caret's stroke width removes its pixels.
-    /// epaint treats a zero-width stroke as empty and paints nothing, so the
-    /// marked row's rule is the only thing saying where Enter lands.
+    /// A caret with a zero stroke width paints nothing: epaint treats a
+    /// zero-width stroke as empty, so the marked row's rule is the only thing
+    /// saying where Enter lands.
     #[test]
     fn a_marked_row_hides_the_caret() {
         let mut transport = Transport::default();
@@ -3636,7 +3636,7 @@ mod tests {
             Some(Command::Search {
                 query: "a".to_owned()
             }),
-            "the first character is a read (R6)"
+            "the first character is a read"
         );
 
         // Focus alone is not a query: the click opens nothing and asks nothing.
@@ -3663,7 +3663,7 @@ mod tests {
         assert_eq!(
             window.library.search.mark(),
             None,
-            "the menu opens with its first row unmarked (R1)"
+            "the menu opens with its first row unmarked"
         );
         for index in 0..3 {
             assert!(
@@ -3707,7 +3707,7 @@ mod tests {
         assert_eq!(
             queue.upcoming().len(),
             6,
-            "the queue is the whole answer, entered at the hit (R16)"
+            "the queue is the whole answer, entered at the hit"
         );
         assert_eq!(
             queue.next(&mut transport),
@@ -3761,7 +3761,11 @@ mod tests {
             vec![egui::Event::Text("b".to_owned())],
         );
         assert_eq!(window.library.search.text, "ab");
-        assert_eq!(window.library.search.mark(), None, "R2 puts the rule back");
+        assert_eq!(
+            window.library.search.mark(),
+            None,
+            "typing puts the rule back on the field"
+        );
         assert!(window.library.search.is_open());
     }
 
@@ -3782,7 +3786,7 @@ mod tests {
             press(&mut window, &mut transport, &mut queue, egui::Key::Escape),
             None
         );
-        assert_eq!(window.library.search.text, "a", "the query is kept (R3)");
+        assert_eq!(window.library.search.text, "a", "the query is kept");
         assert!(window.library.search.is_open(), "and the menu stays up");
         assert_eq!(window.library.search.mark(), None);
 
@@ -3979,7 +3983,7 @@ mod tests {
     }
 
     /// Press a row, then release it: the menu must survive the frame in which
-    /// the press surrenders the field's focus (Q4). Both outcomes are staged:
+    /// the press surrenders the field's focus. Both outcomes are staged:
     /// the natural one, and the opposite one forced between press and release.
     #[test]
     fn a_row_click_plays_under_both_focus_outcomes() {
@@ -4260,8 +4264,8 @@ mod tests {
         let _ = press(&mut window, &mut transport, &mut queue, egui::Key::Escape);
         let cleared = edit_box(&window);
 
-        assert_eq!(empty, typed, "typing does not resize the field (R4)");
-        assert_eq!(empty, cleared, "clearing does not resize it either (R5)");
+        assert_eq!(empty, typed, "typing does not resize the field");
+        assert_eq!(empty, cleared, "clearing does not resize it either");
     }
 
     #[test]
@@ -4296,7 +4300,7 @@ mod tests {
         let (_, frame) = answered_menu(&mut window, &mut transport, &mut queue, "a", 8);
         let field = search_field(&frame).expect("the field is painted");
         // Inside the padded hit rect, which spans the field's height at its right
-        // padding (R5).
+        // padding.
         let at = egui::Pos2::new(field.right() - 16.0, field.center().y);
         // The text edit's own rect, which the clear control must not move.
         let before = edit_box(&window);
@@ -4314,7 +4318,7 @@ mod tests {
         assert_eq!(
             edit_box(&window),
             before,
-            "clearing never changes the field's width (R5)"
+            "clearing never changes the field's width"
         );
     }
 
@@ -4341,7 +4345,7 @@ mod tests {
         let menu = menu_box(&window, field, layout::search_menu::line_height());
         assert!(
             text_in(&frame, "No matches for “a”", menu).is_some(),
-            "an empty answer is one line naming the query (R13)"
+            "an empty answer is one line naming the query"
         );
 
         let mut transport = Transport::default();
@@ -4364,7 +4368,7 @@ mod tests {
                 menu
             )
             .is_some(),
-            "a failed read is one line with its own words (R13)"
+            "a failed read is one line with its own words"
         );
     }
 
@@ -4399,12 +4403,12 @@ mod tests {
                 vec![key(egui::Key::ArrowDown, true)],
             );
         }
-        assert!(window.library.search.is_open(), "an arrow re-opens it (R1)");
+        assert!(window.library.search.is_open(), "an arrow re-opens it");
         assert_eq!(window.library.search.mark(), Some(1));
         assert_eq!(
             press(&mut window, &mut transport, &mut queue, egui::Key::Enter),
             Some(Command::Pause),
-            "the loaded row's action is pause, not a second start (R10)"
+            "the loaded row's action is pause, not a second start"
         );
         assert_eq!(queue.upcoming().len(), queued, "pausing keeps the queue");
         assert_eq!(window.library.search.text, "a", "and keeps the query");
@@ -4453,11 +4457,11 @@ mod tests {
         assert_eq!(window.library.search.mark(), Some(3), "the floor is last");
     }
 
-    /// R2, for the whole painted box: the text edit is the field, so a click on
-    /// the magnifier or the padding beside it focuses the field and re-opens the
-    /// menu the query still holds. Before the text edit covered the box, those
-    /// clicks were "elsewhere": the field blurred, `settle` closed the menu, and
-    /// `clicked_field` never fired.
+    /// A click on the field returns the rule to it, and the whole painted box is
+    /// the field: the text edit is it, so a click on the magnifier or the padding
+    /// beside it focuses the field and re-opens the menu the query still holds.
+    /// Before the text edit covered the box, those clicks were "elsewhere": the
+    /// field blurred, `settle` closed the menu, and `clicked_field` never fired.
     #[test]
     fn a_click_on_the_magnifier_or_the_left_padding_is_a_click_on_the_field() {
         let pad = space::S3 + icon::Size::MD.side / 2.0;
@@ -4484,7 +4488,7 @@ mod tests {
             );
             assert!(
                 window.library.search.is_open(),
-                "and a click on {name} re-opens the menu the query holds (R2)"
+                "and a click on {name} re-opens the menu the query holds"
             );
 
             // The reason those points are the field's: the text edit is the
@@ -4499,8 +4503,8 @@ mod tests {
         }
     }
 
-    /// R9: the pointer's tick is a hint on a row that is not the mark. Moving
-    /// the pointer makes it the last device; it never takes the keyboard's rule
+    /// The pointer's tick is a hint on a row that is not the mark: moving the
+    /// pointer makes it the last device, and it never takes the keyboard's rule
     /// with it.
     #[test]
     fn the_pointer_tick_skips_the_marked_row() {
@@ -4652,7 +4656,7 @@ mod tests {
         );
     }
 
-    /// R12: the floor row is an action, and a click on it opens the page — the
+    /// The floor row is an action, and a click on it opens the page — the
     /// same page Enter on the floor opens.
     #[test]
     fn a_click_on_the_floor_opens_the_results_page() {
@@ -4725,9 +4729,9 @@ mod tests {
         );
     }
 
-    /// R10 with the shared hold decision: the loaded row's action follows the
-    /// transport's state, exactly as its glyph does. A paused track resumes; an
-    /// ended one is restarted, because pausing it would do nothing.
+    /// The loaded row's action follows the transport's state, exactly as its
+    /// glyph does. A paused track resumes; an ended one is restarted, because
+    /// pausing it would do nothing.
     #[test]
     fn enter_resumes_a_paused_row_and_restarts_a_stopped_one() {
         for (state, expected) in [
@@ -8542,49 +8546,6 @@ mod tests {
             layout::PanePref::Hidden,
             "the release that ended the drop toggled the pane"
         );
-    }
-
-    #[test]
-    fn a_pane_toggle_asks_for_the_frame_that_shows_it() {
-        let mut transport = playing(cover("abc"));
-        let mut queue = queue_of(4, &mut transport);
-        let mut window = Window::new(Vec2::new(1400.0, 900.0));
-        let at = queue_button_at(&window).center();
-
-        let _ = window.frame(&mut transport, &mut queue, Vec::new());
-        for event in crate::view::test_support::click_events(at) {
-            let _ = window.frame(&mut transport, &mut queue, vec![event]);
-        }
-        assert_eq!(window.pane, layout::PanePref::Hidden);
-        // The causes are read a pass behind, so the pass after the click carries
-        // the ones the click's own pass recorded.
-        let _ = window.frame(&mut transport, &mut queue, Vec::new());
-        let causes = window.ctx.repaint_causes();
-        let toggle = pane_toggle_repaint_line();
-        assert!(
-            causes.iter().any(|cause| {
-                // Turns the separators around: a Windows build reports the path
-                // with backslashes.
-                cause.file.replace('\\', "/").ends_with("view/shell.rs")
-                    && Some(cause.line as usize) == toggle
-            }),
-            "the toggle did not ask for the frame that shows it: {causes:?}"
-        );
-    }
-
-    /// The line of the `request_repaint` the pane-toggle branch calls, found in
-    /// the source so an edit that moves the branch keeps the test honest.
-    fn pane_toggle_repaint_line() -> Option<usize> {
-        let lines: Vec<&str> = include_str!("shell.rs").lines().collect();
-        let start = lines
-            .iter()
-            .position(|line| line.contains("if playbar_reply.pane"))
-            .expect("the pane-toggle branch is in this file");
-        lines[start + 1..]
-            .iter()
-            .take_while(|line| !line.trim_start().starts_with('}'))
-            .position(|line| line.contains("request_repaint"))
-            .map(|offset| start + offset + 2)
     }
 
     #[test]

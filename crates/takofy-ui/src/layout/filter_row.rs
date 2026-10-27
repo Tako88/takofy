@@ -84,7 +84,7 @@ pub fn beside(sizes: &[Vec2], width: f32, chip_h: f32, count_w: Option<f32>) -> 
             let candidate = cluster(width, Some(count_w));
             let fits = candidate
                 .count
-                .is_some_and(|count| count.left() >= first_line_right(&chips) + space::S1);
+                .is_some_and(|count| count_clears_chips(count.left(), &chips));
             if fits {
                 (chips, candidate)
             } else {
@@ -151,15 +151,29 @@ fn wrapped_rows(chips: &[Rect]) -> usize {
 }
 
 /// The right edge of the last chip on the first line.
-fn first_line_right(chips: &[Rect]) -> f32 {
-    let Some(first) = chips.first() else {
+fn first_line_right<'a>(chips: impl IntoIterator<Item = &'a Rect>) -> f32 {
+    let mut chips = chips.into_iter();
+    let Some(first) = chips.next() else {
         return 0.0;
     };
+    let top = first.top();
     chips
-        .iter()
-        .filter(|rect| (rect.top() - first.top()).abs() < 0.01)
+        .filter(|rect| (rect.top() - top).abs() < 0.01)
         .map(Rect::right)
-        .fold(0.0, f32::max)
+        .fold(first.right(), f32::max)
+}
+
+/// Whether a count whose left edge is at `count_left` clears the chips' first
+/// line, or would sit under one of them.
+///
+/// A count clears the line when it starts one chip gap after the line's last
+/// chip; every chip on it ends further left, and the chips on later lines
+/// already wrap in the row's full width.
+pub(crate) fn count_clears_chips<'a>(
+    count_left: f32,
+    chips: impl IntoIterator<Item = &'a Rect>,
+) -> bool {
+    count_left >= first_line_right(chips) + space::S1
 }
 
 #[cfg(test)]
@@ -325,6 +339,29 @@ mod tests {
         let without = cluster(900.0, None);
         let with = cluster(900.0, Some(90.0));
         assert_eq!(without.field, with.field, "the count sits beside the field");
+    }
+
+    #[test]
+    fn the_count_clears_a_first_line_that_ends_a_gap_short() {
+        let chips = [Rect::from_min_size(pos2(0.0, 0.0), vec2(50.0, CHIP_H))];
+        assert!(
+            count_clears_chips(50.0 + space::S1, &chips),
+            "a count a chip gap past the line's edge clears it"
+        );
+        assert!(
+            !count_clears_chips(50.0 + space::S1 - 0.5, &chips),
+            "a count half a point closer reaches the chip"
+        );
+    }
+
+    #[test]
+    fn only_the_first_line_holds_the_count_back() {
+        let first = Rect::from_min_size(pos2(0.0, 0.0), vec2(20.0, CHIP_H));
+        let second = Rect::from_min_size(pos2(0.0, CHIP_H + space::S1), vec2(90.0, CHIP_H));
+        assert!(
+            count_clears_chips(20.0 + space::S1, &[first, second]),
+            "a wide chip on a later line does not push the count away"
+        );
     }
 
     #[test]

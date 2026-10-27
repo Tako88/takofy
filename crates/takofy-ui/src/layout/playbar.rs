@@ -7,7 +7,78 @@
 //! Every value is closed: a column too narrow for its contents yields a row that
 //! still starts at a floor rather than one that runs backwards.
 
+use egui::{Pos2, Rect, Vec2};
+
 use crate::theme::{extent, space};
+
+/// The transport's height: the large tile, the gap under it, and the seek row.
+///
+/// The play button and the seek row are one stack centred on the column, so the
+/// painter and any rect it derives from that stack read this together.
+pub fn transport_stack() -> f32 {
+    extent::BUTTON_LG + space::S1 + extent::SLIDER_H
+}
+
+/// One run's footprint in a row.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Slot {
+    /// An icon button, `BUTTON` on a side.
+    Button,
+    /// The level: `VOLUME_W` wide and a slider tall, a margin either side.
+    Volume,
+}
+
+impl Slot {
+    /// The width the slot takes in a row, its own margins included.
+    pub fn width(self) -> f32 {
+        match self {
+            Self::Button => extent::BUTTON,
+            Self::Volume => extent::VOLUME_W + 2.0 * space::S2,
+        }
+    }
+}
+
+/// The width a row of runs takes: its slots and a gap between each pair.
+pub fn row_width<P: IntoIterator<Item = Slot>>(slots: P) -> f32 {
+    let mut width = 0.0;
+    for (index, slot) in slots.into_iter().enumerate() {
+        if index > 0 {
+            width += space::S1;
+        }
+        width += slot.width();
+    }
+    width
+}
+
+/// Places one run in a row and leaves `x` past it.
+///
+/// `first` is the row's leading run, which takes no gap before it. The painter
+/// and every rect the shell derives from the row walk it through here, so the
+/// two cannot disagree about where a slot sits.
+pub fn place_run(x: &mut f32, first: bool, slot: Slot, centre_y: f32) -> Rect {
+    if !first {
+        *x += space::S1;
+    }
+    match slot {
+        Slot::Button => {
+            let rect = Rect::from_min_size(
+                Pos2::new(*x, centre_y - extent::BUTTON / 2.0),
+                Vec2::splat(extent::BUTTON),
+            );
+            *x += extent::BUTTON;
+            rect
+        }
+        Slot::Volume => {
+            *x += space::S2;
+            let rect = Rect::from_min_size(
+                Pos2::new(*x, centre_y - extent::SLIDER_H / 2.0),
+                Vec2::new(extent::VOLUME_W, extent::SLIDER_H),
+            );
+            *x += extent::VOLUME_W + space::S2;
+            rect
+        }
+    }
+}
 
 /// The transport's three runs, left to right.
 ///
@@ -58,6 +129,21 @@ pub fn seek_row(column_w: f32) -> SeekRow {
     }
 }
 
+/// The seek row's rect: centred on `centre_x`, under a transport that starts at
+/// `top`.
+///
+/// The stack is centred on the column, so the seek row sits one tile and its
+/// gap below the transport's top.
+pub fn seek_line(centre_x: f32, top: f32, seek: SeekRow) -> Rect {
+    Rect::from_min_size(
+        Pos2::new(
+            centre_x - seek.width / 2.0,
+            top + extent::BUTTON_LG + space::S1,
+        ),
+        Vec2::new(seek.width, extent::SLIDER_H),
+    )
+}
+
 /// Solves the now column's text and controls.
 ///
 /// `natural_w` is the unclamped width of the wider text line, measured before
@@ -103,6 +189,15 @@ mod tests {
     const GAP: f32 = 12.0;
     /// The row's cap, 32rem.
     const SEEK_MAX: f32 = 512.0;
+    /// An icon button's square, 1.75rem.
+    const ICON: f32 = 28.0;
+    /// The volume slider's width, 4.5rem, and its margin either side.
+    const VOLUME: f32 = 72.0;
+    const VOLUME_MARGIN: f32 = 8.0;
+    /// The gap between two runs, `space-1`.
+    const RUN_GAP: f32 = 4.0;
+    /// The seek row's height, 0.875rem.
+    const SLIDER: f32 = 14.0;
 
     /// A now column with the art, the two controls and a width to spare.
     fn now_column(natural_w: f32) -> NowRow {
@@ -206,5 +301,61 @@ mod tests {
         let seek = seek_row(0.0);
         assert_eq!(seek.width, 0.0);
         assert_eq!(seek.track, 0.0);
+    }
+
+    #[test]
+    fn the_transport_stack_is_the_tile_the_gap_and_the_seek_row() {
+        assert_eq!(transport_stack(), TILE + RUN_GAP + SLIDER);
+    }
+
+    #[test]
+    fn the_seek_line_hangs_a_tile_and_a_gap_below_the_transport() {
+        let top = 100.0;
+        let line = seek_line(500.0, top, seek_row(900.0));
+
+        assert_eq!(line.width(), SEEK_MAX);
+        assert_eq!(line.height(), SLIDER);
+        assert_eq!(line.center().x, 500.0, "the row is centred on the column");
+        assert_eq!(line.top(), top + TILE + RUN_GAP);
+    }
+
+    #[test]
+    fn a_row_is_its_slots_and_the_gaps_between_them() {
+        let slots = [Slot::Button, Slot::Volume, Slot::Button];
+        assert_eq!(
+            row_width(slots),
+            2.0 * ICON + VOLUME + 2.0 * VOLUME_MARGIN + 2.0 * RUN_GAP
+        );
+        assert_eq!(row_width([]), 0.0);
+    }
+
+    #[test]
+    fn a_row_laid_from_its_width_ends_at_the_edge_it_was_given() {
+        let slots = [Slot::Volume, Slot::Button];
+        let right = 700.0;
+        let centre = 200.0;
+        let width = row_width(slots);
+        let mut x = right - width;
+        let level = place_run(&mut x, true, slots[0], centre);
+        let glyph = place_run(&mut x, false, slots[1], centre);
+
+        // The slider's margin is inside its slot; the button follows a gap.
+        assert_eq!(level.left(), right - width + VOLUME_MARGIN);
+        assert_eq!(level.width(), VOLUME);
+        assert_eq!(level.center().y, centre);
+        assert_eq!(glyph.left(), level.right() + VOLUME_MARGIN + RUN_GAP);
+        assert_eq!(glyph.size(), Vec2::splat(ICON));
+        assert_eq!(glyph.center().y, centre);
+        assert_eq!(glyph.right(), right, "the walk ends where it started");
+        assert_eq!(x, right);
+    }
+
+    #[test]
+    fn the_leading_run_takes_no_gap_before_it() {
+        let mut x = 100.0;
+        let first = place_run(&mut x, true, Slot::Button, 0.0);
+        assert_eq!(first.left(), 100.0);
+        let second = place_run(&mut x, false, Slot::Button, 0.0);
+        assert_eq!(second.left(), first.right() + RUN_GAP);
     }
 }
