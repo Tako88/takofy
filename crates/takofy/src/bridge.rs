@@ -6,7 +6,8 @@
 //! must not hold up runtime shutdown, and a detached thread dies with the
 //! process.
 //!
-//! The command loop stays here, and the rest of the file is one job per module:
+//! The command loop and the per-command helpers stay here; the jobs below have
+//! their own module:
 //!
 //! - [`wake`]: the waker slot, the notifier, and both ends of the loop.
 //! - [`signin`]: starts the sign-in worker and turns an auth result into an
