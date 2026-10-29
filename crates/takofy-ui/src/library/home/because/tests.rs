@@ -257,3 +257,20 @@ fn a_retry_asks_the_same_first_artist() {
 
     assert_eq!(ask(&mut library), first);
 }
+
+/// The page asks for the followed artists on its first frame, so an `Idle` list
+/// is the one frame before that ask — not a read this shelf waits on. Waiting on
+/// it would hide the day-one invite behind a section that draws nothing.
+#[test]
+fn an_unasked_followed_list_is_not_waited_on() {
+    let mut library = Library::starting_home(NOW_MS);
+    library.apply(&Update::Playlists(Vec::new()));
+    library.apply(&Update::LikedTracks(Vec::new()));
+    library.apply(&Update::SavedAlbums(Vec::new()));
+    assert!(matches!(library.followed_artists, Load::Idle));
+
+    assert!(
+        !matches!(library.because_section(), Section::Waiting),
+        "a list nobody asked for yet is not something to wait for"
+    );
+}
