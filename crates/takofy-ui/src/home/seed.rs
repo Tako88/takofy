@@ -29,7 +29,7 @@ impl Seed {
 ///
 /// Zero draws zero: a shelf with nothing in its pool never asks for an index,
 /// and the answer is total anyway.
-pub fn below(state: &mut u64, n: usize) -> usize {
+pub(super) fn below(state: &mut u64, n: usize) -> usize {
     if n == 0 {
         return 0;
     }

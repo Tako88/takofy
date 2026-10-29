@@ -368,7 +368,7 @@ fn trail(
                 clicked = crumb.target.clone().map(|target| (index, target));
             }
         } else {
-            // Home at the root has nowhere to go, so it is text, not a control.
+            // The current page, Home here, has nowhere to go, so it is text.
             ui.painter().galley(place.min, galley, base);
         }
         x = place.right() + space::S2;

@@ -522,3 +522,63 @@ fn home_asks_for_no_label_away_from_home() {
 
     assert_eq!(library.home_labels_request(), None);
 }
+
+#[test]
+fn a_failed_label_read_is_incomplete_and_never_quiet() {
+    let mut library = home_with_a_liked_song();
+    assert!(
+        library.home_labels_request().is_some(),
+        "arrange: the label is owed"
+    );
+
+    library.apply(&Update::SavedLabelFailed {
+        asked: vec!["spotify:track:t".to_owned()],
+        failure: Failure::Load,
+    });
+
+    assert_eq!(
+        library.home_shelf(4),
+        crate::home::Shelf::Incomplete(Failure::Load),
+        "a failed label read is not a quiet library"
+    );
+    assert_eq!(
+        library.home_labels_request(),
+        None,
+        "the failed URI is not asked for again on its own"
+    );
+}
+
+#[test]
+fn a_retry_after_a_failed_label_read_asks_for_the_labels_again() {
+    let mut library = home_with_a_liked_song();
+    assert!(
+        library.home_labels_request().is_some(),
+        "arrange: the label is owed"
+    );
+    library.apply(&Update::SavedLabelFailed {
+        asked: vec!["spotify:track:t".to_owned()],
+        failure: Failure::Load,
+    });
+    assert_eq!(
+        library.home_shelf(4),
+        crate::home::Shelf::Incomplete(Failure::Load),
+        "arrange: the shelf names the failure"
+    );
+
+    library.reload();
+
+    assert_eq!(
+        library.home_shelf(4),
+        crate::home::Shelf::Waiting,
+        "the retry is a read in flight, not the old failure"
+    );
+    library.apply(&Update::Playlists(Vec::new()));
+    library.apply(&Update::SavedAlbums(Vec::new()));
+    assert_eq!(
+        library.home_labels_request(),
+        Some(Command::LabelSaved {
+            tracks: vec!["spotify:track:t".to_owned()],
+        }),
+        "the retry asks for the label again"
+    );
+}

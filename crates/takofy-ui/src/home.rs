@@ -18,8 +18,8 @@ mod seed;
 
 pub use greeting::greeting;
 pub use outlook::{Intake, Outlook, Phase, Tally, outlook};
-pub use recent::{POOL, pick, pool};
-pub use seed::{Seed, below};
+pub use recent::{pick, pool};
+pub use seed::Seed;
 
 /// One thing a card draws, borrowed from the library's own lists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,6 +66,9 @@ pub struct Home {
     /// The label read's answer for each asked URI; `None` is a track the shelf
     /// cannot draw.
     labels: HashMap<String, Option<TrackEntry>>,
+    /// The failure that stopped the last label read, kept so the shelf can name
+    /// it instead of calling the misses a quiet library.
+    failed: Option<Failure>,
     /// The URIs a label read was sent for, so each one is sent once.
     asked: HashSet<String>,
 }
@@ -97,6 +100,30 @@ impl Home {
                 .cloned();
             self.labels.insert(uri.clone(), usable);
         }
+    }
+
+    /// Records that the label read sent for `asked` failed.
+    ///
+    /// The URIs are asked and answered so nothing asks again on its own, and
+    /// the failure is kept rather than stored as a miss, so the shelf can say
+    /// what happened and offer the retry that reads them again.
+    pub fn fail_labels(&mut self, asked: &[String], failure: Failure) {
+        for uri in asked {
+            self.labels.insert(uri.clone(), None);
+        }
+        self.failed = Some(failure);
+    }
+
+    /// Drops the label read's answers, so a retry asks for every URI again.
+    pub fn forget_labels(&mut self) {
+        self.labels.clear();
+        self.asked.clear();
+        self.failed = None;
+    }
+
+    /// The failure that stopped the last label read, if one did.
+    pub fn failed(&self) -> Option<Failure> {
+        self.failed
     }
 
     /// Whether a label read was sent for `uri`.

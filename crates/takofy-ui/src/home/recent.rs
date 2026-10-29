@@ -13,7 +13,7 @@ use super::seed::{Seed, below};
 ///
 /// It is a fixed count rather than the number of cards on screen, so a resize
 /// never changes which cards were drawn.
-pub const POOL: usize = 24;
+const POOL: usize = 24;
 
 /// The newest dated entries, as indices into `dates`, at most [`POOL`] of them.
 ///

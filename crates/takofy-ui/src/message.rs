@@ -431,6 +431,14 @@ pub enum Update {
         asked: Vec<String>,
         named: Vec<TrackEntry>,
     },
+    /// The labels of the liked songs Home asked for could not be read.
+    ///
+    /// The URIs are the ones the read was sent for, so the shelf can stop
+    /// waiting on an answer that will not come.
+    SavedLabelFailed {
+        asked: Vec<String>,
+        failure: Failure,
+    },
     /// The liked write landed for these tracks, with this value.
     Liked { tracks: Vec<String>, liked: bool },
     /// The liked write did not stick.

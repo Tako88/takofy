@@ -180,12 +180,11 @@ pub struct Library {
     pub filter: Filter,
     /// The per-release track labels the discography fills in as it scrolls.
     pub releases: Releases,
-    /// The library root's filter row. Unlike `filter`, going home does not
-    /// reset it: home then Back reloads the same root, so the choice is kept,
-    /// and the root is the page the choice belongs to.
+    /// The library root's filter row. Opening a page or Home does not reset it:
+    /// Back onto the root reloads the same list, so the choice is kept.
     pub root_filter: RootFilter,
-    /// The sidebar's kind chips. Like `root_filter`, opening a page or going
-    /// home does not reset it.
+    /// The sidebar's kind chips. Like `root_filter`, opening a page or Home
+    /// does not reset them.
     pub sidebar_kind: SidebarFilter,
     /// The playlist page's filter. A page change clears it, because the query
     /// names one playlist's rows; a reload of the same playlist keeps it.
@@ -1004,6 +1003,9 @@ impl Library {
             }
             Update::SavedLabelled { asked, named } => {
                 self.home.apply_labels(asked, named);
+            }
+            Update::SavedLabelFailed { asked, failure } => {
+                self.home.fail_labels(asked, *failure);
             }
             Update::Liked { tracks, liked } => {
                 self.likes.apply(&likes::Event::Confirmed {

@@ -2235,8 +2235,8 @@ async fn label_rows<H: SessionHost>(
 /// Names the liked songs Home's shelf is about to draw.
 ///
 /// The reply is always sent, even when the read fails or names nothing: Home
-/// waits for every answer before it draws, so a miss has to be an answer too.
-/// The shelf then cannot use that song as a card and leaves it out.
+/// waits for every answer before it draws. A miss is an answer the shelf cannot
+/// draw from; a failure is told apart from it so the page can offer the retry.
 async fn label_saved<H: SessionHost>(
     host: &mut H,
     stop: &mut StopReceiver<()>,
@@ -2252,9 +2252,11 @@ async fn label_saved<H: SessionHost>(
         }
         Some(Err(error)) => {
             log_device_error(&error);
-            notifier.send(Update::SavedLabelled {
+            // The labels have no surface of their own, so their failure is the
+            // library's load, as a failed liked read is.
+            notifier.send(Update::SavedLabelFailed {
                 asked,
-                named: Vec::new(),
+                failure: Failure::Load,
             });
             Step::Done
         }

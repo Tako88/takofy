@@ -29,6 +29,18 @@ pub struct Intake {
     pub likes: Phase,
 }
 
+impl Intake {
+    /// Whether every source has answered, so the shelf's pool cannot reshuffle.
+    ///
+    /// A failed rootlist never settles: the reads behind it were never asked.
+    pub fn settled(self) -> bool {
+        !matches!(self.playlists, Phase::Failed(_))
+            && [self.playlists, self.albums, self.likes]
+                .into_iter()
+                .all(|phase| phase != Phase::Pending)
+    }
+}
+
 /// How much the shelf has to draw.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Tally {
@@ -38,6 +50,8 @@ pub struct Tally {
     pub unanswered: usize,
     /// Pooled entries that can draw a card.
     pub usable: usize,
+    /// The failure that stopped the label read, when one did.
+    pub label_failed: Option<Failure>,
 }
 
 /// The one thing Home says under the greeting.
@@ -60,19 +74,16 @@ pub enum Outlook {
 /// What the page says, in the order that keeps it from ever going blank.
 ///
 /// A failed rootlist is the one state that outranks everything: the other two
-/// reads never run without it, so there is nothing else to say. A pending source
-/// or an unanswered label comes next, because drawing a partial shelf would
-/// reshuffle it when the rest lands. A failure below that only speaks when the
-/// pool has nothing usable, so one failed source cannot hide the cards another
-/// still supplies.
+/// reads never run without it, so there is nothing else to say. An unsettled
+/// source or an unanswered label comes next, because drawing a partial shelf
+/// would reshuffle it when the rest lands. A failure below that only speaks when
+/// the pool has nothing usable, so one failed source cannot hide the cards
+/// another still supplies.
 pub fn outlook(intake: Intake, tally: Tally) -> Outlook {
     if let Phase::Failed(failure) = intake.playlists {
         return Outlook::Unreadable(failure);
     }
-    let pending = [intake.playlists, intake.albums, intake.likes]
-        .into_iter()
-        .any(|phase| phase == Phase::Pending);
-    if pending || tally.unanswered > 0 {
+    if !intake.settled() || tally.unanswered > 0 {
         return Outlook::Waiting;
     }
     if tally.usable > 0 {
@@ -82,6 +93,11 @@ pub fn outlook(intake: Intake, tally: Tally) -> Outlook {
         return Outlook::Incomplete(failure);
     }
     if let Phase::Failed(failure) = intake.likes {
+        return Outlook::Incomplete(failure);
+    }
+    // A failed label read emptied the pool without any source failing, so it
+    // must not read as a quiet library with nothing recent.
+    if let Some(failure) = tally.label_failed {
         return Outlook::Incomplete(failure);
     }
     if !tally.any {

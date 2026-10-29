@@ -37,7 +37,7 @@ fn a_label_saved_read_answers_with_the_asked_and_named_tracks() {
 }
 
 #[test]
-fn a_failed_label_saved_read_still_answers_with_the_asked_tracks() {
+fn a_failed_label_saved_read_reports_the_failure_with_the_asked_tracks() {
     let store = Arc::new(MemoryStore::seeded("stored"));
     let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
     let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
@@ -58,11 +58,11 @@ fn a_failed_label_saved_read_still_answers_with_the_asked_tracks() {
 
     assert_eq!(
         update,
-        Update::SavedLabelled {
+        Update::SavedLabelFailed {
             asked: vec![TRACK.to_owned()],
-            named: Vec::new(),
+            failure: Failure::Load,
         },
-        "a miss is still an answer, so the shelf stops waiting"
+        "a failure is an answer the shelf can name"
     );
     assert_eq!(calls(&shared), vec![Call::Label(vec![TRACK.to_owned()])]);
 }

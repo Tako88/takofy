@@ -322,8 +322,8 @@ pub fn episode_meta(show: &str, published: Option<PublishedAt>, now_ms: u64) -> 
 
 /// The root's head note: how many cards the chosen chip shows.
 ///
-/// Each card dates itself differently, so the note counts cards rather than
-/// dating any of them: `3 saved`.
+/// Each card dates itself, so the note counts them rather than picking one
+/// date: `3 saved`.
 pub fn library_note(count: usize) -> String {
     format!("{count} saved")
 }

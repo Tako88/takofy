@@ -80,6 +80,7 @@ impl Library {
             any,
             unanswered,
             usable: usable.len(),
+            label_failed: self.home.failed(),
         };
         match outlook(self.home_intake(), tally) {
             Outlook::Waiting => Shelf::Waiting,

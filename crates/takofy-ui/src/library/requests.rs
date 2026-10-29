@@ -1,6 +1,5 @@
 //! The reads the library asks for, and the loads they point at.
 
-use crate::home::Phase;
 use crate::message::Command;
 use crate::route::Page;
 
@@ -151,6 +150,9 @@ impl Library {
         self.followed_artists = Load::Idle;
         self.saved_albums = Load::Idle;
         self.likes.reload();
+        // The retry is the page's own: it asks for the labels a failed read
+        // left unanswered instead of keeping their misses.
+        self.home.forget_labels();
         Command::ReloadLibrary
     }
 
@@ -356,12 +358,7 @@ impl Library {
         if !self.on_home() {
             return None;
         }
-        let intake = self.home_intake();
-        if matches!(intake.playlists, Phase::Failed(_))
-            || [intake.playlists, intake.albums, intake.likes]
-                .into_iter()
-                .any(|phase| phase == Phase::Pending)
-        {
+        if !self.home_intake().settled() {
             return None;
         }
         let tracks = self.home_unlabelled();

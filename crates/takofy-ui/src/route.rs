@@ -11,9 +11,7 @@ pub enum Page {
     /// Home: the shelf of what was saved most recently.
     ///
     /// It carries no payload, because there is one Home and nothing names it.
-    /// It is a page rather than the root so the root keeps its place: `None` is
-    /// still the playlists grid the library opens on, and Home is a page the
-    /// history can walk to and back from.
+    /// It is a page rather than the root, which is the playlists grid.
     Home,
     /// A playlist, by URI.
     Playlist(String),

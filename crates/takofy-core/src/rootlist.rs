@@ -57,7 +57,7 @@ pub(crate) trait RootlistSource {
 }
 
 /// The rootlist endpoint for one page, asking for each playlist's timestamp.
-pub fn rootlist_path(user: &str, from: usize, len: usize) -> String {
+pub(crate) fn rootlist_path(user: &str, from: usize, len: usize) -> String {
     format!(
         "/playlist/v2/user/{user}/rootlist?decorate=revision,attributes,length,owner,capabilities,status_code,timestamp&from={from}&length={len}"
     )
