@@ -235,3 +235,99 @@ fn the_rows_run_newest_first() {
         "the drawn rows do not run downhill: {dates:?}"
     );
 }
+
+/// One show with `count` episodes, the newest `days_ago` days old.
+fn long_detail(show: &str, count: usize, days_ago: u64) -> ShowDetail {
+    ShowDetail {
+        show: Show {
+            uri: show.to_owned(),
+            name: show.to_owned(),
+            publisher: String::new(),
+            description: String::new(),
+            cover: None,
+        },
+        episodes: (0..count)
+            .map(|at| episode(show, at, days_ago + at as u64))
+            .collect(),
+    }
+}
+
+#[test]
+fn a_long_show_fills_the_shelf_on_its_own() {
+    let mut library = library(followed(4));
+    let shows: Vec<String> = (0..4).map(|_| ask(&mut library)).collect();
+
+    answer(&mut library, long_detail(&shows[0], 20, 1));
+    for (at, show) in shows[1..].iter().enumerate() {
+        answer(&mut library, detail(show, 100 + at as u64 * 100));
+    }
+
+    let Section::Ready(list) = library.episodes_section() else {
+        panic!("four shows landed and the shelf is not drawn");
+    };
+    assert_eq!(list.rows.len(), DRAWN);
+    assert!(
+        list.rows
+            .iter()
+            .all(|row| row.show_uri.as_deref() == Some(shows[0].as_str())),
+        "a row came from a stale show the long one should have filled over"
+    );
+}
+
+#[test]
+fn a_spent_allowance_never_waits_for_a_read_it_cannot_send() {
+    let mut library = library(followed(4));
+    for _ in 0..Budget::per_open(Slot::Episodes) {
+        assert!(library.home.budget.take(Slot::Episodes));
+    }
+
+    assert_eq!(library.episodes_ask(), None);
+    assert!(
+        matches!(library.episodes_section(), Section::Absent),
+        "the shelf waits for reads its spent allowance forbids"
+    );
+}
+
+#[test]
+fn a_reload_returns_the_allowance_the_shelf_spent() {
+    let mut library = library(followed(10));
+    let first: Vec<String> = (0..SHOWS).map(|_| ask(&mut library)).collect();
+    for show in &first {
+        answer(&mut library, detail(show, 1));
+    }
+    assert!(matches!(library.episodes_section(), Section::Ready(_)));
+    assert_eq!(library.home.budget.left(Slot::Episodes), 0);
+
+    let _ = library.reload();
+    library.apply(&Update::FollowedShows(followed(10)));
+
+    assert_eq!(
+        library.home.budget.left(Slot::Episodes),
+        Budget::per_open(Slot::Episodes),
+        "a reload forgot the shelf without giving back what it spent"
+    );
+    let mut again: Vec<String> = Vec::new();
+    while let Some(Command::LoadHome(HomeAsk::Show { show })) = library.episodes_ask() {
+        answer(&mut library, detail(&show, 1));
+        again.push(show);
+    }
+
+    assert_eq!(again.len(), SHOWS, "the shelf owed no read after a reload");
+    assert!(
+        matches!(library.episodes_section(), Section::Ready(_)),
+        "the shelf never settled on the reads a reload let it send"
+    );
+}
+
+#[test]
+fn a_followed_list_nobody_asked_for_yet_is_not_waited_on() {
+    let mut library = Library::starting_home(NOW_MS);
+    library.apply(&Update::Playlists(Vec::new()));
+    assert_eq!(library.followed, Load::Idle, "arrange: no show read is out");
+
+    assert!(
+        matches!(library.episodes_section(), Section::Absent),
+        "the shelf waits for a list it never asked for"
+    );
+    assert_eq!(library.episodes_ask(), None);
+}

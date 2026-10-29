@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use egui::{Context, Event, Pos2, RawInput, Rect, Vec2};
+use egui::{Context, Event, Id, Pos2, RawInput, Rect, Vec2};
 use takofy_model::{Episode, PublishedAt};
 
 use super::*;
@@ -8,7 +8,9 @@ use crate::cover::Art;
 use crate::home::episodes::List;
 use crate::library::Library;
 use crate::route::Page;
-use crate::theme::{Tokens, fonts, style};
+use crate::sidebar_kind::SidebarKind;
+use crate::theme::{Tokens, extent, fonts, space, style};
+use crate::view::carry;
 use crate::view::playlist::root::MediaDraw;
 use crate::view::test_support::click_events;
 
@@ -56,13 +58,26 @@ fn draw(
     rows: &[&Episode],
     events: Vec<Event>,
 ) -> egui::FullOutput {
+    let mut play = None;
+    draw_with(ctx, art, open, &mut play, rows, events)
+}
+
+/// One pass over the shelf alone, with the presses it took left in `open` and
+/// `play`.
+fn draw_with(
+    ctx: &Context,
+    art: &mut Art,
+    open: &mut Option<Page>,
+    play: &mut Option<(String, SidebarKind)>,
+    rows: &[&Episode],
+    events: Vec<Event>,
+) -> egui::FullOutput {
     let tokens = Tokens::DARK;
     let library = Library::default();
     let list = List {
         rows: rows.to_vec(),
     };
     let mut select = None;
-    let mut play = None;
     let mut out = Pressed::default();
     let mut output = ctx.run_ui(input(events), |ui| {
         let mut draw = MediaDraw {
@@ -72,7 +87,7 @@ fn draw(
             library: &library,
             select: &mut select,
             open,
-            play: &mut play,
+            play,
         };
         show(ui, &list, NOW_MS, &tokens, &mut draw, &mut out);
     });
@@ -80,29 +95,80 @@ fn draw(
     output
 }
 
-/// The text one frame actually painted, in paint order.
-fn painted(output: &egui::FullOutput) -> Vec<&str> {
+/// Every text one frame painted, with the box it filled, in paint order.
+fn words(output: &egui::FullOutput) -> Vec<(&str, Rect)> {
     output
         .shapes
         .iter()
         .filter_map(|clipped| match &clipped.shape {
-            egui::epaint::Shape::Text(text) => Some(text.galley.text()),
+            egui::epaint::Shape::Text(text) => Some((
+                text.galley.text(),
+                Rect::from_min_size(text.pos, text.galley.size()),
+            )),
             _ => None,
         })
         .collect()
 }
 
+/// The text one frame actually painted, in paint order.
+fn painted(output: &egui::FullOutput) -> Vec<&str> {
+    words(output).into_iter().map(|(text, _)| text).collect()
+}
+
 /// Where the galley whose text is exactly `label` was painted.
 fn text_rect(output: &egui::FullOutput, label: &str) -> Option<Rect> {
-    output
-        .shapes
-        .iter()
-        .find_map(|clipped| match &clipped.shape {
-            egui::epaint::Shape::Text(text) if text.galley.text() == label => {
-                Some(Rect::from_min_size(text.pos, text.galley.size()))
-            }
-            _ => None,
+    words(output)
+        .into_iter()
+        .find(|(text, _)| *text == label)
+        .map(|(_, rect)| rect)
+}
+
+/// What the head painted on the title's own line, past the title's end.
+fn aside<'a>(output: &'a egui::FullOutput, title: &str) -> Vec<&'a str> {
+    let Some(head) = text_rect(output, title) else {
+        return Vec::new();
+    };
+    words(output)
+        .into_iter()
+        .filter(|(text, rect)| {
+            *text != title
+                && rect.left() > head.right()
+                && (rect.center().y - head.center().y).abs() < head.height() / 2.0
         })
+        .map(|(text, _)| text)
+        .collect()
+}
+
+/// Whether painted words read as a count of what the shelf drew.
+fn looks_like_a_count(text: &str) -> bool {
+    text.chars().any(|character| character.is_ascii_digit())
+}
+
+/// Every label the frame gave an accessibility node, in node order.
+fn announced(output: &egui::FullOutput) -> Vec<String> {
+    output
+        .platform_output
+        .accesskit_update
+        .as_ref()
+        .map(|update| {
+            update
+                .nodes
+                .iter()
+                .filter_map(|(_, node)| node.label().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The centre of the square a play toggle would sit in, on the row whose title
+/// is `title`.
+fn toggle_centre(output: &egui::FullOutput, title: &str) -> Pos2 {
+    let title = text_rect(output, title).expect("the row paints its title");
+    let side = extent::EPISODE_TOGGLE;
+    Pos2::new(
+        title.left() - space::S4 - side / 2.0,
+        title.top() + side / 2.0,
+    )
 }
 
 #[test]
@@ -121,7 +187,11 @@ fn the_head_names_the_shelf_and_counts_nothing() {
         painted.contains(&HOME_EPISODES_TITLE),
         "the head did not name the shelf"
     );
-    assert!(!painted.contains(&"2"), "the head counted the rows it drew");
+    let aside = aside(&output, HOME_EPISODES_TITLE);
+    assert!(
+        !aside.iter().any(|text| looks_like_a_count(text)),
+        "the head counted the rows it drew: {aside:?}"
+    );
     assert!(
         painted.contains(&"Episode 0") && painted.contains(&"Episode 1"),
         "a drawn row was missing: {painted:?}"
@@ -185,5 +255,53 @@ fn an_empty_list_draws_nothing() {
     assert!(
         painted(&output).is_empty(),
         "the shelf drew a head with no rows under it"
+    );
+}
+
+#[test]
+fn a_press_where_the_toggle_would_be_plays_nothing() {
+    let ctx = context();
+    let mut art = Art::default();
+    let one = episode(0, 1);
+    let rows = [&one];
+
+    let first = draw(&ctx, &mut art, &mut None, &rows, Vec::new());
+    let at = toggle_centre(&first, "Episode 0");
+
+    let mut open = None;
+    let mut play = None;
+    for event in click_events(at) {
+        draw_with(&ctx, &mut art, &mut open, &mut play, &rows, vec![event]);
+    }
+
+    assert_eq!(
+        play, None,
+        "a row that only opens its show played from the toggle's place"
+    );
+    assert_eq!(open, None, "one press on the body is a pick, not an open");
+    let picked = carry::List::open(&ctx, Id::unique("home-episodes"), rows.len())
+        .look(0)
+        .selected;
+    assert!(picked, "the press was swallowed where the toggle would be");
+}
+
+#[test]
+fn the_shelf_announces_no_play_it_cannot_give() {
+    let ctx = context();
+    ctx.enable_accesskit();
+    let mut art = Art::default();
+    let one = episode(0, 1);
+    let rows = [&one];
+
+    let output = draw(&ctx, &mut art, &mut None, &rows, Vec::new());
+    let labels = announced(&output);
+
+    assert!(
+        !labels.iter().any(|label| label.starts_with("Play ")),
+        "the shelf announced a play button: {labels:?}"
+    );
+    assert!(
+        labels.iter().any(|label| label.contains("Episode 0")),
+        "the row announced nothing: {labels:?}"
     );
 }

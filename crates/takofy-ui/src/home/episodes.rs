@@ -84,11 +84,12 @@ impl State {
         if !self.has_asked(uri) {
             return;
         }
+        let detail = named(detail);
         self.failed.retain(|(failed, _)| failed != uri);
         if let Some(held) = self.landed.iter_mut().find(|held| held.show.uri == uri) {
-            *held = detail.clone();
+            *held = detail;
         } else {
-            self.landed.push(detail.clone());
+            self.landed.push(detail);
         }
     }
 
@@ -194,6 +195,24 @@ impl State {
 pub struct List<'a> {
     /// The drawn episodes, newest first.
     pub rows: Vec<&'a Episode>,
+}
+
+/// One show's answer, with each episode naming the show it came from.
+///
+/// A row draws its byline from the episode, and the wire does not promise every
+/// row repeats its show, so a blank name or a missing address is filled from the
+/// show the answer is about.
+fn named(detail: &ShowDetail) -> ShowDetail {
+    let mut detail = detail.clone();
+    for episode in &mut detail.episodes {
+        if episode.show.trim().is_empty() {
+            episode.show = detail.show.name.clone();
+        }
+        if episode.show_uri.is_none() {
+            episode.show_uri = Some(detail.show.uri.clone());
+        }
+    }
+    detail
 }
 
 #[cfg(test)]

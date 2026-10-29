@@ -252,6 +252,8 @@ pub fn show_view(
                                 show_uri: Some(detail.show.uri.as_str()),
                                 age: meta.age.as_deref().unwrap_or_default(),
                                 duration: duration.as_deref(),
+                                // The episode's own page is where it plays.
+                                playable: true,
                                 state: state_of(episode.uri.as_str(), transport),
                                 look: selection.look(index),
                                 refocus: false,

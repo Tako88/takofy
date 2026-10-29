@@ -1,9 +1,9 @@
 //! The episodes shelf: the newest episodes of the shows you follow.
 //!
 //! The head names the shelf, and the four rows are the app's own episode rows,
-//! each with how long ago it was published and how long it runs. The shelf owns
-//! no queue: a row's byline opens its show, where the episode's own page plays
-//! it.
+//! each with how long ago it was published and how long it runs. A row offers no
+//! play of its own: its byline opens its show, and the episode plays on the page
+//! that opens.
 
 use egui::{Id, Sense, Ui};
 
@@ -57,6 +57,8 @@ pub(super) fn show(
             show_uri: episode.show_uri.as_deref(),
             age: meta.age.as_deref().unwrap_or_default(),
             duration: duration.as_deref(),
+            // A row here is a doorway to its show, which is where it plays.
+            playable: false,
             state: State::Resting,
             look: selection.look(index),
             refocus: false,
@@ -70,8 +72,8 @@ pub(super) fn show(
                 });
             }
             Some(Click::Open(page)) => *draw.open = Some(page),
-            // The shelf starts nothing of its own: the play toggle and the menu
-            // belong to the pages this one links to.
+            // The shelf starts nothing of its own: the row offers no toggle, and
+            // the play, menu and like all belong to the page the row opens.
             Some(Click::Play) | Some(Click::Menu(_)) | Some(Click::Like(_)) | None => {}
         }
     }

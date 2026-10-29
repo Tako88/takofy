@@ -1,5 +1,6 @@
 //! The reads the library asks for, and the loads they point at.
 
+use crate::home::Budget;
 use crate::message::Command;
 use crate::route::Page;
 
@@ -151,8 +152,11 @@ impl Library {
         self.saved_albums = Load::Idle;
         self.likes.reload();
         // The retry is the page's own: it asks for the labels a failed read
-        // left unanswered instead of keeping their misses.
+        // left unanswered instead of keeping their misses. It forgets every
+        // shelf, so every shelf's allowance comes back with them, or a shelf
+        // would wait for reads it is no longer allowed to send.
         self.home.forget();
+        self.home.budget = Budget::default();
         Command::ReloadLibrary
     }
 
