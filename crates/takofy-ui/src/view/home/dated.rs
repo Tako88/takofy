@@ -17,8 +17,8 @@ use crate::sidebar_kind::SidebarKind;
 use crate::view::playlist::root::{self, MediaDraw};
 
 use super::super::text as recipe;
-use super::super::{controls, hero, media, section, skeleton};
-use super::Pressed;
+use super::super::{controls, hero, media, section};
+use super::{Pressed, frame};
 
 // The dated page's own tests read art, greeting and head through this module, so
 // the three stay named here while only they use them.
@@ -47,11 +47,7 @@ pub(super) fn show(
         Shelf::Waiting => {
             // One row of tiles: the shelf is one row, so the skeleton holds the
             // shape the cards will.
-            let solved = root::media_grid(ui);
-            let count = solved.columns;
-            let list = root::grid_rect(ui, &solved, count);
-            ui.allocate_rect(list, Sense::hover());
-            skeleton::tiles(ui, &solved, count, draw.tokens);
+            frame::card_band(ui, draw.tokens);
         }
         Shelf::Unreadable(failure) | Shelf::Incomplete(failure) => {
             ui.label(recipe::muted(

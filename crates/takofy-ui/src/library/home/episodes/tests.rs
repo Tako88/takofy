@@ -56,6 +56,36 @@ fn detail(show: &str, days_ago: u64) -> ShowDetail {
     }
 }
 
+/// One show answered with exactly `episodes`.
+fn detail_with(show: &str, episodes: Vec<Episode>) -> ShowDetail {
+    ShowDetail {
+        show: Show {
+            uri: show.to_owned(),
+            name: show.to_owned(),
+            publisher: String::new(),
+            description: String::new(),
+            cover: None,
+        },
+        episodes,
+    }
+}
+
+/// An episode the label read could not name: its URI stands in for its title
+/// and it carries no publish date, so the pool drops it.
+fn unnamed(show: &str, at: usize) -> Episode {
+    Episode {
+        uri: format!("spotify:episode:{show}:{at}"),
+        title: format!("spotify:episode:{show}:{at}"),
+        show: String::new(),
+        show_uri: None,
+        description: None,
+        published: None,
+        duration_ms: None,
+        cover: None,
+        named: false,
+    }
+}
+
 /// A Home library whose followed shows have answered with `shows`.
 fn library(shows: Vec<FollowedShow>) -> Library {
     let mut library = Library::starting_home(NOW_MS);
@@ -188,6 +218,43 @@ fn a_stale_show_answer_is_ignored() {
     assert!(
         matches!(library.episodes_section(), Section::Ready(_)),
         "the asked show answered and the shelf did not draw"
+    );
+}
+
+#[test]
+fn a_new_show_that_landed_empty_beside_a_failure_is_failed_not_absent() {
+    let mut library = library(followed(2));
+    let shows: Vec<String> = (0..2).map(|_| ask(&mut library)).collect();
+
+    answer(&mut library, detail_with(&shows[0], Vec::new()));
+    fail(&mut library, &shows[1], Failure::Load);
+
+    assert!(
+        matches!(library.episodes_section(), Section::Failed(Failure::Load)),
+        "a shelf that drew nothing while a read failed is not a library that follows nothing"
+    );
+}
+
+#[test]
+fn shows_that_named_nothing_are_a_failure_not_a_quiet_library() {
+    let mut library = library(followed(2));
+    let shows: Vec<String> = (0..2).map(|_| ask(&mut library)).collect();
+
+    for show in &shows {
+        answer(
+            &mut library,
+            detail_with(show, (0..3).map(|at| unnamed(show, at)).collect()),
+        );
+    }
+
+    assert!(
+        matches!(library.episodes_section(), Section::Failed(Failure::Load)),
+        "answers that named no episode are a read that failed quietly"
+    );
+    assert_eq!(
+        library.episodes_ask(),
+        None,
+        "a failed open asked again without a retry"
     );
 }
 

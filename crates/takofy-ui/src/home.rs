@@ -170,23 +170,23 @@ impl Home {
     }
 
     /// Folds one answer into the shelf that asked for it.
-    pub fn land(&mut self, answer: HomeAnswer) {
+    pub fn land(&mut self, answer: &HomeAnswer) {
         if matches!(answer, HomeAnswer::Labelled { .. }) {
-            self.counted.land(&answer);
+            self.counted.land(answer);
         }
-        self.stations.land(&answer);
-        self.because.land(&answer);
-        self.episodes.land(&answer);
+        self.stations.land(answer);
+        self.because.land(answer);
+        self.episodes.land(answer);
     }
 
     /// Records that the read `ask` named failed.
-    pub fn fail(&mut self, ask: HomeAsk, failure: Failure) {
+    pub fn fail(&mut self, ask: &HomeAsk, failure: Failure) {
         if matches!(ask, HomeAsk::Labels { .. }) {
-            self.counted.fail(&ask, failure);
+            self.counted.fail(ask, failure);
         }
-        self.stations.fail(&ask, failure);
-        self.because.fail(&ask, failure);
-        self.episodes.fail(&ask, failure);
+        self.stations.fail(ask, failure);
+        self.because.fail(ask, failure);
+        self.episodes.fail(ask, failure);
     }
 
     /// Records the URIs a label read was sent for, so they are not sent again.

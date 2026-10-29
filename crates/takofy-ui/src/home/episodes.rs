@@ -27,7 +27,7 @@ pub const POOL: usize = 12;
 pub const DRAWN: usize = 4;
 
 /// The salt that keeps this shelf's draw off the page's other shelves.
-const SALT: u64 = 0x0045_5049_534F;
+pub(super) const SALT: u64 = 0x0045_5049_534F;
 
 /// The episodes this open draws, as indices into `dates`, newest first.
 ///
@@ -147,6 +147,19 @@ impl State {
     /// The shows whose answers landed this open.
     pub fn landed(&self) -> &[ShowDetail] {
         &self.landed
+    }
+
+    /// Whether any episode this open landed can name itself.
+    ///
+    /// An episode the wire could not name answers with its own URI and no
+    /// publish date, so the pool of newest episodes drops it. Counting the
+    /// misses is what tells a read that fell back to its URIs from a library
+    /// whose followed shows have nothing new.
+    pub fn readable(&self) -> bool {
+        self.landed
+            .iter()
+            .flat_map(|detail| &detail.episodes)
+            .any(|episode| episode.named)
     }
 
     /// The first failure this open hit that no answer made good.

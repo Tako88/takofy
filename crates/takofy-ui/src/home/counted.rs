@@ -25,7 +25,7 @@ pub const DRAWN: usize = 6;
 pub const UNLABELLED_MAX_PERCENT: usize = 1;
 
 /// The salt that keeps this shelf's draw off the page's other shelves.
-const SALT: u64 = 0x0043_4F55_4E54;
+pub(super) const SALT: u64 = 0x0043_4F55_4E54;
 
 /// One artist one item of the library names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

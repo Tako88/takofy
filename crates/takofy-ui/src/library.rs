@@ -1074,8 +1074,8 @@ impl Library {
                 self.search.apply(update);
             }
             // A Home answer lands on the shelf that asked for it, whatever page is shown.
-            Update::Home(answer) => self.home.land(answer.clone()),
-            Update::HomeFailed { ask, failure } => self.home.fail(ask.clone(), *failure),
+            Update::Home(answer) => self.home.land(answer),
+            Update::HomeFailed { ask, failure } => self.home.fail(ask, *failure),
             Update::NeedsAuthorization
             | Update::SignInFailed(_)
             | Update::Devices(_)

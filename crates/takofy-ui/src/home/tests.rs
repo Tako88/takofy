@@ -251,7 +251,7 @@ fn a_counted_label_answer_is_not_the_dated_shelves() {
     let uri = "spotify:track:a";
     home.mark_asked(&uris(&[uri]));
 
-    home.land(HomeAnswer::Labelled {
+    home.land(&HomeAnswer::Labelled {
         asked: uris(&[uri]),
         named: vec![named(uri, Some("spotify:album:r"))],
     });
@@ -271,7 +271,7 @@ fn a_failed_counted_read_is_not_the_dated_shelves() {
     home.mark_asked(&uris(&[uri]));
 
     home.fail(
-        HomeAsk::Labels {
+        &HomeAsk::Labels {
             tracks: uris(&[uri]),
         },
         Failure::Load,
@@ -294,6 +294,29 @@ fn the_page_draws_its_shelves_in_a_fixed_order() {
             Slot::Episodes
         ]
     );
+}
+
+/// Each draw on the page is a stream of its own, told apart by its salt alone:
+/// the counted ranking's, the two the related shelf uses to try artists and to
+/// pick their cards, and the episodes pool's. A copied salt would make two draws
+/// take the same positions from pools of the same size.
+#[test]
+fn every_draw_stream_is_its_own() {
+    let page = Seed::for_open(1_700_000_000_000, 1);
+    let streams = [
+        page.split(counted::SALT),
+        page.split(because::ORDER_SALT),
+        page.split(because::PICK_SALT),
+        page.split(episodes::SALT),
+    ];
+
+    for (at, stream) in streams.iter().enumerate() {
+        assert_ne!(*stream, page, "a shelf draws from the page's own stream");
+        assert!(
+            !streams[..at].contains(stream),
+            "two shelves share a stream"
+        );
+    }
 }
 
 #[test]

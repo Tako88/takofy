@@ -14,19 +14,14 @@ use crate::home::{Budget, Phase, Section, Slot, settle};
 use crate::library::{Library, Load};
 use crate::message::Command;
 
-use super::phase_of;
+use super::prerequisite;
 
 impl Library {
     /// What the because shelf draws.
     pub(super) fn because_section(&self) -> Section<Row<'_>> {
-        // A followed list nobody has asked for yet is not a read this shelf
-        // waits on: the page asks for it before a related artist can be owed.
-        let prerequisite = match self.followed_artists {
-            Load::Idle => Phase::Arrived,
-            Load::Loading | Load::Ready(_) | Load::Failed(_) => phase_of(&self.followed_artists),
-        };
+        let wait = prerequisite(&self.followed_artists);
         let own = self.because_phase();
-        settle(prerequisite, &[prerequisite, own], self.home.because.row())
+        settle(wait, &[wait, own], self.home.because.row())
     }
 
     /// What the shelf's own read is doing.

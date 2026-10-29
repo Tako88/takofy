@@ -6,7 +6,7 @@ use takofy_model::home::HomeAsk;
 use takofy_model::{LikedTrack, SavedAlbum};
 
 use crate::home::counted::{self, Holding, Tile, Tiles};
-use crate::home::{Section, Slot, settle};
+use crate::home::{Phase, Section, Slot, settle};
 use crate::message::Command;
 
 use super::super::{Library, Load};
@@ -18,19 +18,29 @@ impl Library {
     /// labels of the liked songs are still owed, so a partial ranking could
     /// never be published as the library's own. A library with nothing liked
     /// waits for no label, so its saved albums rank as soon as they answer.
+    ///
+    /// A feed that failed costs only what it would have added: the tiles the
+    /// other feeds gave are still the shelf, as they are on the dated shelf. A
+    /// labels read that failed is the shelf's own, though, and answers before
+    /// any tiles it held.
     pub(super) fn counted_section(&self) -> Section<Tiles<'_>> {
         let intake = self.home_intake();
         let feeds = [intake.albums, intake.likes];
-        // A failed rootlist, a pending feed, or a held answer decides first.
-        let decided = settle(intake.playlists, &feeds, None::<Tiles<'_>>);
-        if !matches!(decided, Section::Absent) {
-            return decided;
+        // The rootlist gates every read behind it, so its failure is the shelf's.
+        if let Phase::Failed(failure) = intake.playlists {
+            return Section::Failed(failure);
+        }
+        if intake.playlists == Phase::Pending || feeds.contains(&Phase::Pending) {
+            return Section::Waiting;
+        }
+        // A labels read still owed holds the shelf whole: a ranking drawn before
+        // it lands would reshuffle when it does.
+        if self.home.counted.failed().is_none() && !self.home.counted.settled() && self.any_liked()
+        {
+            return Section::Waiting;
         }
         if let Some(failure) = self.home.counted.failed() {
             return Section::Failed(failure);
-        }
-        if !self.home.counted.settled() && self.any_liked() {
-            return Section::Waiting;
         }
         settle(intake.playlists, &feeds, self.counted_tiles())
     }

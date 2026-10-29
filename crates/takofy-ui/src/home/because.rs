@@ -23,10 +23,10 @@ pub const DRAWN: usize = 4;
 pub const NEIGHBOURS: usize = 12;
 
 /// The stream the followed artists are tried from, apart from the row's own.
-const ORDER_SALT: u64 = 0x10;
+pub(super) const ORDER_SALT: u64 = 0x10;
 
 /// The stream the row's cards are picked from.
-const PICK_SALT: u64 = 0x11;
+pub(super) const PICK_SALT: u64 = 0x11;
 
 /// The order the followed artists are tried in, as indices into `artists`.
 ///
@@ -143,11 +143,6 @@ impl State {
         self.seed_name.clear();
         self.cards.clear();
         self.failure = None;
-    }
-
-    /// The seed this open draws with.
-    pub fn seed(&self) -> Seed {
-        self.seed
     }
 
     /// How many followed artists this open has asked.

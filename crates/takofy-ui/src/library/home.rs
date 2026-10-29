@@ -25,6 +25,19 @@ pub(super) fn phase_of<T>(load: &Load<T>) -> Phase {
     }
 }
 
+/// The phase of the list a shelf waits on before it can owe its own read.
+///
+/// A list nobody has asked for yet is not a read the shelf waits on: the page
+/// asks for it before the shelf can owe anything, so until then the shelf has
+/// nothing to draw and nothing to wait for. A list that is out, has answered or
+/// has failed is the shelf's own prerequisite.
+pub(super) fn prerequisite<T>(load: &Load<T>) -> Phase {
+    match load {
+        Load::Idle => Phase::Arrived,
+        Load::Loading | Load::Ready(_) | Load::Failed(_) => phase_of(load),
+    }
+}
+
 impl Library {
     /// Home's five shelves for one frame, borrowed from the library.
     pub fn home_sections(&self, fit: Fit) -> Sections<'_> {
@@ -64,9 +77,9 @@ impl Library {
     /// back to idle so the next frame asks for it, the shelf's answers are
     /// dropped so nothing stale is drawn, and its allowance is returned.
     pub fn retry_home(&mut self, slot: Slot) -> Option<Command> {
-        // The dated shelf's failure is the page's: its Retry re-asks the
-        // library, which restarts every read behind it.
-        if slot == Slot::Dated || matches!(self.playlists, Load::Failed(_)) {
+        // A failed rootlist is the page's own Retry: every shelf's reads were
+        // gated behind it, so the whole library is read again.
+        if matches!(self.playlists, Load::Failed(_)) {
             return Some(self.reload());
         }
         self.reset_home_feeds(slot);
@@ -76,8 +89,11 @@ impl Library {
     }
 
     /// Puts the failed reads `slot` draws from back to idle.
+    ///
+    /// Only the failed ones: a healthy read behind the same shelf keeps its
+    /// answer, so one shelf's Retry never blanks another's.
     fn reset_home_feeds(&mut self, slot: Slot) {
-        if matches!(slot, Slot::Stations | Slot::Counted) {
+        if matches!(slot, Slot::Dated | Slot::Stations | Slot::Counted) {
             if matches!(self.saved_albums, Load::Failed(_)) {
                 self.saved_albums = Load::Idle;
             }

@@ -3,31 +3,24 @@
 //! The shelf asks one show at a time, in the followed list's own order (newest
 //! follow first), so an open reads at most the newest [`SHOWS`] shows. It waits
 //! whole: no row is drawn until every show this open asked has answered or
-//! failed. A show that fails costs only its own episodes; only an open whose
-//! every asked show failed settles as a failure.
+//! failed. A show that fails costs only its own episodes; only an open with
+//! nothing drawable settles as a failure — because every asked show failed, or
+//! because the answers that landed named no episode.
 
 use takofy_model::home::HomeAsk;
 
 use crate::home::episodes::{List, SHOWS};
 use crate::home::{Budget, Phase, Section, Slot, settle};
-use crate::message::Command;
+use crate::message::{Command, Failure};
 
 use super::super::{Library, Load};
-use super::phase_of;
+use super::prerequisite;
 
 impl Library {
     /// What the episodes shelf draws.
-    ///
-    /// A followed list nobody has asked for yet is not a read this shelf waits
-    /// on: the page asks for it before the shelf can owe a show, so until then
-    /// the shelf has nothing to draw and nothing to wait for.
     pub(super) fn episodes_section(&self) -> Section<List<'_>> {
-        let prerequisite = match self.followed {
-            Load::Idle => Phase::Arrived,
-            Load::Loading | Load::Ready(_) | Load::Failed(_) => phase_of(&self.followed),
-        };
         settle(
-            prerequisite,
+            prerequisite(&self.followed),
             &[self.episodes_phase()],
             self.home.episodes.list(),
         )
@@ -37,9 +30,10 @@ impl Library {
     ///
     /// It waits while a show this open asked for has not answered, and while
     /// there is still a followed show the open may ask for and the allowance to
-    /// ask with. Once every show it may ask has answered or failed, a show that
-    /// landed is the section, an open that failed everywhere is a failure, and an
-    /// open with nothing followed is absent.
+    /// ask with. Once every show it may ask has answered or failed, what landed
+    /// decides: an open with nothing drawable is a failure when a read failed or
+    /// when the answers it did get named no episode, and an open with nothing
+    /// followed is absent.
     fn episodes_phase(&self) -> Phase {
         let state = &self.home.episodes;
         let owed = state.asked().len() < self.episodes_target()
@@ -47,10 +41,19 @@ impl Library {
         if state.pending() || owed {
             return Phase::Pending;
         }
-        if state.landed().is_empty()
+        // The payload decides, not how many shows answered: one new show that
+        // landed with no episodes beside a failed read drew nothing, and must
+        // say why instead of reading as a library that follows nothing.
+        if self.home.episodes.list().is_none()
             && let Some(failure) = state.failure()
         {
             return Phase::Failed(failure);
+        }
+        // An answer whose episodes all fell back to their URIs names nothing
+        // the pool can date, so it is a read that failed quietly rather than an
+        // empty following list.
+        if !state.landed().is_empty() && !state.readable() {
+            return Phase::Failed(Failure::Load);
         }
         Phase::Arrived
     }

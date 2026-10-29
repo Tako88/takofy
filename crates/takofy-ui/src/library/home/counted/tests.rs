@@ -514,3 +514,33 @@ fn a_portrait_is_missing_until_the_followed_artists_answer() {
         section => panic!("expected tiles, got {section:?}"),
     }
 }
+
+#[test]
+fn a_failed_likes_read_with_a_held_set_leaves_the_counted_shelf_ready() {
+    let mut library = Library::default();
+    library.home.open(NOW_MS);
+    library.apply(&Update::Playlists(Vec::new()));
+    library.apply(&Update::SavedAlbums(vec![album(
+        "spotify:album:a",
+        &[("spotify:artist:a", "A")],
+    )]));
+    assert!(
+        library.likes_request().is_some(),
+        "arrange: the liked read must be in flight"
+    );
+    library.apply(&Update::LikedTracksFailed(Failure::Load));
+
+    assert_eq!(
+        library.counted_ask(),
+        None,
+        "a failed likes read has no labels to ask for"
+    );
+    let Section::Ready(tiles) = library.counted_section() else {
+        panic!("the albums still name an artist, so the shelf is not failed");
+    };
+    assert_eq!(
+        tiles.artists.first().map(|artist| artist.uri),
+        Some("spotify:artist:a"),
+        "a failed feed cost the tiles the other feeds still gave"
+    );
+}

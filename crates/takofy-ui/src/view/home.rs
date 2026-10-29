@@ -32,11 +32,14 @@ mod episodes;
 mod frame;
 mod stations;
 
-/// The four shelves below the dated one, in the page's order.
+/// The shelves below the dated one, in the page's order.
 ///
 /// It is `Slot::ORDER` less the dated shelf, which draws above them and is the
-/// page's first band.
-const BELOW: [Slot; 4] = [Slot::Stations, Slot::Because, Slot::Counted, Slot::Episodes];
+/// page's first band, so a shelf added to the page is drawn by default rather
+/// than silently left out.
+fn below() -> impl Iterator<Item = Slot> {
+    Slot::ORDER.into_iter().filter(|slot| *slot != Slot::Dated)
+}
 
 /// What the page's presses asked for, collected until the frame's end.
 ///
@@ -103,11 +106,14 @@ pub(super) fn home_view(
                 // A failed rootlist is one failure and not five: the bands below
                 // it would repeat what the shelf above already said.
                 let gated = matches!(shelves.dated, Shelf::Unreadable(_));
-                for slot in BELOW {
-                    if gated
-                        || !matches!(shelves.presence(slot), Presence::Ready | Presence::Failed)
-                    {
+                for slot in below() {
+                    if gated {
                         continue;
+                    }
+                    match shelves.presence(slot) {
+                        // A shelf with nothing to draw occupies no room.
+                        Presence::Absent => continue,
+                        Presence::Ready | Presence::Failed | Presence::Waiting => {}
                     }
                     if drawn {
                         section::divide(ui, tokens);
@@ -127,7 +133,10 @@ pub(super) fn home_view(
                                 slot,
                                 &mut out,
                             ),
-                            Section::Waiting | Section::Absent => {}
+                            Section::Waiting => {
+                                frame::waiting(ui, HOME_STATIONS_TITLE, tokens, frame::Band::Cards)
+                            }
+                            Section::Absent => {}
                         },
                         Slot::Because => match &shelves.because {
                             Section::Ready(row) => {
@@ -141,7 +150,10 @@ pub(super) fn home_view(
                                 slot,
                                 &mut out,
                             ),
-                            Section::Waiting | Section::Absent => {}
+                            Section::Waiting => {
+                                frame::waiting(ui, HOME_BECAUSE_TITLE, tokens, frame::Band::Cards)
+                            }
+                            Section::Absent => {}
                         },
                         Slot::Counted => match &shelves.counted {
                             Section::Ready(tiles) => {
@@ -155,7 +167,10 @@ pub(super) fn home_view(
                                 slot,
                                 &mut out,
                             ),
-                            Section::Waiting | Section::Absent => {}
+                            Section::Waiting => {
+                                frame::waiting(ui, HOME_COUNTED_TITLE, tokens, frame::Band::Cards)
+                            }
+                            Section::Absent => {}
                         },
                         Slot::Episodes => match &shelves.episodes {
                             Section::Ready(list) => {
@@ -169,7 +184,13 @@ pub(super) fn home_view(
                                 slot,
                                 &mut out,
                             ),
-                            Section::Waiting | Section::Absent => {}
+                            Section::Waiting => frame::waiting(
+                                ui,
+                                HOME_EPISODES_TITLE,
+                                tokens,
+                                frame::Band::Episodes,
+                            ),
+                            Section::Absent => {}
                         },
                     }
                     drawn = true;
@@ -206,3 +227,6 @@ pub(super) fn home_view(
     }
     None
 }
+
+#[cfg(test)]
+mod tests;

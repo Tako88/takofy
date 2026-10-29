@@ -195,3 +195,34 @@ fn an_episode_takes_the_show_it_came_from() {
         );
     }
 }
+
+#[test]
+fn an_answer_that_named_its_episodes_is_readable() {
+    let mut state = State::default();
+    state.open(Seed::for_open(NOW_MS, 1));
+    read(&mut state);
+
+    assert!(state.readable(), "a named answer is the shelf's own");
+}
+
+#[test]
+fn an_answer_that_named_nothing_is_not_readable() {
+    let mut state = State::default();
+    state.open(Seed::for_open(NOW_MS, 1));
+    state.ask(SHOW);
+    let mut fallbacks = detail();
+    for episode in &mut fallbacks.episodes {
+        episode.named = false;
+        episode.published = None;
+    }
+    state.land(&HomeAnswer::Show(fallbacks));
+
+    assert!(
+        !state.readable(),
+        "episodes that fell back to their URIs named nothing"
+    );
+    assert!(
+        state.list().is_none(),
+        "arrange: nothing the answer carried can be drawn"
+    );
+}

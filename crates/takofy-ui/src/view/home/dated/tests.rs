@@ -5,7 +5,7 @@ use takofy_model::{PlaylistEntry, SavedAlbum, SavedAt, TrackEntry};
 
 use super::*;
 use crate::layout::Table;
-use crate::library::Library;
+use crate::library::{Library, Load};
 use crate::message::{Command, Failure, Update};
 use crate::player::Transport;
 use crate::queue::Queue;
@@ -388,7 +388,7 @@ fn retry_from_an_unreadable_library_reloads() {
 }
 
 #[test]
-fn retry_from_an_incomplete_library_reloads() {
+fn retry_from_an_incomplete_library_reads_only_what_failed() {
     let ctx = context();
     let mut library = settled(Vec::new(), Vec::new());
     library.apply(&Update::SavedAlbumsFailed(Failure::SavedAlbums));
@@ -401,7 +401,18 @@ fn retry_from_an_incomplete_library_reloads() {
 
     assert_eq!(
         click(&ctx, pos, &mut library, &mut art),
-        Some(Command::ReloadLibrary)
+        None,
+        "the dated shelf's retry is not the whole page's reload"
+    );
+    assert_eq!(
+        library.saved_albums,
+        Load::Idle,
+        "the failed feed was put back to idle"
+    );
+    assert_eq!(
+        library.saved_albums_request(),
+        Some(Command::LoadSavedAlbums),
+        "the next frame asks for only the read that failed"
     );
 }
 
