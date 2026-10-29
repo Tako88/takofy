@@ -273,3 +273,14 @@ fn a_failed_rootlist_is_the_pages_failure() {
         Section::Failed(Failure::Load)
     ));
 }
+
+#[test]
+fn a_failed_rootlist_asks_for_no_station() {
+    let mut library = four_feeds();
+    library.apply(&Update::PlaylistFailed(Failure::Load));
+    assert_eq!(
+        library.stations_ask(),
+        None,
+        "a gated page draws no station read"
+    );
+}

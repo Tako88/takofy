@@ -152,8 +152,12 @@ pub struct Shown<'a> {
 enum Read {
     /// The ask is out and no answer has landed.
     Asked,
-    /// The station landed with rows the band can draw.
-    Landed(Station),
+    /// The station landed with rows the band can draw, and the rows it shows.
+    Landed {
+        station: Station,
+        /// The rows the band shows, drawn once for this open.
+        shown: Vec<usize>,
+    },
     /// The station landed with no row the band can draw, so it is dropped.
     Empty,
     /// The read failed.
@@ -195,7 +199,17 @@ impl State {
         let read = if station.rows.is_empty() {
             Read::Empty
         } else {
-            Read::Landed(station.clone())
+            let Some(at) = self
+                .seeds
+                .as_ref()
+                .and_then(|seeds| seeds.iter().position(|seed| seed.uri == uri))
+            else {
+                return;
+            };
+            Read::Landed {
+                station: station.clone(),
+                shown: shown_rows(&station.rows, self.seed.split(at as u64)),
+            }
         };
         self.reads.insert(uri, read);
     }
@@ -253,7 +267,7 @@ impl State {
             seeds.iter().all(|seed| {
                 matches!(
                     self.reads.get(&seed.uri),
-                    Some(Read::Landed(_) | Read::Empty | Read::Failed)
+                    Some(Read::Landed { .. } | Read::Empty | Read::Failed)
                 )
             })
         })
@@ -268,8 +282,8 @@ impl State {
     pub fn band(&self) -> Option<Band<'_>> {
         let seeds = self.seeds.as_deref().unwrap_or_default();
         let mut stations = Vec::new();
-        for (index, seed) in seeds.iter().enumerate() {
-            let Some(Read::Landed(station)) = self.reads.get(&seed.uri) else {
+        for seed in seeds {
+            let Some(Read::Landed { station, shown }) = self.reads.get(&seed.uri) else {
                 continue;
             };
             if station.rows.is_empty() {
@@ -280,7 +294,7 @@ impl State {
                 head: &station.title,
                 art: station.art.as_ref(),
                 uri: &station.uri,
-                shown: shown_rows(&station.rows, self.seed.split(index as u64)),
+                shown: shown.clone(),
                 whole: &station.rows,
             });
         }

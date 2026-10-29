@@ -140,6 +140,27 @@ fn places(ctx: &Context, rect: Rect, station: &Shown<'_>) -> Places {
     at
 }
 
+/// Where one row's `⋯` sits inside the cell.
+fn more(ctx: &Context, rect: Rect, station: &Shown<'_>, row: usize) -> Pos2 {
+    let tokens = Tokens::DARK;
+    let mut at = Pos2::ZERO;
+    let mut output = ctx.run_ui(input(Vec::new()), |ui| {
+        let head = head_rect(ui, rect, &tokens);
+        at = media::columns(row_rects(rect, head, station.shown.len())[row])
+            .more
+            .center();
+    });
+    output.textures_delta.clear();
+    at
+}
+
+/// The widget id one station row's body draws under.
+fn row_id(root: egui::Id, station: &Shown<'_>, at: usize) -> egui::Id {
+    let track = &station.whole[station.shown[at]];
+    root.with(egui::IdSalt::new((station.uri, at)))
+        .with(("library-media-row", track.uri.as_str()))
+}
+
 /// What one cell's presses asked for, run in the passes egui needs to report a
 /// click at `at`.
 fn press(ctx: &Context, rect: Rect, station: &Shown<'_>, at: Pos2) -> (Pressed, Option<Page>) {
@@ -216,4 +237,72 @@ fn a_press_on_a_row_opens_the_album_its_label_named() {
     let (out, open) = press(&ctx, CELL, &station, at.rows[1]);
     assert_eq!(out.station, None);
     assert_eq!(open, Some(Page::Album("spotify:album:1".to_owned())));
+}
+
+#[test]
+fn a_press_on_a_rows_more_posts_its_track_menu() {
+    let ctx = context();
+    let rows = rows();
+    let station = shown(&rows);
+    let at = more(&ctx, CELL, &station, 1);
+    let (out, open) = press(&ctx, CELL, &station, at);
+    assert_eq!(out.station, None);
+    assert_eq!(open, None, "a menu opens no page");
+    let request = crate::view::context_menu::take_request(&ctx).expect("a menu was posted");
+    assert_eq!(request.targets.len(), 1);
+    assert_eq!(request.targets[0].uri, "spotify:track:3");
+    assert_eq!(request.listing, Listing::Page);
+    assert_eq!(request.rows, vec![0]);
+    assert!(
+        request
+            .items
+            .iter()
+            .any(|item| item.verb == crate::menu::Verb::GoToAlbum),
+        "a track's menu offers the album it came from"
+    );
+}
+
+#[test]
+fn a_track_in_two_stations_draws_two_distinct_rows() {
+    let ctx = context();
+    let rows = rows();
+    let first = shown(&rows);
+    let second = Shown {
+        uri: "spotify:station:artist:2",
+        ..shown(&rows)
+    };
+    let band = Band {
+        stations: vec![first, second],
+    };
+    let tokens = Tokens::DARK;
+    let library = Library::default();
+    let mut art = Art::default();
+    let mut select = None;
+    let mut open = None;
+    let mut play = None;
+    let mut out = Pressed::default();
+    let mut a = None;
+    let mut b = None;
+    let mut output = ctx.run_ui(input(Vec::new()), |ui| {
+        let root = ui.scope_id();
+        let mut draw = MediaDraw {
+            art: &mut art,
+            now: Instant::now(),
+            tokens: &tokens,
+            library: &library,
+            select: &mut select,
+            open: &mut open,
+            play: &mut play,
+        };
+        show(ui, &band, NOW_MS, &tokens, &mut draw, &mut out);
+        a = ui.ctx().read_response(row_id(root, &band.stations[0], 0));
+        b = ui.ctx().read_response(row_id(root, &band.stations[1], 0));
+    });
+    output.textures_delta.clear();
+    let a = a.expect("the first station's row is a widget");
+    let b = b.expect("the second station's row is a widget");
+    assert_ne!(
+        a.id, b.id,
+        "two stations showing one track must draw two rows"
+    );
 }

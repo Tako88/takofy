@@ -89,9 +89,14 @@ impl Library {
     }
 
     /// Whether every feed the seeds are chosen from has settled.
+    ///
+    /// A failed rootlist is the page's own failure, so it never seeds a read
+    /// the gated page would not draw.
     fn stations_settled(&self) -> bool {
+        if matches!(phase_of(&self.playlists), Phase::Failed(_)) {
+            return false;
+        }
         [
-            phase_of(&self.playlists),
             phase_of(&self.saved_albums),
             phase_of(&self.followed_artists),
             self.likes.phase(),

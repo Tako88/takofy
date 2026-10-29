@@ -6,6 +6,7 @@
 //! draws the hole the head reserves, so a band of them still reads as one grid.
 
 use egui::{Rect, Sense, Ui, Vec2, pos2, vec2};
+use takofy_model::TrackEntry;
 
 use crate::availability::Control;
 use crate::cover::{Cover, want_px};
@@ -13,13 +14,15 @@ use crate::format::HOME_STATIONS_TITLE;
 use crate::home::stations::{Band, ROWS, Shown};
 use crate::icon::Icon;
 use crate::layout::chips;
+use crate::menu::{Door, Gate, Listing, Request};
 use crate::mosaic;
 use crate::route::Page;
 use crate::sidebar_kind::SidebarKind;
 use crate::theme::{Tokens, extent, radius, space};
+use crate::verbs;
 use crate::view::playlist::root::MediaDraw;
 
-use super::super::{art, carry, controls, hero, media, section, text as recipe};
+use super::super::{art, carry, context_menu, controls, hero, media, section, text as recipe};
 use super::Pressed;
 
 /// The band's columns: a station beside its neighbour.
@@ -149,25 +152,61 @@ fn cell_of(
     }
 
     let rows = row_rects(rect, head, station.shown.len());
-    for (row_rect, row) in rows
+    for (at, (row_rect, row)) in rows
         .into_iter()
         .zip(station.shown.iter().filter_map(|at| station.whole.get(*at)))
+        .enumerate()
     {
-        let words = row_words(ui, row, draw);
-        if let Some(media::Press::Open) = media::row(ui, row_rect, &words, tokens)
-            && let Some(album) = &row.album_uri
-        {
-            *draw.open = Some(Page::Album(album.clone()));
-        }
+        // A track can be in two stations, and every widget in its row is keyed
+        // by the track's own URI; the scope keeps the two rows apart.
+        ui.push_id((station.uri, at), |ui| {
+            let words = row_words(ui, row, draw);
+            match media::row(ui, row_rect, &words, tokens) {
+                Some(media::Press::Open) => {
+                    if let Some(album) = &row.album_uri {
+                        *draw.open = Some(Page::Album(album.clone()));
+                    }
+                }
+                Some(media::Press::Menu(door)) => post_menu(ui, door, row, draw),
+                Some(media::Press::Play) | None => {}
+            }
+        });
     }
 }
 
+/// Posts the menu a station row's `⋯` asked for, as a track's own menu.
+fn post_menu(ui: &Ui, door: Door, row: &TrackEntry, draw: &MediaDraw<'_, '_>) {
+    let gate = Gate {
+        carrying: carry::carrying(ui.ctx()),
+        writing: draw.library.write_in_flight(),
+    };
+    if !gate.allows() {
+        return;
+    }
+    let targets = vec![row.clone()];
+    let listing = Listing::Page;
+    let here = draw.library.page().cloned();
+    let standing = draw.library.likes.standing(&[row.uri.as_str()]);
+    let items = verbs::track_items(&targets, here.as_ref(), &listing, standing);
+    if items.is_empty() {
+        return;
+    }
+    context_menu::post(
+        ui.ctx(),
+        Request {
+            door,
+            items,
+            playlists: Vec::new(),
+            targets,
+            rows: vec![0],
+            listing,
+            page: here,
+        },
+    );
+}
+
 /// One station row, drawn by the same component a library row is.
-fn row_words<'a>(
-    ui: &Ui,
-    row: &'a takofy_model::TrackEntry,
-    draw: &mut MediaDraw<'_, '_>,
-) -> media::Media<'a> {
+fn row_words<'a>(ui: &Ui, row: &'a TrackEntry, draw: &mut MediaDraw<'_, '_>) -> media::Media<'a> {
     let want = want_px(extent::LIBRARY_ART, ui.pixels_per_point());
     media::Media {
         uri: &row.uri,
@@ -176,7 +215,9 @@ fn row_words<'a>(
         sub: &row.artists,
         size: "",
         round: false,
-        shelf: SidebarKind::Albums,
+        // A row is a track, so its menu is a track's and its kind names a list
+        // of tracks rather than the album it opens.
+        shelf: SidebarKind::Playlists,
         // A row opens the album it came from; the station's own play is the one
         // play the band offers.
         playable: false,
