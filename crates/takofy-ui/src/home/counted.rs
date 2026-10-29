@@ -111,8 +111,13 @@ pub fn pick(ranked_len: usize, seed: Seed) -> Vec<usize> {
 /// A miss answers with the track's own URI and no artists, so a read that
 /// failed quietly is indistinguishable from a thin library by its own report.
 /// Counting the misses is what tells the two apart.
+///
+/// One miss is allowed outright, whatever the library's size: a shelf that
+/// failed on a single unnamed like would fail a small library forever, since a
+/// retry re-reads the same data. Above that the percentage decides.
 pub fn readable(asked: usize, unlabelled: usize) -> bool {
-    unlabelled.saturating_mul(100) <= asked.saturating_mul(UNLABELLED_MAX_PERCENT)
+    unlabelled <= 1
+        || unlabelled.saturating_mul(100) <= asked.saturating_mul(UNLABELLED_MAX_PERCENT)
 }
 
 /// What this open's label read is doing.

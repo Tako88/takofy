@@ -185,17 +185,80 @@ fn the_ask_names_every_liked_song_once_in_saved_order() {
 
 #[test]
 fn one_song_listed_twice_is_asked_for_once() {
+    // `a` is listed twice, and `c` names the artist `b` names: counting the
+    // duplicate would draw `x` level with `y` and let the earlier item win the
+    // tie instead.
     let mut library = settled(
         Vec::new(),
         vec![
             liked("spotify:track:a"),
             liked("spotify:track:a"),
             liked("spotify:track:b"),
+            liked("spotify:track:c"),
         ],
     );
+    let tracks = asked(&mut library);
     assert_eq!(
-        asked(&mut library),
-        vec!["spotify:track:a".to_owned(), "spotify:track:b".to_owned()]
+        tracks,
+        vec![
+            "spotify:track:a".to_owned(),
+            "spotify:track:b".to_owned(),
+            "spotify:track:c".to_owned()
+        ]
+    );
+    land(
+        &mut library,
+        tracks,
+        vec![
+            label("spotify:track:a", &[("spotify:artist:x", "X")]),
+            label("spotify:track:b", &[("spotify:artist:y", "Y")]),
+            label("spotify:track:c", &[("spotify:artist:y", "Y")]),
+        ],
+    );
+    let ranked = counted::rank(&library.counted_holdings());
+    assert_eq!(
+        ranked.iter().map(|artist| artist.uri).collect::<Vec<_>>(),
+        vec!["spotify:artist:y", "spotify:artist:x"],
+        "a song listed twice names its artist once"
+    );
+}
+
+#[test]
+fn the_ranking_reads_every_liked_song_not_the_newest_five_hundred() {
+    // Twenty-five artists hold twenty liked songs each among the newest five
+    // hundred; only the oldest hundred name the artist the library holds most
+    // of. A ranking built from a recent window would not have it at all.
+    let mut likes = Vec::new();
+    let mut named = Vec::new();
+    for index in 0..600 {
+        let uri = format!("spotify:track:{index}");
+        if index < 500 {
+            let slot = index / 20;
+            let artist = format!("spotify:artist:a{slot}");
+            let name = format!("A{slot}");
+            named.push(label(&uri, &[(artist.as_str(), name.as_str())]));
+        } else {
+            named.push(label(&uri, &[("spotify:artist:deep", "Deep")]));
+        }
+        likes.push(liked(&uri));
+    }
+    let mut library = settled(Vec::new(), likes);
+    let tracks = asked(&mut library);
+    assert_eq!(tracks.len(), 600, "every like is asked for");
+    land(&mut library, tracks, named);
+
+    let ranked = counted::rank(&library.counted_holdings());
+    assert_eq!(ranked.len(), 26, "each artist the library holds ranks once");
+    let expected: Vec<String> = std::iter::once("spotify:artist:deep".to_owned())
+        .chain((0..25).map(|slot| format!("spotify:artist:a{slot}")))
+        .collect();
+    assert_eq!(
+        ranked
+            .iter()
+            .map(|artist| artist.uri.to_owned())
+            .collect::<Vec<_>>(),
+        expected,
+        "the whole-set count puts the oldest artist first and the twenty ties in library order"
     );
 }
 
@@ -316,6 +379,28 @@ fn a_read_that_falls_back_to_its_uris_fails_the_shelf() {
     );
     assert_eq!(library.retry_home(Slot::Counted), None);
     assert!(library.counted_ask().is_some(), "the retry reads again");
+}
+
+#[test]
+fn one_unnamed_like_does_not_fail_a_small_library() {
+    let likes: Vec<LikedTrack> = (0..5)
+        .map(|index| liked(&format!("spotify:track:{index}")))
+        .collect();
+    let mut library = settled(Vec::new(), likes);
+    let tracks = asked(&mut library);
+    let mut named: Vec<TrackEntry> = tracks
+        .iter()
+        .take(4)
+        .map(|uri| label(uri, &[("spotify:artist:a", "A")]))
+        .collect();
+    named.extend(tracks.iter().skip(4).map(|uri| missed(uri)));
+    land(&mut library, tracks, named);
+
+    assert_eq!(
+        tile_uris(&library.counted_section()),
+        vec!["spotify:artist:a"],
+        "one unnamed like must not fail a library this small forever"
+    );
 }
 
 #[test]

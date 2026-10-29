@@ -162,7 +162,16 @@ fn another_open_draws_other_positions() {
 fn a_read_that_names_nothing_is_unreadable() {
     assert!(!readable(100, 100));
     assert!(!readable(100, 2));
-    assert!(!readable(99, 1));
+    assert!(!readable(1, 2));
+}
+
+#[test]
+fn a_small_library_survives_one_miss() {
+    assert!(
+        readable(5, 1),
+        "one unnamed like must not fail a small library forever"
+    );
+    assert!(!readable(5, 2), "two of five is above the tolerance");
 }
 
 #[test]
@@ -171,6 +180,8 @@ fn a_read_at_the_tolerance_still_ranks() {
     assert!(readable(100, 1));
     assert!(readable(200, 2));
     assert!(readable(1_000, 10));
+    assert!(readable(300, 3), "three of three hundred is the percentage");
+    assert!(!readable(300, 4), "four of three hundred is past it");
 }
 
 #[test]

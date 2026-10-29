@@ -2,8 +2,8 @@
 
 use std::collections::HashSet;
 
-use takofy_model::SavedAlbum;
 use takofy_model::home::HomeAsk;
+use takofy_model::{LikedTrack, SavedAlbum};
 
 use crate::home::counted::{self, Holding, Tile, Tiles};
 use crate::home::{Section, Slot, settle};
@@ -61,16 +61,22 @@ impl Library {
         self.likes.recent().into_iter().flatten().next().is_some()
     }
 
+    /// Every liked song once, in the library's saved order.
+    ///
+    /// A song the read lists twice is one song: it is asked for once and it
+    /// names its artists once, so the ask and the ranking see the same library.
+    fn liked_once(&self) -> impl Iterator<Item = &LikedTrack> {
+        let mut seen: HashSet<&str> = HashSet::new();
+        self.likes
+            .recent()
+            .into_iter()
+            .flatten()
+            .filter(move |track| seen.insert(track.uri.as_str()))
+    }
+
     /// Every liked song's URI, in the library's saved order, each once.
     fn liked_uris(&self) -> Vec<String> {
-        let mut seen: HashSet<&str> = HashSet::new();
-        let mut uris = Vec::new();
-        for track in self.likes.recent().into_iter().flatten() {
-            if seen.insert(track.uri.as_str()) {
-                uris.push(track.uri.clone());
-            }
-        }
-        uris
+        self.liked_once().map(|track| track.uri.clone()).collect()
     }
 
     /// The tiles this open draws, when the library holds any artist at all.
@@ -110,17 +116,15 @@ impl Library {
                 holdings.extend(counted::one_each(album_pairs(album)));
             }
         }
-        if let Some(liked) = self.likes.recent() {
-            for track in liked {
-                let Some(artists) = self.home.counted.artists(&track.uri) else {
-                    continue;
-                };
-                holdings.extend(counted::one_each(
-                    artists
-                        .iter()
-                        .map(|(uri, name)| (uri.as_str(), name.as_str())),
-                ));
-            }
+        for track in self.liked_once() {
+            let Some(artists) = self.home.counted.artists(&track.uri) else {
+                continue;
+            };
+            holdings.extend(counted::one_each(
+                artists
+                    .iter()
+                    .map(|(uri, name)| (uri.as_str(), name.as_str())),
+            ));
         }
         holdings
     }
