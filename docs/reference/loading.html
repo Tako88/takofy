@@ -50,6 +50,10 @@
       <a class="round-button" href="index.html" data-nav="home" aria-label="Home">
         <svg class="icon" aria-hidden="true"><use href="#i-home"></use></svg>
       </a>
+      <a class="round-button" href="library.html" data-nav="library" aria-label="Your Library">
+        <svg class="icon" aria-hidden="true"><use href="#i-library"></use></svg>
+      </a>
+      <span class="topbar__nav-sep" aria-hidden="true"></span>
       <button class="round-button" type="button" data-back aria-label="Go back">
         <svg class="icon" aria-hidden="true"><use href="#i-arrow-left"></use></svg>
       </button>
@@ -72,13 +76,13 @@
     <div class="view__inner">
       <div class="page-head">
         <h1 class="page-head__title">Loading states</h1>
-        <p class="page-head__note">Concept · 4 states · no spinners</p>
+        <p class="page-head__note">Concept · 6 states · no spinners</p>
       </div>
 
       <p class="states__intro">
         Nothing in this client spins. When the catalogue is late, the interface keeps the shape of
         what is coming, counts what it already holds, and reports it in the same mono voice it uses
-        for a bitrate. Four states are documented here; the first one is live.
+        for a bitrate. Six states are documented here; the first and the fifth are live.
       </p>
 
       <!-- ============ 01 · Library grid ============ -->
@@ -381,6 +385,140 @@
         </div>
       </section>
 
+      <!-- ============ 05 · Home, one shelf in flight ============ -->
+      <section class="section" aria-labelledby="state-home">
+        <div class="section__head">
+          <h2 class="section__title" id="state-home"><span class="states__no">05</span>Home, one shelf in flight</h2>
+          <p class="label states__meta">head first · 4 cards · 1 request</p>
+        </div>
+
+        <div class="states__stage load-demo" data-load-demo>
+          <div class="states__bar">
+            <span class="label">Skeleton</span>
+            <span class="label states__status" role="status" data-load-status>0 of 4 items loaded</span>
+            <button class="button" type="button" data-load-replay>Complete load</button>
+          </div>
+
+          <div class="load-demo__out" data-load-out aria-busy="true">
+            <div class="section__head">
+              <h3 class="section__title">Because you follow Marta Ísleif</h3>
+              <span class="section__link">12 related</span>
+            </div>
+
+            <ul class="card-grid load-demo__skeleton" data-load-skeleton aria-hidden="true">
+              <li class="card card--artist">
+                <div class="card__art"><span class="sk sk--fill"></span></div>
+                <div class="card__body sk-stack"><span class="sk sk--line"></span><span class="sk sk--line-sm"></span></div>
+              </li>
+              <li class="card card--artist">
+                <div class="card__art"><span class="sk sk--fill"></span></div>
+                <div class="card__body sk-stack"><span class="sk sk--line"></span><span class="sk sk--line-sm"></span></div>
+              </li>
+              <li class="card card--artist">
+                <div class="card__art"><span class="sk sk--fill"></span></div>
+                <div class="card__body sk-stack"><span class="sk sk--line"></span><span class="sk sk--line-sm"></span></div>
+              </li>
+              <li class="card card--artist">
+                <div class="card__art"><span class="sk sk--fill"></span></div>
+                <div class="card__body sk-stack"><span class="sk sk--line"></span><span class="sk sk--line-sm"></span></div>
+              </li>
+            </ul>
+
+            <ul class="card-grid load-demo__content" data-load-content hidden>
+              <li class="card card--artist card--centred">
+                <div class="card__art">
+                  <img src="img/artists/pale-harbour.jpg" alt="" loading="lazy" />
+                  <button class="card__play" type="button" data-track="Undertow" data-artist="Pale Harbour" data-art="img/covers/undertow.jpg" data-duration="242" aria-label="Play Pale Harbour">
+                    <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg>
+                  </button>
+                </div>
+                <div class="card__body">
+                  <a class="card__title truncate" href="artist.html">Pale Harbour</a>
+                </div>
+              </li>
+              <li class="card card--artist card--centred">
+                <div class="card__art">
+                  <img src="img/artists/wires-and-wolves.jpg" alt="" loading="lazy" />
+                  <button class="card__play" type="button" data-track="Chrome Gospel" data-artist="Wires &amp; Wolves" data-art="img/covers/chrome-gospel.jpg" data-duration="261" aria-label="Play Wires &amp; Wolves">
+                    <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg>
+                  </button>
+                </div>
+                <div class="card__body">
+                  <a class="card__title truncate" href="artist.html">Wires &amp; Wolves</a>
+                </div>
+              </li>
+              <li class="card card--artist card--centred">
+                <div class="card__art">
+                  <img src="img/artists/hana-so.jpg" alt="" loading="lazy" />
+                  <button class="card__play" type="button" data-track="Blue Hour" data-artist="Hana Sō" data-art="img/covers/blue-hour.jpg" data-duration="215" aria-label="Play Hana Sō">
+                    <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon></use></svg>
+                  </button>
+                </div>
+                <div class="card__body">
+                  <a class="card__title truncate" href="artist.html">Hana Sō</a>
+                </div>
+              </li>
+              <li class="card card--artist card--centred">
+                <div class="card__art">
+                  <img src="img/artists/the-rookery.jpg" alt="" loading="lazy" />
+                  <button class="card__play" type="button" data-track="Glovebox" data-artist="The Rookery" data-art="img/covers/halcyon-street.jpg" data-duration="214" aria-label="Play The Rookery">
+                    <svg class="icon icon--md" aria-hidden="true"><use href="#i-play" data-play-icon="true"></use></svg>
+                  </button>
+                </div>
+                <div class="card__body">
+                  <a class="card__title truncate" href="artist.html">The Rookery</a>
+                </div>
+              </li>
+            </ul>
+          </div>
+        </div>
+
+        <p class="states__note">
+          On Home only the body waits. The head is a sentence the app can compose from what it already
+          holds — “because you follow Marta Ísleif” needs the follow, not the wire — so the band arrives
+          with its title and its count and keeps the shape its cards will take underneath. A shelf
+          whose call fails keeps that head and swaps the cards for one line of explained absence; the
+          other five shelves never learn about it.
+        </p>
+      </section>
+
+      <!-- ============ 06 · Home on day one ============ -->
+      <section class="section" aria-labelledby="state-day-one">
+        <div class="section__head">
+          <h2 class="section__title" id="state-day-one"><span class="states__no">06</span>Home, day one</h2>
+          <p class="label states__meta">0 shelves · two ways out</p>
+        </div>
+
+        <div class="states__stage">
+          <div class="states__bar">
+            <span class="label">A fresh account</span>
+          </div>
+
+          <div class="page-head">
+            <h3 class="page-head__title">Good evening</h3>
+            <p class="page-head__note">0 shelves · nothing saved</p>
+          </div>
+
+          <div class="empty-state">
+            <p class="empty-state__title">Home is built from your library</p>
+            <p>
+              Nothing here yet — there is no feed behind this client to fill the space, and inventing
+              one would be the first lie of the day. Save an album, keep a playlist, follow a show, and
+              the shelves start appearing on the next open.
+            </p>
+            <p class="states__actions">
+              <a class="button" href="search.html">Search the catalogue</a>
+              <a class="button" href="podcasts.html">Follow a podcast</a>
+            </p>
+          </div>
+        </div>
+
+        <p class="states__note">
+          The greeting and its mono count survive an empty library; only the shelves go. One paragraph
+          says plainly why the page is empty, and two doors lead somewhere that is not empty.
+        </p>
+      </section>
+
       <footer class="tracklist__foot">
         <p>
           Loading system for the Takofy concept — see also <a href="search-reference.html">the search reference</a>,
@@ -388,8 +526,7 @@
           Placeholders reuse the resolved components' metrics (row heights, seams, square art), and
           motion is limited to one sheen, one breathing edge and one sweeping band.
         </p>
-      </footer>
-    </div>
+      </footer>    </div>
   </main>
 </div>
 
@@ -448,6 +585,7 @@
 <nav class="tabbar" aria-label="Primary">
   <a href="index.html" data-nav="home"><svg class="icon icon--lg" aria-hidden="true"><use href="#i-home"></use></svg>Home</a>
   <a href="search.html" data-nav="search"><svg class="icon icon--lg" aria-hidden="true"><use href="#i-search"></use></svg>Search</a>
+  <a href="library.html" data-nav="library"><svg class="icon icon--lg" aria-hidden="true"><use href="#i-library"></use></svg>Library</a>
   <a href="podcasts.html" data-nav="podcasts"><svg class="icon icon--lg" aria-hidden="true"><use href="#i-mic"></use></svg>Podcasts</a>
 </nav>
 

@@ -12,44 +12,28 @@
 
 <!-- ===================== Sidebar ===================== -->
 <aside class="sidebar" aria-label="Your library">
-  <div class="sidebar__brand">
-    <svg class="sidebar__logo" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-logo"></use></svg>
-    <span class="sidebar__wordmark">Takofy</span>
+  <div class="chips" role="group" aria-label="Filter your library" data-chip-group data-chip-target="#library-list" data-count-target="[data-library-count]">
+    <button class="chip" type="button" data-chip="playlist" aria-pressed="false">Playlists</button>
+    <button class="chip" type="button" data-chip="artist" aria-pressed="false">Artists</button>
+    <button class="chip" type="button" data-chip="album" aria-pressed="false">Albums</button>
+    <button class="chip" type="button" data-chip="podcast" aria-pressed="false">Podcasts</button>
   </div>
 
-  <nav class="sidebar__nav" aria-label="Primary">
-    <a class="nav-item" href="index.html" data-nav="home">
-      <svg class="icon icon--lg" aria-hidden="true"><use href="#i-home"></use></svg>
-      <span class="nav-item__label">Home</span>
-    </a>
-    <a class="nav-item" href="search.html" data-nav="search">
-      <svg class="icon icon--lg" aria-hidden="true"><use href="#i-search"></use></svg>
-      <span class="nav-item__label">Search</span>
-    </a>
-    <a class="nav-item" href="library.html" data-nav="library">
-      <svg class="icon icon--lg" aria-hidden="true"><use href="#i-library"></use></svg>
-      <span class="nav-item__label">Your Library</span>
-    </a>
-  </nav>
-
-  <div class="library" data-chip-group data-chip-target="#library-list">
+  <div class="library">
     <div class="library__head">
-      <span>Saved</span>
+      <form class="filter-field" role="search" onsubmit="return false">
+        <svg class="icon icon--sm" aria-hidden="true"><use href="#i-search"></use></svg>
+        <input type="search" data-library-filter aria-label="Filter your library" placeholder="28 saved" autocomplete="off" />
+        <button class="filter-field__clear" type="button" data-library-filter-clear aria-label="Clear filter" hidden>
+          <svg class="icon icon--sm" aria-hidden="true"><use href="#i-close"></use></svg>
+        </button>
+      </form>
+      <span class="visually-hidden" role="status" aria-live="polite" data-library-count></span>
       <span class="library__head-actions">
         <button class="icon-button" type="button" aria-label="Create playlist or folder">
           <svg class="icon icon--md" aria-hidden="true"><use href="#i-plus"></use></svg>
         </button>
-        <button class="icon-button" type="button" aria-label="Expand your library">
-          <svg class="icon icon--md" aria-hidden="true"><use href="#i-arrow-right"></use></svg>
-        </button>
       </span>
-    </div>
-
-    <div class="chips" role="group" aria-label="Filter your library">
-      <button class="chip" type="button" data-chip="playlist" aria-pressed="false">Playlists</button>
-      <button class="chip" type="button" data-chip="artist" aria-pressed="false">Artists</button>
-      <button class="chip" type="button" data-chip="album" aria-pressed="false">Albums</button>
-      <button class="chip" type="button" data-chip="podcast" aria-pressed="false">Podcasts</button>
     </div>
 
     <ul class="library__list" id="library-list" data-library-list></ul>
@@ -59,10 +43,17 @@
 <!-- ===================== Main ===================== -->
 <div class="app__main">
   <header class="topbar">
-    <button class="icon-button topbar__drawer-toggle" type="button" data-drawer-toggle aria-expanded="false" aria-label="Open your library">
-      <svg class="icon icon--lg" aria-hidden="true"><use href="#i-library"></use></svg>
+    <button class="icon-button topbar__drawer-toggle" type="button" data-drawer-toggle aria-expanded="false" aria-label="Open your library panel">
+      <svg class="icon icon--lg" aria-hidden="true"><use href="#i-panel"></use></svg>
     </button>
-    <div class="topbar__history">
+    <div class="topbar__nav">
+      <a class="round-button" href="index.html" data-nav="home" aria-label="Home">
+        <svg class="icon" aria-hidden="true"><use href="#i-home"></use></svg>
+      </a>
+      <a class="round-button" href="library.html" data-nav="library" aria-label="Your Library">
+        <svg class="icon" aria-hidden="true"><use href="#i-library"></use></svg>
+      </a>
+      <span class="topbar__nav-sep" aria-hidden="true"></span>
       <button class="round-button" type="button" data-back aria-label="Go back">
         <svg class="icon" aria-hidden="true"><use href="#i-arrow-left"></use></svg>
       </button>
@@ -72,7 +63,7 @@
     </div>
     <form class="searchbar" role="search" onsubmit="return false">
       <svg class="icon icon--md" aria-hidden="true"><use href="#i-search"></use></svg>
-      <input type="search" placeholder="Search your library" aria-label="Search your library" />
+      <input type="search" placeholder="Artists, albums or tracks" aria-label="Search" />
     </form>
     <nav class="trail" aria-label="You are here">
       <a href="index.html">Home</a>
@@ -85,7 +76,7 @@
     <div class="view__inner">
       <div class="page-head">
         <h1 class="page-head__title">Your Library</h1>
-        <p class="page-head__note">18 saved · sorted by recently added</p>
+        <p class="page-head__note">28 saved · sorted by recently added</p>
       </div>
 
       <div class="filters">
@@ -311,11 +302,121 @@
           <p class="media__dur">209 eps</p>
           <button class="icon-button" type="button" aria-label="More options for Two Cars, One Road"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button>
         </li>
+
+        <li class="media" data-kind="playlist">
+          <div class="media__art"><img src="img/covers/long-way-down.jpg" alt="" loading="lazy" /></div>
+          <div class="media__body">
+            <a class="media__title truncate" href="playlist.html">Windows Down</a>
+            <p class="media__sub truncate">Playlist · Made for you</p>
+          </div>
+          <p class="media__meta">Playlist</p>
+          <p class="media__dur">74 songs</p>
+          <button class="icon-button" type="button" aria-label="More options for Windows Down"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button>
+        </li>
+
+        <li class="media" data-kind="playlist">
+          <div class="media__art"><img src="img/covers/harbour-lights.jpg" alt="" loading="lazy" /></div>
+          <div class="media__body">
+            <a class="media__title truncate" href="playlist.html">Neon Rain</a>
+            <p class="media__sub truncate">Playlist · Made for you</p>
+          </div>
+          <p class="media__meta">Playlist</p>
+          <p class="media__dur">88 songs</p>
+          <button class="icon-button" type="button" aria-label="More options for Neon Rain"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button>
+        </li>
+
+        <li class="media" data-kind="playlist">
+          <div class="media__art"><img src="img/covers/paper-rooms.jpg" alt="" loading="lazy" /></div>
+          <div class="media__body">
+            <a class="media__title truncate" href="playlist.html">Tape Hiss</a>
+            <p class="media__sub truncate">Playlist · Made for you</p>
+          </div>
+          <p class="media__meta">Playlist</p>
+          <p class="media__dur">52 songs</p>
+          <button class="icon-button" type="button" aria-label="More options for Tape Hiss"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button>
+        </li>
+
+        <li class="media" data-kind="playlist">
+          <div class="media__art"><img src="img/covers/nocturne-field.jpg" alt="" loading="lazy" /></div>
+          <div class="media__body">
+            <a class="media__title truncate" href="playlist.html">Night Bus</a>
+            <p class="media__sub truncate">Playlist · Vela Moreno</p>
+          </div>
+          <p class="media__meta">Playlist</p>
+          <p class="media__dur">41 songs</p>
+          <button class="icon-button" type="button" aria-label="More options for Night Bus"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button>
+        </li>
+
+        <li class="media" data-kind="playlist">
+          <div class="media__art"><img src="img/covers/northlight.jpg" alt="" loading="lazy" /></div>
+          <div class="media__body">
+            <a class="media__title truncate" href="playlist.html">First Light</a>
+            <p class="media__sub truncate">Playlist · Made for you</p>
+          </div>
+          <p class="media__meta">Playlist</p>
+          <p class="media__dur">63 songs</p>
+          <button class="icon-button" type="button" aria-label="More options for First Light"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button>
+        </li>
+
+        <li class="media" data-kind="playlist">
+          <div class="media__art"><img src="img/covers/saltglass.jpg" alt="" loading="lazy" /></div>
+          <div class="media__body">
+            <a class="media__title truncate" href="playlist.html">Salt &amp; Static</a>
+            <p class="media__sub truncate">Playlist · Made for you</p>
+          </div>
+          <p class="media__meta">Playlist</p>
+          <p class="media__dur">37 songs</p>
+          <button class="icon-button" type="button" aria-label="More options for Salt &amp; Static"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button>
+        </li>
+
+        <li class="media" data-kind="playlist">
+          <div class="media__art"><img src="img/covers/wintering.jpg" alt="" loading="lazy" /></div>
+          <div class="media__body">
+            <a class="media__title truncate" href="playlist.html">Frostbitten</a>
+            <p class="media__sub truncate">Playlist · Made for you</p>
+          </div>
+          <p class="media__meta">Playlist</p>
+          <p class="media__dur">58 songs</p>
+          <button class="icon-button" type="button" aria-label="More options for Frostbitten"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button>
+        </li>
+
+        <li class="media" data-kind="playlist">
+          <div class="media__art"><img src="img/covers/dune-song.jpg" alt="" loading="lazy" /></div>
+          <div class="media__body">
+            <a class="media__title truncate" href="playlist.html">Long Way Home</a>
+            <p class="media__sub truncate">Playlist · Made for you</p>
+          </div>
+          <p class="media__meta">Playlist</p>
+          <p class="media__dur">96 songs</p>
+          <button class="icon-button" type="button" aria-label="More options for Long Way Home"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button>
+        </li>
+
+        <li class="media" data-kind="playlist">
+          <div class="media__art"><img src="img/covers/chrome-gospel.jpg" alt="" loading="lazy" /></div>
+          <div class="media__body">
+            <a class="media__title truncate" href="playlist.html">Iron &amp; Rain</a>
+            <p class="media__sub truncate">Playlist · The Rookery</p>
+          </div>
+          <p class="media__meta">Playlist</p>
+          <p class="media__dur">44 songs</p>
+          <button class="icon-button" type="button" aria-label="More options for Iron &amp; Rain"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button>
+        </li>
+
+        <li class="media" data-kind="playlist">
+          <div class="media__art"><img src="img/covers/undertow.jpg" alt="" loading="lazy" /></div>
+          <div class="media__body">
+            <a class="media__title truncate" href="playlist.html">After Hours</a>
+            <p class="media__sub truncate">Playlist · Made for you</p>
+          </div>
+          <p class="media__meta">Playlist</p>
+          <p class="media__dur">71 songs</p>
+          <button class="icon-button" type="button" aria-label="More options for After Hours"><svg class="icon icon--sm" aria-hidden="true"><use href="#i-more"></use></svg></button>
+        </li>
       </ul>
 
       <div class="empty-state" id="library-grid-empty" hidden>
         <p class="empty-state__title">Nothing saved here yet</p>
-        <p>Anything you save from Home, Search or a podcast will land in this filter.</p>
+        <p>Anything you save from Search or a podcast will land in this filter.</p>
       </div>
 
       <footer class="tracklist__foot">

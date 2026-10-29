@@ -528,13 +528,13 @@
     if (!list) return;
     list.innerHTML = QUEUE.map(function (t) {
       return (
-        '<li class="queue-item truncate" role="button" tabindex="0" data-track="' + t.name + '"' +
+        '<li class="mini-row truncate" role="button" tabindex="0" data-track="' + t.name + '"' +
         ' data-artist="' + t.artist + '" data-art="' + t.art + '" data-duration="' + t.duration + '"' +
         ' aria-label="Play ' + t.name + ' by ' + t.artist + '">' +
-        '<img class="queue-item__art" src="' + t.art + '" alt="" loading="lazy">' +
-        '<span><span class="queue-item__name truncate">' + t.name + '</span>' +
-        '<span class="queue-item__artist truncate">' + t.artist + '</span></span>' +
-        '<span class="queue-item__dur">' + fmtTime(t.duration) + "</span></li>"
+        '<img class="mini-row__art" src="' + t.art + '" alt="" loading="lazy">' +
+        '<span><span class="mini-row__name truncate">' + t.name + '</span>' +
+        '<span class="mini-row__sub truncate">' + t.artist + '</span></span>' +
+        '<span class="mini-row__meta">' + fmtTime(t.duration) + "</span></li>"
       );
     }).join("");
   }
@@ -744,41 +744,54 @@
      geometry can be compared with the grid that replaces it.
      ---------------------------------------------------------------------- */
 
+  /* The greeting is the clock, not a guess about your taste — the one thing on
+     Home this client can honestly know before it has read anything. */
+  function renderGreeting() {
+    var el = $("[data-greeting]");
+    if (!el) return;
+    var hour = new Date().getHours();
+    el.textContent =
+      hour < 5 ? "Still up" : hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
+  }
+
   function bindLoadDemo() {
-    var demo = $("[data-load-demo]");
-    if (!demo) return;
-    var out = $("[data-load-out]", demo);
-    var skeleton = $("[data-load-skeleton]", demo);
-    var content = $("[data-load-content]", demo);
-    var status = $("[data-load-status]");
-    var replay = $("[data-load-replay]");
-    var timer = 0;
+    // Every stage on the states page runs the same load, so each demo owns its
+    // own skeleton, content, status line and replay button.
+    $$("[data-load-demo]").forEach(function (demo) {
+      var out = $("[data-load-out]", demo);
+      var skeleton = $("[data-load-skeleton]", demo);
+      var content = $("[data-load-content]", demo);
+      var status = $("[data-load-status]", demo);
+      var replay = $("[data-load-replay]", demo);
+      var total = skeleton ? skeleton.children.length : 0;
+      var timer = 0;
 
-    function land() {
-      if (out) out.setAttribute("aria-busy", "false");
-      skeleton.hidden = true;
-      content.hidden = false;
-      if (status) status.textContent = "8 of 8 items loaded";
-      if (replay) {
-        replay.disabled = false;
-        replay.textContent = "Replay load";
+      function land() {
+        if (out) out.setAttribute("aria-busy", "false");
+        if (skeleton) skeleton.hidden = true;
+        if (content) content.hidden = false;
+        if (status) status.textContent = total + " of " + total + " items loaded";
+        if (replay) {
+          replay.disabled = false;
+          replay.textContent = "Replay load";
+        }
       }
-    }
 
-    function run() {
-      window.clearTimeout(timer);
-      if (out) out.setAttribute("aria-busy", "true");
-      skeleton.hidden = false;
-      content.hidden = true;
-      if (status) status.textContent = "0 of 8 items loaded";
-      if (replay) {
-        replay.disabled = true;
-        replay.textContent = "Loading…";
+      function run() {
+        window.clearTimeout(timer);
+        if (out) out.setAttribute("aria-busy", "true");
+        if (skeleton) skeleton.hidden = false;
+        if (content) content.hidden = true;
+        if (status) status.textContent = "0 of " + total + " items loaded";
+        if (replay) {
+          replay.disabled = true;
+          replay.textContent = "Loading…";
+        }
+        timer = window.setTimeout(land, 2400);
       }
-      timer = window.setTimeout(land, 2400);
-    }
 
-    if (replay) replay.addEventListener("click", run);
+      if (replay) replay.addEventListener("click", run);
+    });
   }
 
   /* ----------------------------------------------------------------------
@@ -1004,6 +1017,7 @@
     bindDrawer();
     bindSearch();
     bindKeys();
+    renderGreeting();
 
     // Rows that carry their own track data but are not <button>s (the queue)
     // still need Enter and Space.

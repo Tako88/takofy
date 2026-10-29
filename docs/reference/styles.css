@@ -804,6 +804,16 @@ svg {
   gap: var(--space-1);
 }
 
+/* Two kinds of control share this strip: where you can go (Home, Your Library)
+   and where you have been (back, forward). A hairline keeps the pair from
+   reading as four of the same thing. */
+.topbar__nav-sep {
+  width: 1px;
+  height: 1rem;
+  margin-inline: var(--space-1);
+  background: var(--color-border);
+}
+
 .round-button {
   display: grid;
   place-items: center;
@@ -962,15 +972,15 @@ svg {
   white-space: nowrap;
 }
 
-/* The label stays optically small while the target grows to something a
-   pointer can actually hit. */
-.section__link::after {
+/* A link's hover and its grown target belong to links: the same type carries a
+   count in a dozen places, and a count must not brighten under the pointer. */
+a.section__link::after {
   content: "";
   position: absolute;
   inset: -0.75rem -0.5rem;
 }
 
-.section__link:hover {
+a.section__link:hover {
   color: var(--color-text);
 }
 
@@ -1001,9 +1011,12 @@ svg {
   height: 0.875rem;
 }
 
+/* auto-fit, not auto-fill: a shelf that fits on one line takes the whole rule
+   rather than stopping short of it and leaving an empty column under its own
+   count. A grid that wraps is unaffected — no track is empty across all rows. */
 .card-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
   gap: var(--space-3);
   /* Pull the grid out by the card's own padding so cover art lines up with the
      section headings; the hover surface still bleeds past the gutter. */
@@ -1060,6 +1073,15 @@ svg {
   transform: translateY(0.25rem);
   transition: opacity var(--dur-base) var(--ease-out), transform var(--dur-base) var(--ease-out),
     background var(--dur-fast) var(--ease-out);
+}
+
+/* The tile stays small enough to sit calmly on a cover; the target does not.
+   Six pixels of padding all round makes it 44, and it is the tile that is
+   painted, so nothing looks heavier. */
+.card__play::after {
+  content: "";
+  position: absolute;
+  inset: -0.375rem;
 }
 
 .card__play .icon {
@@ -1143,11 +1165,169 @@ svg {
   text-align: left;
 }
 
-/* Recently played — compact rows, not tiles with air in them. */
+/* A face takes a centred caption: the one body where the picture is a person,
+   set apart from the shelves of covers by its label as well as its mask. */
+.card--centred .card__body {
+  text-align: center;
+}
+
+/* The reduced row: an artwork, a two-line credit and one mono value at the
+   trailing edge. It was the queue's row and it is Home's row too — a shelf of
+   tracks and a queue differ only in what the mono value says. */
+.mini-row {
+  display: grid;
+  grid-template-columns: 2.5rem minmax(0, 1fr) auto;
+  gap: var(--space-3);
+  align-items: center;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  transition: background var(--dur-fast) var(--ease-out);
+}
+
+.mini-row[role="button"] {
+  cursor: pointer;
+}
+
+.mini-row:hover,
+.mini-row:focus-within {
+  background: var(--color-row-hover);
+}
+
+.mini-row.is-playing {
+  box-shadow: inset 2px 0 0 var(--color-accent);
+}
+
+.mini-row__art {
+  width: 2.5rem;
+  height: 2.5rem;
+  padding: 0;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xs);
+  overflow: hidden;
+}
+
+.mini-row__art img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.mini-row__name {
+  display: block;
+  font-size: var(--text-sm);
+  font-weight: 500;
+}
+
+.mini-row__sub {
+  display: block;
+  color: var(--color-text-subtle);
+  font-size: var(--text-2xs);
+}
+
+.mini-row__meta {
+  color: var(--color-text-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Two abreast, and never more: a station is a list of tracks, so a third column
+   would only narrow the titles it exists to show. */
+.row-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-5) var(--space-4);
+  margin-top: var(--space-2);
+  margin-inline: calc(var(--space-2) * -1);
+}
+
+/* A station is a seed and the list it generates. The head names the seed in the
+   page's own voice and counts what it would play; the body is the same reduced
+   row as everywhere else, so a station reads as a small queue rather than as
+   another kind of card. */
+.station {
+  display: grid;
+  align-content: start;
+  gap: var(--space-1);
+}
+
+.station__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  /* Sits on the shelf's axis, level with the art below it rather than with the
+     row titles inside it: it is a heading, not a row. */
+  padding: var(--space-1) var(--space-2) var(--space-2);
+  min-width: 0;
+}
+
+.station__about {
+  min-width: 0;
+}
+
+.station__seed {
+  display: block;
+  font-size: var(--text-md);
+  font-weight: 600;
+  letter-spacing: var(--tracking-tight);
+}
+
+.station__seed:hover {
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+.station__source {
+  display: block;
+  color: var(--color-text-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+}
+
+/* The station's own play: the episode rows' bordered square at head-line size,
+   in the same border, glyph and hover as that control. The pad keeps its target
+   at 44 even though the box is 32. */
+.station__play {
+  position: relative;
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--color-text);
+  transition: border-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+
+.station__play::after {
+  content: "";
+  position: absolute;
+  inset: -0.375rem;
+}
+
+.station__play:hover {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+.station__play .icon {
+  width: 0.75rem;
+  height: 0.75rem;
+  fill: currentColor;
+  stroke: none;
+}
+
+/* The library tile: a compact row that keeps its own box. Dense enough to count
+   a shelf of holdings without turning into a table. */
 .tiles {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
-  gap: var(--space-1);
+  gap: var(--space-2);
 }
 
 .tile {
@@ -1156,7 +1336,9 @@ svg {
   grid-template-columns: 2.75rem minmax(0, 1fr) auto;
   gap: var(--space-3);
   align-items: center;
-  height: 2.75rem;
+  /* Tall enough that the 44pt portrait sits inside the border instead of being
+     clipped by it, and level with the shelf's other row. */
+  height: 3rem;
   padding-right: var(--space-2);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
@@ -1171,8 +1353,9 @@ svg {
 }
 
 .tile__art {
-  width: 2.75rem;
-  height: 2.75rem;
+  width: 2.5rem;
+  height: 2.5rem;
+  justify-self: center;
   object-fit: cover;
 }
 
@@ -1181,6 +1364,24 @@ svg {
   place-items: center;
   background: linear-gradient(140deg, var(--color-liked-from), var(--color-liked-to));
   color: var(--color-text);
+}
+
+/* A portrait at 2.75rem reads as a person once it is round, not as another
+   sleeve in a list of sleeves. */
+.tile__art--round {
+  border-radius: 50%;
+}
+
+.tile__body {
+  min-width: 0;
+}
+
+.tile__sub {
+  display: block;
+  color: var(--color-text-subtle);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-variant-numeric: tabular-nums;
 }
 
 .tile__art--liked .icon {
@@ -1253,6 +1454,32 @@ svg {
   font-size: var(--text-2xs);
   letter-spacing: var(--tracking-wide);
   text-transform: uppercase;
+}
+
+/* Home's foot: the page states how it was assembled. There is no feed behind
+   this client, so the one thing it can always promise is its own arithmetic —
+   the ledgers it read and the calls it made, both counted. */
+.colophon {
+  display: grid;
+  gap: var(--space-2);
+  margin-top: var(--space-7);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--color-border);
+}
+
+.colophon__line {
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+}
+
+.colophon__note {
+  max-width: 68ch;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
 }
 
 /* --------------------------------------------------------------------------
@@ -2003,12 +2230,15 @@ svg {
   font-variant-numeric: tabular-nums;
 }
 
+/* The row's padding is vertical only: its hairline runs the full width of the
+   band, so the content has to start on the heading's axis or the rule overhangs
+   its own row. */
 .episode {
   display: grid;
-  grid-template-columns: 2.5rem minmax(0, 1fr) auto;
+  grid-template-columns: 2.75rem minmax(0, 1fr) auto;
   gap: var(--space-4);
   align-items: start;
-  padding: var(--space-4) var(--space-3);
+  padding: var(--space-4) 0;
   border-bottom: 1px solid var(--color-border);
   transition: background var(--dur-fast) var(--ease-out);
 }
@@ -2020,8 +2250,8 @@ svg {
 .episode__toggle {
   display: grid;
   place-items: center;
-  width: 2.5rem;
-  height: 2.5rem;
+  width: 2.75rem;
+  height: 2.75rem;
   border: 1px solid var(--color-border-strong);
   border-radius: var(--radius-sm);
   color: var(--color-text);
@@ -2069,6 +2299,12 @@ svg {
   letter-spacing: var(--tracking-wide);
   text-transform: uppercase;
   white-space: nowrap;
+}
+
+/* A row in the shows shelf carries no description, so the credit line closes up
+   under the title instead of starting a second paragraph. */
+.episode--compact .episode__meta {
+  padding-top: 0;
 }
 
 /* --------------------------------------------------------------------------
@@ -2459,63 +2695,6 @@ svg {
   font-weight: 500;
   letter-spacing: var(--tracking-caps);
   text-transform: uppercase;
-}
-
-.queue-item {
-  display: grid;
-  grid-template-columns: 2.5rem minmax(0, 1fr) auto;
-  gap: var(--space-3);
-  align-items: center;
-  padding: var(--space-1) var(--space-2);
-  border-radius: var(--radius-sm);
-  transition: background var(--dur-fast) var(--ease-out);
-}
-
-.queue-item[role="button"] {
-  cursor: pointer;
-}
-
-.queue-item:hover,
-.queue-item:focus-within {
-  background: var(--color-row-hover);
-}
-
-.queue-item.is-playing {
-  box-shadow: inset 2px 0 0 var(--color-accent);
-}
-
-.queue-item__art {
-  width: 2.5rem;
-  height: 2.5rem;
-  padding: 0;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-xs);
-  overflow: hidden;
-}
-
-.queue-item__art img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
-.queue-item__name {
-  display: block;
-  font-size: var(--text-sm);
-  font-weight: 500;
-}
-
-.queue-item__artist {
-  display: block;
-  color: var(--color-text-subtle);
-  font-size: var(--text-2xs);
-}
-
-.queue-item__dur {
-  color: var(--color-text-subtle);
-  font-family: var(--font-mono);
-  font-size: var(--text-2xs);
-  font-variant-numeric: tabular-nums;
 }
 
 .lyrics {
@@ -2919,6 +3098,14 @@ svg {
   font-weight: var(--weight-medium);
   letter-spacing: 0;
   font-variant-numeric: tabular-nums;
+}
+
+/* Two exits from an empty state, side by side. */
+.states__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
 }
 
 /* Two readings of the same moment, split by a hairline rather than boxed into
@@ -3662,7 +3849,7 @@ svg {
    difference on black, the ink steps up with it: the number to full bone, the
    secondary columns one tier, so "picked" is carried by ink as well as by area. */
 .track-row.is-selected,
-.queue-item.is-selected,
+.mini-row.is-selected,
 .library-item.is-selected {
   background: var(--color-row-selected);
 }
@@ -3678,7 +3865,7 @@ svg {
 /* A row on its way somewhere else stays where it is and steps back, so the hole
    it came out of is visible while the ghost travels. */
 .track-row.is-lifted,
-.queue-item.is-lifted,
+.mini-row.is-lifted,
 .library-item.is-lifted {
   opacity: var(--opacity-lifted);
 }
@@ -3686,7 +3873,7 @@ svg {
 /* "Add it here" is an area too — never a rule. That is how the sidebar's two
    meanings split: a filled row adds, a rule between rows reorders. */
 .track-row.is-drop-target,
-.queue-item.is-drop-target,
+.mini-row.is-drop-target,
 .library-item.is-drop-target,
 .icon-button.is-drop-target {
   background: var(--color-row-selected);
@@ -3785,7 +3972,7 @@ svg {
   box-shadow: none;
 }
 
-.drag-ghost.is-refused :is(.track-row__name, .track-row__artist, .track-row__album, .track-row__meta, .track-row__duration, .track-row__index, .queue-item__name, .queue-item__artist, .queue-item__dur, .library-item__name, .library-item__kind) {
+.drag-ghost.is-refused :is(.track-row__name, .track-row__artist, .track-row__album, .track-row__meta, .track-row__duration, .track-row__index, .mini-row__name, .mini-row__sub, .mini-row__meta, .library-item__name, .library-item__kind) {
   color: var(--color-text-subtle);
 }
 
@@ -4142,6 +4329,14 @@ svg {
     color: var(--color-text);
   }
 
+  /* Two places and a field, or five icons and half a field: the history pair is
+     the first thing a phone can afford to lose. */
+  .topbar__nav [data-back],
+  .topbar__nav [data-forward],
+  .topbar__nav-sep {
+    display: none;
+  }
+
   /* The drawer toggle and the nav cluster stay — hiding them left the search
      field as the only control. Only the breadcrumb makes way. */
   .trail {
@@ -4279,7 +4474,7 @@ svg {
   .card-grid,
   .library-grid,
   .genre-grid {
-    grid-template-columns: repeat(auto-fill, minmax(7.5rem, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(7.5rem, 1fr));
     gap: var(--space-2);
   }
 
@@ -4303,6 +4498,16 @@ svg {
     grid-template-columns: minmax(0, 1fr);
   }
 
+  .row-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* A station previews two tracks on a phone instead of three: the seed and its
+     flavour, with the rest one open away. */
+  .station li:nth-child(n + 3) {
+    display: none;
+  }
+
   .album-block__head {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -4317,10 +4522,12 @@ svg {
   }
 
   .episode {
-    grid-template-columns: 2.5rem minmax(0, 1fr);
+    grid-template-columns: 2.75rem minmax(0, 1fr);
   }
 
-  .episode__meta {
+  /* The duration goes; the credit line stays, because without the show's name an
+     episode row on a phone is a title with no author. */
+  .episode > .episode__meta {
     display: none;
   }
 
