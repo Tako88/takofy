@@ -16,6 +16,7 @@ use takofy_core::engine::{Engine, EngineError, Orders, RootlistRead};
 use takofy_core::playback::{Playback, PlaybackError, PlaybackEvent, Volume};
 use takofy_core::receive::Inbound;
 use takofy_core::{Resolution, TransferPlan};
+use takofy_model::home::{Station, StationSeed};
 use takofy_model::{
     AlbumDetail, ArtistDetail, ArtistPortrait, CoverSet, FollowedArtist, FollowedShow, Landing,
     LikedTrack, Move, PlaylistAccess, PlaylistEntry, Removal, Report, RequestId, Revision,
@@ -80,6 +81,7 @@ impl SessionError {
             Self::Engine(EngineError::Album(_)) => "album",
             Self::Engine(EngineError::Artist(_)) => "artist",
             Self::Engine(EngineError::Show(_)) => "show",
+            Self::Engine(EngineError::Station(_)) => "station",
             Self::Engine(EngineError::Lyrics(_)) => "lyrics",
             Self::Engine(EngineError::Playlist(_)) => "playlist",
             Self::Engine(EngineError::Followed(_)) => "followed",
@@ -225,6 +227,12 @@ pub(crate) trait SessionHost: Send + 'static {
     fn album(&self, album: &str) -> impl Future<Output = Result<AlbumDetail, SessionError>> + Send;
 
     fn show(&self, show: &str) -> impl Future<Output = Result<ShowDetail, SessionError>> + Send;
+
+    /// One station read from its seed, its rows labelled.
+    fn station(
+        &self,
+        seed: &StationSeed,
+    ) -> impl Future<Output = Result<Station, SessionError>> + Send;
 
     /// The shows the user follows, newest follow first, each as its card draws
     /// it.
@@ -672,6 +680,13 @@ impl SessionHost for LiveSession {
     async fn show(&self, show: &str) -> Result<ShowDetail, SessionError> {
         match &self.engine {
             Some(engine) => engine.show(show).await.map_err(SessionError::Engine),
+            None => Err(SessionError::NotConnected),
+        }
+    }
+
+    async fn station(&self, seed: &StationSeed) -> Result<Station, SessionError> {
+        match &self.engine {
+            Some(engine) => engine.station(seed).await.map_err(SessionError::Engine),
             None => Err(SessionError::NotConnected),
         }
     }

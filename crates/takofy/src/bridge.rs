@@ -22,6 +22,7 @@
 mod covers;
 mod devices;
 mod errors;
+mod home;
 mod orders;
 mod playback;
 mod rebuild;
@@ -412,6 +413,12 @@ fn start_with<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                 }
                 Event::Command(Some(Command::LoadLikedTracks)) => {
                     let step = load_liked_tracks(&mut host, &mut stop_rx, &task_notifier).await;
+                    if step.stopped() {
+                        break;
+                    }
+                }
+                Event::Command(Some(Command::LoadHome(ask))) => {
+                    let step = home::load_home(&mut host, &mut stop_rx, &task_notifier, ask).await;
                     if step.stopped() {
                         break;
                     }

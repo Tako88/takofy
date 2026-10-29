@@ -1073,6 +1073,8 @@ impl Library {
             | Update::PortraitsFailed { .. } => {
                 self.search.apply(update);
             }
+            // Nothing sends a Home ask yet, so there is no answer to hold.
+            Update::Home(_) | Update::HomeFailed { .. } => {}
             Update::NeedsAuthorization
             | Update::SignInFailed(_)
             | Update::Devices(_)

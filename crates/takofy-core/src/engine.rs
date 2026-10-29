@@ -30,8 +30,10 @@ use crate::remote::{
 use crate::rootlist::{RootEntry, RootlistError, fetch_all};
 use crate::search::search_uri;
 use crate::show::ShowError;
+use crate::station::{StationError, read_station};
 use crate::transfer::{Resolution, TransferPlan};
 use crate::watch::{self, Gate};
+use takofy_model::home::{Station, StationSeed};
 use takofy_model::{
     AlbumDetail, ArtistDetail, ArtistPortrait, CoverSet, FollowedArtist, FollowedShow, Landing,
     LikedTrack, Move, PlaylistAccess, PlaylistEntry, Removal, Report, RequestId, Revision,
@@ -53,6 +55,8 @@ pub enum EngineError {
     Artist(#[from] ArtistError),
     #[error(transparent)]
     Show(#[from] ShowError),
+    #[error(transparent)]
+    Station(#[from] StationError),
     #[error(transparent)]
     Followed(#[from] FollowedError),
     #[error(transparent)]
@@ -591,6 +595,11 @@ impl Engine {
     /// A URI that does not name a show fails before any request is made.
     pub async fn show(&self, show_uri: &str) -> Result<ShowDetail, EngineError> {
         Ok(read_show(&self.session, show_uri).await?)
+    }
+
+    /// One station read from its seed, its rows labelled.
+    pub async fn station(&self, seed: &StationSeed) -> Result<Station, EngineError> {
+        Ok(read_station(&self.session, &self.labels, seed).await?)
     }
 
     /// One track's lyrics, empty when the track has none.

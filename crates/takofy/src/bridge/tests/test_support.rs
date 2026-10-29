@@ -25,6 +25,7 @@ use takofy_core::engine::{EngineError, RootlistRead};
 use takofy_core::login::{SourceError, SourceErrorKind, TokenSet, TokenSource};
 use takofy_core::playback::{PlaybackError, PlaybackEvent};
 use takofy_core::{Resolution, TransferPlan};
+use takofy_model::home::{Station, StationSeed};
 use takofy_model::{
     AlbumDetail, ArtistPortrait, Device, DeviceKind, FollowedArtist, FollowedShow, Landing,
     LikedTrack, Move, PlaylistAccess, PlaylistEntry, RemotePlayback, RemoteState, Removal, Report,
@@ -278,7 +279,6 @@ pub(super) enum RelatedScript {
     #[default]
     Ready,
     /// The read fails, as a disconnected session does.
-    #[allow(dead_code)]
     Fail,
 }
 
@@ -297,6 +297,14 @@ pub(super) enum ReleaseScript {
     #[default]
     Ready,
     Named(Vec<TrackEntry>),
+    Fail,
+}
+
+/// A scripted station read; the default answers the canned station.
+#[derive(Clone, Default)]
+pub(super) enum StationScript {
+    #[default]
+    Ready,
     Fail,
 }
 
@@ -430,6 +438,7 @@ pub(super) struct FakeState {
     pub(super) search_script: Mutex<SearchScript>,
     pub(super) portrait_script: Mutex<PortraitScript>,
     pub(super) release_script: Mutex<ReleaseScript>,
+    pub(super) station_script: Mutex<StationScript>,
     pub(super) follow_script: Mutex<FollowScript>,
     pub(super) move_script: Mutex<MoveScript>,
     pub(super) remove_script: Mutex<MoveScript>,
@@ -778,6 +787,24 @@ impl SessionHost for FakeHost {
                 ShowScript::Ready(detail) => Ok(detail),
                 ShowScript::Fail => Err(SessionError::NotConnected),
                 ShowScript::Pending => std::future::pending().await,
+            }
+        }
+    }
+
+    fn station(
+        &self,
+        seed: &StationSeed,
+    ) -> impl Future<Output = Result<Station, SessionError>> + Send {
+        let connected = self.shared.connected.load(Ordering::SeqCst);
+        let script = self.shared.station_script.lock().expect("lock").clone();
+        let seed = seed.clone();
+        async move {
+            if !connected {
+                return Err(SessionError::NotConnected);
+            }
+            match script {
+                StationScript::Ready => Ok(canned_station(&seed)),
+                StationScript::Fail => Err(SessionError::NotConnected),
             }
         }
     }
@@ -1816,6 +1843,18 @@ pub(super) fn track(uri: &str) -> TrackEntry {
         duration_ms: None,
         named: true,
         cover: None,
+    }
+}
+
+/// One station for its seed, so an answer can be told apart from another's.
+pub(super) fn canned_station(seed: &StationSeed) -> Station {
+    Station {
+        seed: seed.clone(),
+        uri: "spotify:station:1".to_owned(),
+        title: "Radio".to_owned(),
+        subtitle: None,
+        art: None,
+        rows: vec![track(TRACK)],
     }
 }
 

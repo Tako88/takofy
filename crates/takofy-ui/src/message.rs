@@ -5,6 +5,7 @@
 
 use std::time::Instant;
 
+use takofy_model::home::{HomeAnswer, HomeAsk};
 use takofy_model::{
     AlbumDetail, ArtistDetail, ArtistPortrait, CoverImage, CoverSet, CoverUrl, Device,
     FollowedArtist, FollowedShow, Landing, LikedTrack, Move, Order, PlaylistAccess, PlaylistEntry,
@@ -108,6 +109,8 @@ pub enum Command {
     LoadSavedAlbums,
     /// Load the tracks the user has liked, newest save first.
     LoadLikedTracks,
+    /// One read a Home shelf asked for.
+    LoadHome(HomeAsk),
     /// Write these tracks into the liked-songs set, or out of it.
     SetLiked { tracks: Vec<String>, liked: bool },
     /// The tracks one search query answers.
@@ -483,6 +486,10 @@ pub enum Update {
     /// Silent on screen: a portrait that does not arrive is drawn like a cover
     /// that has not been fetched.
     PortraitsFailed { query: String },
+    /// One Home shelf's answer, matched back by the ask it carries.
+    Home(HomeAnswer),
+    /// One Home shelf's read failed, told apart by the ask that named it.
+    HomeFailed { ask: HomeAsk, failure: Failure },
     /// A playback change.
     Transport(TransportUpdate),
     /// A change to the account's devices.
