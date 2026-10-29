@@ -181,20 +181,59 @@ fn an_unreadable_followed_list_settles_failed() {
 }
 
 #[test]
-fn a_failed_related_read_settles_failed() {
-    let mut library = library(followed(3));
-    let first = ask(&mut library);
+fn one_failed_read_does_not_end_the_section() {
+    let artists = followed(6);
+    let mut library = library(artists.clone());
 
+    let first = ask(&mut library);
     fail(&mut library, &first, Failure::Related);
 
-    assert!(matches!(
-        library.because_section(),
-        Section::Failed(Failure::Related)
-    ));
+    assert!(
+        matches!(library.because_section(), Section::Waiting),
+        "one failed read ended a section the allowance could still fill"
+    );
+    let second = ask(&mut library);
+    assert_ne!(second, first, "a failed read asked the same artist again");
+
+    answer(
+        &mut library,
+        &second,
+        vec![artist("spotify:artist:z", "Zed")],
+    );
+
+    let Section::Ready(row) = library.because_section() else {
+        panic!("an answer after a failed read draws a row");
+    };
+    let name = artists
+        .iter()
+        .find(|artist| artist.uri == second)
+        .map(|artist| artist.name.clone())
+        .expect("the ask names a followed artist");
+    assert_eq!(
+        row.seed_name, name,
+        "the head named an artist that did not answer"
+    );
+    assert_eq!(row.cards.len(), 1);
+    assert_eq!(row.cards[0].uri, "spotify:artist:z");
+}
+
+#[test]
+fn every_failed_read_settles_failed() {
+    let mut library = library(followed(6));
+
+    for _ in 0..Budget::per_open(Slot::Because) {
+        let artist = ask(&mut library);
+        fail(&mut library, &artist, Failure::Related);
+    }
+
+    assert!(
+        matches!(library.because_section(), Section::Failed(Failure::Related)),
+        "an open that drew nothing while its reads failed is not a quiet library"
+    );
     assert_eq!(
         library.because_ask(),
         None,
-        "a failed read asked again without a retry"
+        "a failed open asked again without a retry"
     );
 }
 

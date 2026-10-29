@@ -162,6 +162,61 @@ fn a_ready_answer_picks_from_the_first_neighbours() {
 }
 
 #[test]
+fn a_neighbour_list_is_filtered_before_the_pick() {
+    let cards = vec![
+        artist("spotify:artist:a"),
+        artist("spotify:artist:b"),
+        artist("spotify:artist:b"),
+        artist("spotify:artist:c"),
+    ];
+
+    let kept: Vec<&str> = distinct("spotify:artist:a", &cards)
+        .iter()
+        .map(|card| card.uri.as_str())
+        .collect();
+
+    assert_eq!(kept, ["spotify:artist:b", "spotify:artist:c"]);
+}
+
+#[test]
+fn a_row_draws_neither_the_seed_artist_nor_a_repeated_neighbour() {
+    let mut state = State::default();
+    state.open(seed());
+    state.ask(&artist("spotify:artist:a"));
+    let mut cards = vec![artist("spotify:artist:a")];
+    cards.extend((0..8).map(|_| artist("spotify:artist:b")));
+
+    state.land(&related("spotify:artist:a", cards));
+
+    let row = state.row().expect("the one real neighbour draws a card");
+    assert_eq!(row.cards.len(), 1, "a repeated neighbour drew twice");
+    assert_eq!(row.cards[0].uri, "spotify:artist:b");
+}
+
+#[test]
+fn a_later_answer_draws_after_one_read_failed() {
+    let mut state = State::default();
+    state.open(seed());
+    state.ask(&artist("spotify:artist:a"));
+    state.fail(&asked_artist("spotify:artist:a"), Failure::Related);
+    assert!(state.row().is_none());
+
+    state.ask(&artist("spotify:artist:b"));
+    state.land(&related(
+        "spotify:artist:b",
+        vec![artist("spotify:artist:z")],
+    ));
+
+    let row = state.row().expect("a later answer still draws a row");
+    assert_eq!(row.seed_name, "spotify:artist:b");
+    assert_eq!(
+        state.failure(),
+        None,
+        "a drawn row kept a failure it made good"
+    );
+}
+
+#[test]
 fn a_failed_related_read_is_kept() {
     let mut state = State::default();
     state.open(seed());

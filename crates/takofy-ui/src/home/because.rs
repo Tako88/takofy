@@ -47,6 +47,23 @@ pub fn pick(cards: usize, seed: Seed) -> Vec<usize> {
     sample(cards.min(NEIGHBOURS), seed, DRAWN)
 }
 
+/// The answer's artists without `seed`, and without a repeated URI, in order.
+///
+/// A related answer may name the artist it was read for, and may name the same
+/// artist twice: neither draws a card, and neither takes one of the row's
+/// positions, so the draw reaches [`NEIGHBOURS`] distinct artists rather than
+/// spending its dozen on repeats.
+fn distinct<'a>(seed: &str, cards: &'a [FollowedArtist]) -> Vec<&'a FollowedArtist> {
+    let mut kept: Vec<&FollowedArtist> = Vec::new();
+    for card in cards {
+        if card.uri == seed || kept.iter().any(|held| held.uri == card.uri) {
+            continue;
+        }
+        kept.push(card);
+    }
+    kept
+}
+
 /// What the because shelf holds between opens.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct State {
@@ -73,10 +90,11 @@ impl State {
 
     /// Folds one answer the shelf asked for into its state.
     ///
-    /// An answer for any artist but the outstanding one is another open's, or a
-    /// read this shelf never asked for, so it is dropped rather than drawn. An
-    /// answer with no artists leaves nothing to draw and lets the next ask try
-    /// the next followed artist.
+    /// The match is by artist URI alone, so an answer naming an artist this open
+    /// did not ask for is dropped rather than drawn: the shelf cannot tell
+    /// another open's answer from a read it never sent. An answer with no
+    /// artists to draw leaves the state as it was and lets the next ask try the
+    /// next followed artist.
     pub fn land(&mut self, answer: &HomeAnswer) {
         let HomeAnswer::Related { artist, cards } = answer else {
             return;
@@ -85,16 +103,25 @@ impl State {
             return;
         }
         self.asked = None;
-        if cards.is_empty() {
+        let neighbours = distinct(artist, cards);
+        if neighbours.is_empty() {
             return;
         }
-        self.cards = pick(cards.len(), self.seed.split(PICK_SALT))
+        self.cards = pick(neighbours.len(), self.seed.split(PICK_SALT))
             .into_iter()
-            .filter_map(|at| cards.get(at).cloned())
+            .filter_map(|at| neighbours.get(at).copied())
+            .cloned()
             .collect();
+        self.failure = None;
     }
 
     /// Records that one of the shelf's reads failed.
+    ///
+    /// The failure costs the artist it asked for and no more: the open keeps the
+    /// failure, but the next ask still tries the next followed artist while the
+    /// allowance lasts, so a flaky read does not end a section three more tries
+    /// could have filled. An open that draws nothing carries the failure to its
+    /// settle; an open that draws a row drops it.
     pub fn fail(&mut self, ask: &HomeAsk, failure: Failure) {
         let HomeAsk::Related { artist } = ask else {
             return;
@@ -133,7 +160,7 @@ impl State {
         self.asked.as_deref()
     }
 
-    /// The failure that stopped the shelf's last read.
+    /// The failure a read of this open hit that nothing has made good.
     pub fn failure(&self) -> Option<Failure> {
         self.failure
     }
