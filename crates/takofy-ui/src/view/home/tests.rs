@@ -104,7 +104,7 @@ fn painted(output: &egui::FullOutput) -> Vec<&str> {
 }
 
 /// The rect the shelf's `index`-th card takes, solved the way the page solves
-/// it: the head first, then the grid.
+/// it: the page head, then the shelf's own head, then the grid.
 fn card_rect_for(ctx: &Context, index: usize) -> Rect {
     let tokens = Tokens::DARK;
     let mut found = None;
@@ -114,6 +114,7 @@ fn card_rect_for(ctx: &Context, index: usize) -> Rect {
             .show(ui, |ui| {
                 crate::view::inner(ui, |ui| {
                     page_head::show(ui, greeting(LOCAL_HOUR), "", &tokens);
+                    section::head(ui, HOME_SHELF_TITLE, "", &tokens);
                     found = Some(root::media_grid(ui).card_rect(index));
                 });
             });

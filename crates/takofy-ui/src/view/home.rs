@@ -16,7 +16,6 @@ use crate::format::{
     media_type, saved_sub,
 };
 use crate::home::{Card, Saved, Shelf, greeting};
-use crate::layout::cards;
 use crate::layout::table as table_layout;
 use crate::library::{Library, MediaLayout};
 use crate::library_filter::{Item, RootKind};
@@ -60,14 +59,15 @@ pub(super) fn home_view(
                         tokens,
                     ));
                 }
-                let solved = root::media_grid(ui);
+                let columns = root::media_grid(ui).columns;
                 // The shelf is one row, so the grid's own column count is the
                 // number of cards to draw.
-                match library.home_shelf(solved.columns) {
+                match library.home_shelf(columns) {
                     Shelf::Waiting => {
                         // One row of tiles: the shelf is one row, so the
                         // skeleton holds the shape the cards will.
-                        let count = solved.columns;
+                        let count = columns;
+                        let solved = root::media_grid(ui);
                         let list = root::grid_rect(ui, &solved, count);
                         ui.allocate_rect(list, Sense::hover());
                         skeleton::tiles(ui, &solved, count, tokens);
@@ -104,7 +104,6 @@ pub(super) fn home_view(
                         ui.label(recipe::muted(HOME_QUIET, tokens));
                     }
                     Shelf::Cards(cards) => {
-                        section::head(ui, HOME_SHELF_TITLE, "", tokens);
                         let mut draw = MediaDraw {
                             art,
                             now,
@@ -114,7 +113,7 @@ pub(super) fn home_view(
                             open: &mut open,
                             play: &mut play,
                         };
-                        cards_row(ui, &solved, &cards, &mut draw, now_ms);
+                        cards_row(ui, &cards, &mut draw, now_ms);
                     }
                 }
             });
@@ -143,14 +142,19 @@ pub(super) fn home_view(
     None
 }
 
-/// The shelf's cards, in the library's own tiles.
-fn cards_row(
-    ui: &mut Ui,
-    solved: &cards::Grid,
-    cards: &[Card<'_>],
-    draw: &mut MediaDraw<'_, '_>,
-    now_ms: u64,
-) {
+/// The shelf's head and its cards, in the library's own tiles.
+///
+/// The head is drawn here, and the grid is solved after it, so the cards cannot
+/// be placed above the title that names them.
+fn cards_row(ui: &mut Ui, cards: &[Card<'_>], draw: &mut MediaDraw<'_, '_>, now_ms: u64) {
+    let head = section::head(ui, HOME_SHELF_TITLE, "", draw.tokens);
+    let solved = &root::media_grid(ui);
+    if let Some(first) = (0..cards.len()).map(|at| solved.card_rect(at)).next() {
+        debug_assert!(
+            first.top() >= head.bottom(),
+            "the shelf's cards start above its own title"
+        );
+    }
     let list = root::grid_rect(ui, solved, cards.len());
     ui.allocate_rect(list, Sense::hover());
     let visible = ui.clip_rect();
