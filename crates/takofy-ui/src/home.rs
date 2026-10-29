@@ -2,7 +2,7 @@
 //! songs need before they can be drawn as cards.
 //!
 //! The rest of Home is pure logic in the child modules: the seed and the draw
-//! ([`seed`], [`recent`]), the greeting, and the state machine that decides what
+//! ([`seed`], [`draw`]), the greeting, and the state machine that decides what
 //! the page says ([`outlook`]).
 
 use std::collections::{HashMap, HashSet};
@@ -11,14 +11,14 @@ use takofy_model::{PlaylistEntry, SavedAlbum, SavedAt, TrackEntry};
 
 use crate::message::Failure;
 
+mod draw;
 mod greeting;
 mod outlook;
-mod recent;
 mod seed;
 
+pub use draw::{pick, pool};
 pub use greeting::greeting;
 pub use outlook::{Intake, Outlook, Phase, Tally, outlook};
-pub use recent::{pick, pool};
 pub use seed::Seed;
 
 /// One thing a card draws, borrowed from the library's own lists.
