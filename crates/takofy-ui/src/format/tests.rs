@@ -865,3 +865,41 @@ fn every_chip_says_what_it_is_loading() {
     );
     assert_eq!(root_loading_label(RootKind::Albums), "Loading your albums…");
 }
+
+#[test]
+fn a_home_card_says_what_it_is_and_when_it_was_saved() {
+    let at = SavedAt::from_millis(1_700_000_000_000).expect("a date");
+    assert_eq!(
+        saved_sub("Playlist", at, 1_700_000_000_000 + 3_600_000),
+        "Playlist · Today"
+    );
+    assert_eq!(
+        saved_sub("Album", at, 1_700_000_000_000 + 8 * 86_400_000),
+        "Album · 1 week ago"
+    );
+    assert_eq!(
+        saved_sub("Playlist", at, 1_699_000_000_000),
+        "Playlist",
+        "a date after the clock has no age to name"
+    );
+}
+
+#[test]
+fn the_home_copy_has_no_counts() {
+    assert_eq!(HOME_SHELF_TITLE, "Most recently added");
+    assert_eq!(HOME_QUIET, "Nothing recent to show yet.");
+    assert_eq!(HOME_DAY_ONE_TITLE, "Home is built from what you save");
+    assert_eq!(HOME_DAY_ONE_DOOR, "Search the catalogue");
+    for copy in [
+        HOME_SHELF_TITLE,
+        HOME_QUIET,
+        HOME_DAY_ONE_TITLE,
+        HOME_DAY_ONE_BODY,
+        HOME_DAY_ONE_DOOR,
+    ] {
+        assert!(
+            !copy.chars().any(|c| c.is_ascii_digit()),
+            "{copy:?} counts nothing"
+        );
+    }
+}

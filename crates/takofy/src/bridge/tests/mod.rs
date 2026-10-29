@@ -4,6 +4,7 @@ mod create;
 mod devices;
 mod errors;
 mod follow;
+mod home;
 mod orders;
 mod playback;
 mod reads;

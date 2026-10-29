@@ -15,6 +15,7 @@ use std::collections::HashSet;
 use takofy_model::LikedTrack;
 use takofy_model::uri::{UriKind, parse};
 
+use crate::home::Phase;
 use crate::message::Failure;
 
 /// What a pick's members have in common, as the menu's save row reads it.
@@ -112,6 +113,31 @@ impl Likes {
                 .iter()
                 .filter(move |track| set.contains(&track.uri)),
         )
+    }
+
+    /// Whether the set holds any track at all.
+    ///
+    /// This is the set, not the last read's tracks: a song liked this session
+    /// is in the set but not in `recent`, and that user must not be told that
+    /// nothing is saved.
+    pub fn any(&self) -> bool {
+        self.set.as_ref().is_some_and(|set| !set.is_empty())
+    }
+
+    /// What Home's shelf needs to know about the liked songs.
+    ///
+    /// A failed read reports itself even when a set is held; the shelf's own
+    /// pool decides whether that set still draws cards. A read that answered is
+    /// arrived whether or not it adopted a set, and a held set whose next read
+    /// is due is arrived too, because there is still data to draw. Only a set
+    /// that has never been read is pending.
+    pub fn phase(&self) -> Phase {
+        match self.read {
+            Read::Failed(failure) => Phase::Failed(failure),
+            Read::Current => Phase::Arrived,
+            Read::Idle | Read::Stale if self.set.is_some() => Phase::Arrived,
+            Read::Idle | Read::Stale => Phase::Pending,
+        }
     }
 
     /// What `uris` have in common, as the menu's save row reads it.

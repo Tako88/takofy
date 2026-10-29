@@ -654,6 +654,12 @@ fn start_with<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                         break;
                     }
                 }
+                Event::Command(Some(Command::LabelSaved { tracks })) => {
+                    let step = label_saved(&mut host, &mut stop_rx, &task_notifier, &tracks).await;
+                    if step.stopped() {
+                        break;
+                    }
+                }
                 Event::Command(Some(Command::Play { uri })) => {
                     let step = play_now(
                         &mut host,
@@ -2221,6 +2227,35 @@ async fn label_rows<H: SessionHost>(
         }
         Some(Err(error)) => {
             log_device_error(&error);
+            Step::Done
+        }
+    }
+}
+
+/// Names the liked songs Home's shelf is about to draw.
+///
+/// The reply is always sent, even when the read fails or names nothing: Home
+/// waits for every answer before it draws, so a miss has to be an answer too.
+/// The shelf then cannot use that song as a card and leaves it out.
+async fn label_saved<H: SessionHost>(
+    host: &mut H,
+    stop: &mut StopReceiver<()>,
+    notifier: &Notifier,
+    tracks: &[String],
+) -> Step {
+    let asked = tracks.to_vec();
+    match stop_or(stop, host.release_tracks(tracks)).await {
+        None => Step::Stopped,
+        Some(Ok(named)) => {
+            notifier.send(Update::SavedLabelled { asked, named });
+            Step::Done
+        }
+        Some(Err(error)) => {
+            log_device_error(&error);
+            notifier.send(Update::SavedLabelled {
+                asked,
+                named: Vec::new(),
+            });
             Step::Done
         }
     }

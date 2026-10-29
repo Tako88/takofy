@@ -141,6 +141,9 @@ pub enum Command {
     LabelRemote { track: String },
     /// Label these track URIs, in the order the caller listed them.
     LabelRows { uris: Vec<String> },
+    /// Label the liked songs Home's shelf draws, in the order the caller
+    /// listed them.
+    LabelSaved { tracks: Vec<String> },
     /// Fetch the playlists again.
     ReloadLibrary,
     /// Fetch one cover image from the worker.
@@ -420,6 +423,14 @@ pub enum Update {
     LikedTracks(Vec<LikedTrack>),
     /// The liked tracks could not be loaded; a set already read is kept.
     LikedTracksFailed(Failure),
+    /// The labels of the liked songs Home asked for.
+    ///
+    /// It is always sent, even when the read failed or named nothing, because
+    /// the shelf waits for every answer before it draws.
+    SavedLabelled {
+        asked: Vec<String>,
+        named: Vec<TrackEntry>,
+    },
     /// The liked write landed for these tracks, with this value.
     Liked { tracks: Vec<String>, liked: bool },
     /// The liked write did not stick.

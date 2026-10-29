@@ -2,7 +2,7 @@
 //! playbar's clock, the hero's byline, the playlist band's description, and the
 //! age a playlist row gives its date.
 
-use takofy_model::{AddedAt, Owner, PlaylistEntry, PublishedAt, ReleaseKind, TrackEntry};
+use takofy_model::{AddedAt, Owner, PlaylistEntry, PublishedAt, ReleaseKind, SavedAt, TrackEntry};
 
 use crate::discography::Chip;
 use crate::library::SidebarWrite;
@@ -237,6 +237,30 @@ pub fn added_label(added: AddedAt, now_ms: u64) -> Option<String> {
     age_label(added.as_millis(), now_ms)
 }
 
+/// What a Home card says under its name: what it is and when it was saved.
+///
+/// A save dated after the clock has no age, so the card carries the kind word
+/// alone rather than a broken sentence.
+pub fn saved_sub(kind: &str, at: SavedAt, now_ms: u64) -> String {
+    library_kind(kind, age_label(at.as_millis(), now_ms).as_deref())
+}
+
+/// The Home shelf's title.
+pub const HOME_SHELF_TITLE: &str = "Most recently added";
+
+/// What the shelf says when things are saved but none of them is recent.
+pub const HOME_QUIET: &str = "Nothing recent to show yet.";
+
+/// The day-one page's heading.
+pub const HOME_DAY_ONE_TITLE: &str = "Home is built from what you save";
+
+/// The day-one page's one sentence under the heading.
+pub const HOME_DAY_ONE_BODY: &str =
+    "Save an album, keep a playlist or like a song, and it appears here.";
+
+/// The day-one page's door into the catalogue.
+pub const HOME_DAY_ONE_DOOR: &str = "Search the catalogue";
+
 /// An episode count as the show page's head writes it: `1 episode`, `N episodes`.
 pub fn episode_count_label(count: usize) -> String {
     count_noun(count, "episode")
@@ -298,9 +322,8 @@ pub fn episode_meta(show: &str, published: Option<PublishedAt>, now_ms: u64) -> 
 
 /// The root's head note: how many cards the chosen chip shows.
 ///
-/// Only the shows the user follows carry an added date, and a rootlist playlist
-/// carries none, so the note counts cards rather than dating any of them: `3
-/// saved`.
+/// Each card dates itself differently, so the note counts cards rather than
+/// dating any of them: `3 saved`.
 pub fn library_note(count: usize) -> String {
     format!("{count} saved")
 }

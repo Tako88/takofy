@@ -425,6 +425,22 @@ fn the_first_request_waits_for_the_playlists() {
 }
 
 #[test]
+fn any_reads_the_set_not_the_last_read() {
+    let mut likes = Likes::default();
+    assert!(likes.request(true));
+    likes.apply(&Event::Set(Vec::new()));
+    assert!(!likes.any(), "a read landed, and it was empty");
+
+    assert!(set(&mut likes, &[A], true).is_some());
+    assert!(likes.any(), "a song liked this session is in the set");
+    assert_eq!(
+        likes.recent().expect("a set").count(),
+        0,
+        "but not in the last read's tracks"
+    );
+}
+
+#[test]
 fn recent_is_none_until_a_read_lands() {
     assert!(Likes::default().recent().is_none());
     let mut likes = Likes::default();
@@ -492,4 +508,24 @@ fn a_track_unliked_leaves_recent_and_its_failed_write_brings_it_back() {
         vec![&a, &b],
         "the revert put it back in the read's order"
     );
+}
+
+#[test]
+fn every_read_and_set_combination_has_a_phase() {
+    const FAILURE: Failure = Failure::Load;
+    let cases = [
+        (Read::Idle, false, Phase::Pending),
+        (Read::Idle, true, Phase::Arrived),
+        (Read::Stale, false, Phase::Pending),
+        (Read::Stale, true, Phase::Arrived),
+        (Read::Current, false, Phase::Arrived),
+        (Read::Current, true, Phase::Arrived),
+        (Read::Failed(FAILURE), false, Phase::Failed(FAILURE)),
+        (Read::Failed(FAILURE), true, Phase::Failed(FAILURE)),
+    ];
+    for (read, held, expected) in cases {
+        let mut likes = if held { likes(&[A]) } else { Likes::default() };
+        likes.read = read.clone();
+        assert_eq!(likes.phase(), expected, "{read:?} with a set: {held}");
+    }
 }

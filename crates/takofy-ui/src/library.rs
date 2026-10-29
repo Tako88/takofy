@@ -21,6 +21,7 @@ use takofy_model::{
 use crate::cover_refresh::CoverRefresh;
 use crate::discography::Filter;
 use crate::follow::Follow;
+use crate::home::Home;
 use crate::library_filter::{RootFilter, RootKind};
 use crate::likes::{self, Likes};
 use crate::lyrics::LyricsPanel;
@@ -38,6 +39,7 @@ use crate::show_order::{ShowOrder, default_order};
 use crate::sidebar_kind::{SidebarFilter, SidebarKind};
 use crate::track_filter::TrackFilter;
 
+mod home;
 mod nav;
 mod requests;
 mod saved;
@@ -147,6 +149,8 @@ pub struct Library {
     pub saved_albums: Load<Vec<SavedAlbum>>,
     /// The liked-songs set, and the one write in flight against it.
     pub likes: Likes,
+    /// The Home page's seed, and the labels the liked cards need.
+    pub home: Home,
     /// The artists the open artist page is heard with, once they are named.
     pub related: Load<Vec<FollowedArtist>>,
     /// The artist the likeness list belongs to, so a stale reply is told apart.
@@ -997,6 +1001,9 @@ impl Library {
             }
             Update::LikedTracksFailed(failure) => {
                 self.likes.apply(&likes::Event::SetFailed(*failure));
+            }
+            Update::SavedLabelled { asked, named } => {
+                self.home.apply_labels(asked, named);
             }
             Update::Liked { tracks, liked } => {
                 self.likes.apply(&likes::Event::Confirmed {
