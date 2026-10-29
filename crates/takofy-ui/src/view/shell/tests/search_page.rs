@@ -150,7 +150,7 @@ fn back_and_forward_walk_the_search_pages() {
     // Back onto a's page: its answer was dropped when b replaced it, so the
     // page asks again — and never paints b's rows under a's heading.
     assert_eq!(
-        window.click(&mut transport, &mut queue, buttons[1].center()),
+        window.click(&mut transport, &mut queue, buttons[2].center()),
         None,
         "a search page never settles with a command"
     );
@@ -183,7 +183,7 @@ fn back_and_forward_walk_the_search_pages() {
 
     // Forward onto b's page, which is asked for the same way.
     let buttons = topbar_buttons(&frame);
-    window.click(&mut transport, &mut queue, buttons[2].center());
+    window.click(&mut transport, &mut queue, buttons[3].center());
     assert_eq!(window.library.page_search_query(), Some("b"));
     assert_eq!(
         search_read(&mut window),

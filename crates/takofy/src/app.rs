@@ -161,7 +161,7 @@ impl TakofyApp {
         let (transport, queue) = Self::restored_state(&loaded);
         Self {
             state: SignIn::default(),
-            library: Library::default(),
+            library: Library::starting_home(wall_clock_ms()),
             transport,
             queue,
             reporter: Reporter::default(),
@@ -246,6 +246,11 @@ impl eframe::App for TakofyApp {
             let _ = self.ui_end.commands.send(command);
         }
         if let Some(command) = self.library.likes_request() {
+            let _ = self.ui_end.commands.send(command);
+        }
+        // The shelf names liked songs by their labels, and only Home folds them
+        // into cards, so the read is Home's own and is asked once per URI.
+        if let Some(command) = self.library.home_labels_request() {
             let _ = self.ui_end.commands.send(command);
         }
         // The artist page's likeness row is its second read: it is asked for

@@ -101,6 +101,7 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
         screen.library,
         bar.nav.or_else(|| nav_from_input(ui)),
         command,
+        screen.now_ms,
     );
 
     // Hazard, deferred: if an earlier region already reported a command, this
@@ -1240,6 +1241,7 @@ fn apply_nav(
     library: &mut Library,
     nav: Option<topbar::Nav>,
     command: Option<Command>,
+    now_ms: u64,
 ) -> Option<Command> {
     if command.is_some() {
         return command;
@@ -1248,9 +1250,15 @@ fn apply_nav(
         None => None,
         Some(topbar::Nav::Back) => library.back(),
         Some(topbar::Nav::Forward) => library.forward(),
+        // Home is a page of its own: opening it draws a new shelf, and Home on
+        // Home keeps the one already on screen.
+        Some(topbar::Nav::Home) => {
+            library.go_home(now_ms);
+            None
+        }
         // The root is local state and never needs a fetch, so it adds no command
         // of its own.
-        Some(topbar::Nav::Home) => {
+        Some(topbar::Nav::Library) => {
             library.to_playlists();
             None
         }

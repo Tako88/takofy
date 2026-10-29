@@ -720,7 +720,7 @@ fn home_and_back_leave_no_stale_open_menu() {
 
     let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
     let buttons = topbar_buttons(&frame);
-    let _ = window.click(&mut transport, &mut queue, buttons[1].center());
+    let _ = window.click(&mut transport, &mut queue, buttons[2].center());
     assert!(
         !window.library.search.is_open(),
         "and Back does not reopen it"

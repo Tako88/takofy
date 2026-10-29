@@ -437,6 +437,8 @@ pub(super) fn search_field(output: &egui::FullOutput) -> Option<Rect> {
 }
 
 pub(super) const PLAYLIST: &str = "spotify:playlist:a";
+/// A settled wall-clock instant, for the navs that seed Home's shelf.
+pub(super) const NOW_MS: u64 = 1_700_000_000_000;
 pub(super) const ARTIST: &str = "spotify:artist:a";
 pub(super) const ALBUM: &str = "spotify:album:b";
 pub(super) const ALBUM_B: &str = "spotify:album:c";

@@ -70,12 +70,28 @@ pub enum Nav {
     Back,
     /// Forward to the page Back left behind.
     Forward,
-    /// Back to the library root, which is Home, showing the chip it showed.
+    /// Open the Home page.
     Home,
+    /// Open the library root, whatever chip it was left on.
+    Library,
     /// Back to the library root, showing one chip.
     Root(RootKind),
     /// Open a page.
     Page(Page),
+}
+
+/// One place in the nav cluster: a button, or the rule that parts the two
+/// destinations from the history pair.
+enum Item<'a> {
+    Button {
+        control: Control,
+        glyph: Icon,
+        label: &'a str,
+        requested: Nav,
+        live: bool,
+        current: bool,
+    },
+    Rule,
 }
 
 /// Draws the topbar inside `rect`.
@@ -111,59 +127,105 @@ pub fn show(
         .response
     });
 
-    // Home sits in the cluster now that the sidebar's navigation is gone, and it
-    // doubles as the position marker when the library root is on screen.
-    let home = library.page().is_none();
+    // Home and Your Library are the two places the library can start, and each
+    // marks the page it opens as the current one.
+    let on_home = library.page() == Some(&Page::Home);
+    let at_root = library.page().is_none();
     row_centred(ui, "history", places.history, |ui| {
         // The cluster spaces itself, so egui must not add its own gap on top of
-        // each advance or the third button is pushed past the row's clip.
+        // each advance or the last button is pushed past the row's clip.
         ui.spacing_mut().item_spacing.x = 0.0;
-        let cluster: [(Control, Icon, &str, Nav, bool, bool); 3] = [
-            (Control::NavHome, Icon::Home, "Home", Nav::Home, true, home),
-            (
-                Control::HistoryBack,
-                Icon::ArrowLeft,
-                "Go back",
-                Nav::Back,
-                can_back,
-                false,
-            ),
-            (
-                Control::HistoryForward,
-                Icon::ArrowRight,
-                "Go forward",
-                Nav::Forward,
-                can_forward,
-                false,
-            ),
+        let cluster = [
+            Item::Button {
+                control: Control::NavHome,
+                glyph: Icon::Home,
+                label: "Home",
+                requested: Nav::Home,
+                live: true,
+                current: on_home,
+            },
+            Item::Button {
+                control: Control::NavLibrary,
+                glyph: Icon::Library,
+                label: "Your Library",
+                requested: Nav::Library,
+                live: true,
+                current: at_root,
+            },
+            Item::Rule,
+            Item::Button {
+                control: Control::HistoryBack,
+                glyph: Icon::ArrowLeft,
+                label: "Go back",
+                requested: Nav::Back,
+                live: can_back,
+                current: false,
+            },
+            Item::Button {
+                control: Control::HistoryForward,
+                glyph: Icon::ArrowRight,
+                label: "Go forward",
+                requested: Nav::Forward,
+                live: can_forward,
+                current: false,
+            },
         ];
         let side = extent::BUTTON;
         let top = crate::view::shell::row_centre(ui) - side / 2.0;
         let last = cluster.len() - 1;
-        for (index, (control, glyph, label, requested, live, current)) in
-            cluster.into_iter().enumerate()
-        {
-            let rect = Rect::from_min_size(Pos2::new(ui.cursor().min.x, top), Vec2::splat(side));
-            let slot = controls::round_button(
-                ui,
-                tokens,
-                control,
-                rect,
-                glyph,
-                Size::BASE,
-                label,
-                live,
-                current,
-            );
-            if slot.response.clicked() {
-                nav = Some(requested);
+        for (index, item) in cluster.into_iter().enumerate() {
+            let width = match &item {
+                Item::Button { .. } => side,
+                // The rule takes the slot the layout budgets for it, never a
+                // leftover, so the two cannot drift apart.
+                Item::Rule => layout::HISTORY_RULE,
+            };
+            let rect =
+                Rect::from_min_size(Pos2::new(ui.cursor().min.x, top), Vec2::new(width, side));
+            match item {
+                Item::Button {
+                    control,
+                    glyph,
+                    label,
+                    requested,
+                    live,
+                    current,
+                } => {
+                    let button = Rect::from_min_size(rect.min, Vec2::splat(side));
+                    let slot = controls::round_button(
+                        ui,
+                        tokens,
+                        control,
+                        button,
+                        glyph,
+                        Size::BASE,
+                        label,
+                        live,
+                        current,
+                    );
+                    if slot.response.clicked() {
+                        nav = Some(requested);
+                    }
+                }
+                // The rule is a mark, not a control: it keeps the two
+                // destinations apart from the pair that moves through history.
+                Item::Rule => {
+                    ui.painter().rect_filled(
+                        Rect::from_min_size(
+                            Pos2::new(rect.left() + space::S1, rect.center().y - space::S4 / 2.0),
+                            Vec2::new(stroke::HAIRLINE, space::S4),
+                        ),
+                        radius::NONE,
+                        tokens.palette.border,
+                    );
+                }
             }
-            // The cluster is exactly its buttons and the gaps between them, so
+            // The cluster is exactly its items and the gaps between them, so
             // the last one gets no trailing gap to overflow the row by.
             let advance = if index == last {
-                extent::BUTTON
+                width
             } else {
-                extent::BUTTON + space::S1
+                width + space::S1
             };
             ui.advance_cursor_after_rect(Rect::from_min_size(rect.min, Vec2::new(advance, side)));
         }
@@ -173,7 +235,7 @@ pub fn show(
     // the field has to be edited through: once `trail` returns, the borrow is
     // done and the search state is free.
     if let Some((index, target)) = trail(ui, &crumbs, places.trail, tokens) {
-        // Home leads to the root as it is; a list crumb sets the chip it names.
+        // Home leads to the Home page; a list crumb sets the chip it names.
         nav = Some(match (index, target) {
             (0, _) => Nav::Home,
             (_, Target::Root(kind)) => Nav::Root(kind),

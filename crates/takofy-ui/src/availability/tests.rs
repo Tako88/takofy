@@ -7,6 +7,7 @@ fn only_the_controls_with_a_way_to_act_are_ready() {
             control,
             Control::DrawerToggle
                 | Control::NavHome
+                | Control::NavLibrary
                 | Control::LibraryCreate
                 | Control::TrailHome
                 | Control::TrailPlaylists

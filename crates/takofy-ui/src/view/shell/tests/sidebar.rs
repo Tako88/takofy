@@ -52,7 +52,7 @@ fn the_playlists_crumb_returns_to_the_root_and_back_loads_the_playlist() {
     assert_eq!(window.library.page(), None, "the crumb returns to the root");
 
     let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-    let back = topbar_buttons(&frame)[1];
+    let back = topbar_buttons(&frame)[2];
     assert_eq!(
         window.click(&mut transport, &mut queue, back.center()),
         Some(Command::LoadTracks {
@@ -89,7 +89,7 @@ fn back_into_a_playlist_whose_tracks_were_cleared_loads_it() {
     assert_eq!(window.library.page(), None);
 
     let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-    let back = topbar_buttons(&frame)[1];
+    let back = topbar_buttons(&frame)[2];
     assert_eq!(
         window.click(&mut transport, &mut queue, back.center()),
         Some(Command::LoadTracks {
@@ -146,7 +146,12 @@ fn a_nav_that_loses_the_frame_leaves_the_library_alone() {
     let won = Command::LoadTracks {
         playlist: ALBUM.to_owned(),
     };
-    let command = apply_nav(&mut library, Some(topbar::Nav::Back), Some(won.clone()));
+    let command = apply_nav(
+        &mut library,
+        Some(topbar::Nav::Back),
+        Some(won.clone()),
+        NOW_MS,
+    );
 
     assert_eq!(command, Some(won), "the earlier command keeps the frame");
     assert_eq!(
@@ -169,7 +174,7 @@ fn a_nav_applies_when_no_other_region_asked() {
     stale_playlist_behind_an_album(&mut library);
 
     assert_eq!(
-        apply_nav(&mut library, Some(topbar::Nav::Back), None),
+        apply_nav(&mut library, Some(topbar::Nav::Back), None, NOW_MS),
         Some(Command::LoadTracks {
             playlist: PLAYLIST.to_owned()
         })
@@ -190,7 +195,8 @@ fn a_list_crumb_returns_to_the_root_on_its_own_chip() {
         apply_nav(
             &mut library,
             Some(topbar::Nav::Root(RootKind::Playlists)),
-            None
+            None,
+            NOW_MS,
         ),
         None
     );
@@ -208,6 +214,7 @@ fn a_page_crumb_opens_the_page() {
             &mut library,
             Some(topbar::Nav::Page(Page::Artist(ARTIST.to_owned()))),
             None,
+            NOW_MS,
         ),
         Some(Command::LoadArtist {
             artist: ARTIST.to_owned()

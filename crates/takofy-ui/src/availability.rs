@@ -8,6 +8,7 @@
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Control {
     NavHome,
+    NavLibrary,
     LibraryCreate,
     FilterPlaylists,
     FilterArtists,
@@ -83,8 +84,9 @@ pub enum Control {
 }
 
 impl Control {
-    pub const ALL: [Self; 51] = [
+    pub const ALL: [Self; 52] = [
         Self::NavHome,
+        Self::NavLibrary,
         Self::LibraryCreate,
         Self::FilterPlaylists,
         Self::FilterArtists,
@@ -162,6 +164,7 @@ pub fn availability(control: Control) -> Availability {
         Control::HistoryForward => Availability::Ready, // #16
 
         Control::NavHome => Availability::Ready,
+        Control::NavLibrary => Availability::Ready,
         Control::LibraryCreate => Availability::Ready, // #35
         Control::FilterPlaylists => Availability::Ready, // #3
         Control::FilterArtists => Availability::Ready,
