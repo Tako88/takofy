@@ -7,6 +7,7 @@
 
 pub mod cover;
 pub mod device;
+pub mod home;
 pub mod remote;
 pub mod uri;
 
@@ -629,6 +630,16 @@ pub struct SavedAlbum {
     pub named: bool,
     /// The album's artists, joined with ", ". Empty when none were named.
     pub artists: String,
+    /// The album's artists' URIs, aligned with [`Self::artist_names`].
+    ///
+    /// An artist whose name is blank or whose id does not resolve is absent
+    /// from both lists, so index `i` of one always names the same artist as
+    /// index `i` of the other. The joined [`Self::artists`] cannot be split
+    /// back into names, because a name may itself contain the joining comma.
+    pub artist_uris: Vec<String>,
+    /// The album's artists' names, same length and order as
+    /// [`Self::artist_uris`].
+    pub artist_names: Vec<String>,
     pub year: Option<u16>,
     pub cover: Option<CoverSet>,
     /// The album's track count, when its discs could be read.

@@ -42,6 +42,8 @@ pub(super) fn saved_album(uri: &str, name: &str, artists: &str) -> SavedAlbum {
         name: name.to_owned(),
         named: true,
         artists: artists.to_owned(),
+        artist_uris: Vec::new(),
+        artist_names: Vec::new(),
         year: None,
         cover: None,
         tracks: None,

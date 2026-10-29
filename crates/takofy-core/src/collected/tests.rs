@@ -11,7 +11,7 @@ use librespot::protocol::metadata::{
 use protobuf::Message as _;
 use protobuf::MessageField;
 use protobuf::well_known_types::any::Any;
-use takofy_model::{CoverSet, CoverUrl, LikedTrack, SavedAt};
+use takofy_model::{CoverSet, CoverUrl, LikedTrack, SavedAlbum, SavedAt};
 
 use super::{
     ArtistCard, album_dated, artist_card, artist_entries, artist_order, liked_tracks,
@@ -470,4 +470,98 @@ fn a_blank_wire_name_reads_unnamed_with_the_uri() {
     assert!(!entry.named);
     assert_eq!(entry.artists, "");
     assert_eq!(entry.tracks, Some(0));
+}
+
+/// One album message naming the artists `(gid byte, name)` in wire order; a
+/// missing gid is an artist the wire named but did not identify.
+fn credited_album(artists: &[(Option<u8>, &str)]) -> AlbumMessage {
+    let mut album = AlbumMessage::default();
+    album.set_gid(gid(50));
+    album.set_name("Record".to_owned());
+    for (byte, name) in artists {
+        let mut artist = ArtistMessage::default();
+        if let Some(byte) = byte {
+            artist.set_gid(gid(*byte));
+        }
+        artist.set_name((*name).to_owned());
+        album.artist.push(artist);
+    }
+    album
+}
+
+/// The saved-album entry one answered album message gives.
+fn saved_album(album: AlbumMessage) -> SavedAlbum {
+    let order = vec![album_uri(50)];
+    saved_album_entries(&order, vec![Some(response(&[(&album_uri(50), album)]))])
+        .pop()
+        .expect("an entry")
+}
+
+#[test]
+fn a_blank_artist_name_keeps_the_lists_aligned() {
+    let entry = saved_album(credited_album(&[
+        (Some(1), "Vela"),
+        (Some(2), "   "),
+        (Some(3), "Kite"),
+    ]));
+
+    assert_eq!(entry.artists, "Vela, Kite");
+    assert_eq!(entry.artist_uris, vec![artist_uri(1), artist_uri(3)]);
+    assert_eq!(
+        entry.artist_names,
+        vec!["Vela".to_owned(), "Kite".to_owned()],
+        "the unnamed artist is in neither list, so the two stay indexed alike"
+    );
+    assert_eq!(entry.artist_uris.len(), entry.artist_names.len());
+}
+
+#[test]
+fn an_artist_with_no_gid_is_in_neither_list() {
+    let entry = saved_album(credited_album(&[(Some(1), "Vela"), (None, "Kite")]));
+
+    assert_eq!(entry.artists, "Vela, Kite", "a named artist still reads");
+    assert_eq!(entry.artist_uris, vec![artist_uri(1)]);
+    assert_eq!(
+        entry.artist_names,
+        vec!["Vela".to_owned()],
+        "an unresolvable id gives no link, and no name either"
+    );
+}
+
+#[test]
+fn the_joined_names_are_unchanged() {
+    let entry = saved_album(credited_album(&[
+        (Some(1), " Vela "),
+        (Some(2), ""),
+        (Some(3), "Kite"),
+    ]));
+
+    assert_eq!(
+        entry.artists, "Vela, Kite",
+        "trimmed, blanks dropped, the rest joined with a comma and a space"
+    );
+}
+
+#[test]
+fn two_artists_give_uris_in_wire_order() {
+    let entry = saved_album(credited_album(&[(Some(7), "Kite"), (Some(3), "Vela")]));
+
+    assert_eq!(entry.artist_uris, vec![artist_uri(7), artist_uri(3)]);
+    assert_eq!(
+        entry.artist_names,
+        vec!["Kite".to_owned(), "Vela".to_owned()],
+        "each name keeps the wire's order, not the id's"
+    );
+}
+
+#[test]
+fn an_unanswered_album_has_empty_lists() {
+    let order = vec![album_uri(10)];
+    let entry = saved_album_entries(&order, vec![None])
+        .pop()
+        .expect("an entry");
+
+    assert_eq!(entry.artists, "");
+    assert!(entry.artist_uris.is_empty());
+    assert!(entry.artist_names.is_empty());
 }

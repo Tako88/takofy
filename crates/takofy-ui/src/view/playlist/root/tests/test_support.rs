@@ -203,6 +203,8 @@ pub(super) fn saved_album(uri: &str, name: &str) -> takofy_model::SavedAlbum {
         name: name.to_owned(),
         named: true,
         artists: "Nils Aker".to_owned(),
+        artist_uris: Vec::new(),
+        artist_names: Vec::new(),
         year: None,
         cover: None,
         tracks: None,

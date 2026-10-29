@@ -1334,6 +1334,8 @@ pub(super) fn removable_rows(window: &mut Window) {
         name: "A Record".to_owned(),
         named: true,
         artists: String::new(),
+        artist_uris: Vec::new(),
+        artist_names: Vec::new(),
         year: None,
         cover: None,
         tracks: None,

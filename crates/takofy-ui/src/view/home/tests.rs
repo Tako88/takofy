@@ -165,6 +165,8 @@ fn album(uri: &str, name: &str, ms: Option<u64>) -> SavedAlbum {
         name: name.to_owned(),
         named: true,
         artists: "Nils Aker".to_owned(),
+        artist_uris: Vec::new(),
+        artist_names: Vec::new(),
         year: None,
         cover: None,
         tracks: None,

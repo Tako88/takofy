@@ -16,6 +16,8 @@ fn saved_album(uri: &str) -> takofy_model::SavedAlbum {
         name: "Signal Decay".to_owned(),
         named: true,
         artists: "Band".to_owned(),
+        artist_uris: Vec::new(),
+        artist_names: Vec::new(),
         year: Some(2024),
         cover: None,
         tracks: Some(2),

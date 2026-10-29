@@ -78,6 +78,8 @@ fn album(uri: &str) -> SavedAlbum {
         name: uri.to_owned(),
         named: true,
         artists: String::new(),
+        artist_uris: Vec::new(),
+        artist_names: Vec::new(),
         year: None,
         cover: None,
         tracks: None,

@@ -1680,7 +1680,7 @@ fn show_card(show: &Show) -> Option<ShowCard> {
 ///
 /// A wrong length is not an id, so it gives no URI rather than an approximate
 /// one; the caller then has nothing to link to and draws plain text.
-fn uri_of(gid: Option<&[u8]>, page: fn(SpotifyId) -> SpotifyUri) -> Option<String> {
+pub(crate) fn uri_of(gid: Option<&[u8]>, page: fn(SpotifyId) -> SpotifyUri) -> Option<String> {
     page(SpotifyId::from_raw(gid?).ok()?).to_uri().ok()
 }
 
