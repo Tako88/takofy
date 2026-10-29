@@ -73,6 +73,9 @@ pub enum Control {
     /// The library page's two densities.
     LayoutGrid,
     LayoutList,
+    /// The day-one page's door into the catalogue, which focuses the search
+    /// field.
+    HomeSearch,
     /// A library item's own play, in the grid and in the list. It is keyed by the
     /// item's uri, so one control serves every card and every row.
     CardPlay,
@@ -80,7 +83,7 @@ pub enum Control {
 }
 
 impl Control {
-    pub const ALL: [Self; 50] = [
+    pub const ALL: [Self; 51] = [
         Self::NavHome,
         Self::LibraryCreate,
         Self::FilterPlaylists,
@@ -130,6 +133,7 @@ impl Control {
         Self::ReleaseMore,
         Self::EpisodeOrder,
         Self::CardPlay,
+        Self::HomeSearch,
         Self::Authorize,
     ];
 }
@@ -216,6 +220,7 @@ pub fn availability(control: Control) -> Availability {
         Control::LibraryFilterPodcasts => Availability::Ready, // #3
         Control::LibraryMore => Availability::Ready,
         Control::LayoutGrid | Control::LayoutList => Availability::Ready,
+        Control::HomeSearch => Availability::Ready,
         Control::ReleasePlay => Availability::Ready,
         Control::EpisodeToggle => Availability::Ready,
         Control::ReleaseLike => Availability::Ready, // #35

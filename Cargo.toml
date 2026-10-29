@@ -35,6 +35,9 @@ futures-util = "0.3"
 # The collection endpoints want their own media type and an HTTP method, and
 # hyper does not re-export either; `http` is the same 1.5.0 librespot has locked.
 http = "1"
+# The local hour for Home's greeting. Already in the build through `oauth2`, and
+# `unsafe_code` is denied, so a hand-written `localtime` is out.
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 # The window: eframe runs the event loop and egui draws each frame.
 #
 # Glow (OpenGL), not wgpu. wgpu 30 does not compile for Windows: wgpu-hal 30

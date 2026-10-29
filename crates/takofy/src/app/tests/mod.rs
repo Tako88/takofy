@@ -1,3 +1,4 @@
+mod clock;
 mod drain;
 mod painting;
 mod prefs;

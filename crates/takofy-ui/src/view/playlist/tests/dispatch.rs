@@ -4,6 +4,13 @@ use super::super::*;
 fn main_page_maps_show_to_the_show_view() {
     let mut library = Library::default();
     assert_eq!(main_page(&library), MainPage::Root);
+    let mut home = Library::starting_home(1_700_000_000_000);
+    assert_eq!(
+        main_page(&home),
+        MainPage::Home,
+        "the Home page is its own body"
+    );
+    home.to_playlists();
     let _ = library.open(Page::Playlist("spotify:playlist:a".to_owned()));
     assert_eq!(main_page(&library), MainPage::Playlist);
     let _ = library.open(Page::Album("spotify:album:a".to_owned()));

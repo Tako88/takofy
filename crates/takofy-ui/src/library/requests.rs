@@ -1,5 +1,6 @@
 //! The reads the library asks for, and the loads they point at.
 
+use crate::home::Phase;
 use crate::message::Command;
 use crate::route::Page;
 
@@ -131,7 +132,9 @@ impl Library {
                 self.search.open_results(&query);
                 None
             }
-            _ => None,
+            // Neither the root nor Home is a read of its own: the root draws
+            // the two library lists, and Home draws their settled state.
+            None | Some(Page::Home) => None,
         }
     }
 
@@ -312,12 +315,15 @@ impl Library {
 
     /// The command that starts the saved-albums load, if one is due.
     ///
-    /// The followed-artists shape, one chip over.
+    /// The followed-artists shape, one chip over. Home also wants the list,
+    /// whatever chip the root was left on: its shelf draws albums, and the chip
+    /// that would ask for them is not on screen to do it.
     pub fn saved_albums_request(&mut self) -> Option<Command> {
         if self.saved_albums == Load::Idle
             && matches!(self.playlists, Load::Ready(_))
             && (albums_chosen(self.root_filter.chosen(), self.sidebar_kind.chosen())
-                || self.on_artist_page())
+                || self.on_artist_page()
+                || self.on_home())
         {
             self.saved_albums = Load::Loading;
             Some(Command::LoadSavedAlbums)
@@ -342,6 +348,28 @@ impl Library {
         self.likes
             .request(matches!(self.playlists, Load::Ready(_)))
             .then_some(Command::LoadLikedTracks)
+    }
+
+    /// The label read Home's liked cards owe: asked once per URI, marked at send,
+    /// and only on a settled pool.
+    pub fn home_labels_request(&mut self) -> Option<Command> {
+        if !self.on_home() {
+            return None;
+        }
+        let intake = self.home_intake();
+        if matches!(intake.playlists, Phase::Failed(_))
+            || [intake.playlists, intake.albums, intake.likes]
+                .into_iter()
+                .any(|phase| phase == Phase::Pending)
+        {
+            return None;
+        }
+        let tracks = self.home_unlabelled();
+        if tracks.is_empty() {
+            return None;
+        }
+        self.home.mark_asked(&tracks);
+        Some(Command::LabelSaved { tracks })
     }
 
     /// Flips the liked set and asks for the write, or changes nothing.

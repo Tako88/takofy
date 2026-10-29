@@ -966,6 +966,7 @@ fn try_rename(window: &mut Window, uri: &str, surface: crate::naming::Surface) -
             art: &mut window.art,
             now: window.now,
             now_ms: 0,
+            local_hour: 9,
             pane: &mut window.pane,
         };
         command = apply_rename(ui, &mut screen, &item, surface);

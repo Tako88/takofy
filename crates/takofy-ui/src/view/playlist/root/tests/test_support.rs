@@ -50,6 +50,7 @@ pub(super) fn run(
             art,
             Instant::now(),
             NOW_MS,
+            9,
             &tokens,
         );
     });
@@ -140,6 +141,7 @@ pub(super) fn click(
                 art,
                 Instant::now(),
                 NOW_MS,
+                9,
                 &tokens,
             ) {
                 *command = Some(next);

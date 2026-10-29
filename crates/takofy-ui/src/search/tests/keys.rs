@@ -430,3 +430,15 @@ fn closing_an_applied_action_keeps_the_query() {
     assert_eq!(state.mark(), None);
     assert_eq!(state.text, "abc");
 }
+
+/// A control outside the field can ask for its keyboard, and the ask is taken
+/// once: a press is one move, not a lock.
+#[test]
+fn the_focus_ask_is_consumed_once() {
+    let mut state = Search::default();
+    assert!(!state.take_focus_ask(), "nothing was asked for");
+
+    state.ask_focus();
+    assert!(state.take_focus_ask());
+    assert!(!state.take_focus_ask(), "one press is one ask");
+}

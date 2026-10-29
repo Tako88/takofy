@@ -25,6 +25,7 @@ fn pane_band_top(library: &mut Library) -> f32 {
             &mut art,
             Instant::now(),
             0,
+            9,
             &tokens,
         );
     });

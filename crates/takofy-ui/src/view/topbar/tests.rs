@@ -32,9 +32,9 @@ fn the_field_announces_itself_as_a_search_input() {
     assert_eq!(role, Some(egui::Role::SearchInput));
 }
 
-/// Home is the library root, so on a page its crumb leads back there.
+/// Home is a page of its own, so on another page its crumb leads there.
 #[test]
-fn the_home_crumb_is_a_way_back_to_the_root() {
+fn the_home_crumb_is_a_way_back_home() {
     let tokens = Tokens::DARK;
     let ctx = egui::Context::default();
     ctx.set_fonts(fonts::definitions());
@@ -61,9 +61,9 @@ fn the_home_crumb_is_a_way_back_to_the_root() {
         output.textures_delta.clear();
     }
 
-    let (index, target) = back.expect("the Home crumb did not ask for the root");
+    let (index, target) = back.expect("the Home crumb did not ask for Home");
     assert_eq!(index, 0, "Home is the first crumb");
-    assert_eq!(target, Target::Root(RootKind::All));
+    assert_eq!(target, Target::Page(crate::route::Page::Home));
 }
 
 /// The magnifier sits at the field's left edge, so the text has to start

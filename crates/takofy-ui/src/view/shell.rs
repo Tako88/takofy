@@ -125,6 +125,7 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
                 screen.art,
                 screen.now,
                 screen.now_ms,
+                screen.local_hour,
                 tokens,
             )
         },

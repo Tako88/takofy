@@ -204,6 +204,7 @@ pub(super) fn tracklist_frame(
             &mut Art::default(),
             Instant::now(),
             NOW_MS,
+            9,
             &tokens,
         );
     })
@@ -228,6 +229,7 @@ pub(super) fn tracklist_frame_in(
             &mut Art::default(),
             Instant::now(),
             NOW_MS,
+            9,
             &tokens,
         );
     })
@@ -482,6 +484,7 @@ pub(super) fn clicks(
             &mut Art::default(),
             Instant::now(),
             NOW_MS,
+            9,
             &tokens,
         );
     });
@@ -501,6 +504,7 @@ pub(super) fn clicks(
                     &mut Art::default(),
                     Instant::now(),
                     NOW_MS,
+                    9,
                     &tokens,
                 ) {
                     *command = Some(next);
@@ -574,6 +578,7 @@ pub(super) fn pass(
             &mut Art::default(),
             Instant::now(),
             NOW_MS,
+            9,
             &tokens,
         );
     });
@@ -676,6 +681,7 @@ pub(super) fn table_frame_in(
             &mut Art::default(),
             Instant::now(),
             NOW_MS,
+            9,
             &tokens,
         );
     })

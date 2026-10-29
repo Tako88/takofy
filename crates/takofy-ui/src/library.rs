@@ -1093,7 +1093,7 @@ impl Library {
         let page = self.history.current().cloned();
         self.history.retain(|page| match page {
             Page::Playlist(uri) => present(uri),
-            Page::Album(_) | Page::Artist(_) | Page::Show(_) | Page::Search(_) => true,
+            Page::Home | Page::Album(_) | Page::Artist(_) | Page::Show(_) | Page::Search(_) => true,
         });
         if self.history.current().cloned() != page {
             self.left_page();

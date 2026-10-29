@@ -145,6 +145,7 @@ impl Window {
             art: &mut self.art,
             now: self.now,
             now_ms: 0,
+            local_hour: 9,
             pane: &mut self.pane,
         };
         let mut output = self.ctx.run_ui(input, |ui| {

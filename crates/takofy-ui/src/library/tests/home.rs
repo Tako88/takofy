@@ -340,3 +340,185 @@ fn a_dated_playlist_draws_even_with_a_failed_albums_read() {
         other => panic!("expected cards, got {other:?}"),
     }
 }
+
+/// A Home library whose three sources have all answered, holding one dated
+/// liked song whose label nobody has asked for yet.
+fn home_with_a_liked_song() -> Library {
+    let mut library = Library::starting_home(1_700_000_000_000);
+    library.apply(&Update::Playlists(Vec::new()));
+    assert_eq!(
+        library.likes_request(),
+        Some(Command::LoadLikedTracks),
+        "arrange: the liked read must be in flight"
+    );
+    library.apply(&Update::LikedTracks(vec![liked("spotify:track:t", 5_000)]));
+    library.apply(&Update::SavedAlbums(Vec::new()));
+    library
+}
+
+#[test]
+fn starting_home_opens_on_home_with_nowhere_behind_it() {
+    let library = Library::starting_home(1_700_000_000_000);
+
+    assert_eq!(library.page(), Some(&Page::Home));
+    assert!(!library.can_back());
+    assert_eq!(
+        Library::default().page(),
+        None,
+        "a default library still opens on the root"
+    );
+}
+
+#[test]
+fn home_on_home_keeps_the_draw_and_a_new_page_reseeds() {
+    let mut library = Library::default();
+    library.go_home(1_700_000_000_000);
+    let seed = library.home.seed();
+
+    library.go_home(1_700_000_001_000);
+    assert_eq!(library.home.seed(), seed, "Home on Home changes nothing");
+
+    library.open(Page::Album("spotify:album:a".to_owned()));
+    library.go_home(1_700_000_002_000);
+    assert_eq!(library.page(), Some(&Page::Home));
+    assert_ne!(library.home.seed(), seed, "a new open is a new draw");
+}
+
+#[test]
+fn back_and_forward_keep_the_seed() {
+    let mut library = Library::default();
+    library.go_home(1_700_000_000_000);
+    let seed = library.home.seed();
+
+    library.open(Page::Album("spotify:album:a".to_owned()));
+    library.back();
+    assert_eq!(library.page(), Some(&Page::Home));
+    assert_eq!(library.home.seed(), seed, "Back onto Home keeps the draw");
+
+    library.forward();
+    library.back();
+    assert_eq!(library.home.seed(), seed, "a later Back keeps it too");
+}
+
+#[test]
+fn going_home_drops_a_failed_page_load() {
+    let mut library = Library::default();
+    library.select("a");
+    library.apply(&Update::TracksFailed {
+        playlist: "a".to_owned(),
+        failure: Failure::Load,
+    });
+
+    library.go_home(1_700_000_000_000);
+
+    assert_eq!(library.tracks, Load::Idle);
+    assert_eq!(library.wanted, None);
+}
+
+/// Every pending source on Home is one Home guarantees a read for, whatever
+/// chip the root was left on: a narrowed chip must not leave the shelf waiting
+/// for an ask nobody makes.
+#[test]
+fn home_asks_for_the_albums_and_the_likes_under_every_chip() {
+    for kind in crate::library_filter::ROW {
+        let mut library = Library::starting_home(1_700_000_000_000);
+        library.root_filter.choose(kind);
+        library.apply(&Update::Playlists(Vec::new()));
+
+        assert_eq!(
+            library.saved_albums_request(),
+            Some(Command::LoadSavedAlbums),
+            "{kind:?}"
+        );
+        assert_eq!(
+            library.likes_request(),
+            Some(Command::LoadLikedTracks),
+            "{kind:?}"
+        );
+    }
+}
+
+#[test]
+fn a_failed_rootlist_asks_for_nothing_and_says_it_is_unreadable() {
+    let mut library = Library::starting_home(1_700_000_000_000);
+    library.apply(&Update::PlaylistFailed(Failure::Load));
+
+    assert_eq!(library.saved_albums_request(), None);
+    assert_eq!(library.likes_request(), None);
+    assert_eq!(library.home_labels_request(), None);
+    assert_eq!(
+        library.home_shelf(4),
+        crate::home::Shelf::Unreadable(Failure::Load)
+    );
+}
+
+#[test]
+fn retrying_a_failed_rootlist_waits_again() {
+    let mut library = Library::starting_home(1_700_000_000_000);
+    library.apply(&Update::PlaylistFailed(Failure::Load));
+    assert_eq!(
+        library.home_shelf(4),
+        crate::home::Shelf::Unreadable(Failure::Load)
+    );
+
+    library.reload();
+
+    assert_eq!(
+        library.home_shelf(4),
+        crate::home::Shelf::Waiting,
+        "the retry is a read in flight, not another failure"
+    );
+}
+
+#[test]
+fn home_asks_for_a_label_once_per_uri() {
+    let mut library = home_with_a_liked_song();
+
+    assert_eq!(
+        library.home_labels_request(),
+        Some(Command::LabelSaved {
+            tracks: vec!["spotify:track:t".to_owned()],
+        })
+    );
+    assert_eq!(
+        library.home_labels_request(),
+        None,
+        "a URI is asked for once"
+    );
+    assert!(library.home.asked("spotify:track:t"));
+}
+
+#[test]
+fn home_asks_for_no_label_until_every_source_has_settled() {
+    let mut library = Library::starting_home(1_700_000_000_000);
+    library.apply(&Update::Playlists(Vec::new()));
+    assert_eq!(library.likes_request(), Some(Command::LoadLikedTracks));
+    library.apply(&Update::LikedTracks(vec![liked("spotify:track:t", 5_000)]));
+
+    assert!(
+        matches!(library.home_intake().albums, crate::home::Phase::Pending),
+        "arrange: the albums are still unasked"
+    );
+    assert_eq!(
+        library.home_labels_request(),
+        None,
+        "an unsettled pool could reshuffle under the labels"
+    );
+
+    library.apply(&Update::SavedAlbums(Vec::new()));
+
+    assert_eq!(
+        library.home_labels_request(),
+        Some(Command::LabelSaved {
+            tracks: vec!["spotify:track:t".to_owned()],
+        })
+    );
+}
+
+#[test]
+fn home_asks_for_no_label_away_from_home() {
+    let mut library = home_with_a_liked_song();
+    library.to_playlists();
+
+    assert_eq!(library.home_labels_request(), None);
+}

@@ -193,9 +193,24 @@ pub struct Search {
     page_open: bool,
     /// How much of each block the page has been asked to show.
     reveal: Reveal,
+    /// Whether something outside the field asked for its keyboard.
+    focus_ask: bool,
 }
 
 impl Search {
+    /// Asks for the field's keyboard, from a control that cannot reach egui.
+    ///
+    /// The view only records the ask: the topbar draws the field, so it is the
+    /// one place that can move the keyboard there.
+    pub fn ask_focus(&mut self) {
+        self.focus_ask = true;
+    }
+
+    /// Takes the focus ask, so it moves the keyboard once.
+    pub fn take_focus_ask(&mut self) -> bool {
+        std::mem::take(&mut self.focus_ask)
+    }
+
     /// The query the field stands for, or `None` when it is blank.
     pub fn key(&self) -> Option<String> {
         collapse(&self.text)

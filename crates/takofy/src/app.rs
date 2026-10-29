@@ -3,6 +3,7 @@
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use chrono::{DateTime, Local, TimeZone, Timelike};
 use eframe::egui;
 use takofy_model::{Order, RequestId};
 use takofy_ui::cover::Art;
@@ -349,6 +350,7 @@ impl eframe::App for TakofyApp {
                 art: &mut self.art,
                 now,
                 now_ms: wall_clock_ms(),
+                local_hour: local_hour(),
             };
             view::show(ui, &mut screen, &self.tokens)
         };
@@ -402,6 +404,23 @@ fn wall_clock_ms() -> u64 {
         .map_or(0, |since| {
             u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
         })
+}
+
+/// The hour the greeting says, from an instant in any time zone.
+///
+/// The greeting is the clock and nothing else, so this is the whole conversion:
+/// `hour()` follows the zone's offset, and a value that cannot be a `u8`
+/// saturates, which the greeting reads as an evening hour.
+fn local_hour_at<Tz: TimeZone>(at: &DateTime<Tz>) -> u8 {
+    u8::try_from(at.hour()).unwrap_or(u8::MAX)
+}
+
+/// The local hour of the day, read once per frame.
+///
+/// The time zone is the machine's, which is what "Good morning" is about; a
+/// hand-written `localtime` would need `unsafe`, which is denied.
+fn local_hour() -> u8 {
+    local_hour_at(&Local::now())
 }
 
 /// The window's background. The channels between panels read as the window

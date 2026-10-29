@@ -71,6 +71,7 @@ fn heading_left(
             &mut Art::default(),
             Instant::now(),
             NOW_MS,
+            9,
             &tokens,
         );
     });
@@ -163,6 +164,7 @@ fn below_1000_the_playlist_heads_and_draws_the_artist_but_not_the_album() {
             &mut Art::default(),
             Instant::now(),
             NOW_MS,
+            9,
             &Tokens::DARK,
         );
     });
@@ -260,6 +262,7 @@ fn an_empty_track_list_draws_without_panicking() {
             &mut Art::default(),
             Instant::now(),
             NOW_MS,
+            9,
             &tokens,
         );
     });
@@ -286,6 +289,7 @@ fn the_hero_heads_a_named_playlist_and_not_an_unnamed_one() {
             &mut Art::default(),
             Instant::now(),
             NOW_MS,
+            9,
             &tokens,
         );
     });
@@ -313,6 +317,7 @@ fn the_hero_heads_a_named_playlist_and_not_an_unnamed_one() {
             &mut Art::default(),
             Instant::now(),
             NOW_MS,
+            9,
             &tokens,
         );
     });

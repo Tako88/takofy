@@ -385,6 +385,7 @@ fn a_library_rows_removal_is_dropped_while_a_field_holds_the_keyboard() {
                 art: &mut art,
                 now: Instant::now(),
                 now_ms: 0,
+                local_hour: 9,
                 pane: &mut pane,
             };
             command = apply_remove_from_library(ui, &mut screen, &row);

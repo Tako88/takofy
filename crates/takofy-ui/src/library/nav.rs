@@ -3,7 +3,7 @@
 use crate::follow::Follow;
 use crate::message::Command;
 use crate::naming::Surface;
-use crate::route::Page;
+use crate::route::{History, Page};
 
 use super::{Library, Load};
 
@@ -22,7 +22,9 @@ impl Library {
     pub fn page_search_query(&self) -> Option<&str> {
         match self.history.current()? {
             Page::Search(query) => Some(query),
-            Page::Playlist(_) | Page::Album(_) | Page::Artist(_) | Page::Show(_) => None,
+            Page::Home | Page::Playlist(_) | Page::Album(_) | Page::Artist(_) | Page::Show(_) => {
+                None
+            }
         }
     }
 
@@ -35,8 +37,13 @@ impl Library {
     pub fn selected(&self) -> Option<&str> {
         match self.history.current()? {
             Page::Playlist(uri) => Some(uri),
-            Page::Album(_) | Page::Artist(_) | Page::Show(_) | Page::Search(_) => None,
+            Page::Home | Page::Album(_) | Page::Artist(_) | Page::Show(_) | Page::Search(_) => None,
         }
+    }
+
+    /// Whether Home is the page on screen.
+    pub fn on_home(&self) -> bool {
+        matches!(self.page(), Some(Page::Home))
     }
 
     /// Moves to a playlist and returns the command that loads it.
@@ -91,6 +98,33 @@ impl Library {
         if self.history.go(None) {
             self.left_page();
         }
+        self.reset_details();
+    }
+
+    /// Moves to Home, drawing a new shelf only when this move changes the page.
+    pub fn go_home(&mut self, now_ms: u64) {
+        if self.history.go(Some(Page::Home)) {
+            self.left_page();
+            self.home.open(now_ms);
+        }
+        self.reset_details();
+    }
+
+    /// A library that opens on Home, with the first shelf already drawn.
+    pub fn starting_home(now_ms: u64) -> Library {
+        let mut library = Library {
+            history: History::starting_at(Page::Home),
+            ..Library::default()
+        };
+        library.home.open(now_ms);
+        library
+    }
+
+    /// The page's detail loads, dropped along with the wants that name them.
+    ///
+    /// A settled tracks read is kept for the page Back returns to; the artist
+    /// page's Follow state goes because it names a page no longer on screen.
+    fn reset_details(&mut self) {
         self.wanted = None;
         self.wanted_album = None;
         self.wanted_artist = None;

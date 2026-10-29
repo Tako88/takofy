@@ -53,6 +53,7 @@ fn band_frame(
             &mut Art::default(),
             Instant::now(),
             NOW_MS,
+            9,
             &tokens,
         );
     });

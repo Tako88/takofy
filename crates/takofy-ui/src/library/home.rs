@@ -52,25 +52,7 @@ impl Library {
             || matches!(&self.saved_albums, Load::Ready(items) if !items.is_empty())
             || self.likes.any();
 
-        let mut all: Vec<(Pooled<'_>, Option<SavedAt>)> = Vec::new();
-        if let Load::Ready(playlists) = &self.playlists {
-            all.extend(
-                playlists
-                    .iter()
-                    .map(|entry| (Pooled::Saved(Saved::Playlist(entry)), entry.saved_at)),
-            );
-        }
-        if let Load::Ready(albums) = &self.saved_albums {
-            all.extend(
-                albums
-                    .iter()
-                    .map(|album| (Pooled::Saved(Saved::Album(album)), album.saved_at)),
-            );
-        }
-        if let Some(recent) = self.likes.recent() {
-            all.extend(recent.map(|track| (Pooled::Liked(track), track.saved_at)));
-        }
-
+        let all = self.home_entries();
         let dates: Vec<Option<SavedAt>> = all.iter().map(|(_, at)| *at).collect();
         let mut unanswered = 0;
         let mut usable: Vec<usize> = Vec::new();
@@ -107,6 +89,45 @@ impl Library {
             Outlook::Quiet => Shelf::Quiet,
             Outlook::Cards => Shelf::Cards(self.home_cards(&all, &dates, &usable, cards)),
         }
+    }
+
+    /// The pooled liked songs whose label no read has asked for yet.
+    ///
+    /// Only the pool counts: a liked song older than the newest `POOL` entries
+    /// is never drawn, so its label would be a read nobody uses.
+    pub(super) fn home_unlabelled(&self) -> Vec<String> {
+        let all = self.home_entries();
+        let dates: Vec<Option<SavedAt>> = all.iter().map(|(_, at)| *at).collect();
+        pool(&dates)
+            .into_iter()
+            .filter_map(|index| match all.get(index)?.0 {
+                Pooled::Liked(track) if !self.home.asked(&track.uri) => Some(track.uri.clone()),
+                Pooled::Saved(_) | Pooled::Liked(_) => None,
+            })
+            .collect()
+    }
+
+    /// Everything the shelf can draw from, with the date it was saved.
+    fn home_entries(&self) -> Vec<(Pooled<'_>, Option<SavedAt>)> {
+        let mut all: Vec<(Pooled<'_>, Option<SavedAt>)> = Vec::new();
+        if let Load::Ready(playlists) = &self.playlists {
+            all.extend(
+                playlists
+                    .iter()
+                    .map(|entry| (Pooled::Saved(Saved::Playlist(entry)), entry.saved_at)),
+            );
+        }
+        if let Load::Ready(albums) = &self.saved_albums {
+            all.extend(
+                albums
+                    .iter()
+                    .map(|album| (Pooled::Saved(Saved::Album(album)), album.saved_at)),
+            );
+        }
+        if let Some(recent) = self.likes.recent() {
+            all.extend(recent.map(|track| (Pooled::Liked(track), track.saved_at)));
+        }
+        all
     }
 
     /// The drawn cards, in date order.

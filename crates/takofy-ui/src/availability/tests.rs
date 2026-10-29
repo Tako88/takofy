@@ -55,6 +55,7 @@ fn only_the_controls_with_a_way_to_act_are_ready() {
                 | Control::FilterAlbums
                 | Control::FilterPodcasts
                 | Control::SearchField
+                | Control::HomeSearch
         );
         assert_eq!(
             availability(control) == Availability::Ready,

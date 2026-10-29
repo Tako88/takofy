@@ -101,16 +101,16 @@ fn a_page_names_the_list_it_lives_in() {
     assert_eq!(crumbs[1].target, Some(Target::Root(RootKind::Playlists)));
 }
 
-/// Home goes back to the root as it was; the list crumb goes back to the
-/// root showing that list.
+/// Home leads to the Home page; the list crumb is what sets the chip, and it
+/// sets it to the list the page belongs to.
 #[test]
-fn home_keeps_the_chip_and_the_list_crumb_sets_it() {
+fn the_list_crumb_sets_the_chip() {
     let mut library = Library::default();
     library.root_filter.choose(RootKind::Artists);
     library.open(Page::Album("spotify:album:a".to_owned()));
 
     let crumbs = trail(&library);
-    assert_eq!(crumbs[0].target, Some(Target::Root(RootKind::Artists)));
+    assert_eq!(crumbs[0].target, Some(Target::Page(Page::Home)));
     assert_eq!(crumbs[1].target, Some(Target::Root(RootKind::Albums)));
 }
 
@@ -126,7 +126,7 @@ fn a_search_page_has_no_list_crumb() {
             Crumb {
                 label: "Home",
                 current: false,
-                target: Some(Target::Root(RootKind::All)),
+                target: Some(Target::Page(Page::Home)),
             },
             Crumb {
                 label: "Search",
@@ -137,12 +137,16 @@ fn a_search_page_has_no_list_crumb() {
     );
 }
 
-/// At the root there is nowhere to go back to.
+/// At the root Home still leads to the Home page; the library crumb is the
+/// one with nowhere to go.
 #[test]
-fn the_root_trail_has_nowhere_to_go() {
+fn the_root_trail_leads_home_and_nowhere_else() {
     let mut library = Library::default();
     library.apply(&Update::Playlists(vec![playlist("a", "Mix")]));
-    assert!(trail(&library).iter().all(|crumb| crumb.target.is_none()));
+
+    let crumbs = trail(&library);
+    assert_eq!(crumbs[0].target, Some(Target::Page(Page::Home)));
+    assert!(crumbs[1..].iter().all(|crumb| crumb.target.is_none()));
 }
 
 #[test]
@@ -154,7 +158,7 @@ fn the_root_trail_is_home_then_the_library() {
             Crumb {
                 label: "Home",
                 current: false,
-                target: None,
+                target: Some(Target::Page(Page::Home)),
             },
             Crumb {
                 label: "Your Library",
@@ -166,7 +170,7 @@ fn the_root_trail_is_home_then_the_library() {
 }
 
 #[test]
-fn a_selection_gives_home_a_list_link_and_the_name() {
+fn a_selection_gives_home_the_page_link_and_the_name() {
     let mut library = Library::default();
     library.apply(&Update::Playlists(vec![playlist("a", "Mix")]));
     library.select("a");
@@ -177,7 +181,7 @@ fn a_selection_gives_home_a_list_link_and_the_name() {
             Crumb {
                 label: "Home",
                 current: false,
-                target: Some(Target::Root(RootKind::All)),
+                target: Some(Target::Page(Page::Home)),
             },
             Crumb {
                 label: "Playlists",
@@ -363,7 +367,7 @@ fn an_album_artist_or_show_page_gives_its_kind_as_current() {
                 Crumb {
                     label: "Home",
                     current: false,
-                    target: Some(Target::Root(RootKind::All)),
+                    target: Some(Target::Page(Page::Home)),
                 },
                 Crumb {
                     label: root_filter_label(list),
@@ -378,4 +382,27 @@ fn an_album_artist_or_show_page_gives_its_kind_as_current() {
             ]
         );
     }
+}
+
+/// Home is nobody's list: it is the page you reach from everywhere, not a
+/// member of a chip's grid.
+#[test]
+fn home_lives_in_no_list() {
+    assert_eq!(owning_list(&Page::Home), None);
+}
+
+/// On Home the trail is that one crumb, current and with nothing to press.
+#[test]
+fn on_home_the_trail_is_home_alone() {
+    let mut library = Library::default();
+    library.go_home(1_700_000_000_000);
+
+    assert_eq!(
+        trail(&library),
+        vec![Crumb {
+            label: "Home",
+            current: true,
+            target: None,
+        }]
+    );
 }

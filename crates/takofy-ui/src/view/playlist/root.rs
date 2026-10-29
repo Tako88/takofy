@@ -361,27 +361,27 @@ fn list(ui: &mut Ui, items: &[Item<'_>], draw: &mut MediaDraw<'_, '_>) {
 }
 
 /// Where a click on one item goes, and the frame's drawing context.
-pub(super) struct MediaDraw<'a, 'b> {
-    pub(super) art: &'a mut Art,
-    pub(super) now: Instant,
-    pub(super) tokens: &'a Tokens,
-    pub(super) library: &'b Library,
-    pub(super) select: &'b mut Option<String>,
-    pub(super) open: &'b mut Option<Page>,
+pub(in crate::view) struct MediaDraw<'a, 'b> {
+    pub(in crate::view) art: &'a mut Art,
+    pub(in crate::view) now: Instant,
+    pub(in crate::view) tokens: &'a Tokens,
+    pub(in crate::view) library: &'b Library,
+    pub(in crate::view) select: &'b mut Option<String>,
+    pub(in crate::view) open: &'b mut Option<Page>,
     /// The object whose play was pressed, and the list it belongs to.
-    pub(super) play: &'b mut Option<(String, SidebarKind)>,
+    pub(in crate::view) play: &'b mut Option<(String, SidebarKind)>,
 }
 
 impl MediaDraw<'_, '_> {
     /// Records a press on an item's play. The want is taken after the scroll
     /// area, so the borrow of the items has ended by the time it is held.
-    fn want_play(&mut self, media: &MediaWords) {
+    pub(in crate::view) fn want_play(&mut self, media: &MediaWords) {
         *self.play = Some((media.uri.clone(), media.shelf));
     }
 
     /// What a click on one item does: a playlist selects, the rest open their
     /// page.
-    fn activate(&mut self, item: &Item<'_>, uri: &str) {
+    pub(in crate::view) fn activate(&mut self, item: &Item<'_>, uri: &str) {
         match item {
             Item::Playlist(_) => *self.select = Some(uri.to_owned()),
             Item::Show(_) => *self.open = Some(Page::Show(uri.to_owned())),
@@ -424,7 +424,7 @@ impl MediaDraw<'_, '_> {
     ///
     /// Only the grid composes: a four-up at a row's art column is mush, so a
     /// list never looks its quadrants up.
-    pub(super) fn media_of(
+    pub(in crate::view) fn media_of(
         &mut self,
         item: &Item<'_>,
         layout: MediaLayout,
@@ -511,21 +511,21 @@ impl MediaDraw<'_, '_> {
 }
 
 /// One item's words and pictures, owned so a borrow of the item is not needed.
-pub(super) struct MediaWords {
+pub(in crate::view) struct MediaWords {
     uri: String,
     name: String,
     kind: &'static str,
-    pub(super) sub: String,
+    pub(in crate::view) sub: String,
     size: String,
     round: bool,
-    pub(super) shelf: SidebarKind,
+    pub(in crate::view) shelf: SidebarKind,
     playable: bool,
     cover: Cover,
-    pub(super) picture: hero::Picture,
+    pub(in crate::view) picture: hero::Picture,
 }
 
 impl MediaWords {
-    pub(super) fn as_media(&self) -> media::Media<'_> {
+    pub(in crate::view) fn as_media(&self) -> media::Media<'_> {
         media::Media {
             uri: &self.uri,
             name: &self.name,

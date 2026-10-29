@@ -74,6 +74,7 @@ fn a_card_click_asks_for_tracks_once() {
             &mut Art::default(),
             Instant::now(),
             NOW_MS,
+            9,
             &tokens,
         );
     });
@@ -91,6 +92,7 @@ fn a_card_click_asks_for_tracks_once() {
                     &mut Art::default(),
                     Instant::now(),
                     NOW_MS,
+                    9,
                     &tokens,
                 ) {
                     loads += 1;
@@ -375,6 +377,7 @@ fn a_link_cell_points_the_hand_and_brightens_its_label() {
                 &mut Art::default(),
                 Instant::now(),
                 NOW_MS,
+                9,
                 &tokens,
             );
         });
@@ -457,6 +460,7 @@ fn the_row_keeps_its_hover_over_a_link_cell() {
                 &mut Art::default(),
                 Instant::now(),
                 NOW_MS,
+                9,
                 &tokens,
             );
         });
@@ -687,6 +691,7 @@ fn the_enter_key_plays_with_the_pointer_on_a_link_cell() {
                     &mut Art::default(),
                     Instant::now(),
                     NOW_MS,
+                    9,
                     &tokens,
                 );
             })
@@ -736,6 +741,7 @@ fn the_enter_key_plays_with_the_pointer_on_a_link_cell() {
                     &mut Art::default(),
                     Instant::now(),
                     NOW_MS,
+                    9,
                     &tokens,
                 ) {
                     *command = Some(next);

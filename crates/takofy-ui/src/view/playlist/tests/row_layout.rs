@@ -189,6 +189,7 @@ fn the_view_hands_a_tracks_album_and_length_to_its_row() {
             &mut Art::default(),
             Instant::now(),
             NOW_MS,
+            9,
             &tokens,
         );
     });
@@ -596,6 +597,7 @@ fn a_row_that_only_touches_the_fold_asks_for_no_cover() {
                 &mut art,
                 now,
                 NOW_MS,
+                9,
                 &tokens,
             );
         });
@@ -631,6 +633,7 @@ fn a_row_that_only_touches_the_fold_asks_for_no_cover() {
                 &mut art,
                 now,
                 NOW_MS,
+                9,
                 &tokens,
             );
         },

@@ -384,6 +384,17 @@ fn search(
     // The field's id is the control's, so the drawer's focus hand-back and the
     // shell's reads name the same widget the text edit stores its state under.
     let id = ui.scope_id().with((Control::SearchField, ()));
+    // A control outside the field cannot reach egui's focus, so it leaves an ask.
+    if search.take_focus_ask() {
+        ui.memory_mut(|memory| {
+            memory.request_focus(id);
+            // `request_focus` stores a default `EventFilter`, so without this the
+            // first Escape or arrow after the press would behave as if the field
+            // were a plain widget.
+            memory.set_focus_lock_filter(id, FIELD_FILTER);
+        });
+        ui.ctx().request_repaint();
+    }
     let focused_before = ui.memory(|memory| memory.has_focus(id));
     // Read every key through the same unmodified match it is consumed with: a
     // read that ignored the modifiers while the consume matched them let
