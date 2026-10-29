@@ -8,9 +8,10 @@
 //! one episode twice today, but the position costs nothing and keeps the row's
 //! contract the same as every other list's.
 //!
-//! Its body is a click target and a drag source both. The toggle and a double
-//! click play the episode; a single click picks the row, and a drag lifts it, so
-//! scanning the list with the pointer never starts playback.
+//! Its body is a click target and a drag source both. A playable row plays its
+//! episode from the toggle or a double click; a single click picks the row, and a
+//! drag lifts it, so scanning the list with the pointer never starts playback. A
+//! row that only opens its show draws no toggle and is asked for no play.
 //!
 //! The byline under the description names the show, and that name is a link to
 //! the show; the date beside it is plain.
@@ -50,6 +51,11 @@ pub struct Row<'a> {
     /// How long ago the episode was published, when known; the date stays plain.
     pub age: &'a str,
     pub duration: Option<&'a str>,
+    /// Whether the row plays its own episode.
+    ///
+    /// A shelf whose rows only open their show passes `false`: the row then draws
+    /// no toggle and answers no play, so nothing it cannot do is announced.
+    pub playable: bool,
     pub state: State,
     /// Where the row stands in its list's selection, and in a carry.
     pub look: Look,
@@ -84,9 +90,10 @@ impl Row<'_> {
 /// Draws one row into `rect` and reports what the pointer or the keyboard asked
 /// for.
 ///
-/// The toggle asks for one episode; a double click anywhere else on the row asks
-/// for the same. A single click only picks the row, so scanning a list does not
-/// start playback by accident.
+/// A playable row's toggle asks for one episode, and a double click anywhere else
+/// on it asks for the same; one that is not playable asks for neither. A single
+/// click only picks the row, so scanning a list does not start playback by
+/// accident.
 pub fn show(ui: &mut Ui, rect: Rect, row: &Row<'_>, tokens: &Tokens) -> Option<Click> {
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return None;
@@ -118,7 +125,9 @@ pub fn show(ui: &mut Ui, rect: Rect, row: &Row<'_>, tokens: &Tokens) -> Option<C
 
     // Keyboard activation is answered before the pointer's, so a click landing in
     // the same frame can never swallow it.
-    let keyboard = response.has_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+    let keyboard = row.playable
+        && response.has_focus()
+        && ui.input(|input| input.key_pressed(egui::Key::Enter));
     if keyboard || played {
         return Some(Click::Play);
     }
@@ -132,10 +141,10 @@ pub fn show(ui: &mut Ui, rect: Rect, row: &Row<'_>, tokens: &Tokens) -> Option<C
     // press twice would restart the episode it just started. `hovered` is a
     // belt-and-braces guard, not the mechanism: egui gives the click to the hit
     // widget, so a link leaves the row no double click to answer.
-    let over_toggle = response
-        .interact_pointer_pos()
-        .is_some_and(|at| toggle.contains(at));
-    if response.double_clicked() && !over_toggle && !hovered {
+    let over_toggle = toggle
+        .zip(response.interact_pointer_pos())
+        .is_some_and(|(rect, at)| rect.contains(at));
+    if row.playable && response.double_clicked() && !over_toggle && !hovered {
         return Some(Click::Play);
     }
     if body.lift {
@@ -155,14 +164,15 @@ pub(super) fn id(ui: &Ui, key: (&str, usize)) -> Id {
 
 /// Draws the row's hairline, its length, its toggle and its text, and reports
 /// whether the toggle was clicked with the rect it answered in, and what the
-/// byline's link drew.
+/// byline's link drew. A row that is not playable draws no toggle and reports
+/// none, so a press there is the row's own.
 fn paint(
     ui: &mut Ui,
     rect: Rect,
     row: &Row<'_>,
     key: (&str, usize),
     tokens: &Tokens,
-) -> (bool, Rect, Option<link::Shown>) {
+) -> (bool, Option<Rect>, Option<link::Shown>) {
     // The reference closes every row with a hairline rather than drawing a box.
     ui.painter().rect_filled(
         Rect::from_min_size(
@@ -185,7 +195,8 @@ fn paint(
     let duration_w = duration.as_ref().map_or(0.0, |line| line.size().x);
     let parts = row_parts(rect, duration_w);
 
-    let played = toggle(ui, parts.toggle, row, key, tokens);
+    let toggle = row.playable.then_some(parts.toggle);
+    let played = toggle.is_some_and(|at| play_toggle(ui, at, row, key, tokens));
 
     let text_width = parts.body.width().min(measure(ui));
     let byline = if text_width > 0.0 {
@@ -200,11 +211,17 @@ fn paint(
             tokens.palette.text_subtle,
         );
     }
-    (played, parts.toggle, byline)
+    (played, toggle, byline)
 }
 
 /// The bordered square that starts one episode.
-fn toggle(ui: &mut Ui, rect: Rect, row: &Row<'_>, key: (&str, usize), tokens: &Tokens) -> bool {
+fn play_toggle(
+    ui: &mut Ui,
+    rect: Rect,
+    row: &Row<'_>,
+    key: (&str, usize),
+    tokens: &Tokens,
+) -> bool {
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return false;
     }
