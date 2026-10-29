@@ -18,8 +18,8 @@ use takofy_core::receive::Inbound;
 use takofy_core::{Resolution, TransferPlan};
 use takofy_model::{
     AlbumDetail, ArtistDetail, ArtistPortrait, CoverSet, FollowedArtist, FollowedShow, Landing,
-    Move, PlaylistAccess, PlaylistEntry, Removal, Report, RequestId, Revision, SavedAlbum,
-    ShowDetail, TrackEntry, TrackLyrics,
+    LikedTrack, Move, PlaylistAccess, PlaylistEntry, Removal, Report, RequestId, Revision,
+    SavedAlbum, ShowDetail, TrackEntry, TrackLyrics,
 };
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::oneshot::Receiver;
@@ -242,7 +242,7 @@ pub(crate) trait SessionHost: Send + 'static {
     fn saved_albums(&self) -> impl Future<Output = Result<Vec<SavedAlbum>, SessionError>> + Send;
 
     /// The tracks the user has liked, newest save first.
-    fn liked_tracks(&self) -> impl Future<Output = Result<Vec<String>, SessionError>> + Send;
+    fn liked_tracks(&self) -> impl Future<Output = Result<Vec<LikedTrack>, SessionError>> + Send;
 
     /// Writes these tracks into the liked-songs set, or out of it.
     fn set_liked(
@@ -700,7 +700,7 @@ impl SessionHost for LiveSession {
         }
     }
 
-    async fn liked_tracks(&self) -> Result<Vec<String>, SessionError> {
+    async fn liked_tracks(&self) -> Result<Vec<LikedTrack>, SessionError> {
         match &self.engine {
             Some(engine) => engine.liked_tracks().await.map_err(SessionError::Engine),
             None => Err(SessionError::NotConnected),

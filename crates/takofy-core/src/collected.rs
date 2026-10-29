@@ -15,30 +15,63 @@ use librespot::core::SpotifyUri;
 use librespot::metadata::Artist;
 use librespot::protocol::extended_metadata::BatchedExtensionResponse;
 use librespot::protocol::metadata::Album as AlbumMessage;
-use takofy_model::{CoverSet, FollowedArtist, SavedAlbum};
+use takofy_model::{CoverSet, FollowedArtist, LikedTrack, SavedAlbum, SavedAt};
 
 use crate::artist::{answered_albums, portrait_of, release_chunks, release_of, release_uris};
 use crate::collection::Item;
-use crate::followed::newest_first;
+use crate::followed::{Dated, newest_dated, newest_first};
 
 /// The saved artists' URIs, newest save first.
 pub(crate) fn artist_order(items: Vec<Item>) -> Vec<String> {
     newest_first(items, |uri| matches!(uri, SpotifyUri::Artist { .. }))
 }
 
-/// The saved albums' URIs, newest save first.
+/// The saved albums' URIs and save dates, newest save first.
 ///
 /// Liked songs, episodes and everything else the set carries are dropped, so
 /// only album items are kept.
-pub(crate) fn album_order(items: Vec<Item>) -> Vec<String> {
-    newest_first(items, |uri| matches!(uri, SpotifyUri::Album { .. }))
+pub(crate) fn album_dated(items: Vec<Item>) -> Vec<Dated> {
+    newest_dated(items, |uri| matches!(uri, SpotifyUri::Album { .. }))
 }
 
-/// The liked tracks' URIs, newest save first.
+/// The liked tracks' URIs and save dates, newest save first.
 ///
 /// The same set holds saved albums and episodes, so only track items are kept.
-pub(crate) fn track_order(items: Vec<Item>) -> Vec<String> {
-    newest_first(items, |uri| matches!(uri, SpotifyUri::Track { .. }))
+pub(crate) fn track_dated(items: Vec<Item>) -> Vec<Dated> {
+    newest_dated(items, |uri| matches!(uri, SpotifyUri::Track { .. }))
+}
+
+/// The liked tracks, each with the date it was liked.
+pub(crate) fn liked_tracks(dated: Vec<Dated>) -> Vec<LikedTrack> {
+    dated
+        .into_iter()
+        .map(|dated| LikedTrack {
+            uri: dated.uri,
+            saved_at: dated.added_at.and_then(SavedAt::from_secs),
+        })
+        .collect()
+}
+
+/// The albums, each with the save date its own URI is dated at.
+///
+/// Matched by URI, so an album the dates do not name keeps no date, and a
+/// reordered answer cannot stamp the wrong album.
+pub(crate) fn stamp_albums(albums: Vec<SavedAlbum>, dated: &[Dated]) -> Vec<SavedAlbum> {
+    let added: HashMap<&str, Option<i64>> = dated
+        .iter()
+        .map(|dated| (dated.uri.as_str(), dated.added_at))
+        .collect();
+    albums
+        .into_iter()
+        .map(|album| SavedAlbum {
+            saved_at: added
+                .get(album.uri.as_str())
+                .copied()
+                .flatten()
+                .and_then(SavedAt::from_secs),
+            ..album
+        })
+        .collect()
 }
 
 /// An artist as its card draws it, before it is joined to the saved order.

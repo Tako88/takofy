@@ -11,13 +11,14 @@ use librespot::protocol::metadata::{
 use protobuf::Message as _;
 use protobuf::MessageField;
 use protobuf::well_known_types::any::Any;
-use takofy_model::{CoverSet, CoverUrl};
+use takofy_model::{CoverSet, CoverUrl, LikedTrack, SavedAt};
 
 use super::{
-    ArtistCard, album_order, artist_card, artist_entries, artist_order, saved_album_entries,
-    track_order,
+    ArtistCard, album_dated, artist_card, artist_entries, artist_order, liked_tracks,
+    saved_album_entries, stamp_albums, track_dated,
 };
 use crate::collection::Item;
+use crate::followed::Dated;
 
 /// A 16-byte gid. `SpotifyId::from_raw` rejects anything else.
 fn gid(byte: u8) -> Vec<u8> {
@@ -69,75 +70,131 @@ fn artist_order_drops_removed_and_non_artist_items_and_orders_newest_first() {
     );
 }
 
+fn dated(uri: String, added_at: Option<i64>) -> Dated {
+    Dated { uri, added_at }
+}
+
 #[test]
-fn album_order_drops_liked_songs_and_episodes_and_orders_newest_first() {
+fn album_dated_drops_liked_songs_and_episodes_and_orders_newest_first() {
     assert_eq!(
-        album_order(vec![
+        album_dated(vec![
             item(&track_uri(9), Some(900), false), // a liked song
             item(&episode_uri(8), Some(800), false),
             item(&album_uri(1), Some(100), false),
             item(&album_uri(2), Some(400), true), // a removed album
             item(&album_uri(3), None, false),
         ]),
-        vec![album_uri(1), album_uri(3)],
+        vec![dated(album_uri(1), Some(100)), dated(album_uri(3), None)],
         "liked songs and episodes are not saved albums, and a removed one stays dropped"
     );
 }
 
 #[test]
-fn album_order_keeps_the_first_of_a_duplicate_pair() {
+fn album_dated_keeps_the_first_of_a_duplicate_pair() {
     assert_eq!(
-        album_order(vec![
+        album_dated(vec![
             item(&album_uri(1), Some(100), false),
             item(&album_uri(1), Some(2_000), false),
         ]),
-        vec![album_uri(1)],
+        vec![dated(album_uri(1), Some(100))],
         "the first occurrence's date sorts, so the later, newer duplicate does not win"
     );
 }
 
 #[test]
-fn track_order_keeps_only_live_track_items() {
+fn track_dated_keeps_only_live_track_items_with_their_dates() {
     assert_eq!(
-        track_order(vec![
+        track_dated(vec![
             item(&track_uri(1), Some(100), false),
             item(&album_uri(2), Some(200), false),
             item(&episode_uri(3), Some(300), false),
             item(&track_uri(4), Some(400), true),
             item(&track_uri(5), None, false),
         ]),
-        vec![track_uri(1), track_uri(5)],
+        vec![dated(track_uri(1), Some(100)), dated(track_uri(5), None)],
         "an album, an episode and a removed track are not liked songs"
     );
 }
 
 #[test]
-fn a_track_saved_removed_and_saved_again_is_one_track() {
+fn a_track_saved_removed_and_saved_again_keeps_the_live_date() {
     assert_eq!(
-        track_order(vec![
+        track_dated(vec![
             item(&track_uri(1), Some(100), true),  // saved, then removed
             item(&track_uri(1), Some(200), false), // saved again
         ]),
-        vec![track_uri(1)]
+        vec![dated(track_uri(1), Some(200))]
     );
 }
 
 #[test]
-fn track_order_keeps_the_first_duplicate() {
+fn track_dated_keeps_the_first_duplicate() {
     assert_eq!(
-        track_order(vec![
+        track_dated(vec![
             item(&track_uri(1), Some(100), false),
             item(&track_uri(1), Some(2_000), false),
         ]),
-        vec![track_uri(1)],
+        vec![dated(track_uri(1), Some(100))],
         "the first occurrence's date sorts, so the later, newer duplicate does not win"
     );
 }
 
 #[test]
+fn liked_tracks_read_each_date_as_epoch_seconds_and_zero_as_no_date() {
+    assert_eq!(
+        liked_tracks(vec![
+            dated(track_uri(1), Some(1_700_000_000)),
+            dated(track_uri(2), Some(0)),
+            dated(track_uri(3), None),
+        ]),
+        vec![
+            LikedTrack {
+                uri: track_uri(1),
+                saved_at: SavedAt::from_millis(1_700_000_000_000),
+            },
+            LikedTrack {
+                uri: track_uri(2),
+                saved_at: None,
+            },
+            LikedTrack {
+                uri: track_uri(3),
+                saved_at: None,
+            },
+        ]
+    );
+}
+
+#[test]
+fn stamp_albums_matches_by_uri_not_by_position() {
+    let albums = saved_album_entries(&[album_uri(1), album_uri(2), album_uri(3)], Vec::new());
+    let stamped = stamp_albums(
+        albums,
+        &[
+            dated(album_uri(3), Some(300)),
+            dated(album_uri(2), Some(0)),
+            dated(album_uri(1), Some(100)),
+        ],
+    );
+    let dates: Vec<_> = stamped.iter().map(|album| album.saved_at).collect();
+    assert_eq!(
+        dates,
+        vec![SavedAt::from_secs(100), None, SavedAt::from_secs(300),],
+        "a zero date is no date, and each album takes the date named for its own URI"
+    );
+}
+
+#[test]
+fn an_album_no_date_names_keeps_no_date() {
+    let albums = saved_album_entries(&[album_uri(1)], Vec::new());
+    let stamped = stamp_albums(albums, &[dated(album_uri(9), Some(900))]);
+    assert_eq!(stamped[0].saved_at, None);
+}
+
+#[test]
 fn an_empty_item_list_gives_an_empty_order() {
     assert!(artist_order(Vec::new()).is_empty());
-    assert!(album_order(Vec::new()).is_empty());
+    assert!(album_dated(Vec::new()).is_empty());
+    assert!(track_dated(Vec::new()).is_empty());
 }
 
 /// The parsed artist the page reads.

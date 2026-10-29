@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use takofy_model::{
     AlbumDetail, ArtistDetail, ArtistPortrait, CoverImage, CoverSet, CoverUrl, Device,
-    FollowedArtist, FollowedShow, Landing, Move, Order, PlaylistAccess, PlaylistEntry,
+    FollowedArtist, FollowedShow, Landing, LikedTrack, Move, Order, PlaylistAccess, PlaylistEntry,
     RemotePlayback, Removal, Report, RequestId, Revision, SavedAlbum, ShowDetail, TrackEntry,
     TrackLyrics,
 };
@@ -417,7 +417,7 @@ pub enum Update {
     /// The saved albums could not be loaded.
     SavedAlbumsFailed(Failure),
     /// The tracks the user has liked, newest save first.
-    LikedTracks(Vec<String>),
+    LikedTracks(Vec<LikedTrack>),
     /// The liked tracks could not be loaded; a set already read is kept.
     LikedTracksFailed(Failure),
     /// The liked write landed for these tracks, with this value.

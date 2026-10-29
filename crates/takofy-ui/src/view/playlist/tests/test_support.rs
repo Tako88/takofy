@@ -405,7 +405,12 @@ pub(super) fn row_rect_for(ctx: &Context, count: usize, index: usize) -> Rect {
 pub(super) fn liked(library: &mut Library, uris: &[&str]) {
     assert!(library.likes.request(true));
     library.likes.apply(&crate::likes::Event::Set(
-        uris.iter().map(|uri| (*uri).to_owned()).collect(),
+        uris.iter()
+            .map(|uri| takofy_model::LikedTrack {
+                uri: (*uri).to_owned(),
+                saved_at: None,
+            })
+            .collect(),
     ));
 }
 

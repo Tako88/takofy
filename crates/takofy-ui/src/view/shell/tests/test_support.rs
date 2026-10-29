@@ -609,7 +609,13 @@ pub(super) fn more_button(output: &egui::FullOutput, view: Rect, title: &str) ->
 pub(super) fn liked(window: &mut Window, tracks: &[&str]) {
     assert!(window.library.likes.request(true));
     window.library.apply(&Update::LikedTracks(
-        tracks.iter().map(|uri| (*uri).to_owned()).collect(),
+        tracks
+            .iter()
+            .map(|uri| takofy_model::LikedTrack {
+                uri: (*uri).to_owned(),
+                saved_at: None,
+            })
+            .collect(),
     ));
 }
 

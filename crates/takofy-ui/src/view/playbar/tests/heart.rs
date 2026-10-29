@@ -178,9 +178,10 @@ fn the_playbar_and_a_row_of_the_same_track_agree() {
     let ctx = context(&tokens);
     let mut likes = crate::likes::Likes::default();
     assert!(likes.request(true));
-    likes.apply(&crate::likes::Event::Set(vec![
-        "spotify:track:x".to_owned(),
-    ]));
+    likes.apply(&crate::likes::Event::Set(vec![takofy_model::LikedTrack {
+        uri: "spotify:track:x".to_owned(),
+        saved_at: None,
+    }]));
     let state = likes.state("spotify:track:x");
     assert_eq!(state, Some(true), "the set did not answer");
 

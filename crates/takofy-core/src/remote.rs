@@ -24,8 +24,8 @@ use librespot::protocol::metadata::{
 use protobuf::Message as _;
 use takofy_model::{
     AlbumDetail, ArtistDetail, ArtistPortrait, CoverSet, CoverUrl, Episode, FollowedArtist,
-    FollowedShow, Move, PlaylistAccess, PlaylistCover, PlaylistEntry, PublishedAt, Removal,
-    Revision, SavedAlbum, ShowDetail, TrackEntry, TrackLyrics, composed_from,
+    FollowedShow, LikedTrack, Move, PlaylistAccess, PlaylistCover, PlaylistEntry, PublishedAt,
+    Removal, Revision, SavedAlbum, ShowDetail, TrackEntry, TrackLyrics, composed_from,
 };
 
 use crate::album::{AlbumError, detail, positions};
@@ -44,7 +44,10 @@ use crate::label_cache::UriCache;
 use crate::lyrics::{self, LyricsError};
 use crate::playlist_edit;
 use crate::portrait::{portrait_from, portraits_of};
-use crate::rootlist::{RootlistError, RootlistPage, RootlistSource, RootlistWire, parse_rootlist};
+use crate::rootlist::{
+    RootEntry, RootlistError, RootlistPage, RootlistSource, RootlistWire, parse_rootlist,
+    rootlist_path,
+};
 use crate::show::{ShowError, detail as show_detail, episode_uris};
 use crate::status_tally::StatusTally;
 
@@ -62,10 +65,15 @@ pub(crate) struct RemoteRootlist<'a> {
 
 impl RootlistSource for RemoteRootlist<'_> {
     async fn page(&self, from: usize, len: usize) -> Result<RootlistPage, RootlistError> {
+        let endpoint = rootlist_path(&self.session.username(), from, len);
         let bytes = match self.wire {
-            RootlistWire::Binary => self.session.spclient().get_rootlist(from, Some(len)).await,
+            RootlistWire::Binary => {
+                self.session
+                    .spclient()
+                    .request(&Method::GET, &endpoint, None, None)
+                    .await
+            }
             RootlistWire::Json => {
-                let endpoint = rootlist_endpoint(self.session, from, len);
                 // `hyper::Method` is not re-exported by librespot, so infer it here.
                 let method = "GET"
                     .parse()
@@ -81,14 +89,6 @@ impl RootlistSource for RemoteRootlist<'_> {
     }
 }
 
-/// The same endpoint `get_rootlist` builds; `request_as_json` needs it inline.
-fn rootlist_endpoint(session: &Session, from: usize, len: usize) -> String {
-    let user = session.username();
-    format!(
-        "/playlist/v2/user/{user}/rootlist?decorate=revision,attributes,length,owner,capabilities,status_code&from={from}&length={len}"
-    )
-}
-
 /// Names each playlist, falling back to its URI when metadata is missing.
 ///
 /// A playlist's cover is, in order: the picture the user set, or the cover of
@@ -96,10 +96,11 @@ fn rootlist_endpoint(session: &Session, from: usize, len: usize) -> String {
 /// every head a picture-less playlist brings.
 pub(crate) async fn label_playlists(
     session: &Session,
-    uris: Vec<String>,
+    entries: Vec<RootEntry>,
     cache: &LabelCache,
 ) -> Vec<PlaylistEntry> {
-    let metas = futures_util::stream::iter(uris.iter().cloned())
+    let uris: Vec<String> = entries.iter().map(|entry| entry.uri.clone()).collect();
+    let metas = futures_util::stream::iter(uris)
         .map(|uri| async move { playlist_meta(session, &uri).await })
         .buffered(REMOTE_FETCH_WIDTH)
         .collect::<Vec<_>>()
@@ -108,9 +109,11 @@ pub(crate) async fn label_playlists(
     let labels = fetch_labels(session, &head_candidates(&metas), cache).await;
     let user = session.username();
 
-    uris.into_iter()
+    entries
+        .into_iter()
         .zip(metas)
-        .map(|(uri, meta)| {
+        .map(|(entry, meta)| {
+            let RootEntry { uri, saved_at } = entry;
             let PlaylistMeta {
                 name,
                 head,
@@ -124,7 +127,7 @@ pub(crate) async fn label_playlists(
             let composed = composed_of(&head, cover.as_ref(), &labels);
             let (name, named) = playlist_label(&uri, name);
             PlaylistEntry {
-                saved_at: None,
+                saved_at,
                 uri,
                 name,
                 named,
@@ -861,11 +864,13 @@ async fn read_collection(session: &Session) -> Result<Vec<Item>, FollowedError> 
     .await
 }
 
-/// The liked tracks' URIs, newest save first.
+/// The liked tracks, newest save first, each with the date it was saved.
 ///
 /// The set holds saved albums and episodes too, so only track items are kept.
-pub(crate) async fn read_liked_tracks(session: &Session) -> Result<Vec<String>, FollowedError> {
-    Ok(collected::track_order(read_collection(session).await?))
+pub(crate) async fn read_liked_tracks(session: &Session) -> Result<Vec<LikedTrack>, FollowedError> {
+    Ok(collected::liked_tracks(collected::track_dated(
+        read_collection(session).await?,
+    )))
 }
 
 /// Writes one pick into the liked-songs set, or out of it.
@@ -1109,8 +1114,8 @@ pub(crate) async fn read_related(
 /// An empty set asks for no metadata at all. A chunk whose request fails costs
 /// only its albums, which stay in the list unnamed.
 pub(crate) async fn read_saved_albums(session: &Session) -> Result<Vec<SavedAlbum>, FollowedError> {
-    let items = read_collection(session).await?;
-    let order = collected::album_order(items);
+    let dated = collected::album_dated(read_collection(session).await?);
+    let order: Vec<String> = dated.iter().map(|dated| dated.uri.clone()).collect();
     if !needs_labels(&order) {
         return Ok(Vec::new());
     }
@@ -1119,7 +1124,7 @@ pub(crate) async fn read_saved_albums(session: &Session) -> Result<Vec<SavedAlbu
     for chunk in release_chunks(&order) {
         answers.push(batched_request(session, chunk, ExtensionKind::ALBUM_V4).await);
     }
-    let albums = collected::saved_album_entries(&order, answers);
+    let albums = collected::stamp_albums(collected::saved_album_entries(&order, answers), &dated);
     let named = albums.iter().filter(|album| album.named).count();
     if named < albums.len() {
         log::warn!("{named} of {} saved albums came back named", albums.len());

@@ -2,14 +2,14 @@ use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use librespot::protocol::playlist4_external::{Item, ListItems, SelectedListContent};
+use librespot::protocol::playlist4_external::{Item, ListItems, MetaItem, SelectedListContent};
 use protobuf::{Message, MessageField};
 
 use super::{
-    MAX_ITEMS, PAGE_SIZE, RootlistError, RootlistPage, RootlistSource, RootlistWire, fetch_all,
-    parse_rootlist,
+    MAX_ITEMS, PAGE_SIZE, RootEntry, RootlistError, RootlistPage, RootlistSource, RootlistWire,
+    fetch_all, parse_rootlist, rootlist_path,
 };
-use takofy_model::{PlaylistAccess, Revision};
+use takofy_model::{PlaylistAccess, Revision, SavedAt};
 
 const PLAYLIST_A: &str = "spotify:playlist:37i9dQZF1DXcBWIGoYBM5M";
 const PLAYLIST_B: &str = "spotify:playlist:37i9dQZF1DX0XUsuxWHRQd";
@@ -24,6 +24,36 @@ fn item(uri: &str) -> Item {
 
 fn binary(items: Vec<Item>, length: Option<i32>) -> Vec<u8> {
     binary_at(items, length, None)
+}
+
+/// A body whose metadata list rides alongside its items, as the wire sends it.
+fn binary_dated(items: Vec<Item>, meta_items: Vec<MetaItem>) -> Vec<u8> {
+    let mut list = ListItems::new();
+    list.pos = Some(0);
+    list.truncated = Some(false);
+    list.items = items;
+    list.meta_items = meta_items;
+    let mut content = SelectedListContent::new();
+    content.contents = MessageField::some(list);
+    content.write_to_bytes().expect("serialize fixture")
+}
+
+fn meta(timestamp: i64) -> MetaItem {
+    MetaItem {
+        timestamp: Some(timestamp),
+        ..Default::default()
+    }
+}
+
+fn entry(uri: &str, saved_at: Option<SavedAt>) -> RootEntry {
+    RootEntry {
+        uri: uri.to_owned(),
+        saved_at,
+    }
+}
+
+fn uris(entries: &[RootEntry]) -> Vec<String> {
+    entries.iter().map(|entry| entry.uri.clone()).collect()
 }
 
 fn binary_at(items: Vec<Item>, length: Option<i32>, revision: Option<&[u8]>) -> Vec<u8> {
@@ -43,14 +73,7 @@ fn revision(byte: u8) -> Revision {
 }
 
 fn page_with(count: usize, total: Option<usize>) -> RootlistPage {
-    RootlistPage {
-        playlists: (0..count)
-            .map(|index| format!("spotify:playlist:{index:022}"))
-            .collect(),
-        scanned: count,
-        total,
-        revision: Some(revision(1)),
-    }
+    page_at(count, total, Some(revision(1)), count)
 }
 
 /// One page of `count` playlists, at `revision`, reporting `total`.
@@ -62,7 +85,7 @@ fn page_at(
 ) -> RootlistPage {
     RootlistPage {
         playlists: (0..count)
-            .map(|index| format!("spotify:playlist:{index:022}"))
+            .map(|index| entry(&format!("spotify:playlist:{index:022}"), None))
             .collect(),
         scanned,
         total,
@@ -145,7 +168,7 @@ fn parses_playlist_uris() {
     let bytes = binary(vec![item(PLAYLIST_A), item(PLAYLIST_B)], Some(2));
     let page = parse_rootlist(&bytes, RootlistWire::Binary).expect("valid fixture");
     assert_eq!(
-        page.playlists,
+        uris(&page.playlists),
         vec![PLAYLIST_A.to_owned(), PLAYLIST_B.to_owned()]
     );
     assert_eq!(page.scanned, 2);
@@ -171,7 +194,7 @@ fn unset_or_negative_length_is_none() {
 fn folder_markers_are_skipped_but_counted() {
     let bytes = binary(vec![item(FOLDER), item(PLAYLIST_A)], Some(2));
     let page = parse_rootlist(&bytes, RootlistWire::Binary).expect("valid fixture");
-    assert_eq!(page.playlists, vec![PLAYLIST_A.to_owned()]);
+    assert_eq!(uris(&page.playlists), vec![PLAYLIST_A.to_owned()]);
     assert_eq!(page.scanned, 2);
 }
 
@@ -197,10 +220,90 @@ fn json_wire_parses_the_same_fixture() {
     let content = SelectedListContent::parse_from_bytes(&bytes).expect("fixture");
     let json = protobuf_json_mapping::print_to_string(&content).expect("serialize json");
     let page = parse_rootlist(json.as_bytes(), RootlistWire::Json).expect("valid json");
-    assert_eq!(page.playlists, vec![PLAYLIST_A.to_owned()]);
+    assert_eq!(uris(&page.playlists), vec![PLAYLIST_A.to_owned()]);
     assert_eq!(page.scanned, 2);
     assert_eq!(page.total, Some(2));
     assert_eq!(page.revision, Revision::from_wire(&[0xde, 0xad]));
+}
+
+#[test]
+fn each_playlist_takes_the_date_at_its_own_index() {
+    let bytes = binary_dated(
+        vec![item(PLAYLIST_A), item(PLAYLIST_B)],
+        vec![meta(1_700_000_000_000), meta(1_600_000_000_000)],
+    );
+    let page = parse_rootlist(&bytes, RootlistWire::Binary).expect("valid fixture");
+    assert_eq!(
+        page.playlists,
+        vec![
+            entry(PLAYLIST_A, SavedAt::from_millis(1_700_000_000_000)),
+            entry(PLAYLIST_B, SavedAt::from_millis(1_600_000_000_000)),
+        ]
+    );
+}
+
+#[test]
+fn a_zero_timestamp_is_no_date() {
+    let bytes = binary_dated(vec![item(PLAYLIST_A)], vec![meta(0)]);
+    let page = parse_rootlist(&bytes, RootlistWire::Binary).expect("valid fixture");
+    assert_eq!(page.playlists, vec![entry(PLAYLIST_A, None)]);
+}
+
+#[test]
+fn a_meta_list_of_another_length_gives_no_dates() {
+    let bytes = binary_dated(
+        vec![item(PLAYLIST_A), item(PLAYLIST_B)],
+        vec![meta(1_700_000_000_000)],
+    );
+    let page = parse_rootlist(&bytes, RootlistWire::Binary).expect("valid fixture");
+    assert_eq!(
+        page.playlists,
+        vec![entry(PLAYLIST_A, None), entry(PLAYLIST_B, None)],
+        "the dates cannot be matched to their playlists, so none is taken"
+    );
+}
+
+#[test]
+fn a_folder_marker_keeps_the_later_dates_on_their_own_playlists() {
+    let bytes = binary_dated(
+        vec![item(PLAYLIST_A), item(FOLDER), item(PLAYLIST_B)],
+        vec![meta(1_000), meta(2_000), meta(3_000)],
+    );
+    let page = parse_rootlist(&bytes, RootlistWire::Binary).expect("valid fixture");
+    assert_eq!(
+        page.playlists,
+        vec![
+            entry(PLAYLIST_A, SavedAt::from_millis(1_000)),
+            entry(PLAYLIST_B, SavedAt::from_millis(3_000)),
+        ],
+        "the marker has a date of its own, which is skipped with it"
+    );
+}
+
+#[test]
+fn the_json_wire_reads_the_same_dates() {
+    let bytes = binary_dated(
+        vec![item(PLAYLIST_A), item(FOLDER), item(PLAYLIST_B)],
+        vec![meta(1_700_000_000_000), meta(5), meta(0)],
+    );
+    let content = SelectedListContent::parse_from_bytes(&bytes).expect("fixture");
+    let json = protobuf_json_mapping::print_to_string(&content).expect("serialize json");
+    let page = parse_rootlist(json.as_bytes(), RootlistWire::Json).expect("valid json");
+    assert_eq!(
+        page.playlists,
+        vec![
+            entry(PLAYLIST_A, SavedAt::from_millis(1_700_000_000_000)),
+            entry(PLAYLIST_B, None),
+        ]
+    );
+}
+
+#[test]
+fn the_rootlist_path_asks_for_each_playlists_timestamp() {
+    assert_eq!(
+        rootlist_path("someone", 120, 60),
+        "/playlist/v2/user/someone/rootlist?decorate=revision,attributes,length,owner,capabilities,status_code,timestamp&from=120&length=60"
+    );
 }
 
 #[tokio::test]
@@ -235,7 +338,7 @@ async fn fetch_all_advances_by_scanned_not_playlists_kept() {
     assert_eq!(all_playlists.froms(), vec![0, PAGE_SIZE, 2 * PAGE_SIZE]);
 
     let folder_heavy = Scripted::new(vec![RootlistPage {
-        playlists: vec![PLAYLIST_A.to_owned()],
+        playlists: vec![entry(PLAYLIST_A, None)],
         scanned: 2,
         total: None,
         revision: None,

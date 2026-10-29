@@ -3,12 +3,14 @@ use super::test_support::*;
 use crate::session::ArtistPage;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::channel;
-use takofy_model::{ArtistDetail, ArtistPortrait, CoverSet, LyricLine, TrackEntry, TrackLyrics};
+use takofy_model::{
+    ArtistDetail, ArtistPortrait, CoverSet, LikedTrack, LyricLine, SavedAt, TrackEntry, TrackLyrics,
+};
 
 /// A scripted liked-tracks answer; the default is an empty set.
 #[derive(Clone)]
 pub(super) enum LikedScript {
-    Ready(Vec<String>),
+    Ready(Vec<LikedTrack>),
     Fail,
 }
 
@@ -99,10 +101,14 @@ pub(super) fn artist_detail(uri: &str) -> ArtistDetail {
 }
 
 #[test]
-fn loading_the_liked_tracks_announces_the_whole_set() {
+fn loading_the_liked_tracks_announces_the_whole_set_with_each_date() {
+    let liked = LikedTrack {
+        uri: TRACK.to_owned(),
+        saved_at: SavedAt::from_secs(1_700_000_000),
+    };
     assert_eq!(
-        run_liked(LikedScript::Ready(vec![TRACK.to_owned()])),
-        Update::LikedTracks(vec![TRACK.to_owned()])
+        run_liked(LikedScript::Ready(vec![liked.clone()])),
+        Update::LikedTracks(vec![liked])
     );
 }
 

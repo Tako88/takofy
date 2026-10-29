@@ -4,10 +4,10 @@
 //! branch exists for the day that assumption is wrong.
 
 use librespot::core::SpotifyUri;
-use librespot::protocol::playlist4_external::{Item, SelectedListContent};
+use librespot::protocol::playlist4_external::{Item, MetaItem, SelectedListContent};
 use protobuf::Message;
 use protobuf_json_mapping::ParseOptions;
-use takofy_model::{PlaylistAccess, Revision};
+use takofy_model::{PlaylistAccess, Revision, SavedAt};
 
 /// The wire format a rootlist body arrived in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -16,11 +16,19 @@ pub enum RootlistWire {
     Json,
 }
 
+/// A playlist the rootlist kept, with the date it was added.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RootEntry {
+    pub uri: String,
+    /// `None` when the wire answered no date, or answered `0`.
+    pub saved_at: Option<SavedAt>,
+}
+
 /// One page of the rootlist.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RootlistPage {
-    /// Playlist URIs kept from this page.
-    pub playlists: Vec<String>,
+    /// Playlists kept from this page.
+    pub playlists: Vec<RootEntry>,
     /// Raw item count, including folder markers and unparsable URIs.
     pub scanned: usize,
     /// `SelectedListContent.length`, when set and non-negative.
@@ -46,6 +54,13 @@ pub enum RootlistError {
 /// Reads one page of the rootlist. Implemented over librespot in `remote`.
 pub(crate) trait RootlistSource {
     async fn page(&self, from: usize, len: usize) -> Result<RootlistPage, RootlistError>;
+}
+
+/// The rootlist endpoint for one page, asking for each playlist's timestamp.
+pub fn rootlist_path(user: &str, from: usize, len: usize) -> String {
+    format!(
+        "/playlist/v2/user/{user}/rootlist?decorate=revision,attributes,length,owner,capabilities,status_code,timestamp&from={from}&length={len}"
+    )
 }
 
 /// Page size requested from the rootlist endpoint.
@@ -77,7 +92,25 @@ pub fn parse_rootlist(bytes: &[u8], wire: RootlistWire) -> Result<RootlistPage, 
 
 fn page_from_content(content: &SelectedListContent) -> RootlistPage {
     let items = &content.contents.items;
-    let playlists = items.iter().filter_map(playlist_uri).collect();
+    // Dates are matched by index, so a metadata list of another length gives none.
+    let dated: &[MetaItem] = if content.contents.meta_items.len() == items.len() {
+        &content.contents.meta_items
+    } else {
+        &[]
+    };
+    let playlists = items
+        .iter()
+        .enumerate()
+        .filter_map(|(index, item)| {
+            Some(RootEntry {
+                uri: playlist_uri(item)?,
+                saved_at: dated
+                    .get(index)
+                    .and_then(|meta| meta.timestamp)
+                    .and_then(SavedAt::from_millis),
+            })
+        })
+        .collect();
     RootlistPage {
         playlists,
         scanned: items.len(),
@@ -101,7 +134,7 @@ fn playlist_uri(item: &Item) -> Option<String> {
 /// wire's own.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Walked {
-    pub playlists: Vec<String>,
+    pub playlists: Vec<RootEntry>,
     /// What the sidebar may write with, or `None` when the read named no
     /// revision.
     pub access: Option<PlaylistAccess>,

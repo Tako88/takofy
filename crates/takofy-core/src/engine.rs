@@ -27,15 +27,15 @@ use crate::remote::{
     write_like, write_move, write_remove, write_rename, write_rootlist_add, write_rootlist_move,
     write_rootlist_remove, write_saved,
 };
-use crate::rootlist::{RootlistError, fetch_all};
+use crate::rootlist::{RootEntry, RootlistError, fetch_all};
 use crate::search::search_uri;
 use crate::show::ShowError;
 use crate::transfer::{Resolution, TransferPlan};
 use crate::watch::{self, Gate};
 use takofy_model::{
     AlbumDetail, ArtistDetail, ArtistPortrait, CoverSet, FollowedArtist, FollowedShow, Landing,
-    Move, PlaylistAccess, PlaylistEntry, Removal, Report, RequestId, Revision, SavedAlbum,
-    ShowDetail, TrackEntry, TrackLyrics,
+    LikedTrack, Move, PlaylistAccess, PlaylistEntry, Removal, Report, RequestId, Revision,
+    SavedAlbum, ShowDetail, TrackEntry, TrackLyrics,
 };
 
 /// Why an [`Engine`] operation failed.
@@ -343,7 +343,11 @@ impl Engine {
     /// A created list has none of these in the write's replies, so this is the
     /// read that fills them in without waiting for the next rootlist reload.
     pub async fn playlist_entry(&self, playlist_uri: &str) -> Option<PlaylistEntry> {
-        label_playlists(&self.session, vec![playlist_uri.to_owned()], &self.labels)
+        let entry = RootEntry {
+            uri: playlist_uri.to_owned(),
+            saved_at: None,
+        };
+        label_playlists(&self.session, vec![entry], &self.labels)
             .await
             .pop()
     }
@@ -614,7 +618,7 @@ impl Engine {
     }
 
     /// The tracks the user has liked, newest save first.
-    pub async fn liked_tracks(&self) -> Result<Vec<String>, EngineError> {
+    pub async fn liked_tracks(&self) -> Result<Vec<LikedTrack>, EngineError> {
         Ok(read_liked_tracks(&self.session).await?)
     }
 

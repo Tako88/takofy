@@ -26,9 +26,9 @@ use takofy_core::login::{SourceError, SourceErrorKind, TokenSet, TokenSource};
 use takofy_core::playback::{PlaybackError, PlaybackEvent};
 use takofy_core::{Resolution, TransferPlan};
 use takofy_model::{
-    AlbumDetail, ArtistPortrait, Device, DeviceKind, FollowedArtist, FollowedShow, Landing, Move,
-    PlaylistAccess, PlaylistEntry, RemotePlayback, RemoteState, Removal, Report, RequestId,
-    SavedAlbum, ShowDetail, Status, TrackEntry, TrackLyrics,
+    AlbumDetail, ArtistPortrait, Device, DeviceKind, FollowedArtist, FollowedShow, Landing,
+    LikedTrack, Move, PlaylistAccess, PlaylistEntry, RemotePlayback, RemoteState, Removal, Report,
+    RequestId, SavedAlbum, ShowDetail, Status, TrackEntry, TrackLyrics,
 };
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc::UnboundedSender;
@@ -860,7 +860,7 @@ impl SessionHost for FakeHost {
         }
     }
 
-    fn liked_tracks(&self) -> impl Future<Output = Result<Vec<String>, SessionError>> + Send {
+    fn liked_tracks(&self) -> impl Future<Output = Result<Vec<LikedTrack>, SessionError>> + Send {
         self.shared.liked_lists.fetch_add(1, Ordering::SeqCst);
         let connected = self.shared.connected.load(Ordering::SeqCst);
         let script = self.shared.liked_script.lock().expect("lock").clone();
