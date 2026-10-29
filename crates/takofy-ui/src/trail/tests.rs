@@ -51,6 +51,7 @@ fn current_label(library: &Library) -> Option<&str> {
 
 fn playlist(uri: &str, name: &str) -> PlaylistEntry {
     PlaylistEntry {
+        saved_at: None,
         composed: Vec::new(),
         uri: uri.to_owned(),
         name: name.to_owned(),

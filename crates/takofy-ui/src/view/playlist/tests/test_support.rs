@@ -267,6 +267,7 @@ pub(super) fn library_with(tracks: Vec<TrackEntry>) -> Library {
 pub(super) fn library_named(tracks: Vec<TrackEntry>, name: &str) -> Library {
     let mut library = library_with(tracks);
     library.apply(&Update::Playlists(vec![PlaylistEntry {
+        saved_at: None,
         composed: Vec::new(),
         uri: "spotify:playlist:a".to_owned(),
         name: name.to_owned(),
@@ -282,6 +283,7 @@ pub(super) fn library_named(tracks: Vec<TrackEntry>, name: &str) -> Library {
 
 pub(super) fn playlist(uri: &str, name: &str) -> PlaylistEntry {
     PlaylistEntry {
+        saved_at: None,
         composed: Vec::new(),
         uri: uri.to_owned(),
         name: name.to_owned(),

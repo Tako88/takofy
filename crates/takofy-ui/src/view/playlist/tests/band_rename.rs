@@ -8,6 +8,7 @@ use takofy_model::{PlaylistAccess, Revision};
 fn band_library(name: &str, editable: bool, titles: &[&str]) -> Library {
     let mut library = Library::default();
     library.apply(&Update::Playlists(vec![PlaylistEntry {
+        saved_at: None,
         composed: Vec::new(),
         uri: "spotify:playlist:a".to_owned(),
         name: name.to_owned(),
@@ -351,6 +352,7 @@ fn a_band_fields_return_waits_for_the_page_that_opened_it() {
     let mut library = band_library("Night Drive", true, &["t0"]);
     if let Load::Ready(playlists) = &mut library.playlists {
         playlists.push(PlaylistEntry {
+            saved_at: None,
             composed: Vec::new(),
             uri: "spotify:playlist:b".to_owned(),
             name: "Other".to_owned(),

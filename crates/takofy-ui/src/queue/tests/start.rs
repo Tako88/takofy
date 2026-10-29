@@ -35,6 +35,7 @@ fn the_queue_is_unaffected_by_the_library_changing() {
     clear_guard(&mut queue, &mut transport);
 
     let playlists = Update::Playlists(vec![PlaylistEntry {
+        saved_at: None,
         composed: Vec::new(),
         uri: "spotify:playlist:a".to_owned(),
         name: "A".to_owned(),

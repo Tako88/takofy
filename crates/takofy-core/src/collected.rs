@@ -112,6 +112,7 @@ pub(crate) fn saved_album_entries(
                 Some(album) => {
                     let release = release_of(uri, album);
                     out.push(SavedAlbum {
+                        saved_at: None,
                         uri: uri.clone(),
                         name: release.name,
                         named: album.name.as_deref().is_some_and(|name| !name.is_empty()),
@@ -122,6 +123,7 @@ pub(crate) fn saved_album_entries(
                     });
                 }
                 None => out.push(SavedAlbum {
+                    saved_at: None,
                     uri: uri.clone(),
                     name: uri.clone(),
                     named: false,

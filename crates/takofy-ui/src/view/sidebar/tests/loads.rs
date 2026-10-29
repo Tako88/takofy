@@ -118,6 +118,7 @@ fn an_unasked_artists_or_albums_list_is_loading_not_empty() {
 fn the_size_counts_the_two_new_lists() {
     let mut library = Library::default();
     library.playlists = Load::Ready(vec![PlaylistEntry {
+        saved_at: None,
         composed: Vec::new(),
         uri: "spotify:playlist:a".to_owned(),
         name: "A".to_owned(),

@@ -124,6 +124,7 @@ pub(crate) async fn label_playlists(
             let composed = composed_of(&head, cover.as_ref(), &labels);
             let (name, named) = playlist_label(&uri, name);
             PlaylistEntry {
+                saved_at: None,
                 uri,
                 name,
                 named,

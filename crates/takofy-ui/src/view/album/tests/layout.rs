@@ -37,6 +37,7 @@ fn playlist_library() -> Library {
     let mut library = Library::default();
     library.select(PLAYLIST);
     library.apply(&Update::Playlists(vec![PlaylistEntry {
+        saved_at: None,
         composed: Vec::new(),
         uri: PLAYLIST.to_owned(),
         name: "Mix".to_owned(),

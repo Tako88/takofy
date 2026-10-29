@@ -30,6 +30,7 @@ fn entry(
     access: Option<PlaylistAccess>,
 ) -> PlaylistEntry {
     PlaylistEntry {
+        saved_at: None,
         composed: Vec::new(),
         uri: "spotify:playlist:a".to_owned(),
         name: "A".to_owned(),

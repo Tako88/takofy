@@ -1596,6 +1596,7 @@ async fn create_playlist<H: SessionHost>(
     };
     notifier.send(Update::PlaylistCreated {
         entry: PlaylistEntry {
+            saved_at: None,
             uri: uri.clone(),
             name: name.to_owned(),
             // A list the rename did not reach keeps the typed name for this

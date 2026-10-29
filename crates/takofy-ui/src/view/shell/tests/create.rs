@@ -987,6 +987,7 @@ fn column_library(names: &[&str], rootlist: bool) -> Library {
         names
             .iter()
             .map(|name| PlaylistEntry {
+                saved_at: None,
                 composed: Vec::new(),
                 uri: format!("playlist:{name}"),
                 name: (*name).to_owned(),

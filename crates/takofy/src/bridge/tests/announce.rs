@@ -750,6 +750,7 @@ fn run_saved_albums(albums: Vec<SavedAlbum>) -> Update {
 /// One saved-album card, named after its URI so a test can tell two apart.
 fn saved_album(uri: &str) -> SavedAlbum {
     SavedAlbum {
+        saved_at: None,
         uri: uri.to_owned(),
         name: uri.to_owned(),
         named: true,

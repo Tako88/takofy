@@ -550,6 +550,7 @@ fn space_emits_nothing_while_the_holder_cannot_be_steered() {
 /// A library root holding one named playlist, with its rows already loaded.
 fn shelf_with_rows(window: &mut Window, rows: usize) {
     window.library.apply(&Update::Playlists(vec![PlaylistEntry {
+        saved_at: None,
         composed: Vec::new(),
         uri: PLAYLIST.to_owned(),
         name: "Mix".to_owned(),

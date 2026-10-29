@@ -443,6 +443,7 @@ pub(super) const ALBUM_B: &str = "spotify:album:c";
 /// Puts one named, ready playlist on screen.
 pub(super) fn ready_playlist(window: &mut Window) {
     window.library.apply(&Update::Playlists(vec![PlaylistEntry {
+        saved_at: None,
         composed: Vec::new(),
         uri: PLAYLIST.to_owned(),
         name: "Mix".to_owned(),
@@ -679,6 +680,7 @@ pub(super) fn type_text(
 /// The row a create's reply hands the sidebar.
 pub(super) fn new_playlist(name: &str, access: Option<PlaylistAccess>) -> PlaylistEntry {
     PlaylistEntry {
+        saved_at: None,
         composed: Vec::new(),
         uri: "spotify:playlist:new".to_owned(),
         name: name.to_owned(),
@@ -728,6 +730,7 @@ pub(super) fn search_read(window: &mut Window) -> Option<Command> {
 /// A window whose sidebar holds one row the user may unlink.
 pub(super) fn sidebar_row(window: &mut Window, uri: &str, name: &str) {
     window.library.apply(&Update::Playlists(vec![PlaylistEntry {
+        saved_at: None,
         composed: Vec::new(),
         uri: uri.to_owned(),
         name: name.to_owned(),
@@ -841,6 +844,7 @@ pub(super) fn sidebar_playlists(
     window.library.playlists = Load::Ready(
         rows.iter()
             .map(|(name, tracks)| PlaylistEntry {
+                saved_at: None,
                 composed: Vec::new(),
                 uri: format!("playlist:{name}"),
                 name: (*name).to_owned(),
@@ -868,6 +872,7 @@ pub(super) fn rootlist_access(editable: bool) -> PlaylistAccess {
 /// A page whose rows are real track URIs, so one can be added to a playlist.
 pub(super) fn page_of_tracks(window: &mut Window, uris: &[&str]) {
     window.library.apply(&Update::Playlists(vec![PlaylistEntry {
+        saved_at: None,
         composed: Vec::new(),
         uri: PLAYLIST.to_owned(),
         name: "Mix".to_owned(),
@@ -1223,6 +1228,7 @@ pub(super) fn press(
 /// start the playlist's load again.
 pub(super) fn stale_playlist_behind_an_album(library: &mut Library) {
     library.apply(&Update::Playlists(vec![PlaylistEntry {
+        saved_at: None,
         composed: Vec::new(),
         uri: PLAYLIST.to_owned(),
         name: "Mix".to_owned(),
@@ -1314,6 +1320,7 @@ pub(super) fn removable_rows(window: &mut Window) {
             releases: None,
         }]));
     window.library.apply(&Update::SavedAlbums(vec![SavedAlbum {
+        saved_at: None,
         uri: "spotify:album:r".to_owned(),
         name: "A Record".to_owned(),
         named: true,
@@ -1330,6 +1337,7 @@ pub(super) fn playlist_page_with(
     access: Option<PlaylistAccess>,
 ) {
     window.library.apply(&Update::Playlists(vec![PlaylistEntry {
+        saved_at: None,
         composed: Vec::new(),
         uri: PLAYLIST.to_owned(),
         name: "Mix".to_owned(),

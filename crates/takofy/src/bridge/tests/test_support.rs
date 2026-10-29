@@ -1780,6 +1780,7 @@ pub(super) fn hold_request(shared: &FakeState, id: RequestId) -> Instant {
 
 pub(super) fn playlist(uri: &str, name: &str) -> PlaylistEntry {
     PlaylistEntry {
+        saved_at: None,
         composed: Vec::new(),
         uri: uri.to_owned(),
         name: name.to_owned(),

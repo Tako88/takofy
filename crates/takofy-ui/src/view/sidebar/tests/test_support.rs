@@ -37,6 +37,7 @@ pub(super) fn followed_artist(uri: &str, name: &str) -> FollowedArtist {
 
 pub(super) fn saved_album(uri: &str, name: &str, artists: &str) -> SavedAlbum {
     SavedAlbum {
+        saved_at: None,
         uri: uri.to_owned(),
         name: name.to_owned(),
         named: true,
@@ -113,6 +114,7 @@ pub(super) fn click(
 /// The playlist list's one row, ready to draw.
 pub(super) fn playlist(uri: &str, name: &str) -> PlaylistEntry {
     PlaylistEntry {
+        saved_at: None,
         composed: Vec::new(),
         uri: uri.to_owned(),
         name: name.to_owned(),

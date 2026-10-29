@@ -74,6 +74,7 @@ fn a_create_makes_links_reads_state_and_announces_the_entry() {
         update,
         Update::PlaylistCreated {
             entry: PlaylistEntry {
+                saved_at: None,
                 composed: Vec::new(),
                 uri: CREATED.to_owned(),
                 name: "Night Drive".to_owned(),
@@ -126,6 +127,7 @@ fn a_created_row_carries_the_cover_and_the_mosaic_the_one_playlist_read_gives() 
         cover: Some(PlaylistCover::derived(CoverSet::single(cover.clone()))),
         description: Some("Made here".to_owned()),
         ..PlaylistEntry {
+            saved_at: None,
             uri: CREATED.to_owned(),
             name: "Night Drive".to_owned(),
             named: true,
@@ -392,6 +394,7 @@ fn a_create_lands_the_pick_in_the_new_list_as_one_add() {
         update,
         Update::PlaylistCreated {
             entry: PlaylistEntry {
+                saved_at: None,
                 composed: Vec::new(),
                 uri: CREATED.to_owned(),
                 name: "Night Drive".to_owned(),
@@ -578,6 +581,7 @@ fn a_failed_state_read_still_announces_created_with_no_access() {
         updates.0,
         Update::PlaylistCreated {
             entry: PlaylistEntry {
+                saved_at: None,
                 composed: Vec::new(),
                 uri: CREATED.to_owned(),
                 name: "Night Drive".to_owned(),

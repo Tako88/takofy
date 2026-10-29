@@ -1338,6 +1338,7 @@ fn library_ours(tracks: Vec<TrackEntry>, name: &str) -> Library {
 
 fn listed(name: &str, description: Option<&str>, owner: Option<&str>) -> PlaylistEntry {
     PlaylistEntry {
+        saved_at: None,
         composed: Vec::new(),
         uri: "spotify:playlist:a".to_owned(),
         name: name.to_owned(),
@@ -1376,6 +1377,7 @@ fn sized(tail: &str) -> (CoverSet, CoverUrl, CoverUrl, CoverUrl) {
 
 fn playlist_with_cover(uri: &str, name: &str, cover: CoverUrl) -> PlaylistEntry {
     PlaylistEntry {
+        saved_at: None,
         composed: Vec::new(),
         uri: uri.to_owned(),
         name: name.to_owned(),

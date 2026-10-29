@@ -72,6 +72,7 @@ fn back_into_a_playlist_whose_tracks_were_cleared_loads_it() {
     let mut queue = Queue::default();
     let mut window = Window::new(Vec2::new(1400.0, 900.0));
     window.library.apply(&Update::Playlists(vec![PlaylistEntry {
+        saved_at: None,
         composed: Vec::new(),
         uri: PLAYLIST.to_owned(),
         name: "Mix".to_owned(),
@@ -286,6 +287,7 @@ fn a_library_rows_removal_is_dropped_while_a_gate_holds() {
     let mut window = Window::new(Vec2::new(1400.0, 900.0));
     let row = library_row(SidebarKind::Albums, uri, "A Record");
     window.library.apply(&Update::SavedAlbums(vec![SavedAlbum {
+        saved_at: None,
         uri: uri.to_owned(),
         name: "A Record".to_owned(),
         named: true,
@@ -307,6 +309,7 @@ fn a_library_rows_removal_is_dropped_while_a_gate_holds() {
     // A block is carried.
     let mut window = Window::new(Vec2::new(1400.0, 900.0));
     window.library.apply(&Update::SavedAlbums(vec![SavedAlbum {
+        saved_at: None,
         uri: uri.to_owned(),
         name: "A Record".to_owned(),
         named: true,
@@ -334,6 +337,7 @@ fn a_library_rows_removal_is_dropped_while_a_field_holds_the_keyboard() {
     let uri = "spotify:album:4uLU6hMCjMI75M1A2tKUQC";
     let mut library = Library::default();
     library.apply(&Update::SavedAlbums(vec![SavedAlbum {
+        saved_at: None,
         uri: uri.to_owned(),
         name: "A Record".to_owned(),
         named: true,
@@ -475,6 +479,7 @@ fn a_root_rows_removal_issues_its_kinds_own_write() {
     let uri = "spotify:album:r";
     window.library.apply(&Update::Playlists(Vec::new()));
     window.library.apply(&Update::SavedAlbums(vec![SavedAlbum {
+        saved_at: None,
         uri: uri.to_owned(),
         name: "A Record".to_owned(),
         named: true,

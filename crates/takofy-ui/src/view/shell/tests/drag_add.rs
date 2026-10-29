@@ -257,6 +257,7 @@ fn a_row_that_can_take_a_track_is_offered_even_when_the_rootlist_is_not() {
     // The rows name addable playlists of their own; the rootlist's read says
     // the order is not the list's to change, which only a move needs.
     let entry = |name: &str, tracks: usize| PlaylistEntry {
+        saved_at: None,
         composed: Vec::new(),
         uri: format!("playlist:{name}"),
         name: name.to_owned(),
@@ -336,6 +337,7 @@ fn a_track_over_a_row_that_cannot_take_it_draws_nothing() {
         let mut window = Window::new(Vec2::new(1400.0, 900.0));
         page_of_tracks(&mut window, &[TRACK_A]);
         window.library.playlists = Load::Ready(vec![PlaylistEntry {
+            saved_at: None,
             composed: Vec::new(),
             uri: "playlist:B".to_owned(),
             name: "B".to_owned(),

@@ -239,6 +239,7 @@ fn the_drawers_ring_never_crosses_the_rails_edge() {
     let mut window = Window::new(Vec2::new(800.0, 900.0));
     window.library.apply(&Update::Playlists(vec![
         PlaylistEntry {
+            saved_at: None,
             composed: Vec::new(),
             uri: "spotify:playlist:a".to_owned(),
             name: "A".to_owned(),
@@ -250,6 +251,7 @@ fn the_drawers_ring_never_crosses_the_rails_edge() {
             access: None,
         },
         PlaylistEntry {
+            saved_at: None,
             composed: Vec::new(),
             uri: "spotify:playlist:b".to_owned(),
             name: "B".to_owned(),

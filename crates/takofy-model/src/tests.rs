@@ -1,7 +1,7 @@
 use super::{
     AddedAt, CoverImage, CoverOrigin, CoverSet, CoverUrl, Episode, Move, Owner, OwnerName,
-    PlaylistAccess, PlaylistCover, PlaylistEntry, PublishedAt, Removal, Revision, TrackEntry,
-    TrackLyrics, composed_from,
+    PlaylistAccess, PlaylistCover, PlaylistEntry, PublishedAt, Removal, Revision, SavedAt,
+    TrackEntry, TrackLyrics, composed_from,
 };
 
 fn revision(byte: u8) -> Revision {
@@ -10,6 +10,7 @@ fn revision(byte: u8) -> Revision {
 
 fn playlist(tracks: Option<usize>, access: Option<PlaylistAccess>) -> PlaylistEntry {
     PlaylistEntry {
+        saved_at: None,
         uri: "spotify:playlist:a".to_owned(),
         name: "A".to_owned(),
         named: true,
@@ -257,6 +258,31 @@ fn published_at_rejects_zero_and_negative_and_keeps_positive() {
     assert_eq!(PublishedAt::from_millis(i64::MIN), None);
     let widest = PublishedAt::from_millis(i64::MAX).expect("the widest instant");
     assert_eq!(widest.as_millis(), i64::MAX as u64);
+}
+
+#[test]
+fn saved_at_from_millis_rejects_zero_and_negative_and_keeps_positive() {
+    assert_eq!(SavedAt::from_millis(0), None);
+    assert_eq!(SavedAt::from_millis(-1), None);
+    let saved = SavedAt::from_millis(1_700_000_000_000).expect("a positive instant");
+    assert_eq!(saved.as_millis(), 1_700_000_000_000);
+}
+
+#[test]
+fn saved_at_from_secs_rejects_zero_and_negative() {
+    assert_eq!(SavedAt::from_secs(0), None);
+    assert_eq!(SavedAt::from_secs(-1), None);
+}
+
+#[test]
+fn saved_at_from_secs_reads_seconds_as_milliseconds() {
+    let saved = SavedAt::from_secs(1_700_000_000).expect("a positive instant");
+    assert_eq!(saved.as_millis(), 1_700_000_000_000);
+}
+
+#[test]
+fn saved_at_from_secs_rejects_an_overflowing_count() {
+    assert_eq!(SavedAt::from_secs(i64::MAX), None);
 }
 
 #[test]

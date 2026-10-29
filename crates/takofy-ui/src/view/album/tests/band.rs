@@ -11,6 +11,7 @@ use crate::theme::space;
 /// A library on the album page with `detail` ready.
 fn saved_album(uri: &str) -> takofy_model::SavedAlbum {
     takofy_model::SavedAlbum {
+        saved_at: None,
         uri: uri.to_owned(),
         name: "Signal Decay".to_owned(),
         named: true,

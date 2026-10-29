@@ -14,6 +14,7 @@ fn painted_chips(width: f32) -> Vec<(&'static str, Rect)> {
     ctx.set_global_style(style(&tokens));
     let mut library = Library::default();
     library.apply(&Update::Playlists(vec![PlaylistEntry {
+        saved_at: None,
         composed: Vec::new(),
         uri: "spotify:playlist:a".to_owned(),
         name: "A".to_owned(),
