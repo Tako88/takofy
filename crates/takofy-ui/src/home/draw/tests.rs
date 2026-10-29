@@ -121,3 +121,35 @@ fn a_pool_index_that_names_an_undated_entry_is_dropped() {
         "an in-range but undated index is not a card"
     );
 }
+
+#[test]
+fn sample_has_no_repeats() {
+    for want in 0..=12 {
+        let drawn = sample(12, seed(), want);
+        let mut seen = drawn.clone();
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(seen.len(), drawn.len(), "want = {want}");
+        assert_eq!(drawn.len(), want);
+        assert!(drawn.windows(2).all(|pair| pair[0] < pair[1]), "ascending");
+    }
+    assert_eq!(sample(4, seed(), 9).len(), 4, "a sample past its pool");
+    assert!(sample(0, seed(), 3).is_empty());
+}
+
+#[test]
+fn a_held_seed_samples_the_same_positions() {
+    assert_eq!(sample(20, seed(), 6), sample(20, seed(), 6));
+    assert_ne!(
+        sample(20, seed(), 6),
+        sample(20, Seed::for_open(1_700_000_000_000, 2), 6)
+    );
+}
+
+#[test]
+fn newest_is_the_pool_of_a_narrower_width() {
+    let dates = newest_first(100);
+    assert_eq!(newest(&dates, 3), vec![0, 1, 2]);
+    assert_eq!(newest(&dates, POOL), pool(&dates));
+    assert!(newest(&dates, 0).is_empty());
+}

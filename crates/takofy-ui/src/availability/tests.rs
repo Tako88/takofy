@@ -26,6 +26,7 @@ fn only_the_controls_with_a_way_to_act_are_ready() {
                 | Control::Fullscreen
                 | Control::HeroPlay
                 | Control::CardPlay
+                | Control::StationPlay
                 | Control::HeroMore
                 | Control::HeroLike
                 | Control::HeroShuffle

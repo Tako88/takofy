@@ -261,6 +261,18 @@ pub const HOME_DAY_ONE_BODY: &str =
 /// The day-one page's door into the catalogue.
 pub const HOME_DAY_ONE_DOOR: &str = "Search the catalogue";
 
+/// The stations shelf's title, which names the seeds rather than a count.
+pub const HOME_STATIONS_TITLE: &str = "Stations built from your library";
+
+/// The related shelf's title, before it names the artist it follows.
+pub const HOME_BECAUSE_TITLE: &str = "Because you follow";
+
+/// The counted shelf's title: the ranking, said without a number.
+pub const HOME_COUNTED_TITLE: &str = "The artists you have the most of";
+
+/// The episodes shelf's title.
+pub const HOME_EPISODES_TITLE: &str = "New from the shows you follow";
+
 /// An episode count as the show page's head writes it: `1 episode`, `N episodes`.
 pub fn episode_count_label(count: usize) -> String {
     count_noun(count, "episode")

@@ -669,12 +669,9 @@ pub fn show(ui: &mut Ui, screen: &mut Screen<'_>, tokens: &Tokens) -> Option<Com
         && !carry::carrying(ui.ctx())
         && let Some(start) = screen.library.take_play()
     {
-        command = screen.queue.start(
-            &start.tracks,
-            0,
-            Some(start.origin.as_str()),
-            screen.transport,
-        );
+        command = screen
+            .queue
+            .start(&start.tracks, 0, start.origin.as_deref(), screen.transport);
     }
     // A held start must not wait for the next input event: the frame that kept
     // the rows may be the last one egui runs for a while, and that frame is

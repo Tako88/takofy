@@ -1,14 +1,15 @@
-//! Home's view of the library: what the three reads are doing, and the shelf
-//! that follows from them.
+//! The dated shelf: what the three reads behind it are doing, and the cards that
+//! follow from them.
 //!
-//! Both methods read state only: no page and no clock, so a constructed
-//! `Library` can reach every state at once.
+//! It reads state only: no page and no clock, so a constructed `Library` can
+//! reach every state at once.
 
 use takofy_model::{LikedTrack, SavedAt};
 
-use crate::home::{Card, Intake, Outlook, Phase, Saved, Shelf, Tally, outlook, pick, pool};
+use crate::home::{Card, Intake, Outlook, Saved, Shelf, Tally, inherit, outlook, pick, pool};
 
 use super::super::{Library, Load};
+use super::phase_of;
 
 /// One thing a card can be drawn from, before the shelf knows whether it can be.
 enum Pooled<'a> {
@@ -18,12 +19,49 @@ enum Pooled<'a> {
     Liked(&'a LikedTrack),
 }
 
-/// What one load is doing, as a source of the shelf.
-fn phase_of<T>(load: &Load<T>) -> Phase {
-    match load {
-        Load::Idle | Load::Loading => Phase::Pending,
-        Load::Ready(_) => Phase::Arrived,
-        Load::Failed(failure) => Phase::Failed(*failure),
+/// What Home draws under the greeting, with at most `cards` cards.
+pub(super) fn home_shelf(library: &Library, cards: usize) -> Shelf<'_> {
+    let any = matches!(&library.playlists, Load::Ready(items) if !items.is_empty())
+        || matches!(&library.saved_albums, Load::Ready(items) if !items.is_empty())
+        || library.likes.any();
+
+    let all = library.home_entries();
+    let dates: Vec<Option<SavedAt>> = all.iter().map(|(_, at)| *at).collect();
+    let mut unanswered = 0;
+    let mut usable: Vec<usize> = Vec::new();
+    for index in pool(&dates) {
+        let draws = match all.get(index).map(|(item, _)| item) {
+            Some(Pooled::Saved(_)) => true,
+            Some(Pooled::Liked(track)) => {
+                if library.home.answered(&track.uri) {
+                    // An answered miss leaves the pool rather than holding
+                    // it: the label will not answer twice.
+                    library.home.label(&track.uri).is_some()
+                } else {
+                    unanswered += 1;
+                    false
+                }
+            }
+            None => false,
+        };
+        if draws {
+            usable.push(index);
+        }
+    }
+
+    let tally = Tally {
+        any,
+        unanswered,
+        usable: usable.len(),
+        label_failed: library.home.failed(),
+    };
+    match outlook(library.home_intake(), tally) {
+        Outlook::Waiting => Shelf::Waiting,
+        Outlook::Unreadable(failure) => Shelf::Unreadable(failure),
+        Outlook::Incomplete(failure) => Shelf::Incomplete(failure),
+        Outlook::DayOne => Shelf::DayOne,
+        Outlook::Quiet => Shelf::Quiet,
+        Outlook::Cards => Shelf::Cards(home_cards(library, &all, &dates, &usable, cards)),
     }
 }
 
@@ -35,60 +73,11 @@ impl Library {
     /// a failed rootlist they are failed too, and the page says so instead of
     /// waiting for answers no read will ever ask for.
     pub(in crate::library) fn home_intake(&self) -> Intake {
-        let unasked = match self.playlists {
-            Load::Failed(failure) => Some(failure),
-            Load::Idle | Load::Loading | Load::Ready(_) => None,
-        };
+        let playlists = phase_of(&self.playlists);
         Intake {
-            playlists: phase_of(&self.playlists),
-            albums: unasked.map_or_else(|| phase_of(&self.saved_albums), Phase::Failed),
-            likes: unasked.map_or_else(|| self.likes.phase(), Phase::Failed),
-        }
-    }
-
-    /// What Home draws under the greeting, with at most `cards` cards.
-    pub fn home_shelf(&self, cards: usize) -> Shelf<'_> {
-        let any = matches!(&self.playlists, Load::Ready(items) if !items.is_empty())
-            || matches!(&self.saved_albums, Load::Ready(items) if !items.is_empty())
-            || self.likes.any();
-
-        let all = self.home_entries();
-        let dates: Vec<Option<SavedAt>> = all.iter().map(|(_, at)| *at).collect();
-        let mut unanswered = 0;
-        let mut usable: Vec<usize> = Vec::new();
-        for index in pool(&dates) {
-            let draws = match all.get(index).map(|(item, _)| item) {
-                Some(Pooled::Saved(_)) => true,
-                Some(Pooled::Liked(track)) => {
-                    if self.home.answered(&track.uri) {
-                        // An answered miss leaves the pool rather than holding
-                        // it: the label will not answer twice.
-                        self.home.label(&track.uri).is_some()
-                    } else {
-                        unanswered += 1;
-                        false
-                    }
-                }
-                None => false,
-            };
-            if draws {
-                usable.push(index);
-            }
-        }
-
-        let tally = Tally {
-            any,
-            unanswered,
-            usable: usable.len(),
-            label_failed: self.home.failed(),
-        };
-        match outlook(self.home_intake(), tally) {
-            Outlook::Waiting => Shelf::Waiting,
-            Outlook::Unreadable(failure) => Shelf::Unreadable(failure),
-            Outlook::Incomplete(failure) => Shelf::Incomplete(failure),
-            Outlook::DayOne => Shelf::DayOne,
-            Outlook::Quiet => Shelf::Quiet,
-            Outlook::Cards => Shelf::Cards(self.home_cards(&all, &dates, &usable, cards)),
+            playlists,
+            albums: inherit(playlists, phase_of(&self.saved_albums)),
+            likes: inherit(playlists, self.likes.phase()),
         }
     }
 
@@ -130,26 +119,26 @@ impl Library {
         }
         all
     }
+}
 
-    /// The drawn cards, in date order.
-    fn home_cards<'a>(
-        &'a self,
-        all: &[(Pooled<'a>, Option<SavedAt>)],
-        dates: &[Option<SavedAt>],
-        usable: &[usize],
-        cards: usize,
-    ) -> Vec<Card<'a>> {
-        pick(dates, usable, self.home.seed(), cards)
-            .into_iter()
-            .filter_map(|index| {
-                let (item, at) = all.get(index)?;
-                let at = (*at)?;
-                let saved = match item {
-                    Pooled::Saved(saved) => *saved,
-                    Pooled::Liked(track) => Saved::Track(self.home.label(&track.uri)?),
-                };
-                Some(Card { saved, at })
-            })
-            .collect()
-    }
+/// The drawn cards, in date order.
+fn home_cards<'a>(
+    library: &'a Library,
+    all: &[(Pooled<'a>, Option<SavedAt>)],
+    dates: &[Option<SavedAt>],
+    usable: &[usize],
+    cards: usize,
+) -> Vec<Card<'a>> {
+    pick(dates, usable, library.home.seed(), cards)
+        .into_iter()
+        .filter_map(|index| {
+            let (item, at) = all.get(index)?;
+            let at = (*at)?;
+            let saved = match item {
+                Pooled::Saved(saved) => *saved,
+                Pooled::Liked(track) => Saved::Track(library.home.label(&track.uri)?),
+            };
+            Some(Card { saved, at })
+        })
+        .collect()
 }

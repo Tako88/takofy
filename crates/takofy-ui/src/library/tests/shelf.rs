@@ -42,10 +42,10 @@ fn the_next_page_write_carries_the_rename_replys_revision() {
     );
 }
 
-/// The rows a landed shelf play hands the queue.
+/// The rows a landed shelf play hands the queue, with the object it came from.
 fn start(uri: &str, uris: &[&str]) -> Start {
     Start {
-        origin: uri.to_owned(),
+        origin: Some(uri.to_owned()),
         tracks: uris.iter().map(|uri| track(uri)).collect(),
     }
 }
@@ -472,4 +472,82 @@ fn a_new_press_and_a_page_change_clear_the_shelf_notice() {
 
     library.to_playlists();
     assert_eq!(library.play_notice, None, "a page change kept the sentence");
+}
+
+#[test]
+fn a_shelf_play_keeps_its_object_as_origin() {
+    let mut library = page_with("a", &["t0", "t1"], None);
+
+    assert!(library.want_play("a", SidebarKind::Playlists));
+
+    assert_eq!(
+        library.take_play(),
+        Some(start("a", &["t0", "t1"])),
+        "a pressed object is the context the queue resumes"
+    );
+}
+
+#[test]
+fn want_play_rows_starts_with_no_origin() {
+    let mut library = Library::default();
+
+    assert!(library.want_play_rows(None, vec![track("t0"), track("t1")]));
+    assert_eq!(
+        library.play_request(),
+        None,
+        "rows in hand are never asked for"
+    );
+    assert!(library.has_landed_play());
+    let started = library.take_play().expect("the rows start");
+    assert_eq!(
+        started.origin, None,
+        "rows with no page of their own resume nothing"
+    );
+    assert_eq!(
+        started
+            .tracks
+            .iter()
+            .map(|entry| &entry.uri)
+            .collect::<Vec<_>>(),
+        vec!["t0", "t1"]
+    );
+}
+
+#[test]
+fn want_play_rows_keeps_an_origin_it_is_given() {
+    let mut library = Library::default();
+
+    assert!(library.want_play_rows(Some("spotify:station:x"), vec![track("t0")]));
+
+    assert_eq!(
+        library.take_play(),
+        Some(Start {
+            origin: Some("spotify:station:x".to_owned()),
+            tracks: vec![track("t0")],
+        })
+    );
+}
+
+#[test]
+fn want_play_rows_refuses_an_empty_list() {
+    let mut library = Library::default();
+    assert!(library.want_play_rows(None, vec![track("t0")]));
+    assert!(
+        !library.want_play_rows(None, Vec::new()),
+        "there is no first row to start on"
+    );
+
+    assert!(
+        library.has_landed_play(),
+        "an empty list cancelled the play already waiting"
+    );
+    assert_eq!(
+        library.take_play(),
+        Some(Start {
+            origin: None,
+            tracks: vec![track("t0")],
+        }),
+        "the pending play is untouched"
+    );
+    assert_eq!(library.play_notice, None, "an empty list is not a failure");
 }

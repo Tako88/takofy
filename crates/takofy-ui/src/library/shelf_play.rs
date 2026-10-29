@@ -8,14 +8,20 @@ use crate::sidebar_kind::SidebarKind;
 use super::{Library, Load};
 
 /// A play pressed on a card or a row of the library root.
-///
-/// The rows are held here rather than in `tracks`, which belongs to the page: the
-/// press is not a navigation, and a page the user opens while the rows are in
-/// flight must keep its own list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct PendingPlay {
+    /// The object whose rows the play waits on, so a reply is matched to it.
+    ///
+    /// A play whose rows were handed over whole names no object, and nothing on
+    /// the wire can answer it, so its key is empty.
     pub(super) uri: String,
-    pub(super) kind: SidebarKind,
+    /// The page the rows came from, when the queue may resume it.
+    pub(super) origin: Option<String>,
+    /// The kind of object the press came from, when it came from one.
+    ///
+    /// `None` is a play that was given its rows as they stand: there is nothing
+    /// to ask for and nothing a reply could answer.
+    pub(super) kind: Option<SidebarKind>,
     stage: Stage,
 }
 
@@ -35,7 +41,10 @@ enum Stage {
 pub struct Start {
     /// The page the rows came from, so a later move can tell its target what to
     /// play.
-    pub origin: String,
+    ///
+    /// A station plays without one: its rows are a flat list this client cannot
+    /// page, so there is no context another device could resume.
+    pub origin: Option<String>,
     pub tracks: Vec<TrackEntry>,
 }
 
@@ -77,8 +86,24 @@ impl Library {
         };
         self.play = Some(PendingPlay {
             uri: uri.to_owned(),
-            kind,
+            origin: Some(uri.to_owned()),
+            kind: Some(kind),
             stage,
+        });
+        true
+    }
+
+    /// Starts a play whose rows are already in hand; an empty list starts nothing.
+    pub fn want_play_rows(&mut self, origin: Option<&str>, rows: Vec<TrackEntry>) -> bool {
+        if rows.is_empty() {
+            return false;
+        }
+        self.play_notice = None;
+        self.play = Some(PendingPlay {
+            uri: origin.unwrap_or_default().to_owned(),
+            origin: origin.map(str::to_owned),
+            kind: None,
+            stage: Stage::Landed(rows),
         });
         true
     }
@@ -92,7 +117,7 @@ impl Library {
         if play.stage != Stage::Wanted {
             return None;
         }
-        let command = match play.kind {
+        let command = match play.kind? {
             SidebarKind::Playlists => Command::LoadTracks {
                 playlist: play.uri.clone(),
             },
@@ -112,13 +137,10 @@ impl Library {
     pub fn take_play(&mut self) -> Option<Start> {
         match self.play.take() {
             Some(PendingPlay {
-                uri,
+                origin,
                 stage: Stage::Landed(tracks),
                 ..
-            }) if !tracks.is_empty() => Some(Start {
-                origin: uri,
-                tracks,
-            }),
+            }) if !tracks.is_empty() => Some(Start { origin, tracks }),
             Some(PendingPlay {
                 stage: Stage::Landed(_),
                 ..

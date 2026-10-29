@@ -1,24 +1,31 @@
-//! Home's own state: the seed its shelf draws from, and the labels the liked
-//! songs need before they can be drawn as cards.
+//! Home's own state: the seed its shelves draw from, the labels the liked songs
+//! need before they can be drawn as cards, and one state per section.
 //!
-//! The rest of Home is pure logic in the child modules: the seed and the draw
-//! ([`seed`], [`draw`]), the greeting, and the state machine that decides what
-//! the page says ([`outlook`]).
+//! The rest of Home is pure logic in the child modules: the seed and the draws
+//! ([`seed`], [`draw`]), the greeting, the state machine that decides what the
+//! dated shelf says ([`outlook`]), and the section table ([`section`]).
 
 use std::collections::{HashMap, HashSet};
 
+use takofy_model::home::{HomeAnswer, HomeAsk};
 use takofy_model::{PlaylistEntry, SavedAlbum, SavedAt, TrackEntry};
 
 use crate::message::Failure;
 
-mod draw;
+pub mod because;
+pub mod counted;
+pub mod draw;
+pub mod episodes;
 mod greeting;
 mod outlook;
+mod section;
 mod seed;
+pub mod stations;
 
 pub use draw::{pick, pool};
 pub use greeting::greeting;
 pub use outlook::{Intake, Outlook, Phase, Tally, outlook};
+pub use section::{Budget, Presence, Section, Slot, inherit, settle};
 pub use seed::Seed;
 
 /// One thing a card draws, borrowed from the library's own lists.
@@ -57,7 +64,74 @@ pub enum Shelf<'a> {
     Cards(Vec<Card<'a>>),
 }
 
-/// The shelf's seed and the liked songs' labels.
+/// How much room the page has for its shelves this frame.
+///
+/// It is read once, before any shelf draws, so the room the dated shelf solves
+/// its grid for is the room its cards are placed in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Fit {
+    /// The card columns the dated shelf's grid solves to.
+    pub columns: usize,
+}
+
+/// Home's five shelves for one frame, borrowed from the library.
+#[derive(Debug)]
+pub struct Sections<'a> {
+    /// The page's first shelf: what was saved most recently.
+    pub dated: Shelf<'a>,
+    pub stations: Section<stations::Band<'a>>,
+    pub because: Section<because::Row<'a>>,
+    pub counted: Section<counted::Tiles<'a>>,
+    pub episodes: Section<episodes::List<'a>>,
+}
+
+impl Sections<'_> {
+    /// What `slot` is doing this frame.
+    pub fn presence(&self, slot: Slot) -> Presence {
+        match slot {
+            Slot::Dated => dated_presence(&self.dated),
+            Slot::Stations => self.stations.presence(),
+            Slot::Because => self.because.presence(),
+            Slot::Counted => self.counted.presence(),
+            Slot::Episodes => self.episodes.presence(),
+        }
+    }
+
+    /// The four shelves below the dated one, in the page's order.
+    pub fn others(&self) -> [Presence; 4] {
+        [
+            self.presence(Slot::Stations),
+            self.presence(Slot::Because),
+            self.presence(Slot::Counted),
+            self.presence(Slot::Episodes),
+        ]
+    }
+}
+
+/// What the dated shelf says, in the presence the page reads off it.
+fn dated_presence(shelf: &Shelf<'_>) -> Presence {
+    match shelf {
+        Shelf::Waiting => Presence::Waiting,
+        Shelf::Unreadable(_) | Shelf::Incomplete(_) => Presence::Failed,
+        Shelf::DayOne | Shelf::Quiet => Presence::Absent,
+        Shelf::Cards(_) => Presence::Ready,
+    }
+}
+
+/// Whether the dated shelf draws beside `others`.
+pub fn dated_draws(shelf: &Shelf<'_>, others: [Presence; 4]) -> bool {
+    match shelf {
+        Shelf::Waiting | Shelf::Cards(_) => true,
+        Shelf::Unreadable(_) => true,
+        Shelf::Incomplete(_) => true,
+        Shelf::Quiet => !others
+            .iter()
+            .any(|presence| matches!(presence, Presence::Ready | Presence::Waiting)),
+        Shelf::DayOne => others.iter().all(|presence| *presence == Presence::Absent),
+    }
+}
+
+/// The shelf's seed, the liked songs' labels, and one state per section.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Home {
     seed: Seed,
@@ -71,13 +145,48 @@ pub struct Home {
     failed: Option<Failure>,
     /// The URIs a label read was sent for, so each one is sent once.
     asked: HashSet<String>,
+    /// The stations built from the library's own seeds.
+    pub stations: stations::State,
+    /// The artists related to one followed artist.
+    pub because: because::State,
+    /// The artists the library holds the most of.
+    pub counted: counted::State,
+    /// The newest episodes of the followed shows.
+    pub episodes: episodes::State,
+    /// The reads one open still allows.
+    pub budget: Budget,
 }
 
 impl Home {
-    /// Draws this open's seed, keeping the count of opens.
+    /// Draws this open's seeds, keeping the count of opens, and refills the budget.
     pub fn open(&mut self, now_ms: u64) {
         self.opens = self.opens.saturating_add(1);
         self.seed = Seed::for_open(now_ms, self.opens);
+        self.budget = Budget::default();
+        self.stations.open(self.seed);
+        self.because.open(self.seed);
+        self.counted.open(self.seed);
+        self.episodes.open(self.seed);
+    }
+
+    /// Folds one answer into the shelf that asked for it.
+    pub fn land(&mut self, answer: HomeAnswer) {
+        if matches!(answer, HomeAnswer::Labelled { .. }) {
+            self.counted.land(&answer);
+        }
+        self.stations.land(&answer);
+        self.because.land(&answer);
+        self.episodes.land(&answer);
+    }
+
+    /// Records that the read `ask` named failed.
+    pub fn fail(&mut self, ask: HomeAsk, failure: Failure) {
+        if matches!(ask, HomeAsk::Labels { .. }) {
+            self.counted.fail(&ask, failure);
+        }
+        self.stations.fail(&ask, failure);
+        self.because.fail(&ask, failure);
+        self.episodes.fail(&ask, failure);
     }
 
     /// Records the URIs a label read was sent for, so they are not sent again.
@@ -114,11 +223,26 @@ impl Home {
         self.failed = Some(failure);
     }
 
-    /// Drops the label read's answers, so a retry asks for every URI again.
-    pub fn forget_labels(&mut self) {
-        self.labels.clear();
-        self.asked.clear();
-        self.failed = None;
+    /// Drops what `slot` read, so its retry asks again and the others keep their answers.
+    pub fn forget_slot(&mut self, slot: Slot) {
+        match slot {
+            Slot::Dated => {
+                self.labels.clear();
+                self.asked.clear();
+                self.failed = None;
+            }
+            Slot::Stations => self.stations.forget(),
+            Slot::Because => self.because.forget(),
+            Slot::Counted => self.counted.forget(),
+            Slot::Episodes => self.episodes.forget(),
+        }
+    }
+
+    /// Drops everything the last open read, so a retry asks for all of it again.
+    pub fn forget(&mut self) {
+        for slot in Slot::ORDER {
+            self.forget_slot(slot);
+        }
     }
 
     /// The failure that stopped the last label read, if one did.

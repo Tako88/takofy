@@ -884,6 +884,32 @@ fn a_home_card_says_what_it_is_and_when_it_was_saved() {
     );
 }
 
+/// Every shelf title names what the shelf was built from, and none prints a
+/// number it would have to explain.
+#[test]
+fn the_home_section_titles_count_nothing() {
+    assert_eq!(HOME_STATIONS_TITLE, "Stations built from your library");
+    assert_eq!(HOME_BECAUSE_TITLE, "Because you follow");
+    assert_eq!(HOME_COUNTED_TITLE, "The artists you have the most of");
+    assert_eq!(HOME_EPISODES_TITLE, "New from the shows you follow");
+    for title in [
+        HOME_STATIONS_TITLE,
+        HOME_BECAUSE_TITLE,
+        HOME_COUNTED_TITLE,
+        HOME_EPISODES_TITLE,
+    ] {
+        assert!(
+            !title.chars().any(|c| c.is_ascii_digit()),
+            "{title:?} counts nothing"
+        );
+        assert!(
+            !title.is_empty(),
+            "a shelf is never drawn without its title"
+        );
+        assert_eq!(title.trim(), title, "{title:?} is drawn as it is written");
+    }
+}
+
 #[test]
 fn the_home_copy_has_no_counts() {
     assert_eq!(HOME_SHELF_TITLE, "Most recently added");

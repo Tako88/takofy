@@ -54,3 +54,30 @@ fn below_of_nothing_is_zero() {
         "an empty range draws nothing"
     );
 }
+
+#[test]
+fn split_is_stable() {
+    let seed = Seed::for_open(1_700_000_000_000, 1);
+    assert_eq!(seed.split(3), seed.split(3));
+    assert_eq!(
+        Seed::for_open(1_700_000_000_000, 2).split(0),
+        Seed::for_open(1_700_000_000_000, 2).split(0)
+    );
+}
+
+#[test]
+fn split_streams_differ() {
+    let seed = Seed::for_open(1_700_000_000_000, 1);
+    let mut seen = Vec::new();
+    for salt in 0..5 {
+        let split = seed.split(salt);
+        assert_ne!(split, seed, "a shelf draws from the page's own stream");
+        assert!(!seen.contains(&split), "two shelves share a stream");
+        seen.push(split);
+    }
+    assert_ne!(
+        seed.split(0),
+        Seed::for_open(1_700_000_000_000, 2).split(0),
+        "two opens share a shelf's stream"
+    );
+}

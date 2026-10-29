@@ -80,11 +80,14 @@ pub enum Control {
     /// A library item's own play, in the grid and in the list. It is keyed by the
     /// item's uri, so one control serves every card and every row.
     CardPlay,
+    /// A station's own play. It is keyed by the station's uri, so one control
+    /// serves every station of the band.
+    StationPlay,
     Authorize,
 }
 
 impl Control {
-    pub const ALL: [Self; 52] = [
+    pub const ALL: [Self; 53] = [
         Self::NavHome,
         Self::NavLibrary,
         Self::LibraryCreate,
@@ -135,6 +138,7 @@ impl Control {
         Self::ReleaseMore,
         Self::EpisodeOrder,
         Self::CardPlay,
+        Self::StationPlay,
         Self::HomeSearch,
         Self::Authorize,
     ];
@@ -207,6 +211,9 @@ pub fn availability(control: Control) -> Availability {
         Control::HeroMore => Availability::Ready,
         Control::HeroPlay => Availability::Ready,
         Control::CardPlay => Availability::Ready,
+        // A station's rows are loaded state, so its play is a want and not a
+        // read.
+        Control::StationPlay => Availability::Ready,
 
         // The artist page: following is a real write, the filter row is state
         // the page already holds, and the other three are the reference's chrome

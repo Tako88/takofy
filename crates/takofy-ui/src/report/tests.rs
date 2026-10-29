@@ -340,3 +340,36 @@ fn an_order_that_changes_the_queue_triggers_a_report() {
         "the row the phone queued has to reach the account"
     );
 }
+
+/// The report a play that started from `start` publishes.
+fn published(start: crate::library::Start) -> Option<Report> {
+    let mut queue = Queue::default();
+    let mut transport = Transport::default();
+    queue.start(&start.tracks, 0, start.origin.as_deref(), &mut transport);
+    report_of(&queue, &transport, 0)
+}
+
+#[test]
+fn a_station_play_publishes_no_context() {
+    let mut library = crate::library::Library::default();
+    assert!(library.want_play_rows(None, tracks(5)));
+    let start = library.take_play().expect("the station's rows start");
+
+    let report = published(start).expect("a current entry");
+
+    assert_eq!(
+        report.context, None,
+        "a station's rows are a flat list no reader could resume"
+    );
+}
+
+#[test]
+fn a_playlist_play_publishes_its_uri() {
+    let mut library = crate::library::Library::default();
+    assert!(library.want_play_rows(Some("spotify:playlist:p"), tracks(3)));
+    let start = library.take_play().expect("the playlist's rows start");
+
+    let report = published(start).expect("a current entry");
+
+    assert_eq!(report.context.as_deref(), Some("spotify:playlist:p"));
+}

@@ -1,140 +1,91 @@
-//! The dated page: the greeting, the shelf, and the presses it returns.
-
-use std::time::Instant;
+//! The dated shelf: the skeleton, the cards, and the states between them.
 
 use egui::{Sense, Ui};
 
 use crate::availability::Control;
-use crate::cover::{Art, want_px};
+use crate::cover::want_px;
 use crate::format::{
     HOME_DAY_ONE_BODY, HOME_DAY_ONE_DOOR, HOME_DAY_ONE_TITLE, HOME_QUIET, HOME_SHELF_TITLE,
     media_type, saved_sub,
 };
-use crate::home::{Card, Saved, Shelf, greeting};
+use crate::home::{Card, Saved, Shelf, Slot};
 use crate::layout::table as table_layout;
-use crate::library::{Library, MediaLayout};
+use crate::library::MediaLayout;
 use crate::library_filter::{Item, RootKind};
-use crate::message::Command;
 use crate::route::Page;
 use crate::sidebar_kind::SidebarKind;
-use crate::theme::Tokens;
 use crate::view::playlist::root::{self, MediaDraw};
 
 use super::super::text as recipe;
-use super::super::{controls, hero, media, page_head, section, skeleton};
+use super::super::{controls, hero, media, section, skeleton};
+use super::Pressed;
+
+// The dated page's own tests read art, greeting and head through this module, so
+// the three stay named here while only they use them.
+#[cfg(test)]
+use super::super::page_head;
+#[cfg(test)]
+use crate::cover::Art;
+#[cfg(test)]
+use crate::home::greeting;
 
 #[cfg(test)]
 mod tests;
 
-/// Draws Home and returns the command its controls asked for.
-pub(super) fn home_view(
+/// Draws the dated shelf and records the presses it took.
+///
+/// It draws whatever the shelf's own state is, including the two states where it
+/// has nothing to show, because the greeting alone must never be the page.
+pub(super) fn show(
     ui: &mut Ui,
-    library: &mut Library,
-    art: &mut Art,
-    now: Instant,
+    shelf: &Shelf<'_>,
     now_ms: u64,
-    local_hour: u8,
-    tokens: &Tokens,
-) -> Option<Command> {
-    let mut select: Option<String> = None;
-    let mut open: Option<Page> = None;
-    let mut play: Option<(String, SidebarKind)> = None;
-    let mut focus_search = false;
-    let mut retry = false;
-
-    egui::ScrollArea::vertical()
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            crate::view::inner(ui, |ui| {
-                page_head::show(ui, greeting(local_hour), "", tokens);
-                // The press that failed is the retry, so there is no button.
-                if let Some(failure) = library.play_notice {
-                    ui.label(recipe::muted(
-                        crate::signin::failure_message(failure),
-                        tokens,
-                    ));
-                }
-                let columns = root::media_grid(ui).columns;
-                // The shelf is one row, so the grid's own column count is the
-                // number of cards to draw.
-                match library.home_shelf(columns) {
-                    Shelf::Waiting => {
-                        // One row of tiles: the shelf is one row, so the
-                        // skeleton holds the shape the cards will.
-                        let count = columns;
-                        let solved = root::media_grid(ui);
-                        let list = root::grid_rect(ui, &solved, count);
-                        ui.allocate_rect(list, Sense::hover());
-                        skeleton::tiles(ui, &solved, count, tokens);
-                    }
-                    Shelf::Unreadable(failure) | Shelf::Incomplete(failure) => {
-                        ui.label(recipe::muted(
-                            crate::signin::failure_message(failure),
-                            tokens,
-                        ));
-                        // The root's own failure draws the same pair: the words,
-                        // then the control that asks again.
-                        if ui.button("Retry").clicked() {
-                            retry = true;
-                        }
-                    }
-                    Shelf::DayOne => {
-                        ui.label(recipe::muted(HOME_DAY_ONE_TITLE, tokens));
-                        ui.label(recipe::muted(HOME_DAY_ONE_BODY, tokens));
-                        let size = controls::text_button_size(ui, tokens, HOME_DAY_ONE_DOOR);
-                        let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
-                        let slot = controls::text_button(
-                            ui,
-                            tokens,
-                            Control::HomeSearch,
-                            rect,
-                            HOME_DAY_ONE_DOOR,
-                            true,
-                        );
-                        if slot.response.clicked() {
-                            focus_search = true;
-                        }
-                    }
-                    Shelf::Quiet => {
-                        ui.label(recipe::muted(HOME_QUIET, tokens));
-                    }
-                    Shelf::Cards(cards) => {
-                        let mut draw = MediaDraw {
-                            art,
-                            now,
-                            tokens,
-                            library: &*library,
-                            select: &mut select,
-                            open: &mut open,
-                            play: &mut play,
-                        };
-                        cards_row(ui, &cards, &mut draw, now_ms);
-                    }
-                }
-            });
-        });
-
-    if let Some((uri, kind)) = play
-        && library.want_play(&uri, kind)
-    {
-        ui.ctx().request_repaint();
+    draw: &mut MediaDraw<'_, '_>,
+    out: &mut Pressed,
+) {
+    match shelf {
+        Shelf::Waiting => {
+            // One row of tiles: the shelf is one row, so the skeleton holds the
+            // shape the cards will.
+            let solved = root::media_grid(ui);
+            let count = solved.columns;
+            let list = root::grid_rect(ui, &solved, count);
+            ui.allocate_rect(list, Sense::hover());
+            skeleton::tiles(ui, &solved, count, draw.tokens);
+        }
+        Shelf::Unreadable(failure) | Shelf::Incomplete(failure) => {
+            ui.label(recipe::muted(
+                crate::signin::failure_message(*failure),
+                draw.tokens,
+            ));
+            // The root's own failure draws the same pair: the words, then the
+            // control that asks again.
+            if ui.button("Retry").clicked() {
+                out.retry = Some(Slot::Dated);
+            }
+        }
+        Shelf::DayOne => {
+            ui.label(recipe::muted(HOME_DAY_ONE_TITLE, draw.tokens));
+            ui.label(recipe::muted(HOME_DAY_ONE_BODY, draw.tokens));
+            let size = controls::text_button_size(ui, draw.tokens, HOME_DAY_ONE_DOOR);
+            let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+            let slot = controls::text_button(
+                ui,
+                draw.tokens,
+                Control::HomeSearch,
+                rect,
+                HOME_DAY_ONE_DOOR,
+                true,
+            );
+            if slot.response.clicked() {
+                out.focus_search = true;
+            }
+        }
+        Shelf::Quiet => {
+            ui.label(recipe::muted(HOME_QUIET, draw.tokens));
+        }
+        Shelf::Cards(cards) => cards_row(ui, cards, draw, now_ms),
     }
-    if focus_search {
-        // The topbar draws the field and is drawn before this page, so the ask is
-        // carried to it and the frame that moves the keyboard is asked for here.
-        library.search.ask_focus();
-        ui.ctx().request_repaint();
-    }
-    if retry {
-        return Some(library.reload());
-    }
-    if let Some(uri) = select {
-        return Some(library.select(&uri));
-    }
-    if let Some(page) = open {
-        return library.open(page);
-    }
-    None
 }
 
 /// The shelf's head and its cards, in the library's own tiles.

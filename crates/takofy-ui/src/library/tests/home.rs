@@ -1,5 +1,7 @@
 use super::super::*;
 use super::test_support::*;
+use crate::home::{Budget, Slot};
+use takofy_model::home::{HomeAnswer, HomeAsk};
 use takofy_model::{LikedTrack, SavedAt, TrackEntry};
 
 /// A saved date `ms` after the epoch.
@@ -341,6 +343,125 @@ fn a_dated_playlist_draws_even_with_a_failed_albums_read() {
     }
 }
 
+#[test]
+fn retrying_one_shelf_keeps_a_healthy_likes_read() {
+    let mut library = settled(Vec::new(), Vec::new(), Vec::new());
+    assert_eq!(library.likes.phase(), crate::home::Phase::Arrived);
+    assert_eq!(
+        library.likes_request(),
+        None,
+        "arrange: the liked read has settled"
+    );
+
+    assert_eq!(library.retry_home(Slot::Counted), None);
+
+    assert_eq!(
+        library.likes_request(),
+        None,
+        "the retry re-read every like from a healthy read"
+    );
+    assert_eq!(library.likes.phase(), crate::home::Phase::Arrived);
+}
+
+#[test]
+fn retrying_one_shelf_keeps_another_ready_and_its_budget() {
+    let mut library = settled(
+        vec![dated_playlist("spotify:playlist:a", 5_000)],
+        Vec::new(),
+        vec![liked("spotify:track:t", 4_000)],
+    );
+    library.apply(&Update::SavedLabelled {
+        asked: vec!["spotify:track:t".to_owned()],
+        named: vec![labelled("spotify:track:t")],
+    });
+    let before = drawn_uris(&library.home_shelf(4));
+    assert_eq!(before.len(), 2, "arrange: the dated shelf draws");
+    assert!(library.home.budget.take(Slot::Counted));
+
+    assert_eq!(library.retry_home(Slot::Episodes), None);
+
+    assert_eq!(
+        drawn_uris(&library.home_shelf(4)),
+        before,
+        "the retried shelf dropped another shelf's cards"
+    );
+    assert!(
+        library.home.answered("spotify:track:t"),
+        "the retried shelf dropped another shelf's label"
+    );
+    assert_eq!(
+        library.home.budget.left(Slot::Counted),
+        0,
+        "the retried shelf returned another shelf's read"
+    );
+    assert_eq!(
+        library.home.budget.left(Slot::Episodes),
+        Budget::per_open(Slot::Episodes),
+        "the retried shelf got its allowance back"
+    );
+}
+
+#[test]
+fn a_counted_label_answer_leaves_the_dated_shelf_alone() {
+    let mut library = home_with_a_liked_song();
+    library.apply(&Update::SavedLabelled {
+        asked: vec!["spotify:track:t".to_owned()],
+        named: vec![labelled("spotify:track:t")],
+    });
+    let before = drawn_uris(&library.home_shelf(4));
+    assert_eq!(before, vec!["spotify:track:t".to_owned()]);
+
+    let mut unusable = track("spotify:track:t");
+    unusable.named = false;
+    library.apply(&Update::Home(HomeAnswer::Labelled {
+        asked: vec!["spotify:track:t".to_owned()],
+        named: vec![unusable],
+    }));
+
+    assert_eq!(
+        drawn_uris(&library.home_shelf(4)),
+        before,
+        "the counted answer replaced the dated shelf's label"
+    );
+    assert_eq!(
+        library
+            .home
+            .label("spotify:track:t")
+            .map(|track| track.named),
+        Some(true),
+        "the dated shelf kept the label its own read landed"
+    );
+}
+
+#[test]
+fn a_failed_counted_label_read_leaves_the_dated_shelf_alone() {
+    let mut library = home_with_a_liked_song();
+    library.apply(&Update::SavedLabelled {
+        asked: vec!["spotify:track:t".to_owned()],
+        named: vec![labelled("spotify:track:t")],
+    });
+    let before = drawn_uris(&library.home_shelf(4));
+    assert_eq!(before, vec!["spotify:track:t".to_owned()]);
+
+    library.apply(&Update::HomeFailed {
+        ask: HomeAsk::Labels {
+            tracks: vec!["spotify:track:t".to_owned()],
+        },
+        failure: Failure::Load,
+    });
+
+    assert_eq!(
+        drawn_uris(&library.home_shelf(4)),
+        before,
+        "the counted failure changed what the dated shelf draws"
+    );
+    assert_eq!(
+        library.home.failed(),
+        None,
+        "the dated shelf has no failure of its own"
+    );
+}
+
 /// A Home library whose three sources have all answered, holding one dated
 /// liked song whose label nobody has asked for yet.
 fn home_with_a_liked_song() -> Library {
@@ -354,6 +475,14 @@ fn home_with_a_liked_song() -> Library {
     library.apply(&Update::LikedTracks(vec![liked("spotify:track:t", 5_000)]));
     library.apply(&Update::SavedAlbums(Vec::new()));
     library
+}
+
+/// The label a liked song's own read lands.
+fn labelled(uri: &str) -> TrackEntry {
+    TrackEntry {
+        album_uri: Some("spotify:album:r".to_owned()),
+        ..track(uri)
+    }
 }
 
 #[test]

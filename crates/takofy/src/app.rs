@@ -253,6 +253,12 @@ impl eframe::App for TakofyApp {
         if let Some(command) = self.library.home_labels_request() {
             let _ = self.ui_end.commands.send(command);
         }
+        // The built shelves are want-driven too: one ask per frame, in the page's
+        // shelf order, so a slow session is never flooded with reads it cannot
+        // draw yet.
+        if let Some(command) = self.library.home_request() {
+            let _ = self.ui_end.commands.send(command);
+        }
         // The artist page's likeness row is its second read: it is asked for
         // once the artist's own detail has landed and named somebody.
         if let Some(command) = self.library.related_request() {

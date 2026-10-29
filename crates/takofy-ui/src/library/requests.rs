@@ -152,7 +152,7 @@ impl Library {
         self.likes.reload();
         // The retry is the page's own: it asks for the labels a failed read
         // left unanswered instead of keeping their misses.
-        self.home.forget_labels();
+        self.home.forget();
         Command::ReloadLibrary
     }
 
@@ -306,7 +306,10 @@ impl Library {
     pub fn followed_artists_request(&mut self) -> Option<Command> {
         if self.followed_artists == Load::Idle
             && matches!(self.playlists, Load::Ready(_))
-            && artists_chosen(self.root_filter.chosen(), self.sidebar_kind.chosen())
+            && (artists_chosen(self.root_filter.chosen(), self.sidebar_kind.chosen())
+                // Home's related shelf reads them, and the chip that would ask
+                // for them is not on screen there.
+                || self.on_home())
         {
             self.followed_artists = Load::Loading;
             Some(Command::LoadFollowedArtists)

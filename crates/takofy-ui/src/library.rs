@@ -1073,8 +1073,9 @@ impl Library {
             | Update::PortraitsFailed { .. } => {
                 self.search.apply(update);
             }
-            // Nothing sends a Home ask yet, so there is no answer to hold.
-            Update::Home(_) | Update::HomeFailed { .. } => {}
+            // A Home answer lands on the shelf that asked for it, whatever page is shown.
+            Update::Home(answer) => self.home.land(answer.clone()),
+            Update::HomeFailed { ask, failure } => self.home.fail(ask.clone(), *failure),
             Update::NeedsAuthorization
             | Update::SignInFailed(_)
             | Update::Devices(_)
@@ -1125,7 +1126,7 @@ impl Library {
         if self
             .play
             .as_ref()
-            .is_some_and(|play| play.kind == SidebarKind::Playlists && !present(&play.uri))
+            .is_some_and(|play| play.kind == Some(SidebarKind::Playlists) && !present(&play.uri))
         {
             self.play = None;
         }

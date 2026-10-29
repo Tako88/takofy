@@ -1,4 +1,5 @@
 use super::*;
+use takofy_model::home::{HomeAnswer, HomeAsk};
 
 fn named(uri: &str, album: Option<&str>) -> TrackEntry {
     TrackEntry {
@@ -93,4 +94,237 @@ fn a_sent_uri_is_asked_but_not_yet_answered() {
         &[named("spotify:track:a", Some("spotify:album:r"))],
     );
     assert!(home.answered("spotify:track:a"), "the reply landed");
+}
+
+/// The four shelves below the dated one, each in one presence.
+const ABSENT: [Presence; 4] = [Presence::Absent; 4];
+const ONE_READY: [Presence; 4] = [
+    Presence::Ready,
+    Presence::Absent,
+    Presence::Absent,
+    Presence::Absent,
+];
+const ONE_WAITING: [Presence; 4] = [
+    Presence::Absent,
+    Presence::Waiting,
+    Presence::Absent,
+    Presence::Absent,
+];
+const ONE_FAILED: [Presence; 4] = [
+    Presence::Absent,
+    Presence::Absent,
+    Presence::Failed,
+    Presence::Absent,
+];
+
+#[test]
+fn the_dated_shelf_draws_while_it_waits_and_when_it_has_cards() {
+    assert!(dated_draws(&Shelf::Waiting, ABSENT));
+    assert!(
+        dated_draws(&Shelf::Waiting, ONE_READY),
+        "another shelf has content"
+    );
+    assert!(dated_draws(&Shelf::Cards(Vec::new()), ABSENT));
+    assert!(dated_draws(&Shelf::Cards(Vec::new()), ONE_READY));
+}
+
+#[test]
+fn an_unreadable_library_draws_once_whatever_else_is_present() {
+    for others in [ABSENT, ONE_READY, ONE_WAITING, ONE_FAILED] {
+        assert!(dated_draws(&Shelf::Unreadable(Failure::Load), others));
+    }
+}
+
+#[test]
+fn an_actionable_failure_draws_beside_a_shelf_with_content() {
+    for others in [ABSENT, ONE_READY, ONE_WAITING, ONE_FAILED] {
+        assert!(dated_draws(
+            &Shelf::Incomplete(Failure::SavedAlbums),
+            others
+        ));
+    }
+}
+
+#[test]
+fn the_quiet_shelf_draws_only_when_nothing_else_has_content() {
+    assert!(dated_draws(&Shelf::Quiet, ABSENT));
+    assert!(
+        dated_draws(&Shelf::Quiet, ONE_FAILED),
+        "a failure is not content"
+    );
+    assert!(!dated_draws(&Shelf::Quiet, ONE_READY));
+    assert!(
+        !dated_draws(&Shelf::Quiet, ONE_WAITING),
+        "a shelf still coming will have content"
+    );
+}
+
+#[test]
+fn the_day_one_invite_draws_only_beside_four_absent_shelves() {
+    assert!(dated_draws(&Shelf::DayOne, ABSENT));
+    assert!(!dated_draws(&Shelf::DayOne, ONE_READY));
+    assert!(!dated_draws(&Shelf::DayOne, ONE_WAITING));
+    assert!(
+        !dated_draws(&Shelf::DayOne, ONE_FAILED),
+        "a followed artist would make the invite lie"
+    );
+    assert!(
+        !dated_draws(
+            &Shelf::DayOne,
+            [
+                Presence::Absent,
+                Presence::Absent,
+                Presence::Absent,
+                Presence::Ready
+            ]
+        ),
+        "a shelf at the bottom of the page is still a shelf with content"
+    );
+}
+
+#[test]
+fn an_open_refills_the_budget() {
+    let mut home = Home::default();
+    for _ in 0..Budget::per_open(Slot::Episodes) {
+        assert!(home.budget.take(Slot::Episodes));
+    }
+    assert_eq!(home.budget.left(Slot::Episodes), 0);
+
+    home.open(1_700_000_000_000);
+
+    assert_eq!(
+        home.budget,
+        Budget::default(),
+        "an open is a fresh allowance"
+    );
+}
+
+#[test]
+fn forgetting_drops_the_labels_and_the_failure() {
+    let mut home = Home::default();
+    home.mark_asked(&uris(&["spotify:track:a"]));
+    home.apply_labels(
+        &uris(&["spotify:track:a"]),
+        &[named("spotify:track:a", Some("spotify:album:r"))],
+    );
+    home.fail_labels(&uris(&["spotify:track:b"]), Failure::Load);
+    assert!(home.asked("spotify:track:a"));
+    assert!(home.answered("spotify:track:a"));
+    assert_eq!(home.failed(), Some(Failure::Load));
+
+    home.forget();
+
+    assert!(!home.asked("spotify:track:a"));
+    assert!(!home.answered("spotify:track:a"));
+    assert_eq!(home.label("spotify:track:a"), None);
+    assert_eq!(home.failed(), None);
+}
+
+#[test]
+fn forgetting_one_slot_keeps_the_others_and_the_budget() {
+    let mut home = Home::default();
+    let uri = "spotify:track:a";
+    home.mark_asked(&uris(&[uri]));
+    home.apply_labels(&uris(&[uri]), &[named(uri, Some("spotify:album:r"))]);
+    assert!(home.budget.take(Slot::Counted));
+    let counted = home.counted.clone();
+
+    home.forget_slot(Slot::Episodes);
+
+    assert_eq!(home.counted, counted, "another shelf's state was dropped");
+    assert!(home.answered(uri), "another shelf's label was dropped");
+    assert_eq!(
+        home.budget.left(Slot::Counted),
+        0,
+        "another shelf's read was returned"
+    );
+
+    home.forget_slot(Slot::Dated);
+
+    assert!(!home.asked(uri), "the dated shelf asks again");
+    assert!(!home.answered(uri));
+}
+
+#[test]
+fn a_counted_label_answer_is_not_the_dated_shelves() {
+    let mut home = Home::default();
+    let uri = "spotify:track:a";
+    home.mark_asked(&uris(&[uri]));
+
+    home.land(HomeAnswer::Labelled {
+        asked: uris(&[uri]),
+        named: vec![named(uri, Some("spotify:album:r"))],
+    });
+
+    assert!(
+        !home.answered(uri),
+        "only the dated shelf's own read fills its labels"
+    );
+    assert_eq!(home.label(uri), None);
+    assert_eq!(home.failed(), None);
+}
+
+#[test]
+fn a_failed_counted_read_is_not_the_dated_shelves() {
+    let mut home = Home::default();
+    let uri = "spotify:track:a";
+    home.mark_asked(&uris(&[uri]));
+
+    home.fail(
+        HomeAsk::Labels {
+            tracks: uris(&[uri]),
+        },
+        Failure::Load,
+    );
+
+    assert!(!home.answered(uri));
+    assert_eq!(home.label(uri), None);
+    assert_eq!(home.failed(), None);
+}
+
+#[test]
+fn the_page_draws_its_shelves_in_a_fixed_order() {
+    assert_eq!(
+        Slot::ORDER,
+        [
+            Slot::Dated,
+            Slot::Stations,
+            Slot::Because,
+            Slot::Counted,
+            Slot::Episodes
+        ]
+    );
+}
+
+#[test]
+fn a_sections_presence_reads_the_state_it_settled_from() {
+    assert_eq!(Section::<()>::Waiting.presence(), Presence::Waiting);
+    assert_eq!(
+        Section::<()>::Failed(Failure::Load).presence(),
+        Presence::Failed
+    );
+    assert_eq!(Section::<()>::Absent.presence(), Presence::Absent);
+    assert_eq!(Section::<()>::Ready(()).presence(), Presence::Ready);
+}
+
+/// The dated shelf is the page's one hand-written state, so its presence is
+/// pinned against the same four words the settled sections use.
+#[test]
+fn the_dated_shelf_says_the_same_four_things() {
+    assert_eq!(dated_presence(&Shelf::Waiting), Presence::Waiting);
+    assert_eq!(
+        dated_presence(&Shelf::Unreadable(Failure::Load)),
+        Presence::Failed
+    );
+    assert_eq!(
+        dated_presence(&Shelf::Incomplete(Failure::SavedAlbums)),
+        Presence::Failed
+    );
+    assert_eq!(dated_presence(&Shelf::DayOne), Presence::Absent);
+    assert_eq!(dated_presence(&Shelf::Quiet), Presence::Absent);
+    assert_eq!(
+        dated_presence(&Shelf::Cards(Vec::new())),
+        Presence::Ready,
+        "cards are cards whether or not the pool drew any"
+    );
 }
