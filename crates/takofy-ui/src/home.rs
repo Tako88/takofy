@@ -140,6 +140,9 @@ pub struct Home {
     /// The label read's answer for each asked URI; `None` is a track the shelf
     /// cannot draw.
     labels: HashMap<String, Option<TrackEntry>>,
+    /// How long each labelled track runs, by URI, for the rows that name a
+    /// duration without needing a name.
+    durations: HashMap<String, Option<u32>>,
     /// The failure that stopped the last label read, kept so the shelf can name
     /// it instead of calling the misses a quiet library.
     failed: Option<Failure>,
@@ -202,13 +205,19 @@ impl Home {
     /// that already arrived.
     pub fn apply_labels(&mut self, asked: &[String], named: &[TrackEntry]) {
         for uri in asked {
-            let usable = named
-                .iter()
-                .find(|track| track.uri == *uri)
+            let answer = named.iter().find(|track| track.uri == *uri);
+            self.durations
+                .insert(uri.clone(), answer.and_then(|track| track.duration_ms));
+            let usable = answer
                 .filter(|track| track.named && track.album_uri.is_some())
                 .cloned();
             self.labels.insert(uri.clone(), usable);
         }
+    }
+
+    /// How long the track at `uri` runs, when a label read named it.
+    pub fn duration(&self, uri: &str) -> Option<u32> {
+        self.durations.get(uri).copied().flatten()
     }
 
     /// Records that the label read sent for `asked` failed.

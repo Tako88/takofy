@@ -8,8 +8,9 @@
 use std::collections::{HashMap, HashSet};
 
 use takofy_model::TrackEntry;
-use takofy_model::home::{HomeAnswer, HomeAsk, SeedKind, Station, StationArt, StationSeed};
+use takofy_model::home::{HomeAnswer, HomeAsk, SeedKind, Station, StationSeed};
 
+use crate::format::station_source;
 use crate::message::Failure;
 use crate::shuffle;
 
@@ -114,16 +115,6 @@ pub fn shown_rows(rows: &[TrackEntry], seed: Seed) -> Vec<usize> {
     shown
 }
 
-/// The word a station's head puts beside its title.
-pub fn kind_label(kind: SeedKind) -> &'static str {
-    match kind {
-        SeedKind::Playlist => "Playlist",
-        SeedKind::Artist => "Artist",
-        SeedKind::Album => "Album",
-        SeedKind::Song => "Song",
-    }
-}
-
 /// What the stations shelf draws, borrowed from the stations it holds.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Band<'a> {
@@ -133,12 +124,10 @@ pub struct Band<'a> {
 /// One station: its head, and the rows the band shows of it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Shown<'a> {
-    /// The kind of thing the station was seeded from, as its head names it.
-    pub kind: &'static str,
-    /// The station's own title.
+    /// The line under the seed's name, saying what the station was built from.
+    pub source: &'static str,
+    /// The station's own title, which is the seed's name.
     pub head: &'a str,
-    /// The picture the wire named, when it named one this client can draw.
-    pub art: Option<&'a StationArt>,
     /// The station's own URI, which is what its play hands the queue.
     pub uri: &'a str,
     /// The rows the band shows, as indices into [`Self::whole`], ascending.
@@ -290,9 +279,8 @@ impl State {
                 continue;
             }
             stations.push(Shown {
-                kind: kind_label(seed.kind),
+                source: station_source(seed.kind),
                 head: &station.title,
-                art: station.art.as_ref(),
                 uri: &station.uri,
                 shown: shown.clone(),
                 whole: &station.rows,

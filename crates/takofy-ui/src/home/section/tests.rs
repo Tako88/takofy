@@ -144,11 +144,11 @@ fn the_budget_caps_each_slot_and_its_total() {
         0,
         "the dated shelf reads nothing"
     );
-    assert_eq!(Budget::per_open(Slot::Stations), 4);
+    assert_eq!(Budget::per_open(Slot::Stations), 5);
     assert_eq!(Budget::per_open(Slot::Because), 4);
     assert_eq!(Budget::per_open(Slot::Counted), 1);
     assert_eq!(Budget::per_open(Slot::Episodes), 8);
-    assert_eq!(Budget::allowance(), 17);
+    assert_eq!(Budget::allowance(), 18);
 
     let all: usize = Slot::ORDER.into_iter().map(|slot| full.left(slot)).sum();
     assert_eq!(all, Budget::allowance());

@@ -68,6 +68,7 @@ impl Library {
             .or_else(|| self.because_ask())
             .or_else(|| self.episodes_ask())
             .or_else(|| self.stations_ask())
+            .or_else(|| self.stations_lengths_ask())
     }
 
     /// Asks again for what the shelf in `slot` reads.

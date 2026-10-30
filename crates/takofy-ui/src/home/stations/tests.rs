@@ -1,5 +1,5 @@
 use takofy_model::home::{HomeAnswer, HomeAsk, SeedKind, Station, StationSeed};
-use takofy_model::{CoverSet, CoverUrl, TrackEntry};
+use takofy_model::TrackEntry;
 
 use crate::message::Failure;
 
@@ -92,12 +92,6 @@ fn kinds(seeds: &[StationSeed]) -> Vec<SeedKind> {
 }
 
 /// The bytes a hex string spells, so a test can name the picture it expects.
-fn hex(id: &str) -> Vec<u8> {
-    (0..id.len() / 2)
-        .map(|at| u8::from_str_radix(&id[at * 2..at * 2 + 2], 16).expect("the test's id is hex"))
-        .collect()
-}
-
 #[test]
 fn one_kind_is_seeded_once_in_the_pages_order() {
     let playlists = uris(&["spotify:playlist:1"]);
@@ -321,11 +315,51 @@ fn a_held_seed_pins_the_shown_rows() {
 }
 
 #[test]
-fn every_kind_names_the_word_its_head_draws() {
-    assert_eq!(kind_label(SeedKind::Playlist), "Playlist");
-    assert_eq!(kind_label(SeedKind::Artist), "Artist");
-    assert_eq!(kind_label(SeedKind::Album), "Album");
-    assert_eq!(kind_label(SeedKind::Song), "Song");
+fn every_kind_names_what_its_station_was_built_from() {
+    let sources: Vec<&str> = [
+        SeedKind::Playlist,
+        SeedKind::Artist,
+        SeedKind::Album,
+        SeedKind::Song,
+    ]
+    .into_iter()
+    .map(station_source)
+    .collect();
+    assert_eq!(
+        sources,
+        vec![
+            "From your playlist",
+            "From an artist you follow",
+            "From an album you saved",
+            "From the songs you liked",
+        ]
+    );
+}
+
+#[test]
+fn a_station_draws_the_sentence_for_its_own_seed() {
+    let seeds = four_seeds();
+    let mut state = asked(seeds.clone());
+    for seed in &seeds {
+        state.land(&HomeAnswer::Station(station(
+            seed,
+            &format!("spotify:station:{}", seed.uri),
+            rows(3),
+        )));
+    }
+    let band = state.band().expect("four stations landed");
+    let sources: Vec<&str> = band
+        .stations
+        .iter()
+        .map(|station| station.source)
+        .collect();
+    assert_eq!(
+        sources,
+        seeds
+            .iter()
+            .map(|seed| station_source(seed.kind))
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -430,21 +464,17 @@ fn a_forgotten_shelf_asks_again() {
 }
 
 #[test]
-fn the_band_names_each_stations_kind_title_and_picture() {
+fn the_band_names_each_stations_source_title_and_rows() {
     let seeds = four_seeds();
     let mut state = asked(seeds.clone());
-    let id = "ab67616d0000b273810dd84a63f327f269b14b42";
-    let art = CoverUrl::from_file_id(&hex(id)).map(|url| StationArt::Single(CoverSet::single(url)));
     let mut drawn = station(&seeds[1], "spotify:station:art", rows(4));
-    drawn.title = "Seeded by Die Antwoord".to_owned();
-    drawn.art = art.clone();
+    drawn.title = "Die Antwoord".to_owned();
     state.land(&HomeAnswer::Station(drawn));
 
     let band = state.band().expect("one station landed");
     let shown = band.stations.first().expect("the band holds it");
-    assert_eq!(shown.kind, "Artist");
-    assert_eq!(shown.head, "Seeded by Die Antwoord");
-    assert_eq!(shown.art, art.as_ref());
+    assert_eq!(shown.source, station_source(seeds[1].kind));
+    assert_eq!(shown.head, "Die Antwoord");
     assert_eq!(shown.uri, "spotify:station:art");
     assert_eq!(shown.shown.len(), ROWS);
     assert_eq!(shown.whole.len(), 4);

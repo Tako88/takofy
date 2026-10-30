@@ -88,6 +88,33 @@ impl Library {
         Some(Command::LoadHome(HomeAsk::Station { seed }))
     }
 
+    /// The label read the band owes, for the lengths its rows end in.
+    ///
+    /// A station read names its tracks but not how long they run, so the lengths
+    /// are one batched read over the rows the band shows. Rows already answered
+    /// are not asked for again, so the read runs at most once an open.
+    pub(super) fn stations_lengths_ask(&mut self) -> Option<Command> {
+        let mut tracks: Vec<String> = Vec::new();
+        if let Some(band) = self.home.stations.band() {
+            for station in &band.stations {
+                for row in station.shown.iter().filter_map(|at| station.whole.get(*at)) {
+                    if self.home.duration(&row.uri).is_some()
+                        || self.home.asked(&row.uri)
+                        || tracks.iter().any(|asked| asked == &row.uri)
+                    {
+                        continue;
+                    }
+                    tracks.push(row.uri.clone());
+                }
+            }
+        }
+        if tracks.is_empty() || !self.home.budget.take(Slot::Stations) {
+            return None;
+        }
+        self.home.mark_asked(&tracks);
+        Some(Command::LoadHome(HomeAsk::Labels { tracks }))
+    }
+
     /// Whether every feed the seeds are chosen from has settled.
     ///
     /// A failed rootlist is the page's own failure, so it never seeds a read

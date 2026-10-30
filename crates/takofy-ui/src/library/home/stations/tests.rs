@@ -284,3 +284,75 @@ fn a_failed_rootlist_asks_for_no_station() {
         "a gated page draws no station read"
     );
 }
+
+/// A band of four stations, each with four rows, landed and waiting to be drawn.
+fn a_landed_band() -> Library {
+    let mut library = four_feeds();
+    let seeds = asked_seeds(&mut library, 4);
+    for seed in &seeds {
+        land(&mut library, seed, 4);
+    }
+    library
+}
+
+#[test]
+fn the_shown_rows_lengths_are_one_batched_read() {
+    let mut library = a_landed_band();
+    let Some(Command::LoadHome(HomeAsk::Labels { tracks })) = library.stations_lengths_ask() else {
+        panic!("the band asks for the lengths of the rows it shows");
+    };
+    let band = library.home.stations.band().expect("the band landed");
+    let mut shown: Vec<&str> = band
+        .stations
+        .iter()
+        .flat_map(|station| {
+            station
+                .shown
+                .iter()
+                .filter_map(move |at| station.whole.get(*at).map(|row| row.uri.as_str()))
+        })
+        .collect();
+    shown.sort_unstable();
+    shown.dedup();
+    assert_eq!(
+        tracks.len(),
+        shown.len(),
+        "one read names every distinct row the band draws"
+    );
+    assert_eq!(
+        library.stations_lengths_ask(),
+        None,
+        "the same rows are not asked for twice"
+    );
+}
+
+#[test]
+fn a_row_a_label_read_already_named_is_not_asked_for_again() {
+    let mut library = a_landed_band();
+    let band = library.home.stations.band().expect("the band landed");
+    let named = band.stations[0].whole[band.stations[0].shown[0]].uri.clone();
+    let mut answer = track(&named);
+    answer.duration_ms = Some(252_000);
+    library.apply(&Update::SavedLabelled {
+        asked: vec![named.clone()],
+        named: vec![answer],
+    });
+    let Some(Command::LoadHome(HomeAsk::Labels { tracks })) = library.stations_lengths_ask() else {
+        panic!("the rest of the rows are still owed");
+    };
+    assert!(
+        !tracks.contains(&named),
+        "a row already named is answered"
+    );
+}
+
+#[test]
+fn the_lengths_read_is_spent_from_the_shelfs_own_budget() {
+    let mut library = a_landed_band();
+    assert!(library.stations_lengths_ask().is_some());
+    assert_eq!(
+        library.home.budget.left(Slot::Stations),
+        0,
+        "four stations and one lengths read are the shelf's whole open"
+    );
+}

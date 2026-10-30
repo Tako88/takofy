@@ -56,19 +56,36 @@ fn rows() -> Vec<TrackEntry> {
 
 fn shown<'a>(rows: &'a [TrackEntry]) -> Shown<'a> {
     Shown {
-        kind: "Artist",
-        head: "Seeded by Die Antwoord",
-        art: None,
+        source: "From an artist you follow",
+        head: "Die Antwoord",
         uri: "spotify:station:artist:1",
         shown: vec![0, 2, 3],
         whole: rows,
     }
 }
 
-/// One frame that draws the whole band, and what the frame painted.
-fn band_frame(ctx: &Context, band: &Band<'_>) -> egui::FullOutput {
+/// The text this frame painted, in paint order.
+fn painted_output(output: &egui::FullOutput) -> Vec<String> {
+    output
+        .shapes
+        .iter()
+        .flat_map(|clipped| match &clipped.shape {
+            egui::epaint::Shape::Text(text) => vec![text.galley.text().to_owned()],
+            egui::epaint::Shape::Vec(shapes) => shapes
+                .iter()
+                .filter_map(|shape| match shape {
+                    egui::epaint::Shape::Text(text) => Some(text.galley.text().to_owned()),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        })
+        .collect()
+}
+
+/// One frame that draws the whole band, with the library it draws from.
+fn band_frame(ctx: &Context, band: &Band<'_>, library: &Library) -> egui::FullOutput {
     let tokens = Tokens::DARK;
-    let library = Library::default();
     let mut art = Art::default();
     let mut select = None;
     let mut open = None;
@@ -79,7 +96,7 @@ fn band_frame(ctx: &Context, band: &Band<'_>) -> egui::FullOutput {
             art: &mut art,
             now: Instant::now(),
             tokens: &tokens,
-            library: &library,
+            library,
             select: &mut select,
             open: &mut open,
             play: &mut play,
@@ -88,77 +105,6 @@ fn band_frame(ctx: &Context, band: &Band<'_>) -> egui::FullOutput {
     });
     output.textures_delta.clear();
     output
-}
-
-/// The text this frame painted, in paint order.
-fn painted(output: &egui::FullOutput) -> Vec<String> {
-    output
-        .shapes
-        .iter()
-        .filter_map(|clipped| match &clipped.shape {
-            egui::epaint::Shape::Text(text) => Some(text.galley.text().to_owned()),
-            egui::epaint::Shape::Vec(shapes) => {
-                let mut words = Vec::new();
-                for shape in shapes {
-                    if let egui::epaint::Shape::Text(text) = shape {
-                        words.push(text.galley.text().to_owned());
-                    }
-                }
-                (!words.is_empty()).then_some(words.join("\u{0}"))
-            }
-            _ => None,
-        })
-        .flat_map(|text| {
-            text.split('\u{0}')
-                .map(str::to_owned)
-                .collect::<Vec<String>>()
-        })
-        .collect()
-}
-
-/// Where the drawing put one station's play and its rows.
-struct Places {
-    play: Pos2,
-    rows: Vec<Pos2>,
-}
-
-fn places(ctx: &Context, rect: Rect, station: &Shown<'_>) -> Places {
-    let tokens = Tokens::DARK;
-    let mut at = Places {
-        play: Pos2::ZERO,
-        rows: Vec::new(),
-    };
-    let mut output = ctx.run_ui(input(Vec::new()), |ui| {
-        let head = head_rect(ui, rect, &tokens);
-        at.play = play_rect(head).center();
-        at.rows = row_rects(rect, head, station.shown.len())
-            .iter()
-            .map(Rect::center)
-            .collect();
-    });
-    output.textures_delta.clear();
-    at
-}
-
-/// Where one row's `⋯` sits inside the cell.
-fn more(ctx: &Context, rect: Rect, station: &Shown<'_>, row: usize) -> Pos2 {
-    let tokens = Tokens::DARK;
-    let mut at = Pos2::ZERO;
-    let mut output = ctx.run_ui(input(Vec::new()), |ui| {
-        let head = head_rect(ui, rect, &tokens);
-        at = media::columns(row_rects(rect, head, station.shown.len())[row])
-            .more
-            .center();
-    });
-    output.textures_delta.clear();
-    at
-}
-
-/// The widget id one station row's body draws under.
-fn row_id(root: egui::Id, station: &Shown<'_>, at: usize) -> egui::Id {
-    let track = &station.whole[station.shown[at]];
-    root.with(egui::IdSalt::new((station.uri, at)))
-        .with(("library-media-row", track.uri.as_str()))
 }
 
 /// What one cell's presses asked for, run in the passes egui needs to report a
@@ -194,6 +140,20 @@ const CELL: Rect = Rect {
     max: Pos2::new(420.0, 220.0),
 };
 
+/// Where one cell puts its play and its rows, in the frame that draws them.
+fn places(ctx: &Context, rect: Rect) -> (Pos2, Vec<Pos2>) {
+    let tokens = Tokens::DARK;
+    let mut play = Pos2::ZERO;
+    let mut rows = Vec::new();
+    let mut output = ctx.run_ui(input(Vec::new()), |ui| {
+        let head = head_rect(ui, rect, &tokens);
+        play = play_rect(head).center();
+        rows = (0..ROWS).map(|at| row_rect(rect, head, at).center()).collect();
+    });
+    output.textures_delta.clear();
+    (play, rows)
+}
+
 #[test]
 fn the_band_draws_its_title_and_every_station_it_holds() {
     let ctx = context();
@@ -201,10 +161,10 @@ fn the_band_draws_its_title_and_every_station_it_holds() {
     let band = Band {
         stations: vec![shown(&rows)],
     };
-    let words = painted(&band_frame(&ctx, &band));
+    let words = painted_output(&band_frame(&ctx, &band, &Library::default()));
     assert!(words.iter().any(|word| word == HOME_STATIONS_TITLE));
-    assert!(words.iter().any(|word| word == "Seeded by Die Antwoord"));
-    assert!(words.iter().any(|word| word == "ARTIST"));
+    assert!(words.iter().any(|word| word == "Die Antwoord"));
+    assert!(words.iter().any(|word| word == "Hey Sexy"));
     for title in ["Hey Sexy", "Fuck You", "Cousin Marvin"] {
         assert!(words.iter().any(|word| word == title), "{title}");
     }
@@ -215,12 +175,54 @@ fn the_band_draws_its_title_and_every_station_it_holds() {
 }
 
 #[test]
+fn a_stations_head_names_what_it_was_built_from_under_the_seed() {
+    let ctx = context();
+    let rows = rows();
+    let band = Band {
+        stations: vec![shown(&rows)],
+    };
+    let words = painted_output(&band_frame(&ctx, &band, &Library::default()));
+    assert!(
+        words.iter().any(|word| word == "From an artist you follow"),
+        "the head says what the station was seeded from"
+    );
+    assert!(
+        !words.iter().any(|word| word == "Artist"),
+        "no bare kind word is drawn beside the name"
+    );
+}
+
+#[test]
+fn the_head_sits_above_the_rows_and_the_play_at_its_far_end() {
+    let ctx = context();
+    let (play, rows) = places(&ctx, CELL);
+    assert!(
+        play.x > CELL.center().x,
+        "the play takes the head's right end"
+    );
+    assert!(
+        rows[0].y > CELL.top() + extent::QUEUE_ART,
+        "the rows start under the head that names them"
+    );
+    for pair in rows.windows(2) {
+        assert!(
+            (pair[1].y - pair[0].y - ROW_H).abs() < 0.01,
+            "the rows keep one pitch"
+        );
+    }
+    assert!(
+        rows[ROWS - 1].y < CELL.bottom(),
+        "the last row stays inside the cell it was measured for"
+    );
+}
+
+#[test]
 fn a_press_on_a_stations_play_hands_the_whole_station_to_the_queue() {
     let ctx = context();
     let rows = rows();
     let station = shown(&rows);
-    let at = places(&ctx, CELL, &station);
-    let (out, open) = press(&ctx, CELL, &station, at.play);
+    let (play, _) = places(&ctx, CELL);
+    let (out, open) = press(&ctx, CELL, &station, play);
     assert_eq!(
         out.station,
         Some(("spotify:station:artist:1".to_owned(), rows.clone()))
@@ -233,32 +235,43 @@ fn a_press_on_a_row_opens_the_album_its_label_named() {
     let ctx = context();
     let rows = rows();
     let station = shown(&rows);
-    let at = places(&ctx, CELL, &station);
-    let (out, open) = press(&ctx, CELL, &station, at.rows[1]);
+    let (_, at) = places(&ctx, CELL);
+    let (out, open) = press(&ctx, CELL, &station, at[1]);
     assert_eq!(out.station, None);
     assert_eq!(open, Some(Page::Album("spotify:album:1".to_owned())));
 }
 
 #[test]
-fn a_press_on_a_rows_more_posts_its_track_menu() {
+fn a_row_draws_the_length_a_label_read_named() {
     let ctx = context();
     let rows = rows();
-    let station = shown(&rows);
-    let at = more(&ctx, CELL, &station, 1);
-    let (out, open) = press(&ctx, CELL, &station, at);
-    assert_eq!(out.station, None);
-    assert_eq!(open, None, "a menu opens no page");
-    let request = crate::view::context_menu::take_request(&ctx).expect("a menu was posted");
-    assert_eq!(request.targets.len(), 1);
-    assert_eq!(request.targets[0].uri, "spotify:track:3");
-    assert_eq!(request.listing, Listing::Page);
-    assert_eq!(request.rows, vec![0]);
+    let band = Band {
+        stations: vec![shown(&rows)],
+    };
+    let mut library = Library::default();
+    let mut labelled = track("spotify:track:1", "Hey Sexy");
+    labelled.duration_ms = Some(252_000);
+    library
+        .home
+        .apply_labels(&["spotify:track:1".to_owned()], &[labelled]);
+    let words = painted_output(&band_frame(&ctx, &band, &library));
     assert!(
-        request
-            .items
-            .iter()
-            .any(|item| item.verb == crate::menu::Verb::GoToAlbum),
-        "a track's menu offers the album it came from"
+        words.iter().any(|word| word == "4:12"),
+        "the row ends in its length, not in a menu"
+    );
+}
+
+#[test]
+fn a_row_draws_no_length_until_a_label_read_names_one() {
+    let ctx = context();
+    let rows = rows();
+    let band = Band {
+        stations: vec![shown(&rows)],
+    };
+    let words = painted_output(&band_frame(&ctx, &band, &Library::default()));
+    assert!(
+        !words.iter().any(|word| word == "0:00"),
+        "an unlabelled row says nothing rather than nothing-to-say"
     );
 }
 
@@ -295,8 +308,16 @@ fn a_track_in_two_stations_draws_two_distinct_rows() {
             play: &mut play,
         };
         show(ui, &band, NOW_MS, &tokens, &mut draw, &mut out);
-        a = ui.ctx().read_response(row_id(root, &band.stations[0], 0));
-        b = ui.ctx().read_response(row_id(root, &band.stations[1], 0));
+        a = ui.ctx().read_response(root.with((
+            "home-station-row",
+            band.stations[0].uri,
+            "spotify:track:1",
+        )));
+        b = ui.ctx().read_response(root.with((
+            "home-station-row",
+            band.stations[1].uri,
+            "spotify:track:1",
+        )));
     });
     output.textures_delta.clear();
     let a = a.expect("the first station's row is a widget");

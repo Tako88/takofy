@@ -119,7 +119,8 @@ impl Budget {
     pub const fn per_open(slot: Slot) -> usize {
         match slot {
             Slot::Dated => 0,
-            Slot::Stations => 4,
+            // Four stations, then the one read that lengths their rows.
+            Slot::Stations => 5,
             Slot::Because => 4,
             Slot::Counted => 1,
             Slot::Episodes => 8,

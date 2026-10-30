@@ -148,6 +148,17 @@ pub fn queue_name() -> FontId {
     FontId::new(text::SM, fonts::sans(Weight::Medium))
 }
 
+/// A station's seed name: the reference sets it at `--text-md` in 600.
+pub fn station_seed() -> FontId {
+    FontId::new(text::MD, fonts::sans(Weight::Semibold))
+}
+
+/// The line under a station's seed: the tracked mono tier that says what the
+/// station was built from.
+pub fn station_source() -> FontId {
+    FontId::new(text::XXS, fonts::mono(MonoWeight::Medium))
+}
+
 /// The Now Playing panel's title, the largest interface type the panel carries.
 pub fn panel_title() -> FontId {
     FontId::new(text::MD, fonts::sans(Weight::Bold))

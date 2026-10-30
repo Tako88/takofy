@@ -2,6 +2,7 @@
 //! playbar's clock, the hero's byline, the playlist band's description, and the
 //! age a playlist row gives its date.
 
+use takofy_model::home::SeedKind;
 use takofy_model::{AddedAt, Owner, PlaylistEntry, PublishedAt, ReleaseKind, SavedAt, TrackEntry};
 
 use crate::discography::Chip;
@@ -263,6 +264,19 @@ pub const HOME_DAY_ONE_DOOR: &str = "Search the catalogue";
 
 /// The stations shelf's title, which names the seeds rather than a count.
 pub const HOME_STATIONS_TITLE: &str = "Stations built from your library";
+
+/// What a station's head says it was built from, under the seed's own name.
+///
+/// The reference adds the station's length after it; this client drops the
+/// count and keeps the sentence that makes the shelf honest about its source.
+pub fn station_source(kind: SeedKind) -> &'static str {
+    match kind {
+        SeedKind::Playlist => "From your playlist",
+        SeedKind::Artist => "From an artist you follow",
+        SeedKind::Album => "From an album you saved",
+        SeedKind::Song => "From the songs you liked",
+    }
+}
 
 /// The related shelf's title, before it names the artist it follows.
 pub const HOME_BECAUSE_TITLE: &str = "Because you follow";
