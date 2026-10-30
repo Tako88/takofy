@@ -139,7 +139,7 @@ fn an_entry_wanted_in_the_previous_frame_survives() {
 }
 
 #[test]
-fn a_failure_retries_at_five_then_thirty_seconds_and_then_stops() {
+fn a_failure_retries_at_five_then_thirty_seconds_looking_failed_and_then_stops() {
     let now = base();
     let mut cache = Cache::new();
     let url = cover_url("a");
@@ -149,22 +149,101 @@ fn a_failure_retries_at_five_then_thirty_seconds_and_then_stops() {
     // Waiting for the first retry.
     assert_eq!(cache.look(&url, now), Look::Failed);
     assert_eq!(cache.look(&url, now + Duration::from_secs(4)), Look::Failed);
-    // The retry is taken, and it fails again.
-    assert_eq!(
-        cache.look(&url, now + Duration::from_secs(5)),
-        Look::Loading
-    );
+    // The retry is due, so it is wanted, and the box still reads as a failure.
+    assert_eq!(cache.look(&url, now + Duration::from_secs(5)), Look::Failed);
+    assert_eq!(cache.wanted(), vec![url.clone()]);
     cache.mark_failed(&url, now + Duration::from_secs(5));
     assert_eq!(cache.look(&url, now + Duration::from_secs(6)), Look::Failed);
     assert_eq!(
         cache.look(&url, now + Duration::from_secs(35)),
-        Look::Loading
+        Look::Failed
     );
+    assert_eq!(cache.wanted(), vec![url.clone()]);
     cache.mark_failed(&url, now + Duration::from_secs(35));
     // Three attempts are spent; the failure is permanent.
     assert_eq!(
         cache.look(&url, now + Duration::from_secs(1_000)),
         Look::Failed
+    );
+}
+
+#[test]
+fn a_due_retry_keeps_looking_failed_while_it_is_wanted_and_in_flight() {
+    let now = base();
+    let mut cache = Cache::new();
+    let url = cover_url("a");
+    cache.look(&url, now);
+    cache.mark_failed(&url, now);
+
+    let due = now + Duration::from_secs(5);
+    assert_eq!(cache.look(&url, due), Look::Failed);
+    assert_eq!(cache.wanted(), vec![url.clone()], "the retry is served");
+    cache.mark_in_flight(&url, due);
+    assert_eq!(
+        cache.look(&url, due + Duration::from_secs(1)),
+        Look::Failed,
+        "a retry still running is the same failure"
+    );
+    assert!(cache.wanted().is_empty(), "it is not wanted again");
+}
+
+#[test]
+fn a_due_failure_that_was_never_sent_still_looks_failed() {
+    let now = base();
+    let mut cache = Cache::new();
+    let url = cover_url("a");
+    cache.look(&url, now);
+    cache.mark_failed(&url, now);
+
+    assert_eq!(cache.look(&url, now + Duration::from_secs(5)), Look::Failed);
+    assert_eq!(
+        cache.look(&url, now + Duration::from_secs(100)),
+        Look::Failed,
+        "an unsent retry does not turn into a first attempt"
+    );
+    assert_eq!(cache.wanted(), vec![url], "it stays served");
+}
+
+#[test]
+fn a_first_attempt_in_flight_still_looks_loading() {
+    let now = base();
+    let mut cache = Cache::new();
+    let url = cover_url("a");
+    assert_eq!(cache.look(&url, now), Look::Loading);
+    cache.mark_in_flight(&url, now);
+    assert_eq!(cache.look(&url, now), Look::Loading);
+}
+
+#[test]
+fn a_retry_that_arrives_becomes_ready() {
+    let now = base();
+    let mut cache = Cache::new();
+    let url = cover_url("a");
+    cache.look(&url, now);
+    cache.mark_failed(&url, now);
+    let due = now + Duration::from_secs(5);
+    let _ = cache.look(&url, due);
+    cache.mark_in_flight(&url, due);
+    cache.insert(&url, DEFAULT_TILE);
+    assert_eq!(cache.look(&url, due), Look::Ready);
+}
+
+#[test]
+fn a_retry_in_flight_still_wakes_at_its_deadline() {
+    let now = base();
+    let mut cache = Cache::new();
+    let url = cover_url("a");
+    cache.look(&url, now);
+    cache.mark_failed(&url, now);
+    let due = now + Duration::from_secs(5);
+    let _ = cache.look(&url, due);
+    cache.mark_in_flight(&url, due);
+
+    cache.begin_frame();
+    let _ = cache.look(&url, due);
+    assert_eq!(
+        cache.next_wake(due + Duration::from_secs(1)),
+        Some(IN_FLIGHT_TIMEOUT - Duration::from_secs(1))
     );
 }
 

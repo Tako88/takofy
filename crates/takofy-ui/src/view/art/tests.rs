@@ -173,18 +173,43 @@ fn every_state_draws_something() {
 }
 
 #[test]
-fn a_missing_cover_is_the_only_hole() {
+fn loading_is_the_raised_slot_and_missing_and_failed_are_the_hole() {
     let tokens = Tokens::DARK;
     let (ctx, _) = a_context_holding_a_cover();
-    let holes = painted(&ctx, Cover::Missing, &tokens);
-    assert_eq!(rects(&holes)[0].fill, tokens.palette.surface_sunken);
-    for state in [Cover::Loading, Cover::Failed] {
-        assert_eq!(
-            rects(&painted(&ctx, state, &tokens))[0].fill,
-            tokens.palette.surface_raised,
-            "{state:?} should read as a slot, not a hole"
-        );
-    }
+    let loading = painted(&ctx, Cover::Loading, &tokens);
+    assert_eq!(
+        rects(&loading)[0].fill,
+        tokens.palette.surface_raised,
+        "a cover with nothing failed yet is a slot"
+    );
+
+    let missing = painted(&ctx, Cover::Missing, &tokens);
+    let failed = painted(&ctx, Cover::Failed, &tokens);
+    let (missing, failed) = (rects(&missing), rects(&failed));
+    assert_eq!(missing.len(), 1, "a hole is one fill with its edge");
+    assert_eq!(failed.len(), 1, "a failure draws the same fill");
+    assert_eq!(missing[0].fill, tokens.palette.surface_sunken);
+    assert_eq!(failed[0].fill, tokens.palette.surface_sunken);
+    assert_eq!(failed[0].rect, missing[0].rect);
+    assert_eq!(failed[0].stroke, missing[0].stroke);
+    assert_eq!(failed[0].corner_radius, missing[0].corner_radius);
+    assert!(failed[0].brush.is_none(), "the hole holds no texture");
+    assert_ne!(
+        rects(&loading)[0].fill,
+        missing[0].fill,
+        "a slot is not the hole"
+    );
+}
+
+#[test]
+fn a_failed_tile_keeps_the_hairline_like_a_missing_one() {
+    let tokens = Tokens::DARK;
+    let (ctx, _) = a_context_holding_a_cover();
+    let shapes = painted(&ctx, Cover::Failed, &tokens);
+    let rects = rects(&shapes);
+    assert_eq!(rects.len(), 1, "the hole is one fill with its edge");
+    assert_eq!(rects[0].stroke.color, tokens.palette.border);
+    assert_eq!(rects[0].stroke.width, stroke::HAIRLINE);
 }
 
 #[test]
@@ -247,6 +272,48 @@ fn a_missing_quadrant_is_the_sunken_hole() {
     let quadrants = crate::layout::hero::quadrants(SQUARE);
     assert!(holes.iter().any(|hole| hole.rect == quadrants[0]));
     assert!(holes.iter().any(|hole| hole.rect == quadrants[3]));
+}
+
+#[test]
+fn a_failed_quadrant_is_the_sunken_hole() {
+    let tokens = Tokens::DARK;
+    let (ctx, texture) = a_context_holding_a_cover();
+    let quadrants = crate::layout::hero::quadrants(SQUARE);
+    let shapes = mosaicked(
+        &ctx,
+        [
+            Cover::Failed,
+            Cover::Ready(texture.id()),
+            Cover::Ready(texture.id()),
+            Cover::Failed,
+        ],
+        &tokens,
+    );
+    let sunken: Vec<Rect> = rects(&shapes)
+        .iter()
+        .filter(|rect| rect.brush.is_none() && rect.fill == tokens.palette.surface_sunken)
+        .map(|rect| rect.rect)
+        .collect();
+    assert_eq!(sunken.len(), 2, "two quadrants failed");
+    assert!(sunken.contains(&quadrants[0]));
+    assert!(sunken.contains(&quadrants[3]));
+
+    // A quadrant still fetching keeps the raised slot.
+    let shapes = mosaicked(
+        &ctx,
+        [
+            Cover::Loading,
+            Cover::Ready(texture.id()),
+            Cover::Ready(texture.id()),
+            Cover::Ready(texture.id()),
+        ],
+        &tokens,
+    );
+    let raised = rects(&shapes)
+        .into_iter()
+        .find(|rect| rect.rect == quadrants[0])
+        .expect("the loading quadrant");
+    assert_eq!(raised.fill, tokens.palette.surface_raised);
 }
 
 #[test]

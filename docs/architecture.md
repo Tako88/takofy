@@ -341,7 +341,8 @@ exception, a menu's reply filling the page when Enter hands the overlay over,
 because the cache is keyed by artist and the faces are the same faces. An
 artist whose record carries no portrait, whose face never arrived, or whom the
 answer omitted falls back to the cover of the record the match sits on; only a
-read still in flight draws a raised slot.
+read still in flight draws a raised slot, and a portrait whose cover fetch has
+failed draws the sunken hole.
 
 A revealed block belongs to the read on screen, not to the query: a new query
 starts every block at ten and at the top of the page, while a retry or a

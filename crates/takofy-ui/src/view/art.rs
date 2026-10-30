@@ -4,13 +4,12 @@
 //! pipeline hands it a `Cover`, which is `Ready` with a texture, `Loading`,
 //! `Missing` or `Failed`.
 //!
-//! Two looks, three meanings. A `Ready` tile draws its image, cropped to cover
-//! the rect and rounded to it. `Loading` and `Failed` share the raised slot: from
-//! the seat of someone at the window a slow cover and a broken one are the same
-//! thing, and the store answers both without them — a failure retries itself,
-//! and a cover that arrives fills the very box the placeholder was in. `Missing`
-//! alone reads as a hole, because no cover exists and none is coming. None of
-//! the four blanks the row.
+//! Three looks, four states. A `Ready` tile draws its image, cropped to cover
+//! the rect and rounded to it. `Loading` is the raised slot. `Missing` and
+//! `Failed` are the sunken hole: no cover exists and none is coming, or the
+//! fetch failed and its retries have not brought one yet. A failed cover keeps
+//! retrying, and an image that arrives fills the very box the hole was in. None
+//! of the four blanks the row.
 //!
 //! Nothing fades in. A fade is the age of a texture, and a `Cover` is a plain
 //! value with no age — built by the store, held across frames by the panel and
@@ -61,10 +60,10 @@ pub fn tile(
             // The texture went away under us; the slot is still the right box.
             None => block(painter, rect, radius, border, palette.surface_raised),
         },
-        Cover::Loading | Cover::Failed => {
-            block(painter, rect, radius, border, palette.surface_raised);
+        Cover::Loading => block(painter, rect, radius, border, palette.surface_raised),
+        Cover::Missing | Cover::Failed => {
+            block(painter, rect, radius, border, palette.surface_sunken);
         }
-        Cover::Missing => block(painter, rect, radius, border, palette.surface_sunken),
     }
 }
 
@@ -106,8 +105,8 @@ pub fn mosaic(
 
 /// A cover's pixels in `rect`, rounded to `radius`, with no stroke.
 ///
-/// The three non-ready states fall back to the same slot and hole [`tile`] draws,
-/// so a quadrant with nothing to draw is still a box rather than a gap.
+/// The non-ready states fall back to the same slot and hole [`tile`] draws, so a
+/// quadrant with nothing to draw is still a box rather than a gap.
 pub(crate) fn fill_rounded(
     painter: &Painter,
     rect: Rect,
@@ -129,10 +128,10 @@ pub(crate) fn fill_rounded(
                 painter.rect_filled(rect, radius, palette.surface_raised);
             }
         },
-        Cover::Loading | Cover::Failed => {
+        Cover::Loading => {
             painter.rect_filled(rect, radius, palette.surface_raised);
         }
-        Cover::Missing => {
+        Cover::Missing | Cover::Failed => {
             painter.rect_filled(rect, radius, palette.surface_sunken);
         }
     }
