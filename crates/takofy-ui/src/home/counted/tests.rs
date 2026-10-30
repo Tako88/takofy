@@ -1,5 +1,5 @@
 use super::*;
-use takofy_model::TrackEntry;
+use takofy_model::{ArtistPortrait, CoverUrl, TrackEntry};
 
 /// One holding, named after its own artist.
 fn held(artist: &str) -> Holding<'_> {
@@ -319,4 +319,137 @@ fn an_open_forgets_what_the_last_one_read() {
     assert!(!state.settled());
     assert_eq!(state.artists("spotify:track:a"), None);
     assert!(state.owed());
+}
+
+/// The CDN path of the one face these tests draw.
+const FACE: &str = "ab67616d0000b273810dd84a63f327f269b14b42";
+
+/// One face, from the CDN's own path for it.
+fn cover(tail: &str) -> CoverSet {
+    let url = CoverUrl::from_wire(&format!("https://i.scdn.co/image/{tail}")).expect("a cover url");
+    CoverSet::single(url)
+}
+
+/// An open that has asked for `artists`' faces and has not heard back.
+fn asking(artists: &[&str]) -> State {
+    let mut state = State::default();
+    state.open(seed());
+    for artist in artists {
+        state.ask_portrait(artist);
+    }
+    state
+}
+
+/// One ask for the faces of `artists`.
+fn faces(artists: &[&str]) -> HomeAsk {
+    HomeAsk::Portraits {
+        artists: artists.iter().map(|artist| (*artist).to_owned()).collect(),
+    }
+}
+
+/// The face the wire answered for `artist`.
+fn found(artist: &str) -> ArtistPortrait {
+    ArtistPortrait {
+        artist: artist.to_owned(),
+        portrait: Some(cover(FACE)),
+    }
+}
+
+#[test]
+fn a_partial_answer_faces_what_it_found_and_blanks_the_rest() {
+    let mut state = asking(&["spotify:artist:a", "spotify:artist:b"]);
+
+    state.land(&HomeAnswer::Portraits {
+        asked: vec!["spotify:artist:a".to_owned(), "spotify:artist:b".to_owned()],
+        found: vec![found("spotify:artist:a")],
+    });
+
+    assert_eq!(state.portrait("spotify:artist:a"), Some(&cover(FACE)));
+    assert_eq!(
+        state.portrait("spotify:artist:b"),
+        None,
+        "a face the answer left out is a blank, not a re-read"
+    );
+    assert!(
+        state.portrait_asked("spotify:artist:b"),
+        "the blank face is not asked for again"
+    );
+}
+
+#[test]
+fn a_first_failure_makes_the_face_askable_again() {
+    let mut state = asking(&["spotify:artist:a"]);
+
+    state.fail(&faces(&["spotify:artist:a"]), Failure::Load);
+
+    assert!(
+        !state.portrait_asked("spotify:artist:a"),
+        "a face that will not read is asked for once more"
+    );
+    assert_eq!(state.portrait("spotify:artist:a"), None);
+}
+
+#[test]
+fn a_second_failure_leaves_the_face_blank() {
+    let mut state = asking(&["spotify:artist:a"]);
+    state.fail(&faces(&["spotify:artist:a"]), Failure::Load);
+
+    state.ask_portrait("spotify:artist:a");
+    state.fail(&faces(&["spotify:artist:a"]), Failure::Load);
+
+    assert!(
+        state.portrait_asked("spotify:artist:a"),
+        "a face that failed twice is not asked a third time"
+    );
+    assert_eq!(state.portrait("spotify:artist:a"), None);
+}
+
+#[test]
+fn an_answer_for_a_face_the_open_never_asked_is_ignored() {
+    let mut state = asking(&["spotify:artist:a"]);
+
+    state.land(&HomeAnswer::Portraits {
+        asked: vec!["spotify:artist:b".to_owned()],
+        found: vec![found("spotify:artist:b")],
+    });
+
+    assert_eq!(state.portrait("spotify:artist:b"), None);
+    assert!(!state.portrait_asked("spotify:artist:b"));
+}
+
+#[test]
+fn a_failure_for_a_face_the_open_never_asked_is_ignored() {
+    let mut state = asking(&[]);
+
+    state.fail(&faces(&["spotify:artist:a"]), Failure::Load);
+
+    assert!(!state.portrait_asked("spotify:artist:a"));
+    assert_eq!(state.portrait("spotify:artist:a"), None);
+}
+
+#[test]
+fn a_retry_asks_for_a_once_failed_face_again() {
+    let mut state = asking(&["spotify:artist:a"]);
+    state.fail(&faces(&["spotify:artist:a"]), Failure::Load);
+
+    state.forget();
+
+    assert!(!state.portrait_asked("spotify:artist:a"));
+    state.ask_portrait("spotify:artist:a");
+    state.fail(&faces(&["spotify:artist:a"]), Failure::Load);
+    assert!(
+        !state.portrait_asked("spotify:artist:a"),
+        "the retried set outlived the retry"
+    );
+}
+
+#[test]
+fn a_reopen_asks_for_a_once_failed_face_again() {
+    let mut state = asking(&["spotify:artist:a"]);
+    state.fail(&faces(&["spotify:artist:a"]), Failure::Load);
+
+    state.open(seed());
+
+    assert!(!state.portrait_asked("spotify:artist:a"));
+    assert_eq!(state.portrait("spotify:artist:a"), None);
 }

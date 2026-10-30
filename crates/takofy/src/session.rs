@@ -228,6 +228,15 @@ pub(crate) trait SessionHost: Send + 'static {
 
     fn show(&self, show: &str) -> impl Future<Output = Result<ShowDetail, SessionError>> + Send;
 
+    /// The newest episodes of every show in `shows`, labelled in one read.
+    ///
+    /// A show that does not answer is missing from the answer rather than
+    /// answered empty.
+    fn episodes(
+        &self,
+        shows: &[String],
+    ) -> impl Future<Output = Result<Vec<ShowDetail>, SessionError>> + Send;
+
     /// One station read from its seed, its rows labelled.
     fn station(
         &self,
@@ -687,6 +696,13 @@ impl SessionHost for LiveSession {
     async fn show(&self, show: &str) -> Result<ShowDetail, SessionError> {
         match &self.engine {
             Some(engine) => engine.show(show).await.map_err(SessionError::Engine),
+            None => Err(SessionError::NotConnected),
+        }
+    }
+
+    async fn episodes(&self, shows: &[String]) -> Result<Vec<ShowDetail>, SessionError> {
+        match &self.engine {
+            Some(engine) => engine.episodes(shows).await.map_err(SessionError::Engine),
             None => Err(SessionError::NotConnected),
         }
     }

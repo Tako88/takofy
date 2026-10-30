@@ -119,26 +119,35 @@ impl Library {
         Some(Tiles { artists })
     }
 
-    /// The face read the counted shelf owes, if one is due.
+    /// The faces read the counted shelf owes, if one is due.
     ///
-    /// One artist per call, after the label read has settled: the ranking is what
+    /// One read per call, after the label read has settled: the ranking is what
     /// names the artists worth a read, and a face the followed list already holds
-    /// is not read again. An artist that would not read is not asked twice.
+    /// is not read again. It names at most the tiles the shelf draws, so the read
+    /// is no wider than the page. A face that failed is named again once, and a
+    /// face that failed twice is left blank.
     pub(super) fn counted_portrait_ask(&mut self) -> Option<Command> {
         if !self.home.counted.settled() {
             return None;
         }
         let tiles = self.counted_tiles()?;
-        let artist = tiles
+        let artists: Vec<String> = tiles
             .artists
             .iter()
-            .find(|tile| tile.portrait.is_none() && !self.home.counted.portrait_asked(tile.uri))
-            .map(|tile| tile.uri.to_owned())?;
+            .filter(|tile| tile.portrait.is_none() && !self.home.counted.portrait_asked(tile.uri))
+            .take(counted::DRAWN)
+            .map(|tile| tile.uri.to_owned())
+            .collect();
+        if artists.is_empty() {
+            return None;
+        }
         if !self.home.budget.take(Slot::Counted) {
             return None;
         }
-        self.home.counted.ask_portrait(&artist);
-        Some(Command::LoadHome(HomeAsk::Portrait { artist }))
+        for artist in &artists {
+            self.home.counted.ask_portrait(artist);
+        }
+        Some(Command::LoadHome(HomeAsk::Portraits { artists }))
     }
 
     /// Every artist the library holds, once per item that names it.

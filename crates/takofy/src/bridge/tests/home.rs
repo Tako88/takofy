@@ -1,5 +1,8 @@
+use std::sync::atomic::Ordering;
+use std::sync::mpsc::channel;
+
 use super::super::*;
-use super::announce::{SHOW, ShowScript, followed_artist, show_detail};
+use super::announce::{EpisodesScript, SHOW, followed_artist, show_detail};
 use super::reads::{PortraitScript, portrait};
 use super::test_support::*;
 use takofy_model::TrackEntry;
@@ -191,35 +194,56 @@ fn related_failure_is_failure_related() {
     );
 }
 
+/// A second show, so a pooled read names more than one.
+const SECOND_SHOW: &str = "spotify:show:b";
+
+/// A second artist, so a batched faces read names more than one.
+const SECOND_ARTIST: &str = "spotify:artist:b";
+
 #[test]
-fn show_answers() {
+fn an_episodes_ask_answers_every_show_in_one_read() {
     let store = Arc::new(MemoryStore::seeded("stored"));
     let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
     let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+    let shared = Arc::clone(&host.shared);
+    let details = vec![show_detail(SHOW), show_detail(SECOND_SHOW)];
+    *shared.episodes_script.lock().expect("lock") = EpisodesScript::Ready(details.clone());
 
-    let ask = HomeAsk::Show {
-        show: SHOW.to_owned(),
+    let shows = vec![SHOW.to_owned(), SECOND_SHOW.to_owned()];
+    let ask = HomeAsk::Episodes {
+        shows: shows.clone(),
     };
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
         let _ = expect_updates(&ui_end, 2);
         ui_end.commands.send(Command::LoadHome(ask)).expect("home");
-        ui_end.updates.recv().expect("show")
+        ui_end.updates.recv().expect("episodes")
     });
 
-    assert_eq!(update, Update::Home(HomeAnswer::Show(show_detail(SHOW))));
+    assert_eq!(update, Update::Home(HomeAnswer::Episodes(details)));
+    assert_eq!(
+        shared.episode_reads.load(Ordering::SeqCst),
+        1,
+        "one read names every show the shelf draws"
+    );
+    assert_eq!(
+        shared.episode_asked.lock().expect("lock").clone(),
+        vec![shows],
+        "the one read names the shows it was asked for"
+    );
 }
 
 #[test]
-fn show_failure() {
+fn an_episodes_failure_is_failure_load() {
     let store = Arc::new(MemoryStore::seeded("stored"));
     let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
     let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
     let shared = Arc::clone(&host.shared);
-    *shared.show_script.lock().expect("lock") = ShowScript::Fail;
+    *shared.episodes_script.lock().expect("lock") = EpisodesScript::Fail;
 
-    let ask = HomeAsk::Show {
-        show: SHOW.to_owned(),
+    let shows = vec![SHOW.to_owned()];
+    let ask = HomeAsk::Episodes {
+        shows: shows.clone(),
     };
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
@@ -231,12 +255,53 @@ fn show_failure() {
     assert_eq!(
         update,
         Update::HomeFailed {
-            ask: HomeAsk::Show {
-                show: SHOW.to_owned(),
-            },
+            ask: HomeAsk::Episodes { shows },
             failure: Failure::Load,
         }
     );
+}
+
+#[test]
+fn a_stop_during_an_episodes_read_shuts_down() {
+    let store = Arc::new(MemoryStore::seeded("stored"));
+    let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+    let list = vec![playlist("spotify:playlist:a", "A")];
+    let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(list));
+    let shared = Arc::clone(&host.shared);
+    *shared.episodes_script.lock().expect("lock") = EpisodesScript::Pending;
+    let (started_tx, started_rx) = channel();
+    *shared.episode_started.lock().expect("lock") = Some(started_tx);
+
+    let runtime = runtime();
+    let (ui_end, _slot, worker) = start(runtime.handle(), host, store, source);
+
+    let window = move || {
+        loop {
+            if matches!(ui_end.updates.recv().expect("update"), Update::Playlists(_)) {
+                break;
+            }
+        }
+        ui_end
+            .commands
+            .send(Command::LoadHome(HomeAsk::Episodes {
+                shows: vec![SHOW.to_owned()],
+            }))
+            .expect("home");
+        started_rx.recv().expect("episodes started");
+    };
+    let teardown = move || async move {
+        // A hung stop must fail the test, not hang the suite.
+        tokio::time::timeout(Duration::from_secs(1), worker.finish())
+            .await
+            .expect("finish must resolve when the stop interrupts the episodes read");
+        assert_eq!(
+            shared.shutdowns.load(Ordering::SeqCst),
+            1,
+            "the shutdown must run when the stop interrupts the episodes read"
+        );
+    };
+
+    run_ordered(runtime, window, teardown);
 }
 
 #[test]
@@ -292,6 +357,78 @@ fn labels_failure_is_failure_load() {
         update,
         Update::HomeFailed {
             ask: HomeAsk::Labels { tracks },
+            failure: Failure::Load,
+        }
+    );
+}
+
+#[test]
+fn portraits_are_one_batched_read() {
+    let store = Arc::new(MemoryStore::seeded("stored"));
+    let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+    let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+    let shared = Arc::clone(&host.shared);
+    let artists = vec![ARTIST.to_owned(), SECOND_ARTIST.to_owned()];
+    let found = vec![portrait(ARTIST), portrait(SECOND_ARTIST)];
+    *shared.portrait_script.lock().expect("lock") = PortraitScript::Ready(found.clone());
+
+    let ask = HomeAsk::Portraits {
+        artists: artists.clone(),
+    };
+    let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+        slot.install(Arc::new(RecordingWaker::default()));
+        let _ = expect_updates(&ui_end, 2);
+        ui_end.commands.send(Command::LoadHome(ask)).expect("home");
+        ui_end.updates.recv().expect("portraits")
+    });
+
+    assert_eq!(
+        update,
+        Update::Home(HomeAnswer::Portraits {
+            asked: artists.clone(),
+            found,
+        }),
+        "the answer names the artists it was asked about beside the faces it found"
+    );
+    assert_eq!(
+        shared.portrait_reads.load(Ordering::SeqCst),
+        1,
+        "one read names every face the shelf draws"
+    );
+    assert_eq!(
+        shared.portraited.lock().expect("lock").clone(),
+        vec![artists],
+        "the one read names the artists asked about"
+    );
+}
+
+#[test]
+fn a_portraits_read_that_answers_nothing_is_failure_load() {
+    let store = Arc::new(MemoryStore::seeded("stored"));
+    let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+    let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+    let shared = Arc::clone(&host.shared);
+    // A refused request and an abandoned one are one answer from here on:
+    // `Engine::portraits` has no failure to tell them apart.
+    *shared.portrait_script.lock().expect("lock") = PortraitScript::Fail;
+
+    let artists = vec![ARTIST.to_owned()];
+    let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+        slot.install(Arc::new(RecordingWaker::default()));
+        let _ = expect_updates(&ui_end, 2);
+        ui_end
+            .commands
+            .send(Command::LoadHome(HomeAsk::Portraits {
+                artists: artists.clone(),
+            }))
+            .expect("home");
+        ui_end.updates.recv().expect("failure")
+    });
+
+    assert_eq!(
+        update,
+        Update::HomeFailed {
+            ask: HomeAsk::Portraits { artists },
             failure: Failure::Load,
         }
     );

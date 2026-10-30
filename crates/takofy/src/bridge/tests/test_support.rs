@@ -3,8 +3,8 @@
 use super::super::wake::Waker;
 use super::super::*;
 use super::announce::{
-    AlbumScript, FollowedArtistsScript, FollowedScript, SavedAlbumsScript, ShowScript,
-    followed_artist,
+    AlbumScript, EpisodesScript, FollowedArtistsScript, FollowedScript, SavedAlbumsScript,
+    ShowScript, followed_artist,
 };
 use super::create::{CreateScript, EntryScript, LinkScript};
 use super::devices::{
@@ -427,6 +427,7 @@ pub(super) struct FakeState {
     pub(super) tracks_script: Mutex<TracksScript>,
     pub(super) album_script: Mutex<AlbumScript>,
     pub(super) show_script: Mutex<ShowScript>,
+    pub(super) episodes_script: Mutex<EpisodesScript>,
     pub(super) followed_script: Mutex<FollowedScript>,
     pub(super) followed_artists_script: Mutex<FollowedArtistsScript>,
     pub(super) related_script: Mutex<RelatedScript>,
@@ -495,6 +496,9 @@ pub(super) struct FakeState {
     pub(super) tracks: AtomicUsize,
     pub(super) albums: AtomicUsize,
     pub(super) shows: AtomicUsize,
+    pub(super) episode_reads: AtomicUsize,
+    /// Every show list asked for in one pooled read, in order.
+    pub(super) episode_asked: Mutex<Vec<Vec<String>>>,
     pub(super) followed_lists: AtomicUsize,
     pub(super) followed_artist_lists: AtomicUsize,
     pub(super) saved_album_lists: AtomicUsize,
@@ -525,6 +529,7 @@ pub(super) struct FakeState {
     pub(super) search_started: Mutex<Option<Sender<()>>>,
     pub(super) portrait_started: Mutex<Option<Sender<()>>>,
     pub(super) show_started: Mutex<Option<Sender<()>>>,
+    pub(super) episode_started: Mutex<Option<Sender<()>>>,
 
     pub(super) last_follow: Mutex<Option<(String, bool)>>,
     pub(super) last_move: Mutex<Option<(String, Revision, Vec<Move>)>>,
@@ -787,6 +792,33 @@ impl SessionHost for FakeHost {
                 ShowScript::Ready(detail) => Ok(detail),
                 ShowScript::Fail => Err(SessionError::NotConnected),
                 ShowScript::Pending => std::future::pending().await,
+            }
+        }
+    }
+
+    fn episodes(
+        &self,
+        shows: &[String],
+    ) -> impl Future<Output = Result<Vec<ShowDetail>, SessionError>> + Send {
+        self.shared.episode_reads.fetch_add(1, Ordering::SeqCst);
+        self.shared
+            .episode_asked
+            .lock()
+            .expect("lock")
+            .push(shows.to_vec());
+        if let Some(tx) = self.shared.episode_started.lock().expect("lock").take() {
+            let _ = tx.send(());
+        }
+        let connected = self.shared.connected.load(Ordering::SeqCst);
+        let script = self.shared.episodes_script.lock().expect("lock").clone();
+        async move {
+            if !connected {
+                return Err(SessionError::NotConnected);
+            }
+            match script {
+                EpisodesScript::Ready(details) => Ok(details),
+                EpisodesScript::Fail => Err(SessionError::NotConnected),
+                EpisodesScript::Pending => std::future::pending().await,
             }
         }
     }

@@ -48,7 +48,9 @@ use crate::rootlist::{
     RootEntry, RootlistError, RootlistPage, RootlistSource, RootlistWire, parse_rootlist,
     rootlist_path,
 };
-use crate::show::{ShowError, detail as show_detail, episode_uris};
+use crate::show::{
+    ShowError, detail as show_detail, details as show_details, episode_uris, expand_episodes,
+};
 use crate::status_tally::StatusTally;
 
 /// The wire the live rootlist is read as; flip to `Json` if the binary parse fails.
@@ -56,6 +58,12 @@ pub(crate) const ROOTLIST_WIRE: RootlistWire = RootlistWire::Binary;
 
 /// How many metadata reads one pass keeps in flight.
 const REMOTE_FETCH_WIDTH: usize = 8;
+
+/// How many shows one pooled episode read fetches at a time.
+///
+/// The shows are fetched in their own order, so this bounds the requests without
+/// reordering the pool.
+const SHOW_FANOUT: usize = 4;
 
 /// Reads rootlist pages through librespot's spclient.
 pub(crate) struct RemoteRootlist<'a> {
@@ -709,6 +717,58 @@ pub(crate) async fn read_show(session: &Session, uri: &str) -> Result<ShowDetail
     Ok(show_detail(uri, &show, episodes))
 }
 
+/// Reads several shows: each show's metadata, then the labels for every episode
+/// of all of them in one read.
+///
+/// The shows are fetched `SHOW_FANOUT` at a time in their own order, and the
+/// labels are fetched once over the pooled episode URIs, so a shelf that draws
+/// from eight shows costs one label read instead of eight. A show that does not
+/// answer is left out, and only a read where every show failed is an error: a
+/// partial answer is still the shelf's.
+pub(crate) async fn read_episodes(
+    session: &Session,
+    shows: &[String],
+) -> Result<Vec<ShowDetail>, ShowError> {
+    let reads: Vec<(String, Result<Show, ShowError>)> = futures_util::stream::iter(shows.to_vec())
+        .map(|uri| async move {
+            let read = match parse_show_uri(&uri) {
+                Ok(id) => Show::get(session, &id)
+                    .await
+                    .map_err(|source| ShowError::Source(source.to_string())),
+                Err(error) => Err(error),
+            };
+            (uri, read)
+        })
+        .buffered(SHOW_FANOUT)
+        .collect()
+        .await;
+
+    let mut first_error = None;
+    let mut read = Vec::new();
+    for (uri, show) in reads {
+        match show {
+            Ok(show) => read.push((uri, show)),
+            Err(error) => {
+                log::warn!("show {uri} could not be read: {error}");
+                first_error.get_or_insert(error);
+            }
+        }
+    }
+    if read.is_empty() && !shows.is_empty() {
+        return match first_error {
+            Some(error) => Err(error),
+            None => Ok(Vec::new()),
+        };
+    }
+
+    let mut uris: Vec<String> = Vec::new();
+    for (_, show) in &read {
+        uris.extend(episode_uris(show));
+    }
+    let found = fetch_episode_labels(session, &uris).await;
+    Ok(show_details(&read, &found))
+}
+
 /// The show URI `uri` names, or [`ShowError::NotAShow`].
 ///
 /// Read before any request, so a playlist or album URI costs no round trip.
@@ -1044,10 +1104,9 @@ async fn bounded<T>(future: impl Future<Output = T>, limit: Duration) -> Option<
 /// The portraits for `artists`, in the order asked for, from one batched read.
 ///
 /// An empty list asks for nothing and answers nothing. The read is bounded: it
-/// is speculative, and the worker answers commands one at a time, so a stalled
-/// request must not hold the queue behind it. A failed or abandoned request is
-/// `None`; a partial answer logs how short it was and is otherwise drawn as it
-/// came.
+/// is speculative, so a stalled request must not hold a play behind it. A failed
+/// or abandoned request is `None`; a partial answer logs how short it was and is
+/// otherwise drawn as it came.
 pub(crate) async fn read_portraits(
     session: &Session,
     artists: &[String],
@@ -1385,45 +1444,32 @@ fn merge_labels(tracks: Labels, episodes: Labels) -> Labels {
 /// An unanswered URI falls back to itself and reads as unnamed, exactly as a
 /// track does, so a show page still draws every episode the wire listed.
 async fn fetch_episodes(session: &Session, uris: Vec<String>) -> Vec<Episode> {
-    let distinct = distinct_uris(&uris);
+    let found = fetch_episode_labels(session, &uris).await;
+    expand_episodes(&uris, &found)
+}
+
+/// The episode labels for `uris`, keyed by URI, from one read.
+///
+/// A pooled read asks for every show's episodes at once, so the caller expands
+/// each show's own order from this map rather than getting another list.
+async fn fetch_episode_labels(session: &Session, uris: &[String]) -> HashMap<String, Episode> {
+    let distinct = distinct_uris(uris);
     let (found, tally) =
         fetch_chunked(session, &distinct, ExtensionKind::EPISODE_V4, episode_from).await;
     if let Some(summary) = tally.summary() {
         log::warn!("{summary}");
     }
-    let unnamed = uris.iter().filter(|uri| !found.contains_key(*uri)).count();
+    let unnamed = distinct
+        .iter()
+        .filter(|uri| !found.contains_key(*uri))
+        .count();
     if unnamed > 0 {
-        log::warn!("{} of {} episodes could not be named", unnamed, uris.len());
+        log::warn!(
+            "{unnamed} of {} episodes could not be named",
+            distinct.len()
+        );
     }
-    expand_episodes(&uris, &found)
-}
-
-/// One episode per input position, falling back to the URI when it was not
-/// answered. The wire's order is the page's order, so this never sorts.
-///
-/// The position's own URI is what it draws: the answer is looked up by that URI,
-/// and an answer that carried a different one cannot move the episode to another
-/// position.
-fn expand_episodes(uris: &[String], found: &HashMap<String, Episode>) -> Vec<Episode> {
-    uris.iter()
-        .map(|uri| match found.get(uri) {
-            Some(episode) => Episode {
-                uri: uri.clone(),
-                ..episode.clone()
-            },
-            None => Episode {
-                uri: uri.clone(),
-                title: uri.clone(),
-                show: String::new(),
-                show_uri: None,
-                description: None,
-                published: None,
-                duration_ms: None,
-                cover: None,
-                named: false,
-            },
-        })
-        .collect()
+    found
 }
 
 /// Fetches values for distinct URIs with one extension kind, splitting a chunk

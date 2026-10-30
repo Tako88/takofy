@@ -6,6 +6,8 @@
 //! An episode's order is the show's own: the page keeps the wire's order and
 //! never sorts, because a sort would break a serial show.
 
+use std::collections::HashMap;
+
 use librespot::core::SpotifyUri;
 use librespot::metadata::Show;
 use takofy_model::{Episode, ShowDetail};
@@ -55,6 +57,50 @@ pub(crate) fn detail(uri: &str, show: &Show, episodes: Vec<Episode>) -> ShowDeta
         },
         episodes,
     }
+}
+
+/// The labelled detail of every show read, in the order they were read.
+///
+/// One read names every episode of every show, so the labels arrive as one map
+/// and each show expands its own order from it. A URI two shows share expands
+/// for both, and a run of URIs that did not answer falls back to unnamed in both
+/// shows it crosses.
+pub(crate) fn details(
+    shows: &[(String, Show)],
+    found: &HashMap<String, Episode>,
+) -> Vec<ShowDetail> {
+    shows
+        .iter()
+        .map(|(uri, show)| detail(uri, show, expand_episodes(&episode_uris(show), found)))
+        .collect()
+}
+
+/// One episode per input position, falling back to the URI when it was not
+/// answered. The wire's order is the page's order, so this never sorts.
+///
+/// The position's own URI is what it draws: the answer is looked up by that URI,
+/// and an answer that carried a different one cannot move the episode to another
+/// position.
+pub(crate) fn expand_episodes(uris: &[String], found: &HashMap<String, Episode>) -> Vec<Episode> {
+    uris.iter()
+        .map(|uri| match found.get(uri) {
+            Some(episode) => Episode {
+                uri: uri.clone(),
+                ..episode.clone()
+            },
+            None => Episode {
+                uri: uri.clone(),
+                title: uri.clone(),
+                show: String::new(),
+                show_uri: None,
+                description: None,
+                published: None,
+                duration_ms: None,
+                cover: None,
+                named: false,
+            },
+        })
+        .collect()
 }
 
 #[cfg(test)]

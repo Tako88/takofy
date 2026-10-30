@@ -185,7 +185,7 @@ impl Home {
         }
         if matches!(
             answer,
-            HomeAnswer::Labelled { .. } | HomeAnswer::Portrait { .. }
+            HomeAnswer::Labelled { .. } | HomeAnswer::Portraits { .. }
         ) {
             self.counted.land(answer);
         }
@@ -196,7 +196,7 @@ impl Home {
 
     /// Records that the read `ask` named failed.
     pub fn fail(&mut self, ask: &HomeAsk, failure: Failure) {
-        if matches!(ask, HomeAsk::Labels { .. } | HomeAsk::Portrait { .. }) {
+        if matches!(ask, HomeAsk::Labels { .. } | HomeAsk::Portraits { .. }) {
             self.counted.fail(ask, failure);
         }
         self.stations.fail(ask, failure);

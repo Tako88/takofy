@@ -2,9 +2,9 @@
 //!
 //! Pure: the pool is the newest dozen dated episodes across the shows this open
 //! read, and the draw is a subset of it, so two opens over the same shows differ
-//! and one open never draws an episode twice. A show is asked for by URI, so an
-//! answer that names a show this open did not ask for is dropped rather than
-//! drawn.
+//! and one open never draws an episode twice. One read names every show this
+//! open asks for, so an answer that names no asked show at all belongs to
+//! another open and is dropped rather than drawn.
 
 use takofy_model::home::{HomeAnswer, HomeAsk};
 use takofy_model::{Episode, PublishedAt, SavedAt, ShowDetail};
@@ -70,45 +70,64 @@ impl State {
         self.seed = seed.split(SALT);
     }
 
-    /// Folds one answer the shelf asked for into its state.
+    /// Folds the one answer the shelf asked for into its state.
     ///
-    /// The match is by show URI among the shows this open asked for, so another
-    /// open's answer is dropped: the shelf cannot tell it from a read it never
-    /// sent. A show that failed earlier and answers now is a landed show, not
-    /// both.
+    /// The match is by show URI among the shows this open asked for. An answer
+    /// that names none of them belongs to another open, so it settles nothing;
+    /// otherwise every asked show the answer left out is a read that did not
+    /// happen, not one still owed. A show that failed earlier and answers now
+    /// is a landed show, not both.
     pub fn land(&mut self, answer: &HomeAnswer) {
-        let HomeAnswer::Show(detail) = answer else {
+        let HomeAnswer::Episodes(details) = answer else {
             return;
         };
-        let uri = detail.show.uri.as_str();
-        if !self.has_asked(uri) {
+        let mut matched = false;
+        for detail in details {
+            let uri = detail.show.uri.as_str();
+            if !self.has_asked(uri) {
+                continue;
+            }
+            matched = true;
+            let detail = named(detail);
+            self.failed.retain(|(failed, _)| failed != uri);
+            if let Some(held) = self.landed.iter_mut().find(|held| held.show.uri == uri) {
+                *held = detail;
+            } else {
+                self.landed.push(detail);
+            }
+        }
+        if !matched {
             return;
         }
-        let detail = named(detail);
-        self.failed.retain(|(failed, _)| failed != uri);
-        if let Some(held) = self.landed.iter_mut().find(|held| held.show.uri == uri) {
-            *held = detail;
-        } else {
-            self.landed.push(detail);
+        let missing: Vec<String> = self
+            .asked
+            .iter()
+            .filter(|uri| !self.answered(uri))
+            .cloned()
+            .collect();
+        for uri in missing {
+            self.failed.push((uri, Failure::Load));
         }
     }
 
-    /// Records that one of the shelf's reads failed.
+    /// Records that the shelf's read failed.
     ///
-    /// A failure costs the show it asked for and no more: the other shows this
-    /// open asked for still draw, and only an open whose every asked show failed
-    /// settles as a failure.
+    /// A failure costs the shows it names that have not landed and no more: the
+    /// shows this open already read still draw, and only an open whose every
+    /// asked show failed settles as a failure.
     pub fn fail(&mut self, ask: &HomeAsk, failure: Failure) {
-        let HomeAsk::Show { show } = ask else {
+        let HomeAsk::Episodes { shows } = ask else {
             return;
         };
-        if !self.has_asked(show) || self.landed.iter().any(|held| held.show.uri == *show) {
-            return;
-        }
-        if let Some((_, held)) = self.failed.iter_mut().find(|(uri, _)| uri == show) {
-            *held = failure;
-        } else {
-            self.failed.push((show.clone(), failure));
+        for show in shows {
+            if !self.has_asked(show) || self.landed.iter().any(|held| held.show.uri == *show) {
+                continue;
+            }
+            if let Some((_, held)) = self.failed.iter_mut().find(|(uri, _)| uri == show) {
+                *held = failure;
+            } else {
+                self.failed.push((show.clone(), failure));
+            }
         }
     }
 
@@ -122,10 +141,12 @@ impl State {
         self.failed.clear();
     }
 
-    /// Records that `show` is a read this open sent.
-    pub fn ask(&mut self, show: &str) {
-        if !self.has_asked(show) {
-            self.asked.push(show.to_owned());
+    /// Records the shows the read this open sent names.
+    pub fn ask(&mut self, shows: &[String]) {
+        for show in shows {
+            if !self.has_asked(show) {
+                self.asked.push(show.clone());
+            }
         }
     }
 

@@ -37,6 +37,23 @@ impl Default for ShowScript {
     }
 }
 
+/// A scripted pooled episodes answer; the default is one bare show detail.
+///
+/// `Pending` never answers, so a stop can be tested while the read is still in
+/// flight.
+#[derive(Clone)]
+pub(super) enum EpisodesScript {
+    Ready(Vec<ShowDetail>),
+    Fail,
+    Pending,
+}
+
+impl Default for EpisodesScript {
+    fn default() -> Self {
+        Self::Ready(vec![show_detail(SHOW)])
+    }
+}
+
 /// A scripted followed-shows answer; the default is an empty list.
 #[derive(Clone)]
 pub(super) enum FollowedScript {

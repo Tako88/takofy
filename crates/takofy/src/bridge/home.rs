@@ -46,9 +46,9 @@ pub(super) async fn load_home<H: SessionHost>(
             }
             answered(notifier, HomeAnswer::Related { artist, cards })
         }
-        HomeAsk::Show { show } => match stop_or(stop, host.show(&show)).await {
+        HomeAsk::Episodes { shows } => match stop_or(stop, host.episodes(&shows)).await {
             None => Step::Stopped,
-            Some(Ok(detail)) => answered(notifier, HomeAnswer::Show(detail)),
+            Some(Ok(details)) => answered(notifier, HomeAnswer::Episodes(details)),
             Some(Err(error)) => failed(notifier, asked, library_failure(&error)),
         },
         HomeAsk::Station { seed } => match stop_or(stop, host.station(&seed)).await {
@@ -56,17 +56,21 @@ pub(super) async fn load_home<H: SessionHost>(
             Some(Ok(station)) => answered(notifier, HomeAnswer::Station(station)),
             Some(Err(error)) => failed(notifier, asked, library_failure(&error)),
         },
-        HomeAsk::Portrait { artist } => match stop_or(stop, host.artist(&artist)).await {
-            None => Step::Stopped,
-            Some(Ok(page)) => answered(
-                notifier,
-                HomeAnswer::Portrait {
-                    artist,
-                    portrait: page.artist.portrait,
-                },
-            ),
-            Some(Err(error)) => failed(notifier, asked, library_failure(&error)),
-        },
+        HomeAsk::Portraits { artists } => {
+            match stop_or(stop, host.portraits(artists.clone())).await {
+                None => Step::Stopped,
+                // A read that answered nothing was refused or abandoned, and the
+                // window has no way to tell the two apart: both are a failed read.
+                Some(Some(found)) => answered(
+                    notifier,
+                    HomeAnswer::Portraits {
+                        asked: artists,
+                        found,
+                    },
+                ),
+                Some(None) => failed(notifier, asked, Failure::Load),
+            }
+        }
         HomeAsk::Labels { tracks } => match stop_or(stop, host.release_tracks(&tracks)).await {
             None => Step::Stopped,
             // Every asked track is answered, named or fallen back to its URI:

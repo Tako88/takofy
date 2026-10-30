@@ -193,11 +193,11 @@ fn related_ask(library: &mut Library) -> String {
     }
 }
 
-/// The one show read the shelf owes.
-fn show_ask(library: &mut Library) -> String {
+/// The shows the one pooled episodes read names.
+fn show_ask(library: &mut Library) -> Vec<String> {
     match library.home_request() {
-        Some(Command::LoadHome(HomeAsk::Show { show })) => show,
-        other => panic!("expected one show read, got {other:?}"),
+        Some(Command::LoadHome(HomeAsk::Episodes { shows })) => shows,
+        other => panic!("expected one episodes read, got {other:?}"),
     }
 }
 
@@ -243,8 +243,10 @@ fn all_ready() -> Library {
         "spotify:show:a",
         "Show A",
     )]));
-    let uri = show_ask(&mut library);
-    library.apply(&Update::Home(HomeAnswer::Show(detail(&uri))));
+    let shows = show_ask(&mut library);
+    library.apply(&Update::Home(HomeAnswer::Episodes(
+        shows.iter().map(|uri| detail(uri)).collect(),
+    )));
     library
 }
 
@@ -342,9 +344,9 @@ fn episodes_failed() -> Library {
         "spotify:show:a",
         "Show A",
     )]));
-    let uri = show_ask(&mut library);
+    let shows = show_ask(&mut library);
     library.apply(&Update::HomeFailed {
-        ask: HomeAsk::Show { show: uri },
+        ask: HomeAsk::Episodes { shows },
         failure: Failure::Load,
     });
     library
