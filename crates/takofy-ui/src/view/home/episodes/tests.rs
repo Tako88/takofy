@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use egui::{Context, Event, Id, Pos2, RawInput, Rect, Vec2};
+use egui::{Context, Event, Pos2, RawInput, Rect, Vec2};
 use takofy_model::{Episode, PublishedAt};
 
 use super::*;
@@ -10,7 +10,6 @@ use crate::library::Library;
 use crate::route::Page;
 use crate::sidebar_kind::SidebarKind;
 use crate::theme::{Tokens, extent, fonts, space, style};
-use crate::view::carry;
 use crate::view::playlist::root::MediaDraw;
 use crate::view::test_support::click_events;
 
@@ -59,7 +58,8 @@ fn draw(
     events: Vec<Event>,
 ) -> egui::FullOutput {
     let mut play = None;
-    draw_with(ctx, art, open, &mut play, rows, events)
+    let (output, _) = draw_with(ctx, art, open, &mut play, rows, events);
+    output
 }
 
 /// One pass over the shelf alone, with the presses it took left in `open` and
@@ -71,7 +71,7 @@ fn draw_with(
     play: &mut Option<(String, SidebarKind)>,
     rows: &[&Episode],
     events: Vec<Event>,
-) -> egui::FullOutput {
+) -> (egui::FullOutput, Pressed) {
     let tokens = Tokens::DARK;
     let library = Library::default();
     let list = List {
@@ -92,7 +92,7 @@ fn draw_with(
         show(ui, &list, NOW_MS, &tokens, &mut draw, &mut out);
     });
     output.textures_delta.clear();
-    output
+    (output, out)
 }
 
 /// Every text one frame painted, with the box it filled, in paint order.
@@ -259,34 +259,39 @@ fn an_empty_list_draws_nothing() {
 }
 
 #[test]
-fn a_press_where_the_toggle_would_be_plays_nothing() {
+fn a_press_on_a_rows_toggle_plays_the_shelf_from_that_row() {
     let ctx = context();
     let mut art = Art::default();
-    let one = episode(0, 1);
-    let rows = [&one];
+    let first = episode(0, 1);
+    let second = episode(1, 2);
+    let third = episode(2, 3);
+    let rows = [&first, &second, &third];
 
-    let first = draw(&ctx, &mut art, &mut None, &rows, Vec::new());
-    let at = toggle_centre(&first, "Episode 0");
+    let painted = draw(&ctx, &mut art, &mut None, &rows, Vec::new());
+    let at = toggle_centre(&painted, "Episode 1");
 
     let mut open = None;
     let mut play = None;
+    let mut pressed = Pressed::default();
     for event in click_events(at) {
-        draw_with(&ctx, &mut art, &mut open, &mut play, &rows, vec![event]);
+        let (_, out) = draw_with(&ctx, &mut art, &mut open, &mut play, &rows, vec![event]);
+        pressed.episode = out.episode;
     }
 
+    let queued = pressed.episode.expect("the toggle plays the shelf");
     assert_eq!(
-        play, None,
-        "a row that only opens its show played from the toggle's place"
+        queued
+            .iter()
+            .map(|row| row.uri.as_str())
+            .collect::<Vec<_>>(),
+        vec!["spotify:episode:1", "spotify:episode:2"],
+        "the row plays itself and what the shelf holds after it"
     );
-    assert_eq!(open, None, "one press on the body is a pick, not an open");
-    let picked = carry::List::open(&ctx, Id::unique("home-episodes"), rows.len())
-        .look(0)
-        .selected;
-    assert!(picked, "the press was swallowed where the toggle would be");
+    assert_eq!(open, None, "the toggle opens nothing");
 }
 
 #[test]
-fn the_shelf_announces_no_play_it_cannot_give() {
+fn the_shelf_announces_the_play_it_gives() {
     let ctx = context();
     ctx.enable_accesskit();
     let mut art = Art::default();
@@ -297,11 +302,32 @@ fn the_shelf_announces_no_play_it_cannot_give() {
     let labels = announced(&output);
 
     assert!(
-        !labels.iter().any(|label| label.starts_with("Play ")),
-        "the shelf announced a play button: {labels:?}"
+        labels.iter().any(|label| label == "Play Episode 0"),
+        "the row's toggle was not announced: {labels:?}"
     );
     assert!(
         labels.iter().any(|label| label.contains("Episode 0")),
         "the row announced nothing: {labels:?}"
+    );
+}
+
+#[test]
+fn a_row_draws_its_title_its_show_and_no_description() {
+    let ctx = context();
+    let mut art = Art::default();
+    let one = episode(0, 1);
+    let rows = [&one];
+
+    let output = draw(&ctx, &mut art, &mut None, &rows, Vec::new());
+    let drawn = painted(&output);
+
+    assert!(drawn.contains(&"Episode 0"), "the row draws its title");
+    assert!(
+        drawn.iter().any(|text| text.contains("FIELD NOTES")),
+        "the row draws the show it came from"
+    );
+    assert!(
+        !drawn.contains(&"A walk to the lighthouse."),
+        "the shelf carries no description: that belongs to the show page"
     );
 }

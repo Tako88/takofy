@@ -51,6 +51,8 @@ pub(super) struct Pressed {
     pub(super) retry: Option<Slot>,
     /// The station pressed to play: its URI and the rows it plays.
     pub(super) station: Option<(String, Vec<TrackEntry>)>,
+    /// The episodes a row's toggle pressed: the shelf from that row onwards.
+    pub(super) episode: Option<Vec<TrackEntry>>,
     /// The day-one door asked the topbar's field for the keyboard.
     pub(super) focus_search: bool,
 }
@@ -206,6 +208,13 @@ pub(super) fn home_view(
     // A station's own URI is not a context this client can page, so the queue
     // gets its rows and no origin to publish.
     if let Some((_, rows)) = out.station.take()
+        && library.want_play_rows(None, rows)
+    {
+        ui.ctx().request_repaint();
+    }
+    // The shelf's episodes come from different shows, so there is no context to
+    // publish for them: the queue gets the rows and the playbar names the track.
+    if let Some(rows) = out.episode.take()
         && library.want_play_rows(None, rows)
     {
         ui.ctx().request_repaint();

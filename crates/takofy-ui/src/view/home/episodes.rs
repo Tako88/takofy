@@ -1,13 +1,17 @@
 //! The episodes shelf: the newest episodes of the shows you follow.
 //!
-//! The head names the shelf, and the four rows are the app's own episode rows,
-//! each with how long ago it was published and how long it runs. A row offers no
-//! play of its own: its byline opens its show, and the episode plays on the page
-//! that opens.
+//! The head names the shelf, and the four rows are the app's own episode rows in
+//! their compact form: the toggle, the title, the show and how long ago it was
+//! published, and how long it runs. The description belongs to the show page, not
+//! to a shelf that is only offering the newest of them.
+//!
+//! A row's toggle plays the shelf from that row: the episodes here come from
+//! different shows, so there is no one context to hand the queue, and pressing
+//! the newest is how a reader starts listening through them.
 
 use egui::{Id, Sense, Ui};
 
-use crate::format::{HOME_EPISODES_TITLE, episode_meta, plain_description, total_label};
+use crate::format::{HOME_EPISODES_TITLE, episode_meta, total_label};
 use crate::home::episodes::List;
 use crate::layout::{episode as episode_layout, table as table_layout};
 use crate::theme::Tokens;
@@ -27,7 +31,7 @@ pub(super) fn show(
     now_ms: u64,
     tokens: &Tokens,
     draw: &mut MediaDraw<'_, '_>,
-    _out: &mut Pressed,
+    out: &mut Pressed,
 ) {
     if list.rows.is_empty() {
         return;
@@ -47,18 +51,16 @@ pub(super) fn show(
         }
         let meta = episode_meta(&episode.show, episode.published, now_ms);
         let duration = episode.duration_ms.and_then(total_label);
-        let description = episode.description.as_deref().and_then(plain_description);
         let words = episode_row::Row {
             uri: &episode.uri,
             index,
             title: &episode.title,
-            description: description.as_deref(),
+            description: None,
             show: meta.show.as_deref().unwrap_or_default(),
             show_uri: episode.show_uri.as_deref(),
             age: meta.age.as_deref().unwrap_or_default(),
             duration: duration.as_deref(),
-            // A row here is a doorway to its show, which is where it plays.
-            playable: false,
+            playable: true,
             state: State::Resting,
             look: selection.look(index),
             refocus: false,
@@ -71,10 +73,12 @@ pub(super) fn show(
                     list.rows.get(at).map(|episode| episode.entry())
                 });
             }
+            Some(Click::Play) => {
+                out.episode = Some(list.rows[index..].iter().map(|row| row.entry()).collect());
+            }
             Some(Click::Open(page)) => *draw.open = Some(page),
-            // The shelf starts nothing of its own: the row offers no toggle, and
-            // the play, menu and like all belong to the page the row opens.
-            Some(Click::Play) | Some(Click::Menu(_)) | Some(Click::Like(_)) | None => {}
+            // The menu and the like belong to the page the row opens.
+            Some(Click::Menu(_)) | Some(Click::Like(_)) | None => {}
         }
     }
     selection.finish(ui.ctx());
