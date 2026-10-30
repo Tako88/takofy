@@ -118,16 +118,16 @@ impl Library {
 
     /// The built shelves' one ask for this frame, if any.
     ///
-    /// In the page's shelf order, so a session is asked for one thing at a time
-    /// instead of five at once.
+    /// The order is the page's own, so the first shelf the reader sees is the
+    /// first read started.
     pub(crate) fn home_request(&mut self) -> Option<Command> {
         if !self.on_home() {
             return None;
         }
-        self.counted_ask()
+        self.stations_ask()
             .or_else(|| self.because_ask())
+            .or_else(|| self.counted_ask())
             .or_else(|| self.episodes_ask())
-            .or_else(|| self.stations_ask())
             // Faces and lengths are what the shelves decorate with, so they are
             // asked for last: no shelf waits on one to say what it holds.
             .or_else(|| self.stations_lengths_ask())

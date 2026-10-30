@@ -2,7 +2,7 @@ use super::super::*;
 use super::test_support::*;
 use crate::home::{Budget, Slot};
 use std::time::Instant;
-use takofy_model::home::{HomeAnswer, HomeAsk};
+use takofy_model::home::{HomeAnswer, HomeAsk, Station, StationSeed};
 use takofy_model::{LikedTrack, SavedAt, TrackEntry};
 
 /// A saved date `ms` after the epoch.
@@ -764,6 +764,132 @@ fn the_dated_label_leads() {
     );
     assert_eq!(built_asks(&asks), 1, "one built ask a frame: {asks:?}");
     assert!(!library.home_held());
+}
+
+/// A Home whose every shelf's feeds have answered with one candidate each, and
+/// whose one liked song nobody has labelled yet.
+fn every_shelf_ready() -> Library {
+    let mut library = Library::starting_home(1_700_000_000_000);
+    library.apply(&Update::Playlists(vec![dated_playlist(
+        "spotify:playlist:a",
+        5_000,
+    )]));
+    assert_eq!(
+        library.saved_albums_request(),
+        Some(Command::LoadSavedAlbums),
+        "arrange: the albums are out"
+    );
+    assert_eq!(
+        library.likes_request(),
+        Some(Command::LoadLikedTracks),
+        "arrange: the likes are out"
+    );
+    library.apply(&Update::SavedAlbums(vec![saved_album("spotify:album:r")]));
+    library.apply(&Update::LikedTracks(vec![liked("spotify:track:t", 4_000)]));
+    library.apply(&Update::FollowedArtists(vec![followed_artist(
+        "spotify:artist:a",
+    )]));
+    library.apply(&Update::FollowedShows(vec![followed_show(
+        "spotify:show:s",
+    )]));
+    library
+}
+
+/// A station answer for `seed`, with rows the band can draw.
+fn station_for(seed: &StationSeed) -> Station {
+    Station {
+        seed: seed.clone(),
+        uri: format!("spotify:station:{}", seed.uri),
+        title: seed.uri.clone(),
+        subtitle: None,
+        art: None,
+        rows: vec![
+            track(&format!("{}:one", seed.uri)),
+            track(&format!("{}:two", seed.uri)),
+        ],
+    }
+}
+
+/// The `LoadHome` asks one frame made, in the order the frame made them.
+fn load_home_asks(asks: &[Command]) -> Vec<HomeAsk> {
+    asks.iter()
+        .filter_map(|ask| match ask {
+            Command::LoadHome(ask) => Some(ask.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Asks every frame until the library owes nothing more, appending the
+/// `LoadHome` asks it made.
+fn drain_asks(library: &mut Library, into: &mut Vec<HomeAsk>) {
+    for _ in 0..=Budget::allowance() {
+        let frame = load_home_asks(&library.home_asks(Instant::now()));
+        if frame.is_empty() {
+            return;
+        }
+        into.extend(frame);
+    }
+}
+
+/// The shelf a built ask names, panicking on one that only decorates.
+fn built_slot(ask: &HomeAsk, liked: &str) -> Slot {
+    match ask {
+        HomeAsk::Station { .. } => Slot::Stations,
+        HomeAsk::Related { .. } => Slot::Because,
+        HomeAsk::Episodes { .. } => Slot::Episodes,
+        HomeAsk::Labels { tracks } if tracks.len() == 1 && tracks[0] == liked => Slot::Counted,
+        HomeAsk::Labels { tracks } => panic!("a labels ask outside the shelves: {tracks:?}"),
+        HomeAsk::Portraits { artists } => panic!("a decoration asked first: {artists:?}"),
+    }
+}
+
+#[test]
+fn the_built_asks_follow_the_page_order() {
+    let mut library = every_shelf_ready();
+    let liked = "spotify:track:t";
+    let mut asks: Vec<HomeAsk> = Vec::new();
+
+    drain_asks(&mut library, &mut asks);
+
+    let mut order: Vec<Slot> = Vec::new();
+    for ask in &asks {
+        let slot = built_slot(ask, liked);
+        if order.last() != Some(&slot) {
+            order.push(slot);
+        }
+    }
+    assert_eq!(
+        order,
+        Slot::ORDER[1..],
+        "the shelves are asked in the page's order: {asks:?}"
+    );
+
+    for ask in &asks {
+        if let HomeAsk::Station { seed } = ask {
+            library.apply(&Update::Home(HomeAnswer::Station(station_for(seed))));
+        }
+    }
+    library.apply(&Update::Home(HomeAnswer::Labelled {
+        asked: vec![liked.to_owned()],
+        named: vec![TrackEntry {
+            artist_uris: vec!["spotify:artist:x".to_owned()],
+            artist_names: vec!["X".to_owned()],
+            ..track(liked)
+        }],
+    }));
+
+    let shelves = asks.len();
+    drain_asks(&mut library, &mut asks);
+
+    assert!(
+        matches!(
+            &asks[shelves..],
+            [HomeAsk::Labels { .. }, HomeAsk::Portraits { .. }]
+        ),
+        "the decorations are asked after every shelf: {:?}",
+        &asks[shelves..]
+    );
 }
 
 #[test]
