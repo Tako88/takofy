@@ -65,9 +65,9 @@ impl Library {
 
     /// Everything Home asks for this frame, in the order the page wants it.
     ///
-    /// The dated shelf's own label read goes out first. The built shelves' one
-    /// ask follows it, and waits while the dated feeds are still outstanding for
-    /// at most [`HOME_HOLD`]: a feed that hangs costs the page that bound and no
+    /// The dated shelf's own label read goes out first. The built shelves' asks
+    /// follow it, and wait while the dated feeds are still outstanding for at
+    /// most [`HOME_HOLD`]: a feed that hangs costs the page that bound and no
     /// more. Off Home nothing is asked, because nothing is on screen to draw an
     /// answer.
     pub fn home_asks(&mut self, now: Instant) -> Vec<Command> {
@@ -78,13 +78,13 @@ impl Library {
         }
         let mut asks: Vec<Command> = self.home_labels_request().into_iter().collect();
         if self.home_intake().settled() || self.hold_spent {
-            asks.extend(self.home_request());
+            asks.extend(self.home_requests());
             self.held_since = None;
             self.hold_spent = true;
             return asks;
         }
         if !self.dated_label_due() {
-            asks.extend(self.home_request());
+            asks.extend(self.home_requests());
             return asks;
         }
         match self.held_since {
@@ -92,7 +92,7 @@ impl Library {
             Some(since) if now.saturating_duration_since(since) >= HOME_HOLD => {
                 self.held_since = None;
                 self.hold_spent = true;
-                asks.extend(self.home_request());
+                asks.extend(self.home_requests());
             }
             Some(_) => {}
         }
@@ -132,6 +132,20 @@ impl Library {
             // asked for last: no shelf waits on one to say what it holds.
             .or_else(|| self.stations_lengths_ask())
             .or_else(|| self.counted_portrait_ask())
+    }
+
+    /// Every built ask this open still owes.
+    ///
+    /// They all go out in the frame that owes them: the worker bounds the reads
+    /// in flight, so holding some back for a later frame would only leave its
+    /// places idle. Each ask spends its shelf's allowance, so the loop ends even
+    /// when a shelf's answer never arrives.
+    fn home_requests(&mut self) -> Vec<Command> {
+        let mut asks = Vec::new();
+        while let Some(ask) = self.home_request() {
+            asks.push(ask);
+        }
+        asks
     }
 
     /// Asks again for what the shelf in `slot` reads.

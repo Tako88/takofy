@@ -762,7 +762,10 @@ fn the_dated_label_leads() {
         matches!(asks.first(), Some(Command::LabelSaved { tracks }) if tracks == &vec!["spotify:track:t".to_owned()]),
         "the dated shelf's own read goes out first: {asks:?}"
     );
-    assert_eq!(built_asks(&asks), 1, "one built ask a frame: {asks:?}");
+    assert!(
+        built_asks(&asks) > 0,
+        "the built shelves are asked once their feeds are ready: {asks:?}"
+    );
     assert!(!library.home_held());
 }
 
@@ -842,6 +845,23 @@ fn built_slot(ask: &HomeAsk, liked: &str) -> Slot {
         HomeAsk::Labels { tracks } => panic!("a labels ask outside the shelves: {tracks:?}"),
         HomeAsk::Portraits { artists } => panic!("a decoration asked first: {artists:?}"),
     }
+}
+
+#[test]
+fn one_frame_carries_every_built_ask_it_owes() {
+    let mut library = every_shelf_ready();
+    let before = library.home_asks(Instant::now());
+
+    let after = library.home_asks(Instant::now());
+
+    assert!(
+        built_asks(&before) >= 2,
+        "the frame that owes several asks sends them together, or the worker's places idle: {before:?}"
+    );
+    assert!(
+        built_asks(&after) < built_asks(&before),
+        "what a frame sent is not owed again by the next one: {after:?}"
+    );
 }
 
 #[test]

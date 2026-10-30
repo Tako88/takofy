@@ -184,13 +184,15 @@ pressing play again is the retry, so there is no second gesture to learn.
 
 Home is the page that owes the most reads at once, and its order is the
 library's rather than the frame's: the dated shelf's label read for the pooled
-liked songs goes out first, and the four built shelves are asked one per frame,
-so a session is asked one thing at a time. While the dated shelf's own feeds —
-the rootlist, the saved albums, the likes — are still out and the label is still
-owed, the built asks wait, but for no more than a second: that is a scheduling
-bound rather than a token, so a feed that hangs costs the page that much and no
-more. The wait belongs to one visit, so leaving the page clears it and coming
-back arms it again.
+liked songs goes out first, and the built shelves follow in the order the page
+draws them. They all leave in the frame that owes them, because the worker's cap
+is what bounds the session, and a frame that held one back would leave one of
+its places idle. While the dated shelf's own feeds — the rootlist, the saved
+albums, the likes — are still out and the label is still owed, the built asks
+wait, but for no more than a second: that is a scheduling bound rather than a
+token, so a feed that hangs costs the page that much and no more. The wait
+belongs to one visit, so leaving the page clears it and coming back arms it
+again.
 
 The sidebar column has two meanings, told apart by what is carried: a playlist
 row dragged to a gap moves the playlists, and a track dragged onto a playlist
