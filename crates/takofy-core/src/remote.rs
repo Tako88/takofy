@@ -1483,43 +1483,92 @@ async fn fetch_chunked<T>(
     kind: ExtensionKind,
     parse: fn(&[u8], &str) -> Option<T>,
 ) -> (HashMap<String, T>, StatusTally) {
+    fetch_chunked_with(distinct, |chunk| async move {
+        request_parsed(session, &chunk, kind, parse).await
+    })
+    .await
+}
+
+/// How many chunks one pass keeps in flight.
+const CHUNK_FANOUT: usize = 3;
+
+/// Fetches values for distinct URIs, one request per chunk, `CHUNK_FANOUT`
+/// chunks at a time.
+///
+/// A chunk the server answered only part of is split in half and asked again,
+/// one at a time: the truncation is the rare answer, so the retries do not need
+/// the fan-out's extra requests.
+async fn fetch_chunked_with<T, F, Fut>(
+    distinct: &[String],
+    request: F,
+) -> (HashMap<String, T>, StatusTally)
+where
+    F: Fn(Vec<String>) -> Fut,
+    Fut: Future<Output = Option<(HashMap<String, T>, StatusTally)>>,
+{
     let mut found: HashMap<String, T> = HashMap::new();
     let mut tally = StatusTally::default();
-    let mut queue: Vec<Vec<String>> = distinct
+    let mut retries: Vec<Vec<String>> = Vec::new();
+    let chunks: Vec<Vec<String>> = distinct
         .chunks(LABEL_CHUNK)
         .map(<[String]>::to_vec)
         .collect();
-    queue.reverse();
-    while let Some(chunk) = queue.pop() {
-        let Some((answers, chunk_tally)) = request_parsed(session, &chunk, kind, parse).await
-        else {
-            continue;
-        };
-        tally.merge(chunk_tally);
-        let answered = !answers.is_empty();
-        let mut missing: Vec<String> = chunk
-            .iter()
-            .filter(|uri| !answers.contains_key(*uri))
-            .cloned()
-            .collect();
-        found.extend(answers);
-        if missing.is_empty() || !answered || missing.len() == 1 {
-            // Nothing arrived at all means the provider refused the chunk rather
-            // than truncated it, and retrying one URI at a time is the request
-            // storm this exists to avoid. A single unanswered URI is simply
-            // unknown. Either way the caller falls back to the URI.
-            continue;
-        }
-        log::debug!(
-            "{} of {} entities came back; retrying the rest in smaller requests",
-            chunk.len() - missing.len(),
-            chunk.len()
-        );
-        let right = missing.split_off(missing.len() / 2);
-        queue.push(right);
-        queue.push(missing);
+    let answers = futures_util::stream::iter(chunks)
+        .map(|chunk: Vec<String>| {
+            let asked = chunk.clone();
+            let request = &request;
+            async move {
+                let answer = request(asked).await;
+                (chunk, answer)
+            }
+        })
+        .buffered(CHUNK_FANOUT)
+        .collect::<Vec<_>>()
+        .await;
+    for (chunk, answer) in answers {
+        absorb(&chunk, answer, &mut found, &mut tally, &mut retries);
+    }
+    while let Some(chunk) = retries.pop() {
+        let answer = request(chunk.clone()).await;
+        absorb(&chunk, answer, &mut found, &mut tally, &mut retries);
     }
     (found, tally)
+}
+
+/// Folds one chunk's answer into the pass, queueing the part it left unanswered.
+fn absorb<T>(
+    chunk: &[String],
+    answer: Option<(HashMap<String, T>, StatusTally)>,
+    found: &mut HashMap<String, T>,
+    tally: &mut StatusTally,
+    retries: &mut Vec<Vec<String>>,
+) {
+    let Some((answers, chunk_tally)) = answer else {
+        return;
+    };
+    tally.merge(chunk_tally);
+    let answered = !answers.is_empty();
+    let mut missing: Vec<String> = chunk
+        .iter()
+        .filter(|uri| !answers.contains_key(*uri))
+        .cloned()
+        .collect();
+    found.extend(answers);
+    if missing.is_empty() || !answered || missing.len() == 1 {
+        // Nothing arrived at all means the provider refused the chunk rather
+        // than truncated it, and retrying one URI at a time is the request
+        // storm this exists to avoid. A single unanswered URI is simply
+        // unknown. Either way the caller falls back to the URI.
+        return;
+    }
+    log::debug!(
+        "{} of {} entities came back; retrying the rest in smaller requests",
+        chunk.len() - missing.len(),
+        chunk.len()
+    );
+    let right = missing.split_off(missing.len() / 2);
+    retries.push(right);
+    retries.push(missing);
 }
 
 /// One batched extended-metadata request over `uris`.

@@ -1,6 +1,7 @@
 use super::super::*;
 use super::test_support::*;
 use crate::home::{Budget, Slot};
+use std::time::Instant;
 use takofy_model::home::{HomeAnswer, HomeAsk};
 use takofy_model::{LikedTrack, SavedAt, TrackEntry};
 
@@ -711,5 +712,279 @@ fn a_retry_after_a_failed_label_read_asks_for_the_labels_again() {
             tracks: vec!["spotify:track:t".to_owned()],
         }),
         "the retry asks for the label again"
+    );
+}
+
+/// A Home whose rootlist and followed lists have answered, with both remaning
+/// dated feeds asked and left in flight.
+fn feeds_out() -> Library {
+    let mut library = Library::starting_home(1_700_000_000_000);
+    library.apply(&Update::Playlists(Vec::new()));
+    assert_eq!(
+        library.saved_albums_request(),
+        Some(Command::LoadSavedAlbums),
+        "arrange: the albums are out"
+    );
+    assert_eq!(
+        library.likes_request(),
+        Some(Command::LoadLikedTracks),
+        "arrange: the likes are out"
+    );
+    library.apply(&Update::FollowedShows(vec![followed_show(
+        "spotify:show:s",
+    )]));
+    library.apply(&Update::FollowedArtists(Vec::new()));
+    library
+}
+
+/// The number of `LoadHome` asks in a frame's asks.
+fn built_asks(asks: &[Command]) -> usize {
+    asks.iter()
+        .filter(|ask| matches!(ask, Command::LoadHome(_)))
+        .count()
+}
+
+#[test]
+fn the_dated_label_leads() {
+    let mut library = settled(
+        Vec::new(),
+        Vec::new(),
+        vec![liked("spotify:track:t", 5_000)],
+    );
+    library.go_home(1_700_000_000_000);
+    library.apply(&Update::FollowedShows(vec![followed_show(
+        "spotify:show:s",
+    )]));
+
+    let asks = library.home_asks(Instant::now());
+
+    assert!(
+        matches!(asks.first(), Some(Command::LabelSaved { tracks }) if tracks == &vec!["spotify:track:t".to_owned()]),
+        "the dated shelf's own read goes out first: {asks:?}"
+    );
+    assert_eq!(built_asks(&asks), 1, "one built ask a frame: {asks:?}");
+    assert!(!library.home_held());
+}
+
+#[test]
+fn built_asks_wait_for_the_dated_feeds() {
+    let mut library = feeds_out();
+    let t0 = Instant::now();
+
+    assert!(library.home_asks(t0).is_empty());
+    assert!(library.home_held());
+}
+
+#[test]
+fn a_hung_feed_does_not_stall_the_built_shelves() {
+    let mut library = feeds_out();
+    library.apply(&Update::SavedAlbums(Vec::new()));
+    let t0 = Instant::now();
+
+    assert!(
+        library.home_asks(t0).is_empty(),
+        "arrange: the hold is armed"
+    );
+
+    let asks = library.home_asks(t0 + HOME_HOLD);
+
+    assert!(
+        matches!(
+            asks.as_slice(),
+            [Command::LoadHome(HomeAsk::Episodes { .. })]
+        ),
+        "the built ask goes out once the bound passes: {asks:?}"
+    );
+    assert!(
+        !asks
+            .iter()
+            .any(|ask| matches!(ask, Command::LabelSaved { .. })),
+        "a hung like has no label to send"
+    );
+    assert!(!library.home_held());
+}
+
+#[test]
+fn the_hold_is_armed_once_and_not_by_later_frames() {
+    let mut library = feeds_out();
+    let t0 = Instant::now();
+
+    assert!(
+        library.home_asks(t0).is_empty(),
+        "arrange: the hold is armed"
+    );
+    assert!(
+        library.home_asks(t0 + HOME_HOLD / 2).is_empty(),
+        "a later frame must not push the deadline out"
+    );
+    assert!(!library.home_asks(t0 + HOME_HOLD).is_empty());
+}
+
+#[test]
+fn a_failed_feed_does_not_hold() {
+    let mut library = feeds_out();
+    library.apply(&Update::SavedAlbumsFailed(Failure::Load));
+    library.apply(&Update::LikedTracks(Vec::new()));
+
+    let asks = library.home_asks(Instant::now());
+
+    assert_eq!(built_asks(&asks), 1, "{asks:?}");
+    assert!(!library.home_held(), "a read that failed is not waited on");
+}
+
+#[test]
+fn a_library_with_nothing_liked_does_not_hold() {
+    let mut library = feeds_out();
+    library.apply(&Update::LikedTracks(Vec::new()));
+
+    let asks = library.home_asks(Instant::now());
+
+    assert_eq!(
+        built_asks(&asks),
+        1,
+        "no label read is coming, so nothing is worth waiting for: {asks:?}"
+    );
+    assert!(!library.home_held());
+}
+
+#[test]
+fn a_rootlist_that_fails_after_the_hold_arms_holds_nothing() {
+    let mut library = feeds_out();
+    let t0 = Instant::now();
+    assert!(
+        library.home_asks(t0).is_empty(),
+        "arrange: the hold is armed"
+    );
+
+    library.apply(&Update::PlaylistFailed(Failure::Load));
+
+    assert!(
+        !library.home_held(),
+        "a failed rootlist has no feed left to wait for"
+    );
+}
+
+#[test]
+fn likes_that_answer_empty_after_the_hold_arms_hold_nothing() {
+    let mut library = feeds_out();
+    let t0 = Instant::now();
+    assert!(
+        library.home_asks(t0).is_empty(),
+        "arrange: the hold is armed"
+    );
+
+    library.apply(&Update::LikedTracks(Vec::new()));
+
+    assert!(
+        !library.home_held(),
+        "no label read is coming, so nothing is worth waiting for"
+    );
+}
+
+#[test]
+fn a_failed_rootlist_asks_for_nothing() {
+    let mut library = Library::starting_home(1_700_000_000_000);
+    library.apply(&Update::PlaylistFailed(Failure::Load));
+
+    assert!(library.home_asks(Instant::now()).is_empty());
+    assert!(!library.home_held());
+}
+
+#[test]
+fn away_from_home_nothing_is_asked() {
+    let mut library = feeds_out();
+    library.to_playlists();
+
+    assert!(library.home_asks(Instant::now()).is_empty());
+    assert!(!library.home_held());
+}
+
+#[test]
+fn reopening_home_arms_the_hold_again() {
+    let mut library = feeds_out();
+    let t0 = Instant::now();
+    assert!(
+        library.home_asks(t0).is_empty(),
+        "arrange: the hold is armed"
+    );
+
+    library.to_playlists();
+    library.go_home(1_700_000_000_000);
+
+    assert!(
+        library.home_asks(t0 + HOME_HOLD).is_empty(),
+        "a fresh visit waits its own bound"
+    );
+    assert!(library.home_held());
+}
+
+#[test]
+fn retrying_the_dated_shelf_leads_with_its_label_again() {
+    let mut library = settled(
+        Vec::new(),
+        Vec::new(),
+        vec![liked("spotify:track:t", 5_000)],
+    );
+    library.go_home(1_700_000_000_000);
+    let t0 = Instant::now();
+    assert!(
+        library
+            .home_asks(t0)
+            .first()
+            .is_some_and(|ask| matches!(ask, Command::LabelSaved { .. })),
+        "arrange: the label leads"
+    );
+
+    library.retry_home(Slot::Dated);
+    let asks = library.home_asks(t0);
+
+    assert!(
+        matches!(asks.first(), Some(Command::LabelSaved { .. })),
+        "{asks:?}"
+    );
+}
+
+#[test]
+fn retrying_the_dated_shelf_waits_for_the_feed_it_re_reads() {
+    let mut library = Library::starting_home(1_700_000_000_000);
+    library.apply(&Update::Playlists(Vec::new()));
+    assert_eq!(
+        library.saved_albums_request(),
+        Some(Command::LoadSavedAlbums),
+        "arrange: the albums are out"
+    );
+    assert_eq!(
+        library.likes_request(),
+        Some(Command::LoadLikedTracks),
+        "arrange: the likes are out"
+    );
+    library.apply(&Update::LikedTracks(vec![liked("spotify:track:t", 5_000)]));
+    library.apply(&Update::SavedAlbumsFailed(Failure::Load));
+
+    library.retry_home(Slot::Dated);
+
+    assert_eq!(
+        library.saved_albums,
+        Load::Idle,
+        "the failed feed is re-read"
+    );
+    assert_eq!(
+        library.saved_albums_request(),
+        Some(Command::LoadSavedAlbums)
+    );
+    assert!(
+        library
+            .home_asks(Instant::now())
+            .iter()
+            .all(|ask| !matches!(ask, Command::LabelSaved { .. })),
+        "a label sent before the re-read lands would name a pooled set"
+    );
+
+    library.apply(&Update::SavedAlbums(Vec::new()));
+    let asks = library.home_asks(Instant::now());
+
+    assert!(
+        matches!(asks.first(), Some(Command::LabelSaved { .. })),
+        "the label leads once the feed lands: {asks:?}"
     );
 }

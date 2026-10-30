@@ -11,7 +11,7 @@ use takofy_ui::device_list::DeviceList;
 use takofy_ui::devices::{Devices, Source};
 use takofy_ui::drawer::Drawer;
 use takofy_ui::layout::PanePref;
-use takofy_ui::library::{Library, Load};
+use takofy_ui::library::{HOME_HOLD, Library, Load};
 use takofy_ui::menu::Menu;
 use takofy_ui::message::{Command, RemoteUpdate, Update};
 use takofy_ui::player::{REDRAW, Transport, TransportState};
@@ -248,16 +248,15 @@ impl eframe::App for TakofyApp {
         if let Some(command) = self.library.likes_request() {
             let _ = self.ui_end.commands.send(command);
         }
-        // The shelf names liked songs by their labels, and only Home folds them
-        // into cards, so the read is Home's own and is asked once per URI.
-        if let Some(command) = self.library.home_labels_request() {
+        // Home's dated shelf asks first: its own label read leads, and the built
+        // shelves yield to its feeds for a bounded wait. Without a wake at the
+        // bound's end no frame would run after it, and a hung feed would still
+        // stall the shelves.
+        for command in self.library.home_asks(now) {
             let _ = self.ui_end.commands.send(command);
         }
-        // The built shelves are want-driven too: one ask per frame, in the page's
-        // shelf order, so a slow session is never flooded with reads it cannot
-        // draw yet.
-        if let Some(command) = self.library.home_request() {
-            let _ = self.ui_end.commands.send(command);
+        if self.library.home_held() {
+            ctx.request_repaint_after(HOME_HOLD);
         }
         // The artist page's likeness row is its second read: it is asked for
         // once the artist's own detail has landed and named somebody.
