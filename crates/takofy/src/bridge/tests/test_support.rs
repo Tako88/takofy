@@ -850,6 +850,27 @@ impl SessionHost for FakeHost {
         }
     }
 
+    fn neighbours(
+        &self,
+        artist: &str,
+    ) -> impl Future<Output = Result<Vec<FollowedArtist>, SessionError>> + Send {
+        let connected = self.shared.connected.load(Ordering::SeqCst);
+        let script = self.shared.related_script.lock().expect("lock").clone();
+        let artist = artist.to_owned();
+        async move {
+            if !connected {
+                return Err(SessionError::NotConnected);
+            }
+            match script {
+                RelatedScript::Ready => Ok(vec![
+                    followed_artist(&format!("{artist}:one")),
+                    followed_artist(&format!("{artist}:two")),
+                ]),
+                RelatedScript::Fail => Err(SessionError::NotConnected),
+            }
+        }
+    }
+
     fn related(
         &self,
         uris: Vec<String>,

@@ -7,7 +7,7 @@
 use egui::{Sense, Ui};
 
 use crate::cover::want_px;
-use crate::format::{HOME_BECAUSE_TITLE, home_door_because, library_kind, media_type};
+use crate::format::{HOME_BECAUSE_TITLE, home_door_because, media_type};
 use crate::home::because::Row;
 use crate::layout::table as table_layout;
 use crate::library_filter::RootKind;
@@ -40,7 +40,6 @@ pub(super) fn show(
     ui.allocate_rect(list, Sense::hover());
     let visible = ui.clip_rect();
     let want = want_px(solved.card_w, ui.pixels_per_point());
-    let sub = library_kind(media_type(RootKind::Artists), None);
 
     for (index, card) in row.cards.iter().enumerate() {
         let rect = solved.card_rect(index);
@@ -51,7 +50,9 @@ pub(super) fn show(
             uri: &card.uri,
             name: &card.name,
             kind: media_type(RootKind::Artists),
-            sub: &sub,
+            // The reference's artist card is a face and a name: the kind is what
+            // the card is, and it says nothing a reader at this shelf wants.
+            sub: "",
             size: "",
             round: true,
             shelf: SidebarKind::Artists,

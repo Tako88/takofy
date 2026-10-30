@@ -5,8 +5,8 @@
 //! its own, because this is the one answer in the workspace that is JSON and one
 //! field list does not warrant a dependency for it.
 
-use takofy_model::TrackEntry;
 use takofy_model::home::{Station, StationSeed};
+use takofy_model::{FollowedArtist, TrackEntry};
 
 use super::StationError;
 use super::art::{art_of, cover_of};
@@ -14,6 +14,9 @@ use super::art::{art_of, cover_of};
 /// The wire's track prefix. A station may list other things, and only a track is
 /// a row the band can draw and play.
 const TRACK: &str = "spotify:track:";
+
+/// The wire's artist prefix, which every neighbour a station names carries.
+const ARTIST: &str = "spotify:artist:";
 
 /// The station an answer names, read for `seed`.
 ///
@@ -35,6 +38,50 @@ pub(super) fn station(bytes: &[u8], seed: &StationSeed) -> Result<Station, Stati
             .and_then(art_of),
         rows: rows_of(&answer),
     })
+}
+
+/// The artists a station names as its seed's neighbours, as their cards draw.
+///
+/// The station answer is the only place this client has found them: the artist
+/// payload's own `related` list comes back empty for the artists on the account
+/// this was built against, so a shelf seeded from one of them read nothing at
+/// all and quietly vanished.
+pub(super) fn related(bytes: &[u8]) -> Result<Vec<FollowedArtist>, StationError> {
+    let text = std::str::from_utf8(bytes).map_err(|_| StationError::Parse)?;
+    let answer = json::value(text).ok_or(StationError::Parse)?;
+    Ok(related_of(&answer))
+}
+
+/// The answer's `related_artists`, each as one card.
+///
+/// An entry without an artist URI is not an artist this client can open, so it
+/// is dropped rather than drawn as a card that goes nowhere.
+fn related_of(answer: &json::Json) -> Vec<FollowedArtist> {
+    let Some(json::Json::List(entries)) = json::field(answer, "related_artists") else {
+        return Vec::new();
+    };
+    entries
+        .iter()
+        .filter_map(|entry| {
+            let uri = json::field(entry, "artistUri").and_then(json::text)?;
+            if !uri.starts_with(ARTIST) {
+                return None;
+            }
+            let name = json::field(entry, "artistName")
+                .and_then(json::text)
+                .map(str::trim)
+                .unwrap_or_default();
+            Some(FollowedArtist {
+                uri: uri.to_owned(),
+                name: name.to_owned(),
+                named: !name.is_empty(),
+                portrait: json::field(entry, "imageUri")
+                    .and_then(json::text)
+                    .and_then(cover_of),
+                releases: None,
+            })
+        })
+        .collect()
 }
 
 /// The label read's rows where it named one, and the answer's own row where it

@@ -13,8 +13,7 @@ use crate::session::{SessionHost, stop_or};
 /// Performs one shelf's read and announces its answer.
 ///
 /// A failure carries the ask it belongs to, so a shelf tells its own failure
-/// from another's. A related read is two calls: the artist names the URIs, and
-/// the likeness read names the cards.
+/// from another's.
 pub(super) async fn load_home<H: SessionHost>(
     host: &mut H,
     stop: &mut StopReceiver<()>,
@@ -23,17 +22,29 @@ pub(super) async fn load_home<H: SessionHost>(
 ) -> Step {
     let asked = ask.clone();
     match ask {
+        // The neighbours come from the station answer, where the artist payload's
+        // own related list comes back empty, and their faces from one batched
+        // portrait read: a neighbour is an artist the reader does not follow, so
+        // nothing else on the page has looked one up.
         HomeAsk::Related { artist } => {
-            let page = match stop_or(stop, host.artist(&artist)).await {
+            let mut cards = match stop_or(stop, host.neighbours(&artist)).await {
                 None => return Step::Stopped,
-                Some(Ok(page)) => page,
+                Some(Ok(cards)) => cards,
                 Some(Err(error)) => return failed(notifier, asked, related_failure(&error)),
             };
-            match stop_or(stop, host.related(page.artist.related)).await {
-                None => Step::Stopped,
-                Some(Ok(cards)) => answered(notifier, HomeAnswer::Related { artist, cards }),
-                Some(Err(error)) => failed(notifier, asked, related_failure(&error)),
+            if !cards.is_empty() {
+                let uris: Vec<String> = cards.iter().map(|card| card.uri.clone()).collect();
+                // A face is decoration: the read is silent on failure, and the
+                // card draws its hole rather than holding the shelf.
+                if let Some(faces) = host.portraits(uris).await {
+                    for card in &mut cards {
+                        if let Some(face) = faces.iter().find(|face| face.artist == card.uri) {
+                            card.portrait = face.portrait.clone();
+                        }
+                    }
+                }
             }
+            answered(notifier, HomeAnswer::Related { artist, cards })
         }
         HomeAsk::Show { show } => match stop_or(stop, host.show(&show)).await {
             None => Step::Stopped,

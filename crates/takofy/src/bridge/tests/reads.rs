@@ -463,7 +463,7 @@ fn a_stop_during_a_lyrics_load_shuts_down() {
     run_ordered(runtime, window, teardown);
 }
 
-fn portrait(artist: &str) -> ArtistPortrait {
+pub(super) fn portrait(artist: &str) -> ArtistPortrait {
     ArtistPortrait {
         artist: artist.to_owned(),
         portrait: Some(CoverSet::single(

@@ -30,7 +30,7 @@ use crate::remote::{
 use crate::rootlist::{RootEntry, RootlistError, fetch_all};
 use crate::search::search_uri;
 use crate::show::ShowError;
-use crate::station::{StationError, read_station};
+use crate::station::{StationError, read_neighbours, read_station};
 use crate::transfer::{Resolution, TransferPlan};
 use crate::watch::{self, Gate};
 use takofy_model::home::{Station, StationSeed};
@@ -600,6 +600,12 @@ impl Engine {
     /// One station read from its seed, its rows labelled.
     pub async fn station(&self, seed: &StationSeed) -> Result<Station, EngineError> {
         Ok(read_station(&self.session, &self.labels, seed).await?)
+    }
+
+    /// The artists a station names beside `artist`, which is where this client
+    /// learns an artist's neighbours.
+    pub async fn neighbours(&self, artist: &str) -> Result<Vec<FollowedArtist>, EngineError> {
+        Ok(read_neighbours(&self.session, artist).await?)
     }
 
     /// One track's lyrics, empty when the track has none.

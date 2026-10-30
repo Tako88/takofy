@@ -150,3 +150,25 @@ fn a_card_press_opens_the_artists_page() {
 
     assert_eq!(opened, Some(Page::Artist("spotify:artist:y".to_owned())));
 }
+
+#[test]
+fn a_card_says_the_artists_name_and_no_kind_word() {
+    let ctx = context();
+    let mut art = Art::default();
+    let mut open = None;
+    let cards = vec![artist("spotify:artist:z", "Zed")];
+    let row = Row {
+        seed_name: "Aria",
+        seed_uri: "spotify:artist:aria",
+        cards: &cards,
+    };
+
+    let output = draw(&ctx, &mut art, &mut open, &row, Vec::new());
+    let drawn = painted(&output);
+
+    assert!(drawn.contains(&"Zed"), "the card draws its name");
+    assert!(
+        !drawn.contains(&"Artist"),
+        "the reference's artist card is a face and a name: {drawn:?}"
+    );
+}

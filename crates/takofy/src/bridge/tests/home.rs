@@ -1,8 +1,7 @@
 use super::super::*;
 use super::announce::{SHOW, ShowScript, followed_artist, show_detail};
-use super::reads::{ArtistScript, artist_detail};
+use super::reads::{PortraitScript, portrait};
 use super::test_support::*;
-use crate::session::ArtistPage;
 use takofy_model::TrackEntry;
 use takofy_model::home::{HomeAnswer, HomeAsk, SeedKind, StationSeed};
 
@@ -72,12 +71,12 @@ fn a_failed_label_saved_read_reports_the_failure_with_the_asked_tracks() {
 }
 
 #[test]
-fn an_artist_read_failure_is_failure_related() {
+fn a_neighbour_read_failure_is_failure_related() {
     let store = Arc::new(MemoryStore::seeded("stored"));
     let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
     let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
     let shared = Arc::clone(&host.shared);
-    *shared.artist_script.lock().expect("lock") = ArtistScript::Fail;
+    *shared.related_script.lock().expect("lock") = RelatedScript::Fail;
 
     let ask = HomeAsk::Related {
         artist: ARTIST.to_owned(),
@@ -97,7 +96,7 @@ fn an_artist_read_failure_is_failure_related() {
             },
             failure: Failure::Related,
         },
-        "the card read never ran, yet the sheet names the likeness failure"
+        "a shelf that could not read its neighbours names the failure"
     );
 }
 
@@ -106,13 +105,6 @@ fn related_answers_with_the_cards() {
     let store = Arc::new(MemoryStore::seeded("stored"));
     let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
     let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
-    let shared = Arc::clone(&host.shared);
-    let mut page = ArtistPage {
-        artist: artist_detail(ARTIST),
-        followed: Some(false),
-    };
-    page.artist.related = vec![SECOND.to_owned()];
-    *shared.artist_script.lock().expect("lock") = ArtistScript::Ready(page);
 
     let ask = HomeAsk::Related {
         artist: ARTIST.to_owned(),
@@ -128,8 +120,45 @@ fn related_answers_with_the_cards() {
         update,
         Update::Home(HomeAnswer::Related {
             artist: ARTIST.to_owned(),
-            cards: vec![followed_artist(SECOND)],
-        })
+            cards: vec![
+                followed_artist(&format!("{ARTIST}:one")),
+                followed_artist(&format!("{ARTIST}:two")),
+            ],
+        }),
+        "one station read names the neighbours, with their names"
+    );
+}
+
+#[test]
+fn related_cards_carry_the_faces_one_read_names() {
+    let store = Arc::new(MemoryStore::seeded("stored"));
+    let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+    let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+    let shared = Arc::clone(&host.shared);
+    let face = format!("{ARTIST}:one");
+    *shared.portrait_script.lock().expect("lock") = PortraitScript::Ready(vec![portrait(&face)]);
+
+    let ask = HomeAsk::Related {
+        artist: ARTIST.to_owned(),
+    };
+    let update = run_window(runtime(), host, store, source, |ui_end, slot| {
+        slot.install(Arc::new(RecordingWaker::default()));
+        let _ = expect_updates(&ui_end, 2);
+        ui_end.commands.send(Command::LoadHome(ask)).expect("home");
+        ui_end.updates.recv().expect("related")
+    });
+
+    let Update::Home(HomeAnswer::Related { cards, .. }) = update else {
+        panic!("expected the related answer, got {update:?}");
+    };
+    assert_eq!(cards.len(), 2);
+    assert!(
+        cards[0].portrait.is_some(),
+        "the card draws the face the portrait read named"
+    );
+    assert!(
+        cards[1].portrait.is_none(),
+        "an artist the read did not name keeps its hole"
     );
 }
 

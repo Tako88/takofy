@@ -253,3 +253,45 @@ fn a_dump_with_a_picture_reads_it_as_art() {
         Some(takofy_model::home::StationArt::Single(_))
     ));
 }
+
+#[test]
+fn an_artist_stations_neighbours_are_the_cards_it_names() {
+    let cards = related(ARTIST.as_bytes()).expect("a probe dump is a station answer");
+
+    assert_eq!(cards.len(), 5, "the probe's artist station names five");
+    assert_eq!(cards[0].uri, "spotify:artist:6klB70v9fPkNc3IKDORAW7");
+    assert_eq!(cards[0].name, "Maxnormal.tv");
+    assert!(cards[0].named, "the answer carries the name with the URI");
+    assert!(
+        cards
+            .iter()
+            .all(|card| card.uri.starts_with("spotify:artist:")),
+        "only an artist URI can be drawn as a card"
+    );
+}
+
+#[test]
+fn a_neighbour_with_no_artist_uri_is_dropped() {
+    let answer = br#"{"uri":"spotify:station:x","related_artists":[
+        {"artistName":"Kept","artistUri":"spotify:artist:1"},
+        {"artistName":"Dropped","artistUri":""},
+        {"artistName":"Dropped","artistUri":"spotify:show:1"}
+    ]}"#;
+
+    let cards = related(answer).expect("an answer with related_artists is read");
+
+    assert_eq!(cards.len(), 1);
+    assert_eq!(cards[0].name, "Kept");
+}
+
+#[test]
+fn an_answer_with_no_neighbours_names_none() {
+    let answer = br#"{"uri":"spotify:station:x"}"#;
+
+    assert!(related(answer).expect("a station answer").is_empty());
+}
+
+#[test]
+fn a_body_that_is_not_json_is_not_a_station_answer() {
+    assert!(related(b"not json").is_err());
+}

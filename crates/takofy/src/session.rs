@@ -234,6 +234,13 @@ pub(crate) trait SessionHost: Send + 'static {
         seed: &StationSeed,
     ) -> impl Future<Output = Result<Station, SessionError>> + Send;
 
+    /// The artists a station names beside `artist`: this client's one read of an
+    /// artist's neighbours.
+    fn neighbours(
+        &self,
+        artist: &str,
+    ) -> impl Future<Output = Result<Vec<FollowedArtist>, SessionError>> + Send;
+
     /// The shows the user follows, newest follow first, each as its card draws
     /// it.
     fn followed_shows(
@@ -687,6 +694,16 @@ impl SessionHost for LiveSession {
     async fn station(&self, seed: &StationSeed) -> Result<Station, SessionError> {
         match &self.engine {
             Some(engine) => engine.station(seed).await.map_err(SessionError::Engine),
+            None => Err(SessionError::NotConnected),
+        }
+    }
+
+    async fn neighbours(&self, artist: &str) -> Result<Vec<FollowedArtist>, SessionError> {
+        match &self.engine {
+            Some(engine) => engine
+                .neighbours(artist)
+                .await
+                .map_err(SessionError::Engine),
             None => Err(SessionError::NotConnected),
         }
     }

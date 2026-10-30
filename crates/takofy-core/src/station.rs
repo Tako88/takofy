@@ -7,10 +7,19 @@ mod art;
 mod parse;
 
 use librespot::core::Session;
+use takofy_model::FollowedArtist;
 use takofy_model::home::{Station, StationSeed};
 
 use crate::context::PageTrack;
 use crate::remote::{LabelCache, label_tracks};
+
+/// How many rows a neighbour read asks for.
+///
+/// None are drawn — the answer's rows are what a station is and this read wants
+/// only the artists named beside them — but the count is not asked for as zero:
+/// a small answer is what the probe measured the endpoint answering, and one
+/// row was never tried.
+const NO_ROWS: usize = 20;
 
 /// How many rows one read asks the station for.
 ///
@@ -27,6 +36,24 @@ pub enum StationError {
     /// The answer was not the JSON a station is.
     #[error("the station answer was not a station")]
     Parse,
+}
+
+/// The artists a station names as related to `artist`, for the shelf built from
+/// one followed artist.
+///
+/// Read through the station endpoint rather than the artist payload: the
+/// payload's own related list answers empty, and this route carries the names
+/// with it, so the shelf needs no second read to label its cards.
+pub(crate) async fn read_neighbours(
+    session: &Session,
+    artist: &str,
+) -> Result<Vec<FollowedArtist>, StationError> {
+    let answer = session
+        .spclient()
+        .get_apollo_station("stations", artist, Some(NO_ROWS), Vec::new(), false)
+        .await
+        .map_err(|error| StationError::Source(error.to_string()))?;
+    parse::related(&answer)
 }
 
 /// One station and its rows, named by this session's label read.
