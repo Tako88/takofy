@@ -238,8 +238,8 @@ impl eframe::App for TakofyApp {
         if let Some(command) = self.library.saved_albums_request() {
             let _ = self.ui_end.commands.send(command);
         }
-        // The liked set is read once the playlists can name a signed-in window;
-        // a failed write arms one more read through the same path.
+        // The liked set is read once the session is ready; a failed write arms
+        // one more read through the same path.
         // A page's own album or show needs its saved state whatever the sidebar
         // is listing, so this is asked for by the page, not by a chip.
         if let Some(command) = self.library.saved_request() {

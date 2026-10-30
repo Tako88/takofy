@@ -141,6 +141,9 @@ pub struct ArtistPage<'a> {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Library {
     pub playlists: Load<Vec<PlaylistEntry>>,
+    /// Whether the session is connected and the rootlist walked, so reads that
+    /// need a session may be asked for.
+    session_ready: bool,
     /// The shows the user follows, as the library root draws them.
     pub followed: Load<Vec<FollowedShow>>,
     /// Whether the root draws its saved things as tiles or as rows.
@@ -355,9 +358,10 @@ impl Library {
     ///
     /// The sign-in and library updates are order-independent: `SignedIn` only
     /// starts a load that has not started, so a `Playlists` that arrives first
-    /// is left alone.
+    /// is left alone, and `LibraryReady` opens the list gates whenever it lands.
     pub fn apply(&mut self, update: &Update) {
         match update {
+            Update::LibraryReady => self.session_ready = true,
             Update::SignedIn => {
                 if self.playlists == Load::Idle {
                     self.playlists = Load::Loading;

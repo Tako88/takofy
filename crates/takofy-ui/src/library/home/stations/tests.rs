@@ -79,6 +79,7 @@ fn settled(
 ) -> Library {
     let mut library = Library::default();
     library.go_home(NOW_MS);
+    library.apply(&Update::LibraryReady);
     library.apply(&Update::Playlists(playlists));
     library.apply(&Update::FollowedArtists(artists));
     library.apply(&Update::SavedAlbums(albums));
@@ -89,6 +90,36 @@ fn settled(
     );
     library.apply(&Update::LikedTracks(tracks));
     library
+}
+
+/// A Home library whose lists answered while the label pass is still out.
+fn lists_before_the_labels(tracks: Vec<LikedTrack>) -> Library {
+    let mut library = Library::default();
+    library.go_home(NOW_MS);
+    library.apply(&Update::SignedIn);
+    library.apply(&Update::LibraryReady);
+    library.apply(&Update::FollowedArtists(vec![artist("spotify:artist:1")]));
+    library.apply(&Update::SavedAlbums(vec![album("spotify:album:1")]));
+    assert_eq!(
+        library.likes_request(),
+        Some(Command::LoadLikedTracks),
+        "arrange: the liked read must be in flight"
+    );
+    library.apply(&Update::LikedTracks(tracks));
+    assert_eq!(
+        library.playlists,
+        Load::Loading,
+        "arrange: the playlists are still unlabelled"
+    );
+    library
+}
+
+/// The kinds the seeds a shelf asks for were drawn from.
+fn asked_kinds(library: &mut Library) -> Vec<SeedKind> {
+    asked_seeds(library, 4)
+        .into_iter()
+        .map(|seed| seed.kind)
+        .collect()
 }
 
 /// The seeds a shelf asks for, in ask order.
@@ -139,6 +170,79 @@ fn nothing_is_asked_before_the_feeds_settle() {
     // The rootlist alone is not enough: the seeds are drawn from four feeds.
     library.apply(&Update::Playlists(vec![playlist("spotify:playlist:1")]));
     assert_eq!(library.stations_ask(), None);
+}
+
+/// Whether any of `asks` builds a station.
+fn no_station(asks: &[Command]) -> bool {
+    !asks
+        .iter()
+        .any(|ask| matches!(ask, Command::LoadHome(HomeAsk::Station { .. })))
+}
+
+#[test]
+fn seeds_wait_for_playlists_when_the_lists_land_first() {
+    let mut library = lists_before_the_labels(vec![liked("spotify:track:1")]);
+    assert_eq!(
+        library.stations_ask(),
+        None,
+        "the playlist seeds have not been read yet"
+    );
+    assert!(!library.home.stations.chosen());
+    assert_eq!(library.stations_section().presence(), Presence::Waiting);
+
+    library.apply(&Update::Playlists(vec![playlist("spotify:playlist:1")]));
+    let kinds = asked_kinds(&mut library);
+    assert!(
+        kinds.contains(&SeedKind::Playlist),
+        "the playlists landed, so their seed is in the band: {kinds:?}"
+    );
+}
+
+#[test]
+fn seeds_wait_for_playlists_after_the_hold_is_spent() {
+    let mut library = lists_before_the_labels(vec![liked("spotify:track:1")]);
+    let start = std::time::Instant::now();
+
+    let first = library.home_asks(start);
+    assert!(no_station(&first));
+    assert!(library.home_held(), "arrange: the dated feeds hold it");
+
+    let spent = library.home_asks(start + crate::library::HOME_HOLD);
+    assert!(no_station(&spent));
+    assert!(!library.home.stations.chosen(), "the seeds waited");
+
+    library.apply(&Update::Playlists(vec![playlist("spotify:playlist:1")]));
+    let kinds = asked_kinds(&mut library);
+    assert!(
+        kinds.contains(&SeedKind::Playlist),
+        "the playlists landed, so their seed is in the band: {kinds:?}"
+    );
+}
+
+#[test]
+fn seeds_wait_for_playlists_on_a_library_with_no_likes() {
+    let mut library = lists_before_the_labels(Vec::new());
+
+    let asks = library.home_asks(std::time::Instant::now());
+    assert!(no_station(&asks));
+    assert!(!library.home_held(), "nothing dated is owed");
+    assert!(!library.home.stations.chosen(), "the seeds waited");
+
+    library.apply(&Update::Playlists(vec![playlist("spotify:playlist:1")]));
+    let kinds = asked_kinds(&mut library);
+    assert!(
+        kinds.contains(&SeedKind::Playlist),
+        "the playlists landed, so their seed is in the band: {kinds:?}"
+    );
+}
+
+#[test]
+fn a_failed_rootlist_still_seeds_nothing() {
+    let mut library = four_feeds();
+    library.apply(&Update::PlaylistFailed(Failure::Load));
+
+    assert_eq!(library.stations_ask(), None);
+    assert!(!library.home.stations.chosen());
 }
 
 #[test]

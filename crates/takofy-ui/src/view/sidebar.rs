@@ -516,9 +516,9 @@ impl Retry {
 
 /// Reads what a list draws from the playlists load and its own.
 ///
-/// The playlists are checked first, because every followed request fires only
-/// once the playlists are Ready (`followed_request` and its siblings), and a
-/// retry of the playlists resets the followed lists to Idle.
+/// The playlists are checked first, because a list row is only drawn beside a
+/// named playlist list, and a retry of the playlists resets the followed lists
+/// to Idle.
 fn list_view<'a, T>(
     playlists: &'a Load<Vec<PlaylistEntry>>,
     list: &'a Load<Vec<T>>,

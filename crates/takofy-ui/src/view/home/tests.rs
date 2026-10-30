@@ -225,6 +225,7 @@ fn presence(library: &Library, slot: Slot) -> Presence {
 /// A library whose three Home sources have answered with these lists.
 fn settled(playlists: Vec<PlaylistEntry>, albums: Vec<SavedAlbum>) -> Library {
     let mut library = Library::starting_home(NOW_MS);
+    library.apply(&Update::LibraryReady);
     library.apply(&Update::Playlists(playlists));
     assert_eq!(
         library.likes_request(),

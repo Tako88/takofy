@@ -126,12 +126,16 @@ impl Library {
     /// Whether every feed the seeds are chosen from has settled.
     ///
     /// A failed rootlist is the page's own failure, so it never seeds a read
-    /// the gated page would not draw.
+    /// the gated page would not draw. The seeds wait for the playlists rather
+    /// than the other way round: the lists are read before the labels land, and
+    /// a seed set chosen then would be kept for the whole open without one
+    /// playlist in it.
     fn stations_settled(&self) -> bool {
         if matches!(phase_of(&self.playlists), Phase::Failed(_)) {
             return false;
         }
         [
+            phase_of(&self.playlists),
             phase_of(&self.saved_albums),
             phase_of(&self.followed_artists),
             self.likes.phase(),
