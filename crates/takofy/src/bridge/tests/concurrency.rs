@@ -276,18 +276,20 @@ fn independent_reads_overlap() {
         slot.install(Arc::new(RecordingWaker::default()));
         let _ = expect_updates(&ui_end, 2);
         let hold = hold_reads(&shared);
-        for command in [
+        let reads = [
             Command::LoadFollowedShows,
             Command::LoadFollowedArtists,
             Command::LoadSavedAlbums,
             Command::LoadLikedTracks,
-        ] {
+        ];
+        let asked = reads.len();
+        for command in reads {
             ui_end.commands.send(command).expect("read");
         }
-        until("the four reads in flight", || {
-            in_flight(&shared) == MAX_CONCURRENT_READS
+        until("every read in flight at once", || {
+            in_flight(&shared) == asked
         });
-        hold.add_permits(MAX_CONCURRENT_READS);
+        hold.add_permits(asked);
         (0..4)
             .map(|_| {
                 ui_end
@@ -631,7 +633,7 @@ fn a_read_arriving_inside_the_grace_joins_the_batch() {
 }
 
 #[test]
-fn the_cap_is_four() {
+fn the_cap_bounds_the_reads_in_flight() {
     let store = Arc::new(MemoryStore::seeded("stored"));
     let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
     let host = FakeHost::new(ConnectScript::Ok, RootlistScript::default());
@@ -641,7 +643,8 @@ fn the_cap_is_four() {
         slot.install(Arc::new(RecordingWaker::default()));
         let _ = expect_updates(&ui_end, 2);
         let hold = hold_reads(&shared);
-        for _ in 0..6 {
+        let sent = MAX_CONCURRENT_READS + 2;
+        for _ in 0..sent {
             ui_end
                 .commands
                 .send(Command::LoadFollowedShows)
@@ -652,15 +655,15 @@ fn the_cap_is_four() {
         assert_eq!(
             in_flight(&shared),
             MAX_CONCURRENT_READS,
-            "a fifth read is not admitted while four are in flight"
+            "a read past the cap is not admitted while the cap is taken"
         );
         assert_eq!(
             shared.followed_lists.load(Ordering::SeqCst),
             MAX_CONCURRENT_READS,
-            "only four reads have been asked for"
+            "only the reads inside the cap have been asked for"
         );
-        hold.add_permits(6);
-        for _ in 0..6 {
+        hold.add_permits(sent);
+        for _ in 0..sent {
             ui_end
                 .updates
                 .recv_timeout(Duration::from_secs(2))
@@ -669,7 +672,7 @@ fn the_cap_is_four() {
         assert_eq!(
             shared.reads_peak.load(Ordering::SeqCst),
             MAX_CONCURRENT_READS,
-            "no more than four reads ever ran at once"
+            "no more than the cap ever ran at once"
         );
     });
 }

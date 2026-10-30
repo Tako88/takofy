@@ -27,7 +27,11 @@ use super::wake::Notifier;
 use crate::session::SessionHost;
 
 /// How many reads the batch lets run at once.
-pub(super) const MAX_CONCURRENT_READS: usize = 4;
+///
+/// Six rather than four on the measured account: at four the places were all
+/// taken while the page still had reads to send, and the cap, not the link, was
+/// what the load waited on.
+pub(super) const MAX_CONCURRENT_READS: usize = 6;
 
 /// How long a batch with nothing in flight waits for the next ask before it
 /// hands the loop back.

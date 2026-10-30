@@ -41,11 +41,11 @@ The UI holds a snapshot of what it draws and emits commands. The binary owns the
 engine, runs it on a tokio runtime, drains commands, and sends updates back.
 
 To the worker a command is a read, an instant or a barrier. A read only reads,
-so reads overlap: four at a time, started in the order they were sent and
+so reads overlap: six at a time, started in the order they were sent and
 answered in whatever order they finish. An instant changes nothing a read can
 see — `Fetch`, `Report`, `Volume`, `Answer`, `Pause`, `Resume`, `Stop`, `Seek` —
 so it is served the moment the worker takes it, and the worker takes no command
-at all while all four places are taken. A barrier writes, orders the transport
+at all while all six places are taken. A barrier writes, orders the transport
 or changes the session — a `connect`, retiring a dead engine, a device watch, a
 library reload — so it ends admission, waits for the reads in flight, then runs
 alone, and the barriers behind it follow in the order they were sent. Teardown
@@ -335,7 +335,7 @@ The faces are the one thing the answer cannot carry, so they arrive in a second,
 speculative read: one batched artist request for every artist a surface will
 draw, keyed by the record's own id rather than by the URI the answer echoes, and
 bounded in time so it cannot hold up a play — a play waits for the reads
-already in flight, at most four — and this one gives up after three seconds. A
+already in flight, at most six — and this one gives up after three seconds. A
 reply counts only while the surface that asked is the one on screen — with one
 exception, a menu's reply filling the page when Enter hands the overlay over,
 because the cache is keyed by artist and the faces are the same faces. An
