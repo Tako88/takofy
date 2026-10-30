@@ -226,7 +226,9 @@ fn forgetting_one_slot_keeps_the_others_and_the_budget() {
     let uri = "spotify:track:a";
     home.mark_asked(&uris(&[uri]));
     home.apply_labels(&uris(&[uri]), &[named(uri, Some("spotify:album:r"))]);
-    assert!(home.budget.take(Slot::Counted));
+    for _ in 0..Budget::per_open(Slot::Counted) {
+        assert!(home.budget.take(Slot::Counted));
+    }
     let counted = home.counted.clone();
 
     home.forget_slot(Slot::Episodes);

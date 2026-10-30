@@ -6,12 +6,11 @@ use super::*;
 use crate::cover::Art;
 use crate::home::counted::Tile;
 use crate::library::Library;
-use crate::route::Page;
 use crate::theme::{Tokens, fonts, style};
 use crate::view::playlist::root::MediaDraw;
 use crate::view::test_support::click_events;
 
-/// The probe window: wide enough for four shelf tiles.
+/// The probe window: wide enough for three tiles.
 const PROBE: Vec2 = Vec2::new(900.0, 600.0);
 
 fn context() -> Context {
@@ -70,7 +69,7 @@ fn click(ctx: &Context, pos: Pos2, tiles: &Tiles<'_>) -> Option<Page> {
     opened
 }
 
-/// Where the shelf's `index`-th tile is laid out: its head, then the grid.
+/// Where the shelf lays out its `index`-th tile: the head, then the grid.
 fn tile_rect_for(ctx: &Context, index: usize) -> Rect {
     let tokens = Tokens::DARK;
     let mut found = None;
@@ -80,7 +79,17 @@ fn tile_rect_for(ctx: &Context, index: usize) -> Rect {
             .show(ui, |ui| {
                 crate::view::inner(ui, |ui| {
                     section::head(ui, crate::format::HOME_COUNTED_TITLE, "", &tokens);
-                    found = Some(root::media_grid(ui).card_rect(index));
+                    let width = ui.available_width();
+                    let placed = chips::grid(
+                        2,
+                        width,
+                        super::columns(width),
+                        extent::HOME_ROW_H,
+                        space::S2,
+                    );
+                    let (list, _) =
+                        ui.allocate_exact_size(Vec2::new(width, placed.height), Sense::hover());
+                    found = Some(placed.rects[index].translate(list.min.to_vec2()));
                 });
             });
     });
@@ -131,6 +140,19 @@ fn the_head_names_the_shelf_and_the_tiles_follow_it() {
 }
 
 #[test]
+fn a_tile_draws_its_name_and_no_number() {
+    let ctx = context();
+    let artists = [("spotify:artist:a", "A")];
+    let (_, output) = run(&ctx, Vec::new(), &tiles(&artists));
+    let drawn = painted(&output);
+    assert_eq!(
+        drawn,
+        vec![crate::format::HOME_COUNTED_TITLE, "A"],
+        "a tile says the artist's name and nothing it would have to count"
+    );
+}
+
+#[test]
 fn a_press_opens_the_artist() {
     let ctx = context();
     let artists = [("spotify:artist:a", "A"), ("spotify:artist:b", "B")];
@@ -141,6 +163,13 @@ fn a_press_opens_the_artist() {
         click(&ctx, at, &tiles),
         Some(Page::Artist("spotify:artist:b".to_owned()))
     );
+}
+
+#[test]
+fn a_page_holds_two_tiles_and_a_narrow_one_holds_a_single() {
+    assert_eq!(super::columns(700.0), 2, "the reference's page shows two");
+    assert_eq!(super::columns(extent::HOME_TILE_MIN_W), 1, "a tile's floor");
+    assert_eq!(super::columns(0.0), 1, "a tile never becomes a sliver");
 }
 
 #[test]

@@ -1,5 +1,5 @@
-use takofy_model::home::{HomeAnswer, HomeAsk, SeedKind, Station, StationSeed};
 use takofy_model::TrackEntry;
+use takofy_model::home::{HomeAnswer, HomeAsk, SeedKind, Station, StationSeed};
 
 use crate::message::Failure;
 
@@ -348,11 +348,7 @@ fn a_station_draws_the_sentence_for_its_own_seed() {
         )));
     }
     let band = state.band().expect("four stations landed");
-    let sources: Vec<&str> = band
-        .stations
-        .iter()
-        .map(|station| station.source)
-        .collect();
+    let sources: Vec<&str> = band.stations.iter().map(|station| station.source).collect();
     assert_eq!(
         sources,
         seeds

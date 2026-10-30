@@ -141,6 +141,11 @@ pub struct State {
     seed: Seed,
     /// The artists each answered liked song names, by the song's URI.
     labels: HashMap<String, Vec<(String, String)>>,
+    /// The face read for each ranked artist this open asked about; `None` is an
+    /// artist the wire gave no portrait this client can draw.
+    portraits: HashMap<String, Option<CoverSet>>,
+    /// The artists whose face this open asked for, so none is asked twice.
+    asked: HashSet<String>,
     read: Read,
 }
 
@@ -150,6 +155,7 @@ impl State {
         self.seed = seed.split(SALT);
         self.labels.clear();
         self.read = Read::Idle;
+        self.forget_faces();
     }
 
     /// The draw this open picks the ranking with.
@@ -198,6 +204,12 @@ impl State {
     /// ask waits for. The answer is indexed once, by the URI of each track it
     /// could name, so drawing never scans it.
     pub fn land(&mut self, answer: &HomeAnswer) {
+        if let HomeAnswer::Portrait { artist, portrait } = answer {
+            if self.asked.contains(artist) {
+                self.portraits.insert(artist.clone(), portrait.clone());
+            }
+            return;
+        }
         let HomeAnswer::Labelled { asked, named } = answer else {
             return;
         };
@@ -231,8 +243,31 @@ impl State {
         self.read = Read::Landed;
     }
 
+    /// The face this open landed for `artist`, when it landed one.
+    pub fn portrait(&self, artist: &str) -> Option<&CoverSet> {
+        self.portraits.get(artist)?.as_ref()
+    }
+
+    /// Whether this open already asked for `artist`'s face.
+    pub fn portrait_asked(&self, artist: &str) -> bool {
+        self.asked.contains(artist)
+    }
+
+    /// Records that `artist`'s face is asked for, so no later frame asks again.
+    pub fn ask_portrait(&mut self, artist: &str) {
+        self.asked.insert(artist.to_owned());
+    }
+
     /// Records that one of the shelf's reads failed.
     pub fn fail(&mut self, ask: &HomeAsk, failure: Failure) {
+        if let HomeAsk::Portrait { artist } = ask {
+            // A face that will not read is an artist without one: the shelf
+            // draws the slot and moves on rather than asking again.
+            if self.asked.contains(artist) {
+                self.portraits.insert(artist.clone(), None);
+            }
+            return;
+        }
         let HomeAsk::Labels { tracks } = ask else {
             return;
         };
@@ -245,6 +280,13 @@ impl State {
     pub fn forget(&mut self) {
         self.labels.clear();
         self.read = Read::Idle;
+        self.forget_faces();
+    }
+
+    /// Drops this open's faces, so a retry reads them again.
+    fn forget_faces(&mut self) {
+        self.portraits.clear();
+        self.asked.clear();
     }
 
     /// Whether `asked` is the ask this open sent, and has not answered yet.

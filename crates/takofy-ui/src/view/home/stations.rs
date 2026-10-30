@@ -30,8 +30,8 @@ use super::Pressed;
 /// The band's columns: a station beside its neighbour.
 const COLUMNS: usize = 2;
 
-/// One station row's height: the reference's 40pt cover inside its own air.
-const ROW_H: f32 = extent::QUEUE_ART + space::S1 * 2.0;
+/// One station row's height: the reference's 3rem box around a 40pt cover.
+const ROW_H: f32 = extent::HOME_ROW_H;
 
 /// The station's own play, at the reference's 2rem square.
 const PLAY: f32 = extent::BUTTON_LG;
@@ -169,10 +169,7 @@ fn cell_of(
 /// The rects of the rows under `head`, one per shown row.
 fn row_rect(rect: Rect, head: Rect, at: usize) -> Rect {
     Rect::from_min_size(
-        pos2(
-            rect.left(),
-            head.bottom() + space::S1 + at as f32 * ROW_H,
-        ),
+        pos2(rect.left(), head.bottom() + space::S1 + at as f32 * ROW_H),
         vec2(rect.width(), ROW_H),
     )
 }
@@ -204,7 +201,11 @@ fn row_of(
         .with(("home-station-row", station.uri, row.uri.as_str()));
     let response = ui.interact(rect, id, Sense::click());
     response.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::Role::Button, true, format!("{} by {}", row.title, row.artists))
+        egui::WidgetInfo::labeled(
+            egui::Role::Button,
+            true,
+            format!("{} by {}", row.title, row.artists),
+        )
     });
     if response.clicked() {
         response.request_focus();
@@ -219,7 +220,10 @@ fn row_of(
     let want = want_px(extent::QUEUE_ART, ui.pixels_per_point());
     let cover: Cover = draw.art.look(row.cover.as_ref(), want, draw.now);
     let art_rect = Rect::from_min_size(
-        pos2(rect.left() + space::S2, rect.center().y - extent::QUEUE_ART / 2.0),
+        pos2(
+            rect.left() + space::S2,
+            rect.center().y - extent::QUEUE_ART / 2.0,
+        ),
         Vec2::splat(extent::QUEUE_ART),
     );
     art::tile(
@@ -271,11 +275,8 @@ fn row_of(
     );
     let block = name.size().y + sub.size().y;
     let top = rect.center().y - block / 2.0;
-    ui.painter().galley(
-        Pos2::new(body_left, top),
-        name.clone(),
-        tokens.palette.text,
-    );
+    ui.painter()
+        .galley(Pos2::new(body_left, top), name.clone(), tokens.palette.text);
     ui.painter().galley(
         Pos2::new(body_left, top + name.size().y),
         sub,
@@ -283,7 +284,10 @@ fn row_of(
     );
     if let Some(meta) = meta {
         ui.painter().galley(
-            Pos2::new(rect.right() - space::S2 - meta.size().x, rect.center().y - meta.size().y / 2.0),
+            Pos2::new(
+                rect.right() - space::S2 - meta.size().x,
+                rect.center().y - meta.size().y / 2.0,
+            ),
             meta,
             tokens.palette.text_subtle,
         );

@@ -122,7 +122,8 @@ impl Budget {
             // Four stations, then the one read that lengths their rows.
             Slot::Stations => 5,
             Slot::Because => 4,
-            Slot::Counted => 1,
+            // The labels, then one face per artist the shelf draws.
+            Slot::Counted => 1 + super::counted::DRAWN,
             Slot::Episodes => 8,
         }
     }

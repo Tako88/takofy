@@ -148,7 +148,9 @@ fn places(ctx: &Context, rect: Rect) -> (Pos2, Vec<Pos2>) {
     let mut output = ctx.run_ui(input(Vec::new()), |ui| {
         let head = head_rect(ui, rect, &tokens);
         play = play_rect(head).center();
-        rows = (0..ROWS).map(|at| row_rect(rect, head, at).center()).collect();
+        rows = (0..ROWS)
+            .map(|at| row_rect(rect, head, at).center())
+            .collect();
     });
     output.textures_delta.clear();
     (play, rows)

@@ -330,7 +330,9 @@ fn the_shown_rows_lengths_are_one_batched_read() {
 fn a_row_a_label_read_already_named_is_not_asked_for_again() {
     let mut library = a_landed_band();
     let band = library.home.stations.band().expect("the band landed");
-    let named = band.stations[0].whole[band.stations[0].shown[0]].uri.clone();
+    let named = band.stations[0].whole[band.stations[0].shown[0]]
+        .uri
+        .clone();
     let mut answer = track(&named);
     answer.duration_ms = Some(252_000);
     library.apply(&Update::SavedLabelled {
@@ -340,10 +342,7 @@ fn a_row_a_label_read_already_named_is_not_asked_for_again() {
     let Some(Command::LoadHome(HomeAsk::Labels { tracks })) = library.stations_lengths_ask() else {
         panic!("the rest of the rows are still owed");
     };
-    assert!(
-        !tracks.contains(&named),
-        "a row already named is answered"
-    );
+    assert!(!tracks.contains(&named), "a row already named is answered");
 }
 
 #[test]

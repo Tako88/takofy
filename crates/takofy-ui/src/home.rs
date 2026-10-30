@@ -174,7 +174,10 @@ impl Home {
 
     /// Folds one answer into the shelf that asked for it.
     pub fn land(&mut self, answer: &HomeAnswer) {
-        if matches!(answer, HomeAnswer::Labelled { .. }) {
+        if matches!(
+            answer,
+            HomeAnswer::Labelled { .. } | HomeAnswer::Portrait { .. }
+        ) {
             self.counted.land(answer);
         }
         self.stations.land(answer);
@@ -184,7 +187,7 @@ impl Home {
 
     /// Records that the read `ask` named failed.
     pub fn fail(&mut self, ask: &HomeAsk, failure: Failure) {
-        if matches!(ask, HomeAsk::Labels { .. }) {
+        if matches!(ask, HomeAsk::Labels { .. } | HomeAsk::Portrait { .. }) {
             self.counted.fail(ask, failure);
         }
         self.stations.fail(ask, failure);

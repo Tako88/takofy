@@ -68,7 +68,10 @@ impl Library {
             .or_else(|| self.because_ask())
             .or_else(|| self.episodes_ask())
             .or_else(|| self.stations_ask())
+            // Faces and lengths are what the shelves decorate with, so they are
+            // asked for last: no shelf waits on one to say what it holds.
             .or_else(|| self.stations_lengths_ask())
+            .or_else(|| self.counted_portrait_ask())
     }
 
     /// Asks again for what the shelf in `slot` reads.

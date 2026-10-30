@@ -106,12 +106,39 @@ impl Library {
             .map(|artist| Tile {
                 uri: artist.uri,
                 name: artist.name,
-                portrait: followed
-                    .and_then(|list| list.iter().find(|card| card.uri == artist.uri))
-                    .and_then(|card| card.portrait.as_ref()),
+                // The face this open read for the artist, or the one the
+                // followed list already holds: a followed artist is never read
+                // twice for a picture the library already has.
+                portrait: self.home.counted.portrait(artist.uri).or_else(|| {
+                    followed
+                        .and_then(|list| list.iter().find(|card| card.uri == artist.uri))
+                        .and_then(|card| card.portrait.as_ref())
+                }),
             })
             .collect();
         Some(Tiles { artists })
+    }
+
+    /// The face read the counted shelf owes, if one is due.
+    ///
+    /// One artist per call, after the label read has settled: the ranking is what
+    /// names the artists worth a read, and a face the followed list already holds
+    /// is not read again. An artist that would not read is not asked twice.
+    pub(super) fn counted_portrait_ask(&mut self) -> Option<Command> {
+        if !self.home.counted.settled() {
+            return None;
+        }
+        let tiles = self.counted_tiles()?;
+        let artist = tiles
+            .artists
+            .iter()
+            .find(|tile| tile.portrait.is_none() && !self.home.counted.portrait_asked(tile.uri))
+            .map(|tile| tile.uri.to_owned())?;
+        if !self.home.budget.take(Slot::Counted) {
+            return None;
+        }
+        self.home.counted.ask_portrait(&artist);
+        Some(Command::LoadHome(HomeAsk::Portrait { artist }))
     }
 
     /// Every artist the library holds, once per item that names it.

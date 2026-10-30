@@ -66,6 +66,8 @@ pub enum HomeAsk {
     Station { seed: StationSeed },
     /// Names for these tracks, in the order they were asked for.
     Labels { tracks: Vec<String> },
+    /// One artist's own record, for the face the counted shelf draws.
+    Portrait { artist: String },
 }
 
 /// The answer to a [`HomeAsk`], matched back to it by what the ask named.
@@ -83,5 +85,12 @@ pub enum HomeAnswer {
     Labelled {
         asked: Vec<String>,
         named: Vec<TrackEntry>,
+    },
+    /// One artist's portrait, absent when the wire carried none this client can
+    /// draw. The artist is named back so a late answer lands on the shelf that
+    /// asked rather than on whichever is open.
+    Portrait {
+        artist: String,
+        portrait: Option<CoverSet>,
     },
 }

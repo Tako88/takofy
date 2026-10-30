@@ -376,7 +376,9 @@ fn retrying_one_shelf_keeps_another_ready_and_its_budget() {
     });
     let before = drawn_uris(&library.home_shelf(4));
     assert_eq!(before.len(), 2, "arrange: the dated shelf draws");
-    assert!(library.home.budget.take(Slot::Counted));
+    for _ in 0..crate::home::Budget::per_open(Slot::Counted) {
+        assert!(library.home.budget.take(Slot::Counted));
+    }
 
     assert_eq!(library.retry_home(Slot::Episodes), None);
 

@@ -171,6 +171,11 @@ pub mod extent {
     /// A queue row's cover tile, 2.5 rem. A different box from a library row's,
     /// because the panel's rows are the reference's own grid.
     pub const QUEUE_ART: f32 = 40.0;
+    /// Home's compact row: the reference's 3rem box that holds a 2.5rem cover.
+    /// A station's track row and a counted artist sit in it.
+    pub const HOME_ROW_H: f32 = 48.0;
+    /// A Home tile's floor, the reference's 15rem. Two to a page, never three.
+    pub const HOME_TILE_MIN_W: f32 = 240.0;
     /// The Now Playing art's floor, 4 rem. The art gives way to the pane's own
     /// minimum at the shortest window the panel is drawn at, and stops here.
     pub const NOWPLAYING_ART_MIN: f32 = 64.0;

@@ -45,6 +45,17 @@ pub(super) async fn load_home<H: SessionHost>(
             Some(Ok(station)) => answered(notifier, HomeAnswer::Station(station)),
             Some(Err(error)) => failed(notifier, asked, library_failure(&error)),
         },
+        HomeAsk::Portrait { artist } => match stop_or(stop, host.artist(&artist)).await {
+            None => Step::Stopped,
+            Some(Ok(page)) => answered(
+                notifier,
+                HomeAnswer::Portrait {
+                    artist,
+                    portrait: page.artist.portrait,
+                },
+            ),
+            Some(Err(error)) => failed(notifier, asked, library_failure(&error)),
+        },
         HomeAsk::Labels { tracks } => match stop_or(stop, host.release_tracks(&tracks)).await {
             None => Step::Stopped,
             // Every asked track is answered, named or fallen back to its URI:
