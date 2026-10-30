@@ -43,10 +43,11 @@ const MAX_ATTEMPTS: u32 = 3;
 pub enum Look {
     /// A decoded image is held.
     Ready,
-    /// A fetch is wanted or running, or the entry is waiting to retry.
+    /// A fetch is wanted or running, and no attempt has failed yet.
     Loading,
-    /// The cover could not be fetched, and either is waiting to retry or has
-    /// exhausted its attempts.
+    /// An attempt has failed. A retry may be pending or running, or the
+    /// attempts may be spent; the look stays failed across its retries until an
+    /// image arrives, and an evicted entry starts over when it is drawn again.
     Failed,
 }
 
@@ -56,9 +57,11 @@ enum Entry {
     /// The decoded image is held, and its pixels cost `bytes`.
     Ready { bytes: usize },
     /// A fetch is wanted but has not been sent, because the in-flight cap was
-    /// full when it was last looked at.
+    /// full when it was last looked at. `attempts` counts the failures before
+    /// it, so a wanted retry is told apart from a first attempt.
     Wanted { attempts: u32 },
-    /// A fetch has been sent; `started` is when.
+    /// A fetch has been sent; `started` is when. `attempts` counts the failures
+    /// before it.
     InFlight { started: Instant, attempts: u32 },
     /// A fetch failed. `retry_at` is `None` once the attempts are exhausted.
     Failed {
@@ -74,6 +77,16 @@ impl Entry {
             Entry::Ready { bytes } => bytes,
             _ => 0,
         }
+    }
+}
+
+/// The look for a fetch that has `attempts` failures behind it, which is the
+/// same failure however long its retry has been pending.
+fn looks(attempts: u32) -> Look {
+    if attempts > 0 {
+        Look::Failed
+    } else {
+        Look::Loading
     }
 }
 
@@ -123,15 +136,16 @@ impl Cache {
                 Look::Loading
             }
             Some(Entry::Ready { .. }) => Look::Ready,
-            Some(Entry::Wanted { .. }) => Look::Loading,
-            Some(Entry::InFlight { .. }) => Look::Loading,
-            Some(Entry::Failed { attempts, retry_at }) => match retry_at {
-                Some(at) if at <= now => {
+            Some(Entry::Wanted { attempts }) => looks(attempts),
+            Some(Entry::InFlight { attempts, .. }) => looks(attempts),
+            Some(Entry::Failed { attempts, retry_at }) => {
+                // A due retry is handed to `wanted`, which serves it, but the
+                // box keeps the failure it already showed.
+                if matches!(retry_at, Some(at) if at <= now) {
                     self.entries.insert(url.clone(), Entry::Wanted { attempts });
-                    Look::Loading
                 }
-                _ => Look::Failed,
-            },
+                Look::Failed
+            }
         };
         self.evict();
         look
