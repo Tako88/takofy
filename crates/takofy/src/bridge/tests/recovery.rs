@@ -162,6 +162,13 @@ fn queued(ui_end: &UiEnd) -> Vec<Update> {
     seen
 }
 
+/// Whether one track has been asked for by the fake player.
+fn loaded(shared: &FakeState, uri: &str) -> bool {
+    calls(shared)
+        .iter()
+        .any(|call| matches!(call, Call::Load { uri: asked, .. } if asked == uri))
+}
+
 /// The event sender of the current fake player.
 fn events(shared: &FakeState) -> UnboundedSender<PlaybackEvent> {
     shared
@@ -871,18 +878,17 @@ fn a_command_during_the_watch_does_not_spend_the_start() {
                 uri: SECOND.to_owned(),
             })
             .expect("play");
-        // Long enough for the command to reach the attempt, which must
-        // keep the watch it started.
-        std::thread::sleep(Duration::from_millis(20));
+        // The command waits: nothing the attempt does is visible until the
+        // watch answers, so the check is a window during which the pressed
+        // track must not load, not an instant that a slow machine can miss.
+        std::thread::sleep(Duration::from_millis(150));
         assert!(
-            release.send(()).is_ok(),
-            "the watch is still waiting for its answer"
-        );
-        until("the pressed track", || {
+            !loaded(&watched, SECOND),
+            "the watch holds the pressed track back: {:?}",
             calls(&watched)
-                .iter()
-                .any(|call| matches!(call, Call::Load { .. }))
-        });
+        );
+        let _ = release.send(());
+        until("the pressed track", || loaded(&watched, SECOND));
         queued(&ui_end)
     });
 
@@ -899,7 +905,7 @@ fn a_command_during_the_watch_does_not_spend_the_start() {
     );
     let load = calls(&shared)
         .into_iter()
-        .find(|call| matches!(call, Call::Load { .. }))
+        .find(|call| matches!(call, Call::Load { uri, .. } if uri == SECOND))
         .expect("the pressed track is loaded");
     assert_eq!(
         load,
