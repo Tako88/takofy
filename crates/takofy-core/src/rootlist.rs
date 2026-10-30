@@ -133,7 +133,7 @@ fn playlist_uri(item: &Item) -> Option<String> {
 /// A finished walk: the playlists it kept, and whether its indices are the
 /// wire's own.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Walked {
+pub struct Walked {
     pub playlists: Vec<RootEntry>,
     /// What the sidebar may write with, or `None` when the read named no
     /// revision.

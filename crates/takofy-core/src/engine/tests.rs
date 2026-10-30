@@ -2,10 +2,11 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use super::{Engine, page_cover, resolve_within, search_page};
+use super::{Engine, RootlistRead, page_cover, resolve_within, search_page};
 use crate::context::{ContextError, Page, PageSource, PageTrack, Resolved};
 use crate::remote::titled_label;
-use takofy_model::{CoverSet, CoverUrl, Report, Status, TrackEntry};
+use crate::rootlist::Walked;
+use takofy_model::{CoverSet, CoverUrl, PlaylistAccess, Report, Revision, Status, TrackEntry};
 
 /// A source that records every URI it is asked to resolve and answers one
 /// page with one track.
@@ -158,6 +159,32 @@ async fn track_pages_borrow_the_engines_cache() {
     ));
     let pages = engine.tracks("spotify:playlist:abc");
     assert!(std::ptr::eq(pages.labels, &engine.labels));
+}
+
+/// The label stage answers an empty walk as it found it: the access the walk
+/// named is carried into the read, and the entries stay empty.
+#[tokio::test]
+async fn labelling_an_empty_walk_keeps_its_access() {
+    let engine = Engine::new(session());
+    let access = PlaylistAccess {
+        revision: Revision::from_wire(&[7]).expect("a revision"),
+        editable: true,
+    };
+
+    let read = engine
+        .label_rootlist(Walked {
+            playlists: Vec::new(),
+            access: Some(access.clone()),
+        })
+        .await;
+
+    assert_eq!(
+        read,
+        RootlistRead {
+            entries: Vec::new(),
+            access: Some(access),
+        }
+    );
 }
 
 #[tokio::test]
