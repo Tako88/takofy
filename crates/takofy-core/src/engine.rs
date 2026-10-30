@@ -21,11 +21,11 @@ use crate::presence::Presence;
 use crate::registry::{Registry, Verdict};
 use crate::remote::{
     LabelCache, ROOTLIST_WIRE, RemoteContext, RemoteRootlist, label_playlists, label_tracks,
-    read_album, read_artist, read_followed_artists, read_followed_shows, read_liked_tracks,
-    read_lyrics, read_playlist_state, read_portraits, read_related, read_release_tracks,
-    read_saved_albums, read_saved_state, read_show, write_add, write_create, write_follow,
-    write_like, write_move, write_remove, write_rename, write_rootlist_add, write_rootlist_move,
-    write_rootlist_remove, write_saved,
+    read_album, read_artist, read_episodes, read_followed_artists, read_followed_shows,
+    read_liked_tracks, read_lyrics, read_playlist_state, read_portraits, read_related,
+    read_release_tracks, read_saved_albums, read_saved_state, read_show, write_add, write_create,
+    write_follow, write_like, write_move, write_remove, write_rename, write_rootlist_add,
+    write_rootlist_move, write_rootlist_remove, write_saved,
 };
 use crate::rootlist::{RootEntry, RootlistError, fetch_all};
 use crate::search::search_uri;
@@ -595,6 +595,16 @@ impl Engine {
     /// A URI that does not name a show fails before any request is made.
     pub async fn show(&self, show_uri: &str) -> Result<ShowDetail, EngineError> {
         Ok(read_show(&self.session, show_uri).await?)
+    }
+
+    /// Several shows: each show's metadata and every episode of all of them,
+    /// labelled in one read.
+    ///
+    /// A show that does not answer is left out of the answer rather than
+    /// answered empty, and only a read where every show failed is an error. The
+    /// shows and their episodes stay in the order they were read.
+    pub async fn episodes(&self, shows: &[String]) -> Result<Vec<ShowDetail>, EngineError> {
+        Ok(read_episodes(&self.session, shows).await?)
     }
 
     /// One station read from its seed, its rows labelled.

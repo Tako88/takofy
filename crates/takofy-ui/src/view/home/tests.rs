@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use egui::{Context, Event, Pos2, RawInput, Rect, Vec2};
-use takofy_model::home::{HomeAnswer, HomeAsk};
+use takofy_model::home::{HomeAnswer, HomeAsk, Station};
 use takofy_model::{
     Episode, FollowedArtist, FollowedShow, PlaylistEntry, PublishedAt, SavedAlbum, SavedAt, Show,
     ShowDetail,
@@ -186,18 +186,34 @@ fn detail(uri: &str) -> ShowDetail {
 }
 
 /// The one related read the shelf owes, as the artist it is for.
+///
+/// The stations shelf is asked first, so its reads are answered empty: this
+/// fixture draws no band, and the station asks do not stand in for the one this
+/// returns.
 fn related_ask(library: &mut Library) -> String {
-    match library.home_request() {
-        Some(Command::LoadHome(HomeAsk::Related { artist })) => artist,
-        other => panic!("expected one related read, got {other:?}"),
+    loop {
+        match library.home_request() {
+            Some(Command::LoadHome(HomeAsk::Related { artist })) => return artist,
+            Some(Command::LoadHome(HomeAsk::Station { seed })) => {
+                library.apply(&Update::Home(HomeAnswer::Station(Station {
+                    seed: seed.clone(),
+                    uri: format!("spotify:station:{}", seed.uri),
+                    title: seed.uri.clone(),
+                    subtitle: None,
+                    art: None,
+                    rows: Vec::new(),
+                })));
+            }
+            other => panic!("expected one related read, got {other:?}"),
+        }
     }
 }
 
-/// The one show read the shelf owes.
-fn show_ask(library: &mut Library) -> String {
+/// The shows the one pooled episodes read names.
+fn show_ask(library: &mut Library) -> Vec<String> {
     match library.home_request() {
-        Some(Command::LoadHome(HomeAsk::Show { show })) => show,
-        other => panic!("expected one show read, got {other:?}"),
+        Some(Command::LoadHome(HomeAsk::Episodes { shows })) => shows,
+        other => panic!("expected one episodes read, got {other:?}"),
     }
 }
 
@@ -243,8 +259,10 @@ fn all_ready() -> Library {
         "spotify:show:a",
         "Show A",
     )]));
-    let uri = show_ask(&mut library);
-    library.apply(&Update::Home(HomeAnswer::Show(detail(&uri))));
+    let shows = show_ask(&mut library);
+    library.apply(&Update::Home(HomeAnswer::Episodes(
+        shows.iter().map(|uri| detail(uri)).collect(),
+    )));
     library
 }
 
@@ -342,9 +360,9 @@ fn episodes_failed() -> Library {
         "spotify:show:a",
         "Show A",
     )]));
-    let uri = show_ask(&mut library);
+    let shows = show_ask(&mut library);
     library.apply(&Update::HomeFailed {
-        ask: HomeAsk::Show { show: uri },
+        ask: HomeAsk::Episodes { shows },
         failure: Failure::Load,
     });
     library

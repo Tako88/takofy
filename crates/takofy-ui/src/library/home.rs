@@ -11,10 +11,18 @@ mod dated;
 mod episodes;
 mod stations;
 
+use std::time::{Duration, Instant};
+
 use crate::home::{Fit, Phase, Sections, Shelf, Slot};
 use crate::message::Command;
 
 use super::{Library, Load};
+
+/// How long the built shelves yield to the dated shelf's feeds.
+///
+/// The wait is a read-scheduling bound rather than a token: a feed that hangs
+/// costs the page this much and no more.
+pub const HOME_HOLD: Duration = Duration::from_secs(1);
 
 /// What one load is doing, as a source of a shelf.
 pub(super) fn phase_of<T>(load: &Load<T>) -> Phase {
@@ -55,23 +63,89 @@ impl Library {
         dated::home_shelf(self, cards)
     }
 
-    /// The one read Home owes this frame, if any.
+    /// Everything Home asks for this frame, in the order the page wants it.
     ///
-    /// One ask per frame, in the page's shelf order, so a session is asked for
-    /// one thing at a time instead of five at once. Off Home nothing is owed:
-    /// the shelves are not on screen to draw an answer.
-    pub fn home_request(&mut self) -> Option<Command> {
+    /// The dated shelf's own label read goes out first. The built shelves' asks
+    /// follow it, and wait while the dated feeds are still outstanding for at
+    /// most [`HOME_HOLD`]: a feed that hangs costs the page that bound and no
+    /// more. Off Home nothing is asked, because nothing is on screen to draw an
+    /// answer.
+    pub fn home_asks(&mut self, now: Instant) -> Vec<Command> {
+        if !self.on_home() {
+            self.held_since = None;
+            self.hold_spent = false;
+            return Vec::new();
+        }
+        let mut asks: Vec<Command> = self.home_labels_request().into_iter().collect();
+        if self.home_intake().settled() || self.hold_spent {
+            asks.extend(self.home_requests());
+            self.held_since = None;
+            self.hold_spent = true;
+            return asks;
+        }
+        if !self.dated_label_due() {
+            asks.extend(self.home_requests());
+            return asks;
+        }
+        match self.held_since {
+            None => self.held_since = Some(now),
+            Some(since) if now.saturating_duration_since(since) >= HOME_HOLD => {
+                self.held_since = None;
+                self.hold_spent = true;
+                asks.extend(self.home_requests());
+            }
+            Some(_) => {}
+        }
+        asks
+    }
+
+    /// Whether the wait for the dated feeds is what is holding the built asks.
+    pub fn home_held(&self) -> bool {
+        self.held_since.is_some()
+            && !self.hold_spent
+            && !self.home_intake().settled()
+            && self.dated_label_due()
+    }
+
+    /// Whether the dated shelf may still owe a label read worth yielding to.
+    ///
+    /// A failed rootlist has no feeds left to wait for, and a likes read that
+    /// answered with nothing will never ask for a label.
+    fn dated_label_due(&self) -> bool {
+        !matches!(phase_of(&self.playlists), Phase::Failed(_))
+            && (self.likes.any() || matches!(self.likes.phase(), Phase::Pending))
+    }
+
+    /// The built shelves' one ask for this frame, if any.
+    ///
+    /// The order is the page's own, so the first shelf the reader sees is the
+    /// first read started.
+    pub(crate) fn home_request(&mut self) -> Option<Command> {
         if !self.on_home() {
             return None;
         }
-        self.counted_ask()
+        self.stations_ask()
             .or_else(|| self.because_ask())
+            .or_else(|| self.counted_ask())
             .or_else(|| self.episodes_ask())
-            .or_else(|| self.stations_ask())
             // Faces and lengths are what the shelves decorate with, so they are
             // asked for last: no shelf waits on one to say what it holds.
             .or_else(|| self.stations_lengths_ask())
             .or_else(|| self.counted_portrait_ask())
+    }
+
+    /// Every built ask this open still owes.
+    ///
+    /// They all go out in the frame that owes them: the worker bounds the reads
+    /// in flight, so holding some back for a later frame would only leave its
+    /// places idle. Each ask spends its shelf's allowance, so the loop ends even
+    /// when a shelf's answer never arrives.
+    fn home_requests(&mut self) -> Vec<Command> {
+        let mut asks = Vec::new();
+        while let Some(ask) = self.home_request() {
+            asks.push(ask);
+        }
+        asks
     }
 
     /// Asks again for what the shelf in `slot` reads.

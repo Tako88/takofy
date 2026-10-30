@@ -234,8 +234,8 @@ fn another_shelfs_read_is_not_this_shelfs_failure() {
     state.open(seed());
 
     state.fail(
-        &HomeAsk::Show {
-            show: "spotify:show:s".to_owned(),
+        &HomeAsk::Episodes {
+            shows: vec!["spotify:show:s".to_owned()],
         },
         Failure::Followed,
     );

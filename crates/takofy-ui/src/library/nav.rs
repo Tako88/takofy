@@ -68,6 +68,10 @@ impl Library {
     /// A page change ends the like sentence and any play pressed on the shelf:
     /// the row the play names is no longer on screen.
     pub(super) fn left_page(&mut self) {
+        // The wait for the dated feeds belongs to one visit: reopening Home
+        // arms its own.
+        self.held_since = None;
+        self.hold_spent = false;
         self.likes.clear_notice();
         self.track_filter.clear();
         self.play = None;

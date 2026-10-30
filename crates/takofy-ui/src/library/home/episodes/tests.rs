@@ -41,41 +41,39 @@ fn episode(show: &str, at: usize, days_ago: u64) -> Episode {
     }
 }
 
-fn detail(show: &str, days_ago: u64) -> ShowDetail {
+fn show(uri: &str) -> Show {
+    Show {
+        uri: uri.to_owned(),
+        name: uri.to_owned(),
+        publisher: String::new(),
+        description: String::new(),
+        cover: None,
+    }
+}
+
+fn detail(uri: &str, days_ago: u64) -> ShowDetail {
     ShowDetail {
-        show: Show {
-            uri: show.to_owned(),
-            name: show.to_owned(),
-            publisher: String::new(),
-            description: String::new(),
-            cover: None,
-        },
+        show: show(uri),
         episodes: (0..3)
-            .map(|at| episode(show, at, days_ago + at as u64))
+            .map(|at| episode(uri, at, days_ago + at as u64))
             .collect(),
     }
 }
 
 /// One show answered with exactly `episodes`.
-fn detail_with(show: &str, episodes: Vec<Episode>) -> ShowDetail {
+fn detail_with(uri: &str, episodes: Vec<Episode>) -> ShowDetail {
     ShowDetail {
-        show: Show {
-            uri: show.to_owned(),
-            name: show.to_owned(),
-            publisher: String::new(),
-            description: String::new(),
-            cover: None,
-        },
+        show: show(uri),
         episodes,
     }
 }
 
 /// An episode the label read could not name: its URI stands in for its title
 /// and it carries no publish date, so the pool drops it.
-fn unnamed(show: &str, at: usize) -> Episode {
+fn unnamed(uri: &str, at: usize) -> Episode {
     Episode {
-        uri: format!("spotify:episode:{show}:{at}"),
-        title: format!("spotify:episode:{show}:{at}"),
+        uri: format!("spotify:episode:{uri}:{at}"),
+        title: format!("spotify:episode:{uri}:{at}"),
         show: String::new(),
         show_uri: None,
         description: None,
@@ -93,77 +91,79 @@ fn library(shows: Vec<FollowedShow>) -> Library {
     library
 }
 
-/// The show the shelf owes a read for, which it must be asking for one.
-fn ask(library: &mut Library) -> String {
-    let Some(Command::LoadHome(HomeAsk::Show { show })) = library.episodes_ask() else {
-        panic!("the shelf owes a show read");
+/// The shows the one pooled read names, which it must be asking for.
+fn ask(library: &mut Library) -> Vec<String> {
+    let Some(Command::LoadHome(HomeAsk::Episodes { shows })) = library.episodes_ask() else {
+        panic!("the shelf owes one pooled read");
     };
-    show
+    shows
 }
 
-fn answer(library: &mut Library, detail: ShowDetail) {
-    library.apply(&Update::Home(HomeAnswer::Show(detail)));
+fn answer(library: &mut Library, details: Vec<ShowDetail>) {
+    library.apply(&Update::Home(HomeAnswer::Episodes(details)));
 }
 
-fn fail(library: &mut Library, show: &str, failure: Failure) {
+fn fail(library: &mut Library, shows: &[String], failure: Failure) {
     library.apply(&Update::HomeFailed {
-        ask: HomeAsk::Show {
-            show: show.to_owned(),
+        ask: HomeAsk::Episodes {
+            shows: shows.to_vec(),
         },
         failure,
     });
 }
 
-#[test]
-fn the_ask_names_each_newest_show_once_within_the_allowance() {
-    let mut library = library(followed(10));
-    let mut asked: Vec<String> = Vec::new();
-    while let Some(Command::LoadHome(HomeAsk::Show { show })) = library.episodes_ask() {
-        assert!(!asked.contains(&show), "one show was asked twice");
-        asked.push(show);
-    }
-
-    assert_eq!(asked.len(), SHOWS);
-    assert_eq!(asked.len(), Budget::per_open(Slot::Episodes));
-    let newest: Vec<String> = (0..SHOWS).map(show_uri).collect();
-    assert_eq!(asked, newest, "the asks left the newest-followed order");
-    assert_eq!(library.home.budget.left(Slot::Episodes), 0);
+/// Every asked show answered, which is what an unpooled answer would look like.
+fn all_answered(library: &mut Library, shows: &[String], days_ago: u64) {
+    answer(
+        library,
+        shows.iter().map(|uri| detail(uri, days_ago)).collect(),
+    );
 }
 
 #[test]
-fn waiting_until_every_asked_show_answered() {
+fn the_one_ask_names_the_newest_shows_in_follow_order() {
+    let mut library = library(followed(10));
+
+    let asked = ask(&mut library);
+
+    assert_eq!(asked.len(), SHOWS);
+    assert_eq!(
+        Budget::per_open(Slot::Episodes),
+        1,
+        "the whole shelf costs one read however many shows it names"
+    );
+    let newest: Vec<String> = (0..SHOWS).map(show_uri).collect();
+    assert_eq!(asked, newest, "the read left the newest-followed order");
+    assert_eq!(library.home.budget.left(Slot::Episodes), 0);
+    assert_eq!(library.episodes_ask(), None, "one open sends one read");
+}
+
+#[test]
+fn waiting_until_the_one_read_answers() {
     let mut library = library(followed(4));
-    let mut shows: Vec<String> = (0..4).map(|_| ask(&mut library)).collect();
+    let shows = ask(&mut library);
 
     assert!(
         matches!(library.episodes_section(), Section::Waiting),
-        "the shelf drew while its reads were out"
-    );
-    for show in &shows[..3] {
-        answer(&mut library, detail(show, 1));
-    }
-    assert!(
-        matches!(library.episodes_section(), Section::Waiting),
-        "one show was still out, so the shelf had not settled"
+        "the shelf drew while its read was out"
     );
 
-    let last = shows.pop().expect("four shows were asked");
-    answer(&mut library, detail(&last, 1));
+    answer(&mut library, vec![detail(&shows[0], 1)]);
     assert!(
         matches!(library.episodes_section(), Section::Ready(_)),
-        "every asked show answered and nothing was drawn"
+        "the answer landed and the shelf did not draw"
     );
 }
 
 #[test]
 fn one_failed_show_leaves_the_others_drawn() {
     let mut library = library(followed(4));
-    let shows: Vec<String> = (0..4).map(|_| ask(&mut library)).collect();
+    let shows = ask(&mut library);
 
-    for show in &shows[..3] {
-        answer(&mut library, detail(show, 1));
-    }
-    fail(&mut library, &shows[3], Failure::Load);
+    answer(
+        &mut library,
+        shows[..3].iter().map(|uri| detail(uri, 1)).collect(),
+    );
 
     let Section::Ready(list) = library.episodes_section() else {
         panic!("three shows landed and the shelf is not drawn");
@@ -179,18 +179,16 @@ fn one_failed_show_leaves_the_others_drawn() {
         drawn
             .iter()
             .all(|uri| shows[..3].iter().any(|show| show == uri)),
-        "a row came from the show that failed"
+        "a row came from the show the answer left out"
     );
 }
 
 #[test]
 fn every_show_failing_settles_failed() {
     let mut library = library(followed(4));
-    let shows: Vec<String> = (0..4).map(|_| ask(&mut library)).collect();
+    let shows = ask(&mut library);
 
-    for show in &shows {
-        fail(&mut library, show, Failure::Load);
-    }
+    fail(&mut library, &shows, Failure::Load);
 
     assert!(
         matches!(library.episodes_section(), Section::Failed(Failure::Load)),
@@ -206,28 +204,27 @@ fn every_show_failing_settles_failed() {
 #[test]
 fn a_stale_show_answer_is_ignored() {
     let mut library = library(followed(1));
-    let first = ask(&mut library);
+    let shows = ask(&mut library);
 
-    answer(&mut library, detail("spotify:show:elsewhere", 1));
+    answer(&mut library, vec![detail("spotify:show:elsewhere", 1)]);
     assert!(
         matches!(library.episodes_section(), Section::Waiting),
         "an answer this open never asked for settled the shelf"
     );
 
-    answer(&mut library, detail(&first, 1));
+    all_answered(&mut library, &shows, 1);
     assert!(
         matches!(library.episodes_section(), Section::Ready(_)),
-        "the asked show answered and the shelf did not draw"
+        "the asked shows answered and the shelf did not draw"
     );
 }
 
 #[test]
 fn a_new_show_that_landed_empty_beside_a_failure_is_failed_not_absent() {
     let mut library = library(followed(2));
-    let shows: Vec<String> = (0..2).map(|_| ask(&mut library)).collect();
+    let shows = ask(&mut library);
 
-    answer(&mut library, detail_with(&shows[0], Vec::new()));
-    fail(&mut library, &shows[1], Failure::Load);
+    answer(&mut library, vec![detail_with(&shows[0], Vec::new())]);
 
     assert!(
         matches!(library.episodes_section(), Section::Failed(Failure::Load)),
@@ -238,14 +235,15 @@ fn a_new_show_that_landed_empty_beside_a_failure_is_failed_not_absent() {
 #[test]
 fn shows_that_named_nothing_are_a_failure_not_a_quiet_library() {
     let mut library = library(followed(2));
-    let shows: Vec<String> = (0..2).map(|_| ask(&mut library)).collect();
+    let shows = ask(&mut library);
 
-    for show in &shows {
-        answer(
-            &mut library,
-            detail_with(show, (0..3).map(|at| unnamed(show, at)).collect()),
-        );
-    }
+    answer(
+        &mut library,
+        shows
+            .iter()
+            .map(|uri| detail_with(uri, (0..3).map(|at| unnamed(uri, at)).collect()))
+            .collect(),
+    );
 
     assert!(
         matches!(library.episodes_section(), Section::Failed(Failure::Load)),
@@ -281,10 +279,12 @@ fn an_unreadable_followed_list_settles_failed() {
 #[test]
 fn the_rows_run_newest_first() {
     let mut library = library(followed(2));
-    let shows: Vec<String> = (0..2).map(|_| ask(&mut library)).collect();
+    let shows = ask(&mut library);
 
-    answer(&mut library, detail(&shows[0], 30));
-    answer(&mut library, detail(&shows[1], 1));
+    answer(
+        &mut library,
+        vec![detail(&shows[0], 30), detail(&shows[1], 1)],
+    );
 
     let Section::Ready(list) = library.episodes_section() else {
         panic!("two shows landed and the shelf is not drawn");
@@ -304,17 +304,11 @@ fn the_rows_run_newest_first() {
 }
 
 /// One show with `count` episodes, the newest `days_ago` days old.
-fn long_detail(show: &str, count: usize, days_ago: u64) -> ShowDetail {
+fn long_detail(uri: &str, count: usize, days_ago: u64) -> ShowDetail {
     ShowDetail {
-        show: Show {
-            uri: show.to_owned(),
-            name: show.to_owned(),
-            publisher: String::new(),
-            description: String::new(),
-            cover: None,
-        },
+        show: show(uri),
         episodes: (0..count)
-            .map(|at| episode(show, at, days_ago + at as u64))
+            .map(|at| episode(uri, at, days_ago + at as u64))
             .collect(),
     }
 }
@@ -322,12 +316,13 @@ fn long_detail(show: &str, count: usize, days_ago: u64) -> ShowDetail {
 #[test]
 fn a_long_show_fills_the_shelf_on_its_own() {
     let mut library = library(followed(4));
-    let shows: Vec<String> = (0..4).map(|_| ask(&mut library)).collect();
+    let shows = ask(&mut library);
 
-    answer(&mut library, long_detail(&shows[0], 20, 1));
-    for (at, show) in shows[1..].iter().enumerate() {
-        answer(&mut library, detail(show, 100 + at as u64 * 100));
+    let mut details = vec![long_detail(&shows[0], 20, 1)];
+    for (at, uri) in shows[1..].iter().enumerate() {
+        details.push(detail(uri, 100 + at as u64 * 100));
     }
+    answer(&mut library, details);
 
     let Section::Ready(list) = library.episodes_section() else {
         panic!("four shows landed and the shelf is not drawn");
@@ -356,12 +351,23 @@ fn a_spent_allowance_never_waits_for_a_read_it_cannot_send() {
 }
 
 #[test]
+fn a_retry_asks_again() {
+    let mut library = library(followed(2));
+    let shows = ask(&mut library);
+    all_answered(&mut library, &shows, 1);
+    assert!(matches!(library.episodes_section(), Section::Ready(_)));
+
+    assert_eq!(library.retry_home(Slot::Episodes), None);
+    let again = ask(&mut library);
+
+    assert_eq!(again, shows, "the retry asked for other shows");
+}
+
+#[test]
 fn a_reload_returns_the_allowance_the_shelf_spent() {
     let mut library = library(followed(10));
-    let first: Vec<String> = (0..SHOWS).map(|_| ask(&mut library)).collect();
-    for show in &first {
-        answer(&mut library, detail(show, 1));
-    }
+    let first = ask(&mut library);
+    all_answered(&mut library, &first, 1);
     assert!(matches!(library.episodes_section(), Section::Ready(_)));
     assert_eq!(library.home.budget.left(Slot::Episodes), 0);
 
@@ -373,16 +379,13 @@ fn a_reload_returns_the_allowance_the_shelf_spent() {
         Budget::per_open(Slot::Episodes),
         "a reload forgot the shelf without giving back what it spent"
     );
-    let mut again: Vec<String> = Vec::new();
-    while let Some(Command::LoadHome(HomeAsk::Show { show })) = library.episodes_ask() {
-        answer(&mut library, detail(&show, 1));
-        again.push(show);
-    }
+    let again = ask(&mut library);
+    all_answered(&mut library, &again, 1);
 
     assert_eq!(again.len(), SHOWS, "the shelf owed no read after a reload");
     assert!(
         matches!(library.episodes_section(), Section::Ready(_)),
-        "the shelf never settled on the reads a reload let it send"
+        "the shelf never settled on the read a reload let it send"
     );
 }
 

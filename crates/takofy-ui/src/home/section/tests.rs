@@ -148,11 +148,15 @@ fn the_budget_caps_each_slot_and_its_total() {
     assert_eq!(Budget::per_open(Slot::Because), 4);
     assert_eq!(
         Budget::per_open(Slot::Counted),
-        1 + crate::home::counted::DRAWN,
-        "the labels, then a face per artist the shelf draws"
+        3,
+        "the labels, one batched faces read, and one re-ask"
     );
-    assert_eq!(Budget::per_open(Slot::Episodes), 8);
-    assert_eq!(Budget::allowance(), 24);
+    assert_eq!(
+        Budget::per_open(Slot::Episodes),
+        1,
+        "one pooled read names every show the shelf draws"
+    );
+    assert_eq!(Budget::allowance(), 13);
 
     let all: usize = Slot::ORDER.into_iter().map(|slot| full.left(slot)).sum();
     assert_eq!(all, Budget::allowance());

@@ -146,6 +146,9 @@ pub struct State {
     portraits: HashMap<String, Option<CoverSet>>,
     /// The artists whose face this open asked for, so none is asked twice.
     asked: HashSet<String>,
+    /// The artists whose face read failed once, so each is asked for once more
+    /// and then left blank.
+    retried: HashSet<String>,
     read: Read,
 }
 
@@ -204,9 +207,18 @@ impl State {
     /// ask waits for. The answer is indexed once, by the URI of each track it
     /// could name, so drawing never scans it.
     pub fn land(&mut self, answer: &HomeAnswer) {
-        if let HomeAnswer::Portrait { artist, portrait } = answer {
-            if self.asked.contains(artist) {
-                self.portraits.insert(artist.clone(), portrait.clone());
+        if let HomeAnswer::Portraits { asked, found } = answer {
+            for artist in asked {
+                if !self.asked.contains(artist) {
+                    continue;
+                }
+                let portrait = found
+                    .iter()
+                    .find(|face| face.artist == *artist)
+                    .and_then(|face| face.portrait.clone());
+                // The answer names every artist it asked about, so a missing
+                // face is a blank this open settled on, not a read still owed.
+                self.portraits.insert(artist.clone(), portrait);
             }
             return;
         }
@@ -260,11 +272,20 @@ impl State {
 
     /// Records that one of the shelf's reads failed.
     pub fn fail(&mut self, ask: &HomeAsk, failure: Failure) {
-        if let HomeAsk::Portrait { artist } = ask {
-            // A face that will not read is an artist without one: the shelf
-            // draws the slot and moves on rather than asking again.
-            if self.asked.contains(artist) {
-                self.portraits.insert(artist.clone(), None);
+        if let HomeAsk::Portraits { artists } = ask {
+            // A face that will not read is asked for once more, because a
+            // speculative read can time out on a busy link. A second failure
+            // leaves the artist without one: the shelf draws the slot and moves
+            // on rather than asking again.
+            for artist in artists {
+                if !self.asked.contains(artist) {
+                    continue;
+                }
+                if self.retried.insert(artist.clone()) {
+                    self.asked.remove(artist);
+                } else {
+                    self.portraits.insert(artist.clone(), None);
+                }
             }
             return;
         }
@@ -287,6 +308,7 @@ impl State {
     fn forget_faces(&mut self) {
         self.portraits.clear();
         self.asked.clear();
+        self.retried.clear();
     }
 
     /// Whether `asked` is the ask this open sent, and has not answered yet.

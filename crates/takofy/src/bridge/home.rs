@@ -2,24 +2,17 @@
 
 use takofy_model::home::{HomeAnswer, HomeAsk};
 use takofy_ui::message::{Failure, Update};
-use tokio::sync::oneshot::Receiver as StopReceiver;
 
 use super::errors::{library_failure, related_failure};
 use super::log_device_error;
-use super::rebuild::Step;
 use super::wake::Notifier;
-use crate::session::{SessionHost, stop_or};
+use crate::session::SessionHost;
 
 /// Performs one shelf's read and announces its answer.
 ///
 /// A failure carries the ask it belongs to, so a shelf tells its own failure
 /// from another's.
-pub(super) async fn load_home<H: SessionHost>(
-    host: &mut H,
-    stop: &mut StopReceiver<()>,
-    notifier: &Notifier,
-    ask: HomeAsk,
-) -> Step {
+pub(super) async fn load_home<H: SessionHost>(host: &H, notifier: &Notifier, ask: HomeAsk) {
     let asked = ask.clone();
     match ask {
         // The neighbours come from the station answer, where the artist payload's
@@ -27,10 +20,12 @@ pub(super) async fn load_home<H: SessionHost>(
         // portrait read: a neighbour is an artist the reader does not follow, so
         // nothing else on the page has looked one up.
         HomeAsk::Related { artist } => {
-            let mut cards = match stop_or(stop, host.neighbours(&artist)).await {
-                None => return Step::Stopped,
-                Some(Ok(cards)) => cards,
-                Some(Err(error)) => return failed(notifier, asked, related_failure(&error)),
+            let mut cards = match host.neighbours(&artist).await {
+                Ok(cards) => cards,
+                Err(error) => {
+                    failed(notifier, asked, related_failure(&error));
+                    return;
+                }
             };
             if !cards.is_empty() {
                 let uris: Vec<String> = cards.iter().map(|card| card.uri.clone()).collect();
@@ -44,41 +39,39 @@ pub(super) async fn load_home<H: SessionHost>(
                     }
                 }
             }
-            answered(notifier, HomeAnswer::Related { artist, cards })
+            answered(notifier, HomeAnswer::Related { artist, cards });
         }
-        HomeAsk::Show { show } => match stop_or(stop, host.show(&show)).await {
-            None => Step::Stopped,
-            Some(Ok(detail)) => answered(notifier, HomeAnswer::Show(detail)),
-            Some(Err(error)) => failed(notifier, asked, library_failure(&error)),
+        HomeAsk::Episodes { shows } => match host.episodes(&shows).await {
+            Ok(details) => answered(notifier, HomeAnswer::Episodes(details)),
+            Err(error) => failed(notifier, asked, library_failure(&error)),
         },
-        HomeAsk::Station { seed } => match stop_or(stop, host.station(&seed)).await {
-            None => Step::Stopped,
-            Some(Ok(station)) => answered(notifier, HomeAnswer::Station(station)),
-            Some(Err(error)) => failed(notifier, asked, library_failure(&error)),
+        HomeAsk::Station { seed } => match host.station(&seed).await {
+            Ok(station) => answered(notifier, HomeAnswer::Station(station)),
+            Err(error) => failed(notifier, asked, library_failure(&error)),
         },
-        HomeAsk::Portrait { artist } => match stop_or(stop, host.artist(&artist)).await {
-            None => Step::Stopped,
-            Some(Ok(page)) => answered(
+        HomeAsk::Portraits { artists } => match host.portraits(artists.clone()).await {
+            // A read that answered nothing was refused or abandoned, and the
+            // window has no way to tell the two apart: both are a failed read.
+            Some(found) => answered(
                 notifier,
-                HomeAnswer::Portrait {
-                    artist,
-                    portrait: page.artist.portrait,
+                HomeAnswer::Portraits {
+                    asked: artists,
+                    found,
                 },
             ),
-            Some(Err(error)) => failed(notifier, asked, library_failure(&error)),
+            None => failed(notifier, asked, Failure::Load),
         },
-        HomeAsk::Labels { tracks } => match stop_or(stop, host.release_tracks(&tracks)).await {
-            None => Step::Stopped,
+        HomeAsk::Labels { tracks } => match host.release_tracks(&tracks).await {
             // Every asked track is answered, named or fallen back to its URI:
             // the shelf waits for the whole list before it draws.
-            Some(Ok(named)) => answered(
+            Ok(named) => answered(
                 notifier,
                 HomeAnswer::Labelled {
                     asked: tracks,
                     named,
                 },
             ),
-            Some(Err(error)) => {
+            Err(error) => {
                 log_device_error(&error);
                 failed(notifier, asked, Failure::Load)
             }
@@ -86,14 +79,12 @@ pub(super) async fn load_home<H: SessionHost>(
     }
 }
 
-/// Announces an answer and lets the loop carry on with the next command.
-fn answered(notifier: &Notifier, answer: HomeAnswer) -> Step {
+/// Announces an answer and lets the batch carry on with its next read.
+fn answered(notifier: &Notifier, answer: HomeAnswer) {
     notifier.send(Update::Home(answer));
-    Step::Done
 }
 
 /// Announces a failure with the ask it belongs to.
-fn failed(notifier: &Notifier, ask: HomeAsk, failure: Failure) -> Step {
+fn failed(notifier: &Notifier, ask: HomeAsk, failure: Failure) {
     notifier.send(Update::HomeFailed { ask, failure });
-    Step::Done
 }

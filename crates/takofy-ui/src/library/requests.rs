@@ -151,6 +151,8 @@ impl Library {
         self.followed_artists = Load::Idle;
         self.saved_albums = Load::Idle;
         self.likes.reload();
+        self.held_since = None;
+        self.hold_spent = false;
         // The retry is the page's own: it asks for the labels a failed read
         // left unanswered instead of keeping their misses. It forgets every
         // shelf, so every shelf's allowance comes back with them, or a shelf
@@ -361,7 +363,7 @@ impl Library {
 
     /// The label read Home's liked cards owe: asked once per URI, marked at send,
     /// and only on a settled pool.
-    pub fn home_labels_request(&mut self) -> Option<Command> {
+    pub(crate) fn home_labels_request(&mut self) -> Option<Command> {
         if !self.on_home() {
             return None;
         }

@@ -12,6 +12,7 @@
 
 use std::collections::HashMap;
 use std::ops::Range;
+use std::time::Instant;
 
 use takofy_model::{
     AlbumDetail, ArtistDetail, CoverOrigin, CoverSet, FollowedArtist, FollowedShow, PlaylistAccess,
@@ -46,6 +47,7 @@ mod saved;
 mod shelf_play;
 mod writes;
 
+pub use home::HOME_HOLD;
 use shelf_play::PendingPlay;
 pub use shelf_play::Start;
 
@@ -151,6 +153,10 @@ pub struct Library {
     pub likes: Likes,
     /// The Home page's seed, and the labels the liked cards need.
     pub home: Home,
+    /// When this Home visit started waiting for the dated feeds.
+    held_since: Option<Instant>,
+    /// Whether this visit's wait has been let go, so it does not arm again.
+    hold_spent: bool,
     /// The artists the open artist page is heard with, once they are named.
     pub related: Load<Vec<FollowedArtist>>,
     /// The artist the likeness list belongs to, so a stale reply is told apart.

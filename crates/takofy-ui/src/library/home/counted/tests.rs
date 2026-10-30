@@ -1,8 +1,10 @@
 use takofy_model::home::{HomeAnswer, HomeAsk};
-use takofy_model::{CoverSet, CoverUrl, FollowedArtist, LikedTrack, SavedAlbum, TrackEntry};
+use takofy_model::{
+    ArtistPortrait, CoverSet, CoverUrl, FollowedArtist, LikedTrack, SavedAlbum, TrackEntry,
+};
 
 use super::*;
-use crate::home::{Presence, Section};
+use crate::home::{Presence, Section, Slot};
 use crate::message::{Failure, Update};
 
 const NOW_MS: u64 = 1_700_000_000_000;
@@ -557,23 +559,34 @@ fn ranked(albums: Vec<SavedAlbum>, likes: Vec<LikedTrack>, labelled: Vec<TrackEn
 }
 
 #[test]
-fn a_drawn_artist_without_a_face_is_read_for_one() {
+fn the_faces_read_names_every_drawn_tile_without_one() {
     let mut library = ranked(
         vec![
             album("spotify:album:a", &[("spotify:artist:a", "A")]),
             album("spotify:album:b", &[("spotify:artist:b", "B")]),
+            album("spotify:album:c", &[("spotify:artist:c", "C")]),
         ],
         Vec::new(),
         Vec::new(),
     );
-    let Some(Command::LoadHome(HomeAsk::Portrait { artist })) = library.counted_portrait_ask()
+    let Some(Command::LoadHome(HomeAsk::Portraits { artists })) = library.counted_portrait_ask()
     else {
-        panic!("the shelf asks for the face of an artist it draws");
+        panic!("the shelf asks for the faces of the artists it draws");
     };
     let drawn = tile_uris(&library.counted_section());
+    assert_eq!(
+        artists.len(),
+        drawn.len(),
+        "one names read covers every tile that has no face"
+    );
     assert!(
-        drawn.contains(&artist),
-        "the read is for one of the artists on the page"
+        artists.iter().all(|artist| drawn.contains(artist)),
+        "the read asked for an artist the shelf does not draw"
+    );
+    assert_eq!(
+        library.counted_portrait_ask(),
+        None,
+        "one open sends one faces read"
     );
 }
 
@@ -604,15 +617,14 @@ fn a_face_is_asked_for_once() {
         Vec::new(),
         Vec::new(),
     );
-    let Some(Command::LoadHome(HomeAsk::Portrait { artist })) = library.counted_portrait_ask()
+    let Some(Command::LoadHome(HomeAsk::Portraits { artists })) = library.counted_portrait_ask()
     else {
         panic!("arrange: the face is owed");
     };
-    assert_ne!(
+    assert!(!artists.is_empty());
+    assert_eq!(
         library.counted_portrait_ask(),
-        Some(Command::LoadHome(HomeAsk::Portrait {
-            artist: artist.clone()
-        })),
+        None,
         "the artist asked for is not asked for again"
     );
 }
@@ -624,14 +636,18 @@ fn a_landed_face_is_the_one_the_tile_draws() {
         Vec::new(),
         Vec::new(),
     );
-    let Some(Command::LoadHome(HomeAsk::Portrait { artist })) = library.counted_portrait_ask()
+    let Some(Command::LoadHome(HomeAsk::Portraits { artists })) = library.counted_portrait_ask()
     else {
         panic!("arrange: the face is owed");
     };
     let face = cover("ab67616d0000b273810dd84a63f327f269b14b42");
-    library.apply(&Update::Home(HomeAnswer::Portrait {
-        artist: artist.clone(),
-        portrait: Some(face.clone()),
+    let artist = artists.first().cloned().expect("one artist is drawn");
+    library.apply(&Update::Home(HomeAnswer::Portraits {
+        asked: artists,
+        found: vec![ArtistPortrait {
+            artist: artist.clone(),
+            portrait: Some(face.clone()),
+        }],
     }));
     let Section::Ready(tiles) = library.counted_section() else {
         panic!("the shelf has tiles");
@@ -645,25 +661,44 @@ fn a_landed_face_is_the_one_the_tile_draws() {
 }
 
 #[test]
-fn a_face_that_will_not_read_is_not_asked_again() {
+fn a_failed_read_is_asked_for_once_more() {
+    // One liked song, so the label read is sent beside the faces: the three asks
+    // this test makes are the shelf's whole allowance.
     let mut library = ranked(
         vec![album("spotify:album:a", &[("spotify:artist:a", "A")])],
-        Vec::new(),
-        Vec::new(),
+        vec![liked("spotify:track:a")],
+        vec![label("spotify:track:a", &[("spotify:artist:a", "A")])],
     );
-    let Some(Command::LoadHome(HomeAsk::Portrait { artist })) = library.counted_portrait_ask()
+    let Some(Command::LoadHome(HomeAsk::Portraits { artists })) = library.counted_portrait_ask()
     else {
         panic!("arrange: the face is owed");
     };
     library.apply(&Update::HomeFailed {
-        ask: HomeAsk::Portrait {
-            artist: artist.clone(),
+        ask: HomeAsk::Portraits {
+            artists: artists.clone(),
         },
+        failure: Failure::Load,
+    });
+
+    let Some(Command::LoadHome(HomeAsk::Portraits { artists: again })) =
+        library.counted_portrait_ask()
+    else {
+        panic!("a face that failed is asked for once more");
+    };
+    assert_eq!(again, artists, "the re-ask names exactly what failed");
+    assert_eq!(
+        library.home.budget.left(Slot::Counted),
+        0,
+        "the labels, the faces and the one re-ask are the shelf's whole allowance"
+    );
+
+    library.apply(&Update::HomeFailed {
+        ask: HomeAsk::Portraits { artists: again },
         failure: Failure::Load,
     });
     assert_eq!(
         library.counted_portrait_ask(),
         None,
-        "an artist without a readable face does not hold the shelf open"
+        "a face that will not read is left blank, not asked a third time"
     );
 }

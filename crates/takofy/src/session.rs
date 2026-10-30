@@ -121,8 +121,9 @@ pub(crate) struct ArtistPage {
 /// Returns `impl Future + Send` rather than being an `async fn` because an
 /// `async fn` in a trait does not declare its future `Send`, and the task has
 /// to be spawnable. `&mut self` is only where the lazily started player is
-/// written; `shutdown` consumes, because that is what joins the thread.
-pub(crate) trait SessionHost: Send + 'static {
+/// written; `shutdown` consumes, because that is what joins the thread. `Sync`
+/// is what lets several reads hold `&self` at once.
+pub(crate) trait SessionHost: Send + Sync + 'static {
     /// Opens the session with `token`.
     ///
     /// A caller that replaces a live-but-dead engine retires it first: this
@@ -204,7 +205,7 @@ pub(crate) trait SessionHost: Send + 'static {
     -> impl Future<Output = Option<PlaylistAccess>> + Send;
 
     fn tracks(
-        &mut self,
+        &self,
         playlist: &str,
     ) -> impl Future<Output = Result<TrackPage, SessionError>> + Send;
 
@@ -227,6 +228,15 @@ pub(crate) trait SessionHost: Send + 'static {
     fn album(&self, album: &str) -> impl Future<Output = Result<AlbumDetail, SessionError>> + Send;
 
     fn show(&self, show: &str) -> impl Future<Output = Result<ShowDetail, SessionError>> + Send;
+
+    /// The newest episodes of every show in `shows`, labelled in one read.
+    ///
+    /// A show that does not answer is missing from the answer rather than
+    /// answered empty.
+    fn episodes(
+        &self,
+        shows: &[String],
+    ) -> impl Future<Output = Result<Vec<ShowDetail>, SessionError>> + Send;
 
     /// One station read from its seed, its rows labelled.
     fn station(
@@ -632,7 +642,7 @@ impl SessionHost for LiveSession {
         }
     }
 
-    async fn tracks(&mut self, playlist: &str) -> Result<TrackPage, SessionError> {
+    async fn tracks(&self, playlist: &str) -> Result<TrackPage, SessionError> {
         let Some(engine) = &self.engine else {
             return Err(SessionError::NotConnected);
         };
@@ -687,6 +697,13 @@ impl SessionHost for LiveSession {
     async fn show(&self, show: &str) -> Result<ShowDetail, SessionError> {
         match &self.engine {
             Some(engine) => engine.show(show).await.map_err(SessionError::Engine),
+            None => Err(SessionError::NotConnected),
+        }
+    }
+
+    async fn episodes(&self, shows: &[String]) -> Result<Vec<ShowDetail>, SessionError> {
+        match &self.engine {
+            Some(engine) => engine.episodes(shows).await.map_err(SessionError::Engine),
             None => Err(SessionError::NotConnected),
         }
     }

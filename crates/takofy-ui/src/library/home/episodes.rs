@@ -1,16 +1,16 @@
 //! The episodes shelf's read, and the section the page draws it from.
 //!
-//! The shelf asks one show at a time, in the followed list's own order (newest
-//! follow first), so an open reads at most the newest [`SHOWS`] shows. It waits
-//! whole: no row is drawn until every show this open asked has answered or
-//! failed. A show that fails costs only its own episodes; only an open with
-//! nothing drawable settles as a failure — because every asked show failed, or
-//! because the answers that landed named no episode.
+//! The shelf asks for the newest [`SHOWS`] shows in the followed list's own order
+//! (newest follow first), all in one read, so an open costs one ask however many
+//! shows it draws from. No row is drawn until that read answers. A show the read
+//! could not get costs only its own episodes; only an open with nothing drawable
+//! settles as a failure — because every asked show failed, or because the
+//! episodes that landed named none of themselves.
 
 use takofy_model::home::HomeAsk;
 
 use crate::home::episodes::{List, SHOWS};
-use crate::home::{Budget, Phase, Section, Slot, settle};
+use crate::home::{Phase, Section, Slot, settle};
 use crate::message::{Command, Failure};
 
 use super::super::{Library, Load};
@@ -26,19 +26,15 @@ impl Library {
         )
     }
 
-    /// What the shelf's own reads are doing.
+    /// What the shelf's own read is doing.
     ///
-    /// It waits while a show this open asked for has not answered, and while
-    /// there is still a followed show the open may ask for and the allowance to
-    /// ask with. Once every show it may ask has answered or failed, what landed
-    /// decides: an open with nothing drawable is a failure when a read failed or
-    /// when the answers it did get named no episode, and an open with nothing
-    /// followed is absent.
+    /// It waits while the one read is still owed or a show it named has not
+    /// answered. Once it has, what landed decides: an open with nothing
+    /// drawable is a failure when a read failed or when the episodes it did get
+    /// named none of themselves, and an open with nothing followed is absent.
     fn episodes_phase(&self) -> Phase {
         let state = &self.home.episodes;
-        let owed = state.asked().len() < self.episodes_target()
-            && self.home.budget.left(Slot::Episodes) > 0;
-        if state.pending() || owed {
+        if state.pending() || self.episodes_owed() {
             return Phase::Pending;
         }
         // The payload decides, not how many shows answered: one new show that
@@ -58,38 +54,45 @@ impl Library {
         Phase::Arrived
     }
 
-    /// How many shows this open reads: the newest followed ones, within the
-    /// shelf's allowance.
-    fn episodes_target(&self) -> usize {
-        match &self.followed {
-            Load::Ready(shows) => shows.len().min(SHOWS).min(Budget::per_open(Slot::Episodes)),
-            Load::Idle | Load::Loading | Load::Failed(_) => 0,
+    /// Whether this open still owes its one read.
+    ///
+    /// An open that already asked owes nothing more, and an open with nothing
+    /// followed has nothing to ask for: it settles absent rather than waiting on
+    /// a read it will never send.
+    fn episodes_owed(&self) -> bool {
+        if !self.home.episodes.asked().is_empty() {
+            return false;
         }
+        let Load::Ready(shows) = &self.followed else {
+            return false;
+        };
+        !shows.is_empty() && self.home.budget.left(Slot::Episodes) > 0
     }
 
-    /// The read the episodes shelf owes, if one is due.
+    /// The one read the episodes shelf owes, if it is due.
     ///
-    /// It asks one show at a time, so an answer names the show it was read for
-    /// rather than the last one asked. A show already asked this open is never
-    /// asked again, so the allowance is spent on distinct shows.
+    /// It names every show the shelf draws from, so the pool costs one ask and
+    /// one label read. The allowance is checked before the ask is recorded, so a
+    /// spent open waits for no read it cannot send.
     pub(super) fn episodes_ask(&mut self) -> Option<Command> {
-        let show = {
+        if !self.episodes_owed() {
+            return None;
+        }
+        let shows: Vec<String> = {
             let Load::Ready(shows) = &self.followed else {
                 return None;
             };
             shows
                 .iter()
                 .take(SHOWS)
-                .map(|show| show.uri.as_str())
-                .find(|uri| !self.home.episodes.has_asked(uri))
-                .map(str::to_owned)
+                .map(|show| show.uri.clone())
+                .collect()
         };
-        let show = show?;
         if !self.home.budget.take(Slot::Episodes) {
             return None;
         }
-        self.home.episodes.ask(&show);
-        Some(Command::LoadHome(HomeAsk::Show { show }))
+        self.home.episodes.ask(&shows);
+        Some(Command::LoadHome(HomeAsk::Episodes { shows }))
     }
 }
 

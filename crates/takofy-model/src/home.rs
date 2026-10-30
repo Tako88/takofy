@@ -3,7 +3,7 @@
 //! Plain data: `takofy-core` fills it in from Spotify and the window draws it,
 //! so neither side has to depend on the other to talk about a shelf.
 
-use crate::{CoverSet, FollowedArtist, ShowDetail, TrackEntry};
+use crate::{ArtistPortrait, CoverSet, FollowedArtist, ShowDetail, TrackEntry};
 
 /// The kind of thing a station was seeded from, in the order the page seeds
 /// them.
@@ -60,14 +60,16 @@ pub struct Station {
 pub enum HomeAsk {
     /// The artists related to `artist`, for the shelf that follows it.
     Related { artist: String },
-    /// One followed show's episodes.
-    Show { show: String },
+    /// The newest episodes of every followed show the shelf draws, read
+    /// together so the pool costs one label read rather than one per show.
+    Episodes { shows: Vec<String> },
     /// One station, read from its seed.
     Station { seed: StationSeed },
     /// Names for these tracks, in the order they were asked for.
     Labels { tracks: Vec<String> },
-    /// One artist's own record, for the face the counted shelf draws.
-    Portrait { artist: String },
+    /// The faces of these artists, read together: the counted shelf draws a
+    /// handful of tiles whose faces cost one read, not one each.
+    Portraits { artists: Vec<String> },
 }
 
 /// The answer to a [`HomeAsk`], matched back to it by what the ask named.
@@ -78,7 +80,9 @@ pub enum HomeAnswer {
         artist: String,
         cards: Vec<FollowedArtist>,
     },
-    Show(ShowDetail),
+    /// One detail per show that answered, in the order the shows were read. A
+    /// show the read could not get is missing rather than answered empty.
+    Episodes(Vec<ShowDetail>),
     Station(Station),
     /// The tracks that could be named, paired with the URIs that were asked
     /// for: an unreadable track is missing rather than answered with a blank.
@@ -86,11 +90,12 @@ pub enum HomeAnswer {
         asked: Vec<String>,
         named: Vec<TrackEntry>,
     },
-    /// One artist's portrait, absent when the wire carried none this client can
-    /// draw. The artist is named back so a late answer lands on the shelf that
-    /// asked rather than on whichever is open.
-    Portrait {
-        artist: String,
-        portrait: Option<CoverSet>,
+    /// The faces the read found, paired with the artists that were asked for.
+    /// An artist it found no face for is missing rather than answered blank, so
+    /// a late answer lands on the shelf that asked rather than on whichever is
+    /// open.
+    Portraits {
+        asked: Vec<String>,
+        found: Vec<ArtistPortrait>,
     },
 }

@@ -1,3 +1,4 @@
+use super::super::reads::announce;
 use super::super::*;
 use super::test_support::*;
 use crate::session::{SessionError, TrackPage};
@@ -34,6 +35,23 @@ pub(super) enum ShowScript {
 impl Default for ShowScript {
     fn default() -> Self {
         Self::Ready(show_detail(SHOW))
+    }
+}
+
+/// A scripted pooled episodes answer; the default is one bare show detail.
+///
+/// `Pending` never answers, so a stop can be tested while the read is still in
+/// flight.
+#[derive(Clone)]
+pub(super) enum EpisodesScript {
+    Ready(Vec<ShowDetail>),
+    Fail,
+    Pending,
+}
+
+impl Default for EpisodesScript {
+    fn default() -> Self {
+        Self::Ready(vec![show_detail(SHOW)])
     }
 }
 
