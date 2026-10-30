@@ -304,9 +304,6 @@ pub fn home_door_because(seed: &str) -> String {
     format!("More artists near {seed}")
 }
 
-/// Home's foot: the page says what it is made of, and counts nothing.
-pub const HOME_COLOPHON: &str = "No play history and no curated feed: every title above names the thing in your library it was built from.";
-
 /// An episode count as the show page's head writes it: `1 episode`, `N episodes`.
 pub fn episode_count_label(count: usize) -> String {
     count_noun(count, "episode")

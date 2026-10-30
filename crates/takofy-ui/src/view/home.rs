@@ -19,7 +19,7 @@ use crate::library::Library;
 use crate::message::Command;
 use crate::route::Page;
 use crate::sidebar_kind::SidebarKind;
-use crate::theme::{Tokens, space};
+use crate::theme::Tokens;
 use crate::view::playlist::root::MediaDraw;
 
 use super::text as recipe;
@@ -218,10 +218,9 @@ pub(super) fn home_view(
                     }
                     drawn = true;
                 }
-                // The page's foot, once there is a page above it to explain.
+                // The page's foot, once there is a page above it to end.
                 if drawn {
-                    ui.add_space(space::S6);
-                    foot::show(ui, tokens);
+                    foot::show(ui);
                 }
             });
         });

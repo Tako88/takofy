@@ -1,35 +1,16 @@
-//! Home's foot: the page saying how it was assembled.
+//! Home's foot: the air the page ends in.
 //!
-//! There is no feed behind this client, so the one thing the page can always
-//! promise is its own arithmetic — and the note is the whole of it, because the
-//! counts a shelf would print are exactly what this page refuses to print.
+//! The reference closes the page with a rule, a ledger of what it read and a
+//! sentence saying where its shelves came from. None of that survives here: the
+//! ledger was three counts, and the sentence explains a machine to the person
+//! reading it. What is left of the foot is the room under the last shelf, so the
+//! page does not end against the edge of its own scroll.
 
-use egui::{Sense, Ui, vec2};
+use egui::Ui;
 
-use crate::format::HOME_COLOPHON;
-use crate::theme::{Tokens, space, stroke};
+use crate::theme::space;
 
-use super::super::text as recipe;
-
-/// Draws the rule, the note under it, and the air the page ends in.
-pub(super) fn show(ui: &mut Ui, tokens: &Tokens) {
-    let width = ui.available_width();
-    let (rule, _) = ui.allocate_exact_size(vec2(width, stroke::HAIRLINE), Sense::hover());
-    ui.painter().rect_filled(rule, 0.0, tokens.palette.border);
-    ui.add_space(space::S4);
-
-    // The note wraps: a foot is prose, and a page too narrow for one line draws
-    // two rather than an elision nobody can finish reading.
-    ui.add(
-        egui::Label::new(
-            egui::RichText::new(HOME_COLOPHON)
-                .font(recipe::colophon())
-                .color(tokens.palette.text_muted),
-        )
-        .wrap(),
-    );
-    ui.add_space(space::S5);
+/// The room Home ends in, under its last shelf.
+pub(super) fn show(ui: &mut Ui) {
+    ui.add_space(space::S6);
 }
-
-#[cfg(test)]
-mod tests;
