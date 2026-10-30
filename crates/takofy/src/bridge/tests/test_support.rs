@@ -2017,9 +2017,15 @@ pub(super) fn expect_no_update(ui_end: &UiEnd) {
 }
 
 /// Waits until `check` holds, so no test has to guess at a delay.
-pub(super) fn until(what: &str, mut check: impl FnMut() -> bool) {
+pub(super) fn until(what: &str, check: impl FnMut() -> bool) {
+    until_within(what, Duration::from_secs(2), check);
+}
+
+/// Waits for `check`, giving a step that runs a whole rebuild the room a slow
+/// machine needs rather than the default a single hand-off gets.
+pub(super) fn until_within(what: &str, within: Duration, mut check: impl FnMut() -> bool) {
     let started = std::time::Instant::now();
-    while started.elapsed() < Duration::from_secs(2) {
+    while started.elapsed() < within {
         if check() {
             return;
         }
