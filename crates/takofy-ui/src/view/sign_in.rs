@@ -53,7 +53,9 @@ fn card(ui: &mut Ui, state: &mut SignIn, tokens: &Tokens) -> (Option<Command>, R
                     // The card centres itself in the window; its words are a
                     // left-aligned block, which is what the reference's own
                     // empty-state does and what a paragraph needs to be read.
-                    ui.set_width(card - 2.0 * space::S6);
+                    // A window narrower than the card's own margins would give
+                    // the block a negative width, which egui refuses.
+                    ui.set_width((card - 2.0 * space::S6).max(0.0));
                     ui.with_layout(Layout::top_down(Align::Min), |ui| {
                         logo(ui, tokens);
 

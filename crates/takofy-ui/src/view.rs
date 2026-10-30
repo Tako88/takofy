@@ -21,6 +21,7 @@ mod focus;
 mod ghost;
 mod heart;
 mod hero;
+mod home;
 pub(crate) mod keys;
 mod link;
 mod list_more;
@@ -96,6 +97,9 @@ pub struct Screen<'a> {
     /// The frame's wall clock in epoch milliseconds, read once at the frame
     /// entry.
     pub now_ms: u64,
+    /// The local hour of the day, read once at the frame entry, for the
+    /// greeting.
+    pub local_hour: u8,
 }
 
 /// Draws a page's content inside the reference's `.view__inner` gutter.

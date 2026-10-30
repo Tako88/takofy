@@ -82,6 +82,10 @@ impl SignIn {
                 | Update::SavedAlbumsFailed(_)
                 | Update::LikedTracks(_)
                 | Update::LikedTracksFailed(_)
+                | Update::SavedLabelled { .. }
+                | Update::SavedLabelFailed { .. }
+                | Update::Home(_)
+                | Update::HomeFailed { .. }
                 | Update::Liked { .. }
                 | Update::LikeFailed { .. }
                 | Update::Related { .. }

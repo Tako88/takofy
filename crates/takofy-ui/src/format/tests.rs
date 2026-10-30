@@ -30,6 +30,7 @@ fn entry(
     access: Option<PlaylistAccess>,
 ) -> PlaylistEntry {
     PlaylistEntry {
+        saved_at: None,
         composed: Vec::new(),
         uri: "spotify:playlist:a".to_owned(),
         name: "A".to_owned(),
@@ -863,4 +864,68 @@ fn every_chip_says_what_it_is_loading() {
         "Loading your artists…"
     );
     assert_eq!(root_loading_label(RootKind::Albums), "Loading your albums…");
+}
+
+#[test]
+fn a_home_card_says_what_it_is_and_when_it_was_saved() {
+    let at = SavedAt::from_millis(1_700_000_000_000).expect("a date");
+    assert_eq!(
+        saved_sub("Playlist", at, 1_700_000_000_000 + 3_600_000),
+        "Playlist · Today"
+    );
+    assert_eq!(
+        saved_sub("Album", at, 1_700_000_000_000 + 8 * 86_400_000),
+        "Album · 1 week ago"
+    );
+    assert_eq!(
+        saved_sub("Playlist", at, 1_699_000_000_000),
+        "Playlist",
+        "a date after the clock has no age to name"
+    );
+}
+
+/// Every shelf title names what the shelf was built from, and none prints a
+/// number it would have to explain.
+#[test]
+fn the_home_section_titles_count_nothing() {
+    assert_eq!(HOME_STATIONS_TITLE, "Stations built from your library");
+    assert_eq!(HOME_BECAUSE_TITLE, "Because you follow");
+    assert_eq!(HOME_COUNTED_TITLE, "The artists you have the most of");
+    assert_eq!(HOME_EPISODES_TITLE, "New from the shows you follow");
+    for title in [
+        HOME_STATIONS_TITLE,
+        HOME_BECAUSE_TITLE,
+        HOME_COUNTED_TITLE,
+        HOME_EPISODES_TITLE,
+    ] {
+        assert!(
+            !title.chars().any(|c| c.is_ascii_digit()),
+            "{title:?} counts nothing"
+        );
+        assert!(
+            !title.is_empty(),
+            "a shelf is never drawn without its title"
+        );
+        assert_eq!(title.trim(), title, "{title:?} is drawn as it is written");
+    }
+}
+
+#[test]
+fn the_home_copy_has_no_counts() {
+    assert_eq!(HOME_SHELF_TITLE, "Recently added");
+    assert_eq!(HOME_QUIET, "Nothing recent to show yet.");
+    assert_eq!(HOME_DAY_ONE_TITLE, "Home is built from what you save");
+    assert_eq!(HOME_DAY_ONE_DOOR, "Search the catalogue");
+    for copy in [
+        HOME_SHELF_TITLE,
+        HOME_QUIET,
+        HOME_DAY_ONE_TITLE,
+        HOME_DAY_ONE_BODY,
+        HOME_DAY_ONE_DOOR,
+    ] {
+        assert!(
+            !copy.chars().any(|c| c.is_ascii_digit()),
+            "{copy:?} counts nothing"
+        );
+    }
 }

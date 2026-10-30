@@ -51,6 +51,7 @@ fn row<'a>(title: &'a str) -> Row<'a> {
         show_uri: None,
         age: "",
         duration: None,
+        playable: true,
         state: State::Resting,
         look: Look::default(),
         refocus: false,

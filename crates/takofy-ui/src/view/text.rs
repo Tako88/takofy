@@ -148,6 +148,17 @@ pub fn queue_name() -> FontId {
     FontId::new(text::SM, fonts::sans(Weight::Medium))
 }
 
+/// A station's seed name: the reference sets it at `--text-md` in 600.
+pub fn station_seed() -> FontId {
+    FontId::new(text::MD, fonts::sans(Weight::Semibold))
+}
+
+/// The line under a station's seed: the tracked mono tier that says what the
+/// station was built from.
+pub fn station_source() -> FontId {
+    FontId::new(text::XXS, fonts::mono(MonoWeight::Medium))
+}
+
 /// The Now Playing panel's title, the largest interface type the panel carries.
 pub fn panel_title() -> FontId {
     FontId::new(text::MD, fonts::sans(Weight::Bold))
@@ -191,6 +202,11 @@ pub fn track_secondary() -> FontId {
 /// quantity rather than as prose.
 pub fn track_mono(size: f32) -> FontId {
     FontId::new(size, fonts::mono(MonoWeight::Regular))
+}
+
+/// A page's foot: the sentence under its last rule, at the body size.
+pub fn colophon() -> FontId {
+    FontId::new(text::SM, fonts::sans(Weight::Regular))
 }
 
 /// A page head's title: the reference's `--text-2xl` at 800, tracked tight.

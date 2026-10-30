@@ -12,6 +12,7 @@
 
 use std::collections::HashMap;
 use std::ops::Range;
+use std::time::Instant;
 
 use takofy_model::{
     AlbumDetail, ArtistDetail, CoverOrigin, CoverSet, FollowedArtist, FollowedShow, PlaylistAccess,
@@ -21,6 +22,7 @@ use takofy_model::{
 use crate::cover_refresh::CoverRefresh;
 use crate::discography::Filter;
 use crate::follow::Follow;
+use crate::home::Home;
 use crate::library_filter::{RootFilter, RootKind};
 use crate::likes::{self, Likes};
 use crate::lyrics::LyricsPanel;
@@ -38,12 +40,14 @@ use crate::show_order::{ShowOrder, default_order};
 use crate::sidebar_kind::{SidebarFilter, SidebarKind};
 use crate::track_filter::TrackFilter;
 
+mod home;
 mod nav;
 mod requests;
 mod saved;
 mod shelf_play;
 mod writes;
 
+pub use home::HOME_HOLD;
 use shelf_play::PendingPlay;
 pub use shelf_play::Start;
 
@@ -147,6 +151,12 @@ pub struct Library {
     pub saved_albums: Load<Vec<SavedAlbum>>,
     /// The liked-songs set, and the one write in flight against it.
     pub likes: Likes,
+    /// The Home page's seed, and the labels the liked cards need.
+    pub home: Home,
+    /// When this Home visit started waiting for the dated feeds.
+    held_since: Option<Instant>,
+    /// Whether this visit's wait has been let go, so it does not arm again.
+    hold_spent: bool,
     /// The artists the open artist page is heard with, once they are named.
     pub related: Load<Vec<FollowedArtist>>,
     /// The artist the likeness list belongs to, so a stale reply is told apart.
@@ -176,12 +186,11 @@ pub struct Library {
     pub filter: Filter,
     /// The per-release track labels the discography fills in as it scrolls.
     pub releases: Releases,
-    /// The library root's filter row. Unlike `filter`, going home does not
-    /// reset it: home then Back reloads the same root, so the choice is kept,
-    /// and the root is the page the choice belongs to.
+    /// The library root's filter row. Opening a page or Home does not reset it:
+    /// Back onto the root reloads the same list, so the choice is kept.
     pub root_filter: RootFilter,
-    /// The sidebar's kind chips. Like `root_filter`, opening a page or going
-    /// home does not reset it.
+    /// The sidebar's kind chips. Like `root_filter`, opening a page or Home
+    /// does not reset them.
     pub sidebar_kind: SidebarFilter,
     /// The playlist page's filter. A page change clears it, because the query
     /// names one playlist's rows; a reload of the same playlist keeps it.
@@ -998,6 +1007,12 @@ impl Library {
             Update::LikedTracksFailed(failure) => {
                 self.likes.apply(&likes::Event::SetFailed(*failure));
             }
+            Update::SavedLabelled { asked, named } => {
+                self.home.apply_labels(asked, named);
+            }
+            Update::SavedLabelFailed { asked, failure } => {
+                self.home.fail_labels(asked, *failure);
+            }
             Update::Liked { tracks, liked } => {
                 self.likes.apply(&likes::Event::Confirmed {
                     tracks: tracks.clone(),
@@ -1064,6 +1079,9 @@ impl Library {
             | Update::PortraitsFailed { .. } => {
                 self.search.apply(update);
             }
+            // A Home answer lands on the shelf that asked for it, whatever page is shown.
+            Update::Home(answer) => self.home.land(answer),
+            Update::HomeFailed { ask, failure } => self.home.fail(ask, *failure),
             Update::NeedsAuthorization
             | Update::SignInFailed(_)
             | Update::Devices(_)
@@ -1086,7 +1104,7 @@ impl Library {
         let page = self.history.current().cloned();
         self.history.retain(|page| match page {
             Page::Playlist(uri) => present(uri),
-            Page::Album(_) | Page::Artist(_) | Page::Show(_) | Page::Search(_) => true,
+            Page::Home | Page::Album(_) | Page::Artist(_) | Page::Show(_) | Page::Search(_) => true,
         });
         if self.history.current().cloned() != page {
             self.left_page();
@@ -1114,7 +1132,7 @@ impl Library {
         if self
             .play
             .as_ref()
-            .is_some_and(|play| play.kind == SidebarKind::Playlists && !present(&play.uri))
+            .is_some_and(|play| play.kind == Some(SidebarKind::Playlists) && !present(&play.uri))
         {
             self.play = None;
         }

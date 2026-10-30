@@ -7,6 +7,7 @@ use super::super::*;
 
 pub(super) fn playlist(uri: &str, name: &str) -> PlaylistEntry {
     PlaylistEntry {
+        saved_at: None,
         composed: Vec::new(),
         uri: uri.to_owned(),
         name: name.to_owned(),
@@ -175,10 +176,13 @@ pub(super) fn followed_artist(uri: &str) -> FollowedArtist {
 
 pub(super) fn saved_album(uri: &str) -> SavedAlbum {
     SavedAlbum {
+        saved_at: None,
         uri: uri.to_owned(),
         name: uri.to_owned(),
         named: true,
         artists: String::new(),
+        artist_uris: Vec::new(),
+        artist_names: Vec::new(),
         year: None,
         cover: None,
         tracks: None,
@@ -353,6 +357,7 @@ pub(super) fn naming_library(names: &[&str], name: &str) -> Library {
 /// The row a create's reply hands the sidebar.
 pub(super) fn created(uri: &str, name: &str, access: Option<PlaylistAccess>) -> PlaylistEntry {
     PlaylistEntry {
+        saved_at: None,
         composed: Vec::new(),
         uri: uri.to_owned(),
         name: name.to_owned(),

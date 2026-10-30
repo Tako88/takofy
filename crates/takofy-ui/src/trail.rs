@@ -37,36 +37,42 @@ fn owning_list(page: &Page) -> Option<RootKind> {
         Page::Album(_) => Some(RootKind::Albums),
         Page::Artist(_) => Some(RootKind::Artists),
         Page::Show(_) => Some(RootKind::Podcasts),
-        Page::Search(_) => None,
+        // Home is nobody's list and a search is not a list the root holds.
+        Page::Home | Page::Search(_) => None,
     }
 }
 
 /// The trail for the current page.
 ///
-/// With the root on screen, Your Library is where you are. On any page Home
-/// leads back to the root as it was, the list the page belongs to leads back to
-/// the root showing that list's chip, and the last crumb is current: the
-/// playlist's name once the list that names it is ready, the album's or
-/// artist's own name once its detail names this page, or the page's kind when
-/// there is no name to show. A playlist whose entry is not in a ready list is
-/// the one page that draws no current crumb at all.
+/// Home is the first crumb on every page, and it leads to the Home page
+/// wherever it is not current. On Home the trail is that one crumb. With the
+/// root on screen Your Library is current; on any page the list the page
+/// belongs to leads back to the root showing that list's chip, and the last
+/// crumb is current: the playlist's name once the list that names it is ready,
+/// the album's or artist's own name once its detail names this page, or the
+/// page's kind when there is no name to show. A playlist whose entry is not in
+/// a ready list is the one page that draws no current crumb at all.
 pub fn trail(library: &Library) -> Vec<Crumb<'_>> {
+    let Some(page) = library.page() else {
+        return vec![
+            Crumb {
+                label: "Home",
+                current: false,
+                target: Some(Target::Page(Page::Home)),
+            },
+            Crumb {
+                label: "Your Library",
+                current: true,
+                target: None,
+            },
+        ];
+    };
+
     let mut crumbs = vec![Crumb {
         label: "Home",
-        current: false,
-        target: library
-            .page()
-            .map(|_| Target::Root(library.root_filter.chosen())),
+        current: matches!(page, Page::Home),
+        target: (!matches!(page, Page::Home)).then_some(Target::Page(Page::Home)),
     }];
-
-    let Some(page) = library.page() else {
-        crumbs.push(Crumb {
-            label: "Your Library",
-            current: true,
-            target: None,
-        });
-        return crumbs;
-    };
 
     if let Some(kind) = owning_list(page) {
         crumbs.push(Crumb {
@@ -76,6 +82,7 @@ pub fn trail(library: &Library) -> Vec<Crumb<'_>> {
         });
     }
     let label = match page {
+        Page::Home => None,
         Page::Playlist(_) => library.selected_name(),
         // The album's name only once it is loaded, and only for this page: a
         // ready detail left over from the last album must not name this one.

@@ -118,14 +118,21 @@ pub(crate) fn show_order(items: Vec<Item>) -> Vec<String> {
     newest_first(items, |uri| matches!(uri, SpotifyUri::Show { .. }))
 }
 
-/// The items' URIs, newest first.
+/// An item's URI and the date it was added, as the order keeps them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Dated {
+    pub(crate) uri: String,
+    pub(crate) added_at: Option<i64>,
+}
+
+/// The items' URIs and dates, newest first.
 ///
 /// Removed items and anything the `keep` predicate does not name are dropped,
 /// the first occurrence of a URI is the one kept, and items without a date come
 /// last. The sort is stable, so items sharing a date keep the wire's order.
-pub(crate) fn newest_first(items: Vec<Item>, keep: fn(&SpotifyUri) -> bool) -> Vec<String> {
+pub(crate) fn newest_dated(items: Vec<Item>, keep: fn(&SpotifyUri) -> bool) -> Vec<Dated> {
     let mut seen = HashSet::new();
-    let mut kept: Vec<(Option<i64>, String)> = items
+    let mut kept: Vec<Dated> = items
         .into_iter()
         .filter(|item| !item.removed)
         .filter(|item| match SpotifyUri::from_uri(&item.uri) {
@@ -133,10 +140,21 @@ pub(crate) fn newest_first(items: Vec<Item>, keep: fn(&SpotifyUri) -> bool) -> V
             Err(_) => false,
         })
         .filter(|item| seen.insert(item.uri.clone()))
-        .map(|item| (item.added_at, item.uri))
+        .map(|item| Dated {
+            uri: item.uri,
+            added_at: item.added_at,
+        })
         .collect();
-    kept.sort_by_key(|(added_at, _)| Reverse(*added_at));
-    kept.into_iter().map(|(_, uri)| uri).collect()
+    kept.sort_by_key(|dated| Reverse(dated.added_at));
+    kept
+}
+
+/// The items' URIs, newest first. See [`newest_dated`] for the rules.
+pub(crate) fn newest_first(items: Vec<Item>, keep: fn(&SpotifyUri) -> bool) -> Vec<String> {
+    newest_dated(items, keep)
+        .into_iter()
+        .map(|dated| dated.uri)
+        .collect()
 }
 
 /// A show as its card draws it, before it is joined to the followed order.

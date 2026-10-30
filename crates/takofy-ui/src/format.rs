@@ -2,7 +2,8 @@
 //! playbar's clock, the hero's byline, the playlist band's description, and the
 //! age a playlist row gives its date.
 
-use takofy_model::{AddedAt, Owner, PlaylistEntry, PublishedAt, ReleaseKind, TrackEntry};
+use takofy_model::home::SeedKind;
+use takofy_model::{AddedAt, Owner, PlaylistEntry, PublishedAt, ReleaseKind, SavedAt, TrackEntry};
 
 use crate::discography::Chip;
 use crate::library::SidebarWrite;
@@ -237,6 +238,72 @@ pub fn added_label(added: AddedAt, now_ms: u64) -> Option<String> {
     age_label(added.as_millis(), now_ms)
 }
 
+/// What a Home card says under its name: what it is and when it was saved.
+///
+/// A save dated after the clock has no age, so the card carries the kind word
+/// alone rather than a broken sentence.
+pub fn saved_sub(kind: &str, at: SavedAt, now_ms: u64) -> String {
+    library_kind(kind, age_label(at.as_millis(), now_ms).as_deref())
+}
+
+/// The Home shelf's title.
+pub const HOME_SHELF_TITLE: &str = "Recently added";
+
+/// What the shelf says when things are saved but none of them is recent.
+pub const HOME_QUIET: &str = "Nothing recent to show yet.";
+
+/// The day-one page's heading.
+pub const HOME_DAY_ONE_TITLE: &str = "Home is built from what you save";
+
+/// The day-one page's one sentence under the heading.
+pub const HOME_DAY_ONE_BODY: &str =
+    "Save an album, keep a playlist or like a song, and it appears here.";
+
+/// The day-one page's door into the catalogue.
+pub const HOME_DAY_ONE_DOOR: &str = "Search the catalogue";
+
+/// The stations shelf's title, which names the seeds rather than a count.
+pub const HOME_STATIONS_TITLE: &str = "Stations built from your library";
+
+/// What a station's head says it was built from, under the seed's own name.
+///
+/// The reference adds the station's length after it; this client drops the
+/// count and keeps the sentence that makes the shelf honest about its source.
+pub fn station_source(kind: SeedKind) -> &'static str {
+    match kind {
+        SeedKind::Playlist => "From your playlist",
+        SeedKind::Artist => "From an artist you follow",
+        SeedKind::Album => "From an album you saved",
+        SeedKind::Song => "From the songs you liked",
+    }
+}
+
+/// The related shelf's title, before it names the artist it follows.
+pub const HOME_BECAUSE_TITLE: &str = "Because you follow";
+
+/// The counted shelf's title: the ranking, said without a number.
+pub const HOME_COUNTED_TITLE: &str = "The artists you have the most of";
+
+/// The episodes shelf's title.
+pub const HOME_EPISODES_TITLE: &str = "New from the shows you follow";
+
+/// The dated shelf's foot: the door into the whole library.
+pub const HOME_DOOR_SAVED: &str = "Show all saved";
+
+/// The stations shelf's foot: the reference's own words for it.
+pub const HOME_DOOR_LIBRARY: &str = "Your library";
+
+/// The counted shelf's foot: every artist the ranking was drawn from.
+pub const HOME_DOOR_ARTISTS: &str = "Every artist in your library";
+
+/// The episodes shelf's foot: the shows the episodes came from.
+pub const HOME_DOOR_SHOWS: &str = "All your shows";
+
+/// The because shelf's foot, naming the artist whose neighbours it drew.
+pub fn home_door_because(seed: &str) -> String {
+    format!("More artists near {seed}")
+}
+
 /// An episode count as the show page's head writes it: `1 episode`, `N episodes`.
 pub fn episode_count_label(count: usize) -> String {
     count_noun(count, "episode")
@@ -298,9 +365,8 @@ pub fn episode_meta(show: &str, published: Option<PublishedAt>, now_ms: u64) -> 
 
 /// The root's head note: how many cards the chosen chip shows.
 ///
-/// Only the shows the user follows carry an added date, and a rootlist playlist
-/// carries none, so the note counts cards rather than dating any of them: `3
-/// saved`.
+/// Each card dates itself, so the note counts them rather than picking one
+/// date: `3 saved`.
 pub fn library_note(count: usize) -> String {
     format!("{count} saved")
 }

@@ -5,7 +5,7 @@
 
 use egui::{Rect, pos2, vec2};
 
-use crate::theme::{extent, space};
+use crate::theme::{extent, space, stroke};
 
 pub mod actionbar;
 pub mod cards;
@@ -469,6 +469,21 @@ pub fn playbar_for(rect: Rect, form: Playbar) -> PlaybarCols {
     }
 }
 
+/// The width of the topbar's separator slot, in points.
+///
+/// The mark is a hairline, so the slot is the mark and the `space-1` margin
+/// that keeps it clear of the buttons on either side.
+pub const HISTORY_RULE: f32 = stroke::HAIRLINE + 2.0 * space::S1;
+
+/// The width of the topbar's nav cluster, in points.
+///
+/// Four buttons, a `space-1` gap between them, and the rule's whole slot. The
+/// cluster is one reservation, so the layout and the row that draws it cannot
+/// disagree about how much room it takes.
+pub fn history_width() -> f32 {
+    4.0 * extent::BUTTON + 4.0 * space::S1 + HISTORY_RULE
+}
+
 /// The space the topbar's non-trail items leave free, in points.
 fn topbar_free(rect: Rect, sidebar: Sidebar) -> f32 {
     let toggle = match sidebar {
@@ -482,7 +497,7 @@ fn topbar_free(rect: Rect, sidebar: Sidebar) -> f32 {
     rect.width()
         - 2.0 * TopbarCols::PADDING
         - toggle
-        - (3.0 * extent::BUTTON + 2.0 * space::S1)
+        - history_width()
         - TopbarCols::GAP * (items - 1.0)
 }
 
@@ -496,7 +511,7 @@ pub fn topbar_for(rect: Rect, sidebar: Sidebar, trail_natural: f32) -> TopbarCol
         Sidebar::Full => None,
         Sidebar::Rail => Some(extent::BUTTON),
     };
-    let history = 3.0 * extent::BUTTON + 2.0 * space::S1;
+    let history = history_width();
     let free = topbar_free(rect, sidebar).max(0.0);
     let natural = if trail_natural.is_finite() && trail_natural > 0.0 {
         trail_natural

@@ -7,6 +7,7 @@
 
 pub mod cover;
 pub mod device;
+pub mod home;
 pub mod remote;
 pub mod uri;
 
@@ -272,6 +273,8 @@ pub struct PlaylistEntry {
     /// `None` when the read named no revision: an entry with no access names no
     /// version of its own list, so nothing may be written through it.
     pub access: Option<PlaylistAccess>,
+    /// When the playlist was saved to the library, when the rootlist dated it.
+    pub saved_at: Option<SavedAt>,
 }
 
 impl PlaylistEntry {
@@ -295,8 +298,9 @@ impl PlaylistEntry {
 
 /// When a track joined the playlist it is drawn in, in epoch milliseconds.
 ///
-/// A separate type from a duration, which is also a millisecond count, so the
-/// two can never be passed for each other.
+/// A separate type from a duration, which is also a millisecond count, and from
+/// [`PublishedAt`] and [`SavedAt`], so the two can never be passed for each
+/// other.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AddedAt(u64);
 
@@ -344,6 +348,44 @@ impl PublishedAt {
     pub fn as_millis(self) -> u64 {
         self.0
     }
+}
+
+/// When a playlist, album or liked song was saved, in epoch milliseconds.
+///
+/// A separate type from [`AddedAt`] and [`PublishedAt`], so a save date can
+/// never be passed for a track's added date or an episode's publish date.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SavedAt(u64);
+
+impl SavedAt {
+    /// Reads a millisecond count.
+    ///
+    /// Zero is no date, because the wire answers `0` for an entry it cannot
+    /// date, and a negative count is not an instant at all.
+    pub fn from_millis(millis: i64) -> Option<Self> {
+        let millis = u64::try_from(millis).ok()?;
+        (millis > 0).then_some(Self(millis))
+    }
+
+    /// Reads an epoch-seconds count, the unit the collection reads answer in.
+    ///
+    /// A count too large to scale to milliseconds is no date.
+    pub fn from_secs(secs: i64) -> Option<Self> {
+        Self::from_millis(secs.checked_mul(1000)?)
+    }
+
+    /// The instant as epoch milliseconds.
+    pub fn as_millis(self) -> u64 {
+        self.0
+    }
+}
+
+/// A liked song and the date it was liked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LikedTrack {
+    pub uri: String,
+    /// `None` when the wire gave no usable date for the song.
+    pub saved_at: Option<SavedAt>,
 }
 
 /// A track as a list row draws it.
@@ -588,10 +630,22 @@ pub struct SavedAlbum {
     pub named: bool,
     /// The album's artists, joined with ", ". Empty when none were named.
     pub artists: String,
+    /// The album's artists' URIs, aligned with [`Self::artist_names`].
+    ///
+    /// An artist whose name is blank or whose id does not resolve is absent
+    /// from both lists, so index `i` of one always names the same artist as
+    /// index `i` of the other. The joined [`Self::artists`] cannot be split
+    /// back into names, because a name may itself contain the joining comma.
+    pub artist_uris: Vec<String>,
+    /// The album's artists' names, same length and order as
+    /// [`Self::artist_uris`].
+    pub artist_names: Vec<String>,
     pub year: Option<u16>,
     pub cover: Option<CoverSet>,
     /// The album's track count, when its discs could be read.
     pub tracks: Option<u32>,
+    /// When the album was saved to the library, when the read dated it.
+    pub saved_at: Option<SavedAt>,
 }
 
 /// One line of a track's lyrics, as the lyrics pane draws it.

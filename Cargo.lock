@@ -5192,9 +5192,11 @@ dependencies = [
 name = "takofy"
 version = "0.1.1"
 dependencies = [
+ "chrono",
  "eframe",
  "egui",
  "env_logger",
+ "futures-util",
  "image",
  "keyring",
  "librespot",

@@ -1,15 +1,32 @@
 use super::*;
+use takofy_model::SavedAt;
 
 const A: &str = "spotify:track:a";
 const B: &str = "spotify:track:b";
 const C: &str = "spotify:track:c";
 
+/// A read's answer for `uris`, none of them dated.
+fn undated(uris: &[&str]) -> Vec<LikedTrack> {
+    uris.iter()
+        .map(|uri| LikedTrack {
+            uri: (*uri).to_owned(),
+            saved_at: None,
+        })
+        .collect()
+}
+
+/// A liked track saved `secs` after the epoch.
+fn dated(uri: &str, secs: i64) -> LikedTrack {
+    LikedTrack {
+        uri: uri.to_owned(),
+        saved_at: SavedAt::from_secs(secs),
+    }
+}
+
 fn likes(tracks: &[&str]) -> Likes {
     let mut likes = Likes::default();
     assert!(likes.request(true));
-    likes.apply(&Event::Set(
-        tracks.iter().map(|uri| (*uri).to_owned()).collect(),
-    ));
+    likes.apply(&Event::Set(undated(tracks)));
     likes
 }
 
@@ -224,7 +241,7 @@ fn request_emits_one_load_after_a_failure_and_then_waits_for_the_reply() {
     assert!(!likes.request(false), "the playlists are not ready yet");
     assert!(likes.request(true));
     assert!(!likes.request(true), "one read is in flight");
-    likes.apply(&Event::Set(vec![A.to_owned()]));
+    likes.apply(&Event::Set(undated(&[A])));
     assert!(!likes.request(true), "the read answered");
 }
 
@@ -234,7 +251,7 @@ fn a_read_landing_during_a_pending_write_keeps_the_write() {
     likes.reload();
     assert!(likes.request(true));
     assert!(set(&mut likes, &[B], true).is_some());
-    likes.apply(&Event::Set(vec![A.to_owned()]));
+    likes.apply(&Event::Set(undated(&[A])));
     assert_eq!(likes.state(B), Some(true), "the pending flip survived");
     assert_eq!(
         set(&mut likes, &[C], true),
@@ -256,7 +273,7 @@ fn a_stale_read_landing_after_a_confirmed_like_keeps_the_like() {
     // The read was issued before the like, so it carries the truth from
     // before it: adopting it would wipe a confirmed like with no healing
     // read behind it.
-    likes.apply(&Event::Set(vec![]));
+    likes.apply(&Event::Set(undated(&[])));
     assert_eq!(likes.state(A), Some(true));
 }
 
@@ -278,9 +295,9 @@ fn a_write_failure_during_a_read_heals_after_the_stale_reply() {
 
     // The stale read was issued before the flip: dropping it must ask again,
     // or the sentence would stay forever.
-    likes.apply(&Event::Set(vec![A.to_owned()]));
+    likes.apply(&Event::Set(undated(&[A])));
     assert!(likes.request(true), "the stale reply did not ask again");
-    likes.apply(&Event::Set(vec![A.to_owned()]));
+    likes.apply(&Event::Set(undated(&[A])));
     assert_eq!(likes.notice(), None);
 }
 
@@ -289,7 +306,7 @@ fn a_read_with_no_pending_write_replaces_the_set_wholesale() {
     let mut likes = likes(&[A]);
     likes.reload();
     assert!(likes.request(true));
-    likes.apply(&Event::Set(vec![B.to_owned()]));
+    likes.apply(&Event::Set(undated(&[B])));
     assert_eq!(likes.state(A), Some(false));
     assert_eq!(likes.state(B), Some(true));
 }
@@ -304,7 +321,7 @@ fn an_adopted_read_clears_the_notice() {
     });
     assert_eq!(likes.notice(), Some(Failure::Save));
     assert!(likes.request(true));
-    likes.apply(&Event::Set(vec![A.to_owned()]));
+    likes.apply(&Event::Set(undated(&[A])));
     assert_eq!(likes.notice(), None);
 }
 
@@ -323,7 +340,7 @@ fn a_failed_sweep_after_a_failed_write_stays_stale() {
     // healing read's answer: the set stays stale and is read again.
     likes.apply(&Event::SetFailed(Failure::Load));
     assert!(likes.request(true), "the healing read was buried");
-    likes.apply(&Event::Set(vec![A.to_owned()]));
+    likes.apply(&Event::Set(undated(&[A])));
     assert_eq!(likes.notice(), None);
 }
 
@@ -405,4 +422,110 @@ fn the_first_request_waits_for_the_playlists() {
     let mut likes = Likes::default();
     assert!(!likes.request(false));
     assert!(likes.request(true));
+}
+
+#[test]
+fn any_reads_the_set_not_the_last_read() {
+    let mut likes = Likes::default();
+    assert!(likes.request(true));
+    likes.apply(&Event::Set(Vec::new()));
+    assert!(!likes.any(), "a read landed, and it was empty");
+
+    assert!(set(&mut likes, &[A], true).is_some());
+    assert!(likes.any(), "a song liked this session is in the set");
+    assert_eq!(
+        likes.recent().expect("a set").count(),
+        0,
+        "but not in the last read's tracks"
+    );
+}
+
+#[test]
+fn recent_is_none_until_a_read_lands() {
+    assert!(Likes::default().recent().is_none());
+    let mut likes = Likes::default();
+    assert!(likes.request(true));
+    likes.apply(&Event::SetFailed(Failure::Load));
+    assert!(
+        likes.recent().is_none(),
+        "a failed first read has no set to be recent in"
+    );
+}
+
+#[test]
+fn an_adopted_read_keeps_each_tracks_date_in_the_reads_order() {
+    let mut likes = Likes::default();
+    assert!(likes.request(true));
+    let (b, a) = (dated(B, 200), dated(A, 100));
+    likes.apply(&Event::Set(vec![b.clone(), a.clone()]));
+    assert_eq!(
+        likes.recent().expect("a read landed").collect::<Vec<_>>(),
+        vec![&b, &a]
+    );
+}
+
+#[test]
+fn a_stale_read_is_not_adopted_into_recent() {
+    let mut likes = Likes::default();
+    assert!(likes.request(true));
+    likes.apply(&Event::Set(vec![dated(A, 100)]));
+    likes.reload();
+    assert!(likes.request(true));
+    let change = set(&mut likes, &[B], true).expect("a change");
+    likes.apply(&Event::Confirmed {
+        tracks: change.tracks,
+        liked: true,
+    });
+    // Issued before the like, so it names no tracks; adopting it would empty recent.
+    likes.apply(&Event::Set(Vec::new()));
+    assert_eq!(
+        likes.recent().expect("a set").collect::<Vec<_>>(),
+        vec![&dated(A, 100)],
+        "the stale read was not adopted, so the dated track stays recent"
+    );
+}
+
+#[test]
+fn a_track_unliked_leaves_recent_and_its_failed_write_brings_it_back() {
+    let mut likes = Likes::default();
+    assert!(likes.request(true));
+    let (a, b) = (dated(A, 100), dated(B, 200));
+    likes.apply(&Event::Set(vec![a.clone(), b.clone()]));
+
+    let change = set(&mut likes, &[A], false).expect("a change");
+    assert_eq!(
+        likes.recent().expect("a set").collect::<Vec<_>>(),
+        vec![&b],
+        "an unliked track is no longer recent"
+    );
+
+    likes.apply(&Event::Failed {
+        tracks: change.tracks,
+        failure: Failure::Save,
+    });
+    assert_eq!(
+        likes.recent().expect("a set").collect::<Vec<_>>(),
+        vec![&a, &b],
+        "the revert put it back in the read's order"
+    );
+}
+
+#[test]
+fn every_read_and_set_combination_has_a_phase() {
+    const FAILURE: Failure = Failure::Load;
+    let cases = [
+        (Read::Idle, false, Phase::Pending),
+        (Read::Idle, true, Phase::Arrived),
+        (Read::Stale, false, Phase::Pending),
+        (Read::Stale, true, Phase::Arrived),
+        (Read::Current, false, Phase::Arrived),
+        (Read::Current, true, Phase::Arrived),
+        (Read::Failed(FAILURE), false, Phase::Failed(FAILURE)),
+        (Read::Failed(FAILURE), true, Phase::Failed(FAILURE)),
+    ];
+    for (read, held, expected) in cases {
+        let mut likes = if held { likes(&[A]) } else { Likes::default() };
+        likes.read = read.clone();
+        assert_eq!(likes.phase(), expected, "{read:?} with a set: {held}");
+    }
 }

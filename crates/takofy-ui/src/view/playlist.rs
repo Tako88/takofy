@@ -60,11 +60,19 @@ pub fn tracks_view(
     art: &mut Art,
     now: Instant,
     now_ms: u64,
+    local_hour: u8,
     tokens: &Tokens,
 ) -> Option<Command> {
     // Dispatch on the page, not on the tracks: the root is the grid, and the
     // tracks may still hold a ready playlist that nothing draws.
     match main_page(library) {
+        // Home draws its own page head, so it is inset like the root rather than
+        // covered by the tracklist's band.
+        MainPage::Home => {
+            return super::inner(ui, |ui| {
+                super::home::home_view(ui, library, art, now, now_ms, local_hour, tokens)
+            });
+        }
         MainPage::Root => return super::inner(ui, |ui| idle(ui, library, art, now, tokens)),
         MainPage::Album => {
             return super::album::album_view(
@@ -668,6 +676,8 @@ fn band_picture(
 /// What the page on screen asks the main pane to draw.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MainPage {
+    /// Home: the greeting and the shelf.
+    Home,
     /// The library root: the playlists grid.
     Root,
     /// A playlist's tracklist.
@@ -686,6 +696,7 @@ enum MainPage {
 fn main_page(library: &Library) -> MainPage {
     match library.page() {
         None => MainPage::Root,
+        Some(Page::Home) => MainPage::Home,
         Some(Page::Playlist(_)) => MainPage::Playlist,
         Some(Page::Album(_)) => MainPage::Album,
         Some(Page::Artist(_)) => MainPage::Artist,

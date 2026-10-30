@@ -1,6 +1,7 @@
 use super::super::*;
 use super::test_support::*;
 use crate::library::Load;
+use crate::library_filter::RootKind;
 use crate::player::Transport;
 use crate::queue::Queue;
 use crate::route::Page;
@@ -43,7 +44,11 @@ fn the_drawer_toggle_is_a_button_not_a_column() {
     let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
     let bar = topbar_rect(&window);
     let buttons = topbar_buttons(&frame);
-    assert_eq!(buttons.len(), 4, "the toggle, Home, back and forward");
+    assert_eq!(
+        buttons.len(),
+        5,
+        "the toggle, Home, Your Library, back and forward"
+    );
     for button in &buttons {
         assert!(
             (button.height() - extent::BUTTON).abs() < 0.01,
@@ -79,7 +84,7 @@ fn every_topbar_item_shares_one_baseline() {
     let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
     let bar = topbar_rect(&window).center().y;
     let buttons = topbar_buttons(&frame);
-    assert_eq!(buttons.len(), 3, "Home, back and forward");
+    assert_eq!(buttons.len(), 4, "Home, Your Library, back and forward");
     for button in &buttons {
         assert!(
             (button.center().y - bar).abs() < 0.01,
@@ -136,10 +141,14 @@ fn the_history_buttons_move_between_pages() {
 
     let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
     let buttons = topbar_buttons(&frame);
-    assert_eq!(buttons.len(), 3, "the topbar paints Home, back and forward");
+    assert_eq!(
+        buttons.len(),
+        4,
+        "the topbar paints Home, Your Library, back and forward"
+    );
 
     assert_eq!(
-        window.click(&mut transport, &mut queue, buttons[1].center()),
+        window.click(&mut transport, &mut queue, buttons[2].center()),
         None,
         "back into a ready playlist needs no load"
     );
@@ -151,7 +160,7 @@ fn the_history_buttons_move_between_pages() {
     let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
     let buttons = topbar_buttons(&frame);
     assert_eq!(
-        window.click(&mut transport, &mut queue, buttons[2].center()),
+        window.click(&mut transport, &mut queue, buttons[3].center()),
         None
     );
     assert_eq!(window.library.page(), Some(&Page::Album(ALBUM.to_owned())));
@@ -165,9 +174,15 @@ fn the_history_buttons_do_nothing_with_no_history() {
 
     let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
     let buttons = topbar_buttons(&frame);
-    assert_eq!(buttons.len(), 3, "the topbar paints Home, back and forward");
+    assert_eq!(
+        buttons.len(),
+        4,
+        "the topbar paints Home, Your Library, back and forward"
+    );
 
-    for button in buttons {
+    // Only the history pair: Home and Your Library are destinations, and a
+    // press on either one moves the library.
+    for button in &buttons[2..] {
         assert_eq!(
             window.click(&mut transport, &mut queue, button.center()),
             None
@@ -465,7 +480,7 @@ fn a_topbar_click_beats_a_side_button() {
     history_of_three(&mut window);
 
     let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
-    let back = topbar_buttons(&frame)[1];
+    let back = topbar_buttons(&frame)[2];
     assert!(window.library.can_back(), "history exists, so Back is live");
 
     // The hover frame, so frame 3's hit test sees the button there.
@@ -528,4 +543,64 @@ fn a_topbar_click_beats_a_side_button() {
         Some(&Page::Album(ALBUM_B.to_owned())),
         "with no click to win, the same-frame side press moves Forward"
     );
+}
+
+/// Home is a page of its own, so leaving it and returning draws a new shelf.
+#[test]
+fn home_from_a_page_draws_a_new_shelf() {
+    let mut library = Library::starting_home(NOW_MS);
+    let seed = library.home.seed();
+    library.open(Page::Album(ALBUM.to_owned()));
+    assert_eq!(library.page(), Some(&Page::Album(ALBUM.to_owned())));
+
+    assert_eq!(
+        apply_nav(&mut library, Some(topbar::Nav::Home), None, NOW_MS + 1_000),
+        None,
+        "Home is local state and asks for no read"
+    );
+    assert_eq!(library.page(), Some(&Page::Home));
+    assert_ne!(library.home.seed(), seed, "a new open is a new draw");
+}
+
+/// Home on Home changes nothing, so the cards already on screen stay put.
+#[test]
+fn home_on_home_keeps_the_shelf_it_drew() {
+    let mut library = Library::starting_home(NOW_MS);
+    let seed = library.home.seed();
+
+    assert_eq!(
+        apply_nav(&mut library, Some(topbar::Nav::Home), None, NOW_MS + 1_000),
+        None
+    );
+    assert_eq!(library.page(), Some(&Page::Home));
+    assert_eq!(library.home.seed(), seed, "the draw is kept");
+}
+
+/// Your Library returns to the root as it was left, chip and all.
+#[test]
+fn your_library_from_home_returns_to_the_root_on_its_chip() {
+    let mut library = Library::starting_home(NOW_MS);
+    library.root_filter.choose(RootKind::Albums);
+
+    assert_eq!(
+        apply_nav(&mut library, Some(topbar::Nav::Library), None, NOW_MS),
+        None
+    );
+    assert_eq!(library.page(), None, "the root is on screen");
+    assert_eq!(library.root_filter.chosen(), RootKind::Albums);
+}
+
+/// A page opened from Home has Home behind it, so Back is a step home.
+#[test]
+fn back_from_a_page_opened_on_home_returns_to_home() {
+    let mut library = Library::starting_home(NOW_MS);
+    let seed = library.home.seed();
+    library.open(Page::Album(ALBUM.to_owned()));
+
+    assert_eq!(
+        apply_nav(&mut library, Some(topbar::Nav::Back), None, NOW_MS + 1_000),
+        None
+    );
+    assert_eq!(library.page(), Some(&Page::Home));
+    assert_eq!(library.home.seed(), seed, "Back keeps the draw Home had");
 }

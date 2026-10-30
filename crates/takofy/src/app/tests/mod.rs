@@ -1,4 +1,6 @@
+mod clock;
 mod drain;
+mod home;
 mod painting;
 mod prefs;
 mod remote;

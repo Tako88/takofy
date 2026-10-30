@@ -667,3 +667,48 @@ fn logic_asks_for_the_shelf_play_once() {
         "the shelf play was asked for twice: {sent:?}"
     );
 }
+
+/// Home's related shelf reads the followed artists, so the page asks for them
+/// whatever chip the root was left on: the chip that would ask is not on screen.
+#[test]
+fn home_asks_for_the_artists_whatever_chip_is_chosen() {
+    let mut library = Library::starting_home(1_700_000_000_000);
+    assert_eq!(
+        library.followed_artists_request(),
+        None,
+        "nothing has named a signed-in window yet"
+    );
+
+    library.apply(&Update::Playlists(Vec::new()));
+    assert!(
+        library
+            .root_filter
+            .choose(takofy_ui::library_filter::RootKind::Playlists)
+    );
+    assert_eq!(
+        library.followed_artists_request(),
+        Some(Command::LoadFollowedArtists),
+        "Home reads the artists under a chip that names none"
+    );
+    assert_eq!(
+        library.followed_artists_request(),
+        None,
+        "the load is in flight, so the next frame sends nothing"
+    );
+}
+
+/// A page that is not Home keeps the chip's own gate: the list is only read when
+/// the user asked for a chip that draws it.
+#[test]
+fn a_page_that_is_not_home_keeps_the_artists_gate() {
+    let mut library = Library::default();
+    library.apply(&Update::Playlists(Vec::new()));
+    assert!(
+        library
+            .root_filter
+            .choose(takofy_ui::library_filter::RootKind::Playlists)
+    );
+
+    assert_eq!(library.followed_artists_request(), None);
+    assert_eq!(library.followed_artists, Load::Idle);
+}

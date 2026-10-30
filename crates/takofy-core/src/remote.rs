@@ -24,8 +24,8 @@ use librespot::protocol::metadata::{
 use protobuf::Message as _;
 use takofy_model::{
     AlbumDetail, ArtistDetail, ArtistPortrait, CoverSet, CoverUrl, Episode, FollowedArtist,
-    FollowedShow, Move, PlaylistAccess, PlaylistCover, PlaylistEntry, PublishedAt, Removal,
-    Revision, SavedAlbum, ShowDetail, TrackEntry, TrackLyrics, composed_from,
+    FollowedShow, LikedTrack, Move, PlaylistAccess, PlaylistCover, PlaylistEntry, PublishedAt,
+    Removal, Revision, SavedAlbum, ShowDetail, TrackEntry, TrackLyrics, composed_from,
 };
 
 use crate::album::{AlbumError, detail, positions};
@@ -44,8 +44,13 @@ use crate::label_cache::UriCache;
 use crate::lyrics::{self, LyricsError};
 use crate::playlist_edit;
 use crate::portrait::{portrait_from, portraits_of};
-use crate::rootlist::{RootlistError, RootlistPage, RootlistSource, RootlistWire, parse_rootlist};
-use crate::show::{ShowError, detail as show_detail, episode_uris};
+use crate::rootlist::{
+    RootEntry, RootlistError, RootlistPage, RootlistSource, RootlistWire, parse_rootlist,
+    rootlist_path,
+};
+use crate::show::{
+    ShowError, detail as show_detail, details as show_details, episode_uris, expand_episodes,
+};
 use crate::status_tally::StatusTally;
 
 /// The wire the live rootlist is read as; flip to `Json` if the binary parse fails.
@@ -53,6 +58,12 @@ pub(crate) const ROOTLIST_WIRE: RootlistWire = RootlistWire::Binary;
 
 /// How many metadata reads one pass keeps in flight.
 const REMOTE_FETCH_WIDTH: usize = 8;
+
+/// How many shows one pooled episode read fetches at a time.
+///
+/// The shows are fetched in their own order, so this bounds the requests without
+/// reordering the pool.
+const SHOW_FANOUT: usize = 4;
 
 /// Reads rootlist pages through librespot's spclient.
 pub(crate) struct RemoteRootlist<'a> {
@@ -62,10 +73,15 @@ pub(crate) struct RemoteRootlist<'a> {
 
 impl RootlistSource for RemoteRootlist<'_> {
     async fn page(&self, from: usize, len: usize) -> Result<RootlistPage, RootlistError> {
+        let endpoint = rootlist_path(&self.session.username(), from, len);
         let bytes = match self.wire {
-            RootlistWire::Binary => self.session.spclient().get_rootlist(from, Some(len)).await,
+            RootlistWire::Binary => {
+                self.session
+                    .spclient()
+                    .request(&Method::GET, &endpoint, None, None)
+                    .await
+            }
             RootlistWire::Json => {
-                let endpoint = rootlist_endpoint(self.session, from, len);
                 // `hyper::Method` is not re-exported by librespot, so infer it here.
                 let method = "GET"
                     .parse()
@@ -81,14 +97,6 @@ impl RootlistSource for RemoteRootlist<'_> {
     }
 }
 
-/// The same endpoint `get_rootlist` builds; `request_as_json` needs it inline.
-fn rootlist_endpoint(session: &Session, from: usize, len: usize) -> String {
-    let user = session.username();
-    format!(
-        "/playlist/v2/user/{user}/rootlist?decorate=revision,attributes,length,owner,capabilities,status_code&from={from}&length={len}"
-    )
-}
-
 /// Names each playlist, falling back to its URI when metadata is missing.
 ///
 /// A playlist's cover is, in order: the picture the user set, or the cover of
@@ -96,10 +104,11 @@ fn rootlist_endpoint(session: &Session, from: usize, len: usize) -> String {
 /// every head a picture-less playlist brings.
 pub(crate) async fn label_playlists(
     session: &Session,
-    uris: Vec<String>,
+    entries: Vec<RootEntry>,
     cache: &LabelCache,
 ) -> Vec<PlaylistEntry> {
-    let metas = futures_util::stream::iter(uris.iter().cloned())
+    let uris: Vec<String> = entries.iter().map(|entry| entry.uri.clone()).collect();
+    let metas = futures_util::stream::iter(uris)
         .map(|uri| async move { playlist_meta(session, &uri).await })
         .buffered(REMOTE_FETCH_WIDTH)
         .collect::<Vec<_>>()
@@ -108,9 +117,11 @@ pub(crate) async fn label_playlists(
     let labels = fetch_labels(session, &head_candidates(&metas), cache).await;
     let user = session.username();
 
-    uris.into_iter()
+    entries
+        .into_iter()
         .zip(metas)
-        .map(|(uri, meta)| {
+        .map(|(entry, meta)| {
+            let RootEntry { uri, saved_at } = entry;
             let PlaylistMeta {
                 name,
                 head,
@@ -124,6 +135,7 @@ pub(crate) async fn label_playlists(
             let composed = composed_of(&head, cover.as_ref(), &labels);
             let (name, named) = playlist_label(&uri, name);
             PlaylistEntry {
+                saved_at,
                 uri,
                 name,
                 named,
@@ -705,6 +717,58 @@ pub(crate) async fn read_show(session: &Session, uri: &str) -> Result<ShowDetail
     Ok(show_detail(uri, &show, episodes))
 }
 
+/// Reads several shows: each show's metadata, then the labels for every episode
+/// of all of them in one read.
+///
+/// The shows are fetched `SHOW_FANOUT` at a time in their own order, and the
+/// labels are fetched once over the pooled episode URIs, so a shelf that draws
+/// from eight shows costs one label read instead of eight. A show that does not
+/// answer is left out, and only a read where every show failed is an error: a
+/// partial answer is still the shelf's.
+pub(crate) async fn read_episodes(
+    session: &Session,
+    shows: &[String],
+) -> Result<Vec<ShowDetail>, ShowError> {
+    let reads: Vec<(String, Result<Show, ShowError>)> = futures_util::stream::iter(shows.to_vec())
+        .map(|uri| async move {
+            let read = match parse_show_uri(&uri) {
+                Ok(id) => Show::get(session, &id)
+                    .await
+                    .map_err(|source| ShowError::Source(source.to_string())),
+                Err(error) => Err(error),
+            };
+            (uri, read)
+        })
+        .buffered(SHOW_FANOUT)
+        .collect()
+        .await;
+
+    let mut first_error = None;
+    let mut read = Vec::new();
+    for (uri, show) in reads {
+        match show {
+            Ok(show) => read.push((uri, show)),
+            Err(error) => {
+                log::warn!("show {uri} could not be read: {error}");
+                first_error.get_or_insert(error);
+            }
+        }
+    }
+    if read.is_empty() && !shows.is_empty() {
+        return match first_error {
+            Some(error) => Err(error),
+            None => Ok(Vec::new()),
+        };
+    }
+
+    let mut uris: Vec<String> = Vec::new();
+    for (_, show) in &read {
+        uris.extend(episode_uris(show));
+    }
+    let found = fetch_episode_labels(session, &uris).await;
+    Ok(show_details(&read, &found))
+}
+
 /// The show URI `uri` names, or [`ShowError::NotAShow`].
 ///
 /// Read before any request, so a playlist or album URI costs no round trip.
@@ -860,11 +924,13 @@ async fn read_collection(session: &Session) -> Result<Vec<Item>, FollowedError> 
     .await
 }
 
-/// The liked tracks' URIs, newest save first.
+/// The liked tracks, newest save first, each with the date it was saved.
 ///
 /// The set holds saved albums and episodes too, so only track items are kept.
-pub(crate) async fn read_liked_tracks(session: &Session) -> Result<Vec<String>, FollowedError> {
-    Ok(collected::track_order(read_collection(session).await?))
+pub(crate) async fn read_liked_tracks(session: &Session) -> Result<Vec<LikedTrack>, FollowedError> {
+    Ok(collected::liked_tracks(collected::track_dated(
+        read_collection(session).await?,
+    )))
 }
 
 /// Writes one pick into the liked-songs set, or out of it.
@@ -1038,10 +1104,9 @@ async fn bounded<T>(future: impl Future<Output = T>, limit: Duration) -> Option<
 /// The portraits for `artists`, in the order asked for, from one batched read.
 ///
 /// An empty list asks for nothing and answers nothing. The read is bounded: it
-/// is speculative, and the worker answers commands one at a time, so a stalled
-/// request must not hold the queue behind it. A failed or abandoned request is
-/// `None`; a partial answer logs how short it was and is otherwise drawn as it
-/// came.
+/// is speculative, so a stalled request must not hold a play behind it. A failed
+/// or abandoned request is `None`; a partial answer logs how short it was and is
+/// otherwise drawn as it came.
 pub(crate) async fn read_portraits(
     session: &Session,
     artists: &[String],
@@ -1108,8 +1173,8 @@ pub(crate) async fn read_related(
 /// An empty set asks for no metadata at all. A chunk whose request fails costs
 /// only its albums, which stay in the list unnamed.
 pub(crate) async fn read_saved_albums(session: &Session) -> Result<Vec<SavedAlbum>, FollowedError> {
-    let items = read_collection(session).await?;
-    let order = collected::album_order(items);
+    let dated = collected::album_dated(read_collection(session).await?);
+    let order: Vec<String> = dated.iter().map(|dated| dated.uri.clone()).collect();
     if !needs_labels(&order) {
         return Ok(Vec::new());
     }
@@ -1118,7 +1183,7 @@ pub(crate) async fn read_saved_albums(session: &Session) -> Result<Vec<SavedAlbu
     for chunk in release_chunks(&order) {
         answers.push(batched_request(session, chunk, ExtensionKind::ALBUM_V4).await);
     }
-    let albums = collected::saved_album_entries(&order, answers);
+    let albums = collected::stamp_albums(collected::saved_album_entries(&order, answers), &dated);
     let named = albums.iter().filter(|album| album.named).count();
     if named < albums.len() {
         log::warn!("{named} of {} saved albums came back named", albums.len());
@@ -1379,45 +1444,32 @@ fn merge_labels(tracks: Labels, episodes: Labels) -> Labels {
 /// An unanswered URI falls back to itself and reads as unnamed, exactly as a
 /// track does, so a show page still draws every episode the wire listed.
 async fn fetch_episodes(session: &Session, uris: Vec<String>) -> Vec<Episode> {
-    let distinct = distinct_uris(&uris);
+    let found = fetch_episode_labels(session, &uris).await;
+    expand_episodes(&uris, &found)
+}
+
+/// The episode labels for `uris`, keyed by URI, from one read.
+///
+/// A pooled read asks for every show's episodes at once, so the caller expands
+/// each show's own order from this map rather than getting another list.
+async fn fetch_episode_labels(session: &Session, uris: &[String]) -> HashMap<String, Episode> {
+    let distinct = distinct_uris(uris);
     let (found, tally) =
         fetch_chunked(session, &distinct, ExtensionKind::EPISODE_V4, episode_from).await;
     if let Some(summary) = tally.summary() {
         log::warn!("{summary}");
     }
-    let unnamed = uris.iter().filter(|uri| !found.contains_key(*uri)).count();
+    let unnamed = distinct
+        .iter()
+        .filter(|uri| !found.contains_key(*uri))
+        .count();
     if unnamed > 0 {
-        log::warn!("{} of {} episodes could not be named", unnamed, uris.len());
+        log::warn!(
+            "{unnamed} of {} episodes could not be named",
+            distinct.len()
+        );
     }
-    expand_episodes(&uris, &found)
-}
-
-/// One episode per input position, falling back to the URI when it was not
-/// answered. The wire's order is the page's order, so this never sorts.
-///
-/// The position's own URI is what it draws: the answer is looked up by that URI,
-/// and an answer that carried a different one cannot move the episode to another
-/// position.
-fn expand_episodes(uris: &[String], found: &HashMap<String, Episode>) -> Vec<Episode> {
-    uris.iter()
-        .map(|uri| match found.get(uri) {
-            Some(episode) => Episode {
-                uri: uri.clone(),
-                ..episode.clone()
-            },
-            None => Episode {
-                uri: uri.clone(),
-                title: uri.clone(),
-                show: String::new(),
-                show_uri: None,
-                description: None,
-                published: None,
-                duration_ms: None,
-                cover: None,
-                named: false,
-            },
-        })
-        .collect()
+    found
 }
 
 /// Fetches values for distinct URIs with one extension kind, splitting a chunk
@@ -1431,43 +1483,92 @@ async fn fetch_chunked<T>(
     kind: ExtensionKind,
     parse: fn(&[u8], &str) -> Option<T>,
 ) -> (HashMap<String, T>, StatusTally) {
+    fetch_chunked_with(distinct, |chunk| async move {
+        request_parsed(session, &chunk, kind, parse).await
+    })
+    .await
+}
+
+/// How many chunks one pass keeps in flight.
+const CHUNK_FANOUT: usize = 3;
+
+/// Fetches values for distinct URIs, one request per chunk, `CHUNK_FANOUT`
+/// chunks at a time.
+///
+/// A chunk the server answered only part of is split in half and asked again,
+/// one at a time: the truncation is the rare answer, so the retries do not need
+/// the fan-out's extra requests.
+async fn fetch_chunked_with<T, F, Fut>(
+    distinct: &[String],
+    request: F,
+) -> (HashMap<String, T>, StatusTally)
+where
+    F: Fn(Vec<String>) -> Fut,
+    Fut: Future<Output = Option<(HashMap<String, T>, StatusTally)>>,
+{
     let mut found: HashMap<String, T> = HashMap::new();
     let mut tally = StatusTally::default();
-    let mut queue: Vec<Vec<String>> = distinct
+    let mut retries: Vec<Vec<String>> = Vec::new();
+    let chunks: Vec<Vec<String>> = distinct
         .chunks(LABEL_CHUNK)
         .map(<[String]>::to_vec)
         .collect();
-    queue.reverse();
-    while let Some(chunk) = queue.pop() {
-        let Some((answers, chunk_tally)) = request_parsed(session, &chunk, kind, parse).await
-        else {
-            continue;
-        };
-        tally.merge(chunk_tally);
-        let answered = !answers.is_empty();
-        let mut missing: Vec<String> = chunk
-            .iter()
-            .filter(|uri| !answers.contains_key(*uri))
-            .cloned()
-            .collect();
-        found.extend(answers);
-        if missing.is_empty() || !answered || missing.len() == 1 {
-            // Nothing arrived at all means the provider refused the chunk rather
-            // than truncated it, and retrying one URI at a time is the request
-            // storm this exists to avoid. A single unanswered URI is simply
-            // unknown. Either way the caller falls back to the URI.
-            continue;
-        }
-        log::debug!(
-            "{} of {} entities came back; retrying the rest in smaller requests",
-            chunk.len() - missing.len(),
-            chunk.len()
-        );
-        let right = missing.split_off(missing.len() / 2);
-        queue.push(right);
-        queue.push(missing);
+    let answers = futures_util::stream::iter(chunks)
+        .map(|chunk: Vec<String>| {
+            let asked = chunk.clone();
+            let request = &request;
+            async move {
+                let answer = request(asked).await;
+                (chunk, answer)
+            }
+        })
+        .buffered(CHUNK_FANOUT)
+        .collect::<Vec<_>>()
+        .await;
+    for (chunk, answer) in answers {
+        absorb(&chunk, answer, &mut found, &mut tally, &mut retries);
+    }
+    while let Some(chunk) = retries.pop() {
+        let answer = request(chunk.clone()).await;
+        absorb(&chunk, answer, &mut found, &mut tally, &mut retries);
     }
     (found, tally)
+}
+
+/// Folds one chunk's answer into the pass, queueing the part it left unanswered.
+fn absorb<T>(
+    chunk: &[String],
+    answer: Option<(HashMap<String, T>, StatusTally)>,
+    found: &mut HashMap<String, T>,
+    tally: &mut StatusTally,
+    retries: &mut Vec<Vec<String>>,
+) {
+    let Some((answers, chunk_tally)) = answer else {
+        return;
+    };
+    tally.merge(chunk_tally);
+    let answered = !answers.is_empty();
+    let mut missing: Vec<String> = chunk
+        .iter()
+        .filter(|uri| !answers.contains_key(*uri))
+        .cloned()
+        .collect();
+    found.extend(answers);
+    if missing.is_empty() || !answered || missing.len() == 1 {
+        // Nothing arrived at all means the provider refused the chunk rather
+        // than truncated it, and retrying one URI at a time is the request
+        // storm this exists to avoid. A single unanswered URI is simply
+        // unknown. Either way the caller falls back to the URI.
+        return;
+    }
+    log::debug!(
+        "{} of {} entities came back; retrying the rest in smaller requests",
+        chunk.len() - missing.len(),
+        chunk.len()
+    );
+    let right = missing.split_off(missing.len() / 2);
+    retries.push(right);
+    retries.push(missing);
 }
 
 /// One batched extended-metadata request over `uris`.
@@ -1674,7 +1775,7 @@ fn show_card(show: &Show) -> Option<ShowCard> {
 ///
 /// A wrong length is not an id, so it gives no URI rather than an approximate
 /// one; the caller then has nothing to link to and draws plain text.
-fn uri_of(gid: Option<&[u8]>, page: fn(SpotifyId) -> SpotifyUri) -> Option<String> {
+pub(crate) fn uri_of(gid: Option<&[u8]>, page: fn(SpotifyId) -> SpotifyUri) -> Option<String> {
     page(SpotifyId::from_raw(gid?).ok()?).to_uri().ok()
 }
 

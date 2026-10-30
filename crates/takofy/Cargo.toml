@@ -12,9 +12,11 @@ takofy-model = { path = "../takofy-model" }
 takofy-ui = { path = "../takofy-ui" }
 librespot.workspace = true
 keyring.workspace = true
+chrono.workspace = true
 eframe.workspace = true
 egui.workspace = true
 env_logger.workspace = true
+futures-util.workspace = true
 log.workspace = true
 tokio.workspace = true
 image.workspace = true

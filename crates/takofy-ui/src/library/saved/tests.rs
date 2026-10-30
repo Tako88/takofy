@@ -8,6 +8,7 @@ const ACCOUNT: &str = "spotify:user:someone:playlist:4lRh9XA5hFPyKVnThKW3mi";
 
 fn playlist(uri: &str) -> PlaylistEntry {
     PlaylistEntry {
+        saved_at: None,
         composed: Vec::new(),
         uri: uri.to_owned(),
         name: "A list".to_owned(),

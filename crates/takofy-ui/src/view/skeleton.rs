@@ -15,6 +15,7 @@ use std::time::Duration;
 use egui::{Mesh, Pos2, Rect, Sense, Shape, Ui, Vec2, pos2, vec2};
 
 use crate::layout::cards;
+use crate::layout::chips;
 use crate::layout::episode;
 use crate::layout::table::{self, Present};
 use crate::theme::{Tokens, eq, extent, motion, radius, space};
@@ -311,6 +312,43 @@ pub fn episode_rows(ui: &mut Ui, count: usize, tokens: &Tokens) {
             extent::SKELETON_LINE_SM,
             tokens,
         );
+    }
+}
+
+/// A band of compact rows: the boxes Home's counted tiles and station rows fill.
+///
+/// The placeholders are the boxes themselves, because that is what the shelf will
+/// occupy: a waiting shelf has to hold the room its content will take or the
+/// shelves under it move when the content lands.
+pub fn compact_rows(
+    ui: &mut Ui,
+    count: usize,
+    columns: usize,
+    row_h: f32,
+    gap: f32,
+    tokens: &Tokens,
+) {
+    if count == 0 {
+        return;
+    }
+    wake(ui);
+    let width = ui.available_width();
+    let placed = chips::grid(count, width, columns.max(1), row_h, gap);
+    let (list, _) = ui.allocate_exact_size(vec2(width, placed.height), Sense::hover());
+    for (index, at) in placed.rects.iter().enumerate() {
+        let rect = at.translate(list.min.to_vec2());
+        ui.painter()
+            .rect_filled(rect, radius::SM, tokens.palette.skeleton);
+        let left = rect.left() + space::S2 + extent::QUEUE_ART + space::S3;
+        let bar = Rect::from_min_size(
+            pos2(left, rect.center().y - extent::SKELETON_LINE_SM / 2.0),
+            vec2(
+                (rect.right() - space::S2 - left).max(0.0) * row_title(index),
+                extent::SKELETON_LINE_SM,
+            ),
+        );
+        ui.painter()
+            .rect_filled(bar, radius::XS, tokens.palette.skeleton_rule);
     }
 }
 

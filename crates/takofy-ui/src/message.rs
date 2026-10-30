@@ -5,9 +5,10 @@
 
 use std::time::Instant;
 
+use takofy_model::home::{HomeAnswer, HomeAsk};
 use takofy_model::{
     AlbumDetail, ArtistDetail, ArtistPortrait, CoverImage, CoverSet, CoverUrl, Device,
-    FollowedArtist, FollowedShow, Landing, Move, Order, PlaylistAccess, PlaylistEntry,
+    FollowedArtist, FollowedShow, Landing, LikedTrack, Move, Order, PlaylistAccess, PlaylistEntry,
     RemotePlayback, Removal, Report, RequestId, Revision, SavedAlbum, ShowDetail, TrackEntry,
     TrackLyrics,
 };
@@ -108,6 +109,8 @@ pub enum Command {
     LoadSavedAlbums,
     /// Load the tracks the user has liked, newest save first.
     LoadLikedTracks,
+    /// One read a Home shelf asked for.
+    LoadHome(HomeAsk),
     /// Write these tracks into the liked-songs set, or out of it.
     SetLiked { tracks: Vec<String>, liked: bool },
     /// The tracks one search query answers.
@@ -141,6 +144,9 @@ pub enum Command {
     LabelRemote { track: String },
     /// Label these track URIs, in the order the caller listed them.
     LabelRows { uris: Vec<String> },
+    /// Label the liked songs Home's shelf draws, in the order the caller
+    /// listed them.
+    LabelSaved { tracks: Vec<String> },
     /// Fetch the playlists again.
     ReloadLibrary,
     /// Fetch one cover image from the worker.
@@ -417,9 +423,25 @@ pub enum Update {
     /// The saved albums could not be loaded.
     SavedAlbumsFailed(Failure),
     /// The tracks the user has liked, newest save first.
-    LikedTracks(Vec<String>),
+    LikedTracks(Vec<LikedTrack>),
     /// The liked tracks could not be loaded; a set already read is kept.
     LikedTracksFailed(Failure),
+    /// The labels of the liked songs Home asked for.
+    ///
+    /// It is always sent, even when the read failed or named nothing, because
+    /// the shelf waits for every answer before it draws.
+    SavedLabelled {
+        asked: Vec<String>,
+        named: Vec<TrackEntry>,
+    },
+    /// The labels of the liked songs Home asked for could not be read.
+    ///
+    /// The URIs are the ones the read was sent for, so the shelf can stop
+    /// waiting on an answer that will not come.
+    SavedLabelFailed {
+        asked: Vec<String>,
+        failure: Failure,
+    },
     /// The liked write landed for these tracks, with this value.
     Liked { tracks: Vec<String>, liked: bool },
     /// The liked write did not stick.
@@ -464,6 +486,10 @@ pub enum Update {
     /// Silent on screen: a portrait that does not arrive is drawn like a cover
     /// that has not been fetched.
     PortraitsFailed { query: String },
+    /// One Home shelf's answer, matched back by the ask it carries.
+    Home(HomeAnswer),
+    /// One Home shelf's read failed, told apart by the ask that named it.
+    HomeFailed { ask: HomeAsk, failure: Failure },
     /// A playback change.
     Transport(TransportUpdate),
     /// A change to the account's devices.

@@ -12,8 +12,10 @@
 
 use std::collections::HashSet;
 
+use takofy_model::LikedTrack;
 use takofy_model::uri::{UriKind, parse};
 
+use crate::home::Phase;
 use crate::message::Failure;
 
 /// What a pick's members have in common, as the menu's save row reads it.
@@ -42,8 +44,8 @@ pub struct Change {
 /// What the bridge reports about the set.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
-    /// The whole set, as the read found it.
-    Set(Vec<String>),
+    /// The whole set, as the read found it, in the read's order.
+    Set(Vec<LikedTrack>),
     /// The read failed; a set already read is kept.
     SetFailed(Failure),
     /// The write landed for these tracks, with this value.
@@ -74,6 +76,8 @@ enum Read {
 pub struct Likes {
     /// The last adopted set. `None` until a read lands.
     set: Option<HashSet<String>>,
+    /// The last adopted read's tracks with their dates, in the read's order.
+    recent: Vec<LikedTrack>,
     read: Read,
     /// The epoch of the last local flip or revert.
     epoch: u64,
@@ -95,6 +99,45 @@ impl Likes {
             return None;
         }
         self.set.as_ref().map(|set| set.contains(uri))
+    }
+
+    /// The last read's tracks that are still liked, in the read's order.
+    ///
+    /// `None` until a read lands. A track that is no longer liked is left out
+    /// without a write of its own, and a failed write that reverts brings it
+    /// back the same way.
+    pub fn recent(&self) -> Option<impl Iterator<Item = &LikedTrack>> {
+        let set = self.set.as_ref()?;
+        Some(
+            self.recent
+                .iter()
+                .filter(move |track| set.contains(&track.uri)),
+        )
+    }
+
+    /// Whether the set holds any track at all.
+    ///
+    /// This is the set, not the last read's tracks: a song liked this session
+    /// is in the set but not in `recent`, and that user must not be told that
+    /// nothing is saved.
+    pub fn any(&self) -> bool {
+        self.set.as_ref().is_some_and(|set| !set.is_empty())
+    }
+
+    /// What Home's shelf needs to know about the liked songs.
+    ///
+    /// A failed read reports itself even when a set is held; the shelf's own
+    /// pool decides whether that set still draws cards. A read that answered is
+    /// arrived whether or not it adopted a set, and a held set whose next read
+    /// is due is arrived too, because there is still data to draw. Only a set
+    /// that has never been read is pending.
+    pub fn phase(&self) -> Phase {
+        match self.read {
+            Read::Failed(failure) => Phase::Failed(failure),
+            Read::Current => Phase::Arrived,
+            Read::Idle | Read::Stale if self.set.is_some() => Phase::Arrived,
+            Read::Idle | Read::Stale => Phase::Pending,
+        }
     }
 
     /// What `uris` have in common, as the menu's save row reads it.
@@ -208,7 +251,7 @@ impl Likes {
         self.notice = None;
     }
 
-    fn adopt(&mut self, tracks: Vec<String>) {
+    fn adopt(&mut self, tracks: Vec<LikedTrack>) {
         let Some(issued) = self.asking.take() else {
             return;
         };
@@ -224,7 +267,8 @@ impl Likes {
             self.read = Read::Stale;
             return;
         }
-        self.set = Some(tracks.into_iter().collect());
+        self.set = Some(tracks.iter().map(|track| track.uri.clone()).collect());
+        self.recent = tracks;
         self.read = Read::Current;
         self.notice = None;
     }

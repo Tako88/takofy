@@ -575,6 +575,54 @@ fn the_playbar_weights_follow_the_reference_at_1440_and_at_800() {
 }
 
 #[test]
+fn the_separator_slot_is_the_mark_and_a_space_1_margin_each_side() {
+    assert_eq!(HISTORY_RULE, stroke::HAIRLINE + 2.0 * space::S1);
+}
+
+#[test]
+fn the_history_width_is_the_sum_of_its_parts() {
+    // Four squares, the four gaps between them, and the rule's slot: the
+    // hairline mark with the two `space-1` margins that stand in for its item.
+    assert_eq!(
+        history_width(),
+        4.0 * extent::BUTTON + 4.0 * space::S1 + stroke::HAIRLINE + 2.0 * space::S1
+    );
+}
+
+#[test]
+fn the_placed_history_column_is_the_width_the_solver_reserved() {
+    for width in [700.0, 1000.0, 1440.0] {
+        let rect = topbar_rect(width);
+        let sidebar = regions_for(width).sidebar;
+        let places = topbar_for(rect, sidebar, 200.0).columns(rect);
+
+        assert_eq!(places.history.width(), history_width(), "{width}");
+        assert_close(
+            places.search.left() - places.history.right(),
+            TopbarCols::GAP,
+        );
+    }
+}
+
+#[test]
+fn the_free_space_equals_the_field_the_trail_and_the_room_left_over() {
+    // The solver's `free` has to be what the row actually has to spend: the
+    // field, the trail, and the room the row leaves past its own gap. A solver
+    // that subtracted a history width the row does not place would be off by
+    // exactly that drift here, and by nothing else.
+    for width in [700.0, 1000.0, 1440.0, 1800.0] {
+        let rect = topbar_rect(width);
+        let sidebar = regions_for(width).sidebar;
+        let free = topbar_free(rect, sidebar);
+        let columns = topbar_for(rect, sidebar, 200.0);
+        let places = columns.columns(rect);
+
+        let slack = places.trail.left() - places.search.right() - TopbarCols::GAP;
+        assert_close(columns.search + columns.trail + slack, free);
+    }
+}
+
+#[test]
 fn the_search_field_is_capped_at_its_maximum() {
     let columns = topbar_for(topbar_rect(1440.0), Sidebar::Full, 100.0);
     assert_eq!(columns.search, extent::SEARCH_MAX_W);

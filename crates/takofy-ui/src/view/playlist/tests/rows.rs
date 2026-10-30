@@ -105,6 +105,7 @@ fn a_selection_stays_on_the_playlist_it_was_made_on() {
             &mut Art::default(),
             Instant::now(),
             NOW_MS,
+            9,
             &tokens,
         );
     });
@@ -169,6 +170,7 @@ fn a_carried_list_scrolls_at_its_edge() {
                 &mut Art::default(),
                 Instant::now(),
                 NOW_MS,
+                9,
                 &tokens,
             );
         });
@@ -359,6 +361,7 @@ fn a_failed_like_draws_its_sentence_in_the_pages_slot() {
             &mut Art::default(),
             Instant::now(),
             NOW_MS,
+            9,
             &tokens,
         );
     });

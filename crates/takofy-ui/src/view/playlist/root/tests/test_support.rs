@@ -50,6 +50,7 @@ pub(super) fn run(
             art,
             Instant::now(),
             NOW_MS,
+            9,
             &tokens,
         );
     });
@@ -86,6 +87,7 @@ pub(super) fn text_rect(output: &egui::FullOutput, label: &str) -> Option<Rect> 
 
 pub(super) fn playlist(uri: &str, name: &str) -> PlaylistEntry {
     PlaylistEntry {
+        saved_at: None,
         composed: Vec::new(),
         uri: uri.to_owned(),
         name: name.to_owned(),
@@ -139,6 +141,7 @@ pub(super) fn click(
                 art,
                 Instant::now(),
                 NOW_MS,
+                9,
                 &tokens,
             ) {
                 *command = Some(next);
@@ -195,10 +198,13 @@ pub(super) fn followed_artist(uri: &str, name: &str) -> takofy_model::FollowedAr
 
 pub(super) fn saved_album(uri: &str, name: &str) -> takofy_model::SavedAlbum {
     takofy_model::SavedAlbum {
+        saved_at: None,
         uri: uri.to_owned(),
         name: name.to_owned(),
         named: true,
         artists: "Nils Aker".to_owned(),
+        artist_uris: Vec::new(),
+        artist_names: Vec::new(),
         year: None,
         cover: None,
         tracks: None,

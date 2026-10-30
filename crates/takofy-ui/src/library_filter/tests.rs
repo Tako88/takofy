@@ -2,6 +2,7 @@ use super::*;
 
 fn playlist(uri: &str) -> PlaylistEntry {
     PlaylistEntry {
+        saved_at: None,
         composed: Vec::new(),
         uri: uri.to_owned(),
         name: uri.to_owned(),
@@ -72,10 +73,13 @@ fn artist(uri: &str) -> FollowedArtist {
 
 fn album(uri: &str) -> SavedAlbum {
     SavedAlbum {
+        saved_at: None,
         uri: uri.to_owned(),
         name: uri.to_owned(),
         named: true,
         artists: String::new(),
+        artist_uris: Vec::new(),
+        artist_names: Vec::new(),
         year: None,
         cover: None,
         tracks: None,

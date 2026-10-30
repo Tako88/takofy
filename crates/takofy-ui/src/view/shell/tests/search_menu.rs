@@ -239,6 +239,7 @@ fn the_drawers_ring_never_crosses_the_rails_edge() {
     let mut window = Window::new(Vec2::new(800.0, 900.0));
     window.library.apply(&Update::Playlists(vec![
         PlaylistEntry {
+            saved_at: None,
             composed: Vec::new(),
             uri: "spotify:playlist:a".to_owned(),
             name: "A".to_owned(),
@@ -250,6 +251,7 @@ fn the_drawers_ring_never_crosses_the_rails_edge() {
             access: None,
         },
         PlaylistEntry {
+            saved_at: None,
             composed: Vec::new(),
             uri: "spotify:playlist:b".to_owned(),
             name: "B".to_owned(),
@@ -718,7 +720,7 @@ fn home_and_back_leave_no_stale_open_menu() {
 
     let (_, frame) = window.frame(&mut transport, &mut queue, Vec::new());
     let buttons = topbar_buttons(&frame);
-    let _ = window.click(&mut transport, &mut queue, buttons[1].center());
+    let _ = window.click(&mut transport, &mut queue, buttons[2].center());
     assert!(
         !window.library.search.is_open(),
         "and Back does not reopen it"

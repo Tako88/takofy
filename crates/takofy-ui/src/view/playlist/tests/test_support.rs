@@ -204,6 +204,7 @@ pub(super) fn tracklist_frame(
             &mut Art::default(),
             Instant::now(),
             NOW_MS,
+            9,
             &tokens,
         );
     })
@@ -228,6 +229,7 @@ pub(super) fn tracklist_frame_in(
             &mut Art::default(),
             Instant::now(),
             NOW_MS,
+            9,
             &tokens,
         );
     })
@@ -267,6 +269,7 @@ pub(super) fn library_with(tracks: Vec<TrackEntry>) -> Library {
 pub(super) fn library_named(tracks: Vec<TrackEntry>, name: &str) -> Library {
     let mut library = library_with(tracks);
     library.apply(&Update::Playlists(vec![PlaylistEntry {
+        saved_at: None,
         composed: Vec::new(),
         uri: "spotify:playlist:a".to_owned(),
         name: name.to_owned(),
@@ -282,6 +285,7 @@ pub(super) fn library_named(tracks: Vec<TrackEntry>, name: &str) -> Library {
 
 pub(super) fn playlist(uri: &str, name: &str) -> PlaylistEntry {
     PlaylistEntry {
+        saved_at: None,
         composed: Vec::new(),
         uri: uri.to_owned(),
         name: name.to_owned(),
@@ -403,7 +407,12 @@ pub(super) fn row_rect_for(ctx: &Context, count: usize, index: usize) -> Rect {
 pub(super) fn liked(library: &mut Library, uris: &[&str]) {
     assert!(library.likes.request(true));
     library.likes.apply(&crate::likes::Event::Set(
-        uris.iter().map(|uri| (*uri).to_owned()).collect(),
+        uris.iter()
+            .map(|uri| takofy_model::LikedTrack {
+                uri: (*uri).to_owned(),
+                saved_at: None,
+            })
+            .collect(),
     ));
 }
 
@@ -475,6 +484,7 @@ pub(super) fn clicks(
             &mut Art::default(),
             Instant::now(),
             NOW_MS,
+            9,
             &tokens,
         );
     });
@@ -494,6 +504,7 @@ pub(super) fn clicks(
                     &mut Art::default(),
                     Instant::now(),
                     NOW_MS,
+                    9,
                     &tokens,
                 ) {
                     *command = Some(next);
@@ -567,6 +578,7 @@ pub(super) fn pass(
             &mut Art::default(),
             Instant::now(),
             NOW_MS,
+            9,
             &tokens,
         );
     });
@@ -669,6 +681,7 @@ pub(super) fn table_frame_in(
             &mut Art::default(),
             Instant::now(),
             NOW_MS,
+            9,
             &tokens,
         );
     })

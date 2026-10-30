@@ -54,6 +54,7 @@ fn non_numeric_input_is_invalid() {
 #[test]
 fn playlist_line_names_the_playlist() {
     let entry = PlaylistEntry {
+        saved_at: None,
         composed: Vec::new(),
         uri: "spotify:playlist:x".to_owned(),
         name: "Mix".to_owned(),

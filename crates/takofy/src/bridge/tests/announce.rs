@@ -1,3 +1,4 @@
+use super::super::reads::announce;
 use super::super::*;
 use super::test_support::*;
 use crate::session::{SessionError, TrackPage};
@@ -34,6 +35,23 @@ pub(super) enum ShowScript {
 impl Default for ShowScript {
     fn default() -> Self {
         Self::Ready(show_detail(SHOW))
+    }
+}
+
+/// A scripted pooled episodes answer; the default is one bare show detail.
+///
+/// `Pending` never answers, so a stop can be tested while the read is still in
+/// flight.
+#[derive(Clone)]
+pub(super) enum EpisodesScript {
+    Ready(Vec<ShowDetail>),
+    Fail,
+    Pending,
+}
+
+impl Default for EpisodesScript {
+    fn default() -> Self {
+        Self::Ready(vec![show_detail(SHOW)])
     }
 }
 
@@ -750,10 +768,13 @@ fn run_saved_albums(albums: Vec<SavedAlbum>) -> Update {
 /// One saved-album card, named after its URI so a test can tell two apart.
 fn saved_album(uri: &str) -> SavedAlbum {
     SavedAlbum {
+        saved_at: None,
         uri: uri.to_owned(),
         name: uri.to_owned(),
         named: true,
         artists: String::new(),
+        artist_uris: Vec::new(),
+        artist_names: Vec::new(),
         year: None,
         cover: None,
         tracks: None,

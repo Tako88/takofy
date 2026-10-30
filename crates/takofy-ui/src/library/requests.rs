@@ -1,5 +1,6 @@
 //! The reads the library asks for, and the loads they point at.
 
+use crate::home::Budget;
 use crate::message::Command;
 use crate::route::Page;
 
@@ -131,7 +132,9 @@ impl Library {
                 self.search.open_results(&query);
                 None
             }
-            _ => None,
+            // Neither the root nor Home is a read of its own: the root draws
+            // the two library lists, and Home draws their settled state.
+            None | Some(Page::Home) => None,
         }
     }
 
@@ -148,6 +151,14 @@ impl Library {
         self.followed_artists = Load::Idle;
         self.saved_albums = Load::Idle;
         self.likes.reload();
+        self.held_since = None;
+        self.hold_spent = false;
+        // The retry is the page's own: it asks for the labels a failed read
+        // left unanswered instead of keeping their misses. It forgets every
+        // shelf, so every shelf's allowance comes back with them, or a shelf
+        // would wait for reads it is no longer allowed to send.
+        self.home.forget();
+        self.home.budget = Budget::default();
         Command::ReloadLibrary
     }
 
@@ -301,7 +312,10 @@ impl Library {
     pub fn followed_artists_request(&mut self) -> Option<Command> {
         if self.followed_artists == Load::Idle
             && matches!(self.playlists, Load::Ready(_))
-            && artists_chosen(self.root_filter.chosen(), self.sidebar_kind.chosen())
+            && (artists_chosen(self.root_filter.chosen(), self.sidebar_kind.chosen())
+                // Home's related shelf reads them, and the chip that would ask
+                // for them is not on screen there.
+                || self.on_home())
         {
             self.followed_artists = Load::Loading;
             Some(Command::LoadFollowedArtists)
@@ -312,12 +326,15 @@ impl Library {
 
     /// The command that starts the saved-albums load, if one is due.
     ///
-    /// The followed-artists shape, one chip over.
+    /// The followed-artists shape, one chip over. Home also wants the list,
+    /// whatever chip the root was left on: its shelf draws albums, and the chip
+    /// that would ask for them is not on screen to do it.
     pub fn saved_albums_request(&mut self) -> Option<Command> {
         if self.saved_albums == Load::Idle
             && matches!(self.playlists, Load::Ready(_))
             && (albums_chosen(self.root_filter.chosen(), self.sidebar_kind.chosen())
-                || self.on_artist_page())
+                || self.on_artist_page()
+                || self.on_home())
         {
             self.saved_albums = Load::Loading;
             Some(Command::LoadSavedAlbums)
@@ -342,6 +359,23 @@ impl Library {
         self.likes
             .request(matches!(self.playlists, Load::Ready(_)))
             .then_some(Command::LoadLikedTracks)
+    }
+
+    /// The label read Home's liked cards owe: asked once per URI, marked at send,
+    /// and only on a settled pool.
+    pub(crate) fn home_labels_request(&mut self) -> Option<Command> {
+        if !self.on_home() {
+            return None;
+        }
+        if !self.home_intake().settled() {
+            return None;
+        }
+        let tracks = self.home_unlabelled();
+        if tracks.is_empty() {
+            return None;
+        }
+        self.home.mark_asked(&tracks);
+        Some(Command::LabelSaved { tracks })
     }
 
     /// Flips the liked set and asks for the write, or changes nothing.

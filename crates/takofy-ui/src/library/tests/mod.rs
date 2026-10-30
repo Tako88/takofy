@@ -8,6 +8,7 @@ mod create;
 mod filters;
 mod followed;
 mod history;
+mod home;
 mod moving;
 mod remove;
 mod rename;

@@ -20,6 +20,10 @@ fn search(query: &str) -> Option<Page> {
     Some(Page::Search(query.to_owned()))
 }
 
+fn home() -> Option<Page> {
+    Some(Page::Home)
+}
+
 #[test]
 fn a_show_uri_credits_a_show_page() {
     assert_eq!(
@@ -237,6 +241,7 @@ fn retain_keeps_non_playlist_pages_in_forward() {
 #[test]
 fn a_page_names_its_uri_and_kind() {
     let cases = [
+        (Page::Home, "", "Home"),
         (Page::Playlist("p".to_owned()), "p", "Playlist"),
         (Page::Album("a".to_owned()), "a", "Album"),
         (Page::Artist("r".to_owned()), "r", "Artist"),
@@ -273,6 +278,46 @@ fn retain_keeps_a_search_query_that_spells_a_playlist_uri() {
     history.retain(|page| !matches!(page, Page::Playlist(_)));
 
     assert_eq!(history.current(), search("spotify:playlist:x").as_ref());
+}
+
+/// A history that starts on a page has nowhere behind it: the page is where
+/// the session opened, not a step taken from the root.
+#[test]
+fn starting_at_a_page_has_no_back_entry() {
+    let history = History::starting_at(Page::Home);
+
+    assert_eq!(history.current(), home().as_ref());
+    assert!(!history.can_back());
+    assert!(!history.can_forward());
+}
+
+#[test]
+fn back_from_a_page_opened_on_home_returns_to_home() {
+    let mut history = History::starting_at(Page::Home);
+    assert!(history.go(playlist("a")));
+
+    assert!(history.back());
+    assert_eq!(history.current(), home().as_ref());
+
+    assert!(history.forward());
+    assert_eq!(history.current(), playlist("a").as_ref());
+}
+
+#[test]
+fn retain_keeps_the_home_page() {
+    let mut history = History::starting_at(Page::Home);
+    history.retain(|page| matches!(page, Page::Home));
+    assert_eq!(
+        history.current(),
+        home().as_ref(),
+        "the page a session opened on is not pruned away"
+    );
+
+    history.go(playlist("a"));
+    history.retain(|page| !matches!(page, Page::Playlist(_)));
+
+    assert!(history.back());
+    assert_eq!(history.current(), home().as_ref());
 }
 
 #[test]

@@ -16,10 +16,11 @@ use takofy_core::engine::{Engine, EngineError, Orders, RootlistRead};
 use takofy_core::playback::{Playback, PlaybackError, PlaybackEvent, Volume};
 use takofy_core::receive::Inbound;
 use takofy_core::{Resolution, TransferPlan};
+use takofy_model::home::{Station, StationSeed};
 use takofy_model::{
     AlbumDetail, ArtistDetail, ArtistPortrait, CoverSet, FollowedArtist, FollowedShow, Landing,
-    Move, PlaylistAccess, PlaylistEntry, Removal, Report, RequestId, Revision, SavedAlbum,
-    ShowDetail, TrackEntry, TrackLyrics,
+    LikedTrack, Move, PlaylistAccess, PlaylistEntry, Removal, Report, RequestId, Revision,
+    SavedAlbum, ShowDetail, TrackEntry, TrackLyrics,
 };
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::oneshot::Receiver;
@@ -80,6 +81,7 @@ impl SessionError {
             Self::Engine(EngineError::Album(_)) => "album",
             Self::Engine(EngineError::Artist(_)) => "artist",
             Self::Engine(EngineError::Show(_)) => "show",
+            Self::Engine(EngineError::Station(_)) => "station",
             Self::Engine(EngineError::Lyrics(_)) => "lyrics",
             Self::Engine(EngineError::Playlist(_)) => "playlist",
             Self::Engine(EngineError::Followed(_)) => "followed",
@@ -119,8 +121,9 @@ pub(crate) struct ArtistPage {
 /// Returns `impl Future + Send` rather than being an `async fn` because an
 /// `async fn` in a trait does not declare its future `Send`, and the task has
 /// to be spawnable. `&mut self` is only where the lazily started player is
-/// written; `shutdown` consumes, because that is what joins the thread.
-pub(crate) trait SessionHost: Send + 'static {
+/// written; `shutdown` consumes, because that is what joins the thread. `Sync`
+/// is what lets several reads hold `&self` at once.
+pub(crate) trait SessionHost: Send + Sync + 'static {
     /// Opens the session with `token`.
     ///
     /// A caller that replaces a live-but-dead engine retires it first: this
@@ -202,7 +205,7 @@ pub(crate) trait SessionHost: Send + 'static {
     -> impl Future<Output = Option<PlaylistAccess>> + Send;
 
     fn tracks(
-        &mut self,
+        &self,
         playlist: &str,
     ) -> impl Future<Output = Result<TrackPage, SessionError>> + Send;
 
@@ -226,6 +229,28 @@ pub(crate) trait SessionHost: Send + 'static {
 
     fn show(&self, show: &str) -> impl Future<Output = Result<ShowDetail, SessionError>> + Send;
 
+    /// The newest episodes of every show in `shows`, labelled in one read.
+    ///
+    /// A show that does not answer is missing from the answer rather than
+    /// answered empty.
+    fn episodes(
+        &self,
+        shows: &[String],
+    ) -> impl Future<Output = Result<Vec<ShowDetail>, SessionError>> + Send;
+
+    /// One station read from its seed, its rows labelled.
+    fn station(
+        &self,
+        seed: &StationSeed,
+    ) -> impl Future<Output = Result<Station, SessionError>> + Send;
+
+    /// The artists a station names beside `artist`: this client's one read of an
+    /// artist's neighbours.
+    fn neighbours(
+        &self,
+        artist: &str,
+    ) -> impl Future<Output = Result<Vec<FollowedArtist>, SessionError>> + Send;
+
     /// The shows the user follows, newest follow first, each as its card draws
     /// it.
     fn followed_shows(
@@ -242,7 +267,7 @@ pub(crate) trait SessionHost: Send + 'static {
     fn saved_albums(&self) -> impl Future<Output = Result<Vec<SavedAlbum>, SessionError>> + Send;
 
     /// The tracks the user has liked, newest save first.
-    fn liked_tracks(&self) -> impl Future<Output = Result<Vec<String>, SessionError>> + Send;
+    fn liked_tracks(&self) -> impl Future<Output = Result<Vec<LikedTrack>, SessionError>> + Send;
 
     /// Writes these tracks into the liked-songs set, or out of it.
     fn set_liked(
@@ -617,7 +642,7 @@ impl SessionHost for LiveSession {
         }
     }
 
-    async fn tracks(&mut self, playlist: &str) -> Result<TrackPage, SessionError> {
+    async fn tracks(&self, playlist: &str) -> Result<TrackPage, SessionError> {
         let Some(engine) = &self.engine else {
             return Err(SessionError::NotConnected);
         };
@@ -676,6 +701,30 @@ impl SessionHost for LiveSession {
         }
     }
 
+    async fn episodes(&self, shows: &[String]) -> Result<Vec<ShowDetail>, SessionError> {
+        match &self.engine {
+            Some(engine) => engine.episodes(shows).await.map_err(SessionError::Engine),
+            None => Err(SessionError::NotConnected),
+        }
+    }
+
+    async fn station(&self, seed: &StationSeed) -> Result<Station, SessionError> {
+        match &self.engine {
+            Some(engine) => engine.station(seed).await.map_err(SessionError::Engine),
+            None => Err(SessionError::NotConnected),
+        }
+    }
+
+    async fn neighbours(&self, artist: &str) -> Result<Vec<FollowedArtist>, SessionError> {
+        match &self.engine {
+            Some(engine) => engine
+                .neighbours(artist)
+                .await
+                .map_err(SessionError::Engine),
+            None => Err(SessionError::NotConnected),
+        }
+    }
+
     async fn followed_shows(&self) -> Result<Vec<FollowedShow>, SessionError> {
         match &self.engine {
             Some(engine) => engine.followed_shows().await.map_err(SessionError::Engine),
@@ -700,7 +749,7 @@ impl SessionHost for LiveSession {
         }
     }
 
-    async fn liked_tracks(&self) -> Result<Vec<String>, SessionError> {
+    async fn liked_tracks(&self) -> Result<Vec<LikedTrack>, SessionError> {
         match &self.engine {
             Some(engine) => engine.liked_tracks().await.map_err(SessionError::Engine),
             None => Err(SessionError::NotConnected),

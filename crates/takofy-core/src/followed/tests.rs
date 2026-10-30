@@ -3,7 +3,10 @@ use std::collections::HashMap;
 use librespot::core::{SpotifyId, SpotifyUri};
 use takofy_model::{CoverSet, CoverUrl};
 
-use super::{FollowedError, MAX_PAGES, Pager, ShowCard, entries, newest_first, show_order};
+use super::{
+    Dated, FollowedError, MAX_PAGES, Pager, ShowCard, entries, newest_dated, newest_first,
+    show_order,
+};
 use crate::collection::Item;
 
 fn item(uri: &str, added_at: Option<i64>, removed: bool) -> Item {
@@ -100,6 +103,38 @@ fn newest_first_keeps_what_the_predicate_keeps_and_the_first_of_a_duplicate_pair
         ),
         vec![show(1), show(3)],
         "an album is not a show, and the first show's date sorts, so the newer duplicate does not win"
+    );
+}
+
+#[test]
+fn newest_dated_keeps_each_uri_with_its_date_in_the_same_order() {
+    assert_eq!(
+        newest_dated(
+            vec![
+                item(&show(1), Some(100), false),
+                item(&show(2), Some(200), true),
+                item(&album(3), Some(300), false),
+                item(&show(4), None, false),
+                item(&show(1), Some(2_000), false),
+                item(&show(5), Some(150), false),
+            ],
+            |uri| matches!(uri, SpotifyUri::Show { .. }),
+        ),
+        vec![
+            Dated {
+                uri: show(5),
+                added_at: Some(150),
+            },
+            Dated {
+                uri: show(1),
+                added_at: Some(100),
+            },
+            Dated {
+                uri: show(4),
+                added_at: None,
+            },
+        ],
+        "removed and non-matching items are dropped, the first duplicate's date is kept, and undated comes last"
     );
 }
 

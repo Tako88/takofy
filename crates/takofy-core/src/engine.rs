@@ -21,21 +21,23 @@ use crate::presence::Presence;
 use crate::registry::{Registry, Verdict};
 use crate::remote::{
     LabelCache, ROOTLIST_WIRE, RemoteContext, RemoteRootlist, label_playlists, label_tracks,
-    read_album, read_artist, read_followed_artists, read_followed_shows, read_liked_tracks,
-    read_lyrics, read_playlist_state, read_portraits, read_related, read_release_tracks,
-    read_saved_albums, read_saved_state, read_show, write_add, write_create, write_follow,
-    write_like, write_move, write_remove, write_rename, write_rootlist_add, write_rootlist_move,
-    write_rootlist_remove, write_saved,
+    read_album, read_artist, read_episodes, read_followed_artists, read_followed_shows,
+    read_liked_tracks, read_lyrics, read_playlist_state, read_portraits, read_related,
+    read_release_tracks, read_saved_albums, read_saved_state, read_show, write_add, write_create,
+    write_follow, write_like, write_move, write_remove, write_rename, write_rootlist_add,
+    write_rootlist_move, write_rootlist_remove, write_saved,
 };
-use crate::rootlist::{RootlistError, fetch_all};
+use crate::rootlist::{RootEntry, RootlistError, fetch_all};
 use crate::search::search_uri;
 use crate::show::ShowError;
+use crate::station::{StationError, read_neighbours, read_station};
 use crate::transfer::{Resolution, TransferPlan};
 use crate::watch::{self, Gate};
+use takofy_model::home::{Station, StationSeed};
 use takofy_model::{
     AlbumDetail, ArtistDetail, ArtistPortrait, CoverSet, FollowedArtist, FollowedShow, Landing,
-    Move, PlaylistAccess, PlaylistEntry, Removal, Report, RequestId, Revision, SavedAlbum,
-    ShowDetail, TrackEntry, TrackLyrics,
+    LikedTrack, Move, PlaylistAccess, PlaylistEntry, Removal, Report, RequestId, Revision,
+    SavedAlbum, ShowDetail, TrackEntry, TrackLyrics,
 };
 
 /// Why an [`Engine`] operation failed.
@@ -53,6 +55,8 @@ pub enum EngineError {
     Artist(#[from] ArtistError),
     #[error(transparent)]
     Show(#[from] ShowError),
+    #[error(transparent)]
+    Station(#[from] StationError),
     #[error(transparent)]
     Followed(#[from] FollowedError),
     #[error(transparent)]
@@ -343,7 +347,11 @@ impl Engine {
     /// A created list has none of these in the write's replies, so this is the
     /// read that fills them in without waiting for the next rootlist reload.
     pub async fn playlist_entry(&self, playlist_uri: &str) -> Option<PlaylistEntry> {
-        label_playlists(&self.session, vec![playlist_uri.to_owned()], &self.labels)
+        let entry = RootEntry {
+            uri: playlist_uri.to_owned(),
+            saved_at: None,
+        };
+        label_playlists(&self.session, vec![entry], &self.labels)
             .await
             .pop()
     }
@@ -589,6 +597,27 @@ impl Engine {
         Ok(read_show(&self.session, show_uri).await?)
     }
 
+    /// Several shows: each show's metadata and every episode of all of them,
+    /// labelled in one read.
+    ///
+    /// A show that does not answer is left out of the answer rather than
+    /// answered empty, and only a read where every show failed is an error. The
+    /// shows and their episodes stay in the order they were read.
+    pub async fn episodes(&self, shows: &[String]) -> Result<Vec<ShowDetail>, EngineError> {
+        Ok(read_episodes(&self.session, shows).await?)
+    }
+
+    /// One station read from its seed, its rows labelled.
+    pub async fn station(&self, seed: &StationSeed) -> Result<Station, EngineError> {
+        Ok(read_station(&self.session, &self.labels, seed).await?)
+    }
+
+    /// The artists a station names beside `artist`, which is where this client
+    /// learns an artist's neighbours.
+    pub async fn neighbours(&self, artist: &str) -> Result<Vec<FollowedArtist>, EngineError> {
+        Ok(read_neighbours(&self.session, artist).await?)
+    }
+
     /// One track's lyrics, empty when the track has none.
     ///
     /// A track without lyrics is an empty success rather than an error: the
@@ -614,7 +643,7 @@ impl Engine {
     }
 
     /// The tracks the user has liked, newest save first.
-    pub async fn liked_tracks(&self) -> Result<Vec<String>, EngineError> {
+    pub async fn liked_tracks(&self) -> Result<Vec<LikedTrack>, EngineError> {
         Ok(read_liked_tracks(&self.session).await?)
     }
 

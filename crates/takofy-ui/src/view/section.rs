@@ -16,14 +16,14 @@ use super::text as recipe;
 ///
 /// An empty aside takes no room and draws nothing, so a section with nothing to
 /// count still has its title.
-pub fn head(ui: &mut Ui, title: &str, aside: &str, tokens: &Tokens) {
-    paint(ui, title, aside, None, tokens);
+pub fn head(ui: &mut Ui, title: &str, aside: &str, tokens: &Tokens) -> Rect {
+    paint(ui, title, aside, None, tokens)
 }
 
 /// [`head`], announced as one label reading `spoken`, so the aside is heard with
 /// its title.
-pub fn head_spoken(ui: &mut Ui, title: &str, aside: &str, spoken: &str, tokens: &Tokens) {
-    paint(ui, title, aside, Some(spoken), tokens);
+pub fn head_spoken(ui: &mut Ui, title: &str, aside: &str, spoken: &str, tokens: &Tokens) -> Rect {
+    paint(ui, title, aside, Some(spoken), tokens)
 }
 
 /// A section head whose trailing edge carries a cluster of `size`.
@@ -84,7 +84,7 @@ fn title_line(ui: &Ui, title: &str, width: f32, tokens: &Tokens) -> std::sync::A
     )
 }
 
-fn paint(ui: &mut Ui, title: &str, aside: &str, spoken: Option<&str>, tokens: &Tokens) {
+fn paint(ui: &mut Ui, title: &str, aside: &str, spoken: Option<&str>, tokens: &Tokens) -> Rect {
     let width = ui.available_width();
     let line = title_line(ui, title, width, tokens);
     let height = line.size().y;
@@ -107,6 +107,7 @@ fn paint(ui: &mut Ui, title: &str, aside: &str, spoken: Option<&str>, tokens: &T
     }
 
     ui.add_space(space::S4);
+    rect
 }
 
 #[cfg(test)]

@@ -1,13 +1,18 @@
 //! The library's current page, and the history that moves between pages.
 //!
-//! A page is one of the four kinds the main panel can show; `None` is the
-//! library root, the playlists grid. Nothing here draws or fetches.
+//! A page is Home or one of the four kinds the main panel can show; `None` is
+//! the library root, the playlists grid. Nothing here draws or fetches.
 
 use takofy_model::uri::{UriKind, parse};
 
 /// One page the main panel can show.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Page {
+    /// Home: the shelf of what was saved most recently.
+    ///
+    /// It carries no payload, because there is one Home and nothing names it.
+    /// It is a page rather than the root, which is the playlists grid.
+    Home,
     /// A playlist, by URI.
     Playlist(String),
     /// An album, by URI.
@@ -45,9 +50,12 @@ impl Page {
     ///
     /// A search page's payload is a query and not a URI; it is returned here
     /// because it is the page's identity, the one string the history and the
-    /// reads are keyed by.
+    /// reads are keyed by. Home names no URI and answers the empty string, so
+    /// nothing may read this to decide what a page is: the variant decides
+    /// that, and Home has no address to read.
     pub fn uri(&self) -> &str {
         match self {
+            Page::Home => "",
             Page::Playlist(uri)
             | Page::Album(uri)
             | Page::Artist(uri)
@@ -59,6 +67,7 @@ impl Page {
     /// The page kind's name, as the crumb spells it.
     pub fn kind(&self) -> &'static str {
         match self {
+            Page::Home => "Home",
             Page::Playlist(_) => "Playlist",
             Page::Album(_) => "Album",
             Page::Artist(_) => "Artist",
@@ -90,6 +99,18 @@ pub struct History {
 }
 
 impl History {
+    /// A history that starts on `page`, with nothing behind it.
+    ///
+    /// The page a session opens on is not a move made from anywhere, so Back
+    /// has nowhere to go until the first one. Every later move records its
+    /// previous page as usual.
+    pub fn starting_at(page: Page) -> History {
+        History {
+            current: Some(page),
+            ..History::default()
+        }
+    }
+
     /// The page on screen, or `None` for the root.
     pub fn current(&self) -> Option<&Page> {
         self.current.as_ref()

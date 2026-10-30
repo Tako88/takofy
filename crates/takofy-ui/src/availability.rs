@@ -8,6 +8,7 @@
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Control {
     NavHome,
+    NavLibrary,
     LibraryCreate,
     FilterPlaylists,
     FilterArtists,
@@ -73,15 +74,22 @@ pub enum Control {
     /// The library page's two densities.
     LayoutGrid,
     LayoutList,
+    /// The day-one page's door into the catalogue, which focuses the search
+    /// field.
+    HomeSearch,
     /// A library item's own play, in the grid and in the list. It is keyed by the
     /// item's uri, so one control serves every card and every row.
     CardPlay,
+    /// A station's own play. It is keyed by the station's uri, so one control
+    /// serves every station of the band.
+    StationPlay,
     Authorize,
 }
 
 impl Control {
-    pub const ALL: [Self; 50] = [
+    pub const ALL: [Self; 53] = [
         Self::NavHome,
+        Self::NavLibrary,
         Self::LibraryCreate,
         Self::FilterPlaylists,
         Self::FilterArtists,
@@ -130,6 +138,8 @@ impl Control {
         Self::ReleaseMore,
         Self::EpisodeOrder,
         Self::CardPlay,
+        Self::StationPlay,
+        Self::HomeSearch,
         Self::Authorize,
     ];
 }
@@ -158,6 +168,7 @@ pub fn availability(control: Control) -> Availability {
         Control::HistoryForward => Availability::Ready, // #16
 
         Control::NavHome => Availability::Ready,
+        Control::NavLibrary => Availability::Ready,
         Control::LibraryCreate => Availability::Ready, // #35
         Control::FilterPlaylists => Availability::Ready, // #3
         Control::FilterArtists => Availability::Ready,
@@ -200,6 +211,9 @@ pub fn availability(control: Control) -> Availability {
         Control::HeroMore => Availability::Ready,
         Control::HeroPlay => Availability::Ready,
         Control::CardPlay => Availability::Ready,
+        // A station's rows are loaded state, so its play is a want and not a
+        // read.
+        Control::StationPlay => Availability::Ready,
 
         // The artist page: following is a real write, the filter row is state
         // the page already holds, and the other three are the reference's chrome
@@ -216,6 +230,7 @@ pub fn availability(control: Control) -> Availability {
         Control::LibraryFilterPodcasts => Availability::Ready, // #3
         Control::LibraryMore => Availability::Ready,
         Control::LayoutGrid | Control::LayoutList => Availability::Ready,
+        Control::HomeSearch => Availability::Ready,
         Control::ReleasePlay => Availability::Ready,
         Control::EpisodeToggle => Availability::Ready,
         Control::ReleaseLike => Availability::Ready, // #35

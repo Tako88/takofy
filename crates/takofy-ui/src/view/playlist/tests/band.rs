@@ -54,6 +54,7 @@ fn the_frame_loop_requests_only_visible_covers() {
                 &mut art,
                 now,
                 NOW_MS,
+                9,
                 &tokens,
             );
         });
@@ -120,6 +121,7 @@ fn a_grid_card_switches_to_the_context_image_when_it_arrives() {
             &mut art,
             now,
             NOW_MS,
+            9,
             &tokens,
         );
     });
@@ -145,6 +147,7 @@ fn a_grid_card_switches_to_the_context_image_when_it_arrives() {
             &mut art,
             now,
             NOW_MS,
+            9,
             &tokens,
         );
     });
@@ -182,6 +185,7 @@ fn the_band_waits_for_the_context_image_and_then_shows_it() {
             &mut art,
             now,
             NOW_MS,
+            9,
             &tokens,
         );
     });
@@ -211,6 +215,7 @@ fn the_band_waits_for_the_context_image_and_then_shows_it() {
             &mut art,
             now,
             NOW_MS,
+            9,
             &tokens,
         );
     });
@@ -1338,6 +1343,7 @@ fn library_ours(tracks: Vec<TrackEntry>, name: &str) -> Library {
 
 fn listed(name: &str, description: Option<&str>, owner: Option<&str>) -> PlaylistEntry {
     PlaylistEntry {
+        saved_at: None,
         composed: Vec::new(),
         uri: "spotify:playlist:a".to_owned(),
         name: name.to_owned(),
@@ -1376,6 +1382,7 @@ fn sized(tail: &str) -> (CoverSet, CoverUrl, CoverUrl, CoverUrl) {
 
 fn playlist_with_cover(uri: &str, name: &str, cover: CoverUrl) -> PlaylistEntry {
     PlaylistEntry {
+        saved_at: None,
         composed: Vec::new(),
         uri: uri.to_owned(),
         name: name.to_owned(),
@@ -1502,6 +1509,7 @@ fn band_frame_with(
             art,
             now,
             NOW_MS,
+            9,
             &tokens,
         );
     })

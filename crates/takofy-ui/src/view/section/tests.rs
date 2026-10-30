@@ -45,7 +45,9 @@ fn labels(output: &egui::FullOutput) -> Vec<String> {
 
 #[test]
 fn a_plain_head_adds_no_node() {
-    let (output, _) = run(|ui, tokens| head(ui, "Tracks", "10 of 20", tokens));
+    let (output, _) = run(|ui, tokens| {
+        head(ui, "Tracks", "10 of 20", tokens);
+    });
     assert!(labels(&output).is_empty());
 }
 

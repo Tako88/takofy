@@ -11,6 +11,7 @@ pub mod discography;
 pub mod drawer;
 pub mod follow;
 pub mod format;
+pub mod home;
 pub mod icon;
 pub mod landing;
 pub mod layout;

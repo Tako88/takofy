@@ -27,6 +27,7 @@ fn instant_frame_in(
             &mut Art::default(),
             Instant::now(),
             NOW_MS,
+            9,
             &tokens,
         );
     })
@@ -109,6 +110,7 @@ fn the_filter_field_takes_enter_and_leaves_it_alone() {
             &mut Art::default(),
             Instant::now(),
             NOW_MS,
+            9,
             &tokens,
         );
     });
