@@ -18,7 +18,7 @@ fn rootlist_replies_keep_the_order_their_commands_were_sent_in() {
 
         run_window(runtime(), host, store, source, |ui_end, slot| {
             slot.install(Arc::new(RecordingWaker::default()));
-            let _ = expect_updates(&ui_end, 2);
+            let _ = expect_library(&ui_end);
             let move_command = Command::MovePlaylist {
                 revision: revision(1),
                 from: 0,
@@ -32,10 +32,14 @@ fn rootlist_replies_keep_the_order_their_commands_were_sent_in() {
                 ui_end.commands.send(reload).expect("reload");
                 ui_end.commands.send(move_command).expect("move");
             }
-            vec![
-                ui_end.updates.recv().expect("first reply"),
-                ui_end.updates.recv().expect("second reply"),
-            ]
+            let mut seen: Vec<Update> = Vec::new();
+            while !(seen.iter().any(moved) && seen.iter().any(read)) {
+                seen.push(ui_end.updates.recv().expect("reply"));
+            }
+            // Readiness is no reply to either command: the replies keep the
+            // order the commands were sent in.
+            seen.retain(|update| moved(update) || read(update));
+            seen
         })
     }
 
@@ -68,7 +72,7 @@ fn an_empty_rootlist_is_announced_as_empty() {
 
     let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        expect_updates(&ui_end, 2)
+        expect_library(&ui_end)
     });
 
     assert!(updates.contains(&Update::Playlists(Vec::new())));
@@ -83,7 +87,7 @@ fn a_failed_connect_is_announced_as_a_library_failure() {
 
     let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        expect_updates(&ui_end, 2)
+        expect_library(&ui_end)
     });
 
     assert!(updates.contains(&Update::SignedIn));
@@ -101,7 +105,7 @@ fn a_failed_rootlist_is_announced_as_a_library_failure() {
 
     let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        expect_updates(&ui_end, 2)
+        expect_library(&ui_end)
     });
 
     assert!(updates.contains(&Update::SignedIn));
@@ -119,12 +123,12 @@ fn reload_library_runs_the_rootlist_again() {
 
     let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let mut seen = expect_updates(&ui_end, 2);
+        let mut seen = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::ReloadLibrary)
             .expect("reload");
-        seen.extend(expect_updates(&ui_end, 1));
+        seen.extend(expect_library(&ui_end));
         seen
     });
 
@@ -150,7 +154,7 @@ fn a_second_token_does_not_reconnect() {
 
     let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let mut seen = expect_updates(&ui_end, 2);
+        let mut seen = expect_library(&ui_end);
         let mut sign_ins = seen
             .iter()
             .filter(|update| **update == Update::SignedIn)
@@ -275,12 +279,12 @@ fn reload_library_retries_a_failed_connect() {
 
     let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let mut seen = expect_updates(&ui_end, 2);
+        let mut seen = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::ReloadLibrary)
             .expect("reload");
-        seen.extend(expect_updates(&ui_end, 1));
+        seen.extend(expect_library(&ui_end));
         seen
     });
 
@@ -443,6 +447,64 @@ fn a_failed_label_pass_is_a_disconnected_session() {
     let walked = runtime.block_on(host.walk_rootlist()).expect("a walk");
 
     assert!(runtime.block_on(host.label_rootlist(walked)).is_err());
+}
+
+#[test]
+fn an_empty_rootlist_announces_readiness_then_an_empty_list() {
+    let store = Arc::new(MemoryStore::seeded("stored"));
+    let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+    let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Ready(Vec::new()));
+    let shared = Arc::clone(&host.shared);
+
+    let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
+        slot.install(Arc::new(RecordingWaker::default()));
+        expect_updates(&ui_end, 3)
+    });
+
+    assert_eq!(
+        updates,
+        vec![
+            Update::SignedIn,
+            Update::LibraryReady,
+            Update::Playlists(Vec::new()),
+        ],
+        "an account with no playlists is still ready"
+    );
+    assert_eq!(shared.rootlists.load(Ordering::SeqCst), 1);
+    assert_eq!(shared.labelled.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn an_access_only_walk_sends_access_after_the_empty_list() {
+    let store = Arc::new(MemoryStore::seeded("stored"));
+    let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+    let access = PlaylistAccess {
+        revision: revision(4),
+        editable: true,
+    };
+    let host = FakeHost::new(
+        ConnectScript::Ok,
+        RootlistScript::ReadyWith(RootlistRead {
+            entries: Vec::new(),
+            access: Some(access.clone()),
+        }),
+    );
+
+    let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
+        slot.install(Arc::new(RecordingWaker::default()));
+        expect_updates(&ui_end, 4)
+    });
+
+    assert_eq!(
+        updates,
+        vec![
+            Update::SignedIn,
+            Update::LibraryReady,
+            Update::Playlists(Vec::new()),
+            Update::RootlistAccess(access),
+        ],
+        "the access follows the list, even when the list is empty"
+    );
 }
 
 #[test]

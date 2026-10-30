@@ -858,11 +858,6 @@ impl SessionHost for FakeHost {
         }
     }
 
-    async fn rootlist(&self) -> Result<RootlistRead, SessionError> {
-        let walked = self.walk_rootlist().await?;
-        self.label_rootlist(walked).await
-    }
-
     fn playlist_entry(
         &self,
         _playlist: &str,
@@ -2035,6 +2030,30 @@ pub(super) fn expect_updates(ui_end: &UiEnd, count: usize) -> Vec<Update> {
     (0..count)
         .map(|_| ui_end.updates.recv().expect("update"))
         .collect()
+}
+
+/// Reads the updates a start delivers before a command is taken: the sign-in,
+/// the readiness, and the playlists listed or failed.
+pub(super) fn expect_library(ui_end: &UiEnd) -> Vec<Update> {
+    let mut seen = Vec::new();
+    loop {
+        let update = match ui_end.updates.recv_timeout(Duration::from_secs(5)) {
+            Ok(update) => update,
+            Err(RecvTimeoutError::Timeout) => {
+                panic!("waited for the playlists listed or failed, and neither came")
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                panic!("the worker went away before the playlists listed or failed")
+            }
+        };
+        // Readiness alone is not the list: it opens the gates, then the labels
+        // name the rows.
+        let listed = matches!(update, Update::Playlists(_) | Update::PlaylistFailed(_));
+        seen.push(update);
+        if listed {
+            return seen;
+        }
+    }
 }
 
 pub(super) fn track(uri: &str) -> TrackEntry {

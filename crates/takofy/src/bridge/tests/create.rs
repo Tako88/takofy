@@ -58,7 +58,7 @@ fn a_create_makes_links_reads_state_and_announces_the_entry() {
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::CreatePlaylist {
@@ -143,7 +143,7 @@ fn a_created_row_carries_the_cover_and_the_mosaic_the_one_playlist_read_gives() 
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::CreatePlaylist {
@@ -186,7 +186,7 @@ fn the_rename_answers_what_the_add_is_based_on() {
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::CreatePlaylist {
@@ -232,7 +232,7 @@ fn a_create_whose_rename_fails_says_so_and_still_takes_the_pick() {
 
     let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::CreatePlaylist {
@@ -272,7 +272,7 @@ fn the_link_uses_the_revision_the_command_named_and_the_uri_step_one_returned() 
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::CreatePlaylist {
@@ -309,7 +309,7 @@ fn a_make_failure_announces_create_failed_and_never_links() {
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::CreatePlaylist {
@@ -341,7 +341,7 @@ fn a_link_failure_announces_unlinked_and_never_reads_state() {
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::CreatePlaylist {
@@ -378,7 +378,7 @@ fn a_create_lands_the_pick_in_the_new_list_as_one_add() {
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::CreatePlaylist {
@@ -435,7 +435,7 @@ fn a_create_that_could_not_add_the_pick_says_so_after_the_create() {
 
     let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::CreatePlaylist {
@@ -485,7 +485,7 @@ fn a_create_with_no_pick_makes_no_add_call() {
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::CreatePlaylist {
@@ -510,7 +510,7 @@ fn a_create_whose_state_read_names_no_revision_adds_nothing_and_says_so() {
 
     let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::CreatePlaylist {
@@ -563,7 +563,7 @@ fn a_failed_state_read_still_announces_created_with_no_access() {
 
     let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::CreatePlaylist {

@@ -7,9 +7,10 @@
 //! is served the moment it arrives.
 
 use std::collections::VecDeque;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures_util::stream::{FuturesUnordered, StreamExt};
+use takofy_core::rootlist::Walked;
 use takofy_model::home::HomeAsk;
 use takofy_model::{CoverUrl, Report, RequestId};
 use takofy_ui::message::{Command, DeviceUpdate, Failure, RemoteUpdate, Update};
@@ -23,8 +24,40 @@ use super::errors::{
 use super::home;
 use super::log_device_error;
 use super::rebuild::Step;
+use super::startup::{Stage, Startup};
 use super::wake::Notifier;
 use crate::session::SessionHost;
+
+/// Runs one read as the first of its own batch.
+///
+/// The instant parts stay the caller's, so a command served during the batch
+/// changes the same loop state it would have changed on its own.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the batch's own channels plus the instant parts"
+)]
+pub(super) async fn run_reads<H: SessionHost>(
+    read: Read,
+    host: &H,
+    stop: &mut StopReceiver<()>,
+    notifier: &Notifier,
+    startup: &Startup,
+    parts: &mut super::InstantParts<'_>,
+    commands: &mut UnboundedReceiver<Command>,
+    deferred: &mut VecDeque<Command>,
+) -> Step {
+    run_batch(
+        read,
+        host,
+        stop,
+        notifier,
+        startup,
+        commands,
+        deferred,
+        &mut |immediate| super::serve_instant(host, notifier, parts, immediate),
+    )
+    .await
+}
 
 /// How many reads the batch lets run at once.
 ///
@@ -189,6 +222,11 @@ pub(super) enum Read {
     LabelSaved {
         tracks: Vec<String>,
     },
+    /// The playlists a walk kept, named. Not a command: the worker starts it
+    /// itself once a walk has announced readiness.
+    RootlistLabels {
+        walked: Walked,
+    },
 }
 
 impl Read {
@@ -223,7 +261,12 @@ impl Read {
 
     /// Performs the read and announces it. A read that does not answer sends
     /// nothing, and a batch cancelled by a stop drops it mid-call.
-    pub(super) async fn run<H: SessionHost>(self, host: &H, notifier: &Notifier) {
+    pub(super) async fn run<H: SessionHost>(
+        self,
+        host: &H,
+        notifier: &Notifier,
+        startup: &Startup,
+    ) {
         match self {
             Self::Tracks { playlist } => load_tracks(host, notifier, &playlist).await,
             Self::Album { album } => load_album(host, notifier, &album).await,
@@ -231,11 +274,36 @@ impl Read {
             Self::Related { artist, uris } => load_related(host, notifier, &artist, uris).await,
             Self::Lyrics { track } => load_lyrics(host, notifier, &track).await,
             Self::Show { show } => load_show(host, notifier, &show).await,
-            Self::FollowedShows => load_followed_shows(host, notifier).await,
-            Self::FollowedArtists => load_followed_artists(host, notifier).await,
-            Self::SavedAlbums => load_saved_albums(host, notifier).await,
-            Self::LikedTracks => load_liked_tracks(host, notifier).await,
-            Self::Home(ask) => home::load_home(host, notifier, ask).await,
+            Self::FollowedShows => {
+                let began = Instant::now();
+                if let Some(count) = load_followed_shows(host, notifier).await {
+                    startup.record(Stage::Shows, began, count);
+                }
+            }
+            Self::FollowedArtists => {
+                let began = Instant::now();
+                if let Some(count) = load_followed_artists(host, notifier).await {
+                    startup.record(Stage::Artists, began, count);
+                }
+            }
+            Self::SavedAlbums => {
+                let began = Instant::now();
+                if let Some(count) = load_saved_albums(host, notifier).await {
+                    startup.record(Stage::Albums, began, count);
+                }
+            }
+            Self::LikedTracks => {
+                let began = Instant::now();
+                if let Some(count) = load_liked_tracks(host, notifier).await {
+                    startup.record(Stage::Likes, began, count);
+                }
+            }
+            Self::Home(ask) => {
+                let began = Instant::now();
+                if home::load_home(host, notifier, ask).await {
+                    startup.record(Stage::HomeFirst, began, 1);
+                }
+            }
             Self::Search { query } => load_search(host, notifier, &query).await,
             Self::Portraits { query, artists } => {
                 load_portraits(host, notifier, &query, &artists).await;
@@ -247,6 +315,9 @@ impl Read {
             Self::LabelRemote { track } => label_remote(host, notifier, &track).await,
             Self::LabelRows { uris } => label_rows(host, notifier, &uris).await,
             Self::LabelSaved { tracks } => label_saved(host, notifier, &tracks).await,
+            Self::RootlistLabels { walked } => {
+                label_rootlist_read(host, notifier, startup, walked).await;
+            }
         }
     }
 }
@@ -258,18 +329,23 @@ impl Read {
 /// A read admitted while the cap is reached is not read from the channel at
 /// all, so the order the window sent is kept. A barrier goes back into
 /// `deferred` and the loop runs it once the reads in flight have finished.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the batch's own channels plus the instant parts"
+)]
 pub(super) async fn run_batch<H: SessionHost>(
     first: Read,
     host: &H,
     stop: &mut StopReceiver<()>,
     notifier: &Notifier,
+    startup: &Startup,
     commands: &mut UnboundedReceiver<Command>,
     deferred: &mut VecDeque<Command>,
     // The closure is `Send` because the task that awaits the batch has to be.
     instant: &mut (dyn FnMut(Immediate) + Send),
 ) -> Step {
     let mut running = FuturesUnordered::new();
-    running.push(first.run(host, notifier));
+    running.push(first.run(host, notifier, startup));
     // Whether another command may be taken from the channel.
     let mut admitting = true;
     loop {
@@ -292,7 +368,7 @@ pub(super) async fn run_batch<H: SessionHost>(
             next = next_command(deferred, commands), if may_admit => match next {
                 Some(command) => match classify(&command) {
                     Class::Read => match Read::claim(command) {
-                        Some(read) => running.push(read.run(host, notifier)),
+                        Some(read) => running.push(read.run(host, notifier, startup)),
                         None => log_unclaimed(Class::Read),
                     },
                     Class::Instant => match Immediate::claim(command) {
@@ -382,42 +458,101 @@ async fn load_show<H: SessionHost>(host: &H, notifier: &Notifier, show: &str) {
 /// Loads the shows the user follows and announces the whole list.
 ///
 /// It has its own failure, because the playlists beside it draw fine and
-/// "Could not load the library" would be false there.
-async fn load_followed_shows<H: SessionHost>(host: &H, notifier: &Notifier) {
+/// "Could not load the library" would be false there. Answers the count it
+/// announced, or `None` when the read failed.
+async fn load_followed_shows<H: SessionHost>(host: &H, notifier: &Notifier) -> Option<usize> {
     match host.followed_shows().await {
-        Ok(shows) => notifier.send(Update::FollowedShows(shows)),
-        Err(error) => notifier.send(Update::FollowedShowsFailed(followed_failure(&error))),
-    };
+        Ok(shows) => {
+            let count = shows.len();
+            notifier.send(Update::FollowedShows(shows));
+            Some(count)
+        }
+        Err(error) => {
+            notifier.send(Update::FollowedShowsFailed(followed_failure(&error)));
+            None
+        }
+    }
 }
 
 /// Loads the artists the user follows and announces the whole list.
 ///
 /// It has its own failure, because the playlists beside it draw fine and
-/// "Could not load the library" would be false there.
-async fn load_followed_artists<H: SessionHost>(host: &H, notifier: &Notifier) {
+/// "Could not load the library" would be false there. Answers the count it
+/// announced, or `None` when the read failed.
+async fn load_followed_artists<H: SessionHost>(host: &H, notifier: &Notifier) -> Option<usize> {
     match host.followed_artists().await {
-        Ok(artists) => notifier.send(Update::FollowedArtists(artists)),
-        Err(error) => notifier.send(Update::FollowedArtistsFailed(artists_failure(&error))),
-    };
+        Ok(artists) => {
+            let count = artists.len();
+            notifier.send(Update::FollowedArtists(artists));
+            Some(count)
+        }
+        Err(error) => {
+            notifier.send(Update::FollowedArtistsFailed(artists_failure(&error)));
+            None
+        }
+    }
 }
 
 /// Loads the albums the user saved and announces the whole list.
 ///
 /// It has its own failure, because the playlists beside it draw fine and
-/// "Could not load the library" would be false there.
-async fn load_saved_albums<H: SessionHost>(host: &H, notifier: &Notifier) {
+/// "Could not load the library" would be false there. Answers the count it
+/// announced, or `None` when the read failed.
+async fn load_saved_albums<H: SessionHost>(host: &H, notifier: &Notifier) -> Option<usize> {
     match host.saved_albums().await {
-        Ok(albums) => notifier.send(Update::SavedAlbums(albums)),
-        Err(error) => notifier.send(Update::SavedAlbumsFailed(albums_failure(&error))),
-    };
+        Ok(albums) => {
+            let count = albums.len();
+            notifier.send(Update::SavedAlbums(albums));
+            Some(count)
+        }
+        Err(error) => {
+            notifier.send(Update::SavedAlbumsFailed(albums_failure(&error)));
+            None
+        }
+    }
 }
 
 /// Loads the tracks the user has liked and announces the whole set.
-async fn load_liked_tracks<H: SessionHost>(host: &H, notifier: &Notifier) {
+///
+/// Answers the count it announced, or `None` when the read failed.
+async fn load_liked_tracks<H: SessionHost>(host: &H, notifier: &Notifier) -> Option<usize> {
     match host.liked_tracks().await {
-        Ok(tracks) => notifier.send(Update::LikedTracks(tracks)),
-        Err(error) => notifier.send(Update::LikedTracksFailed(liked_failure(&error))),
-    };
+        Ok(tracks) => {
+            let count = tracks.len();
+            notifier.send(Update::LikedTracks(tracks));
+            Some(count)
+        }
+        Err(error) => {
+            notifier.send(Update::LikedTracksFailed(liked_failure(&error)));
+            None
+        }
+    }
+}
+
+/// Names the walked playlists and announces the list the sidebar draws, then the
+/// walk's access when it named one; a failed pass announces the failure instead.
+async fn label_rootlist_read<H: SessionHost>(
+    host: &H,
+    notifier: &Notifier,
+    startup: &Startup,
+    walked: Walked,
+) {
+    let began = Instant::now();
+    match host.label_rootlist(walked).await {
+        Ok(read) => {
+            startup.record(Stage::Labels, began, read.entries.len());
+            notifier.send(Update::Playlists(read.entries));
+            // Sent after the list, and only when the read named a revision: the
+            // list is not reorderable until its own access arrives.
+            if let Some(access) = read.access {
+                notifier.send(Update::RootlistAccess(access));
+            }
+        }
+        // The readiness stands: the lists it opened may still have answered.
+        Err(error) => {
+            notifier.send(Update::PlaylistFailed(library_failure(&error)));
+        }
+    }
 }
 
 /// Names the artists one artist is heard with, and announces the cards they

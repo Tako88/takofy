@@ -16,7 +16,7 @@ fn a_playlist_move_announces_the_reply_revision_and_sends_what_was_asked() {
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::MovePlaylist {
@@ -47,7 +47,7 @@ fn a_failed_playlist_move_is_announced() {
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::MovePlaylist {
@@ -146,7 +146,7 @@ fn a_playlist_removal_announces_the_reply_revision_and_sends_what_was_asked() {
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::RemovePlaylist {
@@ -183,7 +183,7 @@ fn a_failed_playlist_removal_is_announced() {
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::RemovePlaylist {
@@ -218,7 +218,7 @@ fn a_stop_with_the_playlist_removal_pending_shuts_down() {
     let (ui_end, _slot, worker) = start(runtime.handle(), host, store, source);
 
     let window = move || {
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::RemovePlaylist {
@@ -255,7 +255,7 @@ fn a_saved_probe_reaches_the_host_and_its_answer_comes_back() {
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::LoadSaved {
@@ -290,7 +290,7 @@ fn a_link_puts_the_playlist_on_the_rootlist_and_announces_the_new_revision() {
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::LinkPlaylist {
@@ -328,7 +328,7 @@ fn a_saved_write_announces_the_uri_and_the_direction_it_was_asked_for() {
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::SetSaved {
@@ -366,7 +366,7 @@ fn a_failed_saved_write_is_announced() {
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::SetSaved {
@@ -402,7 +402,7 @@ fn a_stop_during_a_saved_removal_ends_the_task() {
     let (ui_end, _slot, worker) = start(runtime.handle(), host, store, source);
 
     let window = move || {
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::SetSaved {
@@ -443,7 +443,7 @@ fn an_add_announces_the_reply_revision_and_sends_what_was_asked() {
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::AddTracks {
@@ -481,7 +481,7 @@ fn a_failed_add_is_announced() {
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::AddTracks {

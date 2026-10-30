@@ -132,7 +132,7 @@ fn run_like(script: LikeScript, liked: bool) -> Update {
 
     run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::SetLiked {
@@ -154,7 +154,7 @@ fn a_like_announces_the_requested_tracks_and_value_on_success() {
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::SetLiked {
@@ -206,7 +206,7 @@ fn a_stop_during_a_like_write_ends_the_task() {
     let (ui_end, _slot, worker) = start(runtime.handle(), host, store, source);
 
     let window = move || {
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::SetLiked {
@@ -245,7 +245,7 @@ fn a_scripted_artist_announces_the_page_then_the_followed_state() {
 
     let (first, second) = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::LoadArtist {
@@ -283,7 +283,7 @@ fn an_artist_without_a_probe_answer_announces_no_followed_state() {
 
     let (first, second) = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::LoadArtist {
@@ -324,7 +324,7 @@ fn a_failed_artist_load_is_announced() {
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::LoadArtist {
@@ -369,7 +369,7 @@ fn a_scripted_lyrics_load_reaches_the_window() {
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::LoadLyrics {
@@ -400,7 +400,7 @@ fn a_failed_lyrics_load_is_announced() {
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::LoadLyrics {
@@ -487,7 +487,7 @@ fn a_scripted_portrait_read_echoes_the_query_and_the_list() {
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::LoadPortraits {
@@ -524,7 +524,7 @@ fn a_failed_portrait_read_is_announced_silently() {
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::LoadPortraits {
@@ -553,7 +553,7 @@ fn a_portrait_read_before_the_session_connects_is_announced_as_silent() {
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::LoadPortraits {
@@ -629,7 +629,7 @@ fn two_portrait_reads_queued_together_echo_their_own_queries() {
 
     let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         for query in ["first", "second"] {
             ui_end
                 .commands
@@ -685,7 +685,7 @@ fn a_scripted_search_echoes_the_query_it_was_asked() {
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::Search {
@@ -721,7 +721,7 @@ fn a_failed_search_is_announced() {
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::Search {
@@ -796,7 +796,7 @@ fn two_back_to_back_searches_announce_their_own_queries() {
 
     let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         let mut received = Vec::new();
         for query in ["first", "second"] {
             ui_end
@@ -842,7 +842,7 @@ fn two_searches_queued_before_either_reply_announce_their_own_queries() {
 
     let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         // Both reads are queued before either answer is read: a window
         // that is typing does not wait for the first reply to ask again.
         for query in ["first", "second"] {
@@ -892,11 +892,49 @@ fn run_liked(script: LikedScript) -> Update {
 
     run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::LoadLikedTracks)
             .expect("load");
         ui_end.updates.recv().expect("liked tracks")
     })
+}
+
+#[test]
+fn a_list_command_sent_after_readiness_is_served_while_labels_are_pending() {
+    let store = Arc::new(MemoryStore::seeded("stored"));
+    let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+    let list = vec![playlist("spotify:playlist:a", "A")];
+    let host = FakeHost::with_rootlist_scripts(
+        vec![ConnectScript::Ok],
+        vec![RootlistScript::Ready(list)],
+        vec![LabelScript::Pending],
+    );
+    let shared = Arc::clone(&host.shared);
+
+    let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
+        slot.install(Arc::new(RecordingWaker::default()));
+        let mut seen = expect_updates(&ui_end, 2);
+        ui_end
+            .commands
+            .send(Command::LoadLikedTracks)
+            .expect("load");
+        seen.push(ui_end.updates.recv().expect("liked tracks"));
+        seen
+    });
+
+    assert_eq!(
+        updates,
+        vec![
+            Update::SignedIn,
+            Update::LibraryReady,
+            Update::LikedTracks(Vec::new()),
+        ],
+        "the list is answered without waiting for the labels"
+    );
+    assert_eq!(shared.liked_lists.load(Ordering::SeqCst), 1);
+    until("the label pass to start", || {
+        shared.labelled.load(Ordering::SeqCst) == 1
+    });
 }

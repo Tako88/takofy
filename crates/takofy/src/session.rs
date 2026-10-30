@@ -150,9 +150,6 @@ pub(crate) trait SessionHost: Send + Sync + 'static {
         walked: Walked,
     ) -> impl Future<Output = Result<RootlistRead, SessionError>> + Send;
 
-    /// The walk and the labels in one call.
-    fn rootlist(&self) -> impl Future<Output = Result<RootlistRead, SessionError>> + Send;
-
     /// One playlist as the sidebar draws it, or `None` when the read does not
     /// answer.
     fn playlist_entry(&self, playlist: &str) -> impl Future<Output = Option<PlaylistEntry>> + Send;
@@ -542,11 +539,6 @@ impl SessionHost for LiveSession {
             Some(engine) => Ok(engine.label_rootlist(walked).await),
             None => Err(SessionError::NotConnected),
         }
-    }
-
-    async fn rootlist(&self) -> Result<RootlistRead, SessionError> {
-        let walked = self.walk_rootlist().await?;
-        self.label_rootlist(walked).await
     }
 
     async fn portraits(&self, artists: Vec<String>) -> Option<Vec<ArtistPortrait>> {

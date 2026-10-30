@@ -22,7 +22,7 @@ fn a_label_saved_read_answers_with_the_asked_and_named_tracks() {
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::LabelSaved {
@@ -52,7 +52,7 @@ fn a_failed_label_saved_read_reports_the_failure_with_the_asked_tracks() {
 
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::LabelSaved {
@@ -86,7 +86,7 @@ fn a_neighbour_read_failure_is_failure_related() {
     };
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end.commands.send(Command::LoadHome(ask)).expect("home");
         ui_end.updates.recv().expect("failure")
     });
@@ -114,7 +114,7 @@ fn related_answers_with_the_cards() {
     };
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end.commands.send(Command::LoadHome(ask)).expect("home");
         ui_end.updates.recv().expect("related")
     });
@@ -146,7 +146,7 @@ fn related_cards_carry_the_faces_one_read_names() {
     };
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end.commands.send(Command::LoadHome(ask)).expect("home");
         ui_end.updates.recv().expect("related")
     });
@@ -178,7 +178,7 @@ fn related_failure_is_failure_related() {
     };
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end.commands.send(Command::LoadHome(ask)).expect("home");
         ui_end.updates.recv().expect("failure")
     });
@@ -215,7 +215,7 @@ fn an_episodes_ask_answers_every_show_in_one_read() {
     };
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end.commands.send(Command::LoadHome(ask)).expect("home");
         ui_end.updates.recv().expect("episodes")
     });
@@ -247,7 +247,7 @@ fn an_episodes_failure_is_failure_load() {
     };
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end.commands.send(Command::LoadHome(ask)).expect("home");
         ui_end.updates.recv().expect("failure")
     });
@@ -319,7 +319,7 @@ fn labels_answers_even_when_every_track_falls_back() {
     };
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end.commands.send(Command::LoadHome(ask)).expect("home");
         ui_end.updates.recv().expect("labels")
     });
@@ -348,7 +348,7 @@ fn labels_failure_is_failure_load() {
     };
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end.commands.send(Command::LoadHome(ask)).expect("home");
         ui_end.updates.recv().expect("failure")
     });
@@ -377,7 +377,7 @@ fn portraits_are_one_batched_read() {
     };
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end.commands.send(Command::LoadHome(ask)).expect("home");
         ui_end.updates.recv().expect("portraits")
     });
@@ -415,7 +415,7 @@ fn a_portraits_read_that_answers_nothing_is_failure_load() {
     let artists = vec![ARTIST.to_owned()];
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::LoadHome(HomeAsk::Portraits {
@@ -447,7 +447,7 @@ fn station_answers_the_canned_station() {
     let ask = HomeAsk::Station { seed: seed.clone() };
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end.commands.send(Command::LoadHome(ask)).expect("home");
         ui_end.updates.recv().expect("station")
     });
@@ -474,7 +474,7 @@ fn station_failure_is_failure_load() {
     };
     let update = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::LoadHome(ask.clone()))

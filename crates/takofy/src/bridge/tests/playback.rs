@@ -89,7 +89,7 @@ fn a_second_play_does_not_start_a_second_player() {
 
     run_window(runtime(), host, store, source, move |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::Play {
@@ -130,7 +130,7 @@ fn pause_resume_and_stop_with_no_player_do_not_start_one() {
 
     run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end.commands.send(Command::Pause).expect("pause");
         ui_end.commands.send(Command::Resume).expect("resume");
         ui_end.commands.send(Command::Stop).expect("stop");
@@ -162,7 +162,7 @@ fn a_seek_with_no_player_does_not_start_one() {
 
     run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::Seek { position_ms: 12 })
@@ -195,7 +195,7 @@ fn a_seek_reaches_the_host() {
 
     run_window(runtime(), host, store, source, move |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::Play {
@@ -252,7 +252,7 @@ fn a_volume_command_ahead_of_the_play_is_the_level_the_player_starts_at() {
             .commands
             .send(Command::Volume { percent: 35 })
             .expect("volume");
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::Play {
@@ -291,7 +291,7 @@ fn a_player_with_no_volume_command_starts_at_full() {
 
     run_window(runtime(), host, store, source, move |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::Play {
@@ -322,7 +322,7 @@ fn playback_events_reach_the_window() {
 
     let update = run_window(runtime(), host, store, source, move |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        let _ = expect_updates(&ui_end, 2);
+        let _ = expect_library(&ui_end);
         ui_end
             .commands
             .send(Command::Play {

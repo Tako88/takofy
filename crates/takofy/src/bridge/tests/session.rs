@@ -288,10 +288,11 @@ fn a_token_connects_and_lists_the_rootlist() {
 
     let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        expect_updates(&ui_end, 2)
+        expect_updates(&ui_end, 3)
     });
 
     assert!(updates.contains(&Update::SignedIn));
+    assert!(updates.contains(&Update::LibraryReady));
     assert!(updates.contains(&Update::Playlists(list)));
     assert_eq!(shared.connects.load(Ordering::SeqCst), 1);
     assert_eq!(shared.rootlists.load(Ordering::SeqCst), 1);
@@ -317,13 +318,14 @@ fn a_rootlist_read_that_named_a_revision_announces_its_access_right_after_the_li
 
     let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        expect_updates(&ui_end, 3)
+        expect_updates(&ui_end, 4)
     });
 
     assert_eq!(
         updates,
         vec![
             Update::SignedIn,
+            Update::LibraryReady,
             Update::Playlists(list),
             Update::RootlistAccess(access),
         ],
@@ -346,8 +348,321 @@ fn a_rootlist_read_with_no_revision_announces_no_access_update() {
 
     let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
         slot.install(Arc::new(RecordingWaker::default()));
-        expect_updates(&ui_end, 2)
+        expect_updates(&ui_end, 3)
     });
 
-    assert_eq!(updates, vec![Update::SignedIn, Update::Playlists(list)]);
+    assert_eq!(
+        updates,
+        vec![
+            Update::SignedIn,
+            Update::LibraryReady,
+            Update::Playlists(list),
+        ]
+    );
+}
+
+#[test]
+fn the_walk_is_announced_before_the_labels() {
+    let store = Arc::new(MemoryStore::seeded("stored"));
+    let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+    let list = vec![playlist("spotify:playlist:one", "One")];
+    let host = FakeHost::with_rootlist_scripts(
+        vec![ConnectScript::Ok],
+        vec![RootlistScript::Ready(list)],
+        vec![LabelScript::Pending],
+    );
+    let shared = Arc::clone(&host.shared);
+
+    let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
+        slot.install(Arc::new(RecordingWaker::default()));
+        let seen = expect_updates(&ui_end, 2);
+        until("the label pass to start", || {
+            shared.labelled.load(Ordering::SeqCst) == 1
+        });
+        expect_no_update(&ui_end);
+        seen
+    });
+
+    assert_eq!(updates, vec![Update::SignedIn, Update::LibraryReady]);
+    assert_eq!(shared.rootlists.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn labels_replace_the_walk_and_follow_readiness() {
+    let store = Arc::new(MemoryStore::seeded("stored"));
+    let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+    let walked = vec![playlist("spotify:playlist:one", "One")];
+    let named = vec![playlist("spotify:playlist:two", "Two")];
+    let access = PlaylistAccess {
+        revision: revision(5),
+        editable: true,
+    };
+    let host = FakeHost::with_rootlist_scripts(
+        vec![ConnectScript::Ok],
+        vec![RootlistScript::Ready(walked)],
+        vec![LabelScript::Ready(RootlistRead {
+            entries: named.clone(),
+            access: Some(access.clone()),
+        })],
+    );
+
+    let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
+        slot.install(Arc::new(RecordingWaker::default()));
+        expect_updates(&ui_end, 4)
+    });
+
+    assert_eq!(
+        updates,
+        vec![
+            Update::SignedIn,
+            Update::LibraryReady,
+            Update::Playlists(named),
+            Update::RootlistAccess(access),
+        ],
+        "the walk is drawn only once its labels have named the rows"
+    );
+}
+
+#[test]
+fn a_reload_while_labels_are_pending_walks_again_and_labels_each_walk_once() {
+    let store = Arc::new(MemoryStore::seeded("stored"));
+    let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+    let list = vec![playlist("spotify:playlist:one", "One")];
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let host = FakeHost::with_rootlist_scripts(
+        vec![ConnectScript::Ok],
+        vec![RootlistScript::Ready(list.clone())],
+        vec![LabelScript::Gated(Arc::clone(&gate))],
+    );
+    let shared = Arc::clone(&host.shared);
+    let in_flight = Arc::clone(&shared);
+
+    let updates = run_window(runtime(), host, store, source, move |ui_end, slot| {
+        slot.install(Arc::new(RecordingWaker::default()));
+        let mut seen = expect_updates(&ui_end, 2);
+        ui_end
+            .commands
+            .send(Command::ReloadLibrary)
+            .expect("reload");
+        gate.notify_one();
+        seen.push(ui_end.updates.recv().expect("first list"));
+        seen.push(ui_end.updates.recv().expect("second readiness"));
+        until("the second label pass", || {
+            in_flight.labelled.load(Ordering::SeqCst) == 2
+        });
+        gate.notify_one();
+        seen.push(ui_end.updates.recv().expect("second list"));
+        seen
+    });
+
+    assert_eq!(
+        updates,
+        vec![
+            Update::SignedIn,
+            Update::LibraryReady,
+            Update::Playlists(list.clone()),
+            Update::LibraryReady,
+            Update::Playlists(list),
+        ],
+        "each walk is labeled once, and its own list follows its own readiness"
+    );
+    assert_eq!(shared.rootlists.load(Ordering::SeqCst), 2);
+    assert_eq!(shared.labelled.load(Ordering::SeqCst), 2);
+    assert_eq!(shared.connects.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn a_failed_attempt_then_a_reload_announces_readiness() {
+    let store = Arc::new(MemoryStore::seeded("stored"));
+    let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+    let list = vec![playlist("spotify:playlist:one", "One")];
+    let host = FakeHost::with_rootlist_scripts(
+        vec![ConnectScript::Ok],
+        vec![RootlistScript::Fail, RootlistScript::Ready(list.clone())],
+        Vec::new(),
+    );
+    let shared = Arc::clone(&host.shared);
+
+    let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
+        slot.install(Arc::new(RecordingWaker::default()));
+        let mut seen = expect_library(&ui_end);
+        ui_end
+            .commands
+            .send(Command::ReloadLibrary)
+            .expect("reload");
+        seen.extend(expect_library(&ui_end));
+        seen
+    });
+
+    assert_eq!(
+        updates,
+        vec![
+            Update::SignedIn,
+            Update::PlaylistFailed(Failure::Load),
+            Update::LibraryReady,
+            Update::Playlists(list),
+        ],
+        "a failed attempt announces nothing ready; the retry does"
+    );
+    assert_eq!(shared.rootlists.load(Ordering::SeqCst), 2);
+    assert_eq!(shared.labelled.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn a_failed_walk_announces_no_readiness() {
+    let store = Arc::new(MemoryStore::seeded("stored"));
+    let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+    let host = FakeHost::new(ConnectScript::Ok, RootlistScript::Fail);
+    let shared = Arc::clone(&host.shared);
+
+    let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
+        slot.install(Arc::new(RecordingWaker::default()));
+        expect_library(&ui_end)
+    });
+
+    assert!(
+        !updates.contains(&Update::LibraryReady),
+        "a walk that failed opens no gate"
+    );
+    assert!(updates.contains(&Update::PlaylistFailed(Failure::Load)));
+    assert_eq!(shared.labelled.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn a_failed_connect_announces_no_readiness() {
+    let store = Arc::new(MemoryStore::seeded("stored"));
+    let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+    let host = FakeHost::new(ConnectScript::Fail, RootlistScript::default());
+    let shared = Arc::clone(&host.shared);
+
+    let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
+        slot.install(Arc::new(RecordingWaker::default()));
+        expect_library(&ui_end)
+    });
+
+    assert!(
+        !updates.contains(&Update::LibraryReady),
+        "a session that never opened opens no gate"
+    );
+    assert!(updates.contains(&Update::PlaylistFailed(Failure::Load)));
+    assert_eq!(shared.rootlists.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn a_failed_label_pass_announces_playlist_failed_after_readiness() {
+    let store = Arc::new(MemoryStore::seeded("stored"));
+    let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+    let list = vec![playlist("spotify:playlist:one", "One")];
+    let host = FakeHost::with_rootlist_scripts(
+        vec![ConnectScript::Ok],
+        vec![RootlistScript::Ready(list)],
+        vec![LabelScript::Fail],
+    );
+    let shared = Arc::clone(&host.shared);
+
+    let updates = run_window(runtime(), host, store, source, |ui_end, slot| {
+        slot.install(Arc::new(RecordingWaker::default()));
+        expect_library(&ui_end)
+    });
+
+    assert_eq!(
+        updates,
+        vec![
+            Update::SignedIn,
+            Update::LibraryReady,
+            Update::PlaylistFailed(Failure::Load),
+        ],
+        "the readiness stands; only the labels failed"
+    );
+    assert_eq!(shared.labelled.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn a_stop_during_the_label_pass_ends_the_worker() {
+    let store = Arc::new(MemoryStore::seeded("stored"));
+    let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+    let list = vec![playlist("spotify:playlist:one", "One")];
+    let host = FakeHost::with_rootlist_scripts(
+        vec![ConnectScript::Ok],
+        vec![RootlistScript::Ready(list)],
+        vec![LabelScript::Pending],
+    );
+    let shared = Arc::clone(&host.shared);
+
+    let runtime = runtime();
+    let (ui_end, _slot, worker) = start(runtime.handle(), host, store, source);
+
+    let window = {
+        let shared = Arc::clone(&shared);
+        move || {
+            until("the label pass to start", || {
+                shared.labelled.load(Ordering::SeqCst) == 1
+            });
+        }
+    };
+    let teardown = move || async move {
+        tokio::time::timeout(Duration::from_secs(1), worker.finish())
+            .await
+            .expect("finish must resolve when the stop interrupts the label pass");
+        assert!(
+            ui_end.commands.is_closed(),
+            "the task must have returned before finish resolves"
+        );
+        assert_eq!(shared.shutdowns.load(Ordering::SeqCst), 1);
+    };
+
+    run_ordered(runtime, window, teardown);
+}
+
+#[test]
+fn a_write_waits_for_the_label_pass() {
+    let store = Arc::new(MemoryStore::seeded("stored"));
+    let source = Arc::new(FixedSource::on_refresh(Ok(token_set("access", None))));
+    let list = vec![playlist("spotify:playlist:one", "One")];
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let host = FakeHost::with_rootlist_scripts(
+        vec![ConnectScript::Ok],
+        vec![RootlistScript::Ready(list.clone())],
+        vec![LabelScript::Gated(Arc::clone(&gate))],
+    );
+    let shared = Arc::clone(&host.shared);
+    let in_flight = Arc::clone(&shared);
+    *shared.rootlist_move_script.lock().expect("lock") = RootlistMoveScript::Ready(revision(2));
+
+    let updates = run_window(runtime(), host, store, source, move |ui_end, slot| {
+        slot.install(Arc::new(RecordingWaker::default()));
+        let mut seen = expect_updates(&ui_end, 2);
+        ui_end
+            .commands
+            .send(Command::MovePlaylist {
+                revision: revision(1),
+                from: 0,
+                to: 1,
+            })
+            .expect("move");
+        expect_no_update(&ui_end);
+        assert_eq!(
+            in_flight.rootlist_move_writes.load(Ordering::SeqCst),
+            0,
+            "the write waits for the labels"
+        );
+        gate.notify_one();
+        seen.push(ui_end.updates.recv().expect("list"));
+        seen.push(ui_end.updates.recv().expect("move reply"));
+        seen
+    });
+
+    assert_eq!(
+        updates,
+        vec![
+            Update::SignedIn,
+            Update::LibraryReady,
+            Update::Playlists(list),
+            Update::PlaylistMoved {
+                revision: revision(2),
+            },
+        ],
+        "the labels land before the write they held"
+    );
+    assert_eq!(shared.rootlist_move_writes.load(Ordering::SeqCst), 1);
 }
