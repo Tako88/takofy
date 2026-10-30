@@ -15,6 +15,7 @@ use takofy_core::credentials::AccessToken;
 use takofy_core::engine::{Engine, EngineError, Orders, RootlistRead};
 use takofy_core::playback::{Playback, PlaybackError, PlaybackEvent, Volume};
 use takofy_core::receive::Inbound;
+use takofy_core::rootlist::Walked;
 use takofy_core::{Resolution, TransferPlan};
 use takofy_model::home::{Station, StationSeed};
 use takofy_model::{
@@ -134,6 +135,22 @@ pub(crate) trait SessionHost: Send + Sync + 'static {
         token: &AccessToken,
     ) -> impl Future<Output = Result<(), SessionError>> + Send;
 
+    /// The rootlist as the account walks it, before its playlists are named.
+    ///
+    /// Needs only a connected session, so a read that draws no playlist name
+    /// can start before the labels are read.
+    fn walk_rootlist(&self) -> impl Future<Output = Result<Walked, SessionError>> + Send;
+
+    /// The walked playlists named, with what the sidebar may write with.
+    ///
+    /// Cannot fail on the engine's side: a playlist that cannot be named keeps
+    /// its URI.
+    fn label_rootlist(
+        &self,
+        walked: Walked,
+    ) -> impl Future<Output = Result<RootlistRead, SessionError>> + Send;
+
+    /// The walk and the labels in one call.
     fn rootlist(&self) -> impl Future<Output = Result<RootlistRead, SessionError>> + Send;
 
     /// One playlist as the sidebar draws it, or `None` when the read does not
@@ -513,11 +530,23 @@ impl SessionHost for LiveSession {
         Ok(())
     }
 
-    async fn rootlist(&self) -> Result<RootlistRead, SessionError> {
+    async fn walk_rootlist(&self) -> Result<Walked, SessionError> {
         match &self.engine {
-            Some(engine) => engine.rootlist().await.map_err(SessionError::Engine),
+            Some(engine) => engine.walk_rootlist().await.map_err(SessionError::Engine),
             None => Err(SessionError::NotConnected),
         }
+    }
+
+    async fn label_rootlist(&self, walked: Walked) -> Result<RootlistRead, SessionError> {
+        match &self.engine {
+            Some(engine) => Ok(engine.label_rootlist(walked).await),
+            None => Err(SessionError::NotConnected),
+        }
+    }
+
+    async fn rootlist(&self) -> Result<RootlistRead, SessionError> {
+        let walked = self.walk_rootlist().await?;
+        self.label_rootlist(walked).await
     }
 
     async fn portraits(&self, artists: Vec<String>) -> Option<Vec<ArtistPortrait>> {
