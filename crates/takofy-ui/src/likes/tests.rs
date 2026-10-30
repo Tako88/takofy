@@ -246,6 +246,14 @@ fn request_emits_one_load_after_a_failure_and_then_waits_for_the_reply() {
 }
 
 #[test]
+fn likes_request_refused_until_session_ready() {
+    let mut likes = Likes::default();
+    assert!(!likes.request(false), "no session, no set to read");
+    assert!(likes.request(true), "a ready session asks for the set");
+    assert!(!likes.request(true), "one read is in flight");
+}
+
+#[test]
 fn a_read_landing_during_a_pending_write_keeps_the_write() {
     let mut likes = likes(&[A]);
     likes.reload();

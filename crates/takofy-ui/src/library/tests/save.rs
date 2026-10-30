@@ -76,6 +76,7 @@ fn a_heart_that_asks_to_unsave_writes_one_removal() {
 #[test]
 fn an_artist_page_wants_the_saved_albums() {
     let mut library = Library::default();
+    library.apply(&Update::LibraryReady);
     library.apply(&Update::Playlists(Vec::new()));
     library.open(Page::Artist("spotify:artist:a".to_owned()));
 
@@ -160,6 +161,7 @@ fn a_followed_artist_re_arms_the_artist_read() {
 #[test]
 fn a_press_of_follow_asks_for_the_artist_list_again() {
     let mut library = Library::default();
+    library.apply(&Update::LibraryReady);
     library.apply(&Update::Playlists(Vec::new()));
     library.apply(&Update::FollowedArtists(Vec::new()));
     library

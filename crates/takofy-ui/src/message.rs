@@ -294,6 +294,9 @@ pub enum Update {
     NeedsAuthorization,
     /// An attempt failed and may be retried.
     SignInFailed(Failure),
+    /// The session is connected and the rootlist walked, so reads that need a
+    /// session may be sent. Sent before `Playlists`.
+    LibraryReady,
     /// The user's playlists.
     Playlists(Vec<PlaylistEntry>),
     /// The playlists could not be loaded.

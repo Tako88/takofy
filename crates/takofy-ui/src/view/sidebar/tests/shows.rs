@@ -294,6 +294,7 @@ fn clicking_the_playlists_chip_keeps_the_choice() {
 fn pressing_the_artists_chip_asks_for_the_list_once() {
     let ctx = context();
     let mut library = Library::default();
+    library.apply(&Update::LibraryReady);
     library.apply(&Update::Playlists(Vec::new()));
     let mut art = Art::default();
     let (output, _) = run(&ctx, Vec::new(), &mut library, &mut art);

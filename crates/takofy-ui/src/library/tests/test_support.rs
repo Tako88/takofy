@@ -293,6 +293,7 @@ pub(super) fn sidebar_library(
         .iter()
         .map(|name| with_access(playlist(name, name), byte, editable, tracks))
         .collect();
+    library.apply(&Update::LibraryReady);
     library.apply(&Update::Playlists(entries));
     library.apply(&Update::RootlistAccess(rootlist_access(byte, editable)));
     library
@@ -382,6 +383,7 @@ pub(super) fn item(kind: SidebarKind, uri: &str) -> LibraryItem {
 /// A library whose four lists are ready and hold one thing each.
 pub(super) fn saved_library() -> Library {
     let mut library = Library::default();
+    library.apply(&Update::LibraryReady);
     library.apply(&Update::Playlists(Vec::new()));
     library.apply(&Update::FollowedShows(vec![followed_show(
         "spotify:show:s",

@@ -1,5 +1,5 @@
-use takofy_model::FollowedArtist;
 use takofy_model::home::{HomeAnswer, HomeAsk};
+use takofy_model::{FollowedArtist, FollowedShow};
 
 use super::super::Library;
 use crate::home::{Budget, Section, Slot};
@@ -272,5 +272,41 @@ fn an_unasked_followed_list_is_not_waited_on() {
     assert!(
         !matches!(library.because_section(), Section::Waiting),
         "a list nobody asked for yet is not something to wait for"
+    );
+}
+
+#[test]
+fn because_and_episodes_ask_without_the_playlists() {
+    let mut library = Library::starting_home(NOW_MS);
+    library.apply(&Update::SignedIn);
+    library.apply(&Update::LibraryReady);
+    library.apply(&Update::FollowedArtists(followed(2)));
+    library.apply(&Update::FollowedShows(vec![FollowedShow {
+        uri: "spotify:show:a".to_owned(),
+        name: "Show".to_owned(),
+        named: true,
+        publisher: None,
+        cover: None,
+        episodes: None,
+    }]));
+    assert_eq!(
+        library.playlists,
+        Load::Loading,
+        "arrange: the labels are still out"
+    );
+
+    assert!(
+        matches!(
+            library.because_ask(),
+            Some(Command::LoadHome(HomeAsk::Related { .. }))
+        ),
+        "the related shelf reads only the followed artists"
+    );
+    assert!(
+        matches!(
+            library.episodes_ask(),
+            Some(Command::LoadHome(HomeAsk::Episodes { .. }))
+        ),
+        "the episodes shelf reads only the followed shows"
     );
 }

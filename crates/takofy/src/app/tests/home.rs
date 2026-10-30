@@ -45,6 +45,7 @@ fn logic_asks_home_for_the_saved_labels_once_per_uri() {
     let (mut app, mut received) = test_window();
     app.state = SignIn::SignedIn;
     app.library = Library::starting_home(1_700_000_000_000);
+    app.library.apply(&Update::LibraryReady);
     app.library.apply(&Update::Playlists(Vec::new()));
     assert_eq!(
         app.library.likes_request(),

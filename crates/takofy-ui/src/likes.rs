@@ -214,8 +214,8 @@ impl Likes {
     ///
     /// A failed read is not retried until a reload: a request loop behind a
     /// persistent failure would never stop.
-    pub fn request(&mut self, playlists_ready: bool) -> bool {
-        if self.asking.is_some() || !playlists_ready {
+    pub fn request(&mut self, session_ready: bool) -> bool {
+        if self.asking.is_some() || !session_ready {
             return false;
         }
         match self.read {

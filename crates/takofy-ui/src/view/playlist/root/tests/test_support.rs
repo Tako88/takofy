@@ -113,6 +113,7 @@ pub(super) fn show(uri: &str, name: &str) -> FollowedShow {
 
 pub(super) fn library(playlists: Vec<PlaylistEntry>, shows: Vec<FollowedShow>) -> Library {
     let mut library = Library::default();
+    library.apply(&Update::LibraryReady);
     library.apply(&Update::Playlists(playlists));
     library.apply(&Update::FollowedShows(shows));
     library

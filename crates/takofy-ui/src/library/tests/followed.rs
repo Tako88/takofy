@@ -15,30 +15,160 @@ fn followed_starts_idle() {
 }
 
 #[test]
-fn followed_request_waits_for_ready_playlists() {
+fn a_failed_walk_leaves_the_lists_unasked() {
     let mut library = Library::default();
-    assert_eq!(library.followed_request(), None, "nothing has loaded yet");
-
     library.apply(&Update::SignedIn);
-    assert_eq!(library.followed_request(), None, "loading is not ready");
-
     library.apply(&Update::PlaylistFailed(Failure::Load));
+
+    assert_eq!(library.followed_request(), None);
+    assert_eq!(library.followed_artists_request(), None);
+    assert_eq!(library.saved_albums_request(), None);
+    assert_eq!(library.likes_request(), None);
+}
+
+#[test]
+fn lists_are_asked_on_readiness_without_the_playlists() {
+    let mut library = Library::default();
+    library.apply(&Update::SignedIn);
+    library.apply(&Update::LibraryReady);
+    assert_eq!(
+        library.playlists,
+        Load::Loading,
+        "arrange: the labels are still out"
+    );
+
+    assert_eq!(library.followed_request(), Some(Command::LoadFollowedShows));
+    assert_eq!(
+        library.followed_artists_request(),
+        Some(Command::LoadFollowedArtists)
+    );
+    assert_eq!(
+        library.saved_albums_request(),
+        Some(Command::LoadSavedAlbums)
+    );
+    assert_eq!(library.likes_request(), Some(Command::LoadLikedTracks));
+    assert_eq!(
+        library.playlists,
+        Load::Loading,
+        "asking for the lists touches no playlist load"
+    );
+}
+
+#[test]
+fn playlists_arriving_alone_do_not_open_the_list_gates() {
+    let mut library = Library::default();
+    library.apply(&Update::Playlists(vec![playlist("a", "A")]));
+    assert!(matches!(library.playlists, Load::Ready(_)));
+
+    assert_eq!(library.followed_request(), None);
+    assert_eq!(library.followed_artists_request(), None);
+    assert_eq!(library.saved_albums_request(), None);
+    assert_eq!(library.likes_request(), None);
+    assert_eq!(library.followed, Load::Idle);
+    assert_eq!(library.followed_artists, Load::Idle);
+    assert_eq!(library.saved_albums, Load::Idle);
+}
+
+#[test]
+fn readiness_before_signed_in_is_order_independent() {
+    let mut early = Library::default();
+    early.apply(&Update::LibraryReady);
+    early.apply(&Update::SignedIn);
+    assert_eq!(early.followed_request(), Some(Command::LoadFollowedShows));
+
+    let mut late = Library::default();
+    late.apply(&Update::SignedIn);
+    late.apply(&Update::LibraryReady);
+    assert_eq!(late.followed_request(), Some(Command::LoadFollowedShows));
+}
+
+#[test]
+fn reload_closes_the_gates_until_the_next_readiness() {
+    let mut library = Library::default();
+    library.apply(&Update::SignedIn);
+    library.apply(&Update::LibraryReady);
+    assert_eq!(library.followed_request(), Some(Command::LoadFollowedShows));
+
+    assert_eq!(library.reload(), Command::ReloadLibrary);
+    assert_eq!(library.followed, Load::Idle, "a reload re-arms the list");
     assert_eq!(
         library.followed_request(),
         None,
-        "a failed library never names a window"
+        "the new walk has not answered yet"
     );
-    assert_eq!(library.followed, Load::Idle);
+    assert_eq!(library.likes_request(), None);
 
-    let mut ready = Library::default();
-    ready.apply(&Update::Playlists(Vec::new()));
-    assert_eq!(ready.followed_request(), Some(Command::LoadFollowedShows));
-    assert_eq!(ready.followed, Load::Loading);
+    library.apply(&Update::LibraryReady);
+    assert_eq!(library.followed_request(), Some(Command::LoadFollowedShows));
+    assert_eq!(library.likes_request(), Some(Command::LoadLikedTracks));
+}
+
+#[test]
+fn a_label_failure_after_readiness_keeps_lists_asked() {
+    let mut library = Library::default();
+    library.apply(&Update::SignedIn);
+    library.apply(&Update::LibraryReady);
+    library.apply(&Update::PlaylistFailed(Failure::Load));
+
+    assert_eq!(
+        library.followed_request(),
+        Some(Command::LoadFollowedShows),
+        "a failed label pass is not a session that went away"
+    );
+    assert_eq!(library.likes_request(), Some(Command::LoadLikedTracks));
+}
+
+#[test]
+fn readiness_after_an_earlier_failure_opens_the_gates() {
+    let mut library = Library::default();
+    library.apply(&Update::SignedIn);
+    library.apply(&Update::PlaylistFailed(Failure::Load));
+    assert_eq!(library.followed_request(), None);
+
+    library.apply(&Update::LibraryReady);
+    assert_eq!(library.followed_request(), Some(Command::LoadFollowedShows));
+    assert_eq!(library.likes_request(), Some(Command::LoadLikedTracks));
+}
+
+#[test]
+fn readiness_then_an_empty_playlists_keeps_the_lists_asked() {
+    let mut library = Library::default();
+    library.apply(&Update::SignedIn);
+    library.apply(&Update::LibraryReady);
+    assert_eq!(library.followed_request(), Some(Command::LoadFollowedShows));
+
+    library.apply(&Update::Playlists(Vec::new()));
+    assert_eq!(
+        library.followed,
+        Load::Loading,
+        "the empty list is not the first ask's answer"
+    );
+    assert_eq!(library.followed_request(), None, "asked once");
+}
+
+#[test]
+fn playlist_rows_wait_for_the_labeled_list() {
+    let mut library = Library::default();
+    library.apply(&Update::SignedIn);
+    library.apply(&Update::LibraryReady);
+
+    assert!(
+        sidebar_order(&library).is_empty(),
+        "the walk's own entries never reach the sidebar"
+    );
+
+    library.apply(&Update::Playlists(vec![playlist("a", "A")]));
+    assert_eq!(
+        sidebar_order(&library),
+        names(&["a"]),
+        "the list's row draws"
+    );
 }
 
 #[test]
 fn followed_request_fires_once() {
     let mut library = Library::default();
+    library.apply(&Update::LibraryReady);
     library.apply(&Update::Playlists(vec![playlist("a", "A")]));
 
     assert_eq!(library.followed_request(), Some(Command::LoadFollowedShows));
@@ -57,6 +187,7 @@ fn followed_request_is_none_while_loading_ready_or_failed() {
         Load::Failed(Failure::Followed),
     ] {
         let mut library = Library::default();
+        library.apply(&Update::LibraryReady);
         library.apply(&Update::Playlists(vec![playlist("a", "A")]));
         library.followed = state.clone();
 
@@ -111,9 +242,10 @@ fn reload_resets_followed_so_it_refetches() {
     assert_eq!(
         library.followed_request(),
         None,
-        "the playlists are loading again, so the list waits"
+        "the walk has not answered, so the list waits"
     );
 
+    library.apply(&Update::LibraryReady);
     library.apply(&Update::Playlists(vec![playlist("a", "A")]));
     assert_eq!(library.followed_request(), Some(Command::LoadFollowedShows));
 }
@@ -135,6 +267,7 @@ fn reload_followed_marks_loading_and_returns_the_command() {
 #[test]
 fn reload_while_followed_is_loading_accepts_either_reply() {
     let mut library = Library::default();
+    library.apply(&Update::LibraryReady);
     library.apply(&Update::Playlists(vec![playlist("a", "A")]));
     assert_eq!(library.followed_request(), Some(Command::LoadFollowedShows));
     assert_eq!(library.followed, Load::Loading);
@@ -143,6 +276,7 @@ fn reload_while_followed_is_loading_accepts_either_reply() {
     // list, so a second load is issued and two replies are in the air.
     library.reload();
     assert_eq!(library.followed, Load::Idle);
+    library.apply(&Update::LibraryReady);
     library.apply(&Update::Playlists(vec![playlist("a", "A")]));
     assert_eq!(
         library.followed_request(),
@@ -262,7 +396,7 @@ fn followed_artists_and_saved_albums_start_idle() {
 }
 
 #[test]
-fn the_artist_and_album_requests_stay_silent_until_the_playlists_are_ready() {
+fn the_artist_and_album_requests_stay_silent_until_the_session_is_ready() {
     let mut library = Library::default();
     assert_eq!(
         library.followed_artists_request(),
@@ -287,17 +421,17 @@ fn the_artist_and_album_requests_stay_silent_until_the_playlists_are_ready() {
     assert_eq!(
         library.followed_artists_request(),
         None,
-        "a failed library never names a window"
+        "a failed walk never names a window"
     );
     assert_eq!(
         library.saved_albums_request(),
         None,
-        "a failed library never names a window"
+        "a failed walk never names a window"
     );
 
-    // All draws every kind, so a ready library under it asks for both.
+    // All draws every kind, so a ready session under it asks for both.
     let mut ready = Library::default();
-    ready.apply(&Update::Playlists(Vec::new()));
+    ready.apply(&Update::LibraryReady);
     assert_eq!(
         ready.followed_artists_request(),
         Some(Command::LoadFollowedArtists)
@@ -307,7 +441,7 @@ fn the_artist_and_album_requests_stay_silent_until_the_playlists_are_ready() {
     // A chip that draws only playlists names neither list, so both stay
     // idle until one is chosen.
     let mut narrowed = Library::default();
-    narrowed.apply(&Update::Playlists(Vec::new()));
+    narrowed.apply(&Update::LibraryReady);
     narrowed.root_filter.choose(RootKind::Playlists);
     assert_eq!(narrowed.followed_artists_request(), None);
     assert_eq!(narrowed.saved_albums_request(), None);
@@ -356,6 +490,7 @@ fn a_list_that_already_has_an_answer_is_never_asked_again() {
     ];
     for state in artist_states {
         let mut library = Library::default();
+        library.apply(&Update::LibraryReady);
         library.apply(&Update::Playlists(vec![playlist("a", "A")]));
         library.followed_artists = state.clone();
 
@@ -374,6 +509,7 @@ fn a_list_that_already_has_an_answer_is_never_asked_again() {
     ];
     for state in album_states {
         let mut library = Library::default();
+        library.apply(&Update::LibraryReady);
         library.apply(&Update::Playlists(vec![playlist("a", "A")]));
         library.saved_albums = state.clone();
 
