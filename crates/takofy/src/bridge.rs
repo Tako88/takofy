@@ -6,10 +6,11 @@
 //! must not hold up runtime shutdown, and a detached thread dies with the
 //! process.
 //!
-//! The command loop and the per-command helpers stay here; the jobs below have
-//! their own module:
+//! The command loop and the barrier arms stay here; the jobs below have their
+//! own module:
 //!
 //! - [`wake`]: the waker slot, the notifier, and both ends of the loop.
+//! - [`reads`]: the read jobs, and the batch that overlaps them.
 //! - [`signin`]: starts the sign-in worker and turns an auth result into an
 //!   update.
 //! - [`playback`]: starts the player, loads a track, and drains its events.
@@ -25,6 +26,7 @@ mod errors;
 mod home;
 mod orders;
 mod playback;
+mod reads;
 mod rebuild;
 mod signin;
 mod wake;
@@ -34,12 +36,10 @@ pub(crate) use wake::{Notifier, UiEnd};
 
 use covers::{Drains, handle_fetch, reap_finished_covers};
 use devices::{Devices, adopt_watch, arm_watch};
-use errors::{
-    albums_failure, artists_failure, ends_playability, followed_failure, library_failure,
-    liked_failure, lyrics_failure, playback_failure, related_failure, search_failure,
-};
+use errors::{ends_playability, library_failure, playback_failure};
 use orders::{deliver_answer, run_ordered, serve_order};
 use playback::{ensure_drain, interrupts_attempt, play, start_load};
+use reads::{Class, Immediate, Read, classify, log_unclaimed, run_batch};
 use rebuild::{
     Rebuilt, Refresh, Step, link_signal_applies, settle, silence_session, start_refresh,
 };
@@ -217,6 +217,64 @@ fn start_with<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                     }
                 },
             };
+            // A command is routed by its class before the loop's own match: a
+            // read starts a batch, an Instant is served here, and a barrier
+            // falls through to the arms below.
+            let event = match event {
+                Event::Command(Some(command)) => match classify(&command) {
+                    Class::Read => {
+                        let Some(read) = Read::claim(command) else {
+                            log_unclaimed(Class::Read);
+                            continue;
+                        };
+                        let mut parts = InstantParts::new(
+                            connected,
+                            devices.watching,
+                            cover_client.as_ref(),
+                            &mut cover_tasks,
+                            Arc::clone(&cover_permits),
+                            Arc::clone(&cover_in_flight),
+                            &mut recovery,
+                        );
+                        let step = run_batch(
+                            read,
+                            &host,
+                            &mut stop_rx,
+                            &task_notifier,
+                            &mut commands_rx,
+                            &mut deferred,
+                            &mut |immediate| {
+                                serve_instant(&host, &task_notifier, &mut parts, immediate)
+                            },
+                        )
+                        .await;
+                        if step.stopped() {
+                            break;
+                        }
+                        continue;
+                    }
+                    Class::Instant => {
+                        let mut parts = InstantParts::new(
+                            connected,
+                            devices.watching,
+                            cover_client.as_ref(),
+                            &mut cover_tasks,
+                            Arc::clone(&cover_permits),
+                            Arc::clone(&cover_in_flight),
+                            &mut recovery,
+                        );
+                        match Immediate::claim(command) {
+                            Some(immediate) => {
+                                serve_instant(&host, &task_notifier, &mut parts, immediate)
+                            }
+                            None => log_unclaimed(Class::Instant),
+                        }
+                        continue;
+                    }
+                    Class::Barrier => Event::Command(Some(command)),
+                },
+                other => other,
+            };
             match event {
                 Event::Token(Some(received)) => {
                     if connected {
@@ -355,104 +413,9 @@ fn start_with<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                         break;
                     }
                 }
-                Event::Command(Some(Command::LoadTracks { playlist })) => {
-                    let step =
-                        load_tracks(&mut host, &mut stop_rx, &task_notifier, &playlist).await;
-                    if step.stopped() {
-                        break;
-                    }
-                }
-                Event::Command(Some(Command::LoadAlbum { album })) => {
-                    let step = load_album(&mut host, &mut stop_rx, &task_notifier, &album).await;
-                    if step.stopped() {
-                        break;
-                    }
-                }
-                Event::Command(Some(Command::LoadArtist { artist })) => {
-                    let step = load_artist(&mut host, &mut stop_rx, &task_notifier, &artist).await;
-                    if step.stopped() {
-                        break;
-                    }
-                }
-                Event::Command(Some(Command::LoadRelated { artist, uris })) => {
-                    let step =
-                        load_related(&mut host, &mut stop_rx, &task_notifier, &artist, uris).await;
-                    if step.stopped() {
-                        break;
-                    }
-                }
-                Event::Command(Some(Command::LoadLyrics { track })) => {
-                    let step = load_lyrics(&mut host, &mut stop_rx, &task_notifier, &track).await;
-                    if step.stopped() {
-                        break;
-                    }
-                }
-                Event::Command(Some(Command::LoadShow { show })) => {
-                    let step = load_show(&mut host, &mut stop_rx, &task_notifier, &show).await;
-                    if step.stopped() {
-                        break;
-                    }
-                }
-                Event::Command(Some(Command::LoadFollowedShows)) => {
-                    let step = load_followed_shows(&mut host, &mut stop_rx, &task_notifier).await;
-                    if step.stopped() {
-                        break;
-                    }
-                }
-                Event::Command(Some(Command::LoadFollowedArtists)) => {
-                    let step = load_followed_artists(&mut host, &mut stop_rx, &task_notifier).await;
-                    if step.stopped() {
-                        break;
-                    }
-                }
-                Event::Command(Some(Command::LoadSavedAlbums)) => {
-                    let step = load_saved_albums(&mut host, &mut stop_rx, &task_notifier).await;
-                    if step.stopped() {
-                        break;
-                    }
-                }
-                Event::Command(Some(Command::LoadLikedTracks)) => {
-                    let step = load_liked_tracks(&mut host, &mut stop_rx, &task_notifier).await;
-                    if step.stopped() {
-                        break;
-                    }
-                }
-                Event::Command(Some(Command::LoadHome(ask))) => {
-                    let step = home::load_home(&mut host, &mut stop_rx, &task_notifier, ask).await;
-                    if step.stopped() {
-                        break;
-                    }
-                }
                 Event::Command(Some(Command::SetLiked { tracks, liked })) => {
                     let step =
                         set_liked(&mut host, &mut stop_rx, &task_notifier, &tracks, liked).await;
-                    if step.stopped() {
-                        break;
-                    }
-                }
-                Event::Command(Some(Command::Search { query })) => {
-                    let step = load_search(&mut host, &mut stop_rx, &task_notifier, &query).await;
-                    if step.stopped() {
-                        break;
-                    }
-                }
-                Event::Command(Some(Command::LoadPortraits { query, artists })) => {
-                    let step =
-                        load_portraits(&mut host, &mut stop_rx, &task_notifier, &query, &artists)
-                            .await;
-                    if step.stopped() {
-                        break;
-                    }
-                }
-                Event::Command(Some(Command::LoadReleaseTracks { release, tracks })) => {
-                    let step = load_release_tracks(
-                        &mut host,
-                        &mut stop_rx,
-                        &task_notifier,
-                        &release,
-                        &tracks,
-                    )
-                    .await;
                     if step.stopped() {
                         break;
                     }
@@ -536,12 +499,6 @@ fn start_with<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                         &revision,
                     )
                     .await;
-                    if step.stopped() {
-                        break;
-                    }
-                }
-                Event::Command(Some(Command::LoadSaved { uri })) => {
-                    let step = load_saved(&mut host, &mut stop_rx, &task_notifier, &uri).await;
                     if step.stopped() {
                         break;
                     }
@@ -649,24 +606,6 @@ fn start_with<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                         break;
                     }
                 }
-                Event::Command(Some(Command::LabelRemote { track })) => {
-                    let step = label_remote(&mut host, &mut stop_rx, &task_notifier, &track).await;
-                    if step.stopped() {
-                        break;
-                    }
-                }
-                Event::Command(Some(Command::LabelRows { uris })) => {
-                    let step = label_rows(&mut host, &mut stop_rx, &task_notifier, &uris).await;
-                    if step.stopped() {
-                        break;
-                    }
-                }
-                Event::Command(Some(Command::LabelSaved { tracks })) => {
-                    let step = label_saved(&mut host, &mut stop_rx, &task_notifier, &tracks).await;
-                    if step.stopped() {
-                        break;
-                    }
-                }
                 Event::Command(Some(Command::Play { uri })) => {
                     let step = play_now(
                         &mut host,
@@ -684,62 +623,38 @@ fn start_with<H: SessionHost, S: TokenSource + Send + Sync + 'static>(
                         break;
                     }
                 }
-                // The window applied an order, or could not. An entry the budget
-                // already answered is gone: the phone has been told `Failure`,
-                // and the next report put corrects what it shows.
-                Event::Command(Some(Command::Answer { id, ok })) => {
-                    deliver_answer(host.answer_order(id, ok));
-                }
-                // A report only has a wire to reach while the device is on the
-                // account; before that the engine's own slot is not announced.
-                Event::Command(Some(Command::Report(report))) => {
-                    if devices.watching {
-                        host.report(report);
-                    }
-                }
-                Event::Command(Some(Command::Pause)) => {
-                    if recovery.is_active() {
-                        recovery.adjust(Change::Play(false));
-                    } else {
-                        host.pause();
-                    }
-                }
-                Event::Command(Some(Command::Resume)) => {
-                    if recovery.is_active() {
-                        recovery.adjust(Change::Play(true));
-                    } else {
-                        host.resume();
-                    }
-                }
-                Event::Command(Some(Command::Stop)) => {
-                    if recovery.is_active() {
-                        recovery.adjust(Change::Clear);
-                    } else {
-                        host.stop();
-                    }
-                }
-                Event::Command(Some(Command::Seek { position_ms })) => {
-                    if recovery.is_active() {
-                        recovery.adjust(Change::Seek(position_ms));
-                    } else {
-                        host.seek(position_ms);
-                    }
-                }
-                Event::Command(Some(Command::Volume { percent })) => host.set_volume(percent),
-                // The arm only spawns: the fetch must not park the command loop
-                // that also awaits host calls. A signed-out window has no cover
-                // to want, and every request is answered either way.
-                Event::Command(Some(Command::Fetch { url })) => {
-                    handle_fetch(
-                        connected,
-                        cover_client.as_ref(),
-                        &mut cover_tasks,
-                        Arc::clone(&cover_permits),
-                        Arc::clone(&cover_in_flight),
-                        url,
-                        task_notifier.clone(),
-                    );
-                }
+                // Every read and every Instant command was routed away before
+                // this match: the reads to the batch, the Instants to
+                // `serve_instant`. These arms keep the split total, so a new
+                // command still has to be classified above.
+                Event::Command(Some(
+                    Command::LoadTracks { .. }
+                    | Command::LoadAlbum { .. }
+                    | Command::LoadArtist { .. }
+                    | Command::LoadRelated { .. }
+                    | Command::LoadLyrics { .. }
+                    | Command::LoadShow { .. }
+                    | Command::LoadFollowedShows
+                    | Command::LoadFollowedArtists
+                    | Command::LoadSavedAlbums
+                    | Command::LoadLikedTracks
+                    | Command::LoadHome(_)
+                    | Command::Search { .. }
+                    | Command::LoadPortraits { .. }
+                    | Command::LoadReleaseTracks { .. }
+                    | Command::LoadSaved { .. }
+                    | Command::LabelRemote { .. }
+                    | Command::LabelRows { .. }
+                    | Command::LabelSaved { .. }
+                    | Command::Fetch { .. }
+                    | Command::Report(_)
+                    | Command::Volume { .. }
+                    | Command::Answer { .. }
+                    | Command::Pause
+                    | Command::Resume
+                    | Command::Stop
+                    | Command::Seek { .. },
+                )) => {}
                 Event::Command(None) => break,
                 // Every request is answered. A hand-over is served in full, a
                 // transport order is handed to the window that owns the sound,
@@ -842,174 +757,101 @@ async fn load_library<H: SessionHost>(
     }
 }
 
-/// Sends the ready update, or the failure update with its reason collapsed for
-/// the window.
-pub(crate) fn announce<T>(
+/// The loop state an Instant command changes, held apart from the host so one
+/// body serves both the loop and the batch.
+struct InstantParts<'a> {
+    connected: bool,
+    /// Whether a report has a watch to reach the account through.
+    watching: bool,
+    cover_client: Option<&'a reqwest::Client>,
+    cover_tasks: &'a mut JoinSet<()>,
+    cover_permits: Arc<Semaphore>,
+    cover_in_flight: Arc<Mutex<HashSet<CoverUrl>>>,
+    recovery: &'a mut Recovery,
+}
+
+impl<'a> InstantParts<'a> {
+    fn new(
+        connected: bool,
+        watching: bool,
+        cover_client: Option<&'a reqwest::Client>,
+        cover_tasks: &'a mut JoinSet<()>,
+        cover_permits: Arc<Semaphore>,
+        cover_in_flight: Arc<Mutex<HashSet<CoverUrl>>>,
+        recovery: &'a mut Recovery,
+    ) -> Self {
+        Self {
+            connected,
+            watching,
+            cover_client,
+            cover_tasks,
+            cover_permits,
+            cover_in_flight,
+            recovery,
+        }
+    }
+}
+
+/// Serves one Instant command without ending the reads in flight or changing
+/// anything they read.
+fn serve_instant<H: SessionHost>(
+    host: &H,
     notifier: &Notifier,
-    result: Result<T, SessionError>,
-    ready: impl FnOnce(T) -> Update,
-    failed: impl FnOnce(Failure) -> Update,
+    parts: &mut InstantParts<'_>,
+    immediate: Immediate,
 ) {
-    match result {
-        Ok(value) => notifier.send(ready(value)),
-        Err(error) => notifier.send(failed(library_failure(&error))),
-    };
-}
-
-/// Loads the first page of a playlist's tracks and announces it.
-async fn load_tracks<H: SessionHost>(
-    host: &mut H,
-    stop: &mut StopReceiver<()>,
-    notifier: &Notifier,
-    playlist: &str,
-) -> Step {
-    match stop_or(stop, host.tracks(playlist)).await {
-        None => Step::Stopped,
-        Some(result) => {
-            announce(
-                notifier,
-                result,
-                |page| Update::Tracks {
-                    playlist: playlist.to_owned(),
-                    tracks: page.tracks,
-                    cover: page.cover,
-                    access: page.access,
-                },
-                |failure| Update::TracksFailed {
-                    playlist: playlist.to_owned(),
-                    failure,
-                },
-            );
-            Step::Done
+    match immediate {
+        // The window applied an order, or could not. An entry the budget already
+        // answered is gone: the phone has been told `Failure`, and the next
+        // report put corrects what it shows.
+        Immediate::Answer { id, ok } => deliver_answer(host.answer_order(id, ok)),
+        // A report only has a wire to reach while the device is on the account;
+        // before that the engine's own slot is not announced.
+        Immediate::Report(report) => {
+            if parts.watching {
+                host.report(*report);
+            }
         }
-    }
-}
-
-/// Loads one album with its labelled tracks and announces it.
-async fn load_album<H: SessionHost>(
-    host: &mut H,
-    stop: &mut StopReceiver<()>,
-    notifier: &Notifier,
-    album: &str,
-) -> Step {
-    match stop_or(stop, host.album(album)).await {
-        None => Step::Stopped,
-        Some(result) => {
-            announce(notifier, result, Update::Album, |failure| {
-                Update::AlbumFailed {
-                    album: album.to_owned(),
-                    failure,
-                }
-            });
-            Step::Done
+        Immediate::Pause => {
+            if parts.recovery.is_active() {
+                parts.recovery.adjust(Change::Play(false));
+            } else {
+                host.pause();
+            }
         }
-    }
-}
-
-/// Loads one show with its episodes and announces it.
-async fn load_show<H: SessionHost>(
-    host: &mut H,
-    stop: &mut StopReceiver<()>,
-    notifier: &Notifier,
-    show: &str,
-) -> Step {
-    match stop_or(stop, host.show(show)).await {
-        None => Step::Stopped,
-        Some(result) => {
-            announce(notifier, result, Update::Show, |failure| {
-                Update::ShowFailed {
-                    show: show.to_owned(),
-                    failure,
-                }
-            });
-            Step::Done
+        Immediate::Resume => {
+            if parts.recovery.is_active() {
+                parts.recovery.adjust(Change::Play(true));
+            } else {
+                host.resume();
+            }
         }
-    }
-}
-
-/// Loads the shows the user follows and announces the whole list.
-///
-/// It has its own failure, because the playlists beside it draw fine and
-/// "Could not load the library" would be false there.
-async fn load_followed_shows<H: SessionHost>(
-    host: &mut H,
-    stop: &mut StopReceiver<()>,
-    notifier: &Notifier,
-) -> Step {
-    match stop_or(stop, host.followed_shows()).await {
-        None => Step::Stopped,
-        Some(Ok(shows)) => {
-            notifier.send(Update::FollowedShows(shows));
-            Step::Done
+        Immediate::Stop => {
+            if parts.recovery.is_active() {
+                parts.recovery.adjust(Change::Clear);
+            } else {
+                host.stop();
+            }
         }
-        Some(Err(error)) => {
-            notifier.send(Update::FollowedShowsFailed(followed_failure(&error)));
-            Step::Done
+        Immediate::Seek { position_ms } => {
+            if parts.recovery.is_active() {
+                parts.recovery.adjust(Change::Seek(position_ms));
+            } else {
+                host.seek(position_ms);
+            }
         }
-    }
-}
-
-/// Loads the artists the user follows and announces the whole list.
-///
-/// It has its own failure, because the playlists beside it draw fine and
-/// "Could not load the library" would be false there.
-async fn load_followed_artists<H: SessionHost>(
-    host: &mut H,
-    stop: &mut StopReceiver<()>,
-    notifier: &Notifier,
-) -> Step {
-    match stop_or(stop, host.followed_artists()).await {
-        None => Step::Stopped,
-        Some(Ok(artists)) => {
-            notifier.send(Update::FollowedArtists(artists));
-            Step::Done
-        }
-        Some(Err(error)) => {
-            notifier.send(Update::FollowedArtistsFailed(artists_failure(&error)));
-            Step::Done
-        }
-    }
-}
-
-/// Loads the albums the user saved and announces the whole list.
-///
-/// It has its own failure, because the playlists beside it draw fine and
-/// "Could not load the library" would be false there.
-async fn load_saved_albums<H: SessionHost>(
-    host: &mut H,
-    stop: &mut StopReceiver<()>,
-    notifier: &Notifier,
-) -> Step {
-    match stop_or(stop, host.saved_albums()).await {
-        None => Step::Stopped,
-        Some(Ok(albums)) => {
-            notifier.send(Update::SavedAlbums(albums));
-            Step::Done
-        }
-        Some(Err(error)) => {
-            notifier.send(Update::SavedAlbumsFailed(albums_failure(&error)));
-            Step::Done
-        }
-    }
-}
-
-/// Loads the tracks the user has liked and announces the whole set.
-///
-async fn load_liked_tracks<H: SessionHost>(
-    host: &mut H,
-    stop: &mut StopReceiver<()>,
-    notifier: &Notifier,
-) -> Step {
-    match stop_or(stop, host.liked_tracks()).await {
-        None => Step::Stopped,
-        Some(Ok(tracks)) => {
-            notifier.send(Update::LikedTracks(tracks));
-            Step::Done
-        }
-        Some(Err(error)) => {
-            notifier.send(Update::LikedTracksFailed(liked_failure(&error)));
-            Step::Done
-        }
+        Immediate::Volume { percent } => host.set_volume(percent),
+        // The arm only spawns: the fetch must not park the task that also
+        // awaits host calls.
+        Immediate::Fetch { url } => handle_fetch(
+            parts.connected,
+            parts.cover_client,
+            &mut *parts.cover_tasks,
+            Arc::clone(&parts.cover_permits),
+            Arc::clone(&parts.cover_in_flight),
+            url,
+            notifier.clone(),
+        ),
     }
 }
 
@@ -1036,183 +878,6 @@ async fn set_liked<H: SessionHost>(
             notifier.send(Update::LikeFailed {
                 tracks: tracks.to_vec(),
                 failure: Failure::Save,
-            });
-            Step::Done
-        }
-    }
-}
-
-/// Loads one artist and announces the page, then the followed state when the
-/// probe answered.
-///
-/// The two updates are separate because they are separate facts: the page is
-/// drawn from the first, and the Follow label moves only on the second. A probe
-/// that did not answer sends nothing, so the label stays where it was.
-/// Names the artists one artist is heard with, and announces the cards they make.
-async fn load_related<H: SessionHost>(
-    host: &mut H,
-    stop: &mut StopReceiver<()>,
-    notifier: &Notifier,
-    artist: &str,
-    uris: Vec<String>,
-) -> Step {
-    match stop_or(stop, host.related(uris)).await {
-        None => Step::Stopped,
-        Some(Ok(cards)) => {
-            notifier.send(Update::Related {
-                artist: artist.to_owned(),
-                cards,
-            });
-            Step::Done
-        }
-        Some(Err(error)) => {
-            notifier.send(Update::RelatedFailed {
-                artist: artist.to_owned(),
-                failure: related_failure(&error),
-            });
-            Step::Done
-        }
-    }
-}
-
-async fn load_artist<H: SessionHost>(
-    host: &mut H,
-    stop: &mut StopReceiver<()>,
-    notifier: &Notifier,
-    artist: &str,
-) -> Step {
-    match stop_or(stop, host.artist(artist)).await {
-        None => Step::Stopped,
-        Some(Ok(page)) => {
-            notifier.send(Update::Artist(page.artist));
-            if let Some(followed) = page.followed {
-                notifier.send(Update::Followed {
-                    artist: artist.to_owned(),
-                    followed,
-                });
-            }
-            Step::Done
-        }
-        Some(Err(error)) => {
-            notifier.send(Update::ArtistFailed {
-                artist: artist.to_owned(),
-                failure: library_failure(&error),
-            });
-            Step::Done
-        }
-    }
-}
-
-/// Loads one track's lyrics and announces them.
-///
-/// Its failure is `Lyrics`, not `Load`: the page around the pane may draw fine,
-/// and the pane's own message names only the lyrics.
-async fn load_lyrics<H: SessionHost>(
-    host: &mut H,
-    stop: &mut StopReceiver<()>,
-    notifier: &Notifier,
-    track: &str,
-) -> Step {
-    match stop_or(stop, host.lyrics(track)).await {
-        None => Step::Stopped,
-        Some(Ok(lyrics)) => {
-            notifier.send(Update::Lyrics {
-                track: track.to_owned(),
-                lyrics,
-            });
-            Step::Done
-        }
-        Some(Err(error)) => {
-            notifier.send(Update::LyricsFailed {
-                track: track.to_owned(),
-                failure: lyrics_failure(&error),
-            });
-            Step::Done
-        }
-    }
-}
-
-/// Loads one search query's tracks and announces them.
-///
-/// The query is echoed verbatim. The window clears its in-flight marker on an
-/// echo that matches the key it sent, so a reworded query here would strand
-/// the read.
-async fn load_search<H: SessionHost>(
-    host: &mut H,
-    stop: &mut StopReceiver<()>,
-    notifier: &Notifier,
-    query: &str,
-) -> Step {
-    match stop_or(stop, host.search(query)).await {
-        None => Step::Stopped,
-        Some(Ok(tracks)) => {
-            notifier.send(Update::Search {
-                query: query.to_owned(),
-                tracks,
-            });
-            Step::Done
-        }
-        Some(Err(error)) => {
-            notifier.send(Update::SearchFailed {
-                query: query.to_owned(),
-                failure: search_failure(&error),
-            });
-            Step::Done
-        }
-    }
-}
-
-/// Reads one answer's artist portraits and announces them.
-///
-/// The query is echoed verbatim, like a search's, because the window drops a
-/// reply for a query it has typed past. A read that does not answer is silent:
-/// the row keeps the look of a cover that has not arrived.
-async fn load_portraits<H: SessionHost>(
-    host: &mut H,
-    stop: &mut StopReceiver<()>,
-    notifier: &Notifier,
-    query: &str,
-    artists: &[String],
-) -> Step {
-    match stop_or(stop, host.portraits(artists.to_vec())).await {
-        None => Step::Stopped,
-        Some(Some(portraits)) => {
-            notifier.send(Update::Portraits {
-                query: query.to_owned(),
-                portraits,
-            });
-            Step::Done
-        }
-        Some(None) => {
-            notifier.send(Update::PortraitsFailed {
-                query: query.to_owned(),
-            });
-            Step::Done
-        }
-    }
-}
-
-/// Labels one release's tracks and announces them.
-async fn load_release_tracks<H: SessionHost>(
-    host: &mut H,
-    stop: &mut StopReceiver<()>,
-    notifier: &Notifier,
-    release: &str,
-    tracks: &[String],
-) -> Step {
-    match stop_or(stop, host.release_tracks(tracks)).await {
-        None => Step::Stopped,
-        Some(Ok(tracks)) => {
-            notifier.send(Update::ReleaseTracks {
-                release: release.to_owned(),
-                tracks,
-            });
-            Step::Done
-        }
-        Some(Err(error)) => {
-            notifier.send(Update::ReleaseTracksFailed {
-                release: release.to_owned(),
-                failure: library_failure(&error),
             });
             Step::Done
         }
@@ -1394,26 +1059,6 @@ async fn link_playlist<H: SessionHost>(
             Step::Done
         }
     }
-}
-
-/// Asks whether one album or show is in the library, and announces the answer.
-///
-/// A probe that does not answer is announced as unknown rather than as "not
-/// saved": the heart then stays inert instead of claiming the item is not there.
-async fn load_saved<H: SessionHost>(
-    host: &mut H,
-    stop: &mut StopReceiver<()>,
-    notifier: &Notifier,
-    uri: &str,
-) -> Step {
-    let Some(answer) = stop_or(stop, host.saved_state(uri)).await else {
-        return Step::Stopped;
-    };
-    notifier.send(Update::SavedState {
-        uri: uri.to_owned(),
-        saved: answer,
-    });
-    Step::Done
 }
 
 /// Writes one album or show in or out, and echoes the URI it was asked for.
@@ -2185,86 +1830,6 @@ async fn transfer_device<H: SessionHost>(
                 Failure::Transfer
             };
             notifier.send(Update::Devices(DeviceUpdate::TransferFailed(failure)));
-            Step::Done
-        }
-    }
-}
-
-/// Names the track another device is playing, when the label read answers.
-///
-/// A miss is silent: the title stays `None` and the caption still draws.
-async fn label_remote<H: SessionHost>(
-    host: &mut H,
-    stop: &mut StopReceiver<()>,
-    notifier: &Notifier,
-    track: &str,
-) -> Step {
-    let tracks = [track.to_owned()];
-    match stop_or(stop, host.release_tracks(&tracks)).await {
-        None => Step::Stopped,
-        Some(Ok(named)) => {
-            if let Some(entry) = named.into_iter().next() {
-                notifier.send(Update::Devices(DeviceUpdate::Labelled(entry)));
-            }
-            Step::Done
-        }
-        Some(Err(error)) => {
-            log_device_error(&error);
-            Step::Done
-        }
-    }
-}
-
-/// Names the rows a hand-over adopted, in one read.
-///
-/// A miss is silent: the rows keep their URIs and the bar still draws.
-async fn label_rows<H: SessionHost>(
-    host: &mut H,
-    stop: &mut StopReceiver<()>,
-    notifier: &Notifier,
-    uris: &[String],
-) -> Step {
-    match stop_or(stop, host.release_tracks(uris)).await {
-        None => Step::Stopped,
-        Some(Ok(named)) => {
-            if !named.is_empty() {
-                notifier.send(Update::Remote(RemoteUpdate::Labelled(named)));
-            }
-            Step::Done
-        }
-        Some(Err(error)) => {
-            log_device_error(&error);
-            Step::Done
-        }
-    }
-}
-
-/// Names the liked songs Home's shelf is about to draw.
-///
-/// The reply is always sent, even when the read fails or names nothing: Home
-/// waits for every answer before it draws. A miss is an answer the shelf cannot
-/// draw from; a failure is told apart from it so the page can offer the retry.
-async fn label_saved<H: SessionHost>(
-    host: &mut H,
-    stop: &mut StopReceiver<()>,
-    notifier: &Notifier,
-    tracks: &[String],
-) -> Step {
-    let asked = tracks.to_vec();
-    match stop_or(stop, host.release_tracks(tracks)).await {
-        None => Step::Stopped,
-        Some(Ok(named)) => {
-            notifier.send(Update::SavedLabelled { asked, named });
-            Step::Done
-        }
-        Some(Err(error)) => {
-            log_device_error(&error);
-            // The labels have no surface of their own, so their failure is the
-            // library's load, as a failed liked read is.
-            notifier.send(Update::SavedLabelFailed {
-                asked,
-                failure: Failure::Load,
-            });
             Step::Done
         }
     }

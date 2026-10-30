@@ -405,6 +405,7 @@ pub(super) enum Call {
     Accept(RequestId),
     Answer(RequestId, bool),
     Report(Box<Option<takofy_model::Report>>),
+    Pause,
     Label(Vec<String>),
     Load {
         uri: String,
@@ -585,6 +586,13 @@ pub(super) struct FakeState {
     pub(super) device_rx: Mutex<Option<UnboundedReceiver<ClusterEvent>>>,
     pub(super) inbound_tx: Mutex<Option<UnboundedSender<Inbound>>>,
     pub(super) inbound_rx: Mutex<Option<UnboundedReceiver<Inbound>>>,
+    /// The hold every held read waits behind, so a test can watch admission
+    /// while nothing answers. A read releases itself by taking a permit, which
+    /// is spent rather than returned.
+    pub(super) read_hold: Mutex<Option<Arc<tokio::sync::Semaphore>>>,
+    /// How many reads are in flight, and the most that ever were.
+    pub(super) reads_in_flight: AtomicUsize,
+    pub(super) reads_peak: AtomicUsize,
     pub(super) watch_started: Mutex<Option<Sender<()>>>,
     pub(super) refresh_started: Mutex<Option<Sender<()>>>,
     pub(super) steer_started: Mutex<Option<Sender<()>>>,
@@ -599,6 +607,31 @@ pub(super) struct FakeState {
     pub(super) event_tx: Mutex<Option<UnboundedSender<PlaybackEvent>>>,
     /// How many times the one event stream was handed to a drain.
     pub(super) event_takes: AtomicUsize,
+}
+
+impl FakeState {
+    /// Counts one read in flight and waits behind the hold, if a test armed
+    /// one, so a read that has started says so before it answers.
+    async fn enter_read(&self) {
+        let now = self.reads_in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+        self.reads_peak.fetch_max(now, Ordering::SeqCst);
+        // A read a stop drops never reaches the line below, and its count must
+        // still leave.
+        let _in_flight = InFlight(&self.reads_in_flight);
+        let hold = self.read_hold.lock().expect("lock").clone();
+        if let Some(hold) = hold {
+            hold.acquire().await.expect("the hold stays open").forget();
+        }
+    }
+}
+
+/// Leaves the in-flight count when the read it counted ends, however it ends.
+struct InFlight<'a>(&'a AtomicUsize);
+
+impl Drop for InFlight<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 /// Records every session call so an exit path can be asserted without a
@@ -735,7 +768,7 @@ impl SessionHost for FakeHost {
     }
 
     fn tracks(
-        &mut self,
+        &self,
         _playlist: &str,
     ) -> impl Future<Output = Result<TrackPage, SessionError>> + Send {
         self.shared.tracks.fetch_add(1, Ordering::SeqCst);
@@ -809,9 +842,11 @@ impl SessionHost for FakeHost {
         if let Some(tx) = self.shared.episode_started.lock().expect("lock").take() {
             let _ = tx.send(());
         }
+        let shared = Arc::clone(&self.shared);
         let connected = self.shared.connected.load(Ordering::SeqCst);
         let script = self.shared.episodes_script.lock().expect("lock").clone();
         async move {
+            shared.enter_read().await;
             if !connected {
                 return Err(SessionError::NotConnected);
             }
@@ -845,9 +880,11 @@ impl SessionHost for FakeHost {
         &self,
     ) -> impl Future<Output = Result<Vec<FollowedShow>, SessionError>> + Send {
         self.shared.followed_lists.fetch_add(1, Ordering::SeqCst);
+        let shared = Arc::clone(&self.shared);
         let connected = self.shared.connected.load(Ordering::SeqCst);
         let script = self.shared.followed_script.lock().expect("lock").clone();
         async move {
+            shared.enter_read().await;
             if !connected {
                 return Err(SessionError::NotConnected);
             }
@@ -864,6 +901,7 @@ impl SessionHost for FakeHost {
         self.shared
             .followed_artist_lists
             .fetch_add(1, Ordering::SeqCst);
+        let shared = Arc::clone(&self.shared);
         let connected = self.shared.connected.load(Ordering::SeqCst);
         let script = self
             .shared
@@ -872,6 +910,7 @@ impl SessionHost for FakeHost {
             .expect("lock")
             .clone();
         async move {
+            shared.enter_read().await;
             if !connected {
                 return Err(SessionError::NotConnected);
             }
@@ -922,6 +961,7 @@ impl SessionHost for FakeHost {
 
     fn saved_albums(&self) -> impl Future<Output = Result<Vec<SavedAlbum>, SessionError>> + Send {
         self.shared.saved_album_lists.fetch_add(1, Ordering::SeqCst);
+        let shared = Arc::clone(&self.shared);
         let connected = self.shared.connected.load(Ordering::SeqCst);
         let script = self
             .shared
@@ -930,6 +970,7 @@ impl SessionHost for FakeHost {
             .expect("lock")
             .clone();
         async move {
+            shared.enter_read().await;
             if !connected {
                 return Err(SessionError::NotConnected);
             }
@@ -942,9 +983,11 @@ impl SessionHost for FakeHost {
 
     fn liked_tracks(&self) -> impl Future<Output = Result<Vec<LikedTrack>, SessionError>> + Send {
         self.shared.liked_lists.fetch_add(1, Ordering::SeqCst);
+        let shared = Arc::clone(&self.shared);
         let connected = self.shared.connected.load(Ordering::SeqCst);
         let script = self.shared.liked_script.lock().expect("lock").clone();
         async move {
+            shared.enter_read().await;
             if !connected {
                 return Err(SessionError::NotConnected);
             }
@@ -1764,6 +1807,7 @@ impl SessionHost for FakeHost {
     }
 
     fn pause(&self) {
+        self.shared.calls.lock().expect("lock").push(Call::Pause);
         self.shared.pauses.fetch_add(1, Ordering::SeqCst);
     }
 
