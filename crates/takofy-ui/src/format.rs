@@ -247,7 +247,7 @@ pub fn saved_sub(kind: &str, at: SavedAt, now_ms: u64) -> String {
 }
 
 /// The Home shelf's title.
-pub const HOME_SHELF_TITLE: &str = "Most recently added";
+pub const HOME_SHELF_TITLE: &str = "Recently added";
 
 /// What the shelf says when things are saved but none of them is recent.
 pub const HOME_QUIET: &str = "Nothing recent to show yet.";

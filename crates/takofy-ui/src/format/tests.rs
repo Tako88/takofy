@@ -912,7 +912,7 @@ fn the_home_section_titles_count_nothing() {
 
 #[test]
 fn the_home_copy_has_no_counts() {
-    assert_eq!(HOME_SHELF_TITLE, "Most recently added");
+    assert_eq!(HOME_SHELF_TITLE, "Recently added");
     assert_eq!(HOME_QUIET, "Nothing recent to show yet.");
     assert_eq!(HOME_DAY_ONE_TITLE, "Home is built from what you save");
     assert_eq!(HOME_DAY_ONE_DOOR, "Search the catalogue");

@@ -166,7 +166,7 @@ or ten items, then a reveal — rather than inventing a scale of its own.
 
 | Shelf | Source | Body | The "why" line | Network | Empty when |
 | --- | --- | --- | --- | --- | --- |
-| **A. Most recently added** | liked tracks, saved albums and playlists by date (Measured: each carries one) | track rows, or cards | "the newest things you saved" | none | nothing saved at all |
+| **A. Recently added** | liked tracks, saved albums and playlists by date (Measured: each carries one) | track rows, or cards | "the newest things you saved" | none | nothing saved at all |
 | **B. Artists you have a lot of** | counted holdings per artist (local counting, not a route) | artist cards | "the artists you have the most of" | none | a library with no repeats |
 | **C. More like <artist>** | generator 1 | artist cards | "because you follow <artist>" | 1 call per artist | never, if the artist has neighbours |
 | **D. <artist> station** | generator 2 | track rows | "a station built from <artist>" | 1 call | seed has no station |
