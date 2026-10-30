@@ -5,8 +5,8 @@ use egui::{Sense, Ui};
 use crate::availability::Control;
 use crate::cover::want_px;
 use crate::format::{
-    HOME_DAY_ONE_BODY, HOME_DAY_ONE_DOOR, HOME_DAY_ONE_TITLE, HOME_QUIET, HOME_SHELF_TITLE,
-    media_type, saved_sub,
+    HOME_DAY_ONE_BODY, HOME_DAY_ONE_DOOR, HOME_DAY_ONE_TITLE, HOME_DOOR_SAVED, HOME_QUIET,
+    HOME_SHELF_TITLE, media_type, saved_sub,
 };
 use crate::home::{Card, Saved, Shelf, Slot};
 use crate::layout::table as table_layout;
@@ -18,7 +18,7 @@ use crate::view::playlist::root::{self, MediaDraw};
 
 use super::super::text as recipe;
 use super::super::{controls, hero, media, section};
-use super::{Pressed, frame};
+use super::{Door, Pressed, door, frame};
 
 // The dated page's own tests read art, greeting and head through this module, so
 // the three stay named here while only they use them.
@@ -80,7 +80,12 @@ pub(super) fn show(
         Shelf::Quiet => {
             ui.label(recipe::muted(HOME_QUIET, draw.tokens));
         }
-        Shelf::Cards(cards) => cards_row(ui, cards, draw, now_ms),
+        Shelf::Cards(cards) => {
+            cards_row(ui, cards, draw, now_ms);
+            if door::show(ui, HOME_DOOR_SAVED, draw.tokens) {
+                out.door = Some(Door::Library);
+            }
+        }
     }
 }
 

@@ -19,7 +19,7 @@ use crate::library::Library;
 use crate::message::Command;
 use crate::route::Page;
 use crate::sidebar_kind::SidebarKind;
-use crate::theme::Tokens;
+use crate::theme::{Tokens, space};
 use crate::view::playlist::root::{self, MediaDraw};
 
 use super::text as recipe;
@@ -28,7 +28,9 @@ use super::{page_head, section};
 mod because;
 mod counted;
 mod dated;
+mod door;
 mod episodes;
+mod foot;
 mod frame;
 mod stations;
 
@@ -55,6 +57,19 @@ pub(super) struct Pressed {
     pub(super) episode: Option<Vec<TrackEntry>>,
     /// The day-one door asked the topbar's field for the keyboard.
     pub(super) focus_search: bool,
+    /// The shelf whose foot door was pressed.
+    pub(super) door: Option<Door>,
+}
+
+/// Where a shelf's foot door opens.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum Door {
+    /// The library, at its first kind.
+    Library,
+    /// The library, narrowed to the shows that follow.
+    Podcasts,
+    /// One artist's page, which is where its neighbours are listed.
+    Artist(String),
 }
 
 /// Draws Home and returns the command its controls asked for.
@@ -135,9 +150,12 @@ pub(super) fn home_view(
                                 slot,
                                 &mut out,
                             ),
-                            Section::Waiting => {
-                                frame::waiting(ui, HOME_STATIONS_TITLE, tokens, frame::Band::Cards)
-                            }
+                            Section::Waiting => frame::waiting(
+                                ui,
+                                HOME_STATIONS_TITLE,
+                                tokens,
+                                frame::Band::Stations,
+                            ),
                             Section::Absent => {}
                         },
                         Slot::Because => match &shelves.because {
@@ -170,7 +188,7 @@ pub(super) fn home_view(
                                 &mut out,
                             ),
                             Section::Waiting => {
-                                frame::waiting(ui, HOME_COUNTED_TITLE, tokens, frame::Band::Cards)
+                                frame::waiting(ui, HOME_COUNTED_TITLE, tokens, frame::Band::Tiles)
                             }
                             Section::Absent => {}
                         },
@@ -196,6 +214,11 @@ pub(super) fn home_view(
                         },
                     }
                     drawn = true;
+                }
+                // The page's foot, once there is a page above it to explain.
+                if drawn {
+                    ui.add_space(space::S6);
+                    foot::show(ui, tokens);
                 }
             });
         });
@@ -224,6 +247,20 @@ pub(super) fn home_view(
         // carried to it and the frame that moves the keyboard is asked for here.
         library.search.ask_focus();
         ui.ctx().request_repaint();
+    }
+    if let Some(door) = out.door.take() {
+        // The library root is local state and asks for nothing; a shelf's door
+        // that narrows it lands on the chip its words name.
+        if let Door::Artist(uri) = door {
+            return library.open(Page::Artist(uri));
+        }
+        library.to_playlists();
+        if door == Door::Podcasts {
+            library
+                .root_filter
+                .choose(crate::library_filter::RootKind::Podcasts);
+        }
+        return None;
     }
     if let Some(slot) = out.retry {
         return library.retry_home(slot);

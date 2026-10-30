@@ -448,3 +448,70 @@ fn a_waiting_band_holds_its_height_so_the_shelves_below_it_do_not_move() {
         "the shelf below moved when the waiting band's content landed"
     );
 }
+
+#[test]
+fn a_ready_shelf_ends_in_a_door_to_its_rest() {
+    let ctx = context();
+    let mut library = because_ready();
+    let mut art = Art::default();
+    let (_, output) = run(&ctx, Vec::new(), &mut library, &mut art);
+    let painted: Vec<&str> = output
+        .shapes
+        .iter()
+        .filter_map(|clipped| match &clipped.shape {
+            egui::epaint::Shape::Text(text) => Some(text.galley.text()),
+            _ => None,
+        })
+        .collect();
+
+    // The shelves this library has content for end in their own doors; the rest
+    // have nothing to draw, so no foot either.
+    assert!(
+        painted.contains(&crate::format::HOME_DOOR_SAVED),
+        "the dated shelf's foot is missing"
+    );
+    let because = crate::format::home_door_because("Seed");
+    assert!(
+        painted.contains(&because.as_str()),
+        "the because shelf's foot is missing"
+    );
+}
+
+#[test]
+fn a_shelfs_door_takes_the_page_it_names() {
+    let ctx = context();
+    let mut library = because_ready();
+    let mut art = Art::default();
+    let (_, output) = run(&ctx, Vec::new(), &mut library, &mut art);
+    let label = crate::format::home_door_because("Seed");
+    let at = text_rect(&output, &label)
+        .expect("the because shelf has a foot")
+        .center();
+
+    let _ = click(&ctx, at, &mut library, &mut art);
+
+    assert_eq!(
+        library.page(),
+        Some(&Page::Artist("spotify:artist:seed".to_owned())),
+        "the door opens the artist whose neighbours it drew"
+    );
+}
+
+#[test]
+fn a_library_door_lands_on_the_root() {
+    let ctx = context();
+    let mut library = because_ready();
+    let mut art = Art::default();
+    let (_, output) = run(&ctx, Vec::new(), &mut library, &mut art);
+    let at = text_rect(&output, crate::format::HOME_DOOR_SAVED)
+        .expect("the dated shelf has a foot")
+        .center();
+
+    let _ = click(&ctx, at, &mut library, &mut art);
+
+    assert_eq!(
+        library.page(),
+        None,
+        "a door into the library lands on its root rather than on a page"
+    );
+}

@@ -104,6 +104,7 @@ fn the_head_names_the_followed_artist_and_counts_nothing() {
     let cards = vec![artist("spotify:artist:z", "Zed")];
     let row = Row {
         seed_name: "Aria",
+        seed_uri: "spotify:artist:aria",
         cards: &cards,
     };
 
@@ -132,6 +133,7 @@ fn a_card_press_opens_the_artists_page() {
     ];
     let row = Row {
         seed_name: "Aria",
+        seed_uri: "spotify:artist:aria",
         cards: &cards,
     };
 

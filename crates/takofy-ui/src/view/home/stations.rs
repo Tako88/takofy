@@ -14,7 +14,7 @@ use takofy_model::TrackEntry;
 
 use crate::availability::Control;
 use crate::cover::{Cover, want_px};
-use crate::format::{HOME_STATIONS_TITLE, format_position};
+use crate::format::{HOME_DOOR_LIBRARY, HOME_STATIONS_TITLE, format_position};
 use crate::home::stations::{Band, ROWS, Shown};
 use crate::icon::Icon;
 use crate::layout::chips;
@@ -28,7 +28,7 @@ use super::super::{art, controls, section, text as recipe};
 use super::Pressed;
 
 /// The band's columns: a station beside its neighbour.
-const COLUMNS: usize = 2;
+pub(super) const COLUMNS: usize = 2;
 
 /// One station row's height: the reference's 3rem box around a 40pt cover.
 const ROW_H: f32 = extent::HOME_ROW_H;
@@ -66,10 +66,13 @@ pub(super) fn show(
         }
         cell_of(ui, rect, station, tokens, draw, out);
     }
+    if super::door::show(ui, HOME_DOOR_LIBRARY, tokens) {
+        out.door = Some(super::Door::Library);
+    }
 }
 
 /// How tall one station is: its head, one step of air, and the rows it shows.
-fn cell(ui: &Ui, tokens: &Tokens) -> f32 {
+pub(super) fn cell(ui: &Ui, tokens: &Tokens) -> f32 {
     head_height(ui, tokens) + space::S1 + ROWS as f32 * ROW_H
 }
 

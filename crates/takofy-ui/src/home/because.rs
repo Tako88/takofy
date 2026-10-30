@@ -75,6 +75,7 @@ pub struct State {
     asked: Option<String>,
     /// The followed artist's name, which the head draws.
     seed_name: String,
+    seed_uri: String,
     /// The related artists the row draws.
     cards: Vec<FollowedArtist>,
     /// The failure that stopped the shelf's last read.
@@ -141,6 +142,7 @@ impl State {
         self.tried = 0;
         self.asked = None;
         self.seed_name.clear();
+        self.seed_uri.clear();
         self.cards.clear();
         self.failure = None;
     }
@@ -173,6 +175,7 @@ impl State {
     pub fn ask(&mut self, artist: &FollowedArtist) {
         self.asked = Some(artist.uri.clone());
         self.seed_name = artist.name.clone();
+        self.seed_uri = artist.uri.clone();
         self.tried = self.tried.saturating_add(1);
     }
 
@@ -185,6 +188,7 @@ impl State {
     pub fn row(&self) -> Option<Row<'_>> {
         self.has_cards().then_some(Row {
             seed_name: &self.seed_name,
+            seed_uri: &self.seed_uri,
             cards: &self.cards,
         })
     }
@@ -198,6 +202,8 @@ impl State {
 pub struct Row<'a> {
     /// The followed artist the cards are related to.
     pub seed_name: &'a str,
+    /// That artist's own URI, which is the page its foot door opens.
+    pub seed_uri: &'a str,
     /// The related artists the row draws.
     pub cards: &'a [FollowedArtist],
 }

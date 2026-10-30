@@ -11,7 +11,7 @@
 
 use egui::{Id, Sense, Ui};
 
-use crate::format::{HOME_EPISODES_TITLE, episode_meta, total_label};
+use crate::format::{HOME_DOOR_SHOWS, HOME_EPISODES_TITLE, episode_meta, total_label};
 use crate::home::episodes::List;
 use crate::layout::{episode as episode_layout, table as table_layout};
 use crate::theme::Tokens;
@@ -82,6 +82,9 @@ pub(super) fn show(
         }
     }
     selection.finish(ui.ctx());
+    if super::door::show(ui, HOME_DOOR_SHOWS, tokens) {
+        out.door = Some(super::Door::Podcasts);
+    }
 }
 
 #[cfg(test)]

@@ -8,7 +8,7 @@
 use egui::{Pos2, Rect, Sense, Ui, Vec2, pos2, vec2};
 
 use crate::cover::want_px;
-use crate::format::HOME_COUNTED_TITLE;
+use crate::format::{HOME_COUNTED_TITLE, HOME_DOOR_ARTISTS};
 use crate::home::counted::Tiles;
 use crate::layout::chips;
 use crate::route::Page;
@@ -28,7 +28,7 @@ pub(super) fn show(
     _now_ms: u64,
     tokens: &Tokens,
     draw: &mut MediaDraw<'_, '_>,
-    _out: &mut Pressed,
+    out: &mut Pressed,
 ) {
     if tiles.artists.is_empty() {
         return;
@@ -111,11 +111,14 @@ pub(super) fn show(
             tokens.palette.text,
         );
     }
+    if super::door::show(ui, HOME_DOOR_ARTISTS, tokens) {
+        out.door = Some(super::Door::Library);
+    }
 }
 
 /// How many tiles fit across `width`: the reference's 15rem floor, and one tile
 /// when even that does not fit.
-fn columns(width: f32) -> usize {
+pub(super) fn columns(width: f32) -> usize {
     let fit = ((width + space::S2) / (extent::HOME_TILE_MIN_W + space::S2)).floor();
     (fit as usize).max(1)
 }

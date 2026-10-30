@@ -287,6 +287,26 @@ pub const HOME_COUNTED_TITLE: &str = "The artists you have the most of";
 /// The episodes shelf's title.
 pub const HOME_EPISODES_TITLE: &str = "New from the shows you follow";
 
+/// The dated shelf's foot: the door into the whole library.
+pub const HOME_DOOR_SAVED: &str = "Show all saved";
+
+/// The stations shelf's foot: the reference's own words for it.
+pub const HOME_DOOR_LIBRARY: &str = "Your library";
+
+/// The counted shelf's foot: every artist the ranking was drawn from.
+pub const HOME_DOOR_ARTISTS: &str = "Every artist in your library";
+
+/// The episodes shelf's foot: the shows the episodes came from.
+pub const HOME_DOOR_SHOWS: &str = "All your shows";
+
+/// The because shelf's foot, naming the artist whose neighbours it drew.
+pub fn home_door_because(seed: &str) -> String {
+    format!("More artists near {seed}")
+}
+
+/// Home's foot: the page says what it is made of, and counts nothing.
+pub const HOME_COLOPHON: &str = "No play history and no curated feed: every title above names the thing in your library it was built from.";
+
 /// An episode count as the show page's head writes it: `1 episode`, `N episodes`.
 pub fn episode_count_label(count: usize) -> String {
     count_noun(count, "episode")

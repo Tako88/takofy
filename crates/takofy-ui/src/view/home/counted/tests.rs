@@ -147,7 +147,11 @@ fn a_tile_draws_its_name_and_no_number() {
     let drawn = painted(&output);
     assert_eq!(
         drawn,
-        vec![crate::format::HOME_COUNTED_TITLE, "A"],
+        vec![
+            crate::format::HOME_COUNTED_TITLE,
+            "A",
+            crate::format::HOME_DOOR_ARTISTS
+        ],
         "a tile says the artist's name and nothing it would have to count"
     );
 }

@@ -7,7 +7,7 @@
 use egui::{Sense, Ui};
 
 use crate::cover::want_px;
-use crate::format::{HOME_BECAUSE_TITLE, library_kind, media_type};
+use crate::format::{HOME_BECAUSE_TITLE, home_door_because, library_kind, media_type};
 use crate::home::because::Row;
 use crate::layout::table as table_layout;
 use crate::library_filter::RootKind;
@@ -26,7 +26,7 @@ pub(super) fn show(
     _now_ms: u64,
     tokens: &Tokens,
     draw: &mut MediaDraw<'_, '_>,
-    _out: &mut Pressed,
+    out: &mut Pressed,
 ) {
     section::head(
         ui,
@@ -62,6 +62,9 @@ pub(super) fn show(
         if media::tile(ui, rect, &media, tokens) == Some(media::Press::Open) {
             *draw.open = Some(Page::Artist(card.uri.clone()));
         }
+    }
+    if super::door::show(ui, &home_door_because(row.seed_name), tokens) {
+        out.door = Some(super::Door::Artist(row.seed_uri.to_owned()));
     }
 }
 
